@@ -10,11 +10,11 @@ Market Analyzer is a local-first desktop application built with:
 The app runs scheduled market-analysis jobs, produces evolving market reports, stores recent report history, and uses memory retrieval to improve future analysis.
 
 The application is not a trading bot. It acts as a professional market-analysis system focused on:
-- market regimes,
-- evolving macro theses,
-- geopolitical and economic developments,
-- sector analysis,
-- and investment strategy guidance.
+- market regimes
+- evolving macro theses
+- geopolitical and economic developments
+- sector analysis
+- investment strategy guidance
 
 The application runs entirely on the user’s machine except for external API/model requests.
 
@@ -45,6 +45,16 @@ Market Analyzer
 
 ---
 
+## Settings
+The Settings section includes:
+- model selection
+- API token configuration
+- scheduled job enable/disable controls
+- warning visibility
+- and manual job execution controls
+
+---
+
 ## Scheduled Jobs
 
 ### Premarket Report Job
@@ -55,12 +65,12 @@ Monday–Friday mornings
 ```
 
 Focus:
-- overnight futures,
-- global markets,
-- macro calendar,
-- geopolitical developments,
-- overnight earnings/news,
-- expected market drivers.
+- overnight futures
+- global markets
+- macro calendar
+- geopolitical developments
+- overnight earnings/news
+- expected market drivers
 
 ### Postmarket Report Job
 Runs:
@@ -70,27 +80,27 @@ Sunday–Friday evenings
 ```
 
 Focus:
-- what moved markets,
-- index performance,
-- sector leadership,
-- macro reactions,
-- yields/oil/dollar/VIX,
-- thesis evolution,
-- next-day setup.
+- what moved markets
+- index performance
+- sector leadership
+- macro reactions
+- yields/oil/dollar/VIX
+- thesis evolution
+- next-day setup
 
 ### Weekly Review Job
 Runs:
 ```text
 Saturday
-12:00 AM local time
+9:00 AM local time
 ```
 
 Focus:
-- analyze the previous week’s reports,
-- judge accuracy,
-- identify incorrect assumptions,
-- identify useful signals,
-- extract durable lessons.
+- analyze the previous week’s reports
+- judge accuracy
+- identify incorrect assumptions
+- identify useful signals
+- extract durable lessons
 
 The weekly review is stored as a normal readable report inside the application.
 
@@ -100,9 +110,9 @@ The weekly review is stored as a normal readable report inside the application.
 The application uses local scheduled jobs that run directly on the user’s machine.
 
 Jobs are responsible for:
-- generating premarket reports,
-- generating postmarket reports,
-- and generating the weekly review report.
+- generating premarket reports
+- generating postmarket reports
+- generating the weekly review report
 
 ### Application Runtime Requirements
 **Application Must Be Running**
@@ -110,9 +120,9 @@ Jobs are responsible for:
 Scheduled jobs only run while the application is running.
 
 If the user fully quits the application:
-- scheduled jobs do not run,
-- report generation stops,
-- and no background processing occurs.
+- scheduled jobs do not run
+- report generation stops
+- no background processing occurs
 
 Closing the application window does not quit the application if the app remains active in the system tray.
 
@@ -120,84 +130,85 @@ Closing the application window does not quit the application if the app remains 
 Scheduled jobs do not run while the user’s machine is asleep.
 
 Examples:
-- laptop sleeping,
-- laptop lid closed,
-- suspended desktop state,
-- operating system sleep mode.
+- laptop sleeping
+- laptop lid closed
+- suspended desktop state
+- operating system sleep mode
 
 If a scheduled execution time occurs while the machine is asleep:
-- the job is skipped,
-- the application does not attempt to retroactively execute the missed job,
-- and the next scheduled job runs normally.
+- the job is skipped
+- the application does not attempt to retroactively execute the missed job
+- and the next scheduled job runs normally
 
 ### Offline Behavior
 If the machine:
-- loses internet connectivity,
-- cannot reach APIs,
-- or cannot access configured model providers,
-
+- loses internet connectivity
+- cannot reach APIs
+- cannot access configured model providers
 the scheduled job fails cleanly.
 
 The application:
-- cancels the current job,
-- stores the failure state,
-- and displays a warning banner.
+- cancels the current job
+- stores the failure state
+- displays a warning banner
 
 ### Concurrent Job Protection
 Only one scheduled job may run at a time.
 
-If:
-- a report job is currently running,
-- and another scheduled job time occurs,
-
-the second job is skipped.
+If a report job is currently running and another scheduled job time occurs, the second job is skipped.
 
 The application logs the skipped execution.
 
-### Job Scheduling Settings
-
+### Job Status Visibility
 The application displays:
-- last successful run time,
-- currently running job state,
-- last failure state,
-- and skipped job events.
+- last successful run time
+- currently running job state
+- last failure state
+- skipped job events
+
+### Job Controls
+Users can:
+- Enable Premarket Job
+- Disable Premarket Job
+- Enable Postmarket Job
+- Disable Postmarket Job
+- Enable Weekly Review Job
+- Disable Weekly Review Job
 
 ### Manual Report Generation
-
 The application includes manual execution controls for:
-- Premarket Report,
-- Postmarket Report,
-- and Weekly Review.
+- Premarket Report
+- Postmarket Report
+- Weekly Review
 
 Manual execution follows the same workflow and validation rules as scheduled execution.
 
 ### Error Handling
 If a job fails because of:
-- API limits,
-- token exhaustion,
-- provider failures,
-- malformed responses,
-- or model execution errors,
-
+- API limits
+- token exhaustion
+- provider failures
+- malformed responses
+- model execution errors
 the application:
-1. cleanly cancels the job,
-2. stores the failure state,
-3. displays a warning banner inside the application.
+1. cleanly cancels the job
+2. stores the failure state
+3. displays a warning banner inside the application
 
 If the warning already exists and has not been dismissed/resolved:
 - additional failing jobs do not create duplicate warnings.
 
 ### Missed Job Detection
 The application detects when a scheduled job was missed because:
-- the application was not running,
-- the machine was asleep,
-- or the machine was offline during the scheduled execution window.
+- the application was not running
+- the machine was asleep
+- the machine was offline during the scheduled execution window
 
 When the application is next opened or resumed, it displays a notification indicating that the scheduled job was missed.
 
 The user may:
-- dismiss the notification,
-- or manually execute the missed job immediately.
+- dismiss the notification
+- manually execute the missed job immediately
 
 Missed jobs are not automatically replayed or queued.
 
@@ -212,13 +223,13 @@ Docs - https://docs.openbb.co
 OpenBB acts as the primary financial-data access layer for the application.
 
 Responsibilities:
--market prices,
-- index data,
-- sector data,
-- company fundamentals,
-- earnings data,
-- financial metrics,
-- and standardized access to financial datasets.
+- market prices
+- index data
+- sector data
+- company fundamentals
+- earnings data
+- financial metrics
+- standardized access to financial datasets
 
 The application uses OpenBB to normalize and simplify financial-data retrieval workflows.
 
@@ -228,12 +239,12 @@ Docs - https://site.financialmodelingprep.com/developer/docs
 Financial Modeling Prep provides structured financial and market datasets.
 
 Responsibilities:
--  company financials,
-- earnings information,
-- analyst estimates,
-- market metrics,
-- sector performance,
-- and supplemental financial data used by the agents.
+- company financials
+- earnings information
+- analyst estimates
+- market metrics
+- sector performance
+- supplemental financial data used by the agents
 
 The application uses Financial Modeling Prep as a direct structured financial-data source.
 
@@ -243,13 +254,13 @@ Docs - https://fred.stlouisfed.org/docs/api/fred/
 FRED provides official macroeconomic and financial data maintained by the Federal Reserve Bank of St. Louis.
 
 Responsibilities:
-- Treasury yields,
-- interest rates,
-- inflation metrics,
-- recession indicators,
-- unemployment data,
-- consumer data,
-- and broader macroeconomic indicators.
+- Treasury yields
+- interest rates
+- inflation metrics
+- recession indicators
+- unemployment data
+- consumer data
+- broader macroeconomic indicators
 
 The application uses FRED for macroeconomic analysis and long-term market-regime evaluation.
 
@@ -259,14 +270,13 @@ Docs - https://www.bls.gov/developers/
 BLS provides official United States labor and inflation datasets.
 
 Responsibilities:
-- CPI reports,
-- employment reports,
-- wage data,
-- productivity data,
-- and labor-market statistics.
+- CPI reports
+- employment reports
+- wage data
+- productivity data
+- labor-market statistics
 
 The application uses BLS data for inflation and labor-market analysis.
-
 
 ### News and Research
 **Tavily:**
@@ -275,10 +285,10 @@ Docs - https://docs.tavily.com/welcome
 Tavily provides AI-oriented web search and research retrieval.
 
 Responsibilities:
-- gathering relevant market news,
-- retrieving research sources,
-- identifying important developing stories,
-- and supplying contextual research material to the agents.
+- gathering relevant market news
+- retrieving research sources
+- identifying important developing stories
+- supplying contextual research material to the agents
 
 The application uses Tavily as the primary research and news-ingestion system.
 
@@ -288,11 +298,11 @@ Docs - https://www.gdeltproject.org/data.html
 GDELT is a global event and news-monitoring platform that tracks worldwide news coverage and geopolitical developments.
 
 Responsibilities:
-- geopolitical monitoring,
-- conflict tracking,
-- global event detection,
-- international news analysis,
-- and large-scale news trend identification.
+- geopolitical monitoring
+- conflict tracking
+- global event detection
+- international news analysis
+- large-scale news trend identification
 
 The application uses GDELT to strengthen geopolitical and macro event awareness.
 
@@ -349,7 +359,7 @@ Responsibilities:
 - dynamically branch research
 - coordinate subagents
 - synthesize conclusions
-- maintain long-term thesis continuity
+- maintain evolving market theses
 - retrieve memory
 - publish reports
 - write durable learnings
@@ -365,9 +375,9 @@ Three subagents are used:
 These agents are not forced into biased conclusions.
 
 Their role is to:
-- explore different interpretations,
-- challenge assumptions,
-- and strengthen final analysis quality.
+- explore different interpretations
+- challenge assumptions
+- strengthen final analysis quality
 
 ---
 
@@ -376,7 +386,7 @@ Their role is to:
 ### Full Flow
 1. Scheduled job starts
 2. Load settings
-3. Load recent Markdown reports
+3. Load recent Markdown reports and structured metadata
 4. Query vector memory
 5. Check research inbox
 6. Gather baseline market data
@@ -419,9 +429,9 @@ Pipeline:
 The application does not repeatedly inject large historical report histories into prompts.
 
 Instead:
-- recent reports are loaded separately,
-- vector memory retrieval is used selectively,
-- only relevant memory fragments are injected into prompts.
+- only a bounded subset of recent Markdown reports is loaded into agent context
+- vector memory retrieval is used selectively
+- only relevant memory fragments are injected into prompts
 
 ### Agent Workflow Limits
 The application enforces:
@@ -441,15 +451,15 @@ Uses:
 - OpenAI GPT-5 mini
 
 Purpose:
-- filtering,
-- deduplication,
-- relevance scoring,
-- clustering headlines into major topics.
+- filtering
+- deduplication
+- relevance scoring
+- clustering headlines into major topics
 
 Rationale:
-- low cost,
-- fast latency,
-- strong enough for lightweight classification tasks.
+- low cost
+- fast latency
+- strong enough for lightweight classification tasks
 
 ### Data Extraction
 Uses:
@@ -457,31 +467,31 @@ Uses:
 
 Purpose:
 - extracting structured information from:
-  - news articles,
-  - PDFs,
-  - research documents,
-  - earnings summaries,
-  - macro reports.
+  - news articles
+  - PDFs
+  - research documents
+  - earnings summaries
+  - macro reports
 
 Rationale:
-- reliable structured output,
-- inexpensive,
-- good tool/function calling performance.
+- reliable structured output
+- inexpensive
+- good tool/function calling performance
 
 ### Research Routing
 Uses:
 - Anthropic Claude Sonnet
 
 Purpose:
-- determining which topics deserve deeper analysis,
-- identifying second-order implications,
-- prioritizing research depth,
-- deciding which themes/subsectors/geopolitical events matter most.
+- determining which topics deserve deeper analysis
+- identifying second-order implications
+- prioritizing research depth
+- deciding which themes/subsectors/geopolitical events matter most
 
 Rationale:
-- stronger reasoning quality,
-- better long-context understanding,
-- more nuanced prioritization and synthesis.
+- stronger reasoning quality
+- better long-context understanding
+- more nuanced prioritization and synthesis
 
 ## User-Configurable Models
 The user selects the models used for:
@@ -500,14 +510,10 @@ Anthropic Models:
 - Claude Haiku
 
 The user must provide:
-- OpenAI API token,
-- Anthropic API token.
+- OpenAI API token
+- Anthropic API token
 
-If:
-- an agent is configured to use a provider,
-- but the corresponding API token is missing,
-
-the scheduled job does not run. The application displays a warning message.
+If an agent is configured to use a provider but the corresponding API token is missing, the scheduled job does not run. The application displays a warning message.
 
 ---
 
@@ -623,17 +629,17 @@ Reports are written in Markdown by the main agent. An HTML version is generated 
 Reports are authored and stored internally as Markdown.
 
 Markdown is the canonical report format used for:
-- agent memory,
-- report continuity,
-- vector memory ingestion,
-- report retrieval,
-- and future report synthesis.
+- agent memory
+- report continuity
+- vector memory ingestion
+- report retrieval
+- future report synthesis
 
 HTML reports are generated from Markdown and are presentation-only artifacts used for:
-- in-app rendering,
-- styling,
-- chart display,
-- and PDF generation.
+- in-app rendering
+- styling
+- chart display
+- PDF generation
 
 Agents never ingest or reason over HTML reports.
 
@@ -683,7 +689,7 @@ High-level guidance:
 - short/mid/long-term opportunities
 - macro-sensitive positioning
 
-No direct trade recommendations.
+No direct trade recommendations or trade execution guidance.
 
 ## Short-Term Outlook
 
@@ -693,21 +699,24 @@ No direct trade recommendations.
 
 ## Sources
 ```
-### Thesis Continuity and Evolution
+
+---
+
+## Thesis Continuity and Evolution
 The system maintains continuity between reports and treats market analysis as an evolving long-term process rather than a collection of disconnected daily summaries.
 
 Each report exists within a broader market narrative that develops over time.
 
 The main agent continuously:
-- references recent reports,
-- retrieves relevant historical learnings from vector memory,
-- follows up on prior market concerns,
-- tracks whether previous assumptions are strengthening or weakening,
-- and updates long-term theses incrementally as new evidence appears.
+- references recent reports
+- retrieves relevant historical learnings from vector memory
+- follows up on prior market concerns
+- tracks whether previous assumptions are strengthening or weakening
+- updates long-term theses incrementally as new evidence appears
 
 The system is designed to behave like a professional analyst team maintaining ongoing market coverage rather than a stateless news summarizer.
 
-#### Report Continuity
+### Report Continuity
 Reports should naturally flow from previous reports.
 
 Examples:
@@ -723,25 +732,25 @@ Later report:
 ```
 
 The system should:
-- continue monitoring unresolved market risks,
-- revisit previous conclusions,
-- acknowledge when earlier assumptions were incorrect,
-- and identify when a thesis is strengthening or weakening.
+- continue monitoring unresolved market risks
+- revisit previous conclusions
+- acknowledge when earlier assumptions were incorrect
+- and identify when a thesis is strengthening or weakening
 
 ### Thesis Stability
 The system should avoid unnecessary thesis instability.
 
 Long-term market theses should evolve gradually when:
-- market conditions remain structurally similar,
-- existing narratives continue holding,
-- and incoming data reinforces prior conclusions.
+- market conditions remain structurally similar
+- existing narratives continue holding
+- and incoming data reinforces prior conclusions
 
 The system should not dramatically change positioning or outlook because of isolated single-day market moves or short-lived news cycles.
 
 The main agent should prioritize:
-- signal over noise,
-- multi-day/multi-week confirmation,
-- and structural changes over temporary volatility.
+- signal over noise
+- multi-day/multi-week confirmation
+- and structural changes over temporary volatility
 
 ### Thesis Pivot Conditions
 The system may rapidly pivot its outlook when major evidence materially changes the market environment.
@@ -758,31 +767,31 @@ Examples include:
 - major energy disruptions
 
 In these situations:
-- reports may heavily focus on the new event,
-- prior assumptions may be explicitly challenged,
-- and the long-term thesis may be revised aggressively.
+- reports may heavily focus on the new event
+- prior assumptions may be explicitly challenged
+- and the long-term thesis may be revised aggressively
 
 The system should clearly explain:
-- why the thesis changed,
-- which assumptions failed,
-- and what evidence caused the pivot.
+- why the thesis changed
+- which assumptions failed
+- what evidence caused the pivot
 
 ### Memory-Guided Evolution
 The vector memory system exists to help the main agent maintain analytical continuity over time.
 
 The main agent uses memory retrieval to:
-- identify similar historical conditions,
-- revisit previous conclusions,
-- track recurring market patterns,
-- avoid repeating analytical mistakes,
-- and maintain coherent long-term reasoning across reports.
+- identify similar historical conditions
+- revisit previous conclusions
+- track recurring market patterns
+- avoid repeating analytical mistakes
+- maintain coherent long-term reasoning across reports
 
 The goal is not rigid consistency.
 
 The goal is:
-- coherent reasoning,
-- gradual evolution when appropriate,
-- and decisive adaptation when necessary.
+- coherent reasoning
+- gradual evolution when appropriate
+- decisive adaptation when necessary
 
 ---
 
@@ -790,24 +799,38 @@ The goal is:
 
 ### SQLite
 Stores:
-- reports,
-- report metadata,
-- HTML output,
-- job history,
-- warning states.
+- reports
+- report metadata
+- HTML output
+- job history
+- warning states
+
+Each report stores:
+- report type
+- creation timestamp
+- associated market session metadata
 
 Only the most recent 30 full reports are retained. Older reports are deleted automatically.
 
+When a report is removed:
+- its Markdown
+- generated HTML
+- metadata
+- associated vector-memory summary references
+are deleted together.
+
 ### LanceDB Vector Memory
 Stores:
-- report summaries,
-- durable learnings,
-- thesis evolution,
-- important historical analogs,
-- past mistakes,
-- useful recurring patterns.
+- report summaries
+- durable learnings
+- thesis evolution
+- important historical analogs
+- past mistakes
+- useful recurring patterns
 
 The vector DB acts as long-term semantic memory for the main agent.
+
+Deleting older reports does not remove durable learnings already stored in vector memory.
 
 ---
 
@@ -826,6 +849,7 @@ The vector DB acts as long-term semantic memory for the main agent.
 The weekly review report appears in the normal report history UI.
 
 ---
+
 ## Export System
 Reports are stored internally as:
 - Markdown
