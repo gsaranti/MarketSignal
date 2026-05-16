@@ -19,6 +19,7 @@ The application is not a trading bot. It acts as a professional market-analysis 
 The application runs entirely on the user’s machine except for external API/model requests.
 
 ---
+
 ## Application Interface
 
 ### Main Layout
@@ -43,6 +44,7 @@ Market Analyzer
 ```
 
 ---
+
 ## Scheduled Jobs
 
 ### Premarket Report Job
@@ -93,6 +95,7 @@ Focus:
 The weekly review is stored as a normal readable report inside the application.
 
 ---
+
 ## Data Sources
 
 ### Market and Financial Data
@@ -110,6 +113,7 @@ The weekly review is stored as a normal readable report inside the application.
 - Anthropic
 
 ---
+
 ## Research Document Workflow
 The application contains two local folders:
 ```text
@@ -144,6 +148,8 @@ Before each scheduled job:
 The user may manually delete documents from either folder.
 The user cannot manually archive documents.
 
+---
+
 ## Agent Architecture
 
 ### Main Agent
@@ -175,12 +181,14 @@ Their role is to:
 - challenge assumptions,
 - and strengthen final analysis quality.
 
+---
+
 ## Main Agent Workflow
 
 ### Full Flow
 1. Scheduled job starts
 2. Load settings
-3. Load recent reports
+3. Load recent Markdown reports
 4. Query vector memory
 5. Check research inbox
 6. Gather baseline market data
@@ -191,14 +199,16 @@ Their role is to:
 11. Receive subagent theses
 12. Critique subagent responses independently
 13. Synthesize final report
-14. Save report to SQLite
+14. Save Markdown report to SQLite
 15. Save report summary to vector DB
 16. Save durable learnings if applicable
-17. Generate HTML report
+17. Generate HTML report from Markdown
 18. Update application UI
 
 The main agent does not engage in recursive conversations with subagents.
 It critiques responses independently during synthesis.
+
+---
 
 ## Cost-Control Architecture
 The application is designed with bounded workflows to prevent excessive token usage.
@@ -233,31 +243,57 @@ The application enforces:
 - no recursive agent loops
 - no recursive debate cycles
 
+---
+
 ## Fixed Internal Model Usage
-Some internal workflows use non-configurable models for cost control.
+Some internal workflows use non-configurable models for cost control and predictable performance.
 
 ### Headline Filtering
 Uses:
-- low-cost small model
+- OpenAI GPT-5 mini
 
 Purpose:
 - filtering,
 - deduplication,
-- relevance scoring.
+- relevance scoring,
+- clustering headlines into major topics.
+
+Rationale:
+- low cost,
+- fast latency,
+- strong enough for lightweight classification tasks.
 
 ### Data Extraction
 Uses:
-- low-cost model
+- OpenAI GPT-5 mini
 
 Purpose:
-- extracting structured information from news and documents.
+- extracting structured information from:
+  - news articles,
+  - PDFs,
+  - research documents,
+  - earnings summaries,
+  - macro reports.
+
+Rationale:
+- reliable structured output,
+- inexpensive,
+- good tool/function calling performance.
 
 ### Research Routing
 Uses:
-- mid-tier model
+- Anthropic Claude Sonnet
 
 Purpose:
-- deciding which topics deserve deeper analysis.
+- determining which topics deserve deeper analysis,
+- identifying second-order implications,
+- prioritizing research depth,
+- deciding which themes/subsectors/geopolitical events matter most.
+
+Rationale:
+- stronger reasoning quality,
+- better long-context understanding,
+- more nuanced prioritization and synthesis.
 
 ## User-Configurable Models
 The user selects the models used for:
@@ -266,9 +302,14 @@ The user selects the models used for:
 - Bear Analyst
 - Balanced Analyst
 
-Supported providers:
-- OpenAI
-- Anthropic
+OpenAI Models:
+- GPT-5
+- GPT-5 mini
+
+Anthropic Models:
+- Claude Opus
+- Claude Sonnet
+- Claude Haiku
 
 The user must provide:
 - OpenAI API token,
@@ -281,6 +322,7 @@ If:
 the scheduled job does not run. The application displays a warning message.
 
 ---
+
 ## Error Handling
 If a job fails because of:
 - API limits,
@@ -298,6 +340,7 @@ If the warning already exists and has not been dismissed/resolved:
 - additional failing jobs do not create duplicate warnings.
 
 ---
+
 ## Dynamic Research Behavior
 The main agent always begins with a baseline scan.
 
@@ -352,6 +395,7 @@ If geopolitical tensions escalate:
 ```
 
 ---
+
 ## Analyst Skills
 The following reusable skills are included in MVP:
 1. Market Regime Analysis
@@ -374,6 +418,7 @@ The following reusable skills are included in MVP:
 These skills operate as structured reusable prompts with expected output schemas.
 
 ---
+
 ## Subagent Responsibilities
 
 ### Bull Analyst
@@ -401,10 +446,26 @@ Responsibilities:
 - identify thesis change conditions
 
 ---
-## Report Structure
-Reports are written in Markdown by the main agent.
 
-An HTML version is generated for application display.
+## Report Structure
+Reports are written in Markdown by the main agent. An HTML version is generated for application display.
+
+Reports are authored and stored internally as Markdown.
+
+Markdown is the canonical report format used for:
+- agent memory,
+- report continuity,
+- vector memory ingestion,
+- report retrieval,
+- and future report synthesis.
+
+HTML reports are generated from Markdown and are presentation-only artifacts used for:
+- in-app rendering,
+- styling,
+- chart display,
+- and PDF generation.
+
+Agents never ingest or reason over HTML reports.
 
 ### Standard Report Structure
 ```text
@@ -462,12 +523,99 @@ No direct trade recommendations.
 
 ## Sources
 ```
+### Thesis Continuity and Evolution
+The system maintains continuity between reports and treats market analysis as an evolving long-term process rather than a collection of disconnected daily summaries.
 
-Reports maintain continuity over time.
+Each report exists within a broader market narrative that develops over time.
 
-The system evolves and updates long-term market theses gradually unless major events justify rapid pivots.
+The main agent continuously:
+- references recent reports,
+- retrieves relevant historical learnings from vector memory,
+- follows up on prior market concerns,
+- tracks whether previous assumptions are strengthening or weakening,
+- and updates long-term theses incrementally as new evidence appears.
+
+The system is designed to behave like a professional analyst team maintaining ongoing market coverage rather than a stateless news summarizer.
+
+#### Report Continuity
+Reports should naturally flow from previous reports.
+
+Examples:
+```text
+Previous report:
+"The primary market risk remains whether elevated oil prices begin bleeding into core inflation."
+
+Next report:
+"That concern increased after core CPI accelerated while oil remained elevated."
+
+Later report:
+"Inflation pressure has not yet materially damaged AI infrastructure spending, but rising yields are becoming a larger risk to valuation multiples."
+```
+
+The system should:
+- continue monitoring unresolved market risks,
+- revisit previous conclusions,
+- acknowledge when earlier assumptions were incorrect,
+- and identify when a thesis is strengthening or weakening.
+
+### Thesis Stability
+The system should avoid unnecessary thesis instability.
+
+Long-term market theses should evolve gradually when:
+- market conditions remain structurally similar,
+- existing narratives continue holding,
+- and incoming data reinforces prior conclusions.
+
+The system should not dramatically change positioning or outlook because of isolated single-day market moves or short-lived news cycles.
+
+The main agent should prioritize:
+- signal over noise,
+- multi-day/multi-week confirmation,
+- and structural changes over temporary volatility.
+
+### Thesis Pivot Conditions
+The system may rapidly pivot its outlook when major evidence materially changes the market environment.
+
+Examples include:
+- major geopolitical escalation
+- financial system stress
+- persistent inflation regime shifts
+- abrupt central bank policy changes
+- major recession indicators
+- significant AI infrastructure slowdown
+- supply-chain disruptions
+- systemic credit events
+- major energy disruptions
+
+In these situations:
+- reports may heavily focus on the new event,
+- prior assumptions may be explicitly challenged,
+- and the long-term thesis may be revised aggressively.
+
+The system should clearly explain:
+- why the thesis changed,
+- which assumptions failed,
+- and what evidence caused the pivot.
+
+### Memory-Guided Evolution
+The vector memory system exists to help the main agent maintain analytical continuity over time.
+
+The main agent uses memory retrieval to:
+- identify similar historical conditions,
+- revisit previous conclusions,
+- track recurring market patterns,
+- avoid repeating analytical mistakes,
+- and maintain coherent long-term reasoning across reports.
+
+The goal is not rigid consistency.
+
+The goal is:
+- coherent reasoning,
+- gradual evolution when appropriate,
+- and decisive adaptation when necessary.
 
 ---
+
 ## Storage
 
 ### SQLite
@@ -492,6 +640,7 @@ Stores:
 The vector DB acts as long-term semantic memory for the main agent.
 
 ---
+
 ## Weekly Review Workflow
 
 ### Weekly Review Process
