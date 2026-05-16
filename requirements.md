@@ -37,6 +37,10 @@ Market Signal
 │   ├── Postmarket reports
 │   └── Weekly review reports
 │
+├── Research Documents
+│   ├── Research Inbox
+│   └── Research Archive
+│
 ├── Warning Banner Area
 │   ├── Missing agent configuration
 │   ├── Missing API tokens
