@@ -206,14 +206,95 @@ Missed jobs are not automatically replayed or queued.
 ## Data Sources
 
 ### Market and Financial Data
-- OpenBB
-- Financial Modeling Prep
-- FRED
-- BLS
+**OpenBB:**
+Docs - https://docs.openbb.co
+
+OpenBB acts as the primary financial-data access layer for the application.
+
+Responsibilities:
+-market prices,
+- index data,
+- sector data,
+- company fundamentals,
+- earnings data,
+- financial metrics,
+- and standardized access to financial datasets.
+
+The application uses OpenBB to normalize and simplify financial-data retrieval workflows.
+
+**Financial Modeling Prep:**
+Docs - https://site.financialmodelingprep.com/developer/docs
+
+Financial Modeling Prep provides structured financial and market datasets.
+
+Responsibilities:
+-  company financials,
+- earnings information,
+- analyst estimates,
+- market metrics,
+- sector performance,
+- and supplemental financial data used by the agents.
+
+The application uses Financial Modeling Prep as a direct structured financial-data source.
+
+**FRED (Federal Reserve Economic Data):**
+Docs - https://fred.stlouisfed.org/docs/api/fred/
+
+FRED provides official macroeconomic and financial data maintained by the Federal Reserve Bank of St. Louis.
+
+Responsibilities:
+- Treasury yields,
+- interest rates,
+- inflation metrics,
+- recession indicators,
+- unemployment data,
+- consumer data,
+- and broader macroeconomic indicators.
+
+The application uses FRED for macroeconomic analysis and long-term market-regime evaluation.
+
+**BLS (Bureau of Labor Statistics):**
+Docs - https://www.bls.gov/developers/
+
+BLS provides official United States labor and inflation datasets.
+
+Responsibilities:
+- CPI reports,
+- employment reports,
+- wage data,
+- productivity data,
+- and labor-market statistics.
+
+The application uses BLS data for inflation and labor-market analysis.
+
 
 ### News and Research
-- Tavily
-- GDELT
+**Tavily:**
+Docs - https://docs.tavily.com/welcome
+
+Tavily provides AI-oriented web search and research retrieval.
+
+Responsibilities:
+- gathering relevant market news,
+- retrieving research sources,
+- identifying important developing stories,
+- and supplying contextual research material to the agents.
+
+The application uses Tavily as the primary research and news-ingestion system.
+
+**GDELT:**
+Docs - https://www.gdeltproject.org/data.html
+
+GDELT is a global event and news-monitoring platform that tracks worldwide news coverage and geopolitical developments.
+
+Responsibilities:
+- geopolitical monitoring,
+- conflict tracking,
+- global event detection,
+- international news analysis,
+- and large-scale news trend identification.
+
+The application uses GDELT to strengthen geopolitical and macro event awareness.
 
 ### LLM Providers
 - OpenAI
@@ -242,7 +323,7 @@ Supported formats:
 - JSON
 - HTML
 
-Before each scheduled job:
+At the start of each scheduled job:
 1. The main agent checks the inbox folder.
 2. If the folder is empty, the job continues normally.
 3. If documents exist, they are parsed and treated as professional research sources.
