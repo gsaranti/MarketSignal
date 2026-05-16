@@ -1,7 +1,7 @@
-# Market Analyzer MVP
+# Market Signal MVP
 
 ## Overview
-Market Analyzer is a local-first desktop application built with:
+Market Signal is a local-first desktop application built with:
 - Tauri
 - Vue
 - SQLite
@@ -24,23 +24,30 @@ The application runs entirely on the user’s machine except for external API/mo
 
 ### Main Layout
 ```text
-Market Analyzer
+Market Signal
 ├── Latest Report View
-│   ├── Header summary
-│   ├── Market regime
-│   ├── Index analysis
-│   ├── Dynamic market sections
-│   ├── Investment strategy section
-│   ├── Charts / graphs / links
+│   ├── Rendered HTML report
 │   └── Export actions
 │
 ├── Recent Reports Sidebar
 │   ├── Ordered descending
+│   ├── Report type labels
+│   ├── Report timestamps
 │   ├── Premarket reports
 │   ├── Postmarket reports
 │   └── Weekly review reports
 │
+├── Warning Banner Area
+│   ├── Missing agent configuration
+│   ├── Missing API tokens
+│   ├── Failed jobs
+│   └── Missed scheduled jobs
+│
 └── Settings
+    ├── Agent model configuration
+    ├── API token configuration
+    ├── Scheduled job controls
+    └── Manual report execution
 ```
 
 ---
@@ -174,6 +181,8 @@ Users can:
 - Disable Postmarket Job
 - Enable Weekly Review Job
 - Disable Weekly Review Job
+
+By default, all are enabled.
 
 ### Manual Report Generation
 The application includes manual execution controls for:
@@ -372,12 +381,35 @@ Three subagents are used:
 - Bear Analyst
 - Balanced Analyst
 
-These agents are not forced into biased conclusions.
+These agents are not forced into predetermined conclusions or artificial disagreement.
 
-Their role is to:
-- explore different interpretations
+Their purpose is to:
+- explore different market interpretations
 - challenge assumptions
-- strengthen final analysis quality
+- stress-test market narratives
+- identify overlooked risks or opportunities
+- strengthen the quality of the final report
+
+The subagents operate as professional analysts with different analytical perspectives rather than ideological positions.
+
+It is completely valid for:
+- all three agents to arrive at a similar market conclusion
+- two agents to generally agree while one differs
+- all three agents to identify different risks and opportunities within the same broader market regime
+
+Examples:
+- All three agents may conclude that market conditions remain structurally bullish while identifying different risks beneath the surface.
+- The Bull and Balanced agents may agree that AI infrastructure demand remains strong, while the Bear agent focuses on valuation and inflation risks.
+- The Bear agent may acknowledge strong market momentum and liquidity conditions while still identifying fragile assumptions underneath the rally.
+
+The goal of the subagent system is not conflict for the sake of conflict.
+
+The goal is:
+- analytical depth
+- thesis stress-testing
+- stronger final synthesis by the main agent
+
+The main agent evaluates all subagent responses and determines how much weight to assign each perspective during final report generation.
 
 ---
 
@@ -405,6 +437,49 @@ Their role is to:
 
 The main agent does not engage in recursive conversations with subagents.
 It critiques responses independently during synthesis.
+
+---
+
+## Subagent Responsibilities
+
+### Bull Analyst
+The Bull Analyst focuses on constructive interpretations of the market environment.
+
+The Bull Analyst is responsible for:
+- identifying upside drivers
+- identifying resilience in market structure
+- identifying improving conditions
+- challenging overly pessimistic assumptions
+- explaining constructive market scenarios
+
+The Bull Analyst does not ignore negative data or force bullish conclusions.
+It acknowledges risks while focusing on evidence that supports continued market strength or improving conditions.
+
+### Bear Analyst
+The Bear Analyst focuses on identifying fragile assumptions and downside risks.
+
+The Bear Analyst is responsible for:
+- identifying downside risks
+- identifying weakening conditions
+- challenging complacency
+- inspecting valuation and macroeconomic risks
+- and inspecting geopolitical, liquidity, and credit-related risks
+
+The Bear Analyst does not deny bullish market conditions when supported by market data.
+It acknowledges strength while focusing on hidden vulnerabilities, unsustainable narratives, and structural risks.
+
+### Balanced Analyst
+The Balanced Analyst focuses on weighing evidence and identifying the most probable market interpretation.
+
+The Balanced Analyst is responsible for:
+- separating signal from noise
+- weighing bullish and bearish evidence
+- assigning confidence levels
+- separating short-term and long-term implications
+- and identifying conditions that would justify thesis changes
+
+The Balanced Analyst does not attempt to remain artificially neutral.
+It may produce bullish or bearish conclusions when evidence strongly supports them.
 
 ---
 
@@ -513,7 +588,28 @@ The user must provide:
 - OpenAI API token
 - Anthropic API token
 
-If an agent is configured to use a provider but the corresponding API token is missing, the scheduled job does not run. The application displays a warning message.
+When a user selects a provider for an agent, the corresponding API token is required.
+
+Examples:
+- selecting an OpenAI model requires a valid OpenAI API token
+- selecting an Anthropic model requires a valid Anthropic API token
+
+If a required token is missing:
+- settings saving is disabled
+- the application displays a validation warning explaining which token is required
+
+By default, the application starts with no models selected for:
+- Main Agent
+- Bull Analyst
+- Bear Analyst
+- Balanced Analyst
+
+The user must configure a model for all four agents before scheduled jobs can run.
+
+If any agent does not have a configured model:
+- scheduled jobs do not execute
+- manual report execution is disabled
+- the application displays a warning message on the homepage indicating which agents still require configuration
 
 ---
 
@@ -552,6 +648,37 @@ News:
 - AI/semiconductors
 - major economic developments
 
+### Forward-Looking Research
+The research system is designed to analyze both current market conditions and known future developments that may materially impact markets over time.
+
+The system does not operate purely as a reactive news-analysis engine focused only on the current day’s headlines.
+
+The main agent continuously evaluates:
+- short-term developments
+- medium-term macroeconomic and political events
+- long-term structural trends
+
+The research process should remain aware of known future events and begin incorporating their potential market impact before those events occur.
+
+Examples include:
+- presidential elections
+- midterm elections
+- central-bank policy cycles
+- major economic reports
+- debt ceiling events
+- trade negotiations
+- geopolitical escalation risks
+- regulatory changes
+- energy supply transitions
+- long-term AI infrastructure buildouts
+
+The system is expected to think similarly to a professional analyst team that prepares for future market-moving conditions well before they fully materialize.
+
+The market thesis should therefore reflect:
+- what is happening now
+- what is likely developing next
+- what longer-term structural forces may shape future market behavior
+
 ### Dynamic Branching Examples
 ```text
 If oil spikes:
@@ -573,53 +700,159 @@ If geopolitical tensions escalate:
 ---
 
 ## Analyst Skills
-The following reusable skills are included in MVP:
-1. Market Regime Analysis
-2. Narrative vs Reality
-3. Second-Order Effects
-4. Inflation Decomposition
-5. Historical Analog
-6. Positioning & Sentiment
-7. Thesis Stress Test
-8. Geopolitical Escalation
-9. AI Infrastructure Chain
-10. Time Horizon Separation
-11. Credit Stress Analysis
-12. Energy Security Analysis
-13. Central Bank Interpretation
-14. Valuation Compression
-15. Market Breadth Analysis
-16. Consensus vs Contrarian Analysis
-
+The following reusable skills are included in MVP.
 These skills operate as structured reusable prompts with expected output schemas.
 
----
+### Market Regime Analysis
+Determines the current market regime and the dominant forces driving market behavior.
 
-## Subagent Responsibilities
+The skill evaluates whether the market is primarily:
+- risk-on or risk-off
+- liquidity-driven or earnings-driven
+- inflation-sensitive or growth-sensitive
+- whether market leadership is broadening or narrowing
 
-### Bull Analyst
-Responsibilities:
-- identify upside drivers
-- identify resilience
-- challenge bearish overreaction
-- identify improving conditions
-- explain constructive scenarios
+### Narrative vs Reality
+Separates genuine market or economic changes from exaggerated media narratives and short-term emotional reactions.
+The skill evaluates whether market behavior is supported by underlying data, positioning, earnings, macro trends, and structural conditions rather than headlines alone.
 
-### Bear Analyst
-Responsibilities:
-- identify fragile assumptions
-- identify downside risks
-- challenge complacency
-- inspect valuation and macro risks
-- inspect geopolitical and credit risks
+### Second-Order Effects
+Analyzes downstream consequences of major market, economic, geopolitical, or policy developments.
 
-### Balanced Analyst
-Responsibilities:
-- separate signal from noise
-- weigh evidence
-- assign confidence
-- separate short-term and long-term implications
-- identify thesis change conditions
+The skill maps how first-order events can propagate into:
+- inflation
+- yields
+- liquidity
+- sector performance
+- consumer behavior
+- long-term market conditions
+
+### Inflation Decomposition
+Breaks inflation into its underlying components and evaluates whether inflation pressure is temporary, structural, broadening, or narrowing.
+
+The skill analyzes:
+- energy
+- shelter
+- services
+- wages
+- transportation
+- goods inflation separately rather than treating CPI as a single signal
+
+### Historical Analog
+Compares current market conditions to historical market environments and macroeconomic periods.
+
+The skill identifies similarities and differences between current conditions and events such as:
+- the dot-com bubble
+- inflationary periods
+- tightening cycles
+- liquidity crises
+- prior geopolitical or commodity shocks
+
+### Positioning & Sentiment
+Analyzes investor psychology, market positioning, and sentiment conditions.
+
+The skill evaluates:
+- fear and greed dynamics
+- FOMO behavior
+- crowded trades
+- defensive positioning
+- whether market behavior is becoming euphoric, complacent, or overly pessimistic
+
+### Thesis Stress Test
+Challenges the current market thesis and searches for weak assumptions or contradictory evidence.
+
+The skill evaluates:
+- what could invalidate the thesis
+- which assumptions are fragile
+- which signals are being ignored
+- and what conditions would force a reassessment
+
+### Geopolitical Escalation
+Evaluates geopolitical developments and their potential market implications.
+
+The skill analyzes:
+- military conflicts
+- trade tensions
+- sanctions
+- shipping disruptions
+- commodity risks
+- global supply-chain exposure
+
+### AI Infrastructure Chain
+Analyzes the AI infrastructure ecosystem and its broader market implications.
+
+The skill evaluates:
+- semiconductors
+- datacenter buildouts
+- HBM memory
+- networking
+- optics
+- cooling
+- power demand
+- AI-related capital expenditure trends
+
+### Time Horizon Separation
+Separates short-term market reactions from medium-term and long-term structural trends.
+The skill helps prevent the system from confusing temporary volatility with meaningful changes to the broader market thesis.
+
+### Credit Stress Analysis
+Evaluates financial stress inside credit markets and identifies signs of tightening financial conditions.
+
+The skill analyzes:
+- credit spreads
+- refinancing risk
+- default pressure
+- liquidity conditions
+- commercial real estate stress
+- broader systemic financial risk
+
+### Energy Security Analysis
+Analyzes energy-market stability and the macroeconomic implications of energy disruptions.
+
+The skill evaluates:
+- oil and natural gas supply
+- OPEC activity
+- shipping chokepoints
+- grid stress
+- energy-driven inflation risk
+- the relationship between AI infrastructure growth and power demand
+
+### Central Bank Interpretation
+Interprets central-bank communication, policy decisions, and market expectations.
+
+The skill evaluates:
+- rate expectations
+- liquidity conditions
+- inflation priorities
+- policy tone
+- how central-bank positioning may affect equities, bonds, and broader market behavior
+
+### Valuation Compression
+Analyzes how interest rates, yields, and macroeconomic conditions may affect valuation multiples.
+
+The skill focuses particularly on:
+- long-duration growth assets
+- high-multiple sectors
+- whether earnings growth is sufficient to justify current valuations
+
+### Market Breadth Analysis
+Evaluates the health and participation level of the broader market beyond headline index performance.
+
+The skill analyzes:
+- advance/decline trends
+- equal-weight vs cap-weight performance
+- sector participation
+- leadership concentration
+- whether rallies or selloffs are broad-based or narrow
+
+### Consensus vs Contrarian Analysis
+Evaluates what the market currently expects versus what outcomes would genuinely surprise participants.
+
+The skill helps identify:
+- overconsensus narratives
+- underappreciated risks
+- asymmetric opportunities
+- situations where market positioning may be vulnerable to unexpected developments
 
 ---
 
@@ -645,57 +878,218 @@ Agents never ingest or reason over HTML reports.
 
 ### Standard Report Structure
 ```text
-# Market Analyzer Report
+# Market Signal Report
+
+Date
+Report Type:
+- Premarket
+- Postmarket
 
 ## Header Summary
-3–6 key bullets.
+3–6 key bullets summarizing the most important conclusions, risks, developments, and thesis changes.
 
 ## Market Regime
+Current market regime assessment and the dominant forces driving market behavior.
 
 ## Index Picture
+Brief high-level overview of:
 - Dow
 - S&P 500
 - Nasdaq
 
-## What Changed Since Last Report
+This section is intentionally concise and serves as a quick market snapshot rather than a detailed breakdown.
 
 ## Key Market Drivers
 
-Dynamic sections:
-- Inflation / Fed
+Primary developments currently influencing markets.
+
+This section is dynamic and may include topics such as:
+- Inflation / Federal Reserve
 - Energy
 - AI / Semiconductors
 - China / Geopolitics
-- Consumer
+- Consumer Strength or Weakness
 - Earnings
 - Liquidity / Credit
 - Market Breadth
+- Major Economic Reports
+- Elections / Political Developments
+- Global Conflicts
+- Sector Rotation
+- Currency Markets
 
-## Bull Case
+The importance, ordering, size, and presentation of topics may vary significantly between reports depending on current market conditions.
 
-## Bear Case
+Sections may include:
+- charts,
+- graphs,
+- tables,
+- earnings analysis,
+- macroeconomic breakdowns,
+- geopolitical analysis,
+- or deeper long-form commentary when appropriate.
 
-## Balanced Case
+The report should emphasize the topics most materially affecting the market at that time rather than forcing equal coverage across all categories.
 
-## Head Analyst View
+## Market Signal Thesis
+
+The primary market thesis synthesized by the Head Market Analyst after evaluating:
+- market data,
+- research,
+- subagent analysis,
+- historical context,
+- and memory retrieval.
+
+This section represents the unified voice of the system rather than separate Bull/Bear/Balanced outputs.
+
+The thesis may:
+- lean bullish,
+- lean bearish,
+- remain mixed,
+- or heavily emphasize uncertainty depending on current market conditions.
+
+If conditions are unusually uncertain or bifurcated, the thesis may explicitly discuss multiple plausible market paths and the signals that would support each outcome.
 
 ## Investment Strategy
 
-High-level guidance:
-- sectors to watch
-- industries benefiting from trends
-- industries under pressure
-- ETFs/themes of interest
-- short/mid/long-term opportunities
-- macro-sensitive positioning
+High-level investment guidance based on current market conditions and evolving market theses.
 
-No direct trade recommendations or trade execution guidance.
+This section may include:
+- sectors to monitor,
+- industries benefiting from current trends,
+- industries under pressure,
+- ETFs/themes of interest,
+- short/mid/long-term opportunities,
+- defensive positioning,
+- macro-sensitive positioning,
+- or areas where risk/reward appears asymmetric.
+
+The application does not provide direct buy/sell instructions or trade execution guidance.
 
 ## Short-Term Outlook
 
+Key themes, risks, and developments likely to influence markets over the near term.
+
 ## Long-Term Outlook
 
+Longer-term structural market themes, risks, and opportunities.
+
 ## Watchlist
+
+Key:
+- events,
+- economic reports,
+- earnings releases,
+- geopolitical developments,
+- and market signals
+
+that should be monitored going forward.
+
+## Sources
+```
+
+### Weekly Review Report Structure
+```text
+# Market Signal Weekly Review Report
+
+Date
+Review Period
+
+## Weekly Summary
+
+High-level summary of:
+- the week's market behavior,
+- major developments,
+- thesis evolution,
+- and overall market conditions.
+
+## Major Market Drivers
+
+The most important events, themes, and developments that influenced markets during the review period.
+
+This section may include:
+- inflation developments,
+- Federal Reserve expectations,
+- geopolitical escalation,
+- earnings reactions,
+- liquidity changes,
+- energy market shifts,
+- AI infrastructure developments,
+- elections or political developments,
+- and major macroeconomic signals.
+
+## Thesis Review
+
+Evaluation of how the system's market thesis evolved throughout the week.
+
+This section reviews:
+- whether previous assumptions strengthened or weakened,
+- whether the system adapted appropriately to new evidence,
+- and whether major thesis pivots were justified.
+
+## Correct Calls
+
+Analysis areas where the system's prior reports correctly identified:
+- important risks,
+- opportunities,
+- market shifts,
+- or structural developments.
+
+This section focuses on meaningful analytical accuracy rather than isolated lucky predictions.
+
+## Incorrect Assumptions
+
+Analysis of:
+- incorrect conclusions,
+- weak assumptions,
+- missed risks,
+- overemphasized narratives,
+- or situations where the system misread market conditions.
+
+The goal is honest analytical review rather than defending prior conclusions.
+
+## Signal Evaluation
+
+Evaluation of which signals proved most useful during the week.
+
+Examples:
+- yields,
+- breadth,
+- energy prices,
+- inflation data,
+- liquidity,
+- earnings strength,
+- geopolitical developments,
+- or positioning/sentiment behavior.
+
+This section also identifies signals that were ultimately less important than expected.
+
+## Thesis Changes
+
+Summary of:
+- meaningful changes to the long-term market thesis,
+- evolving macroeconomic expectations,
+- structural risks,
+- and major market narratives that materially shifted during the week.
+
+## Durable Learnings
+
+Longer-term analytical lessons extracted from the week's reports and market behavior.
+
+These learnings may be written into vector memory for future report generation and thesis continuity.
+
+## Forward Watchlist
+
+Key upcoming developments the system believes are likely to matter in the coming weeks.
+
+Examples:
+- economic reports,
+- elections,
+- Federal Reserve meetings,
+- geopolitical developments,
+- earnings cycles,
+- energy market risks,
+- or structural market signals.
 
 ## Sources
 ```
@@ -735,7 +1129,7 @@ The system should:
 - continue monitoring unresolved market risks
 - revisit previous conclusions
 - acknowledge when earlier assumptions were incorrect
-- and identify when a thesis is strengthening or weakening
+- identify when a thesis is strengthening or weakening
 
 ### Thesis Stability
 The system should avoid unnecessary thesis instability.
@@ -743,7 +1137,7 @@ The system should avoid unnecessary thesis instability.
 Long-term market theses should evolve gradually when:
 - market conditions remain structurally similar
 - existing narratives continue holding
-- and incoming data reinforces prior conclusions
+- incoming data reinforces prior conclusions
 
 The system should not dramatically change positioning or outlook because of isolated single-day market moves or short-lived news cycles.
 
@@ -769,7 +1163,7 @@ Examples include:
 In these situations:
 - reports may heavily focus on the new event
 - prior assumptions may be explicitly challenged
-- and the long-term thesis may be revised aggressively
+- the long-term thesis may be revised aggressively
 
 The system should clearly explain:
 - why the thesis changed
