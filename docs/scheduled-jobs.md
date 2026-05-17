@@ -26,6 +26,8 @@ Sunday–Friday evenings
 4:00 PM PT / 7:00 PM ET
 ```
 
+The Sunday run is intentional. US cash markets are closed Sunday evening, so this run is not a recap of a trading session — it prepares for the Monday session by covering weekend developments, the futures open, geopolitical news, and Asia-session signals.
+
 Focus:
 - what moved markets
 - index performance
@@ -40,7 +42,7 @@ Focus:
 Runs:
 ```text
 Saturday
-9:00 AM local time
+6:00 PM PT / 9:00 PM ET
 ```
 
 Focus:

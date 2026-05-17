@@ -2,6 +2,8 @@
 
 This template applies to Premarket and Postmarket reports. The Weekly Review uses a separate template; see [weekly-review.md](weekly-review.md).
 
+The format of the `## Sources` section at the end of the template is defined in [format.md](format.md#sources-section-format).
+
 ```text
 # Market Signal Report
 

@@ -33,3 +33,16 @@ At the start of each scheduled job:
 
 The user may manually delete documents from either folder.
 The user cannot manually archive documents.
+
+## Failure Handling
+
+Each file in `/research-inbox` is processed independently. A file fails processing when it has an unsupported extension, is malformed or corrupted, or otherwise cannot be parsed.
+
+When a file fails:
+- the file is skipped and not incorporated into the research process
+- the file is left in `/research-inbox` (not moved to `/research-archive`)
+- the failure is logged
+
+The job continues processing the remaining files and proceeds normally — a single failed file does not cancel the job.
+
+If one or more files failed processing during a job, the application displays a warning banner listing the filenames that failed. The warning follows the same deduplication and dismissal rules as other warnings (see [job-execution.md](job-execution.md)).

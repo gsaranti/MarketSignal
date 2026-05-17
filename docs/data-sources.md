@@ -35,6 +35,8 @@ Responsibilities:
 
 The application uses Financial Modeling Prep as a direct structured financial-data source.
 
+OpenBB is the default access path for financial data. Financial Modeling Prep is called directly only for data that OpenBB does not expose, or for cases where FMP's data shape is materially better suited to the task (e.g., specific analyst-estimate endpoints). This keeps OpenBB as the consistent abstraction layer and avoids duplicate calls for the same data.
+
 ### FRED (Federal Reserve Economic Data)
 
 Docs - https://fred.stlouisfed.org/docs/api/fred/
@@ -100,7 +102,7 @@ The application uses GDELT to strengthen geopolitical and macro event awareness.
 
 ## LLM Providers
 
-- OpenAI
-- Anthropic
+- OpenAI — [API docs](https://platform.openai.com/docs)
+- Anthropic — [API docs](https://platform.claude.com/docs)
 
 Specific models and their roles (fixed-internal vs user-configurable) are described in [agents/models.md](agents/models.md).

@@ -1,6 +1,8 @@
 # Weekly Review
 
-The weekly review schedule (Saturday 9:00 AM local time) and high-level focus are defined in [../scheduled-jobs.md](../scheduled-jobs.md). The weekly review is stored as a normal readable report inside the application and appears in the normal report history UI.
+The weekly review schedule and high-level focus are defined in [../scheduled-jobs.md](../scheduled-jobs.md). The weekly review is stored as a normal readable report inside the application and appears in the normal report history UI.
+
+The format of the `## Sources` section at the end of the template is defined in [format.md](format.md#sources-section-format).
 
 ## Weekly Review Process
 

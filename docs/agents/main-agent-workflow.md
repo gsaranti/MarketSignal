@@ -19,7 +19,22 @@
 15. Save report summary to vector DB
 16. Save durable learnings if applicable
 17. Generate HTML report from Markdown
-18. Update application UI
+18. Save HTML to SQLite
+19. Update application UI
 
 The main agent does not engage in recursive conversations with subagents.
 It critiques responses independently during synthesis.
+
+## Memory Retrieval
+
+At step 4, the main agent queries LanceDB for semantically relevant memory entries. The query is constructed from the current job's baseline-scan topics (see [../research-behavior.md](../research-behavior.md)) and the prior report's thesis summary.
+
+Retrieval pulls the top 10 nearest report summaries and the top 10 nearest durable learnings by cosine similarity. The two entry types are defined in [../storage.md](../storage.md).
+
+The retrieved entries are injected into the main agent's prompt as a "Relevant memory" block before synthesis. This injection is the only path by which long-term memory enters the main agent's context, consistent with the bounded-injection rule in [../cost-control.md](../cost-control.md).
+
+## Subagent Invocation
+
+At step 10, the Bull, Bear, and Balanced subagents are invoked in parallel for latency. The main agent waits for all three responses before proceeding to step 11.
+
+All three subagent responses are required. If any subagent invocation fails — API error, timeout, malformed response, or model execution error — the entire job fails per the [error handling rules](../job-execution.md#error-handling). The main agent does not synthesize a report from a partial set of subagent responses.

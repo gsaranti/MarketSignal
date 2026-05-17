@@ -1,10 +1,10 @@
 # Overview
 
 Market Signal is a local-first desktop application built with:
-- Tauri
-- Vue
-- SQLite
-- LanceDB
+- Tauri — [start guide](https://tauri.app/start/), [Rust API docs](https://docs.rs/tauri/latest/tauri/)
+- Vue — [quick start](https://vuejs.org/guide/quick-start.html)
+- SQLite — [docs](https://www.sqlite.org/docs.html)
+- LanceDB — [Rust API docs](https://docs.rs/lancedb/latest/lancedb/index.html), [quickstart](https://docs.lancedb.com/quickstart)
 
 The app runs scheduled market-analysis jobs, produces evolving market reports, stores recent report history, and uses memory retrieval to improve future analysis.
 
