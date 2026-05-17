@@ -1,7 +1,5 @@
 # Market Signal Documentation
 
-This folder contains the Market Signal MVP requirements, restructured into focused files. The original [requirements.md](../requirements.md) at the project root is preserved unchanged.
-
 ## Files
 
 - [overview.md](overview.md) — what the application is, its stack, and what it is not
@@ -23,4 +21,3 @@ This folder contains the Market Signal MVP requirements, restructured into focus
 - [reports/thesis-continuity.md](reports/thesis-continuity.md) — continuity, stability, pivot conditions, memory-guided evolution
 - [reports/export.md](reports/export.md) — Markdown and PDF export
 - [storage.md](storage.md) — SQLite and LanceDB vector memory
-- [NOTES-FROM-RESTRUCTURING.md](NOTES-FROM-RESTRUCTURING.md) — observations flagged during the restructuring pass (contradictions, gaps, terminology, consolidated duplicates, external-link gaps)
