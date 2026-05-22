@@ -41,7 +41,7 @@ Market Signal
 │   ├── Research Inbox
 │   └── Research Archive
 │
-├── Warning Banner Area
+├── Persistent Warning Area
 │   ├── Missing agent configuration
 │   ├── Missing API tokens
 │   ├── Failed jobs
@@ -230,7 +230,7 @@ Missed jobs are different from failed jobs.
 A missed job means the scheduled execution never started.
 A failed job means execution started but could not complete successfully.
 
-When the application is next opened or resumed, it displays a notification indicating that the scheduled job was missed.
+When the application is next opened or resumed, it displays a warning inside the Persistent Warning Area indicating that the scheduled job was missed.
 
 The user may:
 - dismiss the notification
