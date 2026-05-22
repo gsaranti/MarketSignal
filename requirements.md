@@ -213,7 +213,8 @@ If a job fails because of:
 - model execution errors
 the application:
 1. cleanly cancels the job
-2. displays a warning banner inside the application
+2. stores the failure state
+3. displays a warning banner inside the application
 
 If the warning already exists and has not been dismissed/resolved:
 - additional failing jobs do not create duplicate warnings.
