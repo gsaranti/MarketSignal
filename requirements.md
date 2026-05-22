@@ -165,7 +165,7 @@ A failed job occurs when the application successfully starts the job execution p
 The application:
 - cancels the current job
 - stores the failure state
-- displays a warning banner
+- displays a warning inside the Persistent Warning Area
 
 ### Concurrent Job Protection
 Only one scheduled job may run at a time.
@@ -214,7 +214,7 @@ If a job fails because of:
 the application:
 1. cleanly cancels the job
 2. stores the failure state
-3. displays a warning banner inside the application
+3. displays a warning inside the Persistent Warning Area
 
 If the warning already exists and has not been dismissed/resolved:
 - additional failing jobs do not create duplicate warnings.
@@ -233,7 +233,7 @@ A failed job means execution started but could not complete successfully.
 When the application is next opened or resumed, it displays a warning inside the Persistent Warning Area indicating that the scheduled job was missed.
 
 The user may:
-- dismiss the notification
+- dismiss the warning
 - manually execute the missed job immediately
 
 Missed jobs are not automatically replayed or queued.
@@ -1328,9 +1328,7 @@ The goal is:
 ---
 
 ## Report Structure
-Reports are written in Markdown by the main agent. An HTML version is generated for application display.
-
-Reports are authored and stored internally as Markdown.
+Reports are written, authored, and stored internally in Markdown by the main agent. An HTML version is generated for application display.
 
 Markdown is the canonical report format used for:
 - agent memory
