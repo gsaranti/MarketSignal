@@ -197,7 +197,7 @@ Scheduled jobs are enabled by default, but jobs cannot execute until all require
 A newly installed application therefore begins in an incomplete configuration state until the user finishes model and API setup.
 
 ### Manual Report Generation
-The application includes manual execution controls for:
+The application includes manual execution controls in Settings for:
 - Premarket Report
 - Postmarket Report
 - Weekly Review
@@ -603,7 +603,7 @@ The scheduled or manual job starts by loading application settings and validatin
 The application checks:
 - whether the relevant job type is enabled
 - whether another job is already running
-- whether all required agent models are configured
+- whether the Main Agent and all Analyst Agents are configured
 - whether required API tokens exist for selected model providers
 - whether the machine has network access to required APIs and model providers
 
@@ -905,7 +905,7 @@ The final report is written in one unified voice as the Market Signal Thesis. Th
 The main agent writes the final report in Markdown.
 
 The application saves:
-- the Markdown report to SQLite
+- the Markdown report to persistent local storage
 - report metadata to SQLite
 - report summary to LanceDB
 - durable learnings to LanceDB, if applicable
@@ -950,7 +950,7 @@ The weekly review job starts by loading application settings and validating that
 The application checks:
 - whether the Weekly Review job is enabled
 - whether another job is already running
-- whether all required agent models are configured
+- whether the Main Agent is configured
 - whether required API tokens exist for selected model providers
 - whether the machine has network access to required APIs and model providers
 
@@ -959,6 +959,8 @@ If validation fails, the job does not continue. The application displays the app
 ### Step 2: Load Previous Week's Reports
 
 The application loads the previous week's Markdown reports and structured metadata.
+
+The review period covers the previous market week, from the prior Sunday evening Postmarket report through the Friday Postmarket report.
 
 Only Markdown reports are loaded for review. HTML reports are never loaded into agent prompts.
 
@@ -1069,7 +1071,7 @@ These learnings help the system improve future reports without requiring full hi
 ### Step 9: Save Weekly Review and Update UI
 
 The application saves:
-- the Weekly Review Markdown report to SQLite
+- the Weekly Review Markdown report to persistent local storage
 - report metadata to SQLite
 - durable learnings to LanceDB, if applicable
 
@@ -1569,7 +1571,7 @@ Examples:
 
 ### SQLite
 Stores:
-- reports
+- report records
 - report metadata
 - HTML output
 - job history
