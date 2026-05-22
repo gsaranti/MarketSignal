@@ -822,6 +822,10 @@ The weekly review job runs once per week and produces a Weekly Review report.
 
 The weekly review job is different from the recurring market report job. It is not primarily focused on producing a new market outlook. Its main purpose is retrospective evaluation, thesis review, and memory improvement.
 
+The weekly review job does not run the Bull, Bear, and Balanced analyst agents.
+
+The weekly review is performed directly by the main agent because the job focuses on retrospective evaluation, thesis continuity, and memory improvement rather than multi-perspective market synthesis.
+
 ### Step 1: Weekly Review Job Start and Validation
 
 The weekly review job starts by loading application settings and validating that the job is allowed to run.
