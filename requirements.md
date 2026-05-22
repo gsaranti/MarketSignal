@@ -582,13 +582,12 @@ Vector memory is used selectively. The system does not inject the full report hi
 
 The application checks `/research-inbox` at the start of the report job.
 
-If the folder is empty, the job continues normally.
+Research document handling follows the `## Research Document Workflow` section.
 
-If documents exist, they are parsed and incorporated as professional research sources for the current report. These documents may influence the research packet, analyst agent outputs, and final report.
-
-After successful processing, the documents are moved automatically into `/research-archive`.
-
-The user may manually delete documents from either folder. The user cannot manually archive documents.
+Research documents may influence:
+- the research packet
+- analyst agent outputs
+- the final report
 
 ### Step 5: Gather Baseline Market Data
 
