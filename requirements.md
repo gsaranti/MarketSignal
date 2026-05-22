@@ -1480,7 +1480,9 @@ Rationale:
 - better long-context understanding
 - more nuanced prioritization and synthesis
 
-## User-Configurable Models
+---
+
+## Model and API Configuration
 The user selects the models used for:
 - Main Agent
 - Bull Analyst
@@ -1522,6 +1524,22 @@ If any agent does not have a configured model:
 - scheduled jobs do not execute
 - manual report execution is disabled
 - the application displays a warning message on the homepage indicating which agents still require configuration
+
+### External Data Provider Credentials
+The application also requires configuration for external data providers that use authenticated APIs.
+
+The Settings section includes credential configuration for:
+- Financial Modeling Prep
+- Tavily
+
+OpenBB uses configured provider credentials where required by the selected data source.
+
+FRED, BLS, and GDELT may be accessed through their publicly available APIs when supported.
+
+If a required external provider credential is missing:
+- dependent jobs do not execute
+- manual report execution is disabled
+- the application displays a validation warning explaining which credential is missing
 
 ---
 
