@@ -1583,7 +1583,12 @@ Each report stores:
 - creation timestamp
 - associated market session metadata
 
-Only the most recent 30 full reports are retained. Older reports are deleted automatically.
+Only the most recent 30 reports total are retained across:
+- Premarket reports
+- Postmarket reports
+- Weekly Review reports
+
+Older reports are deleted automatically.
 
 When a report is removed:
 - its Markdown
