@@ -158,6 +158,10 @@ If the machine:
 - cannot access configured model providers
 the scheduled job fails cleanly.
 
+A failed job is different from a missed job.
+
+A failed job occurs when the application successfully starts the job execution process but cannot complete the workflow because required services, APIs, or model providers are unavailable.
+
 The application:
 - cancels the current job
 - stores the failure state
@@ -214,7 +218,12 @@ If the warning already exists and has not been dismissed/resolved:
 The application detects when a scheduled job was missed because:
 - the application was not running
 - the machine was asleep
-- the machine was offline during the scheduled execution window
+- the application could not start the scheduled execution during the scheduled window
+
+Missed jobs are different from failed jobs.
+
+A missed job means the scheduled execution never started.
+A failed job means execution started but could not complete successfully.
 
 When the application is next opened or resumed, it displays a notification indicating that the scheduled job was missed.
 
