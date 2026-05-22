@@ -61,7 +61,7 @@ The Settings section includes:
 - model selection
 - API token configuration
 - scheduled job enable/disable controls
-- warning visibility
+- warning review and dismissal
 - and manual job execution controls
 
 ---
