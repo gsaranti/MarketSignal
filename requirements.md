@@ -424,131 +424,107 @@ The main agent evaluates all analyst agent outputs and determines how much weigh
 
 ---
 
-## Main Agent Workflow
+## Job Logical Flows
 
-### Full Flow
-1. Scheduled job starts
-2. Load settings
-3. Load recent Markdown reports and structured metadata
-4. Query vector memory
-5. Check research inbox
-6. Gather baseline market data
-7. Gather news and research
-8. Perform dynamic research branching
-9. Build condensed research packet
-10. Run Bull/Bear/Balanced analyst agents against the research packet
-11. Receive analyst agent outputs
-12. Critique analyst agent outputs independently
-13. Synthesize final report
-14. Save Markdown report to SQLite
-15. Save report summary to vector DB
-16. Save durable learnings if applicable
-17. Generate HTML report from Markdown
-18. Update application UI
+Market Signal has two distinct job flows:
+- the recurring market report job
+- the weekly review job
 
-The main agent does not engage in recursive conversations with analyst agents.
-It critiques analyst agent outputs independently during synthesis.
+The recurring market report job is used for both Premarket and Postmarket reports. It gathers current market context, performs dynamic research, runs the analyst agents, and produces a new Market Signal report.
+
+The weekly review job is retrospective. It evaluates the prior week's reports against actual market developments, identifies useful or flawed analysis, and writes durable learnings into vector memory.
 
 ---
 
-## Subagent Responsibilities
+## Recurring Market Report Job Flow
 
-### Bull Analyst
-The Bull Analyst focuses on constructive interpretations of the market environment.
+The recurring market report job runs for:
+- Premarket reports
+- Postmarket reports
+- manual Premarket report generation
+- manual Postmarket report generation
 
-The Bull Analyst is responsible for:
-- identifying upside drivers
-- identifying resilience in market structure
-- identifying improving conditions
-- challenging overly pessimistic assumptions
-- explaining constructive market scenarios
+Premarket and Postmarket jobs use the same logical workflow, but the research emphasis differs by report type.
 
-The Bull Analyst does not ignore negative data or force bullish conclusions.
-It acknowledges risks while focusing on evidence that supports continued market strength or improving conditions.
+Premarket reports focus on:
+- overnight futures
+- global market activity
+- upcoming macro events
+- geopolitical developments
+- overnight earnings/news
+- likely market drivers for the coming session
 
-### Bear Analyst
-The Bear Analyst focuses on identifying fragile assumptions and downside risks.
+Postmarket reports focus on:
+- what moved markets during the day
+- index and sector performance
+- macro reactions
+- yields/oil/dollar/VIX behavior
+- thesis evolution
+- the next market setup
 
-The Bear Analyst is responsible for:
-- identifying downside risks
-- identifying weakening conditions
-- challenging complacency
-- inspecting valuation and macroeconomic risks
-- and inspecting geopolitical, liquidity, and credit-related risks
+### Step 1: Job Start and Validation
 
-The Bear Analyst does not deny bullish market conditions when supported by market data.
-It acknowledges strength while focusing on hidden vulnerabilities, unsustainable narratives, and structural risks.
+The scheduled or manual job starts by loading application settings and validating that the job is allowed to run.
 
-### Balanced Analyst
-The Balanced Analyst focuses on weighing evidence and identifying the most probable market interpretation.
+The application checks:
+- whether the relevant job type is enabled
+- whether another job is already running
+- whether all required agent models are configured
+- whether required API tokens exist for selected model providers
+- whether the machine has network access to required APIs and model providers
 
-The Balanced Analyst is responsible for:
-- separating signal from noise
-- weighing bullish and bearish evidence
-- assigning confidence levels
-- separating short-term and long-term implications
-- and identifying conditions that would justify thesis changes
+If validation fails, the job does not continue. The application displays the appropriate warning state and avoids creating duplicate unresolved warnings.
 
-The Balanced Analyst does not attempt to remain artificially neutral.
-It may produce bullish or bearish conclusions when evidence strongly supports them.
+### Step 2: Load Recent Report Context
 
----
+The application loads a bounded set of recent Markdown reports and structured metadata.
 
-## Weekly Review Workflow
+Only Markdown reports are loaded for agent context. HTML reports are never loaded into agent prompts because HTML is a presentation artifact.
 
-### Weekly Review Process
-1. Load previous week's reports
-2. Compare reports against actual market developments
-3. Identify correct conclusions
-4. Identify incorrect assumptions
-5. Identify missed signals
-6. Identify useful patterns
-7. Generate weekly review report
-8. Write durable learnings into vector DB
+Structured metadata may include:
+- report type
+- creation timestamp
+- market session metadata
+- market regime label
+- report summary
+- prior warnings or job status information
 
-The weekly review report appears in the normal report history UI.
+This recent context helps the main agent understand what the system previously believed, what risks were being monitored, and whether the current report should follow up on unresolved themes.
 
----
+### Step 3: Retrieve Relevant Vector Memory
 
-## Cost-Control Architecture
-The application is designed with bounded workflows to prevent excessive token usage.
+The application queries LanceDB for relevant semantic memory before the main agent begins deeper reasoning.
 
-### News Ingestion Flow
-The system does not send large raw news volumes into frontier models.
+Retrieved memory may include:
+- report summaries
+- durable learnings
+- prior thesis changes
+- important historical analogs
+- past analytical mistakes
+- recurring market patterns
 
-Pipeline:
-```text
-~500 headlines gathered
-→ deduplication
-→ relevance scoring
-→ clustering
-→ ~40 relevant headlines
-→ ~10 important stories
-→ ~5 deeply analyzed topics
-```
+Vector memory is used selectively. The system does not inject the full report history into the prompt.
 
-### Context Window Control
-The application does not repeatedly inject large historical report histories into prompts.
+### Step 4: Check Research Inbox
 
-Instead:
-- only a bounded subset of recent Markdown reports is loaded into agent context
-- vector memory retrieval is used selectively
-- only relevant memory fragments are injected into prompts
+The application checks `/research-inbox` at the start of the report job.
 
-### Agent Workflow Limits
-The application enforces:
-- bounded research depth
-- bounded retries
-- bounded analyst agent execution
-- no recursive agent loops
-- no recursive debate cycles
+If the folder is empty, the job continues normally.
 
----
+If documents exist, they are parsed and incorporated as professional research sources for the current report. These documents may influence the research packet, analyst agent outputs, and final report.
 
-## Dynamic Research Behavior
-The main agent always begins with a baseline scan.
+After successful processing, the documents are moved automatically into `/research-archive`.
 
-### Baseline Scan
+The user may manually delete documents from either folder. The user cannot manually archive documents.
+
+### Step 5: Gather Baseline Market Data
+
+The application gathers required baseline market data before agent reasoning begins.
+
+Baseline market data is not optional and does not depend on the main agent deciding to request it.
+
+The baseline scan includes:
+
 Indices:
 - Dow
 - S&P 500
@@ -571,7 +547,7 @@ Macro:
 - inflation expectations
 - consumer confidence
 
-News:
+News categories:
 - politics
 - geopolitics
 - China/trade
@@ -580,7 +556,52 @@ News:
 - AI/semiconductors
 - major economic developments
 
-### Forward-Looking Research
+### Step 6: Gather and Filter News
+
+The application gathers a broad set of headlines and research candidates from configured news and research sources.
+
+The system does not send large raw news volumes into frontier models.
+
+The news ingestion pipeline follows this bounded flow:
+
+```text
+~500 headlines gathered
+→ deduplication
+→ relevance scoring
+→ clustering
+→ ~40 relevant headlines
+→ ~10 important stories
+→ ~5 deeply analyzed topics
+```
+
+Headline filtering uses a fixed low-cost model for:
+- filtering
+- deduplication
+- relevance scoring
+- clustering headlines into major topics
+
+This step reduces noise before the main agent performs deeper reasoning.
+
+### Step 7: Perform Research Routing
+
+Research routing determines which topics deserve deeper analysis for the current report.
+
+The routing step considers:
+- baseline market data
+- filtered headline clusters
+- recent Markdown report context
+- relevant vector memory
+- parsed research inbox documents
+- upcoming known market-moving events
+
+Research routing uses a fixed mid-tier model to decide which themes, sectors, macro issues, geopolitical events, or company-specific developments deserve deeper investigation.
+
+The result is a bounded research plan. The research plan defines what should be investigated further without allowing unbounded agent loops or unlimited tool usage.
+
+### Step 8: Perform Dynamic and Forward-Looking Research
+
+The application executes the approved research plan against configured data sources and returns curated evidence to the main agent.
+
 The research system is designed to analyze both current market conditions and known future developments that may materially impact markets over time.
 
 The system does not operate purely as a reactive news-analysis engine focused only on the current day’s headlines.
@@ -611,7 +632,8 @@ The market thesis should therefore reflect:
 - what is likely developing next
 - what longer-term structural forces may shape future market behavior
 
-### Dynamic Branching Examples
+Dynamic branching examples:
+
 ```text
 If oil spikes:
   Research inflation, shipping, supply disruptions, geopolitical escalation.
@@ -628,6 +650,293 @@ If markets rally despite weak macro:
 If geopolitical tensions escalate:
   Research affected sectors, commodities, supply chains, inflation impact.
 ```
+
+### Step 9: Build Condensed Research Packet
+
+The main agent receives curated evidence and creates a condensed research packet.
+
+The research packet is the canonical input for the analyst agents.
+
+It may include:
+- baseline market data
+- filtered news clusters
+- deep research findings
+- source links
+- recent Markdown report context
+- relevant vector memory
+- research inbox summaries
+- unresolved thesis questions
+- upcoming events that may affect the market thesis
+
+The research packet must be concise enough to control token usage while still preserving the evidence needed for high-quality analysis.
+
+### Step 10: Run Analyst Agents
+
+After the research packet is created, the application runs three analyst agents:
+- Bull Analyst
+- Bear Analyst
+- Balanced Analyst
+
+These agents are not optional tools. They are fixed review stages in the report-generation pipeline.
+
+Each analyst agent receives the same condensed research packet and produces structured analysis from its assigned analytical perspective.
+
+The analyst agents are not forced into predetermined conclusions or artificial disagreement.
+
+Their purpose is to:
+- explore different market interpretations
+- challenge assumptions
+- stress-test market narratives
+- identify overlooked risks or opportunities
+- strengthen the quality of the final report
+
+The analyst agents operate as professional analysts with different analytical perspectives rather than ideological positions.
+
+It is completely valid for:
+- all three analyst agents to arrive at a similar market conclusion
+- two analyst agents to generally agree while one differs
+- all three analyst agents to identify different risks and opportunities within the same broader market regime
+
+### Step 11: Bull Analyst Review
+
+The Bull Analyst focuses on constructive interpretations of the market environment.
+
+The Bull Analyst is responsible for:
+- identifying upside drivers
+- identifying resilience in market structure
+- identifying improving conditions
+- challenging overly pessimistic assumptions
+- explaining constructive market scenarios
+
+The Bull Analyst does not ignore negative data or force bullish conclusions.
+
+It acknowledges risks while focusing on evidence that supports continued market strength or improving conditions.
+
+### Step 12: Bear Analyst Review
+
+The Bear Analyst focuses on identifying fragile assumptions and downside risks.
+
+The Bear Analyst is responsible for:
+- identifying downside risks
+- identifying weakening conditions
+- challenging complacency
+- inspecting valuation and macroeconomic risks
+- inspecting geopolitical, liquidity, and credit-related risks
+
+The Bear Analyst does not deny bullish market conditions when supported by market data.
+
+It acknowledges strength while focusing on hidden vulnerabilities, unsustainable narratives, and structural risks.
+
+### Step 13: Balanced Analyst Review
+
+The Balanced Analyst focuses on weighing evidence and identifying the most probable market interpretation.
+
+The Balanced Analyst is responsible for:
+- separating signal from noise
+- weighing bullish and bearish evidence
+- assigning confidence levels
+- separating short-term and long-term implications
+- identifying conditions that would justify thesis changes
+
+The Balanced Analyst does not attempt to remain artificially neutral.
+
+It may produce bullish or bearish conclusions when evidence strongly supports them.
+
+### Step 14: Main Agent Synthesis
+
+The main agent receives:
+- the original research packet
+- Bull Analyst output
+- Bear Analyst output
+- Balanced Analyst output
+- relevant memory
+- report structure requirements
+
+The main agent does not engage in recursive conversations with analyst agents.
+
+It critiques analyst agent outputs independently during synthesis.
+
+The main agent may:
+- agree with one or more analyst agents
+- reject weak reasoning
+- combine arguments
+- elevate a minority view
+- identify unsupported claims
+- update the long-term thesis
+- flag uncertainty
+
+The final report is written in one unified voice as the Market Signal Thesis. The report should not expose separate Bull/Bear/Balanced sections unless current market conditions specifically require multiple plausible paths to be explained.
+
+### Step 15: Save Report and Memory Outputs
+
+The main agent writes the final report in Markdown.
+
+The application saves:
+- the Markdown report to SQLite
+- report metadata to SQLite
+- report summary to LanceDB
+- durable learnings to LanceDB, if applicable
+
+Durable learnings may include:
+- mistakes the system should avoid repeating
+- analytical strategies that proved useful
+- thesis changes
+- market patterns worth remembering
+- historical analogs that became relevant
+
+### Step 16: Generate HTML and Update UI
+
+After the Markdown report is saved, the application generates the HTML version from Markdown.
+
+The HTML version is used for:
+- in-app rendering
+- styling
+- chart display
+- PDF generation
+
+Agents never ingest or reason over HTML reports.
+
+After HTML generation succeeds, the application updates the Latest Report View and Recent Reports Sidebar.
+
+---
+
+## Weekly Review Job Flow
+
+The weekly review job runs once per week and produces a Weekly Review report.
+
+The weekly review job is different from the recurring market report job. It is not primarily focused on producing a new market outlook. Its main purpose is retrospective evaluation, thesis review, and memory improvement.
+
+### Step 1: Weekly Review Job Start and Validation
+
+The weekly review job starts by loading application settings and validating that the job is allowed to run.
+
+The application checks:
+- whether the Weekly Review job is enabled
+- whether another job is already running
+- whether all required agent models are configured
+- whether required API tokens exist for selected model providers
+- whether the machine has network access to required APIs and model providers
+
+If validation fails, the job does not continue. The application displays the appropriate warning state and avoids creating duplicate unresolved warnings.
+
+### Step 2: Load Previous Week's Reports
+
+The application loads the previous week's Markdown reports and structured metadata.
+
+Only Markdown reports are loaded for review. HTML reports are never loaded into agent prompts.
+
+The weekly review may include:
+- Premarket reports
+- Postmarket reports
+- prior weekly review context when relevant
+- report metadata
+- market session metadata
+- previous market regime labels
+- previous report summaries
+
+### Step 3: Gather Actual Market Developments
+
+The application gathers market data and relevant news needed to evaluate what actually happened after the reports were written.
+
+This may include:
+- index performance
+- sector performance
+- yield movement
+- oil and commodity movement
+- major macro data releases
+- major earnings reactions
+- geopolitical developments
+- liquidity and credit signals
+
+This step gives the weekly review enough context to judge prior analysis against market outcomes and new evidence.
+
+### Step 4: Review Thesis Evolution
+
+The main agent evaluates how the system's market thesis changed throughout the week.
+
+The review considers:
+- whether prior assumptions strengthened or weakened
+- whether reports followed up on unresolved risks
+- whether the system adapted appropriately to new evidence
+- whether major thesis pivots were justified
+- whether the system overreacted to noise or underreacted to meaningful signals
+
+### Step 5: Identify Correct Calls and Incorrect Assumptions
+
+The weekly review identifies where prior reports were analytically useful and where they were wrong or incomplete.
+
+Correct calls may include:
+- risks that were identified before they mattered
+- market shifts that were anticipated correctly
+- structural developments that were interpreted well
+- signals that proved useful
+
+Incorrect assumptions may include:
+- conclusions that were wrong
+- weak assumptions
+- missed risks
+- overemphasized narratives
+- underweighted signals
+- situations where the system misread market conditions
+
+The goal is honest analytical review rather than defending prior conclusions.
+
+### Step 6: Evaluate Signals
+
+The weekly review evaluates which market signals mattered most during the week.
+
+Signals may include:
+- yields
+- breadth
+- energy prices
+- inflation data
+- liquidity
+- earnings strength
+- geopolitical developments
+- positioning/sentiment behavior
+
+The review should also identify signals that were expected to matter but were ultimately less important than anticipated.
+
+### Step 7: Generate Weekly Review Report
+
+The main agent generates a Weekly Review report in Markdown.
+
+The Weekly Review report includes:
+- Weekly Summary
+- Major Market Drivers
+- Thesis Review
+- Correct Calls
+- Incorrect Assumptions
+- Signal Evaluation
+- Thesis Changes
+- Durable Learnings
+- Forward Watchlist
+- Sources
+
+The weekly review report appears in the normal report history UI.
+
+### Step 8: Write Durable Learnings to Vector Memory
+
+The main agent writes durable learnings from the weekly review into LanceDB when the learnings are useful for future analysis.
+
+Durable learnings may include:
+- recurring market patterns
+- signals that proved more important than expected
+- signals that were overemphasized
+- thesis-management mistakes
+- improved research strategies
+- useful historical analogs
+
+These learnings help the system improve future reports without requiring full historical report context to be injected into every prompt.
+
+### Step 9: Save Weekly Review and Update UI
+
+The application saves:
+- the Weekly Review Markdown report to SQLite
+- report metadata to SQLite
+- durable learnings to LanceDB, if applicable
+
+The application generates the HTML version from Markdown and updates the Latest Report View and Recent Reports Sidebar.
 
 ---
 
@@ -961,7 +1270,7 @@ The report should emphasize the topics most materially affecting the market at t
 The primary market thesis synthesized by the Head Market Analyst after evaluating:
 - market data,
 - research,
-- subagent analysis,
+- analyst agent outputs,
 - historical context,
 - and memory retrieval.
 
