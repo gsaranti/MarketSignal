@@ -445,6 +445,58 @@ The main agent evaluates all analyst agent outputs and determines how much weigh
 
 ---
 
+## Fixed Internal Model Usage
+Some internal workflows use non-configurable models for cost control and predictable performance.
+
+### Headline Filtering
+Uses:
+- OpenAI GPT-5 mini
+
+Purpose:
+- filtering
+- deduplication
+- relevance scoring
+- clustering headlines into major topics
+
+Rationale:
+- low cost
+- fast latency
+- strong enough for lightweight classification tasks
+
+### Data Extraction
+Uses:
+- OpenAI GPT-5 mini
+
+Purpose:
+- extracting structured information from:
+  - news articles
+  - PDFs
+  - research documents
+  - earnings summaries
+  - macro reports
+
+Rationale:
+- reliable structured output
+- inexpensive
+- good tool/function calling performance
+
+### Research Routing
+Uses:
+- Anthropic Claude Sonnet
+
+Purpose:
+- determining which topics deserve deeper analysis
+- identifying second-order implications
+- prioritizing research depth
+- deciding which themes/subsectors/geopolitical events matter most
+
+Rationale:
+- stronger reasoning quality
+- better long-context understanding
+- more nuanced prioritization and synthesis
+
+---
+
 ## Job Logical Flows
 
 Market Signal has two distinct job flows:
@@ -1452,58 +1504,6 @@ Examples:
 
 ## Sources
 ```
-
----
-
-## Fixed Internal Model Usage
-Some internal workflows use non-configurable models for cost control and predictable performance.
-
-### Headline Filtering
-Uses:
-- OpenAI GPT-5 mini
-
-Purpose:
-- filtering
-- deduplication
-- relevance scoring
-- clustering headlines into major topics
-
-Rationale:
-- low cost
-- fast latency
-- strong enough for lightweight classification tasks
-
-### Data Extraction
-Uses:
-- OpenAI GPT-5 mini
-
-Purpose:
-- extracting structured information from:
-  - news articles
-  - PDFs
-  - research documents
-  - earnings summaries
-  - macro reports
-
-Rationale:
-- reliable structured output
-- inexpensive
-- good tool/function calling performance
-
-### Research Routing
-Uses:
-- Anthropic Claude Sonnet
-
-Purpose:
-- determining which topics deserve deeper analysis
-- identifying second-order implications
-- prioritizing research depth
-- deciding which themes/subsectors/geopolitical events matter most
-
-Rationale:
-- stronger reasoning quality
-- better long-context understanding
-- more nuanced prioritization and synthesis
 
 ---
 
