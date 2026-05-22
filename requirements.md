@@ -192,6 +192,10 @@ Users can:
 
 By default, all are enabled.
 
+Scheduled jobs are enabled by default, but jobs cannot execute until all required agent models and provider credentials are configured.
+
+A newly installed application therefore begins in an incomplete configuration state until the user finishes model and API setup.
+
 ### Manual Report Generation
 The application includes manual execution controls for:
 - Premarket Report
