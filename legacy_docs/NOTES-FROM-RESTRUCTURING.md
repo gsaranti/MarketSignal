@@ -1,6 +1,6 @@
 # Notes from Restructuring
 
-Observations captured while splitting [requirements.md](requirements.md) into focused files. Not intended as resolutions or as an exhaustive review — just what surfaced naturally during the pass.
+Observations captured while splitting [requirements.md](../requirements.md) into focused files. Not intended as resolutions or as an exhaustive review — just what surfaced naturally during the pass.
 
 ## Potential contradictions or unclear interactions
 

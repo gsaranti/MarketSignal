@@ -205,8 +205,7 @@ If a job fails because of:
 - model execution errors
 the application:
 1. cleanly cancels the job
-2. stores the failure state
-3. displays a warning banner inside the application
+2. displays a warning banner inside the application
 
 If the warning already exists and has not been dismissed/resolved:
 - additional failing jobs do not create duplicate warnings.
@@ -361,31 +360,39 @@ The user cannot manually archive documents.
 
 ---
 
-## Agent Architecture
+## Agent Pipeline Architecture
+Market Signal uses a fixed multi-agent pipeline for each report.
+
+The pipeline is not tool-driven by the main agent. The analyst agents are required stages that run for every report after the research packet is created.
 
 ### Main Agent
 The main agent acts as the Head Market Analyst.
 
-Responsibilities:
-- gather market data
-- gather news and research
-- dynamically branch research
-- coordinate subagents
-- synthesize conclusions
-- maintain evolving market theses
-- retrieve memory
-- publish reports
-- write durable learnings
+The main agent is responsible for:
+- gathering market data
+- gathering news and research
+- dynamically branching research
+- creating the condensed research packet
+- retrieving relevant memory
+- maintaining evolving market theses
+- reviewing analyst agent outputs
+- synthesizing the final report
+- publishing reports
+- writing durable learnings
 
 The main agent owns the final report.
 
-### Subagents
-Three subagents are used:
+### Analyst Agents
+Three analyst agents run after the main agent creates the condensed research packet:
 - Bull Analyst
 - Bear Analyst
 - Balanced Analyst
 
-These agents are not forced into predetermined conclusions or artificial disagreement.
+These agents are not optional tools. They are fixed review stages in the report-generation pipeline.
+
+Each analyst agent receives the same condensed research packet and produces a structured analysis from its assigned analytical perspective.
+
+The analyst agents are not forced into predetermined conclusions or artificial disagreement.
 
 Their purpose is to:
 - explore different market interpretations
@@ -394,26 +401,26 @@ Their purpose is to:
 - identify overlooked risks or opportunities
 - strengthen the quality of the final report
 
-The subagents operate as professional analysts with different analytical perspectives rather than ideological positions.
+The analyst agents operate as professional analysts with different analytical perspectives rather than ideological positions.
 
 It is completely valid for:
-- all three agents to arrive at a similar market conclusion
-- two agents to generally agree while one differs
-- all three agents to identify different risks and opportunities within the same broader market regime
+- all three analyst agents to arrive at a similar market conclusion
+- two analyst agents to generally agree while one differs
+- all three analyst agents to identify different risks and opportunities within the same broader market regime
 
 Examples:
-- All three agents may conclude that market conditions remain structurally bullish while identifying different risks beneath the surface.
-- The Bull and Balanced agents may agree that AI infrastructure demand remains strong, while the Bear agent focuses on valuation and inflation risks.
-- The Bear agent may acknowledge strong market momentum and liquidity conditions while still identifying fragile assumptions underneath the rally.
+- All three analyst agents may conclude that market conditions remain structurally bullish while identifying different risks beneath the surface.
+- The Bull and Balanced analysts may agree that AI infrastructure demand remains strong, while the Bear analyst focuses on valuation and inflation risks.
+- The Bear analyst may acknowledge strong market momentum and liquidity conditions while still identifying fragile assumptions underneath the rally.
 
-The goal of the subagent system is not conflict for the sake of conflict.
+The goal of the analyst agent system is not conflict for the sake of conflict.
 
 The goal is:
 - analytical depth
 - thesis stress-testing
 - stronger final synthesis by the main agent
 
-The main agent evaluates all subagent responses and determines how much weight to assign each perspective during final report generation.
+The main agent evaluates all analyst agent outputs and determines how much weight to assign each perspective during final report generation.
 
 ---
 
@@ -429,9 +436,9 @@ The main agent evaluates all subagent responses and determines how much weight t
 7. Gather news and research
 8. Perform dynamic research branching
 9. Build condensed research packet
-10. Send packet to Bull/Bear/Balanced subagents
-11. Receive subagent theses
-12. Critique subagent responses independently
+10. Run Bull/Bear/Balanced analyst agents against the research packet
+11. Receive analyst agent outputs
+12. Critique analyst agent outputs independently
 13. Synthesize final report
 14. Save Markdown report to SQLite
 15. Save report summary to vector DB
@@ -439,8 +446,8 @@ The main agent evaluates all subagent responses and determines how much weight t
 17. Generate HTML report from Markdown
 18. Update application UI
 
-The main agent does not engage in recursive conversations with subagents.
-It critiques responses independently during synthesis.
+The main agent does not engage in recursive conversations with analyst agents.
+It critiques analyst agent outputs independently during synthesis.
 
 ---
 
@@ -516,104 +523,9 @@ Instead:
 The application enforces:
 - bounded research depth
 - bounded retries
-- bounded subagent execution
+- bounded analyst agent execution
 - no recursive agent loops
 - no recursive debate cycles
-
----
-
-## Fixed Internal Model Usage
-Some internal workflows use non-configurable models for cost control and predictable performance.
-
-### Headline Filtering
-Uses:
-- OpenAI GPT-5 mini
-
-Purpose:
-- filtering
-- deduplication
-- relevance scoring
-- clustering headlines into major topics
-
-Rationale:
-- low cost
-- fast latency
-- strong enough for lightweight classification tasks
-
-### Data Extraction
-Uses:
-- OpenAI GPT-5 mini
-
-Purpose:
-- extracting structured information from:
-  - news articles
-  - PDFs
-  - research documents
-  - earnings summaries
-  - macro reports
-
-Rationale:
-- reliable structured output
-- inexpensive
-- good tool/function calling performance
-
-### Research Routing
-Uses:
-- Anthropic Claude Sonnet
-
-Purpose:
-- determining which topics deserve deeper analysis
-- identifying second-order implications
-- prioritizing research depth
-- deciding which themes/subsectors/geopolitical events matter most
-
-Rationale:
-- stronger reasoning quality
-- better long-context understanding
-- more nuanced prioritization and synthesis
-
-## User-Configurable Models
-The user selects the models used for:
-- Main Agent
-- Bull Analyst
-- Bear Analyst
-- Balanced Analyst
-
-OpenAI Models:
-- GPT-5
-- GPT-5 mini
-
-Anthropic Models:
-- Claude Opus
-- Claude Sonnet
-- Claude Haiku
-
-The user must provide:
-- OpenAI API token
-- Anthropic API token
-
-When a user selects a provider for an agent, the corresponding API token is required.
-
-Examples:
-- selecting an OpenAI model requires a valid OpenAI API token
-- selecting an Anthropic model requires a valid Anthropic API token
-
-If a required token is missing:
-- settings saving is disabled
-- the application displays a validation warning explaining which token is required
-
-By default, the application starts with no models selected for:
-- Main Agent
-- Bull Analyst
-- Bear Analyst
-- Balanced Analyst
-
-The user must configure a model for all four agents before scheduled jobs can run.
-
-If any agent does not have a configured model:
-- scheduled jobs do not execute
-- manual report execution is disabled
-- the application displays a warning message on the homepage indicating which agents still require configuration
 
 ---
 
@@ -857,6 +769,101 @@ The skill helps identify:
 - underappreciated risks
 - asymmetric opportunities
 - situations where market positioning may be vulnerable to unexpected developments
+
+---
+
+## Fixed Internal Model Usage
+Some internal workflows use non-configurable models for cost control and predictable performance.
+
+### Headline Filtering
+Uses:
+- OpenAI GPT-5 mini
+
+Purpose:
+- filtering
+- deduplication
+- relevance scoring
+- clustering headlines into major topics
+
+Rationale:
+- low cost
+- fast latency
+- strong enough for lightweight classification tasks
+
+### Data Extraction
+Uses:
+- OpenAI GPT-5 mini
+
+Purpose:
+- extracting structured information from:
+  - news articles
+  - PDFs
+  - research documents
+  - earnings summaries
+  - macro reports
+
+Rationale:
+- reliable structured output
+- inexpensive
+- good tool/function calling performance
+
+### Research Routing
+Uses:
+- Anthropic Claude Sonnet
+
+Purpose:
+- determining which topics deserve deeper analysis
+- identifying second-order implications
+- prioritizing research depth
+- deciding which themes/subsectors/geopolitical events matter most
+
+Rationale:
+- stronger reasoning quality
+- better long-context understanding
+- more nuanced prioritization and synthesis
+
+## User-Configurable Models
+The user selects the models used for:
+- Main Agent
+- Bull Analyst
+- Bear Analyst
+- Balanced Analyst
+
+OpenAI Models:
+- GPT-5
+- GPT-5 mini
+
+Anthropic Models:
+- Claude Opus
+- Claude Sonnet
+- Claude Haiku
+
+The user must provide:
+- OpenAI API token
+- Anthropic API token
+
+When a user selects a provider for an agent, the corresponding API token is required.
+
+Examples:
+- selecting an OpenAI model requires a valid OpenAI API token
+- selecting an Anthropic model requires a valid Anthropic API token
+
+If a required token is missing:
+- settings saving is disabled
+- the application displays a validation warning explaining which token is required
+
+By default, the application starts with no models selected for:
+- Main Agent
+- Bull Analyst
+- Bear Analyst
+- Balanced Analyst
+
+The user must configure a model for all four agents before scheduled jobs can run.
+
+If any agent does not have a configured model:
+- scheduled jobs do not execute
+- manual report execution is disabled
+- the application displays a warning message on the homepage indicating which agents still require configuration
 
 ---
 
