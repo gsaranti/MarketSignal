@@ -494,6 +494,22 @@ It may produce bullish or bearish conclusions when evidence strongly supports th
 
 ---
 
+## Weekly Review Workflow
+
+### Weekly Review Process
+1. Load previous week's reports
+2. Compare reports against actual market developments
+3. Identify correct conclusions
+4. Identify incorrect assumptions
+5. Identify missed signals
+6. Identify useful patterns
+7. Generate weekly review report
+8. Write durable learnings into vector DB
+
+The weekly review report appears in the normal report history UI.
+
+---
+
 ## Cost-Control Architecture
 The application is designed with bounded workflows to prevent excessive token usage.
 
@@ -772,98 +788,96 @@ The skill helps identify:
 
 ---
 
-## Fixed Internal Model Usage
-Some internal workflows use non-configurable models for cost control and predictable performance.
+## Thesis Continuity and Evolution
+The system maintains continuity between reports and treats market analysis as an evolving long-term process rather than a collection of disconnected daily summaries.
 
-### Headline Filtering
-Uses:
-- OpenAI GPT-5 mini
+Each report exists within a broader market narrative that develops over time.
 
-Purpose:
-- filtering
-- deduplication
-- relevance scoring
-- clustering headlines into major topics
+The main agent continuously:
+- references recent reports
+- retrieves relevant historical learnings from vector memory
+- follows up on prior market concerns
+- tracks whether previous assumptions are strengthening or weakening
+- updates long-term theses incrementally as new evidence appears
 
-Rationale:
-- low cost
-- fast latency
-- strong enough for lightweight classification tasks
+The system is designed to behave like a professional analyst team maintaining ongoing market coverage rather than a stateless news summarizer.
 
-### Data Extraction
-Uses:
-- OpenAI GPT-5 mini
-
-Purpose:
-- extracting structured information from:
-  - news articles
-  - PDFs
-  - research documents
-  - earnings summaries
-  - macro reports
-
-Rationale:
-- reliable structured output
-- inexpensive
-- good tool/function calling performance
-
-### Research Routing
-Uses:
-- Anthropic Claude Sonnet
-
-Purpose:
-- determining which topics deserve deeper analysis
-- identifying second-order implications
-- prioritizing research depth
-- deciding which themes/subsectors/geopolitical events matter most
-
-Rationale:
-- stronger reasoning quality
-- better long-context understanding
-- more nuanced prioritization and synthesis
-
-## User-Configurable Models
-The user selects the models used for:
-- Main Agent
-- Bull Analyst
-- Bear Analyst
-- Balanced Analyst
-
-OpenAI Models:
-- GPT-5
-- GPT-5 mini
-
-Anthropic Models:
-- Claude Opus
-- Claude Sonnet
-- Claude Haiku
-
-The user must provide:
-- OpenAI API token
-- Anthropic API token
-
-When a user selects a provider for an agent, the corresponding API token is required.
+### Report Continuity
+Reports should naturally flow from previous reports.
 
 Examples:
-- selecting an OpenAI model requires a valid OpenAI API token
-- selecting an Anthropic model requires a valid Anthropic API token
+```text
+Previous report:
+"The primary market risk remains whether elevated oil prices begin bleeding into core inflation."
 
-If a required token is missing:
-- settings saving is disabled
-- the application displays a validation warning explaining which token is required
+Next report:
+"That concern increased after core CPI accelerated while oil remained elevated."
 
-By default, the application starts with no models selected for:
-- Main Agent
-- Bull Analyst
-- Bear Analyst
-- Balanced Analyst
+Later report:
+"Inflation pressure has not yet materially damaged AI infrastructure spending, but rising yields are becoming a larger risk to valuation multiples."
+```
 
-The user must configure a model for all four agents before scheduled jobs can run.
+The system should:
+- continue monitoring unresolved market risks
+- revisit previous conclusions
+- acknowledge when earlier assumptions were incorrect
+- identify when a thesis is strengthening or weakening
 
-If any agent does not have a configured model:
-- scheduled jobs do not execute
-- manual report execution is disabled
-- the application displays a warning message on the homepage indicating which agents still require configuration
+### Thesis Stability
+The system should avoid unnecessary thesis instability.
+
+Long-term market theses should evolve gradually when:
+- market conditions remain structurally similar
+- existing narratives continue holding
+- incoming data reinforces prior conclusions
+
+The system should not dramatically change positioning or outlook because of isolated single-day market moves or short-lived news cycles.
+
+The main agent should prioritize:
+- signal over noise
+- multi-day/multi-week confirmation
+- and structural changes over temporary volatility
+
+### Thesis Pivot Conditions
+The system may rapidly pivot its outlook when major evidence materially changes the market environment.
+
+Examples include:
+- major geopolitical escalation
+- financial system stress
+- persistent inflation regime shifts
+- abrupt central bank policy changes
+- major recession indicators
+- significant AI infrastructure slowdown
+- supply-chain disruptions
+- systemic credit events
+- major energy disruptions
+
+In these situations:
+- reports may heavily focus on the new event
+- prior assumptions may be explicitly challenged
+- the long-term thesis may be revised aggressively
+
+The system should clearly explain:
+- why the thesis changed
+- which assumptions failed
+- what evidence caused the pivot
+
+### Memory-Guided Evolution
+The vector memory system exists to help the main agent maintain analytical continuity over time.
+
+The main agent uses memory retrieval to:
+- identify similar historical conditions
+- revisit previous conclusions
+- track recurring market patterns
+- avoid repeating analytical mistakes
+- maintain coherent long-term reasoning across reports
+
+The goal is not rigid consistency.
+
+The goal is:
+- coherent reasoning
+- gradual evolution when appropriate
+- decisive adaptation when necessary
 
 ---
 
@@ -1107,96 +1121,98 @@ Examples:
 
 ---
 
-## Thesis Continuity and Evolution
-The system maintains continuity between reports and treats market analysis as an evolving long-term process rather than a collection of disconnected daily summaries.
+## Fixed Internal Model Usage
+Some internal workflows use non-configurable models for cost control and predictable performance.
 
-Each report exists within a broader market narrative that develops over time.
+### Headline Filtering
+Uses:
+- OpenAI GPT-5 mini
 
-The main agent continuously:
-- references recent reports
-- retrieves relevant historical learnings from vector memory
-- follows up on prior market concerns
-- tracks whether previous assumptions are strengthening or weakening
-- updates long-term theses incrementally as new evidence appears
+Purpose:
+- filtering
+- deduplication
+- relevance scoring
+- clustering headlines into major topics
 
-The system is designed to behave like a professional analyst team maintaining ongoing market coverage rather than a stateless news summarizer.
+Rationale:
+- low cost
+- fast latency
+- strong enough for lightweight classification tasks
 
-### Report Continuity
-Reports should naturally flow from previous reports.
+### Data Extraction
+Uses:
+- OpenAI GPT-5 mini
+
+Purpose:
+- extracting structured information from:
+  - news articles
+  - PDFs
+  - research documents
+  - earnings summaries
+  - macro reports
+
+Rationale:
+- reliable structured output
+- inexpensive
+- good tool/function calling performance
+
+### Research Routing
+Uses:
+- Anthropic Claude Sonnet
+
+Purpose:
+- determining which topics deserve deeper analysis
+- identifying second-order implications
+- prioritizing research depth
+- deciding which themes/subsectors/geopolitical events matter most
+
+Rationale:
+- stronger reasoning quality
+- better long-context understanding
+- more nuanced prioritization and synthesis
+
+## User-Configurable Models
+The user selects the models used for:
+- Main Agent
+- Bull Analyst
+- Bear Analyst
+- Balanced Analyst
+
+OpenAI Models:
+- GPT-5
+- GPT-5 mini
+
+Anthropic Models:
+- Claude Opus
+- Claude Sonnet
+- Claude Haiku
+
+The user must provide:
+- OpenAI API token
+- Anthropic API token
+
+When a user selects a provider for an agent, the corresponding API token is required.
 
 Examples:
-```text
-Previous report:
-"The primary market risk remains whether elevated oil prices begin bleeding into core inflation."
+- selecting an OpenAI model requires a valid OpenAI API token
+- selecting an Anthropic model requires a valid Anthropic API token
 
-Next report:
-"That concern increased after core CPI accelerated while oil remained elevated."
+If a required token is missing:
+- settings saving is disabled
+- the application displays a validation warning explaining which token is required
 
-Later report:
-"Inflation pressure has not yet materially damaged AI infrastructure spending, but rising yields are becoming a larger risk to valuation multiples."
-```
+By default, the application starts with no models selected for:
+- Main Agent
+- Bull Analyst
+- Bear Analyst
+- Balanced Analyst
 
-The system should:
-- continue monitoring unresolved market risks
-- revisit previous conclusions
-- acknowledge when earlier assumptions were incorrect
-- identify when a thesis is strengthening or weakening
+The user must configure a model for all four agents before scheduled jobs can run.
 
-### Thesis Stability
-The system should avoid unnecessary thesis instability.
-
-Long-term market theses should evolve gradually when:
-- market conditions remain structurally similar
-- existing narratives continue holding
-- incoming data reinforces prior conclusions
-
-The system should not dramatically change positioning or outlook because of isolated single-day market moves or short-lived news cycles.
-
-The main agent should prioritize:
-- signal over noise
-- multi-day/multi-week confirmation
-- and structural changes over temporary volatility
-
-### Thesis Pivot Conditions
-The system may rapidly pivot its outlook when major evidence materially changes the market environment.
-
-Examples include:
-- major geopolitical escalation
-- financial system stress
-- persistent inflation regime shifts
-- abrupt central bank policy changes
-- major recession indicators
-- significant AI infrastructure slowdown
-- supply-chain disruptions
-- systemic credit events
-- major energy disruptions
-
-In these situations:
-- reports may heavily focus on the new event
-- prior assumptions may be explicitly challenged
-- the long-term thesis may be revised aggressively
-
-The system should clearly explain:
-- why the thesis changed
-- which assumptions failed
-- what evidence caused the pivot
-
-### Memory-Guided Evolution
-The vector memory system exists to help the main agent maintain analytical continuity over time.
-
-The main agent uses memory retrieval to:
-- identify similar historical conditions
-- revisit previous conclusions
-- track recurring market patterns
-- avoid repeating analytical mistakes
-- maintain coherent long-term reasoning across reports
-
-The goal is not rigid consistency.
-
-The goal is:
-- coherent reasoning
-- gradual evolution when appropriate
-- decisive adaptation when necessary
+If any agent does not have a configured model:
+- scheduled jobs do not execute
+- manual report execution is disabled
+- the application displays a warning message on the homepage indicating which agents still require configuration
 
 ---
 
@@ -1236,22 +1252,6 @@ Stores:
 The vector DB acts as long-term semantic memory for the main agent.
 
 Deleting older reports does not remove durable learnings already stored in vector memory.
-
----
-
-## Weekly Review Workflow
-
-### Weekly Review Process
-1. Load previous week's reports
-2. Compare reports against actual market developments
-3. Identify correct conclusions
-4. Identify incorrect assumptions
-5. Identify missed signals
-6. Identify useful patterns
-7. Generate weekly review report
-8. Write durable learnings into vector DB
-
-The weekly review report appears in the normal report history UI.
 
 ---
 
