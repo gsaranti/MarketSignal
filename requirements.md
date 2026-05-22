@@ -243,7 +243,9 @@ Responsibilities:
 - financial metrics
 - standardized access to financial datasets
 
-The application uses OpenBB to normalize and simplify financial-data retrieval workflows.
+The application uses OpenBB as the primary financial-data access layer where practical.
+
+OpenBB is used to normalize and simplify financial-data retrieval workflows across supported providers and datasets.
 
 **Financial Modeling Prep:**
 Docs - https://site.financialmodelingprep.com/developer/docs
@@ -258,7 +260,7 @@ Responsibilities:
 - sector performance
 - supplemental financial data used by the agents
 
-The application uses Financial Modeling Prep as a direct structured financial-data source.
+The application uses Financial Modeling Prep directly for structured financial datasets when direct access is simpler, more complete, or required by the workflow.
 
 **FRED (Federal Reserve Economic Data):**
 Docs - https://fred.stlouisfed.org/docs/api/fred/
