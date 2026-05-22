@@ -367,13 +367,18 @@ Market Signal uses a fixed multi-agent pipeline for each report.
 
 The pipeline is not tool-driven by the main agent. The analyst agents are required stages that run for every report after the research packet is created.
 
+The application layer executes external API calls and deterministic data retrieval.
+
+Agents do not directly perform unbounded API access. When deeper research is needed, the main agent creates structured research requests that the application layer executes against configured data sources.
+
 ### Main Agent
 The main agent acts as the Head Market Analyst.
 
 The main agent is responsible for:
-- gathering market data
-- gathering news and research
-- dynamically branching research
+- planning market data and research needs
+- creating structured research requests
+- consuming curated data returned by the application layer
+- dynamically guiding research priorities
 - creating the condensed research packet
 - retrieving relevant memory
 - maintaining evolving market theses
