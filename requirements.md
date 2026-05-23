@@ -9,6 +9,8 @@ Market Signal is a local-first desktop application built with:
 
 The app runs scheduled weekly market-analysis jobs, produces evolving market reports, stores recent report history, and uses memory retrieval to improve future analysis.
 
+The weekly cadence is intentionally designed to prioritize signal over noise, structural market analysis, thesis continuity, and forward-looking market preparation rather than reactive daily commentary.
+
 The application is not a trading bot. It acts as a professional market-analysis and thesis-generation system focused on:
 - market regimes
 - evolving macro theses
@@ -32,7 +34,6 @@ Market Signal
 │
 ├── Recent Reports Sidebar
 │   ├── Ordered descending
-│   ├── Report type labels
 │   ├── Report timestamps
 │   └── Weekly Market reports
 │
@@ -74,6 +75,7 @@ Sunday
 9:00 AM local time
 ```
 
+Focus:
 - previous week's market behavior
 - evolving macro thesis
 - geopolitical and economic developments
@@ -137,9 +139,9 @@ The application:
 - displays a warning inside the Persistent Warning Area
 
 ### Concurrent Job Protection
-Only one scheduled job may run at a time.
+Only one report-generation workflow may run at a time.
 
-If a report job is currently running and another scheduled job time occurs, the second job is skipped.
+If a Weekly Market report job is currently running and another scheduled or manual execution is attempted, the second execution is skipped.
 
 The application logs the skipped execution.
 
@@ -541,7 +543,7 @@ If a required external provider credential is missing:
 Market Signal has a single recurring job flow:
 - the Weekly Market Report job
 
-The Weekly Market Report job:
+The Weekly Market Report workflow:
 - analyzes the prior week's market behavior
 - evaluates prior thesis accuracy
 - performs dynamic and forward-looking research
@@ -557,10 +559,9 @@ The report combines:
 - long-term market-thesis evolution
 
 ---
-
 ## Weekly Market Report Job Flow
 
-The Weekly Market Report job runs for:
+The Weekly Market Report workflow runs for:
 - scheduled Weekly Market reports
 - manual Weekly Market report generation
 
@@ -613,6 +614,8 @@ This recent context helps the main agent understand how the broader market thesi
 ### Step 3: Audit Prior Reports
 
 Before deeper synthesis begins, the main agent evaluates a bounded set of prior Weekly Market reports against actual market developments that occurred afterward.
+
+The audit window should usually include the previous 2–6 Weekly Market reports, depending on relevance and context limits.
 
 The retrospective audit process may evaluate:
 - whether major market concerns materialized
@@ -822,6 +825,8 @@ After the research packet is created, the application runs three analyst agents:
 These agents are not optional tools. They are fixed review stages in the report-generation pipeline.
 
 Each analyst agent receives the same condensed research packet and produces structured analysis from its assigned analytical perspective.
+
+Analyst agent outputs are ephemeral pipeline artifacts. They are not persisted independently unless specific insights are extracted into the final report or written as durable learnings.
 
 The analyst agents are not forced into predetermined conclusions or artificial disagreement.
 
@@ -1238,7 +1243,7 @@ Agents never ingest or reason over HTML reports.
 
 ### Standard Report Structure
 ```text
-# Market Signal Report
+# Weekly Market Report
 
 Date
 Report Type:
@@ -1383,7 +1388,7 @@ Stores:
 
 Each report stores:
 - creation timestamp
-- report summary metadata
+- structured report summary metadata
 - market regime metadata
 
 Only the most recent 30 Weekly Market reports are retained.
@@ -1416,12 +1421,42 @@ This allows the system to preserve long-term analytical continuity even while ol
 ---
 
 ## Export System
-Reports are stored internally as:
-- Markdown
-- HTML
+Reports are authored and stored internally as Markdown. The application also generates an HTML version for in-app display and PDF generation.
 
 ### Export Options
-- Export Markdown
-- Export PDF
+Users can export a Weekly Market report as:
+- Markdown
+- PDF
 
+### Markdown Export
+Markdown export uses the canonical Markdown report.
+
+Markdown exports preserve:
+- report structure
+- headings
+- source links
+- written analysis
+- and any Markdown-compatible tables or lists
+
+### PDF Export
 PDF export is generated from the HTML report version.
+
+PDF exports preserve:
+- rendered report styling
+- charts, graphs, and tables included in the HTML report
+- source links when supported by the PDF renderer
+- and the full written report content
+
+### Export Naming
+Exported files use the report date and report title in the filename.
+
+Example:
+```text
+2026-05-24-market-signal-weekly-report.md
+2026-05-24-market-signal-weekly-report.pdf
+```
+
+### Export Behavior
+Exports are generated from the stored report artifacts.
+
+Exporting a report does not re-run the agent workflow, regenerate analysis, or modify the stored report.
