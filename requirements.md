@@ -329,9 +329,9 @@ Supported formats:
 At the start of each scheduled job:
 1. The application checks the inbox folder.
 2. If the folder is empty, the job continues normally.
-3. If documents exist, they are parsed and treated as professional research sources.
-4. The documents are incorporated into the current research process.
-5. After successful processing, the documents are automatically moved into:
+3. If documents exist, the application parses them and prepares them as professional research sources.
+4. Parsed document content is supplied to the report workflow and may be included in the research packet.
+5. After successful processing, the application automatically moves the documents into:
 ```text
 /research-archive
 ```
@@ -359,13 +359,13 @@ The main agent is responsible for:
 - consuming curated data returned by the application layer
 - dynamically guiding research priorities
 - creating the condensed research packet
-- retrieving relevant memory
-- auditing prior report accuracy
+- using relevant memory retrieved by the application layer
+- auditing prior report accuracy using report context and market evidence
 - maintaining evolving long-term market theses
 - evaluating analyst agent outputs
 - synthesizing the final report
-- publishing reports
-- writing durable learnings
+- producing the final Markdown report
+- identifying durable learnings to write to memory
 
 The main agent owns the final report.
 The main agent is responsible for producing a cohesive weekly market publication that:
@@ -599,7 +599,7 @@ If validation fails, the job does not continue. The application displays the app
 
 ### Step 2: Load Recent Report Context
 
-The application loads a bounded set of recent Markdown reports and structured metadata.
+The application loads a bounded set of recent Markdown reports and structured metadata before passing relevant context to the main agent.
 
 Only Markdown reports are loaded for agent context. HTML reports are never loaded into agent prompts because HTML is a presentation artifact.
 
@@ -613,7 +613,7 @@ This recent context helps the main agent understand how the broader market thesi
 
 ### Step 3: Audit Prior Reports
 
-Before deeper synthesis begins, the main agent evaluates a bounded set of prior Weekly Market reports against actual market developments that occurred afterward.
+Before deeper synthesis begins, the application supplies prior report context and actual market developments to the main agent. The main agent then evaluates a bounded set of prior Weekly Market reports against what occurred afterward.
 
 The audit window should usually include the previous 2–6 Weekly Market reports, depending on relevance and context limits.
 
@@ -638,7 +638,7 @@ The retrospective audit system behaves similarly to how professional research fi
 
 ### Step 4: Retrieve Relevant Vector Memory
 
-The application queries LanceDB for relevant semantic memory before the main agent begins deeper reasoning.
+The application queries LanceDB for relevant semantic memory before the main agent begins deeper reasoning, then supplies the retrieved memory fragments to the main agent.
 
 Retrieved memory may include:
 - report summaries
@@ -719,7 +719,7 @@ The news ingestion pipeline follows this bounded flow:
 → ~5 deeply analyzed topics
 ```
 
-Headline filtering uses a fixed low-cost model for:
+The application uses a fixed low-cost model for headline filtering tasks:
 - filtering
 - deduplication
 - relevance scoring
@@ -729,7 +729,7 @@ This step reduces noise before the main agent performs deeper reasoning.
 
 ### Step 8: Perform Research Routing
 
-Research routing determines which topics deserve deeper analysis for the current report.
+Research routing determines which topics deserve deeper analysis for the current report. The routing model produces a structured research plan, and the application layer is responsible for executing that plan against configured data sources.
 
 The routing step considers:
 - baseline market data
@@ -745,13 +745,13 @@ The result is a bounded research plan. The research plan defines what should be 
 
 ### Step 9: Perform Dynamic and Forward-Looking Research
 
-The application executes the approved research plan against configured data sources and returns curated evidence to the main agent.
+The application executes the approved research plan against configured data sources, applies workflow limits, and returns curated evidence to the main agent.
 
 The research system is designed to analyze both current market conditions and known future developments that may materially impact markets over time.
 
 The system does not operate purely as a reactive news-analysis engine focused only on the current day's headlines.
 
-The main agent continuously evaluates:
+The main agent uses the curated research evidence to evaluate:
 - short-term developments
 - medium-term macroeconomic and political events
 - long-term structural trends
@@ -798,7 +798,7 @@ If geopolitical tensions escalate:
 
 ### Step 10: Build Condensed Research Packet
 
-The main agent receives curated evidence and creates a condensed research packet.
+The main agent receives curated evidence from the application layer and creates a condensed research packet.
 
 The research packet is the canonical input for the analyst agents.
 
@@ -932,7 +932,7 @@ The application saves:
 - the Markdown report to persistent local storage
 - report metadata to SQLite
 - report summary to LanceDB
-- durable learnings to LanceDB, if applicable
+- durable learnings identified by the main agent to LanceDB, if applicable
 
 Durable learnings may include:
 - mistakes the system should avoid repeating
@@ -1125,8 +1125,8 @@ The system maintains continuity between reports and treats market analysis as an
 Each report exists within a broader market narrative that develops over time.
 
 The main agent continuously:
-- references recent reports
-- retrieves relevant historical learnings from vector memory
+- reasons over recent report context supplied by the application layer
+- uses relevant historical learnings retrieved from vector memory
 - audits prior thesis accuracy
 - follows up on prior market concerns
 - tracks whether previous assumptions are strengthening or weakening
@@ -1205,7 +1205,7 @@ The system should clearly explain:
 ### Memory-Guided Evolution
 The vector memory system exists to help the main agent maintain analytical continuity over time.
 
-The main agent uses memory retrieval to:
+The application retrieves relevant memory from LanceDB, and the main agent uses those retrieved memory fragments to:
 - identify similar historical conditions
 - revisit previous conclusions
 - track recurring market patterns
