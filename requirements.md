@@ -5,7 +5,7 @@ Market Signal is a local-first desktop application built with:
 - Tauri
 - Vue
 - SQLite
-- LanceDB
+- LanceDBc
 
 The app runs scheduled weekly market-analysis jobs, produces evolving market reports, stores recent report history, and uses memory retrieval to improve future analysis.
 
@@ -61,8 +61,7 @@ The Settings section includes:
 - model selection
 - API token configuration
 - scheduled job enable/disable controls
-- warning review and dismissal
-- and manual job execution controls
+- manual job execution controls
 
 ---
 
