@@ -327,7 +327,7 @@ Supported formats:
 - HTML
 
 At the start of each scheduled job:
-1. The main agent checks the inbox folder.
+1. The application checks the inbox folder.
 2. If the folder is empty, the job continues normally.
 3. If documents exist, they are parsed and treated as professional research sources.
 4. The documents are incorporated into the current research process.
@@ -954,8 +954,6 @@ The HTML version is used for:
 Agents never ingest or reason over HTML reports.
 
 After HTML generation succeeds, the application updates the Latest Report View and Recent Reports Sidebar.
-
----
 
 ---
 
