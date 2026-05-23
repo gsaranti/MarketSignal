@@ -610,7 +610,7 @@ Structured metadata may include:
 
 This recent context helps the main agent understand how the broader market thesis has evolved over time, which unresolved risks remain important, whether prior reports were directionally correct, and whether the current report should strengthen, weaken, or revise prior conclusions.
 
-### Step 3A: Audit Prior Reports
+### Step 3: Audit Prior Reports
 
 Before deeper synthesis begins, the main agent evaluates a bounded set of prior Weekly Market reports against actual market developments that occurred afterward.
 
@@ -633,7 +633,7 @@ The goal is:
 
 The retrospective audit system behaves similarly to how professional research firms review prior theses and market calls over time.
 
-### Step 3: Retrieve Relevant Vector Memory
+### Step 4: Retrieve Relevant Vector Memory
 
 The application queries LanceDB for relevant semantic memory before the main agent begins deeper reasoning.
 
@@ -647,7 +647,7 @@ Retrieved memory may include:
 
 Vector memory is used selectively. The system does not inject the full report history into the prompt.
 
-### Step 4: Check Research Inbox
+### Step 5: Check Research Inbox
 
 The application checks `/research-inbox` at the start of the report job.
 
@@ -658,7 +658,7 @@ Research documents may influence:
 - analyst agent outputs
 - the final report
 
-### Step 5: Gather Baseline Market Data
+### Step 6: Gather Baseline Market Data
 
 The application gathers required baseline market data before agent reasoning begins.
 
@@ -698,7 +698,7 @@ News categories:
 - AI/semiconductors
 - major economic developments
 
-### Step 6: Gather and Filter News
+### Step 7: Gather and Filter News
 
 The application gathers a broad set of headlines and research candidates from configured news and research sources.
 
@@ -724,7 +724,7 @@ Headline filtering uses a fixed low-cost model for:
 
 This step reduces noise before the main agent performs deeper reasoning.
 
-### Step 7: Perform Research Routing
+### Step 8: Perform Research Routing
 
 Research routing determines which topics deserve deeper analysis for the current report.
 
@@ -740,7 +740,7 @@ Research routing uses a fixed mid-tier model to decide which themes, sectors, ma
 
 The result is a bounded research plan. The research plan defines what should be investigated further without allowing unbounded agent loops or unlimited tool usage.
 
-### Step 8: Perform Dynamic and Forward-Looking Research
+### Step 9: Perform Dynamic and Forward-Looking Research
 
 The application executes the approved research plan against configured data sources and returns curated evidence to the main agent.
 
@@ -793,7 +793,7 @@ If geopolitical tensions escalate:
   Research affected sectors, commodities, supply chains, inflation impact.
 ```
 
-### Step 9: Build Condensed Research Packet
+### Step 10: Build Condensed Research Packet
 
 The main agent receives curated evidence and creates a condensed research packet.
 
@@ -812,7 +812,7 @@ It may include:
 
 The research packet must be concise enough to control token usage while still preserving the evidence needed for high-quality analysis.
 
-### Step 10: Run Analyst Agents
+### Step 11: Run Analyst Agents
 
 After the research packet is created, the application runs three analyst agents:
 - Bull Analyst
@@ -839,7 +839,7 @@ It is completely valid for:
 - two analyst agents to generally agree while one differs
 - all three analyst agents to identify different risks and opportunities within the same broader market regime
 
-### Step 11: Bull Analyst Review
+### Step 12: Bull Analyst Review
 
 The Bull Analyst focuses on constructive interpretations of the market environment.
 
@@ -854,7 +854,7 @@ The Bull Analyst does not ignore negative data or force bullish conclusions.
 
 It acknowledges risks while focusing on evidence that supports continued market strength or improving conditions.
 
-### Step 12: Bear Analyst Review
+### Step 13: Bear Analyst Review
 
 The Bear Analyst focuses on identifying fragile assumptions and downside risks.
 
@@ -869,7 +869,7 @@ The Bear Analyst does not deny bullish market conditions when supported by marke
 
 It acknowledges strength while focusing on hidden vulnerabilities, unsustainable narratives, and structural risks.
 
-### Step 13: Balanced Analyst Review
+### Step 14: Balanced Analyst Review
 
 The Balanced Analyst focuses on weighing evidence and identifying the most probable market interpretation.
 
@@ -884,7 +884,7 @@ The Balanced Analyst does not attempt to remain artificially neutral.
 
 It may produce bullish or bearish conclusions when evidence strongly supports them.
 
-### Step 14: Main Agent Synthesis
+### Step 15: Main Agent Synthesis
 
 The main agent receives:
 - the original research packet
@@ -919,7 +919,7 @@ The report should behave like a professional weekly market publication focused o
 
 The report should not expose separate Bull/Bear/Balanced sections unless current market conditions specifically require multiple plausible market paths to be explained.
 
-### Step 15: Save Report and Memory Outputs
+### Step 16: Save Report and Memory Outputs
 
 The main agent writes the final report in Markdown.
 
@@ -936,7 +936,7 @@ Durable learnings may include:
 - market patterns worth remembering
 - historical analogs that became relevant
 
-### Step 16: Generate HTML and Update UI
+### Step 17: Generate HTML and Update UI
 
 After the Markdown report is saved, the application generates the HTML version from Markdown.
 
