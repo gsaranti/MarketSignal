@@ -7,13 +7,14 @@ Market Signal is a local-first desktop application built with:
 - SQLite
 - LanceDB
 
-The app runs scheduled market-analysis jobs, produces evolving market reports, stores recent report history, and uses memory retrieval to improve future analysis.
+The app runs scheduled weekly market-analysis jobs, produces evolving market reports, stores recent report history, and uses memory retrieval to improve future analysis.
 
-The application is not a trading bot. It acts as a professional market-analysis system focused on:
+The application is not a trading bot. It acts as a professional market-analysis and thesis-generation system focused on:
 - market regimes
 - evolving macro theses
 - geopolitical and economic developments
 - sector analysis
+- forward-looking market preparation
 - investment strategy guidance
 
 The application runs entirely on the user’s machine except for external API/model requests.
@@ -33,9 +34,7 @@ Market Signal
 │   ├── Ordered descending
 │   ├── Report type labels
 │   ├── Report timestamps
-│   ├── Premarket reports
-│   ├── Postmarket reports
-│   └── Weekly review reports
+│   └── Weekly Market reports
 │
 ├── Research Documents
 │   ├── Research Inbox
@@ -68,52 +67,24 @@ The Settings section includes:
 
 ## Scheduled Jobs
 
-### Premarket Report Job
+### Weekly Market Report Job
 Runs:
 ```text
-Monday–Friday mornings
-4:00 AM PT / 7:00 AM ET
-```
-
-Focus:
-- overnight futures
-- global markets
-- macro calendar
-- geopolitical developments
-- overnight earnings/news
-- expected market drivers
-
-### Postmarket Report Job
-Runs:
-```text
-Sunday–Friday evenings
-4:00 PM PT / 7:00 PM ET
-```
-
-Focus:
-- what moved markets
-- index performance
-- sector leadership
-- macro reactions
-- yields/oil/dollar/VIX
-- thesis evolution
-- next-day setup
-
-### Weekly Review Job
-Runs:
-```text
-Saturday
+Sunday
 9:00 AM local time
 ```
 
 Focus:
-- analyze the previous week’s reports
-- judge accuracy
-- identify incorrect assumptions
-- identify useful signals
-- extract durable lessons
-
-The weekly review is stored as a normal readable report inside the application.
+- previous week's market behavior
+- evolving macro thesis
+- geopolitical and economic developments
+- sector leadership and weakness
+- inflation, rates, and liquidity conditions
+- AI infrastructure and technology trends
+- market positioning and sentiment
+- forward-looking risks and opportunities
+- upcoming market-moving events
+- retrospective evaluation of prior assumptions and thesis evolution
 
 ---
 
@@ -121,9 +92,7 @@ The weekly review is stored as a normal readable report inside the application.
 The application uses local scheduled jobs that run directly on the user’s machine.
 
 Jobs are responsible for:
-- generating premarket reports
-- generating postmarket reports
-- generating the weekly review report
+- generating Weekly Market reports
 
 ### Application Runtime Requirements
 **Application Must Be Running**
@@ -183,12 +152,8 @@ The application displays:
 
 ### Job Controls
 Users can:
-- Enable Premarket Job
-- Disable Premarket Job
-- Enable Postmarket Job
-- Disable Postmarket Job
-- Enable Weekly Review Job
-- Disable Weekly Review Job
+- Enable Weekly Market Job
+- Disable Weekly Market Job
 
 By default, all are enabled.
 
@@ -198,9 +163,7 @@ A newly installed application therefore begins in an incomplete configuration st
 
 ### Manual Report Generation
 The application includes manual execution controls in Settings for:
-- Premarket Report
-- Postmarket Report
-- Weekly Review
+- Weekly Market Report
 
 Manual execution follows the same workflow and validation rules as scheduled execution.
 
@@ -395,13 +358,19 @@ The main agent is responsible for:
 - dynamically guiding research priorities
 - creating the condensed research packet
 - retrieving relevant memory
-- maintaining evolving market theses
-- reviewing analyst agent outputs
+- maintaining evolving long-term market theses
+- evaluating analyst agent outputs
 - synthesizing the final report
 - publishing reports
 - writing durable learnings
 
 The main agent owns the final report.
+The main agent is responsible for producing a cohesive weekly market publication that:
+- evaluates the prior week's market behavior
+- reviews evolving market theses
+- identifies important structural developments
+- prepares for future market-moving conditions
+- synthesizes forward-looking market analysis
 
 ### Analyst Agents
 Three analyst agents run after the main agent creates the condensed research packet:
@@ -412,6 +381,14 @@ Three analyst agents run after the main agent creates the condensed research pac
 These agents are not optional tools. They are fixed review stages in the report-generation pipeline.
 
 Each analyst agent receives the same condensed research packet and produces a structured analysis from its assigned analytical perspective.
+
+The analyst agents evaluate:
+- the prior week's market developments
+- evolving macroeconomic conditions
+- geopolitical developments
+- market positioning
+- structural risks
+- forward-looking opportunities or threats
 
 The analyst agents are not forced into predetermined conclusions or artificial disagreement.
 
@@ -536,7 +513,7 @@ By default, the application starts with no models selected for:
 The user must configure a model for all four agents before scheduled jobs can run.
 
 If any agent does not have a configured model:
-- scheduled jobs do not execute
+- the Weekly Market job does not execute
 - manual report execution is disabled
 - the application displays a warning message on the homepage indicating which agents still require configuration
 
