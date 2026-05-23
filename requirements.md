@@ -537,48 +537,49 @@ If a required external provider credential is missing:
 
 ## Job Logical Flows
 
-Market Signal has two distinct job flows:
-- the recurring market report job
-- the weekly review job
+Market Signal has a single recurring job flow:
+- the Weekly Market Report job
 
-The recurring market report job is used for both Premarket and Postmarket reports. It gathers current market context, performs dynamic research, runs the analyst agents, and produces a new Market Signal report.
+The Weekly Market Report job:
+- analyzes the prior week's market behavior
+- evaluates prior thesis accuracy
+- performs dynamic and forward-looking research
+- runs the analyst agents
+- updates the long-term market thesis
+- produces a new Market Signal report
 
-The weekly review job is retrospective. It evaluates the prior week's reports against actual market developments, identifies useful or flawed analysis, and writes durable learnings into vector memory.
+The report combines:
+- current market analysis
+- retrospective thesis evaluation
+- forward-looking market preparation
+- long-term market-thesis evolution
 
 ---
 
-## Recurring Market Report Job Flow
+## Weekly Market Report Job Flow
 
-The recurring market report job runs for:
-- Premarket reports
-- Postmarket reports
-- manual Premarket report generation
-- manual Postmarket report generation
+The Weekly Market Report job runs for:
+- scheduled Weekly Market reports
+- manual Weekly Market report generation
 
-Premarket and Postmarket jobs use the same logical workflow, but the research emphasis differs by report type.
+The Weekly Market Report focuses on synthesizing the previous week's market behavior, evaluating evolving macro and geopolitical conditions, updating the long-term market thesis, and identifying forward-looking risks and opportunities.
 
-Premarket reports focus on:
-- overnight futures
-- global market activity
-- upcoming macro events
+The report emphasizes:
+- structural market developments
+- major macroeconomic trends
+- liquidity and valuation conditions
+- sector leadership and weakness
+- AI infrastructure and technology trends
 - geopolitical developments
-- overnight earnings/news
-- likely market drivers for the coming session
-
-Postmarket reports focus on:
-- what moved markets during the day
-- index and sector performance
-- macro reactions
-- yields/oil/dollar/VIX behavior
-- thesis evolution
-- the next market setup
+- market positioning and sentiment
+- upcoming market-moving events
 
 ### Step 1: Job Start and Validation
 
 The scheduled or manual job starts by loading application settings and validating that the job is allowed to run.
 
 The application checks:
-- whether the relevant job type is enabled
+- whether the Weekly Market job is enabled
 - whether another job is already running
 - whether the Main Agent and all Analyst Agents are configured
 - whether required API tokens exist for selected model providers
@@ -593,14 +594,12 @@ The application loads a bounded set of recent Markdown reports and structured me
 Only Markdown reports are loaded for agent context. HTML reports are never loaded into agent prompts because HTML is a presentation artifact.
 
 Structured metadata may include:
-- report type
 - creation timestamp
-- market session metadata
 - market regime label
 - report summary
 - prior warnings or job status information
 
-This recent context helps the main agent understand what the system previously believed, what risks were being monitored, and whether the current report should follow up on unresolved themes.
+This recent context helps the main agent understand how the broader market thesis has evolved over time, which unresolved risks remain important, and whether the current report should strengthen, weaken, or revise prior conclusions.
 
 ### Step 3: Retrieve Relevant Vector Memory
 
@@ -656,6 +655,7 @@ Macro:
 - CPI/PCE/jobs calendar
 - inflation expectations
 - consumer confidence
+- major economic reports from the prior week
 
 News categories:
 - politics
@@ -714,7 +714,7 @@ The application executes the approved research plan against configured data sour
 
 The research system is designed to analyze both current market conditions and known future developments that may materially impact markets over time.
 
-The system does not operate purely as a reactive news-analysis engine focused only on the current day’s headlines.
+The system does not operate purely as a reactive news-analysis engine focused only on the current day's headlines.
 
 The main agent continuously evaluates:
 - short-term developments
@@ -738,7 +738,7 @@ Examples include:
 The system is expected to think similarly to a professional analyst team that prepares for future market-moving conditions well before they fully materialize.
 
 The market thesis should therefore reflect:
-- what is happening now
+- what shaped markets during the previous week
 - what is likely developing next
 - what longer-term structural forces may shape future market behavior
 
@@ -875,7 +875,16 @@ The main agent may:
 - update the long-term thesis
 - flag uncertainty
 
-The final report is written in one unified voice as the Market Signal Thesis. The report should not expose separate Bull/Bear/Balanced sections unless current market conditions specifically require multiple plausible paths to be explained.
+The final report is written in one unified voice as the Market Signal Thesis.
+
+The report should behave like a professional weekly market publication focused on:
+- thesis evolution
+- structural market developments
+- major macroeconomic and geopolitical forces
+- forward-looking market preparation
+- retrospective evaluation of prior assumptions
+
+The report should not expose separate Bull/Bear/Balanced sections unless current market conditions specifically require multiple plausible market paths to be explained.
 
 ### Step 15: Save Report and Memory Outputs
 
@@ -909,150 +918,6 @@ Agents never ingest or reason over HTML reports.
 After HTML generation succeeds, the application updates the Latest Report View and Recent Reports Sidebar.
 
 ---
-
-## Weekly Review Job Flow
-
-The weekly review job runs once per week and produces a Weekly Review report.
-
-The weekly review job is different from the recurring market report job. It is not primarily focused on producing a new market outlook. Its main purpose is retrospective evaluation, thesis review, and memory improvement.
-
-The weekly review job does not run the Bull, Bear, and Balanced analyst agents.
-
-The weekly review is performed directly by the main agent because the job focuses on retrospective evaluation, thesis continuity, and memory improvement rather than multi-perspective market synthesis.
-
-### Step 1: Weekly Review Job Start and Validation
-
-The weekly review job starts by loading application settings and validating that the job is allowed to run.
-
-The application checks:
-- whether the Weekly Review job is enabled
-- whether another job is already running
-- whether the Main Agent is configured
-- whether required API tokens exist for selected model providers
-- whether the machine has network access to required APIs and model providers
-
-If validation fails, the job does not continue. The application displays the appropriate warning state and avoids creating duplicate unresolved warnings.
-
-### Step 2: Load Previous Week's Reports
-
-The application loads the previous week's Markdown reports and structured metadata.
-
-The review period covers the previous market week, from the prior Sunday evening Postmarket report through the Friday Postmarket report.
-
-Only Markdown reports are loaded for review. HTML reports are never loaded into agent prompts.
-
-The weekly review may include:
-- Premarket reports
-- Postmarket reports
-- prior weekly review context when relevant
-- report metadata
-- market session metadata
-- previous market regime labels
-- previous report summaries
-
-### Step 3: Gather Actual Market Developments
-
-The application gathers market data and relevant news needed to evaluate what actually happened after the reports were written.
-
-This may include:
-- index performance
-- sector performance
-- yield movement
-- oil and commodity movement
-- major macro data releases
-- major earnings reactions
-- geopolitical developments
-- liquidity and credit signals
-
-This step gives the weekly review enough context to judge prior analysis against market outcomes and new evidence.
-
-### Step 4: Review Thesis Evolution
-
-The main agent evaluates how the system's market thesis changed throughout the week.
-
-The review considers:
-- whether prior assumptions strengthened or weakened
-- whether reports followed up on unresolved risks
-- whether the system adapted appropriately to new evidence
-- whether major thesis pivots were justified
-- whether the system overreacted to noise or underreacted to meaningful signals
-
-### Step 5: Identify Correct Calls and Incorrect Assumptions
-
-The weekly review identifies where prior reports were analytically useful and where they were wrong or incomplete.
-
-Correct calls may include:
-- risks that were identified before they mattered
-- market shifts that were anticipated correctly
-- structural developments that were interpreted well
-- signals that proved useful
-
-Incorrect assumptions may include:
-- conclusions that were wrong
-- weak assumptions
-- missed risks
-- overemphasized narratives
-- underweighted signals
-- situations where the system misread market conditions
-
-The goal is honest analytical review rather than defending prior conclusions.
-
-### Step 6: Evaluate Signals
-
-The weekly review evaluates which market signals mattered most during the week.
-
-Signals may include:
-- yields
-- breadth
-- energy prices
-- inflation data
-- liquidity
-- earnings strength
-- geopolitical developments
-- positioning/sentiment behavior
-
-The review should also identify signals that were expected to matter but were ultimately less important than anticipated.
-
-### Step 7: Generate Weekly Review Report
-
-The main agent generates a Weekly Review report in Markdown.
-
-The Weekly Review report includes:
-- Weekly Summary
-- Major Market Drivers
-- Thesis Review
-- Correct Calls
-- Incorrect Assumptions
-- Signal Evaluation
-- Thesis Changes
-- Durable Learnings
-- Forward Watchlist
-- Sources
-
-The weekly review report appears in the normal report history UI.
-
-### Step 8: Write Durable Learnings to Vector Memory
-
-The main agent writes durable learnings from the weekly review into LanceDB when the learnings are useful for future analysis.
-
-Durable learnings may include:
-- recurring market patterns
-- signals that proved more important than expected
-- signals that were overemphasized
-- thesis-management mistakes
-- improved research strategies
-- useful historical analogs
-
-These learnings help the system improve future reports without requiring full historical report context to be injected into every prompt.
-
-### Step 9: Save Weekly Review and Update UI
-
-The application saves:
-- the Weekly Review Markdown report to persistent local storage
-- report metadata to SQLite
-- durable learnings to LanceDB, if applicable
-
-The application generates the HTML version from Markdown and updates the Latest Report View and Recent Reports Sidebar.
 
 ---
 
