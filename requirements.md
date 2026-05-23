@@ -74,7 +74,6 @@ Sunday
 9:00 AM local time
 ```
 
-Focus:
 - previous week's market behavior
 - evolving macro thesis
 - geopolitical and economic developments
@@ -85,6 +84,7 @@ Focus:
 - forward-looking risks and opportunities
 - upcoming market-moving events
 - retrospective evaluation of prior assumptions and thesis evolution
+- retrospective evaluation of prior report accuracy and thesis quality
 
 ---
 
@@ -358,6 +358,7 @@ The main agent is responsible for:
 - dynamically guiding research priorities
 - creating the condensed research packet
 - retrieving relevant memory
+- auditing prior report accuracy
 - maintaining evolving long-term market theses
 - evaluating analyst agent outputs
 - synthesizing the final report
@@ -551,6 +552,7 @@ The Weekly Market Report job:
 The report combines:
 - current market analysis
 - retrospective thesis evaluation
+- prior report accuracy auditing
 - forward-looking market preparation
 - long-term market-thesis evolution
 
@@ -573,6 +575,13 @@ The report emphasizes:
 - geopolitical developments
 - market positioning and sentiment
 - upcoming market-moving events
+
+The report also performs retrospective auditing of prior Weekly Market reports to evaluate:
+- thesis accuracy
+- incorrect assumptions
+- overlooked risks
+- useful signals
+- and whether prior market concerns evolved as expected
 
 ### Step 1: Job Start and Validation
 
@@ -599,7 +608,30 @@ Structured metadata may include:
 - report summary
 - prior warnings or job status information
 
-This recent context helps the main agent understand how the broader market thesis has evolved over time, which unresolved risks remain important, and whether the current report should strengthen, weaken, or revise prior conclusions.
+This recent context helps the main agent understand how the broader market thesis has evolved over time, which unresolved risks remain important, whether prior reports were directionally correct, and whether the current report should strengthen, weaken, or revise prior conclusions.
+
+### Step 3A: Audit Prior Reports
+
+Before deeper synthesis begins, the main agent evaluates a bounded set of prior Weekly Market reports against actual market developments that occurred afterward.
+
+The retrospective audit process may evaluate:
+- whether major market concerns materialized
+- whether bullish or bearish expectations proved directionally correct
+- whether risks were underestimated or overestimated
+- whether market-moving events evolved differently than expected
+- which analytical signals proved most useful
+- whether the broader thesis strengthened or weakened over time
+
+The goal of the audit system is not prediction scoring or numerical accuracy tracking.
+
+The goal is:
+- improving long-term analytical quality
+- identifying weak assumptions
+- reinforcing useful analytical patterns
+- maintaining intellectual honesty
+- and improving future market-thesis generation
+
+The retrospective audit system behaves similarly to how professional research firms review prior theses and market calls over time.
 
 ### Step 3: Retrieve Relevant Vector Memory
 
@@ -881,6 +913,7 @@ The report should behave like a professional weekly market publication focused o
 - thesis evolution
 - structural market developments
 - major macroeconomic and geopolitical forces
+- retrospective auditing of prior reports
 - forward-looking market preparation
 - retrospective evaluation of prior assumptions
 
@@ -1091,6 +1124,7 @@ Each report exists within a broader market narrative that develops over time.
 The main agent continuously:
 - references recent reports
 - retrieves relevant historical learnings from vector memory
+- audits prior thesis accuracy
 - follows up on prior market concerns
 - tracks whether previous assumptions are strengthening or weakening
 - updates long-term theses incrementally as new evidence appears
@@ -1117,6 +1151,12 @@ The system should:
 - revisit previous conclusions
 - acknowledge when earlier assumptions were incorrect
 - identify when a thesis is strengthening or weakening
+
+The system should also periodically evaluate:
+- whether prior concerns evolved as expected
+- whether the system overemphasized unimportant narratives
+- whether important signals were missed
+- and whether the broader market thesis remained directionally correct
 
 ### Thesis Stability
 The system should avoid unnecessary thesis instability.
@@ -1252,6 +1292,8 @@ The report should emphasize the topics most materially affecting the market at t
 
 ## Market Signal Thesis
 
+This section may also include retrospective evaluation of prior reports when meaningful thesis confirmations, failures, or analytical mistakes occurred.
+
 The primary market thesis synthesized by the Head Market Analyst after evaluating:
 - market data,
 - research,
@@ -1268,6 +1310,21 @@ The thesis may:
 - or heavily emphasize uncertainty depending on current market conditions.
 
 If conditions are unusually uncertain or bifurcated, the thesis may explicitly discuss multiple plausible market paths and the signals that would support each outcome.
+
+## Retrospective Audit
+
+Evaluation of prior Weekly Market reports and whether previous assumptions, risks, and market expectations evolved as anticipated.
+
+This section may discuss:
+- thesis confirmations
+- incorrect assumptions
+- missed risks
+- signal quality
+- overemphasized narratives
+- useful analytical patterns
+- and meaningful thesis changes
+
+This section is dynamic and only expands when meaningful retrospective analysis is warranted.
 
 ## Investment Strategy
 
@@ -1347,6 +1404,7 @@ Stores:
 - thesis evolution
 - important historical analogs
 - past mistakes
+- retrospective audit learnings
 - useful recurring patterns
 
 The vector DB acts as long-term semantic memory for the main agent.
