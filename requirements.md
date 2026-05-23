@@ -932,7 +932,7 @@ The skill evaluates whether the market is primarily:
 - risk-on or risk-off
 - liquidity-driven or earnings-driven
 - inflation-sensitive or growth-sensitive
-- whether market leadership is broadening or narrowing
+- whether market leadership is broadening or narrowing over time
 
 ### Narrative vs Reality
 Separates genuine market or economic changes from exaggerated media narratives and short-term emotional reactions.
@@ -1014,8 +1014,12 @@ The skill evaluates:
 - AI-related capital expenditure trends
 
 ### Time Horizon Separation
-Separates short-term market reactions from medium-term and long-term structural trends.
+Separates short-term market reactions from medium-term and long-term structural market trends.
 The skill helps prevent the system from confusing temporary volatility with meaningful changes to the broader market thesis.
+The skill also helps the system distinguish between:
+- weekly market noise
+- cyclical developments
+- structural long-term market shifts
 
 ### Credit Stress Analysis
 Evaluates financial stress inside credit markets and identifies signs of tightening financial conditions.
@@ -1075,11 +1079,12 @@ The skill helps identify:
 - underappreciated risks
 - asymmetric opportunities
 - situations where market positioning may be vulnerable to unexpected developments
+- areas where long-term market expectations may be mispriced
 
 ---
 
 ## Thesis Continuity and Evolution
-The system maintains continuity between reports and treats market analysis as an evolving long-term process rather than a collection of disconnected daily summaries.
+The system maintains continuity between reports and treats market analysis as an evolving long-term process rather than a collection of disconnected market snapshots.
 
 Each report exists within a broader market narrative that develops over time.
 
@@ -1121,15 +1126,17 @@ Long-term market theses should evolve gradually when:
 - existing narratives continue holding
 - incoming data reinforces prior conclusions
 
-The system should not dramatically change positioning or outlook because of isolated single-day market moves or short-lived news cycles.
+The system should not dramatically change positioning or outlook because of isolated short-term volatility, temporary news cycles, or single-event reactions.
 
 The main agent should prioritize:
 - signal over noise
-- multi-day/multi-week confirmation
+- multi-week confirmation when appropriate
 - and structural changes over temporary volatility
 
 ### Thesis Pivot Conditions
 The system may rapidly pivot its outlook when major evidence materially changes the market environment.
+
+Major thesis pivots should remain relatively rare and should only occur when evidence strongly suggests that structural market conditions have materially changed.
 
 Examples include:
 - major geopolitical escalation
@@ -1195,8 +1202,7 @@ Agents never ingest or reason over HTML reports.
 
 Date
 Report Type:
-- Premarket
-- Postmarket
+- Weekly Market Report
 
 ## Header Summary
 3–6 key bullets summarizing the most important conclusions, risks, developments, and thesis changes.
@@ -1279,13 +1285,18 @@ This section may include:
 
 The application does not provide direct buy/sell instructions or trade execution guidance.
 
-## Short-Term Outlook
+## Forward Outlook
 
-Key themes, risks, and developments likely to influence markets over the near term.
+Key themes, risks, opportunities, and developments likely to influence markets over the coming weeks and months.
 
-## Long-Term Outlook
-
-Longer-term structural market themes, risks, and opportunities.
+This section may discuss:
+- evolving macroeconomic conditions
+- upcoming market-moving events
+- structural market trends
+- geopolitical risks
+- sector leadership changes
+- liquidity and valuation conditions
+- long-term opportunities or threats
 
 ## Watchlist
 
@@ -1296,113 +1307,7 @@ Key:
 - geopolitical developments,
 - and market signals
 
-that should be monitored going forward.
-
-## Sources
-```
-
-### Weekly Review Report Structure
-```text
-# Market Signal Weekly Review Report
-
-Date
-Review Period
-
-## Weekly Summary
-
-High-level summary of:
-- the week's market behavior,
-- major developments,
-- thesis evolution,
-- and overall market conditions.
-
-## Major Market Drivers
-
-The most important events, themes, and developments that influenced markets during the review period.
-
-This section may include:
-- inflation developments,
-- Federal Reserve expectations,
-- geopolitical escalation,
-- earnings reactions,
-- liquidity changes,
-- energy market shifts,
-- AI infrastructure developments,
-- elections or political developments,
-- and major macroeconomic signals.
-
-## Thesis Review
-
-Evaluation of how the system's market thesis evolved throughout the week.
-
-This section reviews:
-- whether previous assumptions strengthened or weakened,
-- whether the system adapted appropriately to new evidence,
-- and whether major thesis pivots were justified.
-
-## Correct Calls
-
-Analysis areas where the system's prior reports correctly identified:
-- important risks,
-- opportunities,
-- market shifts,
-- or structural developments.
-
-This section focuses on meaningful analytical accuracy rather than isolated lucky predictions.
-
-## Incorrect Assumptions
-
-Analysis of:
-- incorrect conclusions,
-- weak assumptions,
-- missed risks,
-- overemphasized narratives,
-- or situations where the system misread market conditions.
-
-The goal is honest analytical review rather than defending prior conclusions.
-
-## Signal Evaluation
-
-Evaluation of which signals proved most useful during the week.
-
-Examples:
-- yields,
-- breadth,
-- energy prices,
-- inflation data,
-- liquidity,
-- earnings strength,
-- geopolitical developments,
-- or positioning/sentiment behavior.
-
-This section also identifies signals that were ultimately less important than expected.
-
-## Thesis Changes
-
-Summary of:
-- meaningful changes to the long-term market thesis,
-- evolving macroeconomic expectations,
-- structural risks,
-- and major market narratives that materially shifted during the week.
-
-## Durable Learnings
-
-Longer-term analytical lessons extracted from the week's reports and market behavior.
-
-These learnings may be written into vector memory for future report generation and thesis continuity.
-
-## Forward Watchlist
-
-Key upcoming developments the system believes are likely to matter in the coming weeks.
-
-Examples:
-- economic reports,
-- elections,
-- Federal Reserve meetings,
-- geopolitical developments,
-- earnings cycles,
-- energy market risks,
-- or structural market signals.
+that should be monitored in upcoming weeks and report cycles.
 
 ## Sources
 ```
@@ -1420,14 +1325,11 @@ Stores:
 - warning states
 
 Each report stores:
-- report type
 - creation timestamp
-- associated market session metadata
+- report summary metadata
+- market regime metadata
 
-Only the most recent 30 reports total are retained across:
-- Premarket reports
-- Postmarket reports
-- Weekly Review reports
+Only the most recent 30 Weekly Market reports are retained.
 
 Older reports are deleted automatically.
 
@@ -1450,6 +1352,8 @@ Stores:
 The vector DB acts as long-term semantic memory for the main agent.
 
 Deleting older reports does not remove durable learnings already stored in vector memory.
+
+This allows the system to preserve long-term analytical continuity even while older report files are removed from local storage.
 
 ---
 
