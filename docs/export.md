@@ -21,12 +21,12 @@ Markdown exports preserve:
 
 ## PDF Export
 
-PDF export is generated from the HTML report version.
+PDF export is generated from the HTML report version using the Tauri webview's built-in print-to-PDF capability. Because the same webview engine renders both the in-app HTML and the exported PDF, presentation fidelity is preserved.
 
 PDF exports preserve:
 - rendered report styling
 - charts, graphs, and tables included in the HTML report
-- source links when supported by the PDF renderer
+- source links when supported by the underlying webview's print-to-PDF
 - and the full written report content
 
 ## Export Naming

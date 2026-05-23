@@ -28,6 +28,15 @@ Focus:
 
 The end-to-end steps that run inside this job are defined in [weekly-report-workflow.md](weekly-report-workflow.md).
 
+## Job States
+
+A scheduled or manual job ends in one of these states:
+
+- **Successful** — the workflow completed and produced a report.
+- **Failed** — execution started but could not complete because required services, APIs, or model providers were unavailable, or because of API limits, token exhaustion, malformed responses, or model execution errors. See [Offline Behavior](#offline-behavior) and [Error Handling](#error-handling).
+- **Missed** — the scheduled execution never started because the application was not running, the machine was asleep, or the application could not start the scheduled execution during the scheduled window. See [System Sleep Behavior](#system-sleep-behavior) and [Missed Job Detection](#missed-job-detection).
+- **Skipped** — a second execution was rejected because another report-generation workflow was already running. See [Concurrent Job Protection](#concurrent-job-protection).
+
 ## Application Runtime Requirements
 
 **Application Must Be Running**
@@ -52,7 +61,7 @@ Examples:
 - operating system sleep mode
 
 If a scheduled execution time occurs while the machine is asleep:
-- the job is skipped
+- the job is missed
 - the application does not attempt to retroactively execute the missed job
 - and the next scheduled job runs normally
 
@@ -95,7 +104,7 @@ Users can:
 - Enable Weekly Market Job
 - Disable Weekly Market Job
 
-By default, all are enabled.
+The Weekly Market Job is enabled by default.
 
 The execution gate that prevents jobs from running until all required agent models and provider credentials are configured lives in [configuration.md](configuration.md).
 
@@ -119,8 +128,7 @@ the application:
 2. stores the failure state
 3. displays a warning inside the Persistent Warning Area
 
-If the warning already exists and has not been dismissed/resolved:
-- additional failing jobs do not create duplicate warnings.
+The Persistent Warning Area de-duplicates warnings within each category. See [interface.md §Persistent Warning Area](interface.md#persistent-warning-area) for the canonical rule.
 
 ## Missed Job Detection
 

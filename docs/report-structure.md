@@ -19,6 +19,8 @@ HTML reports are generated from Markdown and are presentation-only artifacts use
 - chart display
 - PDF generation
 
+The Markdown→HTML conversion uses **markdown-it** as the renderer. Styling, chart rendering, and other presentation-layer choices are MVP-internal implementation details and not specified here.
+
 Agents never ingest or reason over HTML reports.
 
 ## Standard Report Structure

@@ -45,7 +45,7 @@ For when this job runs and how it interacts with sleep, offline, and concurrent-
 
 ## Step 1: Job Start and Validation
 
-The scheduled or manual job starts by loading application settings and validating that the job is allowed to run.
+The scheduled or manual job starts by loading application configuration and validating that the job is allowed to run.
 
 The application checks:
 - whether the Weekly Market job is enabled
@@ -169,7 +169,7 @@ News categories:
 
 ## Step 7: Gather and Filter News
 
-The application gathers a broad set of headlines and research candidates from configured news and research sources.
+The application gathers a broad set of headlines and research candidates from the configured news and research sources — Tavily and GDELT (see [data-sources.md](data-sources.md)). Tavily contributes AI-oriented market and research headlines; GDELT contributes geopolitical and large-scale news trend coverage.
 
 The system does not send large raw news volumes into frontier models.
 
@@ -214,6 +214,11 @@ The result is a bounded research plan. The research plan defines what should be 
 ## Step 9: Perform Dynamic and Forward-Looking Research
 
 The application executes the approved research plan against configured data sources, applies workflow limits, and returns curated evidence to the main agent.
+
+Workflow limits:
+- maximum 50 research requests per job
+- maximum duration of 30 minutes for the research phase
+- maximum dynamic-branching depth of 2 (a research request may spawn at most one follow-up)
 
 The research system is designed to analyze both current market conditions and known future developments that may materially impact markets over time.
 

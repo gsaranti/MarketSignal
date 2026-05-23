@@ -5,6 +5,7 @@
 The Settings section includes:
 - model selection
 - API token configuration
+- external data provider credentials
 - scheduled job enable/disable controls
 - manual job execution controls
 
@@ -59,7 +60,7 @@ Examples:
 - selecting an Anthropic model requires a valid Anthropic API token
 
 If a required token is missing:
-- settings saving is disabled
+- saving the configuration is disabled
 - the application displays a validation warning explaining which token is required
 
 ## External Data Provider Credentials

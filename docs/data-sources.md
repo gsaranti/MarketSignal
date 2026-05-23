@@ -99,7 +99,7 @@ Responsibilities:
 The application uses GDELT to strengthen geopolitical and macro event awareness.
 
 ## LLM Providers
-- OpenAI
-- Anthropic
+- [OpenAI](https://platform.openai.com/docs)
+- [Anthropic](https://platform.claude.com/docs)
 
 The specific models exposed by these providers, the user-configurable model selections for each agent, and the API-token requirements are covered in [configuration.md](configuration.md). The non-configurable models used by fixed internal pipeline stages are covered in [agents.md](agents.md).

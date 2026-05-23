@@ -26,6 +26,7 @@ Market Signal
 └── Settings
     ├── Agent model configuration
     ├── API token configuration
+    ├── External data provider credentials
     ├── Scheduled job controls
     └── Manual report execution
 ```
@@ -34,5 +35,22 @@ The operational behavior of each panel is defined in the relevant concern files:
 - Latest Report View / Recent Reports Sidebar — see [report-structure.md](report-structure.md) and [storage.md](storage.md).
 - Export actions — see [export.md](export.md).
 - Research Documents (Inbox / Archive) — see [research-documents.md](research-documents.md).
-- Persistent Warning Area triggers — see [scheduling.md](scheduling.md) and [configuration.md](configuration.md).
+- Persistent Warning Area triggers — see [scheduling.md](scheduling.md) and [configuration.md](configuration.md). De-duplication behavior is described below.
 - Settings — see [configuration.md](configuration.md) and [scheduling.md](scheduling.md).
+
+## Persistent Warning Area
+
+The Persistent Warning Area surfaces:
+- Missing agent configuration
+- Missing API tokens
+- Failed jobs
+- Missed scheduled jobs
+
+Each warning category may have at most one unresolved warning at a time. If a warning already exists in a category and has not been dismissed or resolved, additional events in that category do not create duplicate warnings.
+
+Dismissing a warning permanently removes it. A subsequent event in the same category produces a fresh warning.
+
+Operational triggers for each category live in their canonical homes:
+- Missing agent configuration and missing API tokens — see [configuration.md](configuration.md).
+- Failed jobs — see [scheduling.md §Offline Behavior](scheduling.md#offline-behavior) and [scheduling.md §Error Handling](scheduling.md#error-handling).
+- Missed scheduled jobs — see [scheduling.md §Missed Job Detection](scheduling.md#missed-job-detection).

@@ -160,7 +160,7 @@ It may produce bullish or bearish conclusions when evidence strongly supports th
 
 ## Fixed Internal Models
 
-Some internal workflows use non-configurable models for cost control and predictable performance. These are distinct from the user-configurable model selections covered in [configuration.md](configuration.md).
+Some internal workflows use non-configurable models for cost control and predictable performance. These are distinct from the user-configurable model selections covered in [configuration.md](configuration.md). The non-configurable model used for vector-memory embeddings is documented in [storage.md §Embeddings](storage.md#embeddings).
 
 ### Headline Filtering
 
