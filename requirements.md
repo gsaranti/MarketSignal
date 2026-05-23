@@ -1225,7 +1225,7 @@ The goal is:
 Reports are written, authored, and stored internally in Markdown by the main agent. An HTML version is generated for application display.
 
 Markdown is the canonical report format used for:
-- agent memory
+- agent context and memory workflows
 - report continuity
 - vector memory ingestion
 - report retrieval
