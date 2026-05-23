@@ -1,7 +1,5 @@
 # Market Signal Documentation Index
 
-This directory restructures the original [requirements.md](../requirements.md) into focused per-concern files. Each file is a slice of the same source material; combined, they describe the Market Signal MVP.
-
 ## Files
 
 - [overview.md](overview.md) — Product positioning, technology stack, and what the application is and isn't.
@@ -17,7 +15,3 @@ This directory restructures the original [requirements.md](../requirements.md) i
 - [report-structure.md](report-structure.md) — Canonical Markdown authoring format, the HTML-for-presentation rule, and the standard report sections.
 - [storage.md](storage.md) — SQLite and LanceDB responsibilities, retention rules, and deletion behavior.
 - [export.md](export.md) — Markdown and PDF export options, naming conventions, and behavior.
-
-## Process Note
-
-- [NOTES-FROM-RESTRUCTURING.md](NOTES-FROM-RESTRUCTURING.md) — Items surfaced during the restructuring pass: contradictions, ambiguous terms, gaps, consolidated duplications, and places where external links would help.
