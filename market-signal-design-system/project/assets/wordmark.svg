@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 56" width="320" height="56">
+  
+  <text x="0" y="32" class="wm">Market Signal</text>
+  <line x1="0" y1="42" x2="320" y2="42" class="rule"></line>
+  <text x="0" y="54" class="ct">A weekly market report</text>
+</svg>

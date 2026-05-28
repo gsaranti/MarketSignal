@@ -1,0 +1,50 @@
+<!-- @dsCard group="Brand" -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Anti-patterns — recognize on sight</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_card.css">
+</head>
+<body>
+<div class="card-frame">
+
+<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+  <!-- gradient -->
+  <div style="height: 90px; border-radius: 12px; background: linear-gradient(135deg, #8b5cf6, #3b82f6); position: relative; display:flex; align-items:flex-end; justify-content:center; padding: 8px; color: white; font-family: var(--font-sans); font-size: 10px;">brand gradient</div>
+  <!-- drop shadow card -->
+  <div style="height: 90px; background: white; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.12); display:flex; align-items:flex-end; justify-content:center; padding: 8px; font-family: var(--font-sans); font-size: 10px; color: var(--ink-2);">lifted card</div>
+  <!-- pill button -->
+  <div style="height: 90px; display:flex; align-items:center; justify-content:center; border: 1px dashed var(--hairline);">
+    <div style="padding: 10px 22px; border-radius: 999px; background: var(--ink); color: var(--paper); font-family: var(--font-sans); font-size: 11px;">pill button</div>
+  </div>
+  <!-- neon dark -->
+  <div style="height: 90px; background: #0a0a12; border-radius: 8px; display:flex; align-items:flex-end; padding: 8px; font-family: var(--font-sans); font-size: 10px;">
+    <span style="color:#22d3ee;">neon on black</span>
+  </div>
+  <!-- red green -->
+  <div style="height: 90px; border: 1px dashed var(--hairline); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; font-family: var(--font-mono); font-size: 12px;">
+    <span style="color:#16a34a;">▲ +1.42%</span>
+    <span style="color:#dc2626;">▼ −0.83%</span>
+  </div>
+  <!-- emoji UI -->
+  <div style="height: 90px; border: 1px dashed var(--hairline); display:flex; align-items:center; justify-content:center; font-family: var(--font-sans); font-size: 13px; color: var(--ink);">📊 Reports</div>
+  <!-- skeleton shimmer -->
+  <div style="height: 90px; border: 1px dashed var(--hairline); display:flex; flex-direction:column; gap: 6px; padding: 14px; justify-content: center;">
+    <div style="height: 8px; background: linear-gradient(90deg, #eee, #ccc, #eee); border-radius: 4px;"></div>
+    <div style="height: 8px; background: linear-gradient(90deg, #eee, #ccc, #eee); border-radius: 4px; width: 70%;"></div>
+    <div style="font-family: var(--font-sans); font-size: 10px; color: var(--ink-3); margin-top: 4px;">shimmer placeholder</div>
+  </div>
+  <!-- giant hero -->
+  <div style="height: 90px; display:flex; align-items:center; justify-content:center; border: 1px dashed var(--hairline);">
+    <div style="font-family: var(--font-serif); font-size: 36px; font-weight: 800; color: var(--ink);">64px hero</div>
+  </div>
+</div>
+<div class="cap-line" style="margin-top:14px; font-style:italic; color: var(--ink-3);">
+  Each of these should be recognizable on sight as a violation. None appears in this product.
+</div>
+
+</div>
+</body>
+</html>

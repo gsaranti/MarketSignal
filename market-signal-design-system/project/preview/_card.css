@@ -1,0 +1,89 @@
+/* Shared styles for preview cards. Each card imports ../colors_and_type.css
+   and then this file. Cards target ~700px wide and stay sparse — the
+   asset name renders OUTSIDE the card, so the card itself shows only the
+   spec/swatches/specimen. */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--t-ui);
+}
+
+.card-frame {
+  padding: 24px 28px;
+  width: 700px;
+  box-sizing: border-box;
+}
+
+.card-frame.tight    { padding: 20px 24px; }
+.card-frame.compact  { padding: 16px 20px; }
+
+.cap {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.cap-line {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0;
+}
+
+.swatch-row {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 3), 1fr);
+  gap: 16px;
+}
+
+.swatch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.swatch-chip {
+  height: 64px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+}
+
+.swatch-name {
+  font-size: 11px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.swatch-hex {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.flag {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 16px;
+  row-gap: 6px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.kv .k { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.kv .v { color: var(--ink); }

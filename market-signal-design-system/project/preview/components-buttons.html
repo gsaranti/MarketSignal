@@ -1,0 +1,37 @@
+<!-- @dsCard group="Components" -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Buttons — rectangular, 2px radius</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_card.css">
+</head>
+<body>
+<div class="card-frame">
+
+<div style="display: grid; grid-template-columns: max-content max-content max-content; gap: 14px 18px; align-items: center;">
+  <button class="btn btn-primary">Generate this week's issue</button>
+  <button class="btn btn-secondary">Export to PDF</button>
+  <button class="btn btn-ghost">Cancel</button>
+
+  <button class="btn btn-primary" style="background:#2B241B; border-color:#2B241B;">Generate this week's issue</button>
+  <button class="btn btn-secondary" style="background: var(--paper-soft);">Export to PDF</button>
+  <button class="btn btn-ghost" style="background: var(--paper-soft); color: var(--ink);">Cancel</button>
+
+  <button class="btn btn-primary" style="background:#100C08; border-color:#100C08;">Generate this week's issue</button>
+  <button class="btn btn-secondary" style="background: var(--paper-edge);">Export to PDF</button>
+  <button class="btn btn-ghost" style="background: var(--paper-edge); color: var(--ink);">Cancel</button>
+</div>
+<div style="display: grid; grid-template-columns: max-content max-content max-content; gap: 0 18px; margin-top: 8px;">
+  <div class="cap">Primary</div>
+  <div class="cap">Secondary</div>
+  <div class="cap">Ghost</div>
+</div>
+<div class="cap-line" style="margin-top:14px; font-style:italic; color: var(--ink-3);">
+  Default · hover · pressed. No scale, no shadow, no saturation flare.
+</div>
+
+</div>
+</body>
+</html>
