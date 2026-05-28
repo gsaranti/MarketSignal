@@ -3,6 +3,17 @@
 The following reusable skills are included in MVP.
 These skills operate as structured reusable prompts with expected output schemas.
 
+## How Skills Are Used
+
+The skills form a shared analytical library available to the three analyst agents (Bull, Bear, Balanced) and to the main agent during synthesis (see [agents.md](agents.md)). They are not pipeline stages and do not all run on every report.
+
+Skills are provided through progressive disclosure:
+- Each agent first receives only the **frontmatter** of every skill — its name and a short description of what the skill does — so it knows what is available.
+- Given the research packet it is reviewing, the agent then **requests the specific skills** relevant to that packet, and the application layer supplies the full skill (the structured prompt and its expected output schema).
+- Only the requested subset is applied per report; which skills are relevant varies with current market conditions.
+
+Each skill below is listed by name with the description an agent sees in the frontmatter; the full prompt body and output schema are supplied when the skill is requested.
+
 ## Market Regime Analysis
 Determines the current market regime and the dominant forces driving market behavior.
 

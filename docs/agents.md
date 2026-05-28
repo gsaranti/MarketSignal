@@ -6,7 +6,7 @@ The pipeline is not tool-driven by the main agent. The analyst agents are requir
 
 The application layer executes external API calls and deterministic data retrieval.
 
-Agents do not directly perform unbounded API access. When deeper research is needed, the main agent creates structured research requests that the application layer executes against configured data sources.
+Agents do not directly perform unbounded API access. When deeper research is needed, the application layer executes a bounded research plan against configured data sources. That plan is produced by the fixed research-routing model, not the main agent — the main agent shapes research only indirectly, through the inputs that feed routing (prior-report context, unresolved thesis questions, and retrieved memory). See [weekly-report-workflow.md §Step 8](weekly-report-workflow.md#step-8-perform-research-routing).
 
 The end-to-end ordering of pipeline stages — including when each agent runs relative to research gathering, news filtering, and report saving — is defined in [weekly-report-workflow.md](weekly-report-workflow.md).
 
@@ -16,9 +16,8 @@ The main agent acts as the Head Market Analyst.
 
 The main agent is responsible for:
 - planning market data and research needs
-- creating structured research requests
+- surfacing unresolved thesis questions and research needs that inform research routing (the executable research plan is produced by the fixed routing model)
 - consuming curated data returned by the application layer
-- dynamically guiding research priorities
 - creating the condensed research packet
 - using relevant memory retrieved by the application layer
 - auditing prior report accuracy using report context and market evidence

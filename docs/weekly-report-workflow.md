@@ -51,7 +51,8 @@ The application checks:
 - whether the Weekly Market job is enabled
 - whether another job is already running
 - whether the Main Agent and all Analyst Agents are configured
-- whether required API tokens exist for selected model providers
+- whether the required OpenAI and Anthropic API tokens exist (both are always required — see [configuration.md §API Tokens](configuration.md#api-tokens))
+- whether the required external data provider credentials are configured
 - whether the machine has network access to required APIs and model providers
 
 If validation fails, the job does not continue. The application displays the appropriate warning state and avoids creating duplicate unresolved warnings.
@@ -59,6 +60,7 @@ If validation fails, the job does not continue. The application displays the app
 The canonical rules for each check live in:
 - enable/disable state and concurrent-job protection: [scheduling.md](scheduling.md)
 - agent model configuration and API token requirements: [configuration.md](configuration.md)
+- external data provider credential requirements: [configuration.md §External Data Provider Credentials](configuration.md#external-data-provider-credentials)
 - offline / unreachable-provider behavior: [scheduling.md §Offline Behavior](scheduling.md#offline-behavior)
 
 ## Step 2: Load Recent Report Context
@@ -69,7 +71,7 @@ Only Markdown reports are loaded for agent context. HTML reports are never loade
 
 Structured metadata may include:
 - creation timestamp
-- market regime label
+- market regime labels (risk posture and market cycle)
 - report summary
 - prior warnings or job status information
 
@@ -182,7 +184,6 @@ The news ingestion pipeline follows this bounded flow:
 → clustering
 → ~40 relevant headlines
 → ~10 important stories
-→ ~5 deeply analyzed topics
 ```
 
 The application uses a fixed low-cost model for headline filtering tasks:
@@ -193,7 +194,7 @@ The application uses a fixed low-cost model for headline filtering tasks:
 
 For the specific model used and its rationale, see [agents.md §Headline Filtering](agents.md#headline-filtering).
 
-This step reduces noise before the main agent performs deeper reasoning.
+This step reduces noise before the main agent performs deeper reasoning. The headline-filtering model's output is this bounded set of clustered important stories; selecting which of them become the ~5 deeply analyzed topics is the job of research routing ([Step 8](#step-8-perform-research-routing)), and the deep analysis itself runs in [Step 9](#step-9-perform-dynamic-and-forward-looking-research).
 
 ## Step 8: Perform Research Routing
 
@@ -213,12 +214,14 @@ The result is a bounded research plan. The research plan defines what should be 
 
 ## Step 9: Perform Dynamic and Forward-Looking Research
 
-The application executes the approved research plan against configured data sources, applies workflow limits, and returns curated evidence to the main agent.
+The application executes the bounded research plan produced in Step 8 against configured data sources, applies workflow limits, and returns curated evidence to the main agent.
 
 Workflow limits:
 - maximum 50 research requests per job
 - maximum duration of 30 minutes for the research phase
 - maximum dynamic-branching depth of 2 (a research request may spawn at most one follow-up)
+
+These limits bound the research phase, which is the only stage that can loop or branch. The remaining stages — the analyst reviews and the main agent's synthesis — are fixed single-pass runs and carry no separate overall time budget; stuck or failing model calls in any stage are handled as job failures (see [scheduling.md §Error Handling](scheduling.md#error-handling)).
 
 The research system is designed to analyze both current market conditions and known future developments that may materially impact markets over time.
 
@@ -296,6 +299,8 @@ After the research packet is created, the application runs three analyst agents:
 - Balanced Analyst
 
 Each analyst agent receives the same condensed research packet and produces structured analysis from its assigned analytical perspective.
+
+The three analyst agents are independent and run concurrently — each works only from the shared research packet, so there is no ordering dependency between them. Steps 12–14 document each analyst's review individually; their numbering is not an execution order.
 
 Analyst agent outputs are ephemeral pipeline artifacts. They are not persisted independently unless specific insights are extracted into the final report or written as durable learnings.
 

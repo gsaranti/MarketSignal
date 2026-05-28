@@ -49,17 +49,13 @@ For the non-configurable models used by fixed internal pipeline stages (headline
 
 ## API Tokens
 
-The user must provide:
+Both API tokens are always required, regardless of which models the user selects for the four agents:
 - OpenAI API token
 - Anthropic API token
 
-When a user selects a provider for an agent, the corresponding API token is required.
+Both are mandatory because the fixed internal pipeline stages always use both providers — OpenAI for headline filtering and data extraction (GPT-5 mini) and for vector-memory embeddings (`text-embedding-3-large`), and Anthropic for research routing (Claude Sonnet). See [agents.md §Fixed Internal Models](agents.md#fixed-internal-models) and [storage.md §Embeddings](storage.md#embeddings). Because the only model providers are OpenAI and Anthropic, the user's agent model selection adds no token requirement beyond these two.
 
-Examples:
-- selecting an OpenAI model requires a valid OpenAI API token
-- selecting an Anthropic model requires a valid Anthropic API token
-
-If a required token is missing:
+If either token is missing:
 - saving the configuration is disabled
 - the application displays a validation warning explaining which token is required
 
@@ -71,11 +67,13 @@ The Settings section includes credential configuration for:
 - Financial Modeling Prep
 - Tavily
 
+Of these, only the **Tavily** credential is required to run a job: Tavily is the primary research and news-ingestion system, and news gathering is a mandatory workflow step (see [weekly-report-workflow.md §Step 7](weekly-report-workflow.md#step-7-gather-and-filter-news)). The **Financial Modeling Prep** credential is optional — OpenBB is the primary financial-data layer and FMP supplies supplemental data, so a missing FMP credential degrades coverage but does not block execution.
+
 OpenBB uses configured provider credentials where required by the selected data source.
 
 FRED, BLS, and GDELT may be accessed through their publicly available APIs when supported.
 
-If a required external provider credential is missing:
+If a required external provider credential (currently the Tavily credential) is missing:
 - dependent jobs do not execute
 - manual report execution is disabled
 - the application displays a validation warning explaining which credential is missing

@@ -22,17 +22,21 @@ Stores:
 Each report stores:
 - creation timestamp
 - structured report summary metadata
-- market regime metadata
+- market regime metadata (risk posture and market cycle)
 
-The market regime metadata holds a single `market_regime` label drawn from this fixed vocabulary:
+The market regime metadata holds two labels, each drawn from a fixed vocabulary along a separate axis.
+
+`risk_posture` — the market's risk stance:
 - `risk-on`
 - `risk-off`
 - `mixed`
+
+`market_cycle` — the market's cycle stage:
 - `late-cycle`
 - `recessionary`
 - `recovery`
 
-The main agent selects the label that best fits the current regime when synthesizing the report. Free-form regime commentary belongs in the report Markdown itself (see [report-structure.md](report-structure.md)), not in the label.
+The main agent selects the label that best fits each axis when synthesizing the report. Free-form regime commentary belongs in the report Markdown itself (see [report-structure.md](report-structure.md)), not in the labels.
 
 ### Report Summary Metadata Schema
 
@@ -42,7 +46,8 @@ Required fields:
 - `report_id` — UUID for the report.
 - `report_type` — currently always `weekly_market`.
 - `created_at` — ISO-8601 timestamp.
-- `market_regime` — one of the fixed regime labels above.
+- `risk_posture` — one of the risk-posture labels above (`risk-on`, `risk-off`, `mixed`).
+- `market_cycle` — one of the market-cycle labels above (`late-cycle`, `recessionary`, `recovery`).
 - `thesis_stance` — one of: `bullish`, `bearish`, `mixed`, `uncertain`.
 - `header_summary_bullets` — array of 3–6 strings, matching the report's `## Header Summary` section.
 

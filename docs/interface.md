@@ -20,6 +20,7 @@ Market Signal
 ├── Persistent Warning Area
 │   ├── Missing agent configuration
 │   ├── Missing API tokens
+│   ├── Missing provider credentials
 │   ├── Failed jobs
 │   └── Missed scheduled jobs
 │
@@ -43,6 +44,7 @@ The operational behavior of each panel is defined in the relevant concern files:
 The Persistent Warning Area surfaces:
 - Missing agent configuration
 - Missing API tokens
+- Missing provider credentials
 - Failed jobs
 - Missed scheduled jobs
 
@@ -52,5 +54,6 @@ Dismissing a warning permanently removes it. A subsequent event in the same cate
 
 Operational triggers for each category live in their canonical homes:
 - Missing agent configuration and missing API tokens — see [configuration.md](configuration.md).
+- Missing provider credentials — see [configuration.md §External Data Provider Credentials](configuration.md#external-data-provider-credentials).
 - Failed jobs — see [scheduling.md §Offline Behavior](scheduling.md#offline-behavior) and [scheduling.md §Error Handling](scheduling.md#error-handling).
 - Missed scheduled jobs — see [scheduling.md §Missed Job Detection](scheduling.md#missed-job-detection).
