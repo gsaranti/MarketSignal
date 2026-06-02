@@ -67,13 +67,13 @@ The Settings section includes credential configuration for:
 - Financial Modeling Prep
 - Tavily
 
-Of these, only the **Tavily** credential is required to run a job: Tavily is the primary research and news-ingestion system, and news gathering is a mandatory workflow step (see [weekly-report-workflow.md §Step 7](weekly-report-workflow.md#step-7-gather-and-filter-news)). The **Financial Modeling Prep** credential is optional — OpenBB is the primary financial-data layer and FMP supplies supplemental data, so a missing FMP credential degrades coverage but does not block execution.
+Both the **Financial Modeling Prep** and **Tavily** credentials are required to run a job:
+- **Tavily** is the primary research and news-ingestion system, and news gathering is a mandatory workflow step (see [weekly-report-workflow.md §Step 7](weekly-report-workflow.md#step-7-gather-and-filter-news)).
+- **Financial Modeling Prep** is the primary financial-data source and the sole source of the baseline market-data scan — indices, market internals, sector performance (see [weekly-report-workflow.md §Step 6](weekly-report-workflow.md#step-6-gather-baseline-market-data)) — which is not optional, so a missing FMP credential blocks execution.
 
-OpenBB uses configured provider credentials where required by the selected data source.
+FRED, BLS, and GDELT are accessed through their publicly available APIs and require no user credential.
 
-FRED, BLS, and GDELT may be accessed through their publicly available APIs when supported.
-
-If a required external provider credential (currently the Tavily credential) is missing:
+If a required external provider credential (the Financial Modeling Prep or Tavily credential) is missing:
 - dependent jobs do not execute
 - manual report execution is disabled
 - the application displays a validation warning explaining which credential is missing

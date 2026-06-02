@@ -16,14 +16,6 @@ Commit to this as the spine. Concretely:
 
 Why it's load-bearing: this boundary decides the module graph, the testing strategy (agents become offline-stubbable pure functions), the data contracts (the research packet and each analyst's output schema are the API between halves), and the safety model (no unbounded agent I/O). If it were instead a tool-calling agent driving the run, the data model, the limits, and the test approach would all be different.
 
-## The sharp open bet: OpenBB forces Python into a signed macOS bundle
-
-`docs/data-sources.md` names **OpenBB** the *"primary financial-data access layer"* (prices, indices, sectors, fundamentals, earnings, metrics) with FMP *supplemental* (and walk Q3 made only the Tavily credential a hard gate, FMP optional). But OpenBB Platform is **Python-only — there is no Rust SDK.** Reaching it from a Tauri/Rust backend means either a PyInstaller'd Python **sidecar** (stdin/stdout or a localhost FastAPI via `openbb-api`) or the OpenBB REST API — both of which embed a pandas/numpy/Pydantic Python interpreter (~100–250 MB) into a signed, notarized macOS bundle. That signing path is the single hardest, currently-buggy part of the whole project: Tauri's `externalBin` notarization is broken as of issue #11992, and PyInstaller under the hardened runtime is independently fragile.
-
-Web research (2026-05) recommendation, and this brief's **proposed** commitment: for the stated three real providers (FMP, FRED, BLS) plus Tavily/GDELT, **call provider REST APIs directly from Rust with `reqwest`/`serde` and do not embed OpenBB.** OpenBB's normalization value scales with provider count; at N=3 stable APIs it buys little, while the Python-in-bundle cost is severe. The serde structs you'd write are ones you want for type safety anyway.
-
-This is flagged as an **open assumption**, not silently resolved, because it revisits a documented product decision: it elevates FMP from "supplemental" toward "primary financial source" and effectively retires OpenBB from MVP. **Audit this before the financial-data module is built.** The escape hatch if the user keeps OpenBB: adopt the *FastAPI-over-localhost sidecar* form (not stdin/stdout), bind to `127.0.0.1`, and budget real effort for inside-out codesigning. The first vertical slice (below) is deliberately kept independent of this bet so it is not blocked.
-
 ## Data model & storage
 
 Three stores, by responsibility (`docs/storage.md`):
@@ -35,7 +27,7 @@ Three stores, by responsibility (`docs/storage.md`):
 ## Module boundaries
 
 - **`app` (Rust orchestrator)** — the 17-step pipeline, the bounded research executor, the scheduler, validation/gating, and warning-state management. This is where determinism lives.
-- **`adapters` (Rust)** — `data_sources` (FMP/FRED/BLS HTTP via reqwest; Tavily + GDELT for news; OpenBB = open bet) and `models` (OpenAI + Anthropic HTTP). Fixed internal stages are pinned here: GPT-5 mini (headline filtering, data extraction), Claude Sonnet (research routing), `text-embedding-3-large` (embeddings) — non-configurable, distinct from the four user-selectable agent models.
+- **`adapters` (Rust)** — `data_sources` (FMP/FRED/BLS REST via reqwest — FMP primary; data access stays in Rust, no OpenBB/Python sidecar; Tavily + GDELT for news) and `models` (OpenAI + Anthropic HTTP). Fixed internal stages are pinned here: GPT-5 mini (headline filtering, data extraction), Claude Sonnet (research routing), `text-embedding-3-large` (embeddings) — non-configurable, distinct from the four user-selectable agent models.
 - **`agents` (prompt + schema contracts)** — main agent, Bull/Bear/Balanced analysts (run **concurrently**, no ordering dependency — walk Q6), and the **16 analyst skills as a shared library** surfaced by progressive disclosure: agents first receive each skill's frontmatter, then request the full skill (prompt + output schema) on demand from the packet (walk Q1).
 - **`frontend` (Vue 3)** — Latest Report View, Recent Reports Sidebar, Research Documents, Persistent Warning Area, Settings (`docs/interface.md`). All UI is built against the design system in `market-signal-design-system/` (its `SKILL.md` and tokens are binding per project CLAUDE.md). Markdown→HTML rendering uses **markdown-it**, which is JS — so HTML generation lives on the frontend/webview side; the backend persists the rendered HTML. Agents never see HTML.
 
@@ -45,7 +37,7 @@ The existing scaffold gives us exactly one seam to extend: the Tauri command bou
 
 A tray-resident app (closing the window must not quit it) runs a Rust timer that fires the weekly job at Sunday 9 AM local. Honesty about limits is part of the spec: jobs run only while the app is running; sleep ⇒ **missed** (never retroactively replayed); offline/unreachable provider ⇒ **failed**; a second concurrent run ⇒ **skipped** (single workflow at a time). Missed detection happens on next open by comparing last-run against the expected window. Manual execution reuses the identical workflow and validation.
 
-The **execution gate** (`docs/configuration.md`, `docs/weekly-report-workflow.md §Step 1`) blocks any run until: all four agent models are configured; **both** OpenAI and Anthropic tokens exist (always required — the fixed internal stages span both providers, walk C2); the required external credential (Tavily) is present (walk Q3); and the network is reachable. Failures surface in the **Persistent Warning Area**, which now has **five** de-duplicating categories (walk Q4): missing agent configuration, missing API tokens, missing provider credentials, failed jobs, missed scheduled jobs.
+The **execution gate** (`docs/configuration.md`, `docs/weekly-report-workflow.md §Step 1`) blocks any run until: all four agent models are configured; **both** OpenAI and Anthropic tokens exist (always required — the fixed internal stages span both providers, walk C2); the required external credentials (Tavily and FMP) are present; and the network is reachable. Failures surface in the **Persistent Warning Area**, which now has **five** de-duplicating categories (walk Q4): missing agent configuration, missing API tokens, missing provider credentials, failed jobs, missed scheduled jobs.
 
 ## Testing approach
 
@@ -53,7 +45,7 @@ The spine makes the pipeline testable offline: because agents and data adapters 
 
 ## First vertical slice: manual report, stub agent, end to end
 
-The thinnest runnable pass that exercises the load-bearing boundary without touching the OpenBB bet or live API keys:
+The thinnest runnable pass that exercises the load-bearing boundary without touching the financial-data adapters or live API keys:
 
 1. **One Tauri command** — replace the scaffold `greet` with `generate_report_manual` in `src-tauri/src/lib.rs`, wired into `invoke_handler`.
 2. **One agent stage, stubbed** — a `MainAgent` trait with a deterministic stub impl that returns a fixed structured result: a small valid report Markdown body plus a report-summary object (`report_id`, `report_type="weekly_market"`, `created_at`, `risk_posture`, `market_cycle`, `thesis_stance`, `header_summary_bullets`). This proves the structured-in/out contract that the real adapters will later satisfy.
@@ -61,4 +53,4 @@ The thinnest runnable pass that exercises the load-bearing boundary without touc
 4. **One screen** — the Vue **Latest Report View** calls the command, receives the Markdown, and renders it via markdown-it (styled with design-system tokens).
 5. **One passing test** — a Rust integration test that invokes the pipeline with the stub and asserts both the SQLite row (with `risk_posture` + `market_cycle` populated) and the `.md` file exist.
 
-This slice runs offline, instantiates the app→agent-stage→persist→render flow that the whole system is built on, and turns the architecture's central bet (deterministic orchestration around a pure agent stage) into something executable. The immediate next slices: swap the stub for a real OpenAI/Anthropic `MainAgent` adapter (and the config/token gate); persist generated HTML + add PDF export; then build out the data-source adapters (gated on the OpenBB decision).
+This slice runs offline, instantiates the app→agent-stage→persist→render flow that the whole system is built on, and turns the architecture's central bet (deterministic orchestration around a pure agent stage) into something executable. The immediate next slices: swap the stub for a real OpenAI/Anthropic `MainAgent` adapter (and the config/token gate); persist generated HTML + add PDF export; then build out the data-source adapters (FMP/FRED/BLS REST).

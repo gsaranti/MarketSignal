@@ -4,40 +4,25 @@ This file lists the external data and model providers the application depends on
 
 ## Market and Financial Data
 
-### OpenBB
-Docs - https://docs.openbb.co
-
-OpenBB acts as the primary financial-data access layer for the application.
-
-Responsibilities:
-- market prices
-- index data
-- sector data
-- company fundamentals
-- earnings data
-- financial metrics
-- standardized access to financial datasets
-
-The application uses OpenBB as the primary financial-data access layer where practical.
-
-OpenBB is used to normalize and simplify financial-data retrieval workflows across supported providers and datasets.
-
-OpenBB uses configured provider credentials where required by the selected data source.
+The application accesses market and financial data by calling provider REST APIs directly from the Rust backend (`reqwest`/`serde`). **Financial Modeling Prep** is the primary financial-data source; **FRED** and **BLS** supply macroeconomic and labor data through their public APIs.
 
 ### Financial Modeling Prep
 Docs - https://site.financialmodelingprep.com/developer/docs
 
-Financial Modeling Prep provides structured financial and market datasets.
+Financial Modeling Prep is the primary financial-data source for the application.
 
 Responsibilities:
+- market prices
+- index data (Dow, S&P 500, Nasdaq, Russell 2000)
+- market internals (VIX, dollar index, oil, natural gas, gold)
+- sector performance
 - company financials
 - earnings information
 - analyst estimates
 - market metrics
-- sector performance
-- supplemental financial data used by the agents
+- economic calendar
 
-The application uses Financial Modeling Prep directly for structured financial datasets when direct access is simpler, more complete, or required by the workflow.
+The application calls Financial Modeling Prep directly for the baseline market-data scan ([weekly-report-workflow.md §Step 6](weekly-report-workflow.md#step-6-gather-baseline-market-data)) and for company-specific financial data surfaced during research.
 
 ### FRED (Federal Reserve Economic Data)
 Docs - https://fred.stlouisfed.org/docs/api/fred/

@@ -28,7 +28,7 @@ Summary: Split the single market_regime field into two axes — risk_posture {ri
 
 ## Q3: Which external data provider credentials gate execution
 Resolved: 2026-05-28
-Summary: Only the Tavily credential gates execution (primary news/research, mandatory Step 7); FMP is optional/supplemental; OpenBB/FRED/BLS/GDELT are not user-credential-gated. Updated configuration.md §External Data Provider Credentials.
+Summary: Only the Tavily credential gates execution (primary news/research, mandatory Step 7); FMP is optional/supplemental; OpenBB/FRED/BLS/GDELT are not user-credential-gated. Updated configuration.md §External Data Provider Credentials. *(Refined 2026-06-01 by OA2: after OpenBB was dropped, FMP became the sole source of the non-optional baseline scan and now gates execution too.)*
 
 ## Q4: Where missing-external-credential warnings surface in the UI
 Resolved: 2026-05-28
@@ -41,3 +41,11 @@ Summary: Fail-soft — an unparseable document is skipped and logged, the job co
 ## Q6: Analyst-agent execution order and overall job time budget
 Resolved: 2026-05-28
 Summary: The three analyst agents run concurrently (independent, shared packet; Steps 12–14 numbering is not an order). No overall job timeout beyond the Step 9 research-phase cap — analyst/synthesis are fixed single-pass stages, and stuck calls are handled by Error Handling. Updated weekly-report-workflow.md Steps 9 and 11.
+
+## OA1: OpenBB (primary financial layer) vs. calling provider REST APIs directly
+Resolved: 2026-06-01
+Summary: Dropped OpenBB from the MVP. OpenBB Platform is Python-only (no Rust SDK), so it would force a ~100–250 MB Python sidecar into the signed/notarized macOS bundle — the project's riskiest packaging surface — while buying little: its value is cross-provider normalization, which is negligible at three providers of disjoint responsibility (FMP markets, FRED macro, BLS labor). The app calls FMP/FRED/BLS REST directly from Rust (`reqwest`/`serde`); FMP is the primary financial-data source, FRED/BLS macro via public APIs. Updated data-sources.md (FMP primary; OpenBB noted as evaluated-not-adopted) and .metis/BUILD.md (resolved the open bet).
+
+## OA2: Does the FMP credential gate execution
+Resolved: 2026-06-01
+Summary: Yes — refines walk Q3. With OpenBB gone, FMP is the sole source of the non-optional Step 6 baseline market-data scan, so a missing FMP credential now blocks a run alongside Tavily (FMP was previously optional/supplemental). Updated configuration.md §External Data Provider Credentials.
