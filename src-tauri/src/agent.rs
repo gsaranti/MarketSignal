@@ -191,6 +191,12 @@ patience over conviction in either direction.
 The weight of evidence supports neither a clean bullish nor a clean bearish
 stance. We favor balance, with explicit triggers that would move the thesis.
 
+## Retrospective Audit
+
+With no prior Market Signal reports on record yet, there is nothing to audit
+this week; subsequent reports will revisit whether these assumptions and risks
+played out as anticipated.
+
 ## Investment Strategy
 
 Positioning favors balance over conviction: quality, cash-generative leaders

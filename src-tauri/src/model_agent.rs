@@ -118,6 +118,7 @@ Produce the report body as GitHub-flavored Markdown with these sections, in orde
 - ## Index Picture — Dow, S&P 500, Nasdaq
 - ## Key Market Drivers
 - ## Market Signal Thesis — the unified thesis and the conditions that would change it
+- ## Retrospective Audit — how prior reports' assumptions and risks held up against market evidence; this section is dynamic — include it only when there is prior-report context to audit, and keep it brief or omit it otherwise rather than inventing one
 - ## Investment Strategy — frame where risk and reward look asymmetric; never give buy/sell instructions
 - ## Forward Outlook
 - ## Watchlist
@@ -185,10 +186,11 @@ fn response_envelope_schema() -> Value {
     })
 }
 
-/// Anthropic Messages API request: a single forced tool whose `input_schema` is
-/// the envelope. `cache_control` on the system block is correct placement for
-/// when the condensed packet grows the prefix past Opus's ~4096-token cache
-/// minimum; below that it is a no-op, not an error.
+/// Anthropic Messages API request: a single forced tool, with strict schema
+/// validation, whose `input_schema` is the envelope (parity with the OpenAI
+/// arm's strict json_schema). `cache_control` on the system block is correct
+/// placement for when the condensed packet grows the prefix past Opus's
+/// ~4096-token cache minimum; below that it is a no-op, not an error.
 fn build_anthropic_request(model_id: &str, system: &str, schema: &Value) -> Value {
     json!({
         "model": model_id,
@@ -200,6 +202,7 @@ fn build_anthropic_request(model_id: &str, system: &str, schema: &Value) -> Valu
             {
                 "name": TOOL_NAME,
                 "description": "Emit the finished weekly market report and its structured summary.",
+                "strict": true,
                 "input_schema": schema
             }
         ],
@@ -413,6 +416,7 @@ mod tests {
         assert_eq!(body["tool_choice"]["type"], "tool");
         assert_eq!(body["tool_choice"]["name"], TOOL_NAME);
         assert_eq!(body["tools"][0]["name"], TOOL_NAME);
+        assert_eq!(body["tools"][0]["strict"], true);
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
     }
 
