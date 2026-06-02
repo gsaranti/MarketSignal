@@ -11,6 +11,18 @@
 This project has a design package at `./market-signal-design-system/`.
 It is the source of truth for all UI decisions — tokens, components, voice, motion, layout posture.
 
+Robustness, accessibility, and cross-component composition are handled by a
+separate, brand-neutral skill, `frontend-craft`. Apply it on all UI work in
+this project — building, editing, or reviewing. The division is strict: the
+design package is the source of truth for **appearance** (what things look
+like); `frontend-craft` governs **completeness and robustness** (every
+interaction and data state, keyboard and screen-reader access, contrast,
+responsive/resize behavior, overflow, and how components align and cohere
+when placed together). `frontend-craft` never picks colors, type, spacing, or
+motion character — when it calls for a state the design package doesn't define
+(a disabled or error treatment, resize behavior, a section seam), don't invent
+an off-system look: extend the package per step 5 below.
+
 When working on any UI task:
 
 1. Start by reading `market-signal-design-system/README.md` (written
