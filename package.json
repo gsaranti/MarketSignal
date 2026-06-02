@@ -10,6 +10,9 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@fontsource/public-sans": "^5.2.7",
+    "@fontsource/source-serif-4": "^5.2.9",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "markdown-it": "^14.2.0",

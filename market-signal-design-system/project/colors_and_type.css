@@ -10,7 +10,10 @@
      - IBM Plex Mono    (optional, for very dense numeric tables)
    ========================================================================== */
 
-@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+/* Fonts are self-hosted locally by the consuming app (see src/main.ts, which
+   imports the @fontsource weight files) to honor Market Signal's local-first
+   constraint. The previous remote Google Fonts @import was removed because it
+   fetched typefaces over the network on every launch. */
 
 :root {
   /* --- Colors ------------------------------------------------------------- */
