@@ -2,30 +2,34 @@
 
 ## What happened
 
-Shipped **scheduler slice 1 — the deterministic job-lifecycle core**, on the existing manual run path. Committed **`14fbada` (feature)** + **`b3788e4` (docs)**, both pushed to `origin/main`. New `src-tauri/src/jobs.rs` owns the lifecycle: a single-workflow **`RunGuard`** (`Arc<AtomicBool>`, `try_begin`→`RunToken` whose Drop frees the slot — 2nd run ⇒ **Skipped**); a **Tauri-free `run_job`** orchestrator that records every outcome to a new **`job_runs`** table; and **`failure_warning`**, which surfaces the non-blocking **`FailedJob`** category into the Persistent Warning Area (cleared on the next successful run). `check_configuration` now merges that warning in (gained `app: AppHandle`); `generate_report_manual` routes through `run_job` via a managed guard.
+Ran the deferred `tauri dev` smoke that last session flagged, **closing slice 1's verification gap** — slice 1 (shipped last session, `14fbada`/`b3788e4`) is now runtime-verified, not just unit-tested. All three job-lifecycle behaviors confirmed end-to-end via GUI screenshots **and** direct DB queries:
 
-Two reviews passed: **Metis `approve-with-nits`** (unused `MainAgentInput` import — fixed) and **Codex** (clippy `large_enum_variant` on `JobOutcome::Successful(GeneratedReport)` — fixed by boxing the variant). Codex's catch exposed that test-only verification missed clippy, so a **Verification** section was added to `CLAUDE.md`/`AGENTS.md` and a **Development** section to the README, naming the canonical set (`cargo test` + `cargo clippy --all-targets --all-features` + `npm run build`).
+- **Gate row:** launch with `TAVILY_API_KEY` unset → exactly one "Provider credentials — Tavily" warning row, Generate disabled.
+- **Failed row:** gate-passing config + a bogus OpenAI key → click Generate → provider 401 → recorded `Failed` (`job_runs id=1`, no `report_id`) → "Last job failed" row appears via the post-run `refreshValidation`.
+- **Clear-on-success:** real-key `gpt-5-mini` run → the failed row persists on next launch (DB-driven), then a successful run clears it (`job_runs id=2 successful`, `reports` 2→3, new `.md` on disk).
+
+Two carried open questions are now **live-confirmed**: same-day `.md` collision (two `2026-06-03` report rows but one file on disk — the later run overwrote the earlier's markdown) and UTC-vs-local (warning row showed `…22:17:25+00:00` while local time was 15:17).
 
 ## Current state
 
-Working tree clean; both commits pushed. Verified: `cargo test` (26 lib pass / 1 ignored live + `generate_report` + 3 `job_lifecycle`), `cargo clippy --all-targets --all-features` clean, `npm run build` clean. Slice produces **Successful / Failed / Skipped** on the manual path; **`Missed`/`MissedScheduledJob` are NOT produced** (deferred to slice 2).
+No code changed this session (verification + decisions only); **working tree clean, no new commits.** The app DB is no longer pristine — the smoke appended a `job_runs` table (1 `failed` bogus-key row + 1 `successful`) and a 3rd report (`1ca71d1f`); the failed row is harmless, already-cleared, non-blocking history.
 
-**One verification still unexercised:** manual `npm run tauri dev` was not run — both the gate's "unset an env var → warning row" check and the new "forced failure → `FailedJob` row in the warning area" check.
+**Decision (user):** scheduler slice 2 first, **UI/design pass as a separate follow-up slice.** That new slice's scope — all routed through the design system + `frontend-craft`, plan first: condense the warning-row provider error + expandable detail (it overflowed ~10 wrapped lines), de-dup the failure text (warning row vs. red report-area error show the same string), add a dismiss affordance (closes the FailedJob-dismissal question), and "MarketSignal" → "Market Signal" in window chrome.
 
-Deferred slices: **scheduler slice 2 (live timer)** — now the lead; **HTML persistence + PDF**; **`list_reports`**; **FMP/FRED/BLS data-source adapters** (would ground the empty `MainAgentInput`).
+Deferred slices, in order: **scheduler slice 2 (live timer)** — lead; **UI/design pass**; **HTML persistence + PDF**; **`list_reports`** (sidebar shows "No reports yet" under a "Last 30" header despite persisted reports until this lands); **FMP/FRED/BLS adapters** (would ground the empty `MainAgentInput`).
 
 ## Open questions
 
-- **Agent-construction failure isn't a recorded Failed job** — `ModelMainAgent::new` is built in `spawn_blocking` *before* `run_job`, so a build failure surfaces inline but writes no `job_runs` row / `FailedJob` warning. Report-generation failures *are* captured. Low risk now (`new` only builds an HTTP client); revisit in slice 2. *(new)*
-- **FailedJob dismissal** — shipped rule is "clears on next successful run"; no DB-backed dismiss, and `PersistentWarningArea.vue` has no dismiss control. Spec (`interface.md`) wants dismissible warnings. *(new)*
-- **Network reachability** (Step-1 gate pre-check) — a run that fails offline is now captured as a Failed job, but the *proactive* pre-check is still not done. *(carried, partially addressed)*
-- **Same-day filename collision** — `pipeline.rs:54` writes a date-based canonical `.md`, so two same-day runs overwrite the file while inserting separate DB rows. Rides with slice 2's local-time schedule model. Sibling to [[utc-vs-local-report-date]]. *(carried)*
-- **UTC-vs-local report date** — `created_at` + filename, and now `job_runs` timestamps, are `Utc`-derived; decide with slice 2. ([[utc-vs-local-report-date]]) *(carried)*
+- **Agent-construction failure isn't a recorded Failed job** — still unexercised; the smoke's forced failure was a *post-construction* generate 401 (the captured path), so the `ModelMainAgent::new`-fails-before-`run_job` path remains unverified. Low risk (`new` only builds an HTTP client); revisit slice 2. *(carried)*
+- **FailedJob dismissal** — now slated into the UI/design-pass slice (add a dismiss control); `interface.md` wants dismissible warnings. *(carried, slated)*
+- **Network reachability** (Step-1 gate pre-check) — offline runs are captured as Failed, but the *proactive* pre-check is still not done. *(carried)*
+- **Same-day filename collision** — `pipeline.rs:54` writes a date-based canonical `.md`; **confirmed live** this session (two same-day rows, one file). Rides with slice 2's local-time model. Sibling to [[utc-vs-local-report-date]]. *(carried, confirmed)*
+- **UTC-vs-local report date** — `created_at` + filename + `job_runs` timestamps are `Utc`-derived and now **confirmed user-visible** in the warning UI; decide with slice 2. ([[utc-vs-local-report-date]]) *(carried, confirmed)*
 - **Env-slug vs display-name drift** — gate parses config slugs; align with `docs/configuration.md` display names when a Settings store replaces the env substrate. *(carried)*
 - **HTML-persistence path (Step 17)** — how rendered HTML returns to the backend for SQLite; lands with the HTML/PDF slice. *(carried)*
 
-*(Resolved this session: the concurrent-run guard — now `RunGuard`.)*
+*(Resolved this session: slice 1's verification gap — the deferred `tauri dev` smoke.)*
 
 ## Where to start
 
-Run `/metis-plan-task` for **scheduler slice 2 — the live timer**: the tokio **Sunday 9 AM local** timer, **tray runtime** (close ≠ quit), **missed-job detection + `MissedScheduledJob` production**, the **status / enable-disable UI**, and the **UTC-vs-local** + **same-day-filename** decisions that converge there. First, close slice 1's gap by running the deferred manual `tauri dev` smoke (forced failure → `FailedJob` row). Alternatives if deferring the timer: **data-source adapters**, **HTML persistence + PDF**, or **`list_reports`**.
+Run `/metis-plan-task` for **scheduler slice 2 — the live timer**: tokio **Sunday 9 AM local** timer, **tray runtime** (close ≠ quit), **missed-job detection + `MissedScheduledJob` production**, the **status / enable-disable UI**, and the converging **UTC-vs-local** + **same-day-filename** decisions (both now confirmed live). No pre-work needed — slice 1 is verified. Queued right after: the **UI/design pass** slice.
