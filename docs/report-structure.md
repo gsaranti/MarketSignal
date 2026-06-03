@@ -80,8 +80,6 @@ The report should emphasize the topics most materially affecting the market at t
 
 ## Market Signal Thesis
 
-This section may also include retrospective evaluation of prior reports when meaningful thesis confirmations, failures, or analytical mistakes occurred.
-
 The primary market thesis synthesized by the Head Market Analyst after evaluating:
 - market data,
 - research,
