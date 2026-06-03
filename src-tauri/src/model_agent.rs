@@ -318,21 +318,14 @@ impl ModelMainAgent {
         Ok(Self { config, http })
     }
 
-    /// Resolve the adapter from the environment. Stand-in for the Settings-backed
-    /// config store, which lands with the execution-gate slice; not the gate
-    /// itself — just enough for the command to function.
+    /// Resolve the adapter from the environment. Delegates to the single
+    /// env-reading path in `config::AppConfig` so the gate and the adapter agree
+    /// on variable names and wording; used by the live smoke and any caller that
+    /// bypasses the gate. The execution gate itself (`config::validate`) runs
+    /// ahead of this in the command and replaces a missing model/key with
+    /// structured validation rather than this plain error.
     pub fn from_env() -> Result<Self> {
-        let label = std::env::var("MARKET_SIGNAL_MAIN_AGENT_MODEL").map_err(|_| {
-            anyhow!("MARKET_SIGNAL_MAIN_AGENT_MODEL is not set (e.g. claude-opus, gpt-5)")
-        })?;
-        let model = AgentModel::from_config_label(&label)?;
-        let key_var = match model.provider() {
-            Provider::OpenAi => "OPENAI_API_KEY",
-            Provider::Anthropic => "ANTHROPIC_API_KEY",
-        };
-        let api_key = std::env::var(key_var)
-            .map_err(|_| anyhow!("{key_var} is not set (required for the {label} main agent)"))?;
-        Self::new(MainAgentConfig { model, api_key })
+        Self::new(crate::config::AppConfig::from_env().main_agent_config()?)
     }
 
     fn call(&self, provider: Provider, body: &Value) -> Result<Value> {

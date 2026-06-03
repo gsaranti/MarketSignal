@@ -20,3 +20,16 @@ export interface GeneratedReport {
   markdown_path: string;
   summary: ReportSummary;
 }
+
+// Mirrors the Rust `config::ValidationReport` / `WarningCategory` returned by
+// the `check_configuration` command and used to gate report generation.
+export interface WarningCategory {
+  kind: string;
+  title: string;
+  items: string[];
+}
+
+export interface ValidationReport {
+  categories: WarningCategory[];
+  is_blocked: boolean;
+}

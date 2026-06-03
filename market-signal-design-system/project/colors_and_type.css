@@ -313,6 +313,17 @@ html, body {
 }
 .btn-ghost:hover  { color: var(--ink); background: var(--paper-soft); }
 
+/* Disabled — every variant drops out of emphasis into a muted, inert control:
+   an inset-well fill, low-contrast ink, hairline edge, not-allowed cursor. On
+   the macOS WebKit target a disabled button receives no hover, so the variant
+   hover rules above never fight this one. */
+.btn:disabled {
+  cursor: not-allowed;
+  background: var(--paper-edge);
+  color: var(--ink-3);
+  border-color: var(--hairline);
+}
+
 .btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;

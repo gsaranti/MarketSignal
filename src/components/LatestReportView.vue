@@ -7,6 +7,7 @@ const props = defineProps<{
   report: GeneratedReport | null;
   generating: boolean;
   error: string | null;
+  blocked?: boolean;
 }>();
 
 defineEmits<{ (e: "generate"): void }>();
@@ -27,7 +28,12 @@ const renderedHtml = computed(() =>
       <div class="toolbar-actions">
         <button
           class="btn btn-primary"
-          :disabled="generating"
+          :disabled="generating || props.blocked"
+          :title="
+            props.blocked
+              ? 'Resolve the configuration warnings above to generate a report'
+              : undefined
+          "
           @click="$emit('generate')"
         >
           {{ generating ? "Generating…" : "Generate report" }}
