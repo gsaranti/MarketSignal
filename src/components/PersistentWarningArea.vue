@@ -30,7 +30,7 @@ function formatItems(items: string[]): string {
   <section
     v-if="visible"
     class="warning-area"
-    aria-label="Active configuration warnings"
+    aria-label="Active warnings"
     aria-live="polite"
   >
     <ul class="warning-list">

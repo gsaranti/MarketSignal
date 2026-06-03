@@ -21,8 +21,10 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection> {
     Ok(Connection::open(db_path)?)
 }
 
-/// Create the `reports` table if it does not exist. HTML, job-history, and
-/// warning-state tables are intentionally out of scope for this slice.
+/// Create the application tables if they do not exist: `reports` (one row per
+/// generated report) and `job_runs` (one row per job lifecycle outcome, owned by
+/// the scheduler/orchestration layer — see `jobs`). HTML and warning-state
+/// tables remain out of scope for now. Idempotent, so any run path can call it.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS reports (
@@ -34,6 +36,18 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             thesis_stance TEXT NOT NULL,
             markdown_path TEXT NOT NULL,
             summary_json  TEXT NOT NULL
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS job_runs (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_type     TEXT NOT NULL,
+            state        TEXT NOT NULL,
+            started_at   TEXT NOT NULL,
+            finished_at  TEXT NOT NULL,
+            report_id    TEXT,
+            detail       TEXT
         )",
         [],
     )?;
