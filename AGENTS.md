@@ -6,6 +6,18 @@
 - **Native APIs:** use `@tauri-apps/api/*` packages; never reach for browser File/Notification APIs when a Tauri equivalent exists
 - **Backend communication:** Tauri `invoke()`, not `fetch()` to a local server
 
+## Verification
+
+Before committing or marking a slice done, run the full set — not a subset
+(a clippy lint once slipped past test-only verification):
+
+- **Backend:** `cd src-tauri && cargo test`, and `cargo clippy --all-targets
+  --all-features`. Both the build and clippy are kept warning-free.
+- **Frontend:** `npm run build` (runs `vue-tsc --noEmit` type-check + Vite build).
+
+When a Metis plan's verification command touches Rust, name clippy alongside
+`cargo test` so the review step runs it too.
+
 ## Design system
 
 This project has a design package at `./market-signal-design-system/`.

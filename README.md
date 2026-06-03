@@ -37,6 +37,16 @@ Build a production bundle:
 npm run tauri build
 ```
 
+## Development
+
+Run the checks before committing a change:
+
+```bash
+npm run build                                 # frontend: vue-tsc type-check + Vite build
+cd src-tauri && cargo test                    # backend tests
+cargo clippy --all-targets --all-features     # backend lint — kept warning-free
+```
+
 ## Documentation
 
 The product and architecture are specified in [`docs/`](docs/), indexed by [`docs/README.md`](docs/README.md).
