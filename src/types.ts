@@ -3,8 +3,8 @@
 
 // Which main surface is showing. A plain string union driving a ref switch in
 // App.vue (no router) — the app has a small, fixed set of destinations. Archive
-// and Settings join the union as their slices land.
-export type AppView = "report" | "inbox";
+// joins the union as its slice lands.
+export type AppView = "report" | "inbox" | "settings";
 
 export interface ReportSummary {
   report_id: string;
@@ -62,4 +62,49 @@ export interface JobStatus {
   last_failed_at: string | null;
   last_failure_detail: string | null;
   last_skipped_at: string | null;
+}
+
+// Mirrors the Rust `settings::*` structs (docs/configuration.md). The Settings
+// view shows the four agent model selections and, per credential, only whether
+// one is configured — the raw key never leaves the backend (settings.rs).
+
+// One option in the model dropdown, sourced from the Rust `AgentModel` so slugs
+// and display names have a single backend home.
+export interface ModelOption {
+  slug: string;
+  label: string;
+  provider: string; // "OpenAI" | "Anthropic" — used to group the dropdown
+}
+
+// The four agent slots' current model slugs ("" when unset). Round-trips: the
+// form pre-selects these and submits them back to `save_settings`.
+export interface AgentModels {
+  main: string;
+  bull: string;
+  bear: string;
+  balanced: string;
+}
+
+// Whether each credential is configured — never the value itself.
+export interface CredentialStatus {
+  openai: boolean;
+  anthropic: boolean;
+  fmp: boolean;
+  tavily: boolean;
+}
+
+// Returned by `get_settings`.
+export interface SettingsView {
+  models: AgentModels;
+  credentials: CredentialStatus;
+  available_models: ModelOption[];
+}
+
+// The credential half of a `save_settings` submission. A field is set only when
+// the user entered a new value; null/"" leaves the stored secret unchanged.
+export interface CredentialUpdate {
+  openai: string | null;
+  anthropic: string | null;
+  fmp: string | null;
+  tavily: string | null;
 }

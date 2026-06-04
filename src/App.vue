@@ -6,13 +6,17 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import RecentReportsSidebar from "./components/RecentReportsSidebar.vue";
 import LatestReportView from "./components/LatestReportView.vue";
 import ResearchInbox from "./components/ResearchInbox.vue";
+import Settings from "./components/Settings.vue";
 import PersistentWarningArea from "./components/PersistentWarningArea.vue";
 import JobStatusPanel from "./components/JobStatusPanel.vue";
 import type {
   AppView,
+  AgentModels,
+  CredentialUpdate,
   GeneratedReport,
   JobStatus,
   ResearchDocument,
+  SettingsView,
   ValidationReport,
 } from "./types";
 
@@ -39,6 +43,13 @@ const validationError = ref<string | null>(null);
 const jobStatus = ref<JobStatus | null>(null);
 const jobStatusError = ref<string | null>(null);
 const jobBusy = ref(false);
+
+// Settings state lives here alongside the other surfaces' state; the Settings
+// view is presentational. One `settingsError` carries both load and save errors.
+const settings = ref<SettingsView | null>(null);
+const settingsLoading = ref(false);
+const settingsSaving = ref(false);
+const settingsError = ref<string | null>(null);
 
 // The gate blocks generation when configuration is incomplete. The backend is
 // the authoritative guard; this only disables the control and short-circuits.
@@ -136,6 +147,55 @@ async function revealInbox() {
   }
 }
 
+async function refreshSettings() {
+  settingsLoading.value = true;
+  settingsError.value = null;
+  try {
+    settings.value = await invoke<SettingsView>("get_settings");
+  } catch (e) {
+    settingsError.value = String(e);
+  } finally {
+    settingsLoading.value = false;
+  }
+}
+
+async function saveSettings(payload: {
+  models: AgentModels;
+  credentials: CredentialUpdate;
+}) {
+  settingsSaving.value = true;
+  settingsError.value = null;
+  try {
+    await invoke("save_settings", payload);
+  } catch (e) {
+    // Set the error before clearing `saving` so the Settings view's saved-edge
+    // watch sees a failure and doesn't flash "Saved".
+    settingsError.value = String(e);
+    settingsSaving.value = false;
+    return;
+  }
+  settingsSaving.value = false;
+  // Re-read settings (resets the form baseline and flips credential placeholders
+  // to "saved") and re-check config so completing the gate clears the warnings.
+  void refreshSettings();
+  void refreshValidation();
+}
+
+// Switch surfaces. Fetch settings on entry so the configured-flags and model
+// selections are fresh each time the view is opened.
+function navigate(next: AppView) {
+  view.value = next;
+  if (next === "settings") void refreshSettings();
+}
+
+// Manual generation triggered from Settings: jump to the report view so the user
+// watches it render (and sees any error there), then run the same flow the
+// report-view button uses.
+function generateFromSettings() {
+  view.value = "report";
+  void generate();
+}
+
 const unlisteners: UnlistenFn[] = [];
 
 onMounted(async () => {
@@ -144,6 +204,9 @@ onMounted(async () => {
   // Load the inbox up front so the sidebar badge is populated even on the report
   // view, before the user ever opens the inbox.
   void refreshDocuments();
+  // Load settings up front so the gate's config state is known on first paint
+  // (the report view's Generate button depends on it via the warning area).
+  void refreshSettings();
   // The background scheduler emits this when a scheduled run finishes (or when it
   // detects an overslept window), so an open window reflects the new state
   // without a manual refresh. A successful run carries its report so the Latest
@@ -181,7 +244,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
       :report="report"
       :view="view"
       :inbox-count="inboxCount"
-      @navigate="view = $event"
+      @navigate="navigate"
     />
     <div class="main-column">
       <PersistentWarningArea :report="validation" :error="validationError" />
@@ -195,12 +258,26 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           @generate="generate"
         />
         <ResearchInbox
-          v-else
+          v-else-if="view === 'inbox'"
           :documents="documents"
           :loading="documentsLoading"
           :error="documentsError"
           @delete="deleteDocument"
           @reveal="revealInbox"
+        />
+        <Settings
+          v-else-if="view === 'settings'"
+          :settings="settings"
+          :loading="settingsLoading"
+          :saving="settingsSaving"
+          :error="settingsError"
+          :job-enabled="jobStatus?.enabled ?? null"
+          :job-busy="jobBusy"
+          :blocked="blocked"
+          :generating="generating"
+          @save="saveSettings"
+          @set-enabled="setJobEnabled"
+          @generate="generateFromSettings"
         />
       </div>
       <JobStatusPanel

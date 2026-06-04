@@ -37,6 +37,17 @@ pub enum Provider {
     Anthropic,
 }
 
+impl Provider {
+    /// Human-readable provider name, for grouping the Settings model dropdown
+    /// (`docs/configuration.md §Agent Model Configuration`).
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Provider::OpenAi => "OpenAI",
+            Provider::Anthropic => "Anthropic",
+        }
+    }
+}
+
 /// The five user-selectable Main Agent models (`docs/configuration.md §Agent
 /// Model Configuration`). Each resolves to a provider and the provider's API
 /// model-id string.
@@ -50,6 +61,17 @@ pub enum AgentModel {
 }
 
 impl AgentModel {
+    /// Every selectable model, in display order (OpenAI first, then Anthropic).
+    /// The single source for the Settings dropdown's options so the frontend
+    /// never hard-codes the slug/display-name pairing.
+    pub const ALL: [AgentModel; 5] = [
+        Self::Gpt5,
+        Self::Gpt5Mini,
+        Self::ClaudeOpus,
+        Self::ClaudeSonnet,
+        Self::ClaudeHaiku,
+    ];
+
     /// Parse the config-facing slug (the value carried in
     /// `MARKET_SIGNAL_MAIN_AGENT_MODEL`). Distinct from `model_id`, which is the
     /// provider's wire string.
@@ -82,6 +104,30 @@ impl AgentModel {
             Self::ClaudeOpus => "claude-opus-4-8",
             Self::ClaudeSonnet => "claude-sonnet-4-6",
             Self::ClaudeHaiku => "claude-haiku-4-5",
+        }
+    }
+
+    /// The config-facing slug — the inverse of `from_config_label`. Persisted in
+    /// `app_settings` and offered as the Settings dropdown's option value.
+    pub fn config_label(&self) -> &'static str {
+        match self {
+            Self::Gpt5 => "gpt-5",
+            Self::Gpt5Mini => "gpt-5-mini",
+            Self::ClaudeOpus => "claude-opus",
+            Self::ClaudeSonnet => "claude-sonnet",
+            Self::ClaudeHaiku => "claude-haiku",
+        }
+    }
+
+    /// Human-readable model name for the Settings UI (`docs/configuration.md
+    /// §Agent Model Configuration`).
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Gpt5 => "GPT-5",
+            Self::Gpt5Mini => "GPT-5 mini",
+            Self::ClaudeOpus => "Claude Opus",
+            Self::ClaudeSonnet => "Claude Sonnet",
+            Self::ClaudeHaiku => "Claude Haiku",
         }
     }
 }
@@ -400,6 +446,23 @@ mod tests {
             assert_eq!(m.model_id(), model_id, "{label}");
         }
         assert!(AgentModel::from_config_label("bogus").is_err());
+    }
+
+    #[test]
+    fn all_models_round_trip_label_and_carry_a_display_name() {
+        // ALL is the Settings option source: every entry's slug must parse back
+        // to itself, and provider display names cover both providers.
+        for m in AgentModel::ALL {
+            assert_eq!(
+                AgentModel::from_config_label(m.config_label()).unwrap(),
+                m,
+                "{}",
+                m.config_label()
+            );
+            assert!(!m.display_name().is_empty());
+        }
+        assert_eq!(AgentModel::Gpt5.provider().display_name(), "OpenAI");
+        assert_eq!(AgentModel::ClaudeOpus.provider().display_name(), "Anthropic");
     }
 
     #[test]
