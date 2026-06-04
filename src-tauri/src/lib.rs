@@ -3,14 +3,17 @@ pub mod config;
 pub mod jobs;
 pub mod model_agent;
 pub mod pipeline;
+pub mod research;
 pub mod schedule;
 pub mod storage;
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, WindowEvent};
+use tauri_plugin_opener::OpenerExt;
 
 use config::{AppConfig, ValidationReport};
 use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
@@ -67,6 +70,18 @@ fn report_paths(app: &tauri::AppHandle) -> Result<ReportPaths, String> {
         db_path: data_dir.join("market_signal.db"),
         reports_dir: data_dir.join("reports"),
     })
+}
+
+/// The research-inbox folder under the app data directory
+/// (`docs/research-documents.md`). Resolved here alongside `report_paths` so the
+/// whole app-data layout stays defined in one place. The matching
+/// `research-archive` folder is the next slice's concern and is not resolved yet.
+fn research_inbox_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("resolving app data directory: {e}"))?;
+    Ok(data_dir.join("research-inbox"))
 }
 
 /// Manually generate a Weekly Market Report end to end. The execution gate runs
@@ -154,6 +169,39 @@ fn job_status(
 fn set_job_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let conn = open_app_db(&app)?;
     jobs::set_weekly_job_enabled(&conn, enabled).map_err(|e| e.to_string())
+}
+
+/// List the user-supplied documents currently in the research inbox
+/// (`docs/research-documents.md`). A fresh install with no inbox folder yet lists
+/// as empty rather than erroring; the frontend renders the empty state.
+#[tauri::command]
+fn list_research_inbox(app: tauri::AppHandle) -> Result<Vec<research::ResearchDocument>, String> {
+    let inbox = research_inbox_dir(&app)?;
+    research::list_inbox(&inbox).map_err(|e| e.to_string())
+}
+
+/// Delete one document from the research inbox by file name
+/// (`docs/research-documents.md` §User Permissions — the user may delete from the
+/// inbox). The name is validated as a bare file name in `research::` so it cannot
+/// escape the inbox directory.
+#[tauri::command]
+fn delete_research_document(app: tauri::AppHandle, name: String) -> Result<(), String> {
+    let inbox = research_inbox_dir(&app)?;
+    research::delete_inbox_document(&inbox, &name).map_err(|e| e.to_string())
+}
+
+/// Open the research-inbox folder in the OS file manager so the user can drop
+/// documents into it (the spec's canonical interaction — the user manually places
+/// files; `docs/research-documents.md` §Research Inbox). The folder is created on
+/// demand so a first-time reveal lands somewhere real.
+#[tauri::command]
+fn reveal_research_inbox(app: tauri::AppHandle) -> Result<(), String> {
+    let inbox = research_inbox_dir(&app)?;
+    std::fs::create_dir_all(&inbox)
+        .map_err(|e| format!("creating research inbox directory: {e}"))?;
+    app.opener()
+        .open_path(inbox.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| format!("opening research inbox: {e}"))
 }
 
 /// Debug-only schedule override: when `MARKET_SIGNAL_SCHEDULE_OVERRIDE` is set to
@@ -305,7 +353,10 @@ pub fn run() {
             generate_report_manual,
             check_configuration,
             job_status,
-            set_job_enabled
+            set_job_enabled,
+            list_research_inbox,
+            delete_research_document,
+            reveal_research_inbox
         ])
         .setup(|app| {
             // Tray runtime: the app stays resident so scheduled jobs keep running
