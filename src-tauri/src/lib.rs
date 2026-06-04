@@ -284,6 +284,18 @@ fn log_scheduler(message: String) {
     eprintln!("scheduler: {message}");
 }
 
+/// Reveal and focus every window. Shared by the tray "Show" menu item and the
+/// macOS Dock-icon reopen handler — both undo the hide-to-tray performed on
+/// window close. `set_focus` no-ops on a hidden or minimized window (and it
+/// activates the app itself), so unminimize and show first, then focus.
+fn restore_windows(app: &tauri::AppHandle) {
+    for window in app.webview_windows().values() {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -307,35 +319,15 @@ pub fn run() {
                 .tooltip("Market Signal")
                 .menu(&menu)
                 .show_menu_on_left_click(true)
-                // KNOWN BUG — session pickup point: on macOS these tray-menu
-                // clicks never reach this handler. The menu renders with the
-                // right items, but neither this handler nor an app-level
-                // `Builder::on_menu_event` fires on a click. `CloseRequested`
-                // (below) fires fine, so general event wiring is live. Retaining
-                // the TrayIcon handle (tauri#11462, applied below) did not fix
-                // it; root cause still open. Verified live 2026-06-03.
-                .on_menu_event(|app, event| {
-                    match event.id.as_ref() {
-                        "show" => {
-                            // macOS activates at the app level — window.show()
-                            // alone can leave the app backgrounded — so bring the
-                            // app forward first, then restore every window.
-                            #[cfg(target_os = "macos")]
-                            let _ = app.show();
-                            for window in app.webview_windows().values() {
-                                let _ = window.unminimize();
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
-                        "quit" => app.exit(0),
-                        _ => {}
-                    }
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => restore_windows(app),
+                    "quit" => app.exit(0),
+                    _ => {}
                 })
                 .build(app)?;
             // Keep the TrayIcon alive for the app's lifetime: a dropped handle
             // severs menu-event delivery — the icon still draws, but clicks reach
-            // no handler (tauri-apps/tauri#11462). This was the bug.
+            // no handler (tauri-apps/tauri#11462).
             app.manage(tray);
 
             // Start the Sunday-9AM-local timer.
@@ -350,6 +342,20 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // macOS: clicking the Dock icon asks the app to reopen. When the
+            // window has been hidden to the tray on close there are no visible
+            // windows, so restore them — matching the tray "Show" menu item.
+            // (Reopen is macOS-only; other platforms never emit it.)
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } = event
+            {
+                restore_windows(app);
+            }
+        });
 }
