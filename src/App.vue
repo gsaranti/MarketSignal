@@ -5,13 +5,33 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import RecentReportsSidebar from "./components/RecentReportsSidebar.vue";
 import LatestReportView from "./components/LatestReportView.vue";
+import ResearchInbox from "./components/ResearchInbox.vue";
 import PersistentWarningArea from "./components/PersistentWarningArea.vue";
 import JobStatusPanel from "./components/JobStatusPanel.vue";
-import type { GeneratedReport, JobStatus, ValidationReport } from "./types";
+import type {
+  AppView,
+  GeneratedReport,
+  JobStatus,
+  ResearchDocument,
+  ValidationReport,
+} from "./types";
+
+// Which main surface is showing. A plain ref switch (no router) — the app has a
+// small fixed set of destinations and the kit models this as top-level state,
+// not routes (see AppView in types.ts).
+const view = ref<AppView>("report");
 
 const report = ref<GeneratedReport | null>(null);
 const generating = ref(false);
 const error = ref<string | null>(null);
+
+// Research inbox state lives here (not in the inbox view) so the sidebar badge
+// can show the count regardless of which view is active, and a single load path
+// keeps badge and list in sync.
+const documents = ref<ResearchDocument[]>([]);
+const documentsLoading = ref(false);
+const documentsError = ref<string | null>(null);
+const inboxCount = computed(() => documents.value.length);
 
 const validation = ref<ValidationReport | null>(null);
 const validationError = ref<string | null>(null);
@@ -46,17 +66,21 @@ async function refreshJobStatus() {
 
 async function setJobEnabled(value: boolean) {
   jobBusy.value = true;
+  let failure: string | null = null;
   try {
     await invoke("set_job_enabled", { enabled: value });
   } catch (e) {
-    jobStatusError.value = String(e);
+    failure = String(e);
   } finally {
     jobBusy.value = false;
-    // Re-read the authoritative state, and refresh warnings: enabling/disabling
-    // changes whether a missed-window warning applies.
-    await refreshJobStatus();
-    void refreshValidation();
   }
+  // Re-read the authoritative state, and refresh warnings: enabling/disabling
+  // changes whether a missed-window warning applies. refreshJobStatus() clears
+  // jobStatusError, so restore a toggle failure *after* it — otherwise a failed
+  // toggle followed by a successful status read would silently swallow the error.
+  await refreshJobStatus();
+  if (failure !== null) jobStatusError.value = failure;
+  void refreshValidation();
 }
 
 async function generate() {
@@ -76,11 +100,50 @@ async function generate() {
   }
 }
 
+async function refreshDocuments() {
+  documentsLoading.value = true;
+  documentsError.value = null;
+  try {
+    documents.value = await invoke<ResearchDocument[]>("list_research_inbox");
+  } catch (e) {
+    documentsError.value = String(e);
+  } finally {
+    documentsLoading.value = false;
+  }
+}
+
+async function deleteDocument(name: string) {
+  let failure: string | null = null;
+  try {
+    await invoke("delete_research_document", { name });
+  } catch (e) {
+    failure = String(e);
+  }
+  // Re-read the folder either way so the list matches disk (on a failure the
+  // file may already be gone). refreshDocuments() clears documentsError, so
+  // restore a delete failure *after* it — otherwise a failed delete followed by
+  // a successful list silently swallows the error and leaves the file in place.
+  await refreshDocuments();
+  if (failure !== null) documentsError.value = failure;
+}
+
+async function revealInbox() {
+  // Best-effort: opening the folder in Finder is a convenience, not a data path.
+  try {
+    await invoke("reveal_research_inbox");
+  } catch (e) {
+    documentsError.value = String(e);
+  }
+}
+
 const unlisteners: UnlistenFn[] = [];
 
 onMounted(async () => {
   void refreshValidation();
   void refreshJobStatus();
+  // Load the inbox up front so the sidebar badge is populated even on the report
+  // view, before the user ever opens the inbox.
+  void refreshDocuments();
   // The background scheduler emits this when a scheduled run finishes (or when it
   // detects an overslept window), so an open window reflects the new state
   // without a manual refresh. A successful run carries its report so the Latest
@@ -101,6 +164,9 @@ onMounted(async () => {
       if (focused) {
         void refreshValidation();
         void refreshJobStatus();
+        // The user may have dropped files into the inbox folder (via Finder)
+        // while the app was in the background — pick those up on return.
+        void refreshDocuments();
       }
     })
   );
@@ -111,16 +177,32 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
 
 <template>
   <div class="app-shell">
-    <RecentReportsSidebar :report="report" />
+    <RecentReportsSidebar
+      :report="report"
+      :view="view"
+      :inbox-count="inboxCount"
+      @navigate="view = $event"
+    />
     <div class="main-column">
       <PersistentWarningArea :report="validation" :error="validationError" />
-      <LatestReportView
-        :report="report"
-        :generating="generating"
-        :error="error"
-        :blocked="blocked"
-        @generate="generate"
-      />
+      <div class="view-area">
+        <LatestReportView
+          v-if="view === 'report'"
+          :report="report"
+          :generating="generating"
+          :error="error"
+          :blocked="blocked"
+          @generate="generate"
+        />
+        <ResearchInbox
+          v-else
+          :documents="documents"
+          :loading="documentsLoading"
+          :error="documentsError"
+          @delete="deleteDocument"
+          @reveal="revealInbox"
+        />
+      </div>
       <JobStatusPanel
         :status="jobStatus"
         :error="jobStatusError"
@@ -163,5 +245,16 @@ body {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+}
+
+/* Holds the active view between the (global) warning area above and the
+   (global) job-status footer below. A flex container with one flex:1 child so
+   the report pane or inbox fills the height and scrolls internally rather than
+   pushing the footer off-screen. */
+.view-area {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
 }
 </style>
