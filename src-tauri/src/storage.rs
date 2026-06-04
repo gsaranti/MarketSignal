@@ -51,10 +51,11 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // Persistent user-toggleable application state (e.g. the weekly job's
-    // enabled flag). A small key/value table rather than typed columns: the
-    // settings here are user preferences that survive restarts but do not belong
-    // in the env-based credential substrate (`config::AppConfig`).
+    // Persistent user/application state: the weekly job's enabled flag and the
+    // Settings store — agent models, API tokens, provider credentials, written by
+    // `settings::save` and read by `config::AppConfig::load`. A small key/value
+    // table rather than typed columns; values that survive restarts but are not
+    // part of a report record.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_settings (
             key   TEXT PRIMARY KEY,

@@ -8,11 +8,13 @@
 //! both the backend block (the Tauri command refuses to run when blocked) and
 //! the frontend Persistent Warning Area (`docs/interface.md`).
 //!
-//! `AppConfig` is the interim config substrate: it reads from environment
-//! variables (the same surface `model_agent::ModelMainAgent` already used),
-//! standing in for the Settings store that lands later. The env→store swap is
-//! confined to `AppConfig::from_env`; `validate` is pure over the struct and
-//! never touches the environment, so the pass/block matrix is unit-testable
+//! `AppConfig` is the config substrate. `load` reads the persisted Settings
+//! store (`app_settings`, written by `settings::save`) with the environment
+//! variables as a per-field fallback, so the env-based live smoke keeps working
+//! until a value is saved; `from_env` is the env-only path the smoke and the
+//! gate-bypassing adapter use. The store read is confined to these two
+//! constructors; `validate` is pure over the struct and never touches the
+//! environment or the database, so the pass/block matrix is unit-testable
 //! without env mutation.
 //!
 //! Scope note: network reachability — the gate's fourth Step-1 check — and the
@@ -22,9 +24,23 @@
 //! scheduler slice that owns the failed-job category.
 
 use anyhow::{anyhow, Result};
+use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::model_agent::{AgentModel, MainAgentConfig, Provider};
+use crate::storage;
+
+/// `app_settings` keys backing the persisted configuration. `settings::save`
+/// writes them; `AppConfig::load` reads them with the env vars as a per-field
+/// fallback. The slugs deliberately match the `AppConfig` field names.
+pub const KEY_MAIN_AGENT_MODEL: &str = "main_agent_model";
+pub const KEY_BULL_AGENT_MODEL: &str = "bull_agent_model";
+pub const KEY_BEAR_AGENT_MODEL: &str = "bear_agent_model";
+pub const KEY_BALANCED_AGENT_MODEL: &str = "balanced_agent_model";
+pub const KEY_OPENAI_API_KEY: &str = "openai_api_key";
+pub const KEY_ANTHROPIC_API_KEY: &str = "anthropic_api_key";
+pub const KEY_FMP_API_KEY: &str = "fmp_api_key";
+pub const KEY_TAVILY_API_KEY: &str = "tavily_api_key";
 
 /// The five de-duplicating Persistent Warning Area categories (walk Q4,
 /// `docs/interface.md §Persistent Warning Area`). The three configuration
@@ -71,9 +87,9 @@ pub struct ValidationReport {
     pub is_blocked: bool,
 }
 
-/// The interim configuration substrate, read from the environment. Each field is
-/// `None` when its variable is unset; blank values are treated as unset by
-/// `present`. Replaced by the Settings store later — only `from_env` changes.
+/// The configuration substrate. Each field is `None` when neither the persisted
+/// store nor its env var carries a value; blank values are treated as unset by
+/// `present`. Built by `from_env` (env only) or `load` (store, env-fallback).
 #[derive(Debug, Clone, Default)]
 pub struct AppConfig {
     pub main_agent_model: Option<String>,
@@ -106,6 +122,29 @@ impl AppConfig {
             anthropic_api_key: get("ANTHROPIC_API_KEY"),
             fmp_api_key: get("FMP_API_KEY"),
             tavily_api_key: get("TAVILY_API_KEY"),
+        }
+    }
+
+    /// Read the configuration from the persisted Settings store, falling back to
+    /// the environment per field: a saved `app_settings` value wins, an unset key
+    /// (or a read error) defers to the env var. So a fresh install with no saved
+    /// settings behaves exactly like `from_env`, and the env-based live smoke
+    /// keeps working until the user saves something in Settings.
+    pub fn load(conn: &Connection) -> Self {
+        let env = Self::from_env();
+        // Some(saved) wins; None (unset key or read error) falls back to env.
+        let saved = |key: &str, fallback: Option<String>| -> Option<String> {
+            storage::get_setting(conn, key).ok().flatten().or(fallback)
+        };
+        Self {
+            main_agent_model: saved(KEY_MAIN_AGENT_MODEL, env.main_agent_model),
+            bull_agent_model: saved(KEY_BULL_AGENT_MODEL, env.bull_agent_model),
+            bear_agent_model: saved(KEY_BEAR_AGENT_MODEL, env.bear_agent_model),
+            balanced_agent_model: saved(KEY_BALANCED_AGENT_MODEL, env.balanced_agent_model),
+            openai_api_key: saved(KEY_OPENAI_API_KEY, env.openai_api_key),
+            anthropic_api_key: saved(KEY_ANTHROPIC_API_KEY, env.anthropic_api_key),
+            fmp_api_key: saved(KEY_FMP_API_KEY, env.fmp_api_key),
+            tavily_api_key: saved(KEY_TAVILY_API_KEY, env.tavily_api_key),
         }
     }
 
@@ -277,6 +316,37 @@ mod tests {
 
     fn category(report: &ValidationReport, kind: WarningKind) -> Option<&WarningCategory> {
         report.categories.iter().find(|c| c.kind == kind)
+    }
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn load_prefers_a_saved_value_over_the_environment() {
+        // A saved value is authoritative regardless of any ambient env var, so
+        // these assertions are env-independent. The env-fallback direction is
+        // `Option::or` and is left to `from_env` + the live smoke to exercise,
+        // to keep this test free of (unsafe, racy) env mutation.
+        let conn = mem();
+        storage::set_setting(&conn, KEY_MAIN_AGENT_MODEL, "claude-sonnet").unwrap();
+        storage::set_setting(&conn, KEY_OPENAI_API_KEY, "sk-saved").unwrap();
+        let cfg = AppConfig::load(&conn);
+        assert_eq!(cfg.main_agent_model.as_deref(), Some("claude-sonnet"));
+        assert_eq!(cfg.openai_api_key.as_deref(), Some("sk-saved"));
+    }
+
+    #[test]
+    fn load_reads_a_blank_saved_value_that_validate_treats_as_unset() {
+        // A model explicitly cleared in Settings is stored as "" and read back as
+        // Some(""), which `present` (and thus `validate`) reports as unselected.
+        let conn = mem();
+        storage::set_setting(&conn, KEY_MAIN_AGENT_MODEL, "").unwrap();
+        let cfg = AppConfig::load(&conn);
+        assert_eq!(cfg.main_agent_model.as_deref(), Some(""));
+        assert!(present(&cfg.main_agent_model).is_none());
     }
 
     #[test]

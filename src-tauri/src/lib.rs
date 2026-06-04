@@ -5,6 +5,7 @@ pub mod model_agent;
 pub mod pipeline;
 pub mod research;
 pub mod schedule;
+pub mod settings;
 pub mod storage;
 
 use std::path::PathBuf;
@@ -35,24 +36,24 @@ const SCHEDULER_POLL_CHUNK: Duration = Duration::from_secs(60 * 60);
 /// if the database can't be read, the authoritative config warnings still show.
 #[tauri::command]
 fn check_configuration(app: tauri::AppHandle) -> ValidationReport {
-    let mut report = config::validate(&AppConfig::from_env());
-    if let Ok(data_dir) = app.path().app_data_dir() {
-        let db_path = data_dir.join("market_signal.db");
-        if db_path.exists() {
-            if let Ok(conn) = storage::open(&db_path) {
-                // Tolerate a pre-existing slice-1 DB that predates `app_settings`:
-                // init_schema is idempotent and adds any missing tables.
-                let _ = storage::init_schema(&conn);
-                if let Ok(Some(warning)) = jobs::failure_warning(&conn) {
-                    report.categories.push(warning);
-                }
-                let enabled = jobs::weekly_job_enabled(&conn).unwrap_or(true);
-                if let Ok(Some(warning)) =
-                    jobs::missed_warning(&conn, chrono::Local::now(), enabled)
-                {
-                    report.categories.push(warning);
-                }
-            }
+    // Open the app DB (best-effort) so config reads from the saved Settings store
+    // with an env fallback per field. `open_app_db` creates the data dir and runs
+    // the idempotent `init_schema`, tolerating a pre-existing slice-1 DB. If the
+    // DB can't be opened, validate against env alone — the authoritative config
+    // warnings still show; only the job-history warnings are skipped.
+    let conn = open_app_db(&app).ok();
+    let cfg = match &conn {
+        Some(conn) => AppConfig::load(conn),
+        None => AppConfig::from_env(),
+    };
+    let mut report = config::validate(&cfg);
+    if let Some(conn) = &conn {
+        if let Ok(Some(warning)) = jobs::failure_warning(conn) {
+            report.categories.push(warning);
+        }
+        let enabled = jobs::weekly_job_enabled(conn).unwrap_or(true);
+        if let Ok(Some(warning)) = jobs::missed_warning(conn, chrono::Local::now(), enabled) {
+            report.categories.push(warning);
         }
     }
     report
@@ -109,8 +110,14 @@ async fn generate_report_manual(
     app: tauri::AppHandle,
     guard: tauri::State<'_, RunGuard>,
 ) -> Result<GeneratedReport, String> {
-    // Execution gate: refuse a blocked run before doing any work.
-    let cfg = AppConfig::from_env();
+    // Execution gate: refuse a blocked run before doing any work. The config is
+    // read from the saved Settings store (env fallback) on a connection opened and
+    // dropped here, before the await below — a `rusqlite::Connection` is not `Send`
+    // and must never cross an await point.
+    let cfg = {
+        let conn = open_app_db(&app)?;
+        AppConfig::load(&conn)
+    };
     let report = config::validate(&cfg);
     if report.is_blocked {
         return Err(config::blocked_summary(&report));
@@ -169,6 +176,31 @@ fn job_status(
 fn set_job_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let conn = open_app_db(&app)?;
     jobs::set_weekly_job_enabled(&conn, enabled).map_err(|e| e.to_string())
+}
+
+/// The current Settings state (`docs/configuration.md`, `docs/interface.md
+/// §Settings`): the four agent model selections, a configured flag per credential
+/// (never the secret itself), and the model dropdown's options. Reads from the
+/// saved store with an env fallback per field.
+#[tauri::command]
+fn get_settings(app: tauri::AppHandle) -> Result<settings::SettingsView, String> {
+    let conn = open_app_db(&app)?;
+    Ok(settings::load_view(&conn))
+}
+
+/// Persist a Settings submission (`docs/configuration.md`). Model slugs are
+/// validated; each credential is written only when a new value is supplied, so an
+/// untouched field keeps its stored secret. The frontend re-runs
+/// `check_configuration` afterward, so completing the config clears the
+/// Persistent Warning Area's blocking categories.
+#[tauri::command]
+fn save_settings(
+    app: tauri::AppHandle,
+    models: settings::AgentModels,
+    credentials: settings::CredentialUpdate,
+) -> Result<(), String> {
+    let conn = open_app_db(&app)?;
+    settings::save(&conn, &models, &credentials).map_err(|e| e.to_string())
 }
 
 /// List the user-supplied documents currently in the research inbox
@@ -275,20 +307,20 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
         Err(e) => return log_scheduler(e),
     };
 
-    // Read the enable flag synchronously. This connection is opened and dropped
-    // here, before any await; `run_job` opens its own on the blocking thread.
-    // Two short-lived opens, deliberately: no `rusqlite::Connection` (which is
-    // not `Send`) ever crosses an await point.
-    let enabled = match open_app_db(app)
-        .and_then(|conn| jobs::weekly_job_enabled(&conn).map_err(|e| e.to_string()))
-    {
-        Ok(v) => v,
-        Err(e) => return log_scheduler(format!("reading enable flag: {e}")),
+    // Read the enable flag and load the config from one short-lived connection,
+    // opened and dropped here before any await; `run_job` opens its own on the
+    // blocking thread. Deliberately scoped this way: no `rusqlite::Connection`
+    // (which is not `Send`) ever crosses an await point.
+    let (enabled, cfg) = match open_app_db(app) {
+        Ok(conn) => match jobs::weekly_job_enabled(&conn) {
+            Ok(enabled) => (enabled, AppConfig::load(&conn)),
+            Err(e) => return log_scheduler(format!("reading enable flag: {e}")),
+        },
+        Err(e) => return log_scheduler(format!("opening database: {e}")),
     };
 
     // The same pre-run decision the manual command makes, plus the enable flag,
     // as one pure step (`config::decide_scheduled_run`).
-    let cfg = AppConfig::from_env();
     let main_config = match config::decide_scheduled_run(&cfg, enabled) {
         config::ScheduledRun::Proceed(main_config) => main_config,
         config::ScheduledRun::Disabled => return, // expected, quiet no-op
@@ -354,6 +386,8 @@ pub fn run() {
             check_configuration,
             job_status,
             set_job_enabled,
+            get_settings,
+            save_settings,
             list_research_inbox,
             delete_research_document,
             reveal_research_inbox

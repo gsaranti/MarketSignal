@@ -59,6 +59,16 @@ function shortId(id: string): string {
         <span class="nav-label">Research Inbox</span>
         <span v-if="inboxCount > 0" class="nav-badge">{{ inboxCount }}</span>
       </button>
+      <button
+        type="button"
+        class="nav-item"
+        :class="{ 'is-active': view === 'settings' }"
+        :aria-current="view === 'settings' ? 'true' : undefined"
+        @click="$emit('navigate', 'settings')"
+      >
+        <Icon name="settings" :size="14" color="var(--ink-2)" />
+        <span class="nav-label">Settings</span>
+      </button>
     </nav>
   </aside>
 </template>
