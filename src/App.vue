@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import RecentReportsSidebar from "./components/RecentReportsSidebar.vue";
 import LatestReportView from "./components/LatestReportView.vue";
 import PersistentWarningArea from "./components/PersistentWarningArea.vue";
-import type { GeneratedReport, ValidationReport } from "./types";
+import JobStatusPanel from "./components/JobStatusPanel.vue";
+import type { GeneratedReport, JobStatus, ValidationReport } from "./types";
 
 const report = ref<GeneratedReport | null>(null);
 const generating = ref(false);
@@ -12,6 +15,10 @@ const error = ref<string | null>(null);
 
 const validation = ref<ValidationReport | null>(null);
 const validationError = ref<string | null>(null);
+
+const jobStatus = ref<JobStatus | null>(null);
+const jobStatusError = ref<string | null>(null);
+const jobBusy = ref(false);
 
 // The gate blocks generation when configuration is incomplete. The backend is
 // the authoritative guard; this only disables the control and short-circuits.
@@ -28,6 +35,30 @@ async function refreshValidation() {
   }
 }
 
+async function refreshJobStatus() {
+  jobStatusError.value = null;
+  try {
+    jobStatus.value = await invoke<JobStatus>("job_status");
+  } catch (e) {
+    jobStatusError.value = String(e);
+  }
+}
+
+async function setJobEnabled(value: boolean) {
+  jobBusy.value = true;
+  try {
+    await invoke("set_job_enabled", { enabled: value });
+  } catch (e) {
+    jobStatusError.value = String(e);
+  } finally {
+    jobBusy.value = false;
+    // Re-read the authoritative state, and refresh warnings: enabling/disabling
+    // changes whether a missed-window warning applies.
+    await refreshJobStatus();
+    void refreshValidation();
+  }
+}
+
 async function generate() {
   if (blocked.value) return;
   generating.value = true;
@@ -38,13 +69,44 @@ async function generate() {
     error.value = String(e);
   } finally {
     generating.value = false;
-    // Re-check after a run: config may have changed, and later slices surface
-    // failed/missed-job warnings here. Fire-and-forget — it owns its errors.
+    // Re-check after a run: config may have changed, and a run updates job
+    // history (failed/missed warnings, last-run status). Fire-and-forget.
     void refreshValidation();
+    void refreshJobStatus();
   }
 }
 
-onMounted(refreshValidation);
+const unlisteners: UnlistenFn[] = [];
+
+onMounted(async () => {
+  void refreshValidation();
+  void refreshJobStatus();
+  // The background scheduler emits this when a scheduled run finishes (or when it
+  // detects an overslept window), so an open window reflects the new state
+  // without a manual refresh. A successful run carries its report so the Latest
+  // Report View updates too; failure/skip/missed send null.
+  unlisteners.push(
+    await listen<GeneratedReport | null>("job-finished", (event) => {
+      if (event.payload) report.value = event.payload;
+      void refreshValidation();
+      void refreshJobStatus();
+    })
+  );
+  // Closing to the tray hides the window but keeps this app mounted, so
+  // onMounted won't fire again on reopen. Refresh when the window regains focus
+  // so a missed-window warning surfaces on next open/resume, per
+  // docs/scheduling.md §Missed Job Detection.
+  unlisteners.push(
+    await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) {
+        void refreshValidation();
+        void refreshJobStatus();
+      }
+    })
+  );
+});
+
+onUnmounted(() => unlisteners.forEach((u) => u()));
 </script>
 
 <template>
@@ -58,6 +120,12 @@ onMounted(refreshValidation);
         :error="error"
         :blocked="blocked"
         @generate="generate"
+      />
+      <JobStatusPanel
+        :status="jobStatus"
+        :error="jobStatusError"
+        :busy="jobBusy"
+        @set-enabled="setJobEnabled"
       />
     </div>
   </div>

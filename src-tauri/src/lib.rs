@@ -3,14 +3,25 @@ pub mod config;
 pub mod jobs;
 pub mod model_agent;
 pub mod pipeline;
+pub mod schedule;
 pub mod storage;
 
-use tauri::Manager;
+use std::time::Duration;
+
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Emitter, Manager, WindowEvent};
 
 use config::{AppConfig, ValidationReport};
-use jobs::{run_job, JobOutcome, RunGuard};
+use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
 use model_agent::ModelMainAgent;
 use pipeline::{GeneratedReport, ReportPaths};
+
+/// How long the scheduler sleeps between wake-ups while waiting for the next
+/// window. Bounded (rather than one long sleep to the window) so a clock change
+/// or a suspend/resume is re-evaluated within the hour instead of overshooting
+/// silently.
+const SCHEDULER_POLL_CHUNK: Duration = Duration::from_secs(60 * 60);
 
 /// Report the current warning state for the Persistent Warning Area. Read-only:
 /// it validates the config substrate (`docs/weekly-report-workflow.md §Step 1`)
@@ -26,13 +37,36 @@ fn check_configuration(app: tauri::AppHandle) -> ValidationReport {
         let db_path = data_dir.join("market_signal.db");
         if db_path.exists() {
             if let Ok(conn) = storage::open(&db_path) {
+                // Tolerate a pre-existing slice-1 DB that predates `app_settings`:
+                // init_schema is idempotent and adds any missing tables.
+                let _ = storage::init_schema(&conn);
                 if let Ok(Some(warning)) = jobs::failure_warning(&conn) {
+                    report.categories.push(warning);
+                }
+                let enabled = jobs::weekly_job_enabled(&conn).unwrap_or(true);
+                if let Ok(Some(warning)) =
+                    jobs::missed_warning(&conn, chrono::Local::now(), enabled)
+                {
                     report.categories.push(warning);
                 }
             }
         }
     }
     report
+}
+
+/// The on-disk layout for a run — the SQLite database and the reports directory,
+/// both under the app data directory. One source for the path layout, shared by
+/// the manual command and the scheduler so they can never drift apart.
+fn report_paths(app: &tauri::AppHandle) -> Result<ReportPaths, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("resolving app data directory: {e}"))?;
+    Ok(ReportPaths {
+        db_path: data_dir.join("market_signal.db"),
+        reports_dir: data_dir.join("reports"),
+    })
 }
 
 /// Manually generate a Weekly Market Report end to end. The execution gate runs
@@ -68,15 +102,7 @@ async fn generate_report_manual(
     }
     let main_config = cfg.main_agent_config().map_err(|e| e.to_string())?;
 
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("resolving app data directory: {e}"))?;
-
-    let paths = ReportPaths {
-        db_path: data_dir.join("market_signal.db"),
-        reports_dir: data_dir.join("reports"),
-    };
+    let paths = report_paths(&app)?;
 
     let guard = guard.inner().clone();
 
@@ -94,6 +120,170 @@ async fn generate_report_manual(
     }
 }
 
+/// Resolve the SQLite path and ensure the app data directory exists, so a
+/// command that touches the database works even before the first report has been
+/// generated (the pipeline creates the directory as a side effect, but the
+/// status/settings commands can run first).
+fn open_app_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
+    let paths = report_paths(app)?;
+    if let Some(parent) = paths.db_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("creating app data directory: {e}"))?;
+    }
+    let conn = storage::open(&paths.db_path).map_err(|e| e.to_string())?;
+    storage::init_schema(&conn).map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+/// Current job status for the UI's status panel (`docs/scheduling.md §Job Status
+/// Visibility`): last successful run, last failure, last skipped event, whether
+/// a run is in flight, and the enable flag.
+#[tauri::command]
+fn job_status(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, RunGuard>,
+) -> Result<JobStatus, String> {
+    let conn = open_app_db(&app)?;
+    jobs::job_status(&conn, &guard).map_err(|e| e.to_string())
+}
+
+/// Persist the Weekly Market job's enable/disable flag (`docs/scheduling.md
+/// §Job Controls`). The scheduler reads this each time a window fires, so a
+/// disabled job no-ops rather than running.
+#[tauri::command]
+fn set_job_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let conn = open_app_db(&app)?;
+    jobs::set_weekly_job_enabled(&conn, enabled).map_err(|e| e.to_string())
+}
+
+/// Debug-only schedule override: when `MARKET_SIGNAL_SCHEDULE_OVERRIDE` is set to
+/// a number of seconds, the scheduler fires on that fixed interval instead of the
+/// weekly window, so a `tauri dev` smoke can exercise a scheduled run in seconds.
+/// Compiled out of release builds entirely.
+#[cfg(debug_assertions)]
+fn schedule_override_secs() -> Option<u64> {
+    std::env::var("MARKET_SIGNAL_SCHEDULE_OVERRIDE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+}
+
+#[cfg(not(debug_assertions))]
+fn schedule_override_secs() -> Option<u64> {
+    None
+}
+
+/// The tokio timer that drives scheduled runs. Computes the next Sunday-9AM
+/// local window, sleeps until it in bounded chunks, fires, and repeats. A window
+/// the machine slept through is not replayed (`docs/scheduling.md §System Sleep
+/// Behavior`): if wake-up overshoots the window by more than a short grace, the
+/// run is skipped and surfaces as a missed-job warning on next check instead.
+fn spawn_scheduler(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        // Debug fast-path: a fixed interval for smoke testing the fire path.
+        if let Some(secs) = schedule_override_secs() {
+            loop {
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+                run_scheduled_once(&app).await;
+            }
+        }
+
+        let grace = chrono::Duration::minutes(15);
+        loop {
+            let next = schedule::next_run_after(chrono::Local::now());
+            // Sleep toward the window in bounded chunks.
+            loop {
+                let now = chrono::Local::now();
+                if now >= next {
+                    break;
+                }
+                let remaining = (next - now).to_std().unwrap_or(Duration::ZERO);
+                tokio::time::sleep(remaining.min(SCHEDULER_POLL_CHUNK)).await;
+            }
+            // Fire only if we reached the window roughly on time. A large
+            // overshoot means the machine slept past it — that window is missed,
+            // not replayed; the loop advances to the next future window.
+            if chrono::Local::now() - next <= grace {
+                run_scheduled_once(&app).await;
+            } else {
+                // Overshot: the window is missed, not replayed — but nudge an
+                // open window to refresh so the missed-job warning surfaces on
+                // resume (`docs/scheduling.md §Missed Job Detection`), reusing the
+                // same channel a finished run uses (no report to carry).
+                let _ = app.emit("job-finished", Option::<GeneratedReport>::None);
+            }
+        }
+    });
+}
+
+/// One scheduled fire: re-check the enable flag and the execution gate, then run
+/// the identical workflow as the manual command (`docs/weekly-report-workflow.md
+/// §Step 1`). A disabled job or a blocked configuration no-ops — a blocked run
+/// records nothing, since its warnings already surface via `check_configuration`.
+/// Concurrency with a manual run is handled inside `run_job` (→ Skipped). On any
+/// terminal outcome a `job-finished` event lets an open window refresh.
+async fn run_scheduled_once(app: &tauri::AppHandle) {
+    let paths = match report_paths(app) {
+        Ok(p) => p,
+        Err(e) => return log_scheduler(e),
+    };
+
+    // Read the enable flag synchronously. This connection is opened and dropped
+    // here, before any await; `run_job` opens its own on the blocking thread.
+    // Two short-lived opens, deliberately: no `rusqlite::Connection` (which is
+    // not `Send`) ever crosses an await point.
+    let enabled = match open_app_db(app)
+        .and_then(|conn| jobs::weekly_job_enabled(&conn).map_err(|e| e.to_string()))
+    {
+        Ok(v) => v,
+        Err(e) => return log_scheduler(format!("reading enable flag: {e}")),
+    };
+
+    // The same pre-run decision the manual command makes, plus the enable flag,
+    // as one pure step (`config::decide_scheduled_run`).
+    let cfg = AppConfig::from_env();
+    let main_config = match config::decide_scheduled_run(&cfg, enabled) {
+        config::ScheduledRun::Proceed(main_config) => main_config,
+        config::ScheduledRun::Disabled => return, // expected, quiet no-op
+        config::ScheduledRun::Blocked(reason) => return log_scheduler(reason),
+    };
+
+    let guard = app.state::<RunGuard>().inner().clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let agent = ModelMainAgent::new(main_config).map_err(|e| e.to_string())?;
+        run_job(&agent, &paths, &guard).map_err(|e| e.to_string())
+    })
+    .await;
+
+    // Carry the freshly generated report to an open window so its Latest Report
+    // View updates without a manual refresh (`docs/weekly-report-workflow.md
+    // §Step 17`); on failure/skip the payload is None and only the warning area
+    // and status panel refresh. (The Recent Reports sidebar's historical list
+    // still awaits the `list_reports` slice.)
+    let report: Option<GeneratedReport> = match outcome {
+        Ok(Ok(JobOutcome::Successful(report))) => Some(*report),
+        Ok(Ok(JobOutcome::Failed(msg))) => {
+            log_scheduler(format!("job failed: {msg}"));
+            None
+        }
+        Ok(Ok(JobOutcome::Skipped(reason))) => {
+            log_scheduler(format!("skipped: {reason}"));
+            None
+        }
+        Ok(Err(e)) => {
+            log_scheduler(e);
+            None
+        }
+        Err(e) => return log_scheduler(format!("run task failed: {e}")),
+    };
+    let _ = app.emit("job-finished", report);
+}
+
+/// Scheduler diagnostics go to stderr — the scheduler runs headless, so there is
+/// no UI surface to route them to beyond the warning area the next check rebuilds.
+fn log_scheduler(message: String) {
+    eprintln!("scheduler: {message}");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -101,8 +291,65 @@ pub fn run() {
         .manage(RunGuard::default())
         .invoke_handler(tauri::generate_handler![
             generate_report_manual,
-            check_configuration
+            check_configuration,
+            job_status,
+            set_job_enabled
         ])
+        .setup(|app| {
+            // Tray runtime: the app stays resident so scheduled jobs keep running
+            // when the window is closed (`docs/scheduling.md §Application Runtime
+            // Requirements`).
+            let show = MenuItem::with_id(app, "show", "Show Market Signal", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit Market Signal", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().cloned().ok_or("missing default window icon")?)
+                .tooltip("Market Signal")
+                .menu(&menu)
+                .show_menu_on_left_click(true)
+                // KNOWN BUG — session pickup point: on macOS these tray-menu
+                // clicks never reach this handler. The menu renders with the
+                // right items, but neither this handler nor an app-level
+                // `Builder::on_menu_event` fires on a click. `CloseRequested`
+                // (below) fires fine, so general event wiring is live. Retaining
+                // the TrayIcon handle (tauri#11462, applied below) did not fix
+                // it; root cause still open. Verified live 2026-06-03.
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "show" => {
+                            // macOS activates at the app level — window.show()
+                            // alone can leave the app backgrounded — so bring the
+                            // app forward first, then restore every window.
+                            #[cfg(target_os = "macos")]
+                            let _ = app.show();
+                            for window in app.webview_windows().values() {
+                                let _ = window.unminimize();
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "quit" => app.exit(0),
+                        _ => {}
+                    }
+                })
+                .build(app)?;
+            // Keep the TrayIcon alive for the app's lifetime: a dropped handle
+            // severs menu-event delivery — the icon still draws, but clicks reach
+            // no handler (tauri-apps/tauri#11462). This was the bug.
+            app.manage(tray);
+
+            // Start the Sunday-9AM-local timer.
+            spawn_scheduler(app.handle().clone());
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Closing the window hides it to the tray rather than quitting, so the
+            // scheduler keeps running. Quitting is explicit (tray "Quit").
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

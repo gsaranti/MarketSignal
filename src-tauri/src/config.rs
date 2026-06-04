@@ -221,6 +221,42 @@ pub fn blocked_summary(report: &ValidationReport) -> String {
     )
 }
 
+/// The scheduler's pre-run decision for a *scheduled* fire. Distinct from a
+/// manual run, which ignores the enable flag — disabling the weekly schedule
+/// must not block a manual "Generate". No `Debug` derive: the `Proceed` variant
+/// carries `MainAgentConfig`, which deliberately has no `Debug` so an API key
+/// can never be printed.
+pub enum ScheduledRun {
+    /// Gate passed: carries the resolved Main Agent adapter config to run with.
+    Proceed(MainAgentConfig),
+    /// The weekly job is disabled — an expected, quiet no-op (no diagnostic).
+    Disabled,
+    /// Blocked by a noteworthy reason (incomplete config or an unresolved model
+    /// key) worth logging; the human-readable reason rides along.
+    Blocked(String),
+}
+
+/// Decide whether a scheduled fire should proceed: the enable flag, then the
+/// execution gate, then a resolvable Main Agent model + key (`docs/weekly-report
+/// -workflow.md §Step 1`). Pure over its inputs — `validate` and
+/// `main_agent_config` read only from `cfg` — so the enabled / blocked / proceed
+/// composition the scheduler walks is unit-testable without the environment or a
+/// running app. The `main_agent_config` error arm is defensive: after a passing
+/// `validate` (which already requires both provider keys and a parseable main
+/// model) it is effectively unreachable, mirroring the manual command's pattern.
+pub fn decide_scheduled_run(cfg: &AppConfig, enabled: bool) -> ScheduledRun {
+    if !enabled {
+        return ScheduledRun::Disabled;
+    }
+    if validate(cfg).is_blocked {
+        return ScheduledRun::Blocked("configuration incomplete — run skipped".to_string());
+    }
+    match cfg.main_agent_config() {
+        Ok(main_config) => ScheduledRun::Proceed(main_config),
+        Err(e) => ScheduledRun::Blocked(e.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +394,35 @@ mod tests {
         assert!(!WarningKind::FailedJob.is_blocking());
         assert!(!WarningKind::MissedScheduledJob.is_blocking());
         assert!(WarningKind::AgentConfiguration.is_blocking());
+    }
+
+    #[test]
+    fn scheduled_run_proceeds_for_a_complete_enabled_config() {
+        // Match rather than unwrap so `MainAgentConfig` never needs a `Debug`
+        // impl that could print the secret.
+        match decide_scheduled_run(&complete(), true) {
+            ScheduledRun::Proceed(mac) => assert_eq!(mac.model, AgentModel::ClaudeOpus),
+            _ => panic!("expected Proceed for a complete, enabled config"),
+        }
+    }
+
+    #[test]
+    fn scheduled_run_is_a_quiet_skip_when_disabled() {
+        // A complete config that is disabled must not run — and silently, so a
+        // disabled weekly schedule produces no per-window diagnostic.
+        assert!(matches!(
+            decide_scheduled_run(&complete(), false),
+            ScheduledRun::Disabled
+        ));
+    }
+
+    #[test]
+    fn scheduled_run_is_blocked_when_config_incomplete() {
+        let mut cfg = complete();
+        cfg.tavily_api_key = None; // a blocking gap, even with the job enabled
+        match decide_scheduled_run(&cfg, true) {
+            ScheduledRun::Blocked(reason) => assert!(reason.contains("incomplete"), "{reason}"),
+            _ => panic!("expected Blocked when a required credential is missing"),
+        }
     }
 }
