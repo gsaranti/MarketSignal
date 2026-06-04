@@ -44,9 +44,12 @@ function toggle() {
 <template>
   <footer v-if="visible" class="job-panel">
     <div class="job-status" aria-live="polite">
-      <p v-if="status?.is_running" class="job-running">
-        Generating this week's report…
-      </p>
+      <div v-if="status?.is_running" class="job-running">
+        <span class="job-running-label">Generating this week's report…</span>
+        <span class="job-running-bar" aria-hidden="true">
+          <span class="job-running-fill"></span>
+        </span>
+      </div>
       <p v-else-if="error" class="job-error">
         Couldn't read job status — {{ error }}
       </p>
@@ -122,11 +125,41 @@ function toggle() {
   flex: 1;
 }
 
+/* Long-running-job indicator — text plus a single static 1px bar, per the
+   design kit's status row (components-status.html). Deliberately no spinner,
+   no shimmer, no celebration: the pipeline surfaces no step telemetry, so the
+   fill is a fixed-position segment that reads as "in progress", not a
+   determinate percentage. */
 .job-running {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
   margin: 0;
+}
+
+.job-running-label {
+  flex-shrink: 0;
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
   color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.job-running-bar {
+  flex: 1;
+  height: 1px;
+  background: var(--hairline-soft);
+  position: relative;
+  overflow: hidden;
+}
+
+.job-running-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 38%;
+  background: var(--ink);
 }
 
 .job-error {

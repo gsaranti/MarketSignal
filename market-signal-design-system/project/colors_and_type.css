@@ -223,6 +223,90 @@ html, body {
   margin-top: 8px;
 }
 
+/* -----------------------------------------------------------------------------
+   Prose lists, code, and data tables — extension for Markdown-rendered report
+   bodies (the reports are authored as Markdown and rendered via markdown-it, so
+   .prose must style ul/ol/code/table that the kit's hand-built JSX never needed).
+   Added by the implementation; kept on-system: square markers, mono tabular
+   figures, hairline rules, no fills beyond the inset-well token.
+   -------------------------------------------------------------------------- */
+
+/* Lists — square markers (sans-serif print convention), prose rhythm */
+.prose ul,
+.prose ol {
+  margin: 0 0 16px 0;
+  padding-left: 24px;
+}
+.prose ul { list-style: square; }
+.prose ol { list-style: decimal; }
+.prose li { margin-bottom: 6px; }
+.prose li:last-child { margin-bottom: 0; }
+.prose li::marker { color: var(--ink-3); }
+.prose li > ul,
+.prose li > ol { margin: 6px 0 0 0; }
+
+/* Inline code — mono + tabular figures, no fill (matches the report's inline
+   numeric convention, e.g. a price held inline in the prose) */
+.prose code {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-size: 0.92em;
+  color: var(--ink);
+}
+
+/* Block code — a hairline-bordered inset well, horizontally scrollable */
+.prose pre {
+  font-family: var(--font-mono);
+  font-size: var(--t-ui-sm);
+  line-height: var(--lh-ui);
+  color: var(--ink);
+  background: var(--paper-edge);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 0 0 16px 0;
+  overflow-x: auto;
+}
+.prose pre code { font-size: inherit; }
+
+/* Data tables — hairline-ruled, sans, tabular figures (the watchlist idiom from
+   components-table.html: caption-cased heads, hairline-soft body separators) */
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 24px 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.prose thead th {
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-3);
+  text-align: left;
+  padding: 0 24px 6px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.prose tbody td {
+  color: var(--ink);
+  padding: 8px 24px 8px 0;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.prose tbody tr:last-child td { border-bottom: 0; }
+.prose th:last-child,
+.prose td:last-child { padding-right: 0; }
+
+/* Wide / many-column tables scroll locally rather than pushing the reading
+   column sideways. The renderer wraps each Markdown <table> in this element;
+   the table keeps its own margin off so the scroll box hugs the table. */
+.prose-table-wrap {
+  margin: 24px 0;
+  overflow-x: auto;
+}
+.prose-table-wrap > table { margin: 0; }
+
 /* ---- Display moments — report title + date line ---- */
 .report-title {
   font-family: var(--font-serif);
