@@ -51,6 +51,13 @@ const reportsError = ref<string | null>(null);
 const generating = ref(false);
 const error = ref<string | null>(null);
 
+// Markdown export state, kept on its own channel (like the others above):
+// `exportingMarkdown` drives the toolbar button's busy state; `exportError`
+// surfaces a failed save as a slim alert under the report toolbar. PDF export is
+// handled inside LatestReportView (window.print) and needs no state here.
+const exportingMarkdown = ref(false);
+const exportError = ref<string | null>(null);
+
 // Whether the selected report is the newest one — drives the toolbar's "Latest"
 // tag. The list is newest-first, so the head is the latest.
 const selectedIsLatest = computed(
@@ -207,6 +214,9 @@ async function selectReport(id: string) {
   // otherwise LatestReportView's `error` block (which has render precedence)
   // would mask the report we just loaded.
   error.value = null;
+  // A prior export failure belonged to whatever issue was open then; clear it so
+  // it doesn't linger over a freshly selected report.
+  exportError.value = null;
   try {
     const loaded = await invoke<GeneratedReport>("load_report", {
       reportId: id,
@@ -228,6 +238,26 @@ async function selectReport(id: string) {
 function selectAndShow(id: string) {
   view.value = "report";
   void selectReport(id);
+}
+
+// Export the selected report as Markdown. The backend command opens a native
+// Save dialog and writes the stored canonical Markdown to the chosen path
+// (docs/export.md); it returns true when saved, false when the user cancels —
+// both are non-errors. A real failure (unknown id, unreadable/unwritable file)
+// surfaces on the dedicated exportError channel under the report toolbar.
+async function exportMarkdown() {
+  if (selectedReportId.value === null) return;
+  exportingMarkdown.value = true;
+  exportError.value = null;
+  try {
+    await invoke<boolean>("export_report_markdown", {
+      reportId: selectedReportId.value,
+    });
+  } catch (e) {
+    exportError.value = String(e);
+  } finally {
+    exportingMarkdown.value = false;
+  }
 }
 
 async function refreshDocuments() {
@@ -439,6 +469,9 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :error="error"
           :load-error="reportError"
           :is-latest="selectedIsLatest"
+          :exporting-markdown="exportingMarkdown"
+          :export-error="exportError"
+          @export-markdown="exportMarkdown"
         />
         <ResearchDocuments
           v-else-if="view === 'inbox'"
@@ -513,6 +546,47 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: var(--font-sans);
+}
+
+/* Print treatment — a design-system extension (the package defines no print
+   surface). PDF export is the webview's native print-to-PDF (window.print →
+   macOS "Save as PDF"), which prints the whole webview, so isolate the report
+   body: hide every app-chrome surface and let the report flow and paginate
+   instead of living in a fixed-height, internally-scrolling pane. !important is
+   needed to win over the components' scoped (attribute-qualified) rules. */
+@media print {
+  .titlebar,
+  .sidebar,
+  .warning-area,
+  .toolbar,
+  .export-error,
+  .job-panel {
+    display: none !important;
+  }
+
+  html,
+  body,
+  #app,
+  .app-root,
+  .app-shell,
+  .main-column,
+  .view-area,
+  .report-pane,
+  .report-scroll {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: var(--paper) !important;
+  }
+
+  /* Let the column use the printable page width; the page margins come from the
+     print panel (wry on macOS doesn't fully honor CSS @page margins). */
+  .report-article {
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
 }
 </style>
 

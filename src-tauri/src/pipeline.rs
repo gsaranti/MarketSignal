@@ -97,6 +97,32 @@ pub fn load_report(paths: &ReportPaths, report_id: &str) -> Result<GeneratedRepo
     })
 }
 
+/// Export one report's canonical Markdown to a user-chosen destination
+/// (`docs/export.md`). Tauri-free so it sits behind the thin `export_report_markdown`
+/// command the same way `list_reports`/`load_report` do, and is driveable from a
+/// test against temp dirs.
+///
+/// Reads from the stored artifacts only — the canonical `.md` on disk, located via
+/// the SQLite record — so an export never re-runs the workflow and never trusts an
+/// in-memory copy (`docs/export.md §Export Behavior`). An unknown id, a Markdown
+/// file removed out-of-band, or a write failure surfaces as a typed error rather
+/// than a panic, mirroring `load_report`.
+pub fn export_markdown_to(
+    paths: &ReportPaths,
+    report_id: &str,
+    dest: &std::path::Path,
+) -> Result<()> {
+    let conn = storage::open(&paths.db_path)?;
+    storage::init_schema(&conn)?;
+    let (markdown_path, _summary) = storage::get_report_record(&conn, report_id)?
+        .with_context(|| format!("no report with id {report_id}"))?;
+    let markdown = std::fs::read_to_string(&markdown_path)
+        .with_context(|| format!("reading report markdown {markdown_path:?}"))?;
+    std::fs::write(dest, &markdown)
+        .with_context(|| format!("writing exported markdown {dest:?}"))?;
+    Ok(())
+}
+
 /// Build the canonical Markdown filename for a report:
 /// `YYYY-MM-DD-market-signal-weekly-report-<id8>.md`.
 ///
@@ -123,12 +149,43 @@ fn canonical_report_filename<Tz: chrono::TimeZone>(
 where
     Tz::Offset: std::fmt::Display,
 {
-    let local_date = chrono::DateTime::parse_from_rfc3339(created_at)
-        .with_context(|| format!("agent supplied a non-RFC3339 created_at: {created_at:?}"))?
-        .with_timezone(tz)
-        .format("%Y-%m-%d");
+    let local_date = local_date_segment(created_at, tz)?;
     let id8 = report_id.get(..8).unwrap_or(report_id);
     Ok(format!("{local_date}-market-signal-weekly-report-{id8}.md"))
+}
+
+/// Build the export filename a user sees in the Save dialog
+/// (`docs/export.md §Export Naming`): `YYYY-MM-DD-market-signal-weekly-report.<ext>`.
+///
+/// Deliberately distinct from `canonical_report_filename`: the spec's export name
+/// carries **no `-<id8>` suffix** — same-name collisions are the user's own save
+/// dialog overwrite prompt, not ours. `ext` is the bare extension (`"md"`, `"pdf"`).
+/// Shares the local-date logic so an export's date matches the stored file's date.
+pub fn export_basename<Tz: chrono::TimeZone>(
+    created_at: &str,
+    ext: &str,
+    tz: &Tz,
+) -> Result<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let local_date = local_date_segment(created_at, tz)?;
+    Ok(format!("{local_date}-market-signal-weekly-report.{ext}"))
+}
+
+/// The `YYYY-MM-DD` local-date segment shared by the canonical filename and the
+/// export basename: parse the canonical-UTC `created_at` and render it in `tz`'s
+/// calendar (`docs/scheduling.md` — reports are local-time artifacts). A
+/// non-RFC3339 stamp is a typed error, not a panic on a byte slice.
+fn local_date_segment<Tz: chrono::TimeZone>(created_at: &str, tz: &Tz) -> Result<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    Ok(chrono::DateTime::parse_from_rfc3339(created_at)
+        .with_context(|| format!("agent supplied a non-RFC3339 created_at: {created_at:?}"))?
+        .with_timezone(tz)
+        .format("%Y-%m-%d")
+        .to_string())
 }
 
 #[cfg(test)]
@@ -174,6 +231,30 @@ mod tests {
     #[test]
     fn non_rfc3339_created_at_is_a_typed_error() {
         let err = canonical_report_filename("not-a-timestamp", "rid", &minus_three()).unwrap_err();
+        assert!(err.to_string().contains("non-RFC3339"), "{err}");
+    }
+
+    #[test]
+    fn export_basename_has_no_id_suffix_and_carries_the_extension() {
+        // The spec's export name (docs/export.md §Export Naming) is suffix-free,
+        // distinct from the internal canonical filename's `-<id8>` segment.
+        let md = export_basename("2026-06-03T12:00:00Z", "md", &minus_three()).unwrap();
+        assert_eq!(md, "2026-06-03-market-signal-weekly-report.md");
+        let pdf = export_basename("2026-06-03T12:00:00Z", "pdf", &minus_three()).unwrap();
+        assert_eq!(pdf, "2026-06-03-market-signal-weekly-report.pdf");
+    }
+
+    #[test]
+    fn export_basename_uses_local_calendar_date_across_a_midnight_boundary() {
+        // Shares local_date_segment with the canonical filename: 01:30 UTC on the
+        // 3rd is 22:30 on the 2nd at UTC-3, so the export date is the local one.
+        let name = export_basename("2026-06-03T01:30:00Z", "md", &minus_three()).unwrap();
+        assert_eq!(name, "2026-06-02-market-signal-weekly-report.md");
+    }
+
+    #[test]
+    fn export_basename_non_rfc3339_created_at_is_a_typed_error() {
+        let err = export_basename("not-a-timestamp", "md", &minus_three()).unwrap_err();
         assert!(err.to_string().contains("non-RFC3339"), "{err}");
     }
 }

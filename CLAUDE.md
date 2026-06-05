@@ -43,8 +43,8 @@ When working on any UI task:
    custom properties. Reference them in component <style> blocks
    via var(--token-name). Never invent off-system colors, radii,
    or spacing values.
-3. Use the components in `ui_kits/market_signal_desktop/` as the
-   fidelity reference for surfaces and component composition.
+3. Use the components in `market-signal-design-system/project/ui_kits/market_signal_desktop/`
+   as the fidelity reference for surfaces and component composition.
    Translate to Vue 3 single-file components faithfully; match
    visual output, not internal structure.
 4. The "What this system rejects on sight" section of `SKILL.md`

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Icon from "./Icon.vue";
+import { localDate } from "../format";
 import type { AppView, ReportSummary } from "../types";
 
 defineProps<{
@@ -19,8 +20,10 @@ defineEmits<{
   (e: "select", reportId: string): void;
 }>();
 
+// The row's report date in local time, matching the report toolbar's dateline
+// and the export filenames (see ../format).
 function shortDate(iso: string): string {
-  return iso.slice(0, 10);
+  return localDate(iso);
 }
 
 function shortId(id: string): string {

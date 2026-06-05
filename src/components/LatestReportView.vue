@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import MarkdownIt from "markdown-it";
+import Icon from "./Icon.vue";
+import { localDate } from "../format";
 import type { GeneratedReport } from "../types";
 
 const props = defineProps<{
@@ -11,6 +13,18 @@ const props = defineProps<{
   loadError: string | null;
   // Whether the shown report is the newest one — drives the "Latest" tag.
   isLatest: boolean;
+  // Markdown export is in flight (the parent owns the invoke); drives the
+  // "Share as Markdown" button's busy/disabled state.
+  exportingMarkdown: boolean;
+  // A failed Markdown export, surfaced as a slim inline alert under the toolbar.
+  // PDF export is handled locally here and has no parent-tracked error channel.
+  exportError: string | null;
+}>();
+
+const emit = defineEmits<{
+  // Ask the parent to run the Markdown export (Save dialog + write live in the
+  // backend command; the parent owns the invoke and the error/busy state).
+  (e: "export-markdown"): void;
 }>();
 
 // html:false — the Markdown is our own trusted report body, and we never want
@@ -36,22 +50,78 @@ const renderedHtml = computed(() =>
 // report is loaded.
 const toolbarLabel = computed(() =>
   props.report
-    ? `${props.report.summary.created_at.slice(0, 10)} · #${props.report.report_id.slice(0, 8)}`
+    ? `${localDate(props.report.summary.created_at)} · #${props.report.report_id.slice(0, 8)}`
     : "Latest report"
 );
+
+// Export is only meaningful when a report is actually on screen — not while an
+// error/load-error block is showing in its place, and not on the empty state.
+const canExport = computed(
+  () => props.report !== null && props.error === null && props.loadError === null
+);
+
+// Export the rendered report as PDF via the webview's native print-to-PDF (the
+// macOS print panel's "Save as PDF"; there is no silent print-to-PDF API in
+// Tauri/wry on macOS — wry#707). On macOS, Tauri replaces `window.print` with a
+// shim that dispatches the `core:webview:allow-print` command (hence it is async
+// and requires that capability — granted in capabilities/default.json). The
+// `@media print` stylesheet isolates the report article; `document.title` seeds
+// the panel's suggested filename, so set it to the spec's basename (docs/export.md
+// §Export Naming — no internal id suffix) for the duration of the print, then
+// restore. The date is the local-calendar date (see ../format), matching the
+// Markdown export name and the toolbar dateline so all three agree.
+async function exportPdf() {
+  if (!props.report) return;
+  const base = `${localDate(props.report.summary.created_at)}-market-signal-weekly-report`;
+  const previousTitle = document.title;
+  document.title = base;
+  try {
+    await window.print();
+  } finally {
+    document.title = previousTitle;
+  }
+}
 </script>
 
 <template>
   <main class="report-pane">
     <!-- A quiet reading toolbar: generation lives in the empty-state CTA and the
-         footer's "Generate now"; export returns here when that slice lands. The
-         label reflects the selected issue, with a tag when it's the newest. -->
+         footer's "Generate now"; export lives here (kit ReportToolbar). The label
+         reflects the selected issue, with a tag when it's the newest. -->
     <div class="toolbar">
       <div class="toolbar-heading">
         <span class="toolbar-label">{{ toolbarLabel }}</span>
         <span v-if="report && isLatest" class="toolbar-tag">Latest</span>
       </div>
+      <div class="toolbar-actions">
+        <button
+          type="button"
+          class="btn btn-secondary"
+          :disabled="!canExport"
+          title="Export this report as a PDF"
+          @click="exportPdf"
+        >
+          <Icon name="export_" :size="13" />
+          Export PDF
+        </button>
+        <button
+          type="button"
+          class="btn btn-secondary"
+          :disabled="!canExport || exportingMarkdown"
+          :title="exportingMarkdown ? 'Saving…' : 'Save this report as a Markdown file'"
+          @click="emit('export-markdown')"
+        >
+          <Icon name="file" :size="13" />
+          {{ exportingMarkdown ? "Saving…" : "Share as Markdown" }}
+        </button>
+      </div>
     </div>
+
+    <!-- A failed Markdown export: a slim, non-destructive alert under the toolbar
+         that leaves the report on screen (export is an action, not a load). -->
+    <p v-if="exportError" class="export-error" role="alert">
+      Couldn't export: {{ exportError }}
+    </p>
 
     <div class="report-scroll">
       <div v-if="error" class="report-error" role="alert">
@@ -130,6 +200,29 @@ const toolbarLabel = computed(() =>
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
   color: var(--ink-3);
+}
+
+/* The export pair (Export PDF · Share as Markdown), matching the kit's
+   ReportToolbar action group and the inbox/archive toolbars' button row.
+   flex-shrink:0 keeps the buttons whole when the dateline label is long. */
+.toolbar-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: var(--s-3);
+}
+
+/* Slim export-failure alert under the toolbar seam — uses the same caption-scale
+   sans as the report's load-error label, but as a one-line strip so the report
+   underneath stays visible (export is an action, not a load failure). */
+.export-error {
+  margin: 0;
+  padding: var(--s-2) var(--s-8);
+  border-bottom: var(--border);
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  line-height: var(--lh-ui);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
 }
 
 .report-scroll {

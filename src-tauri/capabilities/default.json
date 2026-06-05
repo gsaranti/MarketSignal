@@ -6,6 +6,8 @@
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
-    "opener:default"
+    "opener:default",
+    "dialog:allow-save",
+    "core:webview:allow-print"
   ]
 }

@@ -14,6 +14,7 @@ use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use config::{AppConfig, ValidationReport};
@@ -170,6 +171,51 @@ fn list_reports(app: tauri::AppHandle) -> Result<Vec<agent::ReportSummary>, Stri
 fn load_report(app: tauri::AppHandle, report_id: String) -> Result<GeneratedReport, String> {
     let paths = report_paths(&app)?;
     pipeline::load_report(&paths, &report_id).map_err(|e| e.to_string())
+}
+
+/// Export one report's canonical Markdown to a user-chosen location
+/// (`docs/export.md`). The report is resolved first — a bad id or a Markdown file
+/// removed out-of-band fails here, before any dialog pops — which also yields the
+/// `created_at` used to suggest the spec's export filename
+/// (`YYYY-MM-DD-market-signal-weekly-report.md`, no internal id suffix). The
+/// native Save dialog runs on a blocking thread: `blocking_save_file` parks the
+/// calling thread until the user responds and must not run on the async runtime
+/// thread, so it goes through `spawn_blocking` (the same seam
+/// `generate_report_manual` uses). A cancelled dialog returns `Ok(false)`; a saved
+/// file returns `Ok(true)` after the stored Markdown is written to the chosen path.
+/// Exporting reads stored artifacts only and never re-runs the workflow
+/// (`docs/export.md §Export Behavior`).
+#[tauri::command]
+async fn export_report_markdown(app: tauri::AppHandle, report_id: String) -> Result<bool, String> {
+    let paths = report_paths(&app)?;
+
+    // Resolve the report before showing a dialog: validates the id and that the
+    // Markdown is readable, and supplies created_at for the suggested name.
+    let report = pipeline::load_report(&paths, &report_id).map_err(|e| e.to_string())?;
+    let suggested = pipeline::export_basename(&report.summary.created_at, "md", &chrono::Local)
+        .map_err(|e| e.to_string())?;
+
+    let chosen = {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            app.dialog()
+                .file()
+                .set_file_name(&suggested)
+                .add_filter("Markdown", &["md"])
+                .blocking_save_file()
+        })
+        .await
+        .map_err(|e| format!("save dialog task failed: {e}"))?
+    };
+
+    // User dismissed the dialog without choosing a path.
+    let Some(chosen) = chosen else {
+        return Ok(false);
+    };
+
+    let dest = chosen.into_path().map_err(|e| e.to_string())?;
+    pipeline::export_markdown_to(&paths, &report_id, &dest).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// Resolve the SQLite path and ensure the app data directory exists, so a
@@ -446,11 +492,13 @@ fn restore_windows(app: &tauri::AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(RunGuard::default())
         .invoke_handler(tauri::generate_handler![
             generate_report_manual,
             list_reports,
             load_report,
+            export_report_markdown,
             check_configuration,
             job_status,
             set_job_enabled,
