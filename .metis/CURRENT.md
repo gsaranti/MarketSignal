@@ -2,27 +2,26 @@
 
 ## What happened
 
-**Dark mode shipped — toggle + two AA contrast fixes — merged and pushed to `origin/main`** (3 commits, `bc4fab7..90a68d4`). 
+**Open-questions sweep — five resolved, three commits pushed to `origin/main`** (`1289d5f..7947f31`).
 
-- **Dark-mode toggle** (`3a5349e`): a **Light/Dark boolean**, kit-faithful ("Dark surface"), default Light — *not* tri-state/System (decided: not App-Store-required, simpler, explicit opt-in). New `src/theme.ts` is the **only** setter of `data-theme` on `<html>`; persisted in **localStorage, not `app_settings`** (pure presentation, no backend consumer; synchronous read in `main.ts` before mount → no flash). Applies instantly, independent of the token-gated Save. `color-scheme` declared light/dark so native chrome matches.
-- Making the dark palette user-facing exposed two **pre-existing, latent** token-contrast gaps (caught by three converging reviews — metis reviewer + Codex ×2):
-  - **`--ink-3`** retuned (`fd7238c`): light `#7A6F5F→#6B6153`, dark `#7E7560→#988F78` — clears AA 4.5:1 on paper/soft/edge in both modes; ramp hierarchy preserved.
-  - **`--accent` as text** decoupled (`90a68d4`): new **`--accent-text`** token (dark `#D28A99`; light = `--accent`, unchanged). 8 `color:` text sites + warning chevron repointed; fills/rings/`::selection` keep `--accent` (dark `#B0596A` fails AA as text **by design**).
-- Verified throughout: contrast computation (all six surface/mode pairs), `cargo test`/clippy/`npm run build`, and live light+dark GUI screenshots (non-destructive, real DB backed up/restored).
+- **Appearance persistence**: kept in **localStorage** (not `app_settings`) by decision — synchronous pre-mount read gives a zero-flash launch, and it has no backend consumer. The deliberate exception to "config lives in SQLite" is now documented in `BUILD.md` (`7947f31`).
+- **`--accent-text` (dark)** dialed `#D28A99 → #CE8090` (`aa47bf9`) — deeper oxblood, closer to the light token; still clears AA on every dark surface (4.95–5.99).
+- **FMP bad-key path live-verified** (`cdda6a0`): invalid/empty/missing keys return **HTTP 401 + `Error Message` body** on both `/stable/` and `/api/v3/` — *not* the 200-with-error-body the comments assumed — and are handled correctly by the status branch. Comments corrected; finding locked in as `fmp_401_with_error_body_is_a_failure`. The 200-body branch stays as defensive cover for FMP's plan/rate-limit conditions.
+- **Jun-3 failed job**: benign — a `sk-bogus…test` placeholder key → 401, then a real-key success 4 min later. It *validates* the failed-job path (401 body in `job_runs.detail`, state `failed`, surfaced in warnings). No fix.
+- **Settings test-saved vs test-before-save**: settled as **test-saved** — the backend reads the saved key (the typed secret never crosses the invoke boundary) and the UI gates Test off while the field is dirty. Coherent; no change.
+
+Verified throughout: `cargo test`, `cargo clippy --all-targets --all-features` (warning-free), `npm run build`.
 
 ## Current state
 
-On **`main`** at **`90a68d4`**, **pushed** (up to date with `origin/main`), working tree clean, `dark-mode` branch merged + deleted. **Nothing in flight** — the feature is complete.
+On **`main`** at **`7947f31`**, **pushed** (up to date with `origin/main`), working tree clean. **Nothing in flight.**
 
 ## Open questions
 
-- **Appearance persistence is localStorage, not `app_settings`** — a deliberate departure from the "persisted config lives in SQLite" convention. Justified (UI preference, not gated config; avoids launch flash). Flagged below for whether `BUILD.md` should note it.
-- **`--accent-text` dark = `#D28A99`** — comfortable AA margin but a notable pink shift from the oxblood; could dial toward `#CE8090` (~4.95) if it reads too pink. Accepted as-is; low priority.
-- **No Vue component-test harness** *(carried)* — the toggle's disabled/on/off matrix is covered by build + live screenshot, not Vitest. Stand up Vitest + Vue Test Utils when wanted.
-- *(carried)* Test-saved vs test-before-save (Settings); FMP `200`-with-error-body branch unverified live; **Jun-3 failed job** in the real DB (uninvestigated); retention-cascade enforcement; step-5 auto-archive; report-body fidelity ceiling; PDF `@page` margin fidelity.
-
-*(Resolved this session: the `--ink-3` caption AA gap and the latent dark-mode contrast concern — both fixed and verified.)*
+- **No Vue component-test harness** *(deferred)* — stand up Vitest + Vue Test Utils when wanted; nothing is blocked on it.
+- *(parked for plan-task)* **retention-cascade enforcement** (30-report cap + cascade delete, durable-learnings survival) and **step-5 auto-archive** — real build slices, not quick checks.
+- *(carried, low priority)* report-body rendering fidelity ceiling; PDF `@page` margin fidelity.
 
 ## Where to start
 
-Dark mode is **done + pushed**; not a candidate anymore. Pick the next build target → `/metis-plan-task`: per `BUILD.md`'s "immediate next slices," the **FMP/FRED/BLS data-source adapters** are the next major build; **retention-cascade enforcement** is a smaller self-contained one. The **Jun-3 failed job** in the DB remains a cheap aside if curious.
+Pick the next build target → `/metis-plan-task`. Per `BUILD.md`'s "immediate next slices": the **FMP/FRED/BLS data-source adapters** are the next major build (FMP groundwork already exists in `connection_test.rs`); **retention-cascade enforcement** is the smaller, self-contained option.
