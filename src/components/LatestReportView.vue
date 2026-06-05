@@ -77,12 +77,15 @@ const renderedHtml = computed(() =>
   border-bottom: var(--border);
 }
 
+/* Surface title: stronger than the section eyebrows it sits above — 13px ink
+   semibold (a deliberate step up from the 11px caption used for sub-headings). */
 .toolbar-label {
   font-family: var(--font-sans);
-  font-size: var(--t-caption);
+  font-size: var(--t-ui-sm);
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
-  color: var(--ink-3);
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .report-scroll {

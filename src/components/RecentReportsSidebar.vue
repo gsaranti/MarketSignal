@@ -151,9 +151,10 @@ function shortId(id: string): string {
 /* Bottom nav — targets at the foot of the panel (design kit Sidebar.jsx).
    Geometry mirrors `.row` (2px edge + 14px content offset) so a nav item's
    label aligns with the report-row title above it. */
+/* No top padding: the first nav item's selected highlight (and its accent edge)
+   meets the divider flush, rather than leaving a sliver of gap above it. */
 .sidebar-nav {
   border-top: var(--border);
-  padding-top: var(--s-2);
 }
 
 .nav-item {

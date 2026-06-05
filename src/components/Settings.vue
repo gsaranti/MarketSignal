@@ -351,12 +351,15 @@ function onSave() {
   border-bottom: var(--border);
 }
 
+/* Surface title: stronger than the section eyebrows below it — 13px ink semibold
+   (a deliberate step up from the 11px caption used for sub-headings). */
 .toolbar-label {
   font-family: var(--font-sans);
-  font-size: var(--t-caption);
+  font-size: var(--t-ui-sm);
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
-  color: var(--ink-3);
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .settings-scroll {
@@ -370,8 +373,9 @@ function onSave() {
 }
 
 /* The lead section sits directly under the toolbar seam, so it drops the section
-   rule + top padding that separate the stacked sections below it. */
-.settings-section--lead {
+   rule + top padding that separate the stacked sections below it. Compound
+   selector so it beats `.settings-section` regardless of source order. */
+.settings-section.settings-section--lead {
   border-top: 0;
   padding-top: 0;
 }

@@ -315,7 +315,14 @@ not to entertain.**
   marketing‑page typography does not appear inside the product.
 - **Per‑surface titles.** Serif display is reserved for the report (its own
   title line). Config and list surfaces — **Settings, Research Inbox** — are
-  named once by their toolbar eyebrow and carry **no separate serif H2**.
+  named once by their toolbar eyebrow and carry **no separate serif H2**. That
+  surface‑title eyebrow is set one step **above** the section sub‑heading eyebrows
+  it governs — **13px, ink, semibold** vs. the 11px ink caption used for
+  in‑surface section headings (e.g. "Scheduled job") — so the surface name reads
+  as the dominant label, not weaker than its own sections. The same 13px
+  semibold treatment carries the persistent warning band's oxblood "Needs
+  attention" header. (Extension noted: a 13px tracked‑uppercase label tier on
+  top of the 11px caption.)
 - **Window minimum.** The layout holds from a **~720×480** floor upward (the
   app window's `minWidth`/`minHeight`); below that the fixed‑width sidebar would
   crush the reading column, so the window is not allowed to shrink past it. The

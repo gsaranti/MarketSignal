@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
+import Icon from "./Icon.vue";
 import type { ValidationReport } from "../types";
 
 // Persistent Warning Area (docs/interface.md). Deliberately rendered in the
@@ -23,6 +24,24 @@ const visible = computed(
   () => props.error !== null || categories.value.length > 0
 );
 
+// Collapse state (session-scoped — the component stays mounted across view
+// switches, so this persists until the app restarts).
+const collapsed = ref(false);
+
+// One row per active category, plus the config-check error row when present.
+const issueCount = computed(() => (props.error ? 1 : 0) + categories.value.length);
+
+// A signature of which warnings are present, so we can re-expand when a NEW one
+// appears even if the user had collapsed the band.
+const signature = computed(
+  () => (props.error ? "err," : "") + categories.value.map((c) => c.kind).join(",")
+);
+watch(signature, (now, before) => {
+  const had = new Set((before ?? "").split(",").filter(Boolean));
+  const appeared = now.split(",").filter(Boolean).some((k) => !had.has(k));
+  if (appeared) collapsed.value = false;
+});
+
 function formatItems(items: string[]): string {
   return items.join("; ");
 }
@@ -35,8 +54,26 @@ function formatItems(items: string[]): string {
     aria-label="Needs attention"
     aria-live="polite"
   >
-    <div class="warning-head">Needs attention</div>
-    <ul class="warning-list">
+    <button
+      type="button"
+      class="warning-toggle"
+      :aria-expanded="!collapsed"
+      aria-controls="warning-list"
+      @click="collapsed = !collapsed"
+    >
+      <span class="warning-head">Needs attention</span>
+      <span v-if="collapsed" class="warning-count">
+        · {{ issueCount }} {{ issueCount === 1 ? "issue" : "issues" }}
+      </span>
+      <Icon
+        name="chevron_d"
+        :size="14"
+        color="var(--accent)"
+        class="warning-chevron"
+        :class="{ 'is-open': !collapsed }"
+      />
+    </button>
+    <ul v-show="!collapsed" id="warning-list" class="warning-list">
       <li v-if="error" class="warning-row">
         <span class="warning-label">Configuration</span>
         <span class="warning-body">
@@ -64,23 +101,59 @@ function formatItems(items: string[]): string {
   container-type: inline-size;
 }
 
-/* Accent header is the alert signal — no icon, no saturated red, just the
-   system's oxblood used the way it already marks error labels elsewhere. */
+/* The header doubles as the collapse control: full-width row, head on the left,
+   disclosure chevron pushed to the right. A <button> so it is keyboard-operable. */
+.warning-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.warning-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Accent header is the alert signal — no saturated red, just the system's
+   oxblood used the way it already marks error labels elsewhere. Sized to the
+   strengthened surface-title scale (13px) so it reads as a region heading. */
 .warning-head {
   font-family: var(--font-sans);
-  font-size: var(--t-caption);
+  font-size: var(--t-ui-sm);
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
   font-weight: 600;
   color: var(--accent);
-  margin-bottom: var(--s-3);
+}
+
+/* Count summary shown only when collapsed. */
+.warning-count {
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  color: var(--ink-2);
+}
+
+/* Chevron points down when collapsed, flips up when open. */
+.warning-chevron {
+  margin-left: auto;
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.warning-chevron.is-open {
+  transform: rotate(180deg);
 }
 
 /* One block: the categories are a single list grouped by spacing, with no
    inter-row hairlines (those made one warning area look like three sections). */
 .warning-list {
   list-style: none;
-  margin: 0;
+  margin: var(--s-3) 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -128,5 +201,11 @@ function formatItems(items: string[]): string {
   line-height: var(--lh-ui);
   color: var(--ink);
   overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .warning-chevron {
+    transition: none;
+  }
 }
 </style>
