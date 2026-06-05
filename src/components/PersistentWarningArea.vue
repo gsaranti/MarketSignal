@@ -68,7 +68,7 @@ function formatItems(items: string[]): string {
       <Icon
         name="chevron_d"
         :size="14"
-        color="var(--accent)"
+        color="var(--accent-text)"
         class="warning-chevron"
         :class="{ 'is-open': !collapsed }"
       />
@@ -136,7 +136,7 @@ function formatItems(items: string[]): string {
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* Count summary shown only when collapsed. */

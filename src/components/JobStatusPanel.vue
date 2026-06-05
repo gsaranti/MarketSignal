@@ -148,7 +148,7 @@ function formatLocal(iso: string): string {
   margin: 0;
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
-  color: var(--accent);
+  color: var(--accent-text);
   overflow-wrap: anywhere;
 }
 

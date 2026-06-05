@@ -131,7 +131,7 @@ const statusClass = computed(() => {
 }
 
 .cred-status--err {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 @media (prefers-reduced-motion: reduce) {

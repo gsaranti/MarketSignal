@@ -41,6 +41,7 @@
   --accent:       #6E2230;
   --accent-press: #581923;
   --accent-soft:  #8A3744;   /* for the rare disabled-but-visible state */
+  --accent-text:  #6E2230;   /* accent used as TEXT — same as --accent in light (clears AA); lifts in dark */
 
   /* Neutral chevron for direction (never red/green) */
   --signal-up:    var(--ink);
@@ -126,6 +127,7 @@
   --accent:       #B0596A;
   --accent-press: #C77384;
   --accent-soft:  #8F4452;
+  --accent-text:  #D28A99;   /* lifted oxblood for accent TEXT only — clears WCAG AA (4.5:1) on dark surfaces; fills/rings keep --accent */
 }
 
 /* =============================================================================

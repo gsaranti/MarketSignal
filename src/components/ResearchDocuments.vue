@@ -242,7 +242,7 @@ function formatDate(iso: string | null): string {
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-text);
   margin-bottom: var(--s-3);
 }
 
@@ -397,7 +397,7 @@ function formatDate(iso: string | null): string {
 }
 
 .row-action--danger:hover {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .row-action:focus-visible {

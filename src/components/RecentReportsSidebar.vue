@@ -212,7 +212,7 @@ function shortId(id: string): string {
 /* List-load failure: accent draws the eye to a problem, matching the report
    pane's error-label treatment rather than reading as quiet caption metadata. */
 .row-meta.is-error {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* Bottom nav — targets at the foot of the panel (design kit Sidebar.jsx).

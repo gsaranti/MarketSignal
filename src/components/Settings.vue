@@ -548,7 +548,7 @@ function credDirty(key: CredKey): boolean {
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-text);
   margin-bottom: var(--s-3);
 }
 
