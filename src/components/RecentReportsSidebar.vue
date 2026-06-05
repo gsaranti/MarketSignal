@@ -87,13 +87,18 @@ function shortId(id: string): string {
   background: var(--paper-soft);
 }
 
+/* Header row: fixed height + centered so its bottom seam aligns with the
+   collapsed warning band's across the column gutter (both are the "header" tier). */
 .sidebar-header {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
   font-family: var(--font-sans);
   font-size: var(--t-caption);
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
   color: var(--ink-3);
-  padding: var(--s-5) var(--s-5) var(--s-3);
+  padding: 0 var(--s-5);
   border-bottom: var(--border);
 }
 
@@ -106,8 +111,12 @@ function shortId(id: string): string {
 /* The report row reuses the global `.row` (accent edge + hover) but is a
    <button>; reset the button chrome `.row` doesn't set so only the leading
    accent edge and bottom hairline read. */
+/* Item row: matched to the report toolbar's height (the "item/title" tier) and
+   centered, so its bottom seam lines up with the toolbar's across the gutter. */
 .report-row {
   width: 100%;
+  min-height: 50px;
+  align-items: center;
   appearance: none;
   background: transparent;
   border-top: 0;

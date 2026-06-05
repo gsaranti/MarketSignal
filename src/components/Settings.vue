@@ -562,11 +562,14 @@ function onSave() {
   cursor: pointer;
 }
 
+/* The knob is always filled — muted ink-3 when off, solid ink when on — so the
+   control reads as a switch in both states (a transparent off-knob looked like
+   an empty box). State = fill weight + position. */
 .switch-knob {
   width: 18px;
   height: 16px;
   border-radius: var(--radius-sm);
-  background: transparent;
+  background: var(--ink-3);
   margin-left: 0;
   transition: margin-left var(--dur-fast) var(--ease),
     background-color var(--dur-fast) var(--ease);
@@ -587,8 +590,8 @@ function onSave() {
   border-color: var(--hairline);
 }
 
-.switch:disabled .switch-knob--on {
-  background: var(--ink-3);
+.switch:disabled .switch-knob {
+  background: var(--hairline);
 }
 
 @media (prefers-reduced-motion: reduce) {

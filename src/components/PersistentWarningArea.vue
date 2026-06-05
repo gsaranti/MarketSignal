@@ -96,6 +96,13 @@ function formatItems(items: string[]): string {
   background: var(--paper-edge);
   border-bottom: var(--border);
   padding: var(--s-4) var(--s-8);
+  /* Collapsed, this matches the sidebar header's height so the two bottom seams
+     line up across the column gutter; centered so the single summary line sits
+     mid-band. Expanded, the content exceeds the min and the band simply grows. */
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   /* Query container so rows can adapt to the content column's width (viewport
      minus the fixed sidebar), not the viewport. */
   container-type: inline-size;
