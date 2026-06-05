@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import Icon from "./Icon.vue";
+import ConnectionTestRow from "./ConnectionTestRow.vue";
 import type {
   SettingsView,
   AgentModels,
+  ConnectionTestResult,
   CredentialUpdate,
   ModelOption,
 } from "../types";
@@ -25,11 +27,16 @@ const props = defineProps<{
   // only reports run status (docs/interface.md §Settings).
   jobEnabled: boolean | null;
   jobBusy: boolean;
+  // Per-credential "Test connection" state, owned by App (the single invoke
+  // home): which credential is mid-test, and the last result for each.
+  testing: Record<CredKey, boolean>;
+  testResults: Record<CredKey, ConnectionTestResult | null>;
 }>();
 
 const emit = defineEmits<{
   (e: "save", payload: { models: AgentModels; credentials: CredentialUpdate }): void;
   (e: "set-enabled", value: boolean): void;
+  (e: "test", key: CredKey): void;
 }>();
 
 type ModelKey = "main" | "bull" | "bear" | "balanced";
@@ -165,6 +172,12 @@ function onSave() {
   };
   emit("save", { models: { ...local.value }, credentials: credUpdate });
 }
+
+// Whether a credential field holds a typed (unsaved) value — drives the test
+// row's gating (it validates the saved credential, not what's typed).
+function credDirty(key: CredKey): boolean {
+  return creds.value[key].trim() !== "";
+}
 </script>
 
 <template>
@@ -283,6 +296,13 @@ function onSave() {
                 spellcheck="false"
                 :placeholder="tokenPlaceholder(field.key)"
               />
+              <ConnectionTestRow
+                :configured="!!settings.credentials[field.key]"
+                :dirty="credDirty(field.key)"
+                :testing="testing[field.key]"
+                :result="testResults[field.key]"
+                @test="emit('test', field.key)"
+              />
             </div>
           </section>
 
@@ -302,6 +322,13 @@ function onSave() {
                 autocomplete="off"
                 spellcheck="false"
                 :placeholder="tokenPlaceholder(field.key)"
+              />
+              <ConnectionTestRow
+                :configured="!!settings.credentials[field.key]"
+                :dirty="credDirty(field.key)"
+                :testing="testing[field.key]"
+                :result="testResults[field.key]"
+                @test="emit('test', field.key)"
               />
             </div>
           </section>

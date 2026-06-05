@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod config;
+pub mod connection_test;
 pub mod jobs;
 pub mod model_agent;
 pub mod pipeline;
@@ -279,6 +280,50 @@ fn save_settings(
     settings::save(&conn, &models, &credentials).map_err(|e| e.to_string())
 }
 
+/// Validate one configured provider credential with a single live authenticated
+/// request (Settings "Test connection"). Reads the *saved* credential (env
+/// fallback per field, like the gate); an unset credential returns a
+/// not-configured result without any network call. The blocking HTTP request
+/// goes through `spawn_blocking` — `reqwest::blocking` would panic on the async
+/// runtime thread, the same seam `generate_report_manual` uses. The request
+/// validates the key only: it never spends model tokens, and it does not change
+/// the execution gate, which checks credential *presence*, not validity.
+#[tauri::command]
+async fn test_connection(
+    app: tauri::AppHandle,
+    provider: String,
+) -> Result<connection_test::ConnectionTestResult, String> {
+    use connection_test::CredentialProvider;
+    let target = CredentialProvider::from_label(&provider).map_err(|e| e.to_string())?;
+
+    // Read the saved credential on a short-lived connection dropped before the
+    // await — a `rusqlite::Connection` is not `Send` and must never cross an
+    // await point.
+    let key = {
+        let conn = open_app_db(&app)?;
+        let cfg = AppConfig::load(&conn);
+        let stored = match target {
+            CredentialProvider::OpenAi => &cfg.openai_api_key,
+            CredentialProvider::Anthropic => &cfg.anthropic_api_key,
+            CredentialProvider::Fmp => &cfg.fmp_api_key,
+            CredentialProvider::Tavily => &cfg.tavily_api_key,
+        };
+        stored
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+
+    let Some(key) = key else {
+        return Ok(connection_test::ConnectionTestResult::not_configured());
+    };
+
+    tauri::async_runtime::spawn_blocking(move || connection_test::run_test(target, &key))
+        .await
+        .map_err(|e| format!("connection test task failed: {e}"))
+}
+
 /// List the user-supplied documents currently in the research inbox
 /// (`docs/research-documents.md`). A fresh install with no inbox folder yet lists
 /// as empty rather than erroring; the frontend renders the empty state.
@@ -504,6 +549,7 @@ pub fn run() {
             set_job_enabled,
             get_settings,
             save_settings,
+            test_connection,
             list_research_inbox,
             delete_research_document,
             reveal_research_inbox,

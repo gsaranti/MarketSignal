@@ -92,6 +92,18 @@ export interface CredentialStatus {
   tavily: boolean;
 }
 
+// The four testable credentials — the keys shared by CredentialStatus /
+// CredentialUpdate and used to drive per-credential "Test connection" state.
+export type CredentialKey = "openai" | "anthropic" | "fmp" | "tavily";
+
+// Returned by `test_connection`: whether the saved credential was accepted by a
+// single live authenticated request, plus a short message. Mirrors the Rust
+// `connection_test::ConnectionTestResult`. Never carries the secret.
+export interface ConnectionTestResult {
+  ok: boolean;
+  detail: string;
+}
+
 // Returned by `get_settings`.
 export interface SettingsView {
   models: AgentModels;
