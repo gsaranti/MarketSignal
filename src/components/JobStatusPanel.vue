@@ -2,27 +2,26 @@
 import { computed } from "vue";
 import type { JobStatus } from "../types";
 
-// Weekly-job status + controls (docs/scheduling.md §Job Status Visibility,
-// §Job Controls). A minimal functional surface for this slice — the warning-area
-// redesign and richer status come in the UI/design pass. Fidelity references:
-// the boxy Toggle in the design kit's Settings.jsx, the status row in
-// components-status.html, and the settings control-row (sans label + serif hint).
+// Weekly-job status (docs/scheduling.md §Job Status Visibility). Reports run
+// history (last run / last failure / last skipped) and the in-flight indicator;
+// the enable/disable control lives in Settings. It also carries the persistent
+// manual "Generate now" trigger (the kit's footer division — generation is a job
+// action, the report toolbar is reading-only). Recessed chrome on paper-soft.
 const props = defineProps<{
   status: JobStatus | null;
   error: string | null;
-  busy?: boolean;
+  blocked: boolean;
+  generating: boolean;
 }>();
 
-const emit = defineEmits<{ (e: "set-enabled", value: boolean): void }>();
-
-const enabled = computed(() => props.status?.enabled ?? false);
+defineEmits<{ (e: "generate"): void }>();
 
 // Stay silent until the first status resolves (mirrors the warning area), so the
 // footer doesn't flash empty on load. Surface as soon as there's status or error.
 const visible = computed(() => props.status !== null || props.error !== null);
 
-// The backend persists UTC; render in the viewer's local time (the "show local"
-// half of the time-zone decision). Fall back to the raw string if unparseable.
+// The backend persists UTC; render in the viewer's local time. Fall back to the
+// raw string if unparseable.
 function formatLocal(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -33,11 +32,6 @@ function formatLocal(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function toggle() {
-  if (props.busy || !props.status) return;
-  emit("set-enabled", !enabled.value);
 }
 </script>
 
@@ -64,13 +58,11 @@ function toggle() {
             }}
           </dd>
         </div>
+        <!-- Timestamp only — the full failure reason is in the warning band
+             above, which has room to wrap (the footer always truncated it). -->
         <div v-if="status?.last_failed_at" class="job-fact">
           <dt>Last failure</dt>
-          <dd :title="status.last_failure_detail || undefined">
-            {{ formatLocal(status.last_failed_at)
-            }}<template v-if="status.last_failure_detail">
-              — {{ status.last_failure_detail }}</template>
-          </dd>
+          <dd>{{ formatLocal(status.last_failed_at) }}</dd>
         </div>
         <div v-if="status?.last_skipped_at" class="job-fact">
           <dt>Last skipped</dt>
@@ -79,45 +71,36 @@ function toggle() {
       </dl>
     </div>
 
-    <div v-if="status" class="job-control">
-      <div class="job-control-text">
-        <div class="job-control-label">Weekly report</div>
-        <div class="job-control-hint">
-          {{
-            enabled
-              ? "Runs automatically every Sunday at 9:00 AM."
-              : "Scheduled runs are paused."
-          }}
-        </div>
-      </div>
-      <button
-        type="button"
-        class="switch"
-        role="switch"
-        :aria-checked="enabled"
-        :aria-label="
-          enabled ? 'Disable weekly report job' : 'Enable weekly report job'
-        "
-        :disabled="busy || !status"
-        @click="toggle"
-      >
-        <span class="switch-knob" :class="{ 'switch-knob--on': enabled }"></span>
-      </button>
-    </div>
+    <!-- Persistent manual trigger. Hidden while a run is in flight (the bar to
+         the left already says so). Disabled when the gate blocks a run; the
+         reason lives in the warning band above and the report empty state. -->
+    <button
+      v-if="!status?.is_running"
+      type="button"
+      class="btn btn-secondary btn-generate"
+      :disabled="generating || blocked"
+      :title="
+        blocked
+          ? 'Resolve the configuration warnings above to generate a report'
+          : undefined
+      "
+      @click="$emit('generate')"
+    >
+      {{ generating ? "Generating…" : "Generate now" }}
+    </button>
   </footer>
 </template>
 
 <style scoped>
 /* Footer seam aligns its left edge with the toolbar and warning rows
-   (var(--s-3) var(--s-8)). */
+   (var(--s-3) var(--s-8)); recessed onto paper-soft like the sidebar. */
 .job-panel {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--s-6);
   padding: var(--s-3) var(--s-8);
   border-top: var(--border);
-  background: var(--paper);
+  background: var(--paper-soft);
 }
 
 .job-status {
@@ -126,9 +109,8 @@ function toggle() {
 }
 
 /* Long-running-job indicator — text plus a single static 1px bar, per the
-   design kit's status row (components-status.html). Deliberately no spinner,
-   no shimmer, no celebration: the pipeline surfaces no step telemetry, so the
-   fill is a fixed-position segment that reads as "in progress", not a
+   design kit's status row. Deliberately no spinner, no shimmer: the pipeline
+   surfaces no step telemetry, so the fill reads as "in progress", not a
    determinate percentage. */
 .job-running {
   display: flex;
@@ -170,6 +152,20 @@ function toggle() {
   overflow-wrap: anywhere;
 }
 
+/* Compact secondary button sized to the footer's tight chrome. Hover steps one
+   tonal step deeper than the paper-soft footer (the secondary default hover is
+   paper-soft, which would be invisible here) — matching the sidebar's tinted-
+   region pattern. */
+.btn-generate {
+  flex-shrink: 0;
+  padding: var(--s-2) var(--s-4);
+  font-size: var(--t-ui-sm);
+}
+
+.btn-generate:hover:not(:disabled) {
+  background: var(--paper-edge);
+}
+
 .job-facts {
   margin: 0;
   display: flex;
@@ -201,89 +197,9 @@ function toggle() {
   font-size: var(--t-ui-sm);
   color: var(--ink-2);
   font-variant-numeric: tabular-nums lining-nums;
-  /* A status footer is a compact bar — clamp each value to one line so an
-     arbitrarily long detail (e.g. a raw provider error) can never balloon the
-     footer's height. The full text is available via the dd's title on hover. */
+  /* Clamp to one line so a long localized timestamp can't balloon the footer. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.job-control {
-  display: flex;
-  align-items: center;
-  gap: var(--s-5);
-  flex-shrink: 0;
-}
-
-.job-control-text {
-  text-align: right;
-}
-
-.job-control-label {
-  font-family: var(--font-sans);
-  font-size: var(--t-ui-sm);
-  font-weight: 500;
-  color: var(--ink);
-}
-
-.job-control-hint {
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: var(--t-caption);
-  color: var(--ink-3);
-  line-height: var(--lh-ui);
-}
-
-/* Boxy switch — mirrors Settings.jsx Toggle: 44×22, 1px ink edge, 2px radius,
-   a sliding 18×16 ink block. No pill, no rounded slider. Rendered as a button
-   so it is keyboard-operable (Enter/Space) and shows a focus ring. */
-.switch {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  width: 44px;
-  height: 22px;
-  padding: 2px;
-  border: 1px solid var(--ink);
-  border-radius: var(--radius);
-  background: transparent;
-  cursor: pointer;
-}
-
-.switch-knob {
-  width: 18px;
-  height: 16px;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  margin-left: 0;
-  transition: margin-left var(--dur-fast) var(--ease),
-    background-color var(--dur-fast) var(--ease);
-}
-
-.switch-knob--on {
-  background: var(--ink);
-  margin-left: 20px;
-}
-
-.switch:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* Disabled (no status yet, or a toggle request in flight): inert, muted edge. */
-.switch:disabled {
-  cursor: not-allowed;
-  border-color: var(--hairline);
-}
-
-.switch:disabled .switch-knob--on {
-  background: var(--ink-3);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .switch-knob {
-    transition: none;
-  }
 }
 </style>

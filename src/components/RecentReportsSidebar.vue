@@ -21,7 +21,7 @@ function shortId(id: string): string {
 
 <template>
   <aside class="sidebar">
-    <div class="sidebar-header">Recent Reports · last 30</div>
+    <div class="sidebar-header">Latest report</div>
     <div class="sidebar-list">
       <!-- The report row doubles as the "back to report" nav: clickable (and
            keyboard-operable) even in the empty state, so a path back from the
@@ -74,6 +74,9 @@ function shortId(id: string): string {
 </template>
 
 <style scoped>
+/* Recessed chrome: the sidebar sits one tonal step below the paper reading
+   surface so the boundary between navigation and report content is legible
+   without leaning on the hairline alone. */
 .sidebar {
   width: 280px;
   flex-shrink: 0;
@@ -81,16 +84,21 @@ function shortId(id: string): string {
   flex-direction: column;
   min-height: 0;
   border-right: var(--border);
-  background: var(--paper);
+  background: var(--paper-soft);
 }
 
+/* Header row: fixed height + centered so its bottom seam aligns with the
+   collapsed warning band's across the column gutter (both are the "header" tier). */
 .sidebar-header {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
   font-family: var(--font-sans);
   font-size: var(--t-caption);
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
   color: var(--ink-3);
-  padding: var(--s-5) var(--s-5) var(--s-3);
+  padding: 0 var(--s-5);
   border-bottom: var(--border);
 }
 
@@ -103,8 +111,12 @@ function shortId(id: string): string {
 /* The report row reuses the global `.row` (accent edge + hover) but is a
    <button>; reset the button chrome `.row` doesn't set so only the leading
    accent edge and bottom hairline read. */
+/* Item row: matched to the report toolbar's height (the "item/title" tier) and
+   centered, so its bottom seam lines up with the toolbar's across the gutter. */
 .report-row {
   width: 100%;
+  min-height: 50px;
+  align-items: center;
   appearance: none;
   background: transparent;
   border-top: 0;
@@ -116,6 +128,13 @@ function shortId(id: string): string {
 .report-row:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* The global `.row` hover/current is paper-soft, which now matches the sidebar
+   background — step it one deeper so selection still reads. */
+.report-row:hover,
+.report-row.is-current {
+  background: var(--paper-edge);
 }
 
 .row-main {
@@ -141,9 +160,10 @@ function shortId(id: string): string {
 /* Bottom nav — targets at the foot of the panel (design kit Sidebar.jsx).
    Geometry mirrors `.row` (2px edge + 14px content offset) so a nav item's
    label aligns with the report-row title above it. */
+/* No top padding: the first nav item's selected highlight (and its accent edge)
+   meets the divider flush, rather than leaving a sliver of gap above it. */
 .sidebar-nav {
   border-top: var(--border);
-  padding-top: var(--s-2);
 }
 
 .nav-item {
@@ -166,11 +186,11 @@ function shortId(id: string): string {
 }
 
 .nav-item:hover {
-  background: var(--paper-soft);
+  background: var(--paper-edge);
 }
 
 .nav-item.is-active {
-  background: var(--paper-soft);
+  background: var(--paper-edge);
   border-left-color: var(--accent);
   font-weight: 600;
 }

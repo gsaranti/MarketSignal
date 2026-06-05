@@ -72,12 +72,12 @@ function formatDate(iso: string | null): string {
     </div>
 
     <div class="inbox-scroll">
-      <div class="inbox-intro">
-        <h2 class="inbox-title">Filed research</h2>
+      <!-- Lede only when there are documents; the empty state below carries its
+           own single instruction, so showing both would just repeat it. -->
+      <div v-if="documents.length > 0" class="inbox-intro">
         <p class="inbox-lede">
-          Drop PDFs, transcripts, or text notes into this folder and the analyst
-          pipeline will consider them when writing next week's issue. Nothing is
-          sent anywhere until you generate.
+          Filed research — read by the pipeline at the start of the next run.
+          Nothing leaves your machine until you generate.
         </p>
       </div>
 
@@ -99,8 +99,9 @@ function formatDate(iso: string | null): string {
       <div v-else-if="documents.length === 0" class="inbox-empty">
         <div class="inbox-empty-eyebrow">No documents</div>
         <p class="inbox-empty-body">
-          This folder is empty. Add files, then they'll be parsed at the start of
-          the next report run.
+          Use “Add files…” to open the inbox folder, then drop in your PDFs,
+          transcripts, or notes. The pipeline reads them at the start of the
+          next run.
         </p>
       </div>
 
@@ -167,21 +168,27 @@ function formatDate(iso: string | null): string {
   background: var(--paper);
 }
 
-/* Toolbar geometry matches the report pane's so the two views share a seam. */
+/* Toolbar geometry matches the report pane's so the two views share a seam.
+   min-height matches the button-less panes; the "Add files…" button already
+   sets this height here, so this just pins the shared reference. */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 50px;
   padding: var(--s-3) var(--s-8);
   border-bottom: var(--border);
 }
 
+/* Surface title: stronger than the section eyebrows — 13px ink semibold (a
+   deliberate step up from the 11px caption used for sub-headings). */
 .toolbar-label {
   font-family: var(--font-sans);
-  font-size: var(--t-caption);
+  font-size: var(--t-ui-sm);
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
-  color: var(--ink-3);
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .toolbar-actions {
@@ -199,19 +206,11 @@ function formatDate(iso: string | null): string {
   padding: var(--s-10) var(--s-8) var(--s-5);
 }
 
-.inbox-title {
-  margin: 0 0 var(--s-2);
-  font-family: var(--font-serif);
-  font-size: var(--t-h1);
-  line-height: var(--lh-display);
-  font-weight: 600;
-  color: var(--ink);
-}
-
+/* Chrome-scale serif: annotates the surface without reading at report size. */
 .inbox-lede {
   margin: 0;
   font-family: var(--font-serif);
-  font-size: var(--t-prose-sm);
+  font-size: var(--t-ui-sm);
   line-height: var(--lh-prose);
   letter-spacing: var(--track-prose);
   color: var(--ink-2);
@@ -249,9 +248,11 @@ function formatDate(iso: string | null): string {
   color: var(--ink-3);
 }
 
+/* Top padding sets the eyebrow off the toolbar seam (matches the report empty
+   state's rhythm) so "No documents" doesn't hug the divider. */
 .inbox-empty {
   max-width: var(--measure);
-  padding: 0 var(--s-8) var(--s-10);
+  padding: var(--s-10) var(--s-8);
 }
 
 .inbox-empty-eyebrow {
@@ -263,13 +264,16 @@ function formatDate(iso: string | null): string {
   margin-bottom: var(--s-4);
 }
 
+/* Chrome-scale serif, not 17px report prose: the empty inbox is product chrome,
+   not a reading surface. ink-2 (not ink-3) clears WCAG AA at this size. */
 .inbox-empty-body {
   margin: 0;
+  max-width: var(--measure);
   font-family: var(--font-serif);
-  font-size: var(--t-body);
+  font-size: var(--t-ui-sm);
   line-height: var(--lh-prose);
   letter-spacing: var(--track-prose);
-  color: var(--ink-3);
+  color: var(--ink-2);
 }
 
 /* The list is hairline-ruled top and bottom, dense rows separated by soft

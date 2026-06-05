@@ -92,7 +92,7 @@
 ## Interface
 - Main layout tree — interface.md §Main Layout
 - Latest Report View / Recent Reports Sidebar — interface.md; weekly-report-workflow.md §Step 17
-- Persistent Warning Area (4 categories, de-dup, dismiss) — interface.md §Persistent Warning Area; scheduling.md §Error Handling
+- Persistent Warning Area (5 categories, de-dup, dismiss) — interface.md §Persistent Warning Area; scheduling.md §Error Handling
 
 ## Export
 - Export options (Markdown, PDF) — export.md §Export Options

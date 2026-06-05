@@ -1,5 +1,11 @@
 // WarningBar.jsx — persistent warning area. Always visible. No icon, no
 // color flag, no chrome. The words are the alert.
+//
+// ⚠ SUPERSEDED (2026-06-04 UX pass): shipped as a status BAND, not serif prose.
+// The serif-italic "words are the alert" treatment read as report content. Now:
+// a --paper-edge inset-well, an oxblood "Needs attention" header, SANS body, one
+// grouped block (no inter-row hairlines). See project/README.md §Persistent
+// Warning Area. Mockup below kept for history.
 
 function WarningBar({ children }) {
   if (!children) return null;

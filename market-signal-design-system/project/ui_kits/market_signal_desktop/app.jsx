@@ -1,4 +1,9 @@
 // app.jsx — top-level state + view router.
+//
+// ⚠ SUPERSEDED (2026-06-04 UX pass): the footer/status row is run-status only —
+// the weekly on/off toggle lives in Settings, and the footer no longer shows the
+// (always-truncated) failure reason, just the timestamp; the full reason is in
+// the warning band. Footer + sidebar sit on --paper-soft. See project/README.md.
 
 function StatusRow({ generating, onGenerate }) {
   if (!generating) {

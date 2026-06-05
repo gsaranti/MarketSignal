@@ -1,17 +1,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import MarkdownIt from "markdown-it";
-import Icon from "./Icon.vue";
 import type { GeneratedReport } from "../types";
 
 const props = defineProps<{
   report: GeneratedReport | null;
-  generating: boolean;
   error: string | null;
-  blocked?: boolean;
 }>();
-
-defineEmits<{ (e: "generate"): void }>();
 
 // html:false — the Markdown is our own trusted report body, and we never want
 // raw HTML from it leaking into the rendered surface.
@@ -34,27 +29,10 @@ const renderedHtml = computed(() =>
 
 <template>
   <main class="report-pane">
+    <!-- A quiet reading toolbar: generation lives in the empty-state CTA and the
+         footer's "Generate now"; export returns here when that slice lands. -->
     <div class="toolbar">
       <div class="toolbar-label">Latest report</div>
-      <div class="toolbar-actions">
-        <button
-          class="btn btn-primary"
-          :disabled="generating || props.blocked"
-          :title="
-            props.blocked
-              ? 'Resolve the configuration warnings above to generate a report'
-              : undefined
-          "
-          @click="$emit('generate')"
-        >
-          {{ generating ? "Generating…" : "Generate report" }}
-        </button>
-        <button class="btn btn-secondary" disabled>
-          <!-- size ≤14 keeps Icon on its fine 1.1px stroke branch; don't bump to 16 -->
-          <Icon name="export_" :size="13" />
-          Export
-        </button>
-      </div>
     </div>
 
     <div class="report-scroll">
@@ -88,25 +66,26 @@ const renderedHtml = computed(() =>
   background: var(--paper);
 }
 
+/* min-height keeps the toolbar seam uniform with the inbox/settings panes even
+   though this reading toolbar carries no button. */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 50px;
   padding: var(--s-3) var(--s-8);
   border-bottom: var(--border);
 }
 
+/* Surface title: stronger than the section eyebrows it sits above — 13px ink
+   semibold (a deliberate step up from the 11px caption used for sub-headings). */
 .toolbar-label {
   font-family: var(--font-sans);
-  font-size: var(--t-caption);
+  font-size: var(--t-ui-sm);
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
-  color: var(--ink-3);
-}
-
-.toolbar-actions {
-  display: flex;
-  gap: var(--s-3);
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .report-scroll {
@@ -141,7 +120,9 @@ const renderedHtml = computed(() =>
   font-size: var(--t-body);
   line-height: var(--lh-prose);
   letter-spacing: var(--track-prose);
-  color: var(--ink-3);
+  /* ink-2, not ink-3: 17px reading prose must clear WCAG AA (4.5:1); ink-3 on
+     paper is ~4.3:1. */
+  color: var(--ink-2);
 }
 
 .report-error {

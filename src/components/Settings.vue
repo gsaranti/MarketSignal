@@ -21,19 +21,15 @@ const props = defineProps<{
   loading: boolean;
   saving: boolean;
   error: string | null;
-  // Operational controls mirrored from the global footer (docs/interface.md
-  // §Settings). The state lives in App.vue and feeds both surfaces, so the footer
-  // toggle and this one can never disagree.
+  // Weekly-schedule control — Settings is the single home for it; the footer
+  // only reports run status (docs/interface.md §Settings).
   jobEnabled: boolean | null;
   jobBusy: boolean;
-  blocked: boolean;
-  generating: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "save", payload: { models: AgentModels; credentials: CredentialUpdate }): void;
   (e: "set-enabled", value: boolean): void;
-  (e: "generate"): void;
 }>();
 
 type ModelKey = "main" | "bull" | "bear" | "balanced";
@@ -141,12 +137,13 @@ const canSave = computed(
     tokensSatisfied.value
 );
 
-// Scheduled-job control — same backend state the footer toggle drives.
+// Scheduled-job control — the footer reports status; this is where it's toggled.
 const scheduleEnabled = computed(() => props.jobEnabled ?? false);
 function toggleSchedule() {
   if (props.jobBusy || props.jobEnabled === null) return;
   emit("set-enabled", !scheduleEnabled.value);
 }
+
 // "Saved" shows only while the form is at rest and unchanged since the save.
 const showSaved = computed(
   () => justSaved.value && !dirty.value && !props.saving && props.error === null
@@ -178,14 +175,46 @@ function onSave() {
 
     <div class="settings-scroll">
       <div class="settings-body">
-        <div class="settings-intro">
-          <h2 class="settings-title">Settings</h2>
-          <p class="settings-lede">
-            Choose the models that write each issue and supply the credentials
-            the pipeline needs. Everything stays on this machine; nothing is sent
-            anywhere until you generate a report.
-          </p>
-        </div>
+        <!-- Weekly-schedule control: the single home for enabling/disabling the
+             Sunday job (docs/interface.md §Settings). The footer only reports
+             status. Leads the surface (not below Save) and renders regardless of
+             the config form's load state. -->
+        <section
+          class="settings-section settings-section--lead"
+          aria-labelledby="sec-schedule"
+        >
+          <h3 id="sec-schedule" class="section-eyebrow">Scheduled job</h3>
+          <div class="control-row">
+            <div class="control-text">
+              <div class="control-label">Weekly report</div>
+              <div class="control-hint">
+                {{
+                  scheduleEnabled
+                    ? "Runs automatically every Sunday at 9:00 AM."
+                    : "Scheduled runs are paused."
+                }}
+              </div>
+            </div>
+            <button
+              type="button"
+              class="switch"
+              role="switch"
+              :aria-checked="scheduleEnabled"
+              :aria-label="
+                scheduleEnabled
+                  ? 'Disable weekly report job'
+                  : 'Enable weekly report job'
+              "
+              :disabled="jobBusy || jobEnabled === null"
+              @click="toggleSchedule"
+            >
+              <span
+                class="switch-knob"
+                :class="{ 'switch-knob--on': scheduleEnabled }"
+              ></span>
+            </button>
+          </div>
+        </section>
 
         <p
           v-if="loading && !settings"
@@ -203,11 +232,7 @@ function onSave() {
         <form v-else-if="settings" class="settings-form" @submit.prevent="onSave">
           <section class="settings-section" aria-labelledby="sec-models">
             <h3 id="sec-models" class="section-eyebrow">Agent models</h3>
-            <p class="section-note">
-              All four must be configured before a report can run. OpenAI and
-              Anthropic tokens are both required regardless of which models you
-              pick.
-            </p>
+            <p class="section-note">All four must be set before a report can run.</p>
             <div v-for="field in agentFields" :key="field.key" class="field">
               <label class="label" :for="`model-${field.key}`">{{ field.label }}</label>
               <div class="select-wrap">
@@ -244,8 +269,8 @@ function onSave() {
           <section class="settings-section" aria-labelledby="sec-tokens">
             <h3 id="sec-tokens" class="section-eyebrow">API tokens</h3>
             <p class="section-note">
-              Both are required to save. The fixed pipeline stages use OpenAI and
-              Anthropic regardless of which models you choose.
+              Both are always required — the fixed pipeline stages use OpenAI and
+              Anthropic regardless of the models you pick.
             </p>
             <div v-for="field in tokenFields" :key="field.key" class="field">
               <label class="label" :for="`cred-${field.key}`">{{ field.label }}</label>
@@ -299,72 +324,6 @@ function onSave() {
             </span>
           </div>
         </form>
-
-        <!-- Operational controls (docs/interface.md §Settings tree). Bound to the
-             same App.vue state as the global footer, so the two stay in sync;
-             rendered regardless of the config-form's load state. -->
-        <section class="settings-section" aria-labelledby="sec-schedule">
-          <h3 id="sec-schedule" class="section-eyebrow">Scheduled job</h3>
-          <div class="control-row">
-            <div class="control-text">
-              <div class="control-label">Weekly report</div>
-              <div class="control-hint">
-                {{
-                  scheduleEnabled
-                    ? "Runs automatically every Sunday at 9:00 AM."
-                    : "Scheduled runs are paused."
-                }}
-              </div>
-            </div>
-            <button
-              type="button"
-              class="switch"
-              role="switch"
-              :aria-checked="scheduleEnabled"
-              :aria-label="
-                scheduleEnabled
-                  ? 'Disable weekly report job'
-                  : 'Enable weekly report job'
-              "
-              :disabled="jobBusy || jobEnabled === null"
-              @click="toggleSchedule"
-            >
-              <span
-                class="switch-knob"
-                :class="{ 'switch-knob--on': scheduleEnabled }"
-              ></span>
-            </button>
-          </div>
-        </section>
-
-        <section class="settings-section" aria-labelledby="sec-manual">
-          <h3 id="sec-manual" class="section-eyebrow">Manual report</h3>
-          <div class="control-row">
-            <div class="control-text">
-              <div class="control-label">Generate now</div>
-              <div class="control-hint">
-                {{
-                  blocked
-                    ? "Resolve the configuration above to generate a report."
-                    : "Runs the same workflow as the Sunday job, immediately."
-                }}
-              </div>
-            </div>
-            <button
-              type="button"
-              class="btn btn-secondary"
-              :disabled="generating || blocked"
-              :title="
-                blocked
-                  ? 'Resolve the configuration warnings to generate a report'
-                  : undefined
-              "
-              @click="emit('generate')"
-            >
-              {{ generating ? "Generating…" : "Generate report" }}
-            </button>
-          </div>
-        </section>
       </div>
     </div>
   </main>
@@ -379,21 +338,28 @@ function onSave() {
   background: var(--paper);
 }
 
-/* Toolbar geometry matches the report/inbox panes so the views share a seam. */
+/* Toolbar geometry matches the report/inbox panes so the views share a seam.
+   min-height keeps that seam uniform whether or not a toolbar carries a button
+   (the inbox's "Add files…" sets the reference height), so a button-less title
+   gets the same top/bottom breathing room. */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 50px;
   padding: var(--s-3) var(--s-8);
   border-bottom: var(--border);
 }
 
+/* Surface title: stronger than the section eyebrows below it — 13px ink semibold
+   (a deliberate step up from the 11px caption used for sub-headings). */
 .toolbar-label {
   font-family: var(--font-sans);
-  font-size: var(--t-caption);
+  font-size: var(--t-ui-sm);
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
-  color: var(--ink-3);
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .settings-scroll {
@@ -403,31 +369,15 @@ function onSave() {
 
 .settings-body {
   max-width: 640px;
-  padding: var(--s-10) var(--s-8) var(--s-12);
+  padding: var(--s-7) var(--s-8) var(--s-12);
 }
 
-.settings-intro {
-  margin-bottom: var(--s-9);
-}
-
-.settings-title {
-  margin: 0 0 var(--s-2);
-  font-family: var(--font-serif);
-  font-size: var(--t-display-2);
-  line-height: var(--lh-display);
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.settings-lede {
-  margin: 0;
-  max-width: var(--measure);
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: var(--t-prose-sm);
-  line-height: var(--lh-prose);
-  letter-spacing: var(--track-prose);
-  color: var(--ink-2);
+/* The lead section sits directly under the toolbar seam, so it drops the section
+   rule + top padding that separate the stacked sections below it. Compound
+   selector so it beats `.settings-section` regardless of source order. */
+.settings-section.settings-section--lead {
+  border-top: 0;
+  padding-top: 0;
 }
 
 .settings-status {
@@ -459,7 +409,9 @@ function onSave() {
   font-style: italic;
   font-size: var(--t-ui-sm);
   line-height: var(--lh-prose);
-  color: var(--ink-3);
+  /* ink-2, not ink-3: at 13px this secondary prose must clear WCAG AA (4.5:1);
+     ink-3 on paper is ~4.3:1. */
+  color: var(--ink-2);
 }
 
 .field {
@@ -566,8 +518,7 @@ function onSave() {
   color: var(--ink-3);
 }
 
-/* Operational control rows (scheduled job, manual report) — label/hint on the
-   left, control on the right, matching the footer's job-control geometry. */
+/* Schedule control row — label/hint on the left, switch on the right. */
 .control-row {
   display: flex;
   align-items: center;
@@ -590,13 +541,14 @@ function onSave() {
   font-family: var(--font-serif);
   font-style: italic;
   font-size: var(--t-caption);
-  color: var(--ink-3);
+  color: var(--ink-2);
   line-height: var(--lh-ui);
 }
 
-/* Boxy switch — duplicated from JobStatusPanel.vue so the footer toggle and the
-   Settings toggle read identically (44×22, 1px ink edge, sliding ink block). If
-   these need to stay locked together long-term, extract a shared Toggle. */
+/* Boxy switch (design kit Settings.jsx Toggle): 44×22, 1px ink edge, 2px radius,
+   a sliding ink block — no pill, no rounded slider. A <button> so it is
+   keyboard-operable (Enter/Space) with a focus ring. This is the toggle's only
+   instance now that the footer no longer carries one. */
 .switch {
   flex-shrink: 0;
   display: inline-flex;
@@ -610,11 +562,14 @@ function onSave() {
   cursor: pointer;
 }
 
+/* The knob is always filled — muted ink-3 when off, solid ink when on — so the
+   control reads as a switch in both states (a transparent off-knob looked like
+   an empty box). State = fill weight + position. */
 .switch-knob {
   width: 18px;
   height: 16px;
   border-radius: var(--radius-sm);
-  background: transparent;
+  background: var(--ink-3);
   margin-left: 0;
   transition: margin-left var(--dur-fast) var(--ease),
     background-color var(--dur-fast) var(--ease);
@@ -635,8 +590,8 @@ function onSave() {
   border-color: var(--hairline);
 }
 
-.switch:disabled .switch-knob--on {
-  background: var(--ink-3);
+.switch:disabled .switch-knob {
+  background: var(--hairline);
 }
 
 @media (prefers-reduced-motion: reduce) {

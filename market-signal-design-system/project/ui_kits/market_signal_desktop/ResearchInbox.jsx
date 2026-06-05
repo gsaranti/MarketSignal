@@ -1,5 +1,10 @@
 // ResearchInbox.jsx — user-supplied PDFs and notes, organized for later
 // citation. Dense, single-column list. No bulk action chrome.
+//
+// ⚠ SUPERSEDED (2026-06-04 UX pass): serif "Filed research" title dropped (the
+// toolbar eyebrow names it). The "Drop … into this folder" copy was reworded —
+// there is no in-window drag-drop; "Add files…" reveals the inbox folder. See
+// project/README.md §Per-surface titles and §c empty-state copy.
 
 function InboxToolbar() {
   const [hover, setHover] = React.useState(null);

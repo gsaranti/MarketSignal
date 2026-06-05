@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import RecentReportsSidebar from "./components/RecentReportsSidebar.vue";
 import LatestReportView from "./components/LatestReportView.vue";
 import ResearchInbox from "./components/ResearchInbox.vue";
@@ -24,6 +25,13 @@ import type {
 // small fixed set of destinations and the kit models this as top-level state,
 // not routes (see AppView in types.ts).
 const view = ref<AppView>("report");
+
+// App version for the titlebar masthead ("Desk · v0.1.0"); falls back to "Desk"
+// if the version can't be read.
+const appVersion = ref("");
+const versionLabel = computed(() =>
+  appVersion.value ? `Desk · v${appVersion.value}` : "Desk"
+);
 
 const report = ref<GeneratedReport | null>(null);
 const generating = ref(false);
@@ -188,17 +196,12 @@ function navigate(next: AppView) {
   if (next === "settings") void refreshSettings();
 }
 
-// Manual generation triggered from Settings: jump to the report view so the user
-// watches it render (and sees any error there), then run the same flow the
-// report-view button uses.
-function generateFromSettings() {
-  view.value = "report";
-  void generate();
-}
-
 const unlisteners: UnlistenFn[] = [];
 
 onMounted(async () => {
+  getVersion()
+    .then((v) => (appVersion.value = v))
+    .catch(() => {});
   void refreshValidation();
   void refreshJobStatus();
   // Load the inbox up front so the sidebar badge is populated even on the report
@@ -239,7 +242,17 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-root">
+    <!-- Masthead titlebar (design kit Window.jsx): native traffic lights remain
+         via titleBarStyle:Overlay; we draw the centered wordmark + hairline. The
+         whole bar is a drag region. -->
+    <header class="titlebar" data-tauri-drag-region>
+      <div class="titlebar-brand">
+        <span class="wordmark">Market Signal</span>
+        <span class="wordmark-sub">{{ versionLabel }}</span>
+      </div>
+    </header>
+    <div class="app-shell">
     <RecentReportsSidebar
       :report="report"
       :view="view"
@@ -252,10 +265,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
         <LatestReportView
           v-if="view === 'report'"
           :report="report"
-          :generating="generating"
           :error="error"
-          :blocked="blocked"
-          @generate="generate"
         />
         <ResearchInbox
           v-else-if="view === 'inbox'"
@@ -273,19 +283,18 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :error="settingsError"
           :job-enabled="jobStatus?.enabled ?? null"
           :job-busy="jobBusy"
-          :blocked="blocked"
-          :generating="generating"
           @save="saveSettings"
           @set-enabled="setJobEnabled"
-          @generate="generateFromSettings"
         />
       </div>
       <JobStatusPanel
         :status="jobStatus"
         :error="jobStatusError"
-        :busy="jobBusy"
-        @set-enabled="setJobEnabled"
+        :blocked="blocked"
+        :generating="generating"
+        @generate="generate"
       />
+      </div>
     </div>
   </div>
 </template>
@@ -310,9 +319,57 @@ body {
 </style>
 
 <style scoped>
+.app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--paper);
+}
+
+/* Masthead titlebar — full width above the sidebar/content row. The native
+   traffic lights overlay its left (titleBarStyle:Overlay); the wordmark is
+   absolutely centered so the lights never shift it. */
+.titlebar {
+  position: relative;
+  flex-shrink: 0;
+  height: 38px;
+  background: var(--paper);
+  border-bottom: var(--border);
+}
+
+.titlebar-brand {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  white-space: nowrap;
+  /* Let drags pass through to the bar's drag region. */
+  pointer-events: none;
+}
+
+.wordmark {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.wordmark-sub {
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
 .app-shell {
   display: flex;
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
   background: var(--paper);
 }
 
