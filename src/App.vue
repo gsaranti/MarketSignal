@@ -244,10 +244,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
         <LatestReportView
           v-if="view === 'report'"
           :report="report"
-          :generating="generating"
           :error="error"
-          :blocked="blocked"
-          @generate="generate"
         />
         <ResearchInbox
           v-else-if="view === 'inbox'"

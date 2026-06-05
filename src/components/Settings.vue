@@ -175,16 +175,14 @@ function onSave() {
 
     <div class="settings-scroll">
       <div class="settings-body">
-        <p class="settings-lede">
-          Choose the models and credentials the weekly pipeline needs — all kept
-          on this machine.
-        </p>
-
         <!-- Weekly-schedule control: the single home for enabling/disabling the
              Sunday job (docs/interface.md §Settings). The footer only reports
-             status. Sits near the top — not below Save — and renders regardless
-             of the config form's load state. -->
-        <section class="settings-section" aria-labelledby="sec-schedule">
+             status. Leads the surface (not below Save) and renders regardless of
+             the config form's load state. -->
+        <section
+          class="settings-section settings-section--lead"
+          aria-labelledby="sec-schedule"
+        >
           <h3 id="sec-schedule" class="section-eyebrow">Scheduled job</h3>
           <div class="control-row">
             <div class="control-text">
@@ -340,11 +338,15 @@ function onSave() {
   background: var(--paper);
 }
 
-/* Toolbar geometry matches the report/inbox panes so the views share a seam. */
+/* Toolbar geometry matches the report/inbox panes so the views share a seam.
+   min-height keeps that seam uniform whether or not a toolbar carries a button
+   (the inbox's "Add files…" sets the reference height), so a button-less title
+   gets the same top/bottom breathing room. */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 50px;
   padding: var(--s-3) var(--s-8);
   border-bottom: var(--border);
 }
@@ -364,21 +366,14 @@ function onSave() {
 
 .settings-body {
   max-width: 640px;
-  padding: var(--s-10) var(--s-8) var(--s-12);
+  padding: var(--s-7) var(--s-8) var(--s-12);
 }
 
-/* Chrome-scale serif-italic: the lede annotates the surface; it must not read at
-   report-prose size. Kept serif-italic (brand voice) but stepped down to the
-   hint register (13px). */
-.settings-lede {
-  margin: 0 0 var(--s-7);
-  max-width: var(--measure);
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: var(--t-ui-sm);
-  line-height: var(--lh-prose);
-  letter-spacing: var(--track-prose);
-  color: var(--ink-2);
+/* The lead section sits directly under the toolbar seam, so it drops the section
+   rule + top padding that separate the stacked sections below it. */
+.settings-section--lead {
+  border-top: 0;
+  padding-top: 0;
 }
 
 .settings-status {

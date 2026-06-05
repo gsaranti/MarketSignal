@@ -99,8 +99,9 @@ function formatDate(iso: string | null): string {
       <div v-else-if="documents.length === 0" class="inbox-empty">
         <div class="inbox-empty-eyebrow">No documents</div>
         <p class="inbox-empty-body">
-          Drop PDFs, transcripts, or notes into the inbox folder with “Add
-          files…” above. The pipeline reads them at the start of the next run.
+          Use “Add files…” to open the inbox folder, then drop in your PDFs,
+          transcripts, or notes. The pipeline reads them at the start of the
+          next run.
         </p>
       </div>
 
@@ -167,11 +168,14 @@ function formatDate(iso: string | null): string {
   background: var(--paper);
 }
 
-/* Toolbar geometry matches the report pane's so the two views share a seam. */
+/* Toolbar geometry matches the report pane's so the two views share a seam.
+   min-height matches the button-less panes; the "Add files…" button already
+   sets this height here, so this just pins the shared reference. */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 50px;
   padding: var(--s-3) var(--s-8);
   border-bottom: var(--border);
 }
@@ -241,9 +245,11 @@ function formatDate(iso: string | null): string {
   color: var(--ink-3);
 }
 
+/* Top padding sets the eyebrow off the toolbar seam (matches the report empty
+   state's rhythm) so "No documents" doesn't hug the divider. */
 .inbox-empty {
   max-width: var(--measure);
-  padding: 0 var(--s-8) var(--s-10);
+  padding: var(--s-10) var(--s-8);
 }
 
 .inbox-empty-eyebrow {

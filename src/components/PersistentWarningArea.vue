@@ -88,27 +88,30 @@ function formatItems(items: string[]): string {
 }
 
 /* Default to a stacked label-over-body row: this never crushes the body, and it
-   is the graceful-degradation layout if container queries are unsupported. Wide
-   columns earn the side-by-side aligned-gutter layout below. */
+   is the graceful-degradation layout if container queries are unsupported. */
 .warning-row {
   display: flex;
   flex-direction: column;
   gap: var(--s-1);
 }
 
+/* Wide enough: lay the whole list out as a two-column grid so every body shares
+   one left edge regardless of label length (column 1 auto-sizes to the widest
+   label). display:contents lets each row's label + body join the list grid. */
 @container (min-width: 32rem) {
-  .warning-row {
-    flex-direction: row;
+  .warning-list {
+    display: grid;
+    grid-template-columns: max-content 1fr;
     align-items: baseline;
-    gap: var(--s-4);
+    column-gap: var(--s-5);
+    row-gap: var(--s-2);
   }
-  .warning-label {
-    min-width: 10rem;
+  .warning-row {
+    display: contents;
   }
 }
 
 .warning-label {
-  flex-shrink: 0;
   font-family: var(--font-sans);
   font-size: var(--t-caption);
   letter-spacing: var(--track-caption);

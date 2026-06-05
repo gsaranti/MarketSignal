@@ -5,12 +5,8 @@ import type { GeneratedReport } from "../types";
 
 const props = defineProps<{
   report: GeneratedReport | null;
-  generating: boolean;
   error: string | null;
-  blocked?: boolean;
 }>();
-
-defineEmits<{ (e: "generate"): void }>();
 
 // html:false — the Markdown is our own trusted report body, and we never want
 // raw HTML from it leaking into the rendered surface.
@@ -56,20 +52,6 @@ const renderedHtml = computed(() =>
           No issue has been generated yet. When you generate one — or the
           Sunday job runs — it will appear here.
         </p>
-        <div class="report-empty-actions">
-          <button
-            class="btn btn-primary"
-            :disabled="generating || props.blocked"
-            @click="$emit('generate')"
-          >
-            {{ generating ? "Generating…" : "Generate report" }}
-          </button>
-          <!-- Visible, not hover-only: the gate's reason is in the warning band
-               above; this names the blocker at the disabled control itself. -->
-          <p v-if="props.blocked" class="report-empty-hint">
-            Resolve the configuration warnings above to generate a report.
-          </p>
-        </div>
       </div>
     </div>
   </main>
@@ -84,10 +66,13 @@ const renderedHtml = computed(() =>
   background: var(--paper);
 }
 
+/* min-height keeps the toolbar seam uniform with the inbox/settings panes even
+   though this reading toolbar carries no button. */
 .toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 50px;
   padding: var(--s-3) var(--s-8);
   border-bottom: var(--border);
 }
@@ -134,26 +119,6 @@ const renderedHtml = computed(() =>
   letter-spacing: var(--track-prose);
   /* ink-2, not ink-3: 17px reading prose must clear WCAG AA (4.5:1); ink-3 on
      paper is ~4.3:1. */
-  color: var(--ink-2);
-}
-
-/* The primary call-to-action on the empty surface — this is the report view's
-   home for manual generation now that the toolbar is reading-only. */
-.report-empty-actions {
-  margin-top: var(--s-7);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--s-4);
-}
-
-/* The blocked reason, shown inline (not as a hover title) so keyboard and touch
-   users see why generation is unavailable. ink-2: a 13px hint must clear AA. */
-.report-empty-hint {
-  margin: 0;
-  font-family: var(--font-sans);
-  font-size: var(--t-ui-sm);
-  line-height: var(--lh-ui);
   color: var(--ink-2);
 }
 
