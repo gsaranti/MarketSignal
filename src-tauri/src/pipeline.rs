@@ -70,6 +70,33 @@ pub fn generate_report(agent: &dyn MainAgent, paths: &ReportPaths) -> Result<Gen
     })
 }
 
+/// List the most recent reports (newest first), capped at the retention display
+/// limit. The Tauri `list_reports` command is a thin wrapper over this.
+pub fn list_reports(paths: &ReportPaths) -> Result<Vec<ReportSummary>> {
+    let conn = storage::open(&paths.db_path)?;
+    storage::init_schema(&conn)?;
+    storage::list_recent_reports(&conn, storage::RECENT_REPORTS_LIMIT)
+}
+
+/// Load one persisted report by id for display: its summary from SQLite and its
+/// canonical Markdown read back from disk. An unknown id, or a Markdown file
+/// removed out-of-band, surfaces as a typed error the UI renders rather than a
+/// panic.
+pub fn load_report(paths: &ReportPaths, report_id: &str) -> Result<GeneratedReport> {
+    let conn = storage::open(&paths.db_path)?;
+    storage::init_schema(&conn)?;
+    let (markdown_path, summary) = storage::get_report_record(&conn, report_id)?
+        .with_context(|| format!("no report with id {report_id}"))?;
+    let markdown = std::fs::read_to_string(&markdown_path)
+        .with_context(|| format!("reading report markdown {markdown_path:?}"))?;
+    Ok(GeneratedReport {
+        report_id: summary.report_id.clone(),
+        markdown,
+        markdown_path,
+        summary,
+    })
+}
+
 /// Build the canonical Markdown filename for a report:
 /// `YYYY-MM-DD-market-signal-weekly-report-<id8>.md`.
 ///

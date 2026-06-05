@@ -16,6 +16,7 @@ import type {
   CredentialUpdate,
   GeneratedReport,
   JobStatus,
+  ReportSummary,
   ResearchDocument,
   SettingsView,
   ValidationReport,
@@ -33,9 +34,31 @@ const versionLabel = computed(() =>
   appVersion.value ? `Desk · v${appVersion.value}` : "Desk"
 );
 
-const report = ref<GeneratedReport | null>(null);
+// The recent-reports list (newest first, capped at 30 by the backend) and the
+// currently-selected report. `reports` drives the sidebar; `selectedReport`
+// carries the loaded Markdown for the report pane. Selection is held by id so the
+// sidebar highlight and the pane stay in sync from one source of truth.
+const reports = ref<ReportSummary[]>([]);
+const selectedReportId = ref<string | null>(null);
+const selectedReport = ref<GeneratedReport | null>(null);
+// Two distinct error channels, deliberately kept apart: `reportError` is a
+// failure to OPEN the selected report (feeds the report pane's load-error
+// state); `reportsError` is a failure to LIST the sidebar (a sidebar-level
+// problem). Conflating them lets a transient list refresh mask a perfectly-valid
+// loaded report — so the list error never reaches the report pane.
+const reportError = ref<string | null>(null);
+const reportsError = ref<string | null>(null);
 const generating = ref(false);
 const error = ref<string | null>(null);
+
+// Whether the selected report is the newest one — drives the toolbar's "Latest"
+// tag. The list is newest-first, so the head is the latest.
+const selectedIsLatest = computed(
+  () =>
+    selectedReportId.value !== null &&
+    reports.value.length > 0 &&
+    reports.value[0].report_id === selectedReportId.value
+);
 
 // Research inbox state lives here (not in the inbox view) so the sidebar badge
 // can show the count regardless of which view is active, and a single load path
@@ -115,7 +138,16 @@ async function generate() {
   generating.value = true;
   error.value = null;
   try {
-    report.value = await invoke<GeneratedReport>("generate_report_manual");
+    // A fresh run returns the full report (with Markdown) — show it directly and
+    // refresh the list so its new row appears, selected, at the top.
+    const fresh = await invoke<GeneratedReport>("generate_report_manual");
+    selectedReport.value = fresh;
+    selectedReportId.value = fresh.report_id;
+    reportError.value = null;
+    // Surface its row immediately so the sidebar never lags the pane, even if the
+    // refresh below fails; refreshReports() reconciles ordering against the DB.
+    upsertReportSummary(fresh.summary);
+    void refreshReports();
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -125,6 +157,77 @@ async function generate() {
     void refreshValidation();
     void refreshJobStatus();
   }
+}
+
+// Mirrors the backend's display cap (storage::RECENT_REPORTS_LIMIT) and the
+// sidebar header's "last 30". Held here so the optimistic insert below honors the
+// cap even when the reconciling refresh — which would otherwise re-impose it —
+// fails.
+const RECENT_REPORTS_LIMIT = 30;
+
+// Place a report's summary at the head of the list (deduped, capped), so a
+// freshly generated or just-finished report appears — selected — in the sidebar
+// immediately, without waiting on (or depending on) the list refresh. The report
+// is already persisted by the time we have its summary, so the optimistic row is
+// always real; refreshReports() then reconciles the authoritative DB ordering.
+// The trim keeps the list within "last 30" if a post-generate refresh fails
+// (otherwise repeated failures could grow it past the cap).
+function upsertReportSummary(summary: ReportSummary) {
+  reports.value = [
+    summary,
+    ...reports.value.filter((r) => r.report_id !== summary.report_id),
+  ].slice(0, RECENT_REPORTS_LIMIT);
+}
+
+async function refreshReports() {
+  try {
+    reports.value = await invoke<ReportSummary[]>("list_reports");
+    // A recovered refresh clears a prior list error — the sidebar error state is
+    // never left stuck once listing succeeds again. On failure the old list is
+    // kept (the early return below leaves `reports` untouched).
+    reportsError.value = null;
+  } catch (e) {
+    reportsError.value = String(e);
+    return;
+  }
+  // On first load — or after the selected report fell out of the list — default
+  // to the newest report so the pane is never blank when reports exist.
+  const stillSelected =
+    selectedReportId.value !== null &&
+    reports.value.some((r) => r.report_id === selectedReportId.value);
+  if (!stillSelected && reports.value.length > 0) {
+    void selectReport(reports.value[0].report_id);
+  }
+}
+
+async function selectReport(id: string) {
+  selectedReportId.value = id;
+  reportError.value = null;
+  // Viewing a specific report dismisses any prior generation-failure banner —
+  // otherwise LatestReportView's `error` block (which has render precedence)
+  // would mask the report we just loaded.
+  error.value = null;
+  try {
+    const loaded = await invoke<GeneratedReport>("load_report", {
+      reportId: id,
+    });
+    // Guard against a slower earlier load resolving after a newer selection:
+    // only apply the result if this is still the selected report.
+    if (selectedReportId.value !== id) return;
+    selectedReport.value = loaded;
+  } catch (e) {
+    if (selectedReportId.value !== id) return;
+    // A report whose Markdown was removed out-of-band still lists but can't be
+    // opened — surface the failure and clear the pane rather than show a stale body.
+    selectedReport.value = null;
+    reportError.value = String(e);
+  }
+}
+
+// Sidebar row click: show the report surface and load the chosen issue.
+function selectAndShow(id: string) {
+  view.value = "report";
+  void selectReport(id);
 }
 
 async function refreshDocuments() {
@@ -248,6 +351,9 @@ onMounted(async () => {
     .catch(() => {});
   void refreshValidation();
   void refreshJobStatus();
+  // Load the recent-reports list up front so the sidebar is populated and the
+  // newest report shows in the pane on first paint.
+  void refreshReports();
   // Load the inbox up front so the sidebar badge is populated even on the report
   // view, before the user ever opens the inbox. Same for the archive.
   void refreshDocuments();
@@ -261,7 +367,17 @@ onMounted(async () => {
   // Report View updates too; failure/skip/missed send null.
   unlisteners.push(
     await listen<GeneratedReport | null>("job-finished", (event) => {
-      if (event.payload) report.value = event.payload;
+      if (event.payload) {
+        selectedReport.value = event.payload;
+        selectedReportId.value = event.payload.report_id;
+        reportError.value = null;
+        // A fresh report supersedes any stale generation-failure banner.
+        error.value = null;
+        // Surface its row immediately (see generate) so a scheduled run's report
+        // appears in the sidebar even if the list refresh below fails.
+        upsertReportSummary(event.payload.summary);
+        void refreshReports();
+      }
       void refreshValidation();
       void refreshJobStatus();
     })
@@ -275,6 +391,9 @@ onMounted(async () => {
       if (focused) {
         void refreshValidation();
         void refreshJobStatus();
+        // A scheduled run while backgrounded may have added a report; re-list so
+        // the sidebar reflects it on return.
+        void refreshReports();
         // The user may have dropped files into the inbox folder (via Finder)
         // while the app was in the background — pick those up on return. The
         // archive can change too (a background run files documents, or the user
@@ -302,19 +421,24 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
     </header>
     <div class="app-shell">
     <RecentReportsSidebar
-      :report="report"
+      :reports="reports"
+      :selected-report-id="selectedReportId"
+      :reports-error="reportsError"
       :view="view"
       :inbox-count="inboxCount"
       :archive-count="archiveCount"
       @navigate="navigate"
+      @select="selectAndShow"
     />
     <div class="main-column">
       <PersistentWarningArea :report="validation" :error="validationError" />
       <div class="view-area">
         <LatestReportView
           v-if="view === 'report'"
-          :report="report"
+          :report="selectedReport"
           :error="error"
+          :load-error="reportError"
+          :is-latest="selectedIsLatest"
         />
         <ResearchDocuments
           v-else-if="view === 'inbox'"

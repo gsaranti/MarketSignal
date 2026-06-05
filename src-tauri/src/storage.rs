@@ -88,6 +88,50 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// How many of the most recent reports the sidebar lists (`docs/storage.md` —
+/// only the most recent 30 Weekly Market reports are retained). This bounds the
+/// *display* query; the retention-cascade deletion that enforces the same number
+/// on disk is a separate concern.
+pub const RECENT_REPORTS_LIMIT: u32 = 30;
+
+/// List the most recent reports, newest first, capped at `limit`. The stored
+/// `summary_json` blob is the whole `ReportSummary`, so it round-trips back into
+/// the struct; the `rowid` tiebreak keeps same-timestamp ordering stable
+/// (insertion order) rather than arbitrary.
+pub fn list_recent_reports(conn: &Connection, limit: u32) -> Result<Vec<ReportSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT summary_json FROM reports
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit], |row| row.get::<_, String>(0))?;
+    let mut summaries = Vec::new();
+    for json in rows {
+        summaries.push(serde_json::from_str(&json?)?);
+    }
+    Ok(summaries)
+}
+
+/// Look up one report's canonical Markdown path and summary by id, or `None`
+/// when no such report exists. The application layer (`pipeline::load_report`)
+/// reads the Markdown file the path points at.
+pub fn get_report_record(
+    conn: &Connection,
+    report_id: &str,
+) -> Result<Option<(String, ReportSummary)>> {
+    let row = conn
+        .query_row(
+            "SELECT markdown_path, summary_json FROM reports WHERE report_id = ?1",
+            [report_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    match row {
+        Some((path, json)) => Ok(Some((path, serde_json::from_str(&json)?))),
+        None => Ok(None),
+    }
+}
+
 /// Insert a report record. The regime columns store the canonical kebab labels;
 /// the full summary lives in `summary_json` for retrieval.
 pub fn insert_report(conn: &Connection, record: &ReportRecord) -> Result<()> {
@@ -119,6 +163,62 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         conn
+    }
+
+    fn sample_summary(id: &str, created_at: &str) -> ReportSummary {
+        use crate::agent::{MarketCycle, RiskPosture, ThesisStance};
+        ReportSummary {
+            report_id: id.to_string(),
+            report_type: "weekly_market".to_string(),
+            created_at: created_at.to_string(),
+            risk_posture: RiskPosture::Mixed,
+            market_cycle: MarketCycle::LateCycle,
+            thesis_stance: ThesisStance::Uncertain,
+            header_summary_bullets: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            key_risks: vec![],
+            unresolved_questions: vec![],
+            forward_outlook_themes: vec![],
+        }
+    }
+
+    fn insert_sample(conn: &Connection, id: &str, created_at: &str) {
+        let summary = sample_summary(id, created_at);
+        let summary_json = serde_json::to_string(&summary).unwrap();
+        insert_report(
+            conn,
+            &ReportRecord {
+                summary: &summary,
+                markdown_path: &format!("/tmp/{id}.md"),
+                summary_json: &summary_json,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn list_recent_reports_caps_at_limit_and_orders_newest_first() {
+        let conn = mem();
+        // 32 reports with strictly ascending timestamps; ids encode insertion order.
+        for i in 0..32 {
+            let created_at = format!("2026-01-{:02}T00:00:00Z", i + 1);
+            insert_sample(&conn, &format!("id-{i:02}"), &created_at);
+        }
+        let recent = list_recent_reports(&conn, 30).unwrap();
+        assert_eq!(recent.len(), 30, "capped at the limit");
+        // Newest (id-31) first; the two oldest (id-00, id-01) fall off the window.
+        assert_eq!(recent[0].report_id, "id-31");
+        assert_eq!(recent[29].report_id, "id-02");
+    }
+
+    #[test]
+    fn get_report_record_round_trips_and_misses_cleanly() {
+        let conn = mem();
+        insert_sample(&conn, "abc", "2026-02-01T00:00:00Z");
+        let (path, summary) = get_report_record(&conn, "abc").unwrap().unwrap();
+        assert_eq!(path, "/tmp/abc.md");
+        assert_eq!(summary.report_id, "abc");
+        assert_eq!(summary.created_at, "2026-02-01T00:00:00Z");
+        assert!(get_report_record(&conn, "missing").unwrap().is_none());
     }
 
     #[test]

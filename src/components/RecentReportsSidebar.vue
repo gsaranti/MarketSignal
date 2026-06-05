@@ -1,15 +1,23 @@
 <script setup lang="ts">
 import Icon from "./Icon.vue";
-import type { AppView, GeneratedReport } from "../types";
+import type { AppView, ReportSummary } from "../types";
 
 defineProps<{
-  report: GeneratedReport | null;
+  reports: ReportSummary[];
+  selectedReportId: string | null;
+  // A failure to list the reports (sidebar-level). Only surfaces when there's no
+  // list to fall back on — a refresh failure with an existing list keeps the
+  // stale list silently rather than flashing an error.
+  reportsError: string | null;
   view: AppView;
   inboxCount: number;
   archiveCount: number;
 }>();
 
-defineEmits<{ (e: "navigate", view: AppView): void }>();
+defineEmits<{
+  (e: "navigate", view: AppView): void;
+  (e: "select", reportId: string): void;
+}>();
 
 function shortDate(iso: string): string {
   return iso.slice(0, 10);
@@ -22,27 +30,56 @@ function shortId(id: string): string {
 
 <template>
   <aside class="sidebar">
-    <div class="sidebar-header">Latest report</div>
+    <div class="sidebar-header">Recent reports · last 30</div>
     <div class="sidebar-list">
-      <!-- The report row doubles as the "back to report" nav: clickable (and
-           keyboard-operable) even in the empty state, so a path back from the
-           inbox always exists. -->
+      <!-- One row per persisted report, newest first. Selecting a row loads that
+           issue into the report pane (App handles the load + view switch). -->
+      <template v-if="reports.length > 0">
+        <button
+          v-for="r in reports"
+          :key="r.report_id"
+          type="button"
+          class="row report-row"
+          :class="{
+            'is-current': view === 'report' && r.report_id === selectedReportId,
+          }"
+          :aria-current="
+            view === 'report' && r.report_id === selectedReportId
+              ? 'true'
+              : undefined
+          "
+          @click="$emit('select', r.report_id)"
+        >
+          <div class="row-main">
+            <div class="row-title">Weekly Market Report</div>
+            <div class="row-meta">
+              {{ shortDate(r.created_at) }} · #{{ shortId(r.report_id) }}
+            </div>
+          </div>
+        </button>
+      </template>
+      <!-- Empty state keeps a path back to the (empty) report view from the
+           inbox/archive/settings surfaces, since the bottom nav has no report
+           target. Clickable and keyboard-operable like a real row. When listing
+           failed (and there's no list to show), the meta says so rather than
+           misreporting an empty library as "No reports yet". -->
       <button
+        v-else
         type="button"
         class="row report-row"
         :class="{ 'is-current': view === 'report' }"
         :aria-current="view === 'report' ? 'true' : undefined"
+        :title="reportsError ?? undefined"
         @click="$emit('navigate', 'report')"
       >
         <div class="row-main">
           <div class="row-title">Weekly Market Report</div>
-          <div class="row-meta">
-            <template v-if="report">
-              {{ shortDate(report.summary.created_at) }} · #{{
-                shortId(report.report_id)
-              }}
-            </template>
-            <template v-else>No reports yet</template>
+          <div
+            class="row-meta"
+            :class="{ 'is-error': reportsError }"
+            aria-live="polite"
+          >
+            {{ reportsError ? "Couldn't load reports" : "No reports yet" }}
           </div>
         </div>
       </button>
@@ -167,6 +204,12 @@ function shortId(id: string): string {
   text-transform: uppercase;
   color: var(--ink-3);
   margin-top: var(--s-1);
+}
+
+/* List-load failure: accent draws the eye to a problem, matching the report
+   pane's error-label treatment rather than reading as quiet caption metadata. */
+.row-meta.is-error {
+  color: var(--accent);
 }
 
 /* Bottom nav — targets at the foot of the panel (design kit Sidebar.jsx).

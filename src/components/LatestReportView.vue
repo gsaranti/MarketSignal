@@ -6,6 +6,11 @@ import type { GeneratedReport } from "../types";
 const props = defineProps<{
   report: GeneratedReport | null;
   error: string | null;
+  // A load failure when opening a selected issue (distinct from a generation
+  // failure) — e.g. the Markdown file was removed out-of-band.
+  loadError: string | null;
+  // Whether the shown report is the newest one — drives the "Latest" tag.
+  isLatest: boolean;
 }>();
 
 // html:false — the Markdown is our own trusted report body, and we never want
@@ -25,20 +30,37 @@ md.renderer.rules.table_close = (tokens, idx, options, _env, self) =>
 const renderedHtml = computed(() =>
   props.report ? md.render(props.report.markdown) : ""
 );
+
+// The toolbar reflects which issue is shown: the selected report's date and
+// short id, rather than a static label. Falls back to "Latest report" when no
+// report is loaded.
+const toolbarLabel = computed(() =>
+  props.report
+    ? `${props.report.summary.created_at.slice(0, 10)} · #${props.report.report_id.slice(0, 8)}`
+    : "Latest report"
+);
 </script>
 
 <template>
   <main class="report-pane">
     <!-- A quiet reading toolbar: generation lives in the empty-state CTA and the
-         footer's "Generate now"; export returns here when that slice lands. -->
+         footer's "Generate now"; export returns here when that slice lands. The
+         label reflects the selected issue, with a tag when it's the newest. -->
     <div class="toolbar">
-      <div class="toolbar-label">Latest report</div>
+      <div class="toolbar-heading">
+        <span class="toolbar-label">{{ toolbarLabel }}</span>
+        <span v-if="report && isLatest" class="toolbar-tag">Latest</span>
+      </div>
     </div>
 
     <div class="report-scroll">
       <div v-if="error" class="report-error" role="alert">
         <div class="report-error-label">Generation failed</div>
         <p class="report-error-detail">{{ error }}</p>
+      </div>
+      <div v-else-if="loadError" class="report-error" role="alert">
+        <div class="report-error-label">Couldn't open this report</div>
+        <p class="report-error-detail">{{ loadError }}</p>
       </div>
       <!-- eslint-disable-next-line vue/no-v-html -->
       <article
@@ -77,6 +99,14 @@ const renderedHtml = computed(() =>
   border-bottom: var(--border);
 }
 
+/* The label and its "Latest" tag share a baseline-aligned row. */
+.toolbar-heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
 /* Surface title: stronger than the section eyebrows it sits above — 13px ink
    semibold (a deliberate step up from the 11px caption used for sub-headings). */
 .toolbar-label {
@@ -86,6 +116,20 @@ const renderedHtml = computed(() =>
   text-transform: uppercase;
   font-weight: 600;
   color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "Latest" tag: a quiet caption next to the dateline, marking the newest issue
+   without competing with the title. */
+.toolbar-tag {
+  flex-shrink: 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  color: var(--ink-3);
 }
 
 .report-scroll {

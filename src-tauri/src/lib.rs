@@ -152,6 +152,26 @@ async fn generate_report_manual(
     }
 }
 
+/// List the most recent persisted reports for the Recent Reports sidebar
+/// (`docs/interface.md`, `docs/storage.md` — newest first, capped at the
+/// 30-report retention window). A fresh install with no reports yet lists as
+/// empty rather than erroring; the frontend renders the empty state.
+#[tauri::command]
+fn list_reports(app: tauri::AppHandle) -> Result<Vec<agent::ReportSummary>, String> {
+    let paths = report_paths(&app)?;
+    pipeline::list_reports(&paths).map_err(|e| e.to_string())
+}
+
+/// Load one persisted report by id for the Latest Report View: its summary plus
+/// its canonical Markdown read back from disk (`docs/weekly-report-workflow.md
+/// §Step 17`). An unknown id, or a Markdown file removed out-of-band, surfaces as
+/// an error the view renders.
+#[tauri::command]
+fn load_report(app: tauri::AppHandle, report_id: String) -> Result<GeneratedReport, String> {
+    let paths = report_paths(&app)?;
+    pipeline::load_report(&paths, &report_id).map_err(|e| e.to_string())
+}
+
 /// Resolve the SQLite path and ensure the app data directory exists, so a
 /// command that touches the database works even before the first report has been
 /// generated (the pipeline creates the directory as a side effect, but the
@@ -382,8 +402,9 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
     // Carry the freshly generated report to an open window so its Latest Report
     // View updates without a manual refresh (`docs/weekly-report-workflow.md
     // §Step 17`); on failure/skip the payload is None and only the warning area
-    // and status panel refresh. (The Recent Reports sidebar's historical list
-    // still awaits the `list_reports` slice.)
+    // and status panel refresh. The Recent Reports sidebar re-lists via
+    // `list_reports` on this same event, so a scheduled run's new report also
+    // appears in the sidebar.
     let report: Option<GeneratedReport> = match outcome {
         Ok(Ok(JobOutcome::Successful(report))) => Some(*report),
         Ok(Ok(JobOutcome::Failed(msg))) => {
@@ -428,6 +449,8 @@ pub fn run() {
         .manage(RunGuard::default())
         .invoke_handler(tauri::generate_handler![
             generate_report_manual,
+            list_reports,
+            load_report,
             check_configuration,
             job_status,
             set_job_enabled,
