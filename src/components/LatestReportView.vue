@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import MarkdownIt from "markdown-it";
-import Icon from "./Icon.vue";
 import type { GeneratedReport } from "../types";
 
 const props = defineProps<{
@@ -34,27 +33,10 @@ const renderedHtml = computed(() =>
 
 <template>
   <main class="report-pane">
+    <!-- A quiet reading toolbar: generation lives in the empty-state CTA and the
+         footer's "Generate now"; export returns here when that slice lands. -->
     <div class="toolbar">
       <div class="toolbar-label">Latest report</div>
-      <div class="toolbar-actions">
-        <button
-          class="btn btn-primary"
-          :disabled="generating || props.blocked"
-          :title="
-            props.blocked
-              ? 'Resolve the configuration warnings above to generate a report'
-              : undefined
-          "
-          @click="$emit('generate')"
-        >
-          {{ generating ? "Generating…" : "Generate report" }}
-        </button>
-        <button class="btn btn-secondary" disabled>
-          <!-- size ≤14 keeps Icon on its fine 1.1px stroke branch; don't bump to 16 -->
-          <Icon name="export_" :size="13" />
-          Export
-        </button>
-      </div>
     </div>
 
     <div class="report-scroll">
@@ -74,6 +56,20 @@ const renderedHtml = computed(() =>
           No issue has been generated yet. When you generate one — or the
           Sunday job runs — it will appear here.
         </p>
+        <div class="report-empty-actions">
+          <button
+            class="btn btn-primary"
+            :disabled="generating || props.blocked"
+            @click="$emit('generate')"
+          >
+            {{ generating ? "Generating…" : "Generate report" }}
+          </button>
+          <!-- Visible, not hover-only: the gate's reason is in the warning band
+               above; this names the blocker at the disabled control itself. -->
+          <p v-if="props.blocked" class="report-empty-hint">
+            Resolve the configuration warnings above to generate a report.
+          </p>
+        </div>
       </div>
     </div>
   </main>
@@ -102,11 +98,6 @@ const renderedHtml = computed(() =>
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
   color: var(--ink-3);
-}
-
-.toolbar-actions {
-  display: flex;
-  gap: var(--s-3);
 }
 
 .report-scroll {
@@ -143,6 +134,26 @@ const renderedHtml = computed(() =>
   letter-spacing: var(--track-prose);
   /* ink-2, not ink-3: 17px reading prose must clear WCAG AA (4.5:1); ink-3 on
      paper is ~4.3:1. */
+  color: var(--ink-2);
+}
+
+/* The primary call-to-action on the empty surface — this is the report view's
+   home for manual generation now that the toolbar is reading-only. */
+.report-empty-actions {
+  margin-top: var(--s-7);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-4);
+}
+
+/* The blocked reason, shown inline (not as a hover title) so keyboard and touch
+   users see why generation is unavailable. ink-2: a 13px hint must clear AA. */
+.report-empty-hint {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  line-height: var(--lh-ui);
   color: var(--ink-2);
 }
 

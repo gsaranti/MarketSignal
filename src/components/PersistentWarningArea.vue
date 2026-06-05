@@ -59,6 +59,9 @@ function formatItems(items: string[]): string {
   background: var(--paper-edge);
   border-bottom: var(--border);
   padding: var(--s-4) var(--s-8);
+  /* Query container so rows can adapt to the content column's width (viewport
+     minus the fixed sidebar), not the viewport. */
+  container-type: inline-size;
 }
 
 /* Accent header is the alert signal — no icon, no saturated red, just the
@@ -84,15 +87,28 @@ function formatItems(items: string[]): string {
   gap: var(--s-2);
 }
 
+/* Default to a stacked label-over-body row: this never crushes the body, and it
+   is the graceful-degradation layout if container queries are unsupported. Wide
+   columns earn the side-by-side aligned-gutter layout below. */
 .warning-row {
   display: flex;
-  align-items: baseline;
-  gap: var(--s-4);
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+@container (min-width: 32rem) {
+  .warning-row {
+    flex-direction: row;
+    align-items: baseline;
+    gap: var(--s-4);
+  }
+  .warning-label {
+    min-width: 10rem;
+  }
 }
 
 .warning-label {
   flex-shrink: 0;
-  min-width: 11rem;
   font-family: var(--font-sans);
   font-size: var(--t-caption);
   letter-spacing: var(--track-caption);

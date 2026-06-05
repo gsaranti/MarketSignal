@@ -180,6 +180,44 @@ function onSave() {
           on this machine.
         </p>
 
+        <!-- Weekly-schedule control: the single home for enabling/disabling the
+             Sunday job (docs/interface.md §Settings). The footer only reports
+             status. Sits near the top — not below Save — and renders regardless
+             of the config form's load state. -->
+        <section class="settings-section" aria-labelledby="sec-schedule">
+          <h3 id="sec-schedule" class="section-eyebrow">Scheduled job</h3>
+          <div class="control-row">
+            <div class="control-text">
+              <div class="control-label">Weekly report</div>
+              <div class="control-hint">
+                {{
+                  scheduleEnabled
+                    ? "Runs automatically every Sunday at 9:00 AM."
+                    : "Scheduled runs are paused."
+                }}
+              </div>
+            </div>
+            <button
+              type="button"
+              class="switch"
+              role="switch"
+              :aria-checked="scheduleEnabled"
+              :aria-label="
+                scheduleEnabled
+                  ? 'Disable weekly report job'
+                  : 'Enable weekly report job'
+              "
+              :disabled="jobBusy || jobEnabled === null"
+              @click="toggleSchedule"
+            >
+              <span
+                class="switch-knob"
+                :class="{ 'switch-knob--on': scheduleEnabled }"
+              ></span>
+            </button>
+          </div>
+        </section>
+
         <p
           v-if="loading && !settings"
           class="settings-status"
@@ -288,43 +326,6 @@ function onSave() {
             </span>
           </div>
         </form>
-
-        <!-- Weekly-schedule control: the single home for enabling/disabling the
-             Sunday job (docs/interface.md §Settings). The footer only reports
-             status. Rendered regardless of the config form's load state. -->
-        <section class="settings-section" aria-labelledby="sec-schedule">
-          <h3 id="sec-schedule" class="section-eyebrow">Scheduled job</h3>
-          <div class="control-row">
-            <div class="control-text">
-              <div class="control-label">Weekly report</div>
-              <div class="control-hint">
-                {{
-                  scheduleEnabled
-                    ? "Runs automatically every Sunday at 9:00 AM."
-                    : "Scheduled runs are paused."
-                }}
-              </div>
-            </div>
-            <button
-              type="button"
-              class="switch"
-              role="switch"
-              :aria-checked="scheduleEnabled"
-              :aria-label="
-                scheduleEnabled
-                  ? 'Disable weekly report job'
-                  : 'Enable weekly report job'
-              "
-              :disabled="jobBusy || jobEnabled === null"
-              @click="toggleSchedule"
-            >
-              <span
-                class="switch-knob"
-                :class="{ 'switch-knob--on': scheduleEnabled }"
-              ></span>
-            </button>
-          </div>
-        </section>
       </div>
     </div>
   </main>
@@ -366,12 +367,15 @@ function onSave() {
   padding: var(--s-10) var(--s-8) var(--s-12);
 }
 
+/* Chrome-scale serif-italic: the lede annotates the surface; it must not read at
+   report-prose size. Kept serif-italic (brand voice) but stepped down to the
+   hint register (13px). */
 .settings-lede {
-  margin: 0 0 var(--s-9);
+  margin: 0 0 var(--s-7);
   max-width: var(--measure);
   font-family: var(--font-serif);
   font-style: italic;
-  font-size: var(--t-prose-sm);
+  font-size: var(--t-ui-sm);
   line-height: var(--lh-prose);
   letter-spacing: var(--track-prose);
   color: var(--ink-2);

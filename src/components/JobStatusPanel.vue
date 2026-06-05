@@ -2,14 +2,19 @@
 import { computed } from "vue";
 import type { JobStatus } from "../types";
 
-// Weekly-job status (docs/scheduling.md §Job Status Visibility). Status-only:
-// the enable/disable control lives in Settings now, so the footer just reports
-// run history (last run / last failure / last skipped) and the in-flight
-// indicator. Recessed chrome — sits on paper-soft like the sidebar.
+// Weekly-job status (docs/scheduling.md §Job Status Visibility). Reports run
+// history (last run / last failure / last skipped) and the in-flight indicator;
+// the enable/disable control lives in Settings. It also carries the persistent
+// manual "Generate now" trigger (the kit's footer division — generation is a job
+// action, the report toolbar is reading-only). Recessed chrome on paper-soft.
 const props = defineProps<{
   status: JobStatus | null;
   error: string | null;
+  blocked: boolean;
+  generating: boolean;
 }>();
+
+defineEmits<{ (e: "generate"): void }>();
 
 // Stay silent until the first status resolves (mirrors the warning area), so the
 // footer doesn't flash empty on load. Surface as soon as there's status or error.
@@ -65,6 +70,24 @@ function formatLocal(iso: string): string {
         </div>
       </dl>
     </div>
+
+    <!-- Persistent manual trigger. Hidden while a run is in flight (the bar to
+         the left already says so). Disabled when the gate blocks a run; the
+         reason lives in the warning band above and the report empty state. -->
+    <button
+      v-if="!status?.is_running"
+      type="button"
+      class="btn btn-secondary btn-generate"
+      :disabled="generating || blocked"
+      :title="
+        blocked
+          ? 'Resolve the configuration warnings above to generate a report'
+          : undefined
+      "
+      @click="$emit('generate')"
+    >
+      {{ generating ? "Generating…" : "Generate now" }}
+    </button>
   </footer>
 </template>
 
@@ -127,6 +150,20 @@ function formatLocal(iso: string): string {
   font-size: var(--t-ui-sm);
   color: var(--accent);
   overflow-wrap: anywhere;
+}
+
+/* Compact secondary button sized to the footer's tight chrome. Hover steps one
+   tonal step deeper than the paper-soft footer (the secondary default hover is
+   paper-soft, which would be invisible here) — matching the sidebar's tinted-
+   region pattern. */
+.btn-generate {
+  flex-shrink: 0;
+  padding: var(--s-2) var(--s-4);
+  font-size: var(--t-ui-sm);
+}
+
+.btn-generate:hover:not(:disabled) {
+  background: var(--paper-edge);
 }
 
 .job-facts {

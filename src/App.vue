@@ -269,7 +269,13 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           @set-enabled="setJobEnabled"
         />
       </div>
-      <JobStatusPanel :status="jobStatus" :error="jobStatusError" />
+      <JobStatusPanel
+        :status="jobStatus"
+        :error="jobStatusError"
+        :blocked="blocked"
+        :generating="generating"
+        @generate="generate"
+      />
     </div>
   </div>
 </template>

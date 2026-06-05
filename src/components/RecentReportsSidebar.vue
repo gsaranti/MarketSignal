@@ -21,7 +21,7 @@ function shortId(id: string): string {
 
 <template>
   <aside class="sidebar">
-    <div class="sidebar-header">Recent Reports · last 30</div>
+    <div class="sidebar-header">Latest report</div>
     <div class="sidebar-list">
       <!-- The report row doubles as the "back to report" nav: clickable (and
            keyboard-operable) even in the empty state, so a path back from the
