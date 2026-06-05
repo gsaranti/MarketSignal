@@ -141,7 +141,9 @@ const renderedHtml = computed(() =>
   font-size: var(--t-body);
   line-height: var(--lh-prose);
   letter-spacing: var(--track-prose);
-  color: var(--ink-3);
+  /* ink-2, not ink-3: 17px reading prose must clear WCAG AA (4.5:1); ink-3 on
+     paper is ~4.3:1. */
+  color: var(--ink-2);
 }
 
 .report-error {

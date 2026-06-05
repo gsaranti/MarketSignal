@@ -74,6 +74,9 @@ function shortId(id: string): string {
 </template>
 
 <style scoped>
+/* Recessed chrome: the sidebar sits one tonal step below the paper reading
+   surface so the boundary between navigation and report content is legible
+   without leaning on the hairline alone. */
 .sidebar {
   width: 280px;
   flex-shrink: 0;
@@ -81,7 +84,7 @@ function shortId(id: string): string {
   flex-direction: column;
   min-height: 0;
   border-right: var(--border);
-  background: var(--paper);
+  background: var(--paper-soft);
 }
 
 .sidebar-header {
@@ -116,6 +119,13 @@ function shortId(id: string): string {
 .report-row:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* The global `.row` hover/current is paper-soft, which now matches the sidebar
+   background — step it one deeper so selection still reads. */
+.report-row:hover,
+.report-row.is-current {
+  background: var(--paper-edge);
 }
 
 .row-main {
@@ -166,11 +176,11 @@ function shortId(id: string): string {
 }
 
 .nav-item:hover {
-  background: var(--paper-soft);
+  background: var(--paper-edge);
 }
 
 .nav-item.is-active {
-  background: var(--paper-soft);
+  background: var(--paper-edge);
   border-left-color: var(--accent);
   font-weight: 600;
 }

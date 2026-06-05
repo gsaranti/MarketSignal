@@ -177,6 +177,21 @@ struct AgentSlot<'a> {
 /// Validate the configuration against the execution gate. Pure: no I/O, no env
 /// access — every input is on `cfg`. Only non-empty categories are returned, so
 /// a clean configuration yields an empty `categories` and `is_blocked == false`.
+/// Join names into a readable Oxford-comma list: "A", "A and B", "A, B, and C".
+/// Keeps each warning category to one scannable sentence instead of one row per
+/// missing item.
+fn join_list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [a] => (*a).to_string(),
+        [a, b] => format!("{a} and {b}"),
+        _ => {
+            let (last, rest) = items.split_last().expect("non-empty slice");
+            format!("{}, and {}", rest.join(", "), last)
+        }
+    }
+}
+
 pub fn validate(cfg: &AppConfig) -> ValidationReport {
     let mut categories: Vec<WarningCategory> = Vec::new();
 
@@ -187,16 +202,26 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
         AgentSlot { name: "Bear Analyst", value: &cfg.bear_agent_model },
         AgentSlot { name: "Balanced Analyst", value: &cfg.balanced_agent_model },
     ];
-    let mut agent_items = Vec::new();
+    // One concise line per problem rather than one row per agent, so the warning
+    // area reads as a brief status, not a wall of repeated predicates.
+    let mut not_selected: Vec<&str> = Vec::new();
+    let mut unknown: Vec<String> = Vec::new();
     for slot in slots {
         match present(slot.value) {
-            None => agent_items.push(format!("{} — no model selected", slot.name)),
+            None => not_selected.push(slot.name),
             Some(label) => {
                 if AgentModel::from_config_label(label).is_err() {
-                    agent_items.push(format!("{} — unknown model \"{label}\"", slot.name));
+                    unknown.push(format!("{} (\"{label}\")", slot.name));
                 }
             }
         }
+    }
+    let mut agent_items = Vec::new();
+    if !not_selected.is_empty() {
+        agent_items.push(format!("No model selected for {}.", join_list(&not_selected)));
+    }
+    if !unknown.is_empty() {
+        agent_items.push(format!("Unknown model for {}.", unknown.join(", ")));
     }
     if !agent_items.is_empty() {
         categories.push(WarningCategory {
@@ -208,35 +233,35 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
 
     // API tokens: both are always required (the fixed internal stages span both
     // providers — docs/configuration.md §API Tokens).
-    let mut token_items = Vec::new();
+    let mut missing_tokens: Vec<&str> = Vec::new();
     if present(&cfg.openai_api_key).is_none() {
-        token_items.push("OpenAI — API token missing".to_string());
+        missing_tokens.push("OpenAI");
     }
     if present(&cfg.anthropic_api_key).is_none() {
-        token_items.push("Anthropic — API token missing".to_string());
+        missing_tokens.push("Anthropic");
     }
-    if !token_items.is_empty() {
+    if !missing_tokens.is_empty() {
         categories.push(WarningCategory {
             kind: WarningKind::ApiTokens,
             title: "API tokens".to_string(),
-            items: token_items,
+            items: vec![format!("Missing for {}.", join_list(&missing_tokens))],
         });
     }
 
     // External data-provider credentials: FMP and Tavily are both required to
     // run (docs/configuration.md §External Data Provider Credentials).
-    let mut cred_items = Vec::new();
+    let mut missing_creds: Vec<&str> = Vec::new();
     if present(&cfg.fmp_api_key).is_none() {
-        cred_items.push("Financial Modeling Prep — credential missing".to_string());
+        missing_creds.push("Financial Modeling Prep");
     }
     if present(&cfg.tavily_api_key).is_none() {
-        cred_items.push("Tavily — credential missing".to_string());
+        missing_creds.push("Tavily");
     }
-    if !cred_items.is_empty() {
+    if !missing_creds.is_empty() {
         categories.push(WarningCategory {
             kind: WarningKind::ProviderCredentials,
             title: "Provider credentials".to_string(),
-            items: cred_items,
+            items: vec![format!("Missing for {}.", join_list(&missing_creds))],
         });
     }
 
@@ -365,7 +390,7 @@ mod tests {
         let cat = category(&report, WarningKind::AgentConfiguration).expect("agent category");
         assert_eq!(cat.items.len(), 1);
         assert!(cat.items[0].contains("Bear Analyst"), "{:?}", cat.items);
-        assert!(cat.items[0].contains("no model selected"), "{:?}", cat.items);
+        assert!(cat.items[0].contains("No model selected"), "{:?}", cat.items);
     }
 
     #[test]
@@ -386,7 +411,7 @@ mod tests {
         let report = validate(&cfg);
         let cat = category(&report, WarningKind::AgentConfiguration).expect("agent category");
         assert!(cat.items[0].contains("Main Agent"), "{:?}", cat.items);
-        assert!(cat.items[0].contains("no model selected"), "{:?}", cat.items);
+        assert!(cat.items[0].contains("No model selected"), "{:?}", cat.items);
     }
 
     #[test]
@@ -419,13 +444,20 @@ mod tests {
         assert!(category(&report, WarningKind::AgentConfiguration).is_some());
         assert!(category(&report, WarningKind::ApiTokens).is_some());
         assert!(category(&report, WarningKind::ProviderCredentials).is_some());
-        // All four agents and both tokens and both creds reported.
+        // Each category condenses to a single line that names every missing item.
         let agents = category(&report, WarningKind::AgentConfiguration).unwrap();
-        assert_eq!(agents.items.len(), 4);
+        assert_eq!(agents.items.len(), 1);
+        for name in ["Main Agent", "Bull Analyst", "Bear Analyst", "Balanced Analyst"] {
+            assert!(agents.items[0].contains(name), "{:?}", agents.items);
+        }
         let tokens = category(&report, WarningKind::ApiTokens).unwrap();
-        assert_eq!(tokens.items.len(), 2);
+        assert_eq!(tokens.items.len(), 1);
+        assert!(tokens.items[0].contains("OpenAI") && tokens.items[0].contains("Anthropic"));
         let creds = category(&report, WarningKind::ProviderCredentials).unwrap();
-        assert_eq!(creds.items.len(), 2);
+        assert_eq!(creds.items.len(), 1);
+        assert!(
+            creds.items[0].contains("Financial Modeling Prep") && creds.items[0].contains("Tavily")
+        );
     }
 
     #[test]

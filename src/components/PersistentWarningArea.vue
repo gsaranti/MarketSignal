@@ -2,11 +2,13 @@
 import { computed } from "vue";
 import type { ValidationReport } from "../types";
 
-// Persistent Warning Area (docs/interface.md). The design system's WarningBar
-// is the fidelity reference: an always-visible row of active caveats, no icon
-// and no color flag — the words are the alert. Each active category renders as
-// one row: a sans uppercase label and the serif body listing what is missing.
-// When there are no active warnings the area renders nothing.
+// Persistent Warning Area (docs/interface.md). Deliberately rendered in the
+// chrome/status register — sans type on an inset-well (paper-edge) band with an
+// accent header — NOT the serif reading register, so it can never be mistaken
+// for report content. This extends the design kit's WarningBar: the kit's "plain
+// serif prose, no header" treatment was indistinguishable from the report body
+// (the reading surface uses the same serif), so a coding-agent review promoted it
+// to a labelled status band. Each active category is one line inside one block.
 const props = defineProps<{
   report: ValidationReport | null;
   error: string | null;
@@ -30,12 +32,13 @@ function formatItems(items: string[]): string {
   <section
     v-if="visible"
     class="warning-area"
-    aria-label="Active warnings"
+    aria-label="Needs attention"
     aria-live="polite"
   >
+    <div class="warning-head">Needs attention</div>
     <ul class="warning-list">
       <li v-if="error" class="warning-row">
-        <span class="warning-label">Warning</span>
+        <span class="warning-label">Configuration</span>
         <span class="warning-body">
           Couldn't check configuration — {{ error }}
         </span>
@@ -49,48 +52,61 @@ function formatItems(items: string[]): string {
 </template>
 
 <style scoped>
+/* An inset-well band (one tonal step below the paper reading surface) so the
+   warning area reads as system status, not report content. Left padding matches
+   the toolbar/footer (var(--s-8)) so the left edge still aligns across regions. */
 .warning-area {
-  background: var(--paper);
+  background: var(--paper-edge);
   border-bottom: var(--border);
+  padding: var(--s-4) var(--s-8);
 }
 
-.warning-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-/* Padding matches the report toolbar (var(--s-3) var(--s-8)) so the warning
-   rows and the toolbar below them share one left edge. */
-.warning-row {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-4);
-  padding: var(--s-3) var(--s-8);
-}
-
-.warning-row + .warning-row {
-  border-top: 1px solid var(--hairline-soft);
-}
-
-.warning-label {
-  flex-shrink: 0;
+/* Accent header is the alert signal — no icon, no saturated red, just the
+   system's oxblood used the way it already marks error labels elsewhere. */
+.warning-head {
   font-family: var(--font-sans);
   font-size: var(--t-caption);
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
   font-weight: 600;
-  color: var(--ink);
-  white-space: nowrap;
+  color: var(--accent);
+  margin-bottom: var(--s-3);
 }
 
+/* One block: the categories are a single list grouped by spacing, with no
+   inter-row hairlines (those made one warning area look like three sections). */
+.warning-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.warning-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-4);
+}
+
+.warning-label {
+  flex-shrink: 0;
+  min-width: 11rem;
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+/* Sans, not serif-italic: keeps the status text out of the reading register. */
 .warning-body {
   min-width: 0;
-  font-family: var(--font-serif);
-  font-size: var(--t-prose-sm);
-  line-height: var(--lh-prose);
-  letter-spacing: var(--track-prose);
-  font-style: italic;
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  line-height: var(--lh-ui);
   color: var(--ink);
   overflow-wrap: anywhere;
 }

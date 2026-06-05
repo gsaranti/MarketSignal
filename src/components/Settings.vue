@@ -21,19 +21,15 @@ const props = defineProps<{
   loading: boolean;
   saving: boolean;
   error: string | null;
-  // Operational controls mirrored from the global footer (docs/interface.md
-  // §Settings). The state lives in App.vue and feeds both surfaces, so the footer
-  // toggle and this one can never disagree.
+  // Weekly-schedule control — Settings is the single home for it; the footer
+  // only reports run status (docs/interface.md §Settings).
   jobEnabled: boolean | null;
   jobBusy: boolean;
-  blocked: boolean;
-  generating: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "save", payload: { models: AgentModels; credentials: CredentialUpdate }): void;
   (e: "set-enabled", value: boolean): void;
-  (e: "generate"): void;
 }>();
 
 type ModelKey = "main" | "bull" | "bear" | "balanced";
@@ -141,12 +137,13 @@ const canSave = computed(
     tokensSatisfied.value
 );
 
-// Scheduled-job control — same backend state the footer toggle drives.
+// Scheduled-job control — the footer reports status; this is where it's toggled.
 const scheduleEnabled = computed(() => props.jobEnabled ?? false);
 function toggleSchedule() {
   if (props.jobBusy || props.jobEnabled === null) return;
   emit("set-enabled", !scheduleEnabled.value);
 }
+
 // "Saved" shows only while the form is at rest and unchanged since the save.
 const showSaved = computed(
   () => justSaved.value && !dirty.value && !props.saving && props.error === null
@@ -178,14 +175,10 @@ function onSave() {
 
     <div class="settings-scroll">
       <div class="settings-body">
-        <div class="settings-intro">
-          <h2 class="settings-title">Settings</h2>
-          <p class="settings-lede">
-            Choose the models that write each issue and supply the credentials
-            the pipeline needs. Everything stays on this machine; nothing is sent
-            anywhere until you generate a report.
-          </p>
-        </div>
+        <p class="settings-lede">
+          Choose the models and credentials the weekly pipeline needs — all kept
+          on this machine.
+        </p>
 
         <p
           v-if="loading && !settings"
@@ -203,11 +196,7 @@ function onSave() {
         <form v-else-if="settings" class="settings-form" @submit.prevent="onSave">
           <section class="settings-section" aria-labelledby="sec-models">
             <h3 id="sec-models" class="section-eyebrow">Agent models</h3>
-            <p class="section-note">
-              All four must be configured before a report can run. OpenAI and
-              Anthropic tokens are both required regardless of which models you
-              pick.
-            </p>
+            <p class="section-note">All four must be set before a report can run.</p>
             <div v-for="field in agentFields" :key="field.key" class="field">
               <label class="label" :for="`model-${field.key}`">{{ field.label }}</label>
               <div class="select-wrap">
@@ -244,8 +233,8 @@ function onSave() {
           <section class="settings-section" aria-labelledby="sec-tokens">
             <h3 id="sec-tokens" class="section-eyebrow">API tokens</h3>
             <p class="section-note">
-              Both are required to save. The fixed pipeline stages use OpenAI and
-              Anthropic regardless of which models you choose.
+              Both are always required — the fixed pipeline stages use OpenAI and
+              Anthropic regardless of the models you pick.
             </p>
             <div v-for="field in tokenFields" :key="field.key" class="field">
               <label class="label" :for="`cred-${field.key}`">{{ field.label }}</label>
@@ -300,9 +289,9 @@ function onSave() {
           </div>
         </form>
 
-        <!-- Operational controls (docs/interface.md §Settings tree). Bound to the
-             same App.vue state as the global footer, so the two stay in sync;
-             rendered regardless of the config-form's load state. -->
+        <!-- Weekly-schedule control: the single home for enabling/disabling the
+             Sunday job (docs/interface.md §Settings). The footer only reports
+             status. Rendered regardless of the config form's load state. -->
         <section class="settings-section" aria-labelledby="sec-schedule">
           <h3 id="sec-schedule" class="section-eyebrow">Scheduled job</h3>
           <div class="control-row">
@@ -333,35 +322,6 @@ function onSave() {
                 class="switch-knob"
                 :class="{ 'switch-knob--on': scheduleEnabled }"
               ></span>
-            </button>
-          </div>
-        </section>
-
-        <section class="settings-section" aria-labelledby="sec-manual">
-          <h3 id="sec-manual" class="section-eyebrow">Manual report</h3>
-          <div class="control-row">
-            <div class="control-text">
-              <div class="control-label">Generate now</div>
-              <div class="control-hint">
-                {{
-                  blocked
-                    ? "Resolve the configuration above to generate a report."
-                    : "Runs the same workflow as the Sunday job, immediately."
-                }}
-              </div>
-            </div>
-            <button
-              type="button"
-              class="btn btn-secondary"
-              :disabled="generating || blocked"
-              :title="
-                blocked
-                  ? 'Resolve the configuration warnings to generate a report'
-                  : undefined
-              "
-              @click="emit('generate')"
-            >
-              {{ generating ? "Generating…" : "Generate report" }}
             </button>
           </div>
         </section>
@@ -406,21 +366,8 @@ function onSave() {
   padding: var(--s-10) var(--s-8) var(--s-12);
 }
 
-.settings-intro {
-  margin-bottom: var(--s-9);
-}
-
-.settings-title {
-  margin: 0 0 var(--s-2);
-  font-family: var(--font-serif);
-  font-size: var(--t-display-2);
-  line-height: var(--lh-display);
-  font-weight: 600;
-  color: var(--ink);
-}
-
 .settings-lede {
-  margin: 0;
+  margin: 0 0 var(--s-9);
   max-width: var(--measure);
   font-family: var(--font-serif);
   font-style: italic;
@@ -459,7 +406,9 @@ function onSave() {
   font-style: italic;
   font-size: var(--t-ui-sm);
   line-height: var(--lh-prose);
-  color: var(--ink-3);
+  /* ink-2, not ink-3: at 13px this secondary prose must clear WCAG AA (4.5:1);
+     ink-3 on paper is ~4.3:1. */
+  color: var(--ink-2);
 }
 
 .field {
@@ -566,8 +515,7 @@ function onSave() {
   color: var(--ink-3);
 }
 
-/* Operational control rows (scheduled job, manual report) — label/hint on the
-   left, control on the right, matching the footer's job-control geometry. */
+/* Schedule control row — label/hint on the left, switch on the right. */
 .control-row {
   display: flex;
   align-items: center;
@@ -590,13 +538,14 @@ function onSave() {
   font-family: var(--font-serif);
   font-style: italic;
   font-size: var(--t-caption);
-  color: var(--ink-3);
+  color: var(--ink-2);
   line-height: var(--lh-ui);
 }
 
-/* Boxy switch — duplicated from JobStatusPanel.vue so the footer toggle and the
-   Settings toggle read identically (44×22, 1px ink edge, sliding ink block). If
-   these need to stay locked together long-term, extract a shared Toggle. */
+/* Boxy switch (design kit Settings.jsx Toggle): 44×22, 1px ink edge, 2px radius,
+   a sliding ink block — no pill, no rounded slider. A <button> so it is
+   keyboard-operable (Enter/Space) with a focus ring. This is the toggle's only
+   instance now that the footer no longer carries one. */
 .switch {
   flex-shrink: 0;
   display: inline-flex;

@@ -73,11 +73,10 @@ function formatDate(iso: string | null): string {
 
     <div class="inbox-scroll">
       <div class="inbox-intro">
-        <h2 class="inbox-title">Filed research</h2>
         <p class="inbox-lede">
-          Drop PDFs, transcripts, or text notes into this folder and the analyst
-          pipeline will consider them when writing next week's issue. Nothing is
-          sent anywhere until you generate.
+          Use “Add files…” to open the inbox folder, then drop your PDFs,
+          transcripts, or notes inside. The pipeline reads them at the start of
+          next week's run; nothing leaves your machine until you generate.
         </p>
       </div>
 
@@ -99,8 +98,8 @@ function formatDate(iso: string | null): string {
       <div v-else-if="documents.length === 0" class="inbox-empty">
         <div class="inbox-empty-eyebrow">No documents</div>
         <p class="inbox-empty-body">
-          This folder is empty. Add files, then they'll be parsed at the start of
-          the next report run.
+          No documents yet. Use “Add files…” above to open the folder and add
+          some; they're parsed at the start of the next report run.
         </p>
       </div>
 
@@ -199,15 +198,6 @@ function formatDate(iso: string | null): string {
   padding: var(--s-10) var(--s-8) var(--s-5);
 }
 
-.inbox-title {
-  margin: 0 0 var(--s-2);
-  font-family: var(--font-serif);
-  font-size: var(--t-h1);
-  line-height: var(--lh-display);
-  font-weight: 600;
-  color: var(--ink);
-}
-
 .inbox-lede {
   margin: 0;
   font-family: var(--font-serif);
@@ -269,7 +259,8 @@ function formatDate(iso: string | null): string {
   font-size: var(--t-body);
   line-height: var(--lh-prose);
   letter-spacing: var(--track-prose);
-  color: var(--ink-3);
+  /* ink-2, not ink-3: 17px reading prose must clear WCAG AA (4.5:1). */
+  color: var(--ink-2);
 }
 
 /* The list is hairline-ruled top and bottom, dense rows separated by soft

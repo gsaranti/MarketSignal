@@ -188,14 +188,6 @@ function navigate(next: AppView) {
   if (next === "settings") void refreshSettings();
 }
 
-// Manual generation triggered from Settings: jump to the report view so the user
-// watches it render (and sees any error there), then run the same flow the
-// report-view button uses.
-function generateFromSettings() {
-  view.value = "report";
-  void generate();
-}
-
 const unlisteners: UnlistenFn[] = [];
 
 onMounted(async () => {
@@ -273,19 +265,11 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :error="settingsError"
           :job-enabled="jobStatus?.enabled ?? null"
           :job-busy="jobBusy"
-          :blocked="blocked"
-          :generating="generating"
           @save="saveSettings"
           @set-enabled="setJobEnabled"
-          @generate="generateFromSettings"
         />
       </div>
-      <JobStatusPanel
-        :status="jobStatus"
-        :error="jobStatusError"
-        :busy="jobBusy"
-        @set-enabled="setJobEnabled"
-      />
+      <JobStatusPanel :status="jobStatus" :error="jobStatusError" />
     </div>
   </div>
 </template>
