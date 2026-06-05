@@ -20,6 +20,10 @@ available files (`colors_and_type.css`, the `preview/` cards, the
      focused inputs, and at most one emphasized chart series.
    - **Flat with hairlines.** No shadows, no glass/blur, no gradients,
      no rounded-everything (1–2px radii only, pill capsules prohibited).
+     Structural chrome *regions* may carry one flat tonal step for grounding
+     (sidebar/footer on `--paper-soft`, the warning band on `--paper-edge`);
+     cards and the reading surface stay hairline-only. See README §Region
+     grounding.
    - **Serif body, sans UI.** Source Serif 4 (body + display) and Public
      Sans (chrome). Display moments stay at 28–32px — never a 64px hero.
    - **Direction is sign + position + weight + neutral chevron** — never

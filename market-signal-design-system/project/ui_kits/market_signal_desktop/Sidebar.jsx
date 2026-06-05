@@ -1,5 +1,10 @@
 // Sidebar.jsx — Recent Reports list (dense, hairline-ruled rows) plus
 // nav targets at the foot of the panel: Inbox, Archive, Settings.
+//
+// ⚠ SUPERSEDED (2026-06-04 UX pass): the sidebar is now grounded on --paper-soft
+// (recessed chrome) so its boundary with the report surface reads without
+// leaning on the hairline alone; hover/selected rows step to --paper-edge. See
+// project/README.md §Region grounding.
 
 function SidebarHeader({ children }) {
   return (

@@ -23,8 +23,12 @@ Market Signal is narrow on purpose. The surfaces are reading‑shaped:
   hairline‑separated rows.
 - **Research Inbox / Archive** — user‑supplied PDFs and notes, organized
   for later citation.
-- **Persistent Warning Area** — a small, always‑visible row for active
-  caveats and revisions.
+- **Persistent Warning Area** — an always‑visible **status band** for active
+  caveats and config gaps. Rendered in the chrome register — **sans** body on a
+  `--paper-edge` inset‑well, an oxblood **"Needs attention"** header, one grouped
+  block with no inter‑row hairlines — so it can never be mistaken for report
+  prose. (The earlier serif‑italic "words are the alert" treatment was: it read
+  as report content on the same serif reading surface.)
 - **Settings** — model choice and API credentials. A single‑column form;
   the tightest surface in the system.
 
@@ -118,7 +122,7 @@ own desk: **measured, plain‑spoken, accountable, structural, unhurried.**
 
 Plain prose, no decoration. No emoji. No exclamation marks.
 
-- Empty inbox → *"No research has been filed yet. Drag a PDF here to add it to the archive."*
+- Empty inbox → *"No documents yet. Use 'Add files…' to open the inbox folder and add some."* (there is no in‑window drag‑drop; the button reveals the folder the user drops files into)
 - Generating → *"Generating this week's issue. Started 06:12 ET. Estimated 24 minutes remaining."*
 - Generation complete → *"This week's issue is ready."* (no toast theatrics, no celebration)
 - Warning → *"Last month's energy call was early. See the retrospective in §4."*
@@ -195,11 +199,11 @@ Light surfaces:
 | Token | Hex | Role |
 | --- | --- | --- |
 | `--paper` | `#F4EFE4` | primary surface (warm off‑white, premium uncoated stock) |
-| `--paper-soft` | `#ECE6D5` | hovered row / selected sidebar item background |
-| `--paper-edge` | `#E6DFCC` | the next tonal step down, for inset wells |
+| `--paper-soft` | `#ECE6D5` | hovered row / selected sidebar item; **recessed chrome regions** (sidebar, footer) |
+| `--paper-edge` | `#E6DFCC` | next tonal step down — inset wells, the **warning band**, and hover/selected rows on a tinted region |
 | `--ink` | `#1F1A14` | body text — a near‑black with a touch of brown |
-| `--ink-2` | `#4A4238` | secondary text |
-| `--ink-3` | `#7A6F5F` | tertiary text, captions |
+| `--ink-2` | `#4A4238` | secondary text (and **body‑size secondary prose** — see Contrast) |
+| `--ink-3` | `#7A6F5F` | tertiary text, captions — **large/caption sizes only** (see Contrast) |
 | `--hairline` | `#C8BFAE` | section dividers, table rules, input borders |
 | `--accent` | `#6E2230` | oxblood — used **only** for interactive states, current sidebar item, and one emphasized chart series |
 | `--accent-press` | `#581923` | accent darkened by one tonal step |
@@ -224,8 +228,24 @@ series needs emphasis.
 **Where the accent is deliberately absent:** body prose (always ink),
 icons (stroked in ink), section dividers (hairlines), **up/down market
 signal** (direction is sign + position + weight + a neutral chevron, never
-saturated red/green), card backgrounds (surfaces stay paper‑toned;
-differentiation is by hairline, not fill).
+saturated red/green), card backgrounds and the reading column (these stay
+paper‑toned; differentiation is by hairline, not fill — but see **Region
+grounding**, which does tint the structural chrome *zones*).
+
+**Region grounding.** The structural chrome *regions* carry one flat tonal
+step so the eye can find their edges without leaning on the hairline alone: the
+**report/reading surface stays `--paper`** (the lightest — the hero), the
+**sidebar and footer sit on `--paper-soft`**, and the **warning band sits on
+`--paper-edge`**. Within a tinted region, hover/selected rows step one further
+to `--paper-edge`. This is still "flat with hairlines" — a tonal fill, never a
+shadow, gradient, or glass — and it stops at regions: individual **cards and the
+reading column never get a fill.**
+
+**Contrast (WCAG AA).** `--ink-3` (#7A6F5F) on `--paper` is ≈ **4.3:1** — below
+the 4.5:1 floor for normal text. Use `--ink-3` only for **large or caption**
+text (eyebrows, metadata, dates); for **body‑size secondary prose** (empty‑state
+bodies, form hints, section notes) use **`--ink-2`** (#4A4238, ≈ 8:1). The same
+asymmetry holds in dark mode.
 
 ### Spacing & baseline
 
@@ -293,6 +313,13 @@ not to entertain.**
   home view is not a landing page.
 - **No oversized headlines.** Report titles set at 28–32px in the serif;
   marketing‑page typography does not appear inside the product.
+- **Per‑surface titles.** Serif display is reserved for the report (its own
+  title line). Config and list surfaces — **Settings, Research Inbox** — are
+  named once by their toolbar eyebrow and carry **no separate serif H2**.
+- **Window minimum.** The layout holds from a **~720×480** floor upward (the
+  app window's `minWidth`/`minHeight`); below that the fixed‑width sidebar would
+  crush the reading column, so the window is not allowed to shrink past it. The
+  reading measure still caps on the wide end (64–72ch).
 - **No "dashboard widget" cards** — the genre of a card containing one
   large number, a sparkline, and a percent‑change pill. Numerical context
   lives inside the report prose and its embedded figures.

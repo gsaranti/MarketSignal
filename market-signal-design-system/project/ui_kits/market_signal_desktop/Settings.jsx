@@ -1,5 +1,10 @@
 // Settings.jsx — the tightest surface. Single-column form, label above
 // field, no decorative grouping cards.
+//
+// ⚠ SUPERSEDED (2026-06-04 UX pass): the serif "Settings" title was dropped —
+// the toolbar eyebrow names the surface, and serif display is reserved for the
+// report. The weekly schedule toggle also moved here (it's the single home for
+// it). See project/README.md §Per-surface titles.
 
 function Field({ label, hint, children, mono }) {
   return (
