@@ -31,7 +31,7 @@
   /* Ink — warm near-black, never pure #000 */
   --ink:          #1F1A14;
   --ink-2:        #4A4238;
-  --ink-3:        #7A6F5F;
+  --ink-3:        #6B6153;   /* captions/tertiary — retuned to clear WCAG AA (4.5:1) on paper/soft/edge */
 
   /* Hairlines */
   --hairline:     #C8BFAE;
@@ -118,7 +118,7 @@
 
   --ink:          #ECE5D2;
   --ink-2:        #B5AC97;
-  --ink-3:        #7E7560;
+  --ink-3:        #988F78;   /* lifted to clear WCAG AA (4.5:1) on every dark surface */
 
   --hairline:     #3A342A;
   --hairline-soft:#2C271F;
