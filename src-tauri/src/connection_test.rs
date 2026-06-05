@@ -11,10 +11,14 @@
 //! version header is reused from there.
 //!
 //! Each provider's request function is split from a pure `interpret_*` so the
-//! pass/fail logic — notably FMP's habit of returning a 200 whose body carries an
-//! auth error — is unit-testable offline. The request validates the credential
-//! only; it never spends model tokens and does not change the execution gate
-//! (which checks credential *presence*, not validity — see `config::validate`).
+//! pass/fail logic — notably FMP, which can report an error either in the status
+//! or in a 200 body — is unit-testable offline. (Verified live Jun 2026: an
+//! invalid/missing FMP key returns 401 with an `{"Error Message": ...}` body on
+//! both `/stable/` and legacy `/api/v3/`; the 200-with-error-body path is kept as
+//! defensive cover for FMP's other conditions, e.g. plan/rate-limit, that do.)
+//! The request validates the credential only; it never spends model tokens and
+//! does not change the execution gate (which checks credential *presence*, not
+//! validity — see `config::validate`).
 
 use std::time::Duration;
 
@@ -139,9 +143,9 @@ pub fn run_test(provider: CredentialProvider, api_key: &str) -> ConnectionTestRe
             }
         }
         CredentialProvider::Fmp => {
-            // FMP takes the key as a query param (never an Authorization header),
-            // and a wrong key can come back as a 200 with an error body — so the
-            // body is read and handed to the interpreter.
+            // FMP takes the key as a query param (never an Authorization header).
+            // A wrong key returns 401 (verified live), but FMP can also carry an
+            // error in a 200 body, so the body is read and handed to the interpreter.
             let sent = http
                 .get(FMP_QUOTE_URL)
                 .query(&[("symbol", "AAPL"), ("apikey", api_key)])
@@ -186,8 +190,10 @@ fn interpret_status_only(provider: CredentialProvider, status: u16) -> Connectio
     }
 }
 
-/// FMP needs dual detection: a rejected key may surface as a non-2xx status OR as
-/// a 200 whose JSON body is an `{"Error Message": ...}` object. A 200 array
+/// FMP needs dual detection. A rejected key surfaces as a non-2xx status — live,
+/// an invalid/missing key is a 401 (handled first, before the body is parsed) —
+/// but FMP can also report an error as a 200 whose JSON body is an
+/// `{"Error Message": ...}` object, so a 200 body is inspected too. A 200 array
 /// (including an empty `[]`, which FMP returns for "no data") means the key was
 /// accepted.
 fn interpret_fmp(status: u16, body: &str) -> ConnectionTestResult {
@@ -291,6 +297,17 @@ mod tests {
     #[test]
     fn fmp_401_is_a_failure() {
         let res = interpret_fmp(401, "");
+        assert!(!res.ok);
+        assert!(res.detail.contains("401"), "{}", res.detail);
+    }
+
+    #[test]
+    fn fmp_401_with_error_body_is_a_failure() {
+        // Verified live (Jun 2026): an invalid/missing key returns 401 *with* an
+        // `{"Error Message": ...}` body on /stable/ and /api/v3/. The status check
+        // must win and report the 401, short-circuiting before the body is parsed.
+        let body = r#"{"Error Message":"Invalid API KEY. Feel free to create a Free API Key..."}"#;
+        let res = interpret_fmp(401, body);
         assert!(!res.ok);
         assert!(res.detail.contains("401"), "{}", res.detail);
     }
