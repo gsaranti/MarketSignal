@@ -6,7 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import RecentReportsSidebar from "./components/RecentReportsSidebar.vue";
 import LatestReportView from "./components/LatestReportView.vue";
-import ResearchInbox from "./components/ResearchInbox.vue";
+import ResearchDocuments from "./components/ResearchDocuments.vue";
 import Settings from "./components/Settings.vue";
 import PersistentWarningArea from "./components/PersistentWarningArea.vue";
 import JobStatusPanel from "./components/JobStatusPanel.vue";
@@ -44,6 +44,14 @@ const documents = ref<ResearchDocument[]>([]);
 const documentsLoading = ref(false);
 const documentsError = ref<string | null>(null);
 const inboxCount = computed(() => documents.value.length);
+
+// Research archive state — the read-only twin of the inbox: the pipeline files
+// processed documents here. Loaded up front (like the inbox) so the sidebar badge
+// is populated regardless of which view is active.
+const archiveDocuments = ref<ResearchDocument[]>([]);
+const archiveLoading = ref(false);
+const archiveError = ref<string | null>(null);
+const archiveCount = computed(() => archiveDocuments.value.length);
 
 const validation = ref<ValidationReport | null>(null);
 const validationError = ref<string | null>(null);
@@ -155,6 +163,42 @@ async function revealInbox() {
   }
 }
 
+async function refreshArchive() {
+  archiveLoading.value = true;
+  archiveError.value = null;
+  try {
+    archiveDocuments.value = await invoke<ResearchDocument[]>(
+      "list_research_archive"
+    );
+  } catch (e) {
+    archiveError.value = String(e);
+  } finally {
+    archiveLoading.value = false;
+  }
+}
+
+async function deleteArchiveDocument(name: string) {
+  let failure: string | null = null;
+  try {
+    await invoke("delete_research_archive_document", { name });
+  } catch (e) {
+    failure = String(e);
+  }
+  // Re-read either way so the list matches disk (mirrors the inbox delete). The
+  // refresh clears archiveError, so restore a delete failure *after* it.
+  await refreshArchive();
+  if (failure !== null) archiveError.value = failure;
+}
+
+async function revealArchive() {
+  // Best-effort: opening the folder in Finder is a convenience, not a data path.
+  try {
+    await invoke("reveal_research_archive");
+  } catch (e) {
+    archiveError.value = String(e);
+  }
+}
+
 async function refreshSettings() {
   settingsLoading.value = true;
   settingsError.value = null;
@@ -205,8 +249,9 @@ onMounted(async () => {
   void refreshValidation();
   void refreshJobStatus();
   // Load the inbox up front so the sidebar badge is populated even on the report
-  // view, before the user ever opens the inbox.
+  // view, before the user ever opens the inbox. Same for the archive.
   void refreshDocuments();
+  void refreshArchive();
   // Load settings up front so the gate's config state is known on first paint
   // (the report view's Generate button depends on it via the warning area).
   void refreshSettings();
@@ -231,8 +276,11 @@ onMounted(async () => {
         void refreshValidation();
         void refreshJobStatus();
         // The user may have dropped files into the inbox folder (via Finder)
-        // while the app was in the background — pick those up on return.
+        // while the app was in the background — pick those up on return. The
+        // archive can change too (a background run files documents, or the user
+        // deletes from it in Finder), so refresh it as well.
         void refreshDocuments();
+        void refreshArchive();
       }
     })
   );
@@ -257,6 +305,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
       :report="report"
       :view="view"
       :inbox-count="inboxCount"
+      :archive-count="archiveCount"
       @navigate="navigate"
     />
     <div class="main-column">
@@ -267,13 +316,38 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :report="report"
           :error="error"
         />
-        <ResearchInbox
+        <ResearchDocuments
           v-else-if="view === 'inbox'"
           :documents="documents"
           :loading="documentsLoading"
           :error="documentsError"
+          title="Research inbox"
+          lede="Filed research — read by the pipeline at the start of the next run. Nothing leaves your machine until you generate."
+          empty-title="No documents"
+          empty-body="Use “Add files…” to open the inbox folder, then drop in your PDFs, transcripts, or notes. The pipeline reads them at the start of the next run."
+          error-label="Couldn't read the inbox"
+          reveal-label="Add files…"
+          reveal-title="Opens the inbox folder so you can drop documents in"
+          reveal-icon="plus"
+          reveal-variant="btn-primary"
           @delete="deleteDocument"
           @reveal="revealInbox"
+        />
+        <ResearchDocuments
+          v-else-if="view === 'archive'"
+          :documents="archiveDocuments"
+          :loading="archiveLoading"
+          :error="archiveError"
+          title="Research archive"
+          lede="Processed research — filed here automatically after the pipeline reads it, and kept on your machine for later citation."
+          empty-title="No archived documents"
+          empty-body="Documents move here from the inbox automatically once the pipeline has processed them at the start of a run. Nothing has been archived yet."
+          error-label="Couldn't read the archive"
+          reveal-label="Show in Finder"
+          reveal-title="Opens the archive folder in Finder"
+          reveal-variant="btn-secondary"
+          @delete="deleteArchiveDocument"
+          @reveal="revealArchive"
         />
         <Settings
           v-else-if="view === 'settings'"

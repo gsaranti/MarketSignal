@@ -75,14 +75,24 @@ fn report_paths(app: &tauri::AppHandle) -> Result<ReportPaths, String> {
 
 /// The research-inbox folder under the app data directory
 /// (`docs/research-documents.md`). Resolved here alongside `report_paths` so the
-/// whole app-data layout stays defined in one place. The matching
-/// `research-archive` folder is the next slice's concern and is not resolved yet.
+/// whole app-data layout stays defined in one place.
 fn research_inbox_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("resolving app data directory: {e}"))?;
     Ok(data_dir.join("research-inbox"))
+}
+
+/// The research-archive folder under the app data directory
+/// (`docs/research-documents.md`). Successfully-processed inbox documents are
+/// moved here; the user may delete from it but cannot manually archive into it.
+fn research_archive_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("resolving app data directory: {e}"))?;
+    Ok(data_dir.join("research-archive"))
 }
 
 /// Manually generate a Weekly Market Report end to end. The execution gate runs
@@ -209,7 +219,7 @@ fn save_settings(
 #[tauri::command]
 fn list_research_inbox(app: tauri::AppHandle) -> Result<Vec<research::ResearchDocument>, String> {
     let inbox = research_inbox_dir(&app)?;
-    research::list_inbox(&inbox).map_err(|e| e.to_string())
+    research::list_folder(&inbox).map_err(|e| e.to_string())
 }
 
 /// Delete one document from the research inbox by file name
@@ -219,7 +229,7 @@ fn list_research_inbox(app: tauri::AppHandle) -> Result<Vec<research::ResearchDo
 #[tauri::command]
 fn delete_research_document(app: tauri::AppHandle, name: String) -> Result<(), String> {
     let inbox = research_inbox_dir(&app)?;
-    research::delete_inbox_document(&inbox, &name).map_err(|e| e.to_string())
+    research::delete_folder_document(&inbox, &name).map_err(|e| e.to_string())
 }
 
 /// Open the research-inbox folder in the OS file manager so the user can drop
@@ -234,6 +244,41 @@ fn reveal_research_inbox(app: tauri::AppHandle) -> Result<(), String> {
     app.opener()
         .open_path(inbox.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|e| format!("opening research inbox: {e}"))
+}
+
+/// List the documents currently in the research archive
+/// (`docs/research-documents.md`). Successfully-processed inbox documents are
+/// moved here; a fresh install with no archive folder yet lists as empty rather
+/// than erroring, so the frontend renders the empty state.
+#[tauri::command]
+fn list_research_archive(app: tauri::AppHandle) -> Result<Vec<research::ResearchDocument>, String> {
+    let archive = research_archive_dir(&app)?;
+    research::list_folder(&archive).map_err(|e| e.to_string())
+}
+
+/// Delete one document from the research archive by file name
+/// (`docs/research-documents.md` §User Permissions — the user may delete from
+/// either folder). The name is validated as a bare file name in `research::` so it
+/// cannot escape the archive directory.
+#[tauri::command]
+fn delete_research_archive_document(app: tauri::AppHandle, name: String) -> Result<(), String> {
+    let archive = research_archive_dir(&app)?;
+    research::delete_folder_document(&archive, &name).map_err(|e| e.to_string())
+}
+
+/// Open the research-archive folder in the OS file manager so the user can inspect
+/// what the pipeline has filed. The archive is read-only by spec — the user may
+/// view or delete here but not add (archiving is automatic;
+/// `docs/research-documents.md` §User Permissions). The folder is created on demand
+/// so a first-time reveal lands somewhere real.
+#[tauri::command]
+fn reveal_research_archive(app: tauri::AppHandle) -> Result<(), String> {
+    let archive = research_archive_dir(&app)?;
+    std::fs::create_dir_all(&archive)
+        .map_err(|e| format!("creating research archive directory: {e}"))?;
+    app.opener()
+        .open_path(archive.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| format!("opening research archive: {e}"))
 }
 
 /// Debug-only schedule override: when `MARKET_SIGNAL_SCHEDULE_OVERRIDE` is set to
@@ -390,7 +435,10 @@ pub fn run() {
             save_settings,
             list_research_inbox,
             delete_research_document,
-            reveal_research_inbox
+            reveal_research_inbox,
+            list_research_archive,
+            delete_research_archive_document,
+            reveal_research_archive
         ])
         .setup(|app| {
             // Tray runtime: the app stays resident so scheduled jobs keep running

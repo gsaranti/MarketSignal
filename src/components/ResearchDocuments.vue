@@ -1,18 +1,44 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import Icon from "./Icon.vue";
+import Icon, { type IconName } from "./Icon.vue";
 import type { ResearchDocument } from "../types";
 
-// User-supplied research documents — a dense, single-column list, translated
-// from the design kit's ResearchInbox.jsx. The inbox is a plain folder; the user
-// drops files in (via "Add files…", which reveals the folder) and the pipeline
-// parses them at the next run. Parse-failure error states are a later slice
-// (job-start processing isn't built yet), so this surfaces only what's on disk.
-defineProps<{
-  documents: ResearchDocument[];
-  loading: boolean;
-  error: string | null;
-}>();
+// A dense, single-column list of research documents, translated from the design
+// kit's ResearchInbox.jsx. Both research surfaces — the inbox (drop files in) and
+// the archive (read-only; the pipeline files processed documents here) — render
+// through this one component; the differences are all copy and the toolbar's
+// reveal affordance, passed as props. The list itself is identical: name, format
+// and size, modified date, and a per-row delete (allowed from either folder,
+// docs/research-documents.md §User Permissions). Parse-failure error states are a
+// later slice, so this surfaces only what's on disk.
+withDefaults(
+  defineProps<{
+    documents: ResearchDocument[];
+    loading: boolean;
+    error: string | null;
+    // Toolbar title (uppercase surface label).
+    title: string;
+    // Intro line, shown only when there are documents.
+    lede: string;
+    // Empty-state eyebrow + body.
+    emptyTitle: string;
+    emptyBody: string;
+    // Heading on the "couldn't read this folder" error block.
+    errorLabel: string;
+    // The single toolbar action — reveals the folder in the OS file manager.
+    revealLabel: string;
+    revealTitle: string;
+    // Optional leading icon (inbox uses "plus" for "Add files…"; the archive's
+    // "Show in Finder" carries none). Variant lets the archive use the quieter
+    // secondary button — it's a read-only convenience, not a primary action.
+    revealIcon?: IconName | null;
+    revealVariant?: "btn-primary" | "btn-secondary";
+  }>(),
+  {
+    revealIcon: null,
+    revealVariant: "btn-primary",
+  }
+);
 
 const emit = defineEmits<{
   (e: "delete", name: string): void;
@@ -55,73 +81,62 @@ function formatDate(iso: string | null): string {
 </script>
 
 <template>
-  <main class="inbox-pane">
+  <main class="docs-pane">
     <div class="toolbar">
-      <div class="toolbar-label">Research inbox</div>
+      <div class="toolbar-label">{{ title }}</div>
       <div class="toolbar-actions">
-        <button
-          class="btn btn-primary"
-          title="Opens the inbox folder so you can drop documents in"
-          @click="emit('reveal')"
-        >
+        <button class="btn" :class="revealVariant" :title="revealTitle" @click="emit('reveal')">
           <!-- size ≤14 keeps Icon on its fine 1.1px stroke branch -->
-          <Icon name="plus" :size="13" />
-          Add files…
+          <Icon v-if="revealIcon" :name="revealIcon" :size="13" />
+          {{ revealLabel }}
         </button>
       </div>
     </div>
 
-    <div class="inbox-scroll">
+    <div class="docs-scroll">
       <!-- Lede only when there are documents; the empty state below carries its
            own single instruction, so showing both would just repeat it. -->
-      <div v-if="documents.length > 0" class="inbox-intro">
-        <p class="inbox-lede">
-          Filed research — read by the pipeline at the start of the next run.
-          Nothing leaves your machine until you generate.
-        </p>
+      <div v-if="documents.length > 0" class="docs-intro">
+        <p class="docs-lede">{{ lede }}</p>
       </div>
 
-      <div v-if="error" class="inbox-error" role="alert">
-        <div class="inbox-error-label">Couldn't read the inbox</div>
-        <p class="inbox-error-detail">{{ error }}</p>
+      <div v-if="error" class="docs-error" role="alert">
+        <div class="docs-error-label">{{ errorLabel }}</div>
+        <p class="docs-error-detail">{{ error }}</p>
       </div>
 
       <!-- Only show the loading line on the first load (no rows yet); a refresh
            with rows already on screen shouldn't blank them out. -->
       <p
         v-else-if="loading && documents.length === 0"
-        class="inbox-status"
+        class="docs-status"
         aria-live="polite"
       >
         Loading…
       </p>
 
-      <div v-else-if="documents.length === 0" class="inbox-empty">
-        <div class="inbox-empty-eyebrow">No documents</div>
-        <p class="inbox-empty-body">
-          Use “Add files…” to open the inbox folder, then drop in your PDFs,
-          transcripts, or notes. The pipeline reads them at the start of the
-          next run.
-        </p>
+      <div v-else-if="documents.length === 0" class="docs-empty">
+        <div class="docs-empty-eyebrow">{{ emptyTitle }}</div>
+        <p class="docs-empty-body">{{ emptyBody }}</p>
       </div>
 
-      <ul v-else class="inbox-list">
+      <ul v-else class="docs-list">
         <li
           v-for="doc in documents"
           :key="doc.name"
-          class="inbox-row"
+          class="docs-row"
           :class="{ 'is-confirming': confirmingName === doc.name }"
         >
           <Icon name="file" :size="14" color="var(--ink-2)" />
-          <div class="inbox-row-main">
-            <div class="inbox-row-name">{{ doc.name }}</div>
-            <div class="inbox-row-meta">
+          <div class="docs-row-main">
+            <div class="docs-row-name">{{ doc.name }}</div>
+            <div class="docs-row-meta">
               {{ formatFormat(doc.format) }} · {{ formatSize(doc.size_bytes) }}
-              <span v-if="!doc.supported" class="inbox-tag">unsupported</span>
+              <span v-if="!doc.supported" class="docs-tag">unsupported</span>
             </div>
           </div>
-          <div class="inbox-row-date">{{ formatDate(doc.modified) }}</div>
-          <div class="inbox-row-actions">
+          <div class="docs-row-date">{{ formatDate(doc.modified) }}</div>
+          <div class="docs-row-actions">
             <template v-if="confirmingName === doc.name">
               <button
                 type="button"
@@ -151,7 +166,7 @@ function formatDate(iso: string | null): string {
         </li>
       </ul>
 
-      <div v-if="documents.length > 0" class="inbox-footer">
+      <div v-if="documents.length > 0" class="docs-footer">
         {{ documents.length }}
         {{ documents.length === 1 ? "item" : "items" }} · all local
       </div>
@@ -160,7 +175,7 @@ function formatDate(iso: string | null): string {
 </template>
 
 <style scoped>
-.inbox-pane {
+.docs-pane {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -169,8 +184,8 @@ function formatDate(iso: string | null): string {
 }
 
 /* Toolbar geometry matches the report pane's so the two views share a seam.
-   min-height matches the button-less panes; the "Add files…" button already
-   sets this height here, so this just pins the shared reference. */
+   min-height matches the button-less panes; the reveal button already sets this
+   height here, so this just pins the shared reference. */
 .toolbar {
   display: flex;
   align-items: center;
@@ -196,18 +211,18 @@ function formatDate(iso: string | null): string {
   gap: var(--s-3);
 }
 
-.inbox-scroll {
+.docs-scroll {
   flex: 1;
   overflow-y: auto;
 }
 
-.inbox-intro {
+.docs-intro {
   max-width: var(--measure);
   padding: var(--s-10) var(--s-8) var(--s-5);
 }
 
 /* Chrome-scale serif: annotates the surface without reading at report size. */
-.inbox-lede {
+.docs-lede {
   margin: 0;
   font-family: var(--font-serif);
   font-size: var(--t-ui-sm);
@@ -216,12 +231,12 @@ function formatDate(iso: string | null): string {
   color: var(--ink-2);
 }
 
-.inbox-error {
+.docs-error {
   max-width: var(--measure);
   padding: 0 var(--s-8) var(--s-6);
 }
 
-.inbox-error-label {
+.docs-error-label {
   font-family: var(--font-sans);
   font-size: var(--t-caption);
   letter-spacing: var(--track-caption);
@@ -231,7 +246,7 @@ function formatDate(iso: string | null): string {
   margin-bottom: var(--s-3);
 }
 
-.inbox-error-detail {
+.docs-error-detail {
   margin: 0;
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
@@ -240,7 +255,7 @@ function formatDate(iso: string | null): string {
   overflow-wrap: anywhere;
 }
 
-.inbox-status {
+.docs-status {
   margin: 0;
   padding: 0 var(--s-8) var(--s-6);
   font-family: var(--font-sans);
@@ -249,13 +264,13 @@ function formatDate(iso: string | null): string {
 }
 
 /* Top padding sets the eyebrow off the toolbar seam (matches the report empty
-   state's rhythm) so "No documents" doesn't hug the divider. */
-.inbox-empty {
+   state's rhythm) so the eyebrow doesn't hug the divider. */
+.docs-empty {
   max-width: var(--measure);
   padding: var(--s-10) var(--s-8);
 }
 
-.inbox-empty-eyebrow {
+.docs-empty-eyebrow {
   font-family: var(--font-sans);
   font-size: var(--t-caption);
   letter-spacing: var(--track-caption);
@@ -264,9 +279,9 @@ function formatDate(iso: string | null): string {
   margin-bottom: var(--s-4);
 }
 
-/* Chrome-scale serif, not 17px report prose: the empty inbox is product chrome,
-   not a reading surface. ink-2 (not ink-3) clears WCAG AA at this size. */
-.inbox-empty-body {
+/* Chrome-scale serif, not 17px report prose: an empty research folder is product
+   chrome, not a reading surface. ink-2 (not ink-3) clears WCAG AA at this size. */
+.docs-empty-body {
   margin: 0;
   max-width: var(--measure);
   font-family: var(--font-serif);
@@ -278,7 +293,7 @@ function formatDate(iso: string | null): string {
 
 /* The list is hairline-ruled top and bottom, dense rows separated by soft
    hairlines — the kit's "filed research" idiom. */
-.inbox-list {
+.docs-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -286,7 +301,7 @@ function formatDate(iso: string | null): string {
   border-bottom: var(--border);
 }
 
-.inbox-row {
+.docs-row {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) max-content max-content;
   gap: var(--s-5);
@@ -296,21 +311,21 @@ function formatDate(iso: string | null): string {
   transition: background-color var(--dur-fast) var(--ease);
 }
 
-.inbox-row:last-child {
+.docs-row:last-child {
   border-bottom: 0;
 }
 
-.inbox-row:hover,
-.inbox-row:focus-within,
-.inbox-row.is-confirming {
+.docs-row:hover,
+.docs-row:focus-within,
+.docs-row.is-confirming {
   background: var(--paper-soft);
 }
 
-.inbox-row-main {
+.docs-row-main {
   min-width: 0;
 }
 
-.inbox-row-name {
+.docs-row-name {
   font-family: var(--font-sans);
   font-size: var(--t-ui);
   font-weight: 500;
@@ -320,7 +335,7 @@ function formatDate(iso: string | null): string {
   white-space: nowrap;
 }
 
-.inbox-row-meta {
+.docs-row-meta {
   display: flex;
   align-items: center;
   gap: var(--s-3);
@@ -334,7 +349,7 @@ function formatDate(iso: string | null): string {
 
 /* Unsupported-format tag — an inset-well chip, no color signal (the system
    reserves the accent for warnings/errors, not catalog metadata). */
-.inbox-tag {
+.docs-tag {
   padding: 1px var(--s-2);
   background: var(--paper-edge);
   border: var(--border-soft);
@@ -342,7 +357,7 @@ function formatDate(iso: string | null): string {
   color: var(--ink-2);
 }
 
-.inbox-row-date {
+.docs-row-date {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums lining-nums;
   font-size: var(--t-ui-sm);
@@ -353,16 +368,16 @@ function formatDate(iso: string | null): string {
 /* Actions reveal on row hover/focus to keep the resting list clean, but stay in
    the tab order (opacity, not display:none) so keyboard users reach them; a row
    mid-confirmation pins them visible. */
-.inbox-row-actions {
+.docs-row-actions {
   display: flex;
   gap: var(--s-3);
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);
 }
 
-.inbox-row:hover .inbox-row-actions,
-.inbox-row:focus-within .inbox-row-actions,
-.inbox-row.is-confirming .inbox-row-actions {
+.docs-row:hover .docs-row-actions,
+.docs-row:focus-within .docs-row-actions,
+.docs-row.is-confirming .docs-row-actions {
   opacity: 1;
 }
 
@@ -390,7 +405,7 @@ function formatDate(iso: string | null): string {
   outline-offset: 2px;
 }
 
-.inbox-footer {
+.docs-footer {
   padding: var(--s-5) var(--s-8);
   font-family: var(--font-sans);
   font-size: var(--t-caption);
@@ -400,8 +415,8 @@ function formatDate(iso: string | null): string {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .inbox-row,
-  .inbox-row-actions,
+  .docs-row,
+  .docs-row-actions,
   .row-action {
     transition: none;
   }

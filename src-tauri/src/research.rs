@@ -1,34 +1,35 @@
-//! Research-inbox filesystem surface: list and delete user-supplied documents.
+//! Research-folder filesystem surface: list and delete user-supplied documents
+//! in the research inbox and archive.
 //!
-//! The research inbox is a plain folder under the app data directory where the
-//! user drops PDFs/notes for the weekly pipeline to consider
-//! (`docs/research-documents.md`). This module is the deterministic, Tauri-free
-//! core — it reads directory entries and deletes a single file by name — so it
-//! can be driven directly by unit tests against temp dirs.
+//! Both folders live under the app data directory (`docs/research-documents.md`):
+//! the user drops PDFs/notes into the inbox for the weekly pipeline to consider,
+//! and successfully-processed documents are moved to the archive. The two share
+//! this deterministic, Tauri-free core — it reads directory entries and deletes a
+//! single file by name — so it can be driven directly by unit tests against temp
+//! dirs. The caller passes whichever folder it means.
 //!
 //! Job-start parsing and the move-to-archive step (`docs/weekly-report-workflow.md`
 //! §Step 5) are not implemented yet, so there is no parse-failure error state to
 //! surface here: this lists what is on disk and lets the user delete it
-//! (§User Permissions — delete yes, archive no).
+//! (§User Permissions — delete yes from either folder, manual archive no).
 
 use std::path::{Component, Path};
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-/// Formats the inbox accepts as professional research sources
+/// Formats accepted as professional research sources
 /// (`docs/research-documents.md` §Research Inbox), as lowercased extensions.
 /// Files with any other extension are still listed but flagged unsupported.
 const SUPPORTED_EXTENSIONS: &[&str] =
     &["pdf", "md", "markdown", "txt", "csv", "json", "html", "htm"];
 
-/// One file in the research inbox, as the UI lists it. The frontend mirror is
+/// One file in a research folder, as the UI lists it. The frontend mirror is
 /// `ResearchDocument` in `src/types.ts`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ResearchDocument {
     /// Bare file name including extension — never a path, since the file lives
-    /// directly in the inbox folder. This is also the key the delete command
-    /// takes back.
+    /// directly in the folder. This is also the key the delete command takes back.
     pub name: String,
     /// Lowercased extension, or an empty string when the file has none.
     pub format: String,
@@ -40,21 +41,21 @@ pub struct ResearchDocument {
     pub modified: Option<String>,
 }
 
-/// List the files directly in `inbox_dir`, most-recently-modified first. A
-/// missing directory lists as empty (the folder is created lazily, on first
-/// reveal), so a fresh install shows an empty inbox rather than an error.
-/// Sub-directories and dotfiles (`.DS_Store` and friends) are ignored — the
-/// inbox is a flat drop of documents.
-pub fn list_inbox(inbox_dir: &Path) -> Result<Vec<ResearchDocument>> {
+/// List the files directly in `dir`, most-recently-modified first. A missing
+/// directory lists as empty (the folder is created lazily, on first reveal), so a
+/// fresh install shows an empty folder rather than an error. Sub-directories and
+/// dotfiles (`.DS_Store` and friends) are ignored — each research folder is a flat
+/// drop of documents.
+pub fn list_folder(dir: &Path) -> Result<Vec<ResearchDocument>> {
     let mut docs = Vec::new();
-    let entries = match std::fs::read_dir(inbox_dir) {
+    let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(docs),
-        Err(e) => return Err(e).with_context(|| format!("reading inbox {inbox_dir:?}")),
+        Err(e) => return Err(e).with_context(|| format!("reading folder {dir:?}")),
     };
 
     for entry in entries {
-        let entry = entry.with_context(|| format!("reading an entry in {inbox_dir:?}"))?;
+        let entry = entry.with_context(|| format!("reading an entry in {dir:?}"))?;
         // A file that vanished mid-scan: skip rather than fail the whole listing.
         let Ok(meta) = entry.metadata() else { continue };
         if !meta.is_file() {
@@ -88,17 +89,18 @@ pub fn list_inbox(inbox_dir: &Path) -> Result<Vec<ResearchDocument>> {
     Ok(docs)
 }
 
-/// Delete one document from the inbox by file name (`docs/research-documents.md`
-/// §User Permissions). `name` must be a single bare file name: any path
-/// separator or parent reference is rejected before the filesystem is touched,
-/// so a crafted name can never escape the inbox directory.
-pub fn delete_inbox_document(inbox_dir: &Path, name: &str) -> Result<()> {
+/// Delete one document from `dir` by file name (`docs/research-documents.md`
+/// §User Permissions — the user may delete from either folder). `name` must be a
+/// single bare file name: any path separator or parent reference is rejected
+/// before the filesystem is touched, so a crafted name can never escape the
+/// folder.
+pub fn delete_folder_document(dir: &Path, name: &str) -> Result<()> {
     validate_bare_name(name)?;
-    let target = inbox_dir.join(name);
-    // Defense in depth: a bare name joined onto the inbox must resolve to a
-    // direct child of the inbox.
-    if target.parent() != Some(inbox_dir) {
-        bail!("refusing to delete a path outside the inbox: {name:?}");
+    let target = dir.join(name);
+    // Defense in depth: a bare name joined onto the folder must resolve to a
+    // direct child of it.
+    if target.parent() != Some(dir) {
+        bail!("refusing to delete a path outside the folder: {name:?}");
     }
     std::fs::remove_file(&target).with_context(|| format!("deleting {target:?}"))?;
     Ok(())
@@ -141,7 +143,7 @@ mod tests {
         touch(tmp.path(), "weird.xyz", b"??");
         touch(tmp.path(), "noext", b"x");
 
-        let docs = list_inbox(tmp.path()).unwrap();
+        let docs = list_folder(tmp.path()).unwrap();
         assert_eq!(docs.len(), 5);
         let by = |n: &str| docs.iter().find(|d| d.name == n).unwrap();
 
@@ -158,10 +160,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_inbox_lists_as_empty() {
+    fn missing_folder_lists_as_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("does-not-exist");
-        assert_eq!(list_inbox(&missing).unwrap(), Vec::<ResearchDocument>::new());
+        assert_eq!(list_folder(&missing).unwrap(), Vec::<ResearchDocument>::new());
     }
 
     #[test]
@@ -171,7 +173,7 @@ mod tests {
         fs::create_dir(tmp.path().join("nested")).unwrap();
         touch(tmp.path(), "real.txt", b"x");
 
-        let docs = list_inbox(tmp.path()).unwrap();
+        let docs = list_folder(tmp.path()).unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].name, "real.txt");
     }
@@ -182,16 +184,16 @@ mod tests {
         touch(tmp.path(), "drop.txt", b"x");
         assert!(tmp.path().join("drop.txt").exists());
 
-        delete_inbox_document(tmp.path(), "drop.txt").unwrap();
+        delete_folder_document(tmp.path(), "drop.txt").unwrap();
         assert!(!tmp.path().join("drop.txt").exists());
     }
 
     #[test]
     fn delete_rejects_traversal_and_separators_without_touching_siblings() {
         let tmp = tempfile::tempdir().unwrap();
-        let inbox = tmp.path().join("inbox");
-        fs::create_dir(&inbox).unwrap();
-        // A secret one level up, outside the inbox.
+        let folder = tmp.path().join("folder");
+        fs::create_dir(&folder).unwrap();
+        // A secret one level up, outside the folder.
         touch(tmp.path(), "secret.txt", b"keep me");
 
         for bad in [
@@ -204,13 +206,13 @@ mod tests {
             "a\\b.txt",
         ] {
             assert!(
-                delete_inbox_document(&inbox, bad).is_err(),
+                delete_folder_document(&folder, bad).is_err(),
                 "expected {bad:?} to be rejected"
             );
         }
         assert!(
             tmp.path().join("secret.txt").exists(),
-            "a rejected name still deleted a file outside the inbox"
+            "a rejected name still deleted a file outside the folder"
         );
     }
 }

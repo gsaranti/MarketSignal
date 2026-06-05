@@ -6,6 +6,7 @@ defineProps<{
   report: GeneratedReport | null;
   view: AppView;
   inboxCount: number;
+  archiveCount: number;
 }>();
 
 defineEmits<{ (e: "navigate", view: AppView): void }>();
@@ -58,6 +59,17 @@ function shortId(id: string): string {
         <Icon name="inbox" :size="14" color="var(--ink-2)" />
         <span class="nav-label">Research Inbox</span>
         <span v-if="inboxCount > 0" class="nav-badge">{{ inboxCount }}</span>
+      </button>
+      <button
+        type="button"
+        class="nav-item"
+        :class="{ 'is-active': view === 'archive' }"
+        :aria-current="view === 'archive' ? 'true' : undefined"
+        @click="$emit('navigate', 'archive')"
+      >
+        <Icon name="archive" :size="14" color="var(--ink-2)" />
+        <span class="nav-label">Research Archive</span>
+        <span v-if="archiveCount > 0" class="nav-badge">{{ archiveCount }}</span>
       </button>
       <button
         type="button"

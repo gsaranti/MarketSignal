@@ -2,9 +2,8 @@
 // structs returned by the `generate_report_manual` command.
 
 // Which main surface is showing. A plain string union driving a ref switch in
-// App.vue (no router) — the app has a small, fixed set of destinations. Archive
-// joins the union as its slice lands.
-export type AppView = "report" | "inbox" | "settings";
+// App.vue (no router) — the app has a small, fixed set of destinations.
+export type AppView = "report" | "inbox" | "archive" | "settings";
 
 export interface ReportSummary {
   report_id: string;
