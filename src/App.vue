@@ -13,6 +13,8 @@ import JobStatusPanel from "./components/JobStatusPanel.vue";
 import type {
   AppView,
   AgentModels,
+  ConnectionTestResult,
+  CredentialKey,
   CredentialUpdate,
   GeneratedReport,
   JobStatus,
@@ -96,6 +98,28 @@ const settings = ref<SettingsView | null>(null);
 const settingsLoading = ref(false);
 const settingsSaving = ref(false);
 const settingsError = ref<string | null>(null);
+
+// Per-credential "Test connection" state, kept on its own channels (apart from
+// settingsError, which is load/save only): which credential is being tested, and
+// the last result for each. Ephemeral and Settings-local — reset on every fresh
+// settings load so a stale chip never outlives the saved value it described.
+const emptyConnectionState = <T,>(value: T): Record<CredentialKey, T> => ({
+  openai: value,
+  anthropic: value,
+  fmp: value,
+  tavily: value,
+});
+const connectionTesting = ref<Record<CredentialKey, boolean>>(
+  emptyConnectionState(false)
+);
+const connectionTests = ref<Record<CredentialKey, ConnectionTestResult | null>>(
+  emptyConnectionState<ConnectionTestResult | null>(null)
+);
+// Bumped on every settings (re)load to invalidate in-flight tests: a reload can
+// change which key is saved, so a test still resolving against the old saved
+// value must be discarded rather than land as a result beside the new one. Each
+// testConnection captures the epoch at start and only writes if it still matches.
+const settingsEpoch = ref(0);
 
 // The gate blocks generation when configuration is incomplete. The backend is
 // the authoritative guard; this only disables the control and short-circuits.
@@ -335,12 +359,49 @@ async function revealArchive() {
 async function refreshSettings() {
   settingsLoading.value = true;
   settingsError.value = null;
+  // A fresh load supersedes any prior test state — a saved key may have changed.
+  // Bump the epoch first so any in-flight test resolving after this is discarded
+  // (it tested the old saved value), then clear the per-credential channels.
+  settingsEpoch.value += 1;
+  connectionTesting.value = emptyConnectionState(false);
+  connectionTests.value = emptyConnectionState<ConnectionTestResult | null>(null);
   try {
     settings.value = await invoke<SettingsView>("get_settings");
   } catch (e) {
     settingsError.value = String(e);
   } finally {
     settingsLoading.value = false;
+  }
+}
+
+// Test one saved credential against its provider. Result lands on that
+// credential's own channel; a failed invoke is itself a failed test (kept apart
+// from settingsError). The backend reads the saved value — never anything typed
+// in the form — so the Settings view only enables this when the field is empty.
+// The epoch guard discards a result whose settings were reloaded mid-flight, so a
+// stale test for a replaced key can't repopulate the cleared state.
+async function testConnection(provider: CredentialKey) {
+  const epoch = settingsEpoch.value;
+  connectionTesting.value = { ...connectionTesting.value, [provider]: true };
+  connectionTests.value = { ...connectionTests.value, [provider]: null };
+  try {
+    const result = await invoke<ConnectionTestResult>("test_connection", {
+      provider,
+    });
+    if (epoch !== settingsEpoch.value) return;
+    connectionTests.value = { ...connectionTests.value, [provider]: result };
+  } catch (e) {
+    if (epoch !== settingsEpoch.value) return;
+    connectionTests.value = {
+      ...connectionTests.value,
+      [provider]: { ok: false, detail: String(e) },
+    };
+  } finally {
+    // Only clear the busy flag if this test is still the current one; otherwise
+    // a reload already reset it and a late finally must not touch fresh state.
+    if (epoch === settingsEpoch.value) {
+      connectionTesting.value = { ...connectionTesting.value, [provider]: false };
+    }
   }
 }
 
@@ -514,8 +575,11 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :error="settingsError"
           :job-enabled="jobStatus?.enabled ?? null"
           :job-busy="jobBusy"
+          :testing="connectionTesting"
+          :test-results="connectionTests"
           @save="saveSettings"
           @set-enabled="setJobEnabled"
+          @test="testConnection"
         />
       </div>
       <JobStatusPanel

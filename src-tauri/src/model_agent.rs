@@ -141,7 +141,7 @@ pub struct MainAgentConfig {
 
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
+pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// The single tool the Anthropic arm forces, and the json_schema name on the
 /// OpenAI arm. Both feed the same `ResponseEnvelope`.
