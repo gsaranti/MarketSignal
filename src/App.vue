@@ -23,6 +23,7 @@ import type {
   SettingsView,
   ValidationReport,
 } from "./types";
+import { readDark, writeDark } from "./theme";
 
 // Which main surface is showing. A plain ref switch (no router) — the app has a
 // small fixed set of destinations and the kit models this as top-level state,
@@ -143,6 +144,16 @@ async function refreshJobStatus() {
   } catch (e) {
     jobStatusError.value = String(e);
   }
+}
+
+// Appearance (Light/Dark) lives alongside the other surfaces' state. Unlike the
+// gated config form, the toggle applies + persists instantly — see ./theme. The
+// initial value was already applied to <html> in main.ts before mount; this ref
+// just keeps the Settings switch in sync.
+const dark = ref(readDark());
+function setDark(value: boolean) {
+  writeDark(value);
+  dark.value = value;
 }
 
 async function setJobEnabled(value: boolean) {
@@ -575,10 +586,12 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :error="settingsError"
           :job-enabled="jobStatus?.enabled ?? null"
           :job-busy="jobBusy"
+          :dark="dark"
           :testing="connectionTesting"
           :test-results="connectionTests"
           @save="saveSettings"
           @set-enabled="setJobEnabled"
+          @set-dark="setDark"
           @test="testConnection"
         />
       </div>

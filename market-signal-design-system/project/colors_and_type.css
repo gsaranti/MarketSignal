@@ -16,6 +16,11 @@
    fetched typefaces over the network on every launch. */
 
 :root {
+  /* Tells the webview to render native chrome (scrollbars, text selection, form
+     controls) for the light surface — without this it follows the OS appearance
+     and can mismatch the app's theme. Paired with `color-scheme: dark` below. */
+  color-scheme: light;
+
   /* --- Colors ------------------------------------------------------------- */
 
   /* Surfaces — warm uncoated stock */
@@ -105,6 +110,8 @@
 /* Dark mode — graphite, not pure black; same desaturated accent, lifted. */
 :root[data-theme="dark"],
 .theme-dark {
+  color-scheme: dark;        /* native chrome matches the dark surface */
+
   --paper:        #1B1814;
   --paper-soft:   #252119;
   --paper-edge:   #2E281E;

@@ -17,4 +17,11 @@ import "@fontsource/ibm-plex-mono/latin-500.css";
 
 import "../market-signal-design-system/project/colors_and_type.css";
 
+import { applyTheme, readDark } from "./theme";
+
+// Apply the saved appearance before mount so a dark-preference launch never
+// flashes the light theme — localStorage is synchronous, so the webview's first
+// paint already has `data-theme` set.
+applyTheme(readDark());
+
 createApp(App).mount("#app");

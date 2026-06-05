@@ -27,6 +27,9 @@ const props = defineProps<{
   // only reports run status (docs/interface.md §Settings).
   jobEnabled: boolean | null;
   jobBusy: boolean;
+  // Appearance (Light/Dark) — applied + persisted by App via ./theme; this just
+  // drives the switch state. Independent of the config form's gated Save.
+  dark: boolean;
   // Per-credential "Test connection" state, owned by App (the single invoke
   // home): which credential is mid-test, and the last result for each.
   testing: Record<CredKey, boolean>;
@@ -36,6 +39,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "save", payload: { models: AgentModels; credentials: CredentialUpdate }): void;
   (e: "set-enabled", value: boolean): void;
+  (e: "set-dark", value: boolean): void;
   (e: "test", key: CredKey): void;
 }>();
 
@@ -151,6 +155,11 @@ function toggleSchedule() {
   emit("set-enabled", !scheduleEnabled.value);
 }
 
+// Appearance toggle — flips and applies instantly (App owns the apply+persist).
+function toggleDark() {
+  emit("set-dark", !props.dark);
+}
+
 // "Saved" shows only while the form is at rest and unchanged since the save.
 const showSaved = computed(
   () => justSaved.value && !dirty.value && !props.saving && props.error === null
@@ -224,6 +233,35 @@ function credDirty(key: CredKey): boolean {
               <span
                 class="switch-knob"
                 :class="{ 'switch-knob--on': scheduleEnabled }"
+              ></span>
+            </button>
+          </div>
+        </section>
+
+        <!-- Appearance: the design kit's "Dark surface" switch. Applies + persists
+             instantly (App.vue / theme.ts), independent of the config form's
+             token-gated Save and of its load state — so it renders even if
+             settings fail to load. -->
+        <section class="settings-section" aria-labelledby="sec-appearance">
+          <h3 id="sec-appearance" class="section-eyebrow">Appearance</h3>
+          <div class="control-row">
+            <div class="control-text">
+              <div class="control-label">Dark surface</div>
+              <div class="control-hint">Warm graphite, never pure black.</div>
+            </div>
+            <button
+              type="button"
+              class="switch"
+              role="switch"
+              :aria-checked="dark"
+              :aria-label="
+                dark ? 'Switch to light surface' : 'Switch to dark surface'
+              "
+              @click="toggleDark"
+            >
+              <span
+                class="switch-knob"
+                :class="{ 'switch-knob--on': dark }"
               ></span>
             </button>
           </div>
