@@ -127,7 +127,7 @@
   --accent:       #B0596A;
   --accent-press: #C77384;
   --accent-soft:  #8F4452;
-  --accent-text:  #D28A99;   /* lifted oxblood for accent TEXT only — clears WCAG AA (4.5:1) on dark surfaces; fills/rings keep --accent */
+  --accent-text:  #CE8090;   /* lifted oxblood for accent TEXT only — clears WCAG AA (4.5:1) on dark surfaces; fills/rings keep --accent */
 }
 
 /* =============================================================================
