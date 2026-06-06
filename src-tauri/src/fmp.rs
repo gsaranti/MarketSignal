@@ -18,21 +18,19 @@
 //! `{"Error Message": ...}` body) are the same ones `connection_test` verified
 //! live (Jun 2026).
 //!
-//! Degradation policy. Three classes of failure, by blast radius:
-//! - **Fatal** — an auth failure (401/403); a *systemic* failure (a 429 rate limit,
-//!   a 5xx, or a 200 `{"Error Message"}` body — FMP's rate-limit / plan signal —
-//!   each of which hits every request); or a transport error. The whole scan fails,
-//!   which `jobs::run_job` records as a failed job (`docs/scheduling.md §Offline
-//!   Behavior`); a mid-scan rate limit must not pass as a "successful" report
-//!   missing most of its data.
-//! - **Per-symbol skip** — a premium 402, a 404, or an unexpected shape: the
-//!   provider works but this one symbol is unavailable, so it is skipped and the
-//!   rest of the scan still lands. Disposition here is by *status*, not body: a 402
-//!   skips whether or not its body carries an error message. (The error-body channel
-//!   is fatal only on a 2xx — the rate-limit case above; a per-symbol "no data" is an
-//!   empty array, never an error object.)
-//! - **Floor** — even with per-symbol skips, a scan that resolves *no* index quotes
-//!   at all fails rather than returning an empty baseline (Step 6 is not optional).
+//! Degradation policy. Disposition is decided by status first (`classify_status`),
+//! with an explicit *skip allowlist* — only a premium-gated (402) or not-found (404)
+//! symbol is a legitimate per-symbol absence. Everything else resolves to:
+//! - **Fatal** — auth (401/403); a systemic failure (a 429 rate limit, a 5xx, or a
+//!   200 `{"Error Message"}` body — FMP's rate-limit / plan signal); a request-contract
+//!   error (400/408/422/any other non-2xx), so a broken request fails loudly instead
+//!   of vanishing into empty data; or a transport error. The whole scan fails, which
+//!   `jobs::run_job` records as a failed job (`docs/scheduling.md §Offline Behavior`).
+//! - **Per-symbol skip** — a 402/404 (or, on a 2xx, an unexpected shape): the provider
+//!   works but this one symbol is unavailable, so it is skipped and the rest lands.
+//!   (A per-symbol "no data" is an empty array, never an error object.)
+//! - **Floor** — even with skips, a scan that resolves *no* index quotes at all fails
+//!   rather than returning an empty baseline (Step 6 is not optional).
 
 use std::collections::HashSet;
 use std::time::Duration as StdDuration;
@@ -92,20 +90,35 @@ struct FmpQuoteRaw {
     change_pct: f64,
 }
 
-/// Whether a status is an authentication failure — fatal for the whole scan (the
-/// key itself is bad), as opposed to a per-symbol data issue that is skippable.
-fn is_auth_failure(status: u16) -> bool {
-    status == 401 || status == 403
+/// What to do with an HTTP status, before looking at the body. The skippable set
+/// is an explicit *allowlist* — only a premium-gated symbol (402) or a not-found
+/// symbol (404) is a legitimate per-symbol absence. Every other non-2xx is fatal,
+/// including request-contract errors (400/408/422/…), so a broken request can't
+/// silently masquerade as a missing symbol (a malformed sector `date`, say, returns
+/// HTTP 400 — which must fail loudly, not yield an empty sector group).
+#[derive(Debug, PartialEq, Eq)]
+enum Disposition {
+    /// 2xx — parse the body (a 200 error-body is still caught by `fmp_error_message`).
+    Process,
+    /// A legitimate per-symbol absence — skip just this symbol, keep the scan going.
+    SkipSymbol,
+    /// The key was rejected (401/403) — fatal.
+    FatalAuth,
+    /// The provider is failing for every request — a rate limit (429) or a 5xx — fatal.
+    FatalSystemic,
+    /// A request-level error (400/408/422/any other non-2xx) — fatal, since it
+    /// signals a broken request contract rather than a missing symbol.
+    FatalRequest,
 }
 
-/// Whether a status signals a *systemic* provider failure — a rate limit (429) or
-/// a server error (5xx) — that will affect every request, not just this symbol.
-/// Fatal like auth: the scan fails rather than soft-degrading to partial data,
-/// which would otherwise let a mid-scan rate limit pass as a "successful" report
-/// missing most of its data. Distinct from a per-symbol absence (402 premium, 404)
-/// where the provider works but this one symbol is unavailable.
-fn is_systemic_failure(status: u16) -> bool {
-    status == 429 || (500..600).contains(&status)
+fn classify_status(status: u16) -> Disposition {
+    match status {
+        200..=299 => Disposition::Process,
+        401 | 403 => Disposition::FatalAuth,
+        402 | 404 => Disposition::SkipSymbol,
+        429 | 500..=599 => Disposition::FatalSystemic,
+        _ => Disposition::FatalRequest,
+    }
 }
 
 /// FMP signals rate-limit / plan conditions as a **200** body that is an
@@ -237,66 +250,80 @@ impl FmpDataSource {
         Ok((status, body))
     }
 
-    /// Fetch one quote per symbol. Auth (401/403) and systemic failures (429/5xx)
-    /// are fatal — the key is bad or the provider is failing for every request, so
-    /// the scan fails rather than returning partial data. Any other per-symbol
-    /// failure (premium 402, 404, error body, unexpected shape) skips just that
-    /// symbol so the rest of the scan still lands.
+    /// Fetch one quote per symbol. Disposition is decided by `classify_status`:
+    /// a 402/404 skips just that symbol; auth, systemic, and request-contract errors
+    /// fail the whole scan; a 2xx is parsed (a 200 error-body or a shape mismatch is
+    /// then handled). So the rest of the scan lands around a legitimately-absent
+    /// symbol, but a broken request or a failing provider fails loudly.
     fn fetch_quotes(&self, symbols: &[(&str, &str)]) -> Result<Vec<Quote>> {
         let mut out = Vec::with_capacity(symbols.len());
         for (symbol, fallback_name) in symbols {
             let (status, body) = self.get(FMP_QUOTE_URL, &[("symbol", symbol)])?;
-            if is_auth_failure(status) {
-                bail!("Financial Modeling Prep rejected the key (HTTP {status})");
-            }
-            if is_systemic_failure(status) {
-                bail!(
-                    "Financial Modeling Prep is failing (HTTP {status}) — failing the scan \
+            match classify_status(status) {
+                Disposition::SkipSymbol => continue,
+                Disposition::FatalAuth => {
+                    bail!("Financial Modeling Prep rejected the key (HTTP {status})")
+                }
+                Disposition::FatalSystemic => bail!(
+                    "Financial Modeling Prep is unavailable (HTTP {status}) — failing the scan \
                      rather than returning a partial baseline"
-                );
-            }
-            if let Some(msg) = fmp_error_message(status, &body) {
-                bail!(
-                    "Financial Modeling Prep returned an error response (\"{msg}\") — failing \
-                     the scan rather than returning a partial baseline"
-                );
-            }
-            match parse_quotes(status, &body, fallback_name) {
-                Ok(quotes) => out.extend(quotes),
-                Err(_) => continue,
+                ),
+                Disposition::FatalRequest => bail!(
+                    "Financial Modeling Prep rejected the request (HTTP {status}) — failing the \
+                     scan rather than masking a broken request as a missing symbol"
+                ),
+                Disposition::Process => {
+                    if let Some(msg) = fmp_error_message(status, &body) {
+                        bail!(
+                            "Financial Modeling Prep returned an error response (\"{msg}\") — \
+                             failing the scan rather than returning a partial baseline"
+                        );
+                    }
+                    if let Ok(quotes) = parse_quotes(status, &body, fallback_name) {
+                        out.extend(quotes);
+                    }
+                }
             }
         }
         Ok(out)
     }
 
     /// Fetch the most recent sector-performance snapshot, walking back from today
-    /// to the last trading day that has data (weekends / holidays have none). Auth
-    /// (401/403) and systemic failures (429/5xx) are fatal — walking back through
-    /// more dates would just repeat a rate limit or outage; if no day in the window
-    /// has a snapshot, the scan soft-degrades to no sector data rather than failing.
+    /// to the last trading day that has data (weekends / holidays have none).
+    /// Disposition follows `classify_status`: a 404 for a date with no snapshot skips
+    /// to the previous day; auth, systemic, and request-contract errors (e.g. a 400
+    /// from a malformed `date`) fail the scan loudly; a 2xx with data returns. If no
+    /// day in the window has a snapshot, the scan soft-degrades to no sector data.
     fn fetch_sectors(&self) -> Result<Vec<SectorPerformance>> {
         let today = Utc::now().date_naive();
         for back in 0..=SECTOR_LOOKBACK_DAYS {
             let date = (today - Duration::days(back)).format("%Y-%m-%d").to_string();
             let (status, body) = self.get(FMP_SECTOR_URL, &[("date", date.as_str())])?;
-            if is_auth_failure(status) {
-                bail!("Financial Modeling Prep rejected the key (HTTP {status})");
-            }
-            if is_systemic_failure(status) {
-                bail!(
-                    "Financial Modeling Prep is failing (HTTP {status}) — failing the scan \
+            match classify_status(status) {
+                Disposition::SkipSymbol => continue, // no snapshot for this date — try the prior day
+                Disposition::FatalAuth => {
+                    bail!("Financial Modeling Prep rejected the key (HTTP {status})")
+                }
+                Disposition::FatalSystemic => bail!(
+                    "Financial Modeling Prep is unavailable (HTTP {status}) — failing the scan \
                      rather than returning a partial baseline"
-                );
-            }
-            if let Some(msg) = fmp_error_message(status, &body) {
-                bail!(
-                    "Financial Modeling Prep returned an error response (\"{msg}\") — failing \
-                     the scan rather than returning a partial baseline"
-                );
-            }
-            if let Ok(sectors) = parse_sectors(status, &body) {
-                if !sectors.is_empty() {
-                    return Ok(sectors);
+                ),
+                Disposition::FatalRequest => bail!(
+                    "Financial Modeling Prep rejected the request (HTTP {status}) — failing the \
+                     scan rather than masking a broken request as missing sector data"
+                ),
+                Disposition::Process => {
+                    if let Some(msg) = fmp_error_message(status, &body) {
+                        bail!(
+                            "Financial Modeling Prep returned an error response (\"{msg}\") — \
+                             failing the scan rather than returning a partial baseline"
+                        );
+                    }
+                    if let Ok(sectors) = parse_sectors(status, &body) {
+                        if !sectors.is_empty() {
+                            return Ok(sectors);
+                        }
+                    }
                 }
             }
         }
@@ -381,26 +408,24 @@ mod tests {
     }
 
     #[test]
-    fn auth_failure_is_classified_fatal() {
-        assert!(is_auth_failure(401));
-        assert!(is_auth_failure(403));
-        assert!(!is_auth_failure(402)); // premium is per-symbol skippable, not fatal
-        assert!(!is_auth_failure(200));
-    }
-
-    #[test]
-    fn systemic_failures_are_classified_fatal() {
-        // A rate limit or server error affects every request, so the scan fails
-        // rather than soft-degrading to partial data...
-        assert!(is_systemic_failure(429));
-        assert!(is_systemic_failure(500));
-        assert!(is_systemic_failure(503));
-        // ...whereas a per-symbol absence (premium / not-found) only skips that one,
-        // and auth is handled separately by is_auth_failure.
-        assert!(!is_systemic_failure(402));
-        assert!(!is_systemic_failure(404));
-        assert!(!is_systemic_failure(401));
-        assert!(!is_systemic_failure(200));
+    fn classify_status_maps_statuses_to_dispositions() {
+        use Disposition::*;
+        assert_eq!(classify_status(200), Process);
+        // Explicit skip allowlist: only premium-gated / not-found symbols skip.
+        assert_eq!(classify_status(402), SkipSymbol);
+        assert_eq!(classify_status(404), SkipSymbol);
+        assert_eq!(classify_status(401), FatalAuth);
+        assert_eq!(classify_status(403), FatalAuth);
+        // Systemic: rate limit + server errors hit every request.
+        assert_eq!(classify_status(429), FatalSystemic);
+        assert_eq!(classify_status(500), FatalSystemic);
+        assert_eq!(classify_status(503), FatalSystemic);
+        // Everything else non-2xx is a request-contract failure, NOT a silent skip:
+        // a broken request (e.g. a malformed sector date -> 400) fails the scan
+        // loudly rather than masquerading as a missing symbol.
+        assert_eq!(classify_status(400), FatalRequest);
+        assert_eq!(classify_status(408), FatalRequest);
+        assert_eq!(classify_status(422), FatalRequest);
     }
 
     #[test]
@@ -424,14 +449,6 @@ mod tests {
         )
         .is_none());
         assert!(fmp_error_message(200, "[]").is_none());
-    }
-
-    #[test]
-    fn quote_premium_402_is_an_error_so_fetch_can_skip_it() {
-        // A premium-gated symbol returns 402; parse_quotes surfaces it as an error
-        // and fetch_quotes skips that one symbol rather than aborting the scan.
-        let err = parse_quotes(402, "Premium Query Parameter", "x").unwrap_err();
-        assert!(err.to_string().contains("402"), "{err}");
     }
 
     #[test]
@@ -469,11 +486,6 @@ mod tests {
         let sectors = parse_sectors(200, body).unwrap();
         assert_eq!(sectors.len(), 1);
         assert_eq!(sectors[0].sector, "Technology");
-    }
-
-    #[test]
-    fn sector_non_2xx_is_an_error() {
-        assert!(parse_sectors(400, "").is_err());
     }
 
     #[test]
