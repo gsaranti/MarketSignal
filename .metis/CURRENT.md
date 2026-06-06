@@ -2,28 +2,28 @@
 
 ## What happened
 
-**Shipped slice 1 of the Step-6 macro/calendar group — the FRED `macro_levels` group. Committed `a068aec`, pushed to `origin/main` (`77e7baf..a068aec`).**
+**Shipped slice 2 of the Step-6 macro/calendar group — the BLS `labor_levels` group. Committed `7f7fb9b`, pushed to `origin/main` (`ef1e61f..7f7fb9b`).**
 
-- **Closed last session's live-verification TODO first:** obtained a real FRED key (saved at `~/.config/market-signal/keys.env`), ran both baseline smokes with real keys. All FMP series resolve including **`GCUSD` gold on the free tier** (the regression-prone symbol) and all FRED series — the FRED/gold mappings are now live-confirmed.
-- **Decomposed the macro/calendar group into 3 sibling slices** (FRED macro levels · BLS adapter · economic calendar) and built the first. The macro "Macro" bullet spans three data shapes/sources, so it is not one task.
-- **`macro_levels` group** added to `BaselineMarketData` (reuses `Quote`), populated from six FRED series via the unchanged `interpret_response`/`observations_to_quote` machinery; composite merges it primary-first. Series: `DFEDTARU`/`DFEDTARL` (Fed-funds target range), `T5YIE`/`T10YIE` (inflation breakevens), `UMCSENT` (sentiment), `PCEPI` (PCE index) — all live-verified.
-- **Decision: "Fed expectations" → Fed-funds target range** (`DFEDTARU`/`DFEDTARL`), because no configured source has free futures-implied expectations (FMP-free is equities-only, FRED has no futures, BLS is labor-only).
-- **Codex P2 fixed:** the first cut used a *both-empty* floor (`&&`), which silently weakened the pre-slice internals guarantee. Replaced with a **pure per-group floor** (`check_completeness` — each non-optional group fails independently), aligning FRED with FMP's required-group floor, plus offline tests for the four cases.
-- Reviews: metis-task-reviewer **approve**, then Codex **approve** after the floor fix.
+- New keyless `src-tauri/src/bls.rs` adapter — the **third `MarketDataSource`**, mirroring `fred`. Fills a new `labor_levels` group on `BaselineMarketData` (reuses `Quote`), **nested** into the composite as `Composite::new(Composite::new(fmp, fred), bls)` so the merge folds in all groups. Four series, **live-verified 4/4**: `CUUR0000SA0` (CPI-U), `LNS14000000` (U-3 unemployment), `CES0000000001` (nonfarm payrolls), `CES0500000003` (avg hourly earnings).
+- **Key shape difference from FRED:** BLS **batches** (one v2 POST) and answers **HTTP 200 even for errors**, so `interpret_response` classifies by the in-body `status` field (`REQUEST_SUCCEEDED` vs `REQUEST_NOT_PROCESSED`), not HTTP code. BLS is keyless ⇒ not in the execution gate; the smoke runs without any key.
+- The baseline serializes whole into the agent prompt (`build_user_prompt` → `serde_json`), so the new group reaches the agent with **no formatter change**.
+- **Two Codex P2s fixed before commit:** (1) a series **omitted** from a successful batch now **fails closed** (`assemble_labor_levels`) — omission ≠ explicit absence; an explicit empty-`data` series still soft-skips (the gold lesson). (2) series display **names carry units inline** (e.g. payrolls "thousands of persons") to kill a 1000× misread — interim until a `Quote.unit` field lands.
+- Reviews: metis-task-reviewer **approve-with-nits** (import-order nit fixed), then Codex **approve**.
 
-Verified: `cargo test` (101) + `cargo clippy` (clean) + live `fred_baseline_smoke` (5 internals + 6 macro) + `npm run build`.
+Verified: `cargo test` (110) + `cargo clippy` (clean) + live `bls_baseline_smoke` (4/4) + `npm run build`.
 
 ## Current state
 
-On **`main`** at **`a068aec`**, **pushed**, in sync with `origin/main`, working tree clean. **Nothing in flight.** The FRED macro-levels slice is done, reviewed, committed. The two **sibling slices remain queued**: the **BLS adapter** (keyless REST, CPI/jobs labor actuals — point-in-time levels) and the **economic calendar** (a different event shape — release schedule + prior-week reports with name/date/actual/expected/prior, from FMP's economic-calendar endpoint).
+On **`main`** at **`7f7fb9b`**, **pushed**, in sync with `origin/main`, working tree clean. **Nothing in flight.** The BLS labor-levels slice is done, reviewed, committed. **One Step-6 sibling remains:** the **economic calendar** — a different event shape (release schedule + prior-week reports with name/date/actual/expected/prior, from FMP's economic-calendar endpoint), the last third of the macro/calendar group.
 
 ## Open questions
 
-- **`change_pct` reads 0 on the rate/breakeven series in the live run.** Correct for the target range (constant between FOMC moves). For the breakevens it means the two most recent *numeric* observations in the 10-obs window were equal (or only one was numeric, given publication lag). The **level** (`price`) is always correct; `OBSERVATION_LIMIT` (10) is the knob if day-over-day change on breakevens ever matters. Low priority, pre-existing machinery.
-- **BLS adapter + economic calendar** — the two remaining thirds of the Step-6 macro/calendar group (see *Current state* for their shapes).
+- **NEW — systemic units fix.** The BLS slice annotates units inline in display names as a stopgap; FMP/FRED quotes are still unit-free (WTI ~78 $/bbl, dollar index, S&P points). The proper fix is a `unit` field on `Quote`, populated across FMP/FRED/BLS and surfaced in the prompt. Small self-contained slice.
+- **`change_pct` reads 0 on level series** — the FRED rate/breakeven series *and* the BLS unemployment rate in the live run. Expected: the two most recent readings were equal (or constant between moves). The **level (`price`) is always correct**; the obs-window limit is the knob if a day/month-over-month delta ever matters. Low priority; **candidate to retire** as a recurring question.
+- **Economic calendar** — the remaining third of the Step-6 macro/calendar group (shape in *Current state*).
 - *(parked)* **retention-cascade enforcement** (30-report cap + cascade, durable-learning survival) and **step-5 auto-archive** — self-contained slices.
-- *(carried, low priority)* no Vue component-test harness; data-source floors are tested via pure helpers, not an HTTP mock (`wiremock` deferred); `cargo fmt` dirty repo-wide (pre-existing; not the gate).
+- *(carried, low priority)* no Vue component-test harness; data-source floors tested via pure helpers, not an HTTP mock (`wiremock` deferred); `cargo fmt` dirty repo-wide (pre-existing; not the gate).
 
 ## Where to start
 
-Pick the next slice → `/metis-plan-task`. Natural follow-on within the macro group: the **BLS adapter** (a new keyless source — CPI/jobs actuals as a labor-levels group) or the **economic calendar** (a new event model). **Retention-cascade enforcement** is the smaller self-contained alternative.
+Pick the next slice → `/metis-plan-task`. Natural follow-on: the **economic calendar** (a new event model — completes the Step-6 macro/calendar group), or the **systemic `unit`-field fix** (small, self-contained, improves baseline legibility for the agent). **Retention-cascade enforcement** is the parked self-contained alternative.
