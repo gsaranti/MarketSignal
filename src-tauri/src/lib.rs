@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod bls;
 pub mod config;
 pub mod connection_test;
 pub mod data_sources;
@@ -21,6 +22,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
+use bls::BlsDataSource;
 use config::{AppConfig, ValidationReport};
 use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
 use data_sources::CompositeMarketDataSource;
@@ -151,11 +153,14 @@ async fn generate_report_manual(
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let agent = ModelMainAgent::new(main_config).map_err(|e| e.to_string())?;
         // The baseline scan is FMP (indices / VIX / gold / sectors) + FRED (yields,
-        // dollar index, oil, gas) merged behind one trait (`docs/weekly-report
-        // -workflow.md §Step 6`).
+        // dollar index, oil, gas, macro levels) + BLS (labor levels) merged behind one
+        // trait (`docs/weekly-report-workflow.md §Step 6`). BLS is keyless (not in the
+        // execution gate); it nests as the outer secondary so its labor_levels group
+        // folds into the FMP+FRED baseline.
         let fmp = FmpDataSource::new(fmp_key).map_err(|e| e.to_string())?;
         let fred = FredDataSource::new(fred_key).map_err(|e| e.to_string())?;
-        let data = CompositeMarketDataSource::new(fmp, fred);
+        let bls = BlsDataSource::new().map_err(|e| e.to_string())?;
+        let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
         run_job(&agent, &data, &paths, &guard).map_err(|e| e.to_string())
     })
     .await
@@ -501,11 +506,13 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
     let guard = app.state::<RunGuard>().inner().clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let agent = ModelMainAgent::new(run_config.main).map_err(|e| e.to_string())?;
-        // FMP + FRED merged behind one trait, identical to the manual command's
-        // baseline source (`docs/weekly-report-workflow.md §Step 6`).
+        // FMP + FRED + BLS merged behind one trait, identical to the manual command's
+        // baseline source (`docs/weekly-report-workflow.md §Step 6`). BLS is keyless,
+        // nested as the outer secondary to fold in the labor_levels group.
         let fmp = FmpDataSource::new(run_config.fmp_api_key).map_err(|e| e.to_string())?;
         let fred = FredDataSource::new(run_config.fred_api_key).map_err(|e| e.to_string())?;
-        let data = CompositeMarketDataSource::new(fmp, fred);
+        let bls = BlsDataSource::new().map_err(|e| e.to_string())?;
+        let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
         run_job(&agent, &data, &paths, &guard).map_err(|e| e.to_string())
     })
     .await;

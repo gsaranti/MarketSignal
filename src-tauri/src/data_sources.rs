@@ -2,20 +2,22 @@
 //!
 //! Mirrors the `agent` module's spine — the application layer owns all I/O, the
 //! data source is a trait the orchestrator drives, and a deterministic stub
-//! stands in for the live provider in offline tests. Two real adapters implement
-//! this trait — `fmp` (equity indices, VIX, gold, sectors) and `fred` (the Treasury
+//! stands in for the live provider in offline tests. Three real adapters implement
+//! this trait — `fmp` (equity indices, VIX, gold, sectors), `fred` (the Treasury
 //! yields, dollar index, and oil / natural-gas internals FMP's free tier omits, plus
 //! the `macro_levels` group — Fed-funds target range, inflation breakevens, consumer
-//! sentiment, PCE) — and the `CompositeMarketDataSource` below runs both and merges
-//! them into one baseline.
+//! sentiment, PCE), and `bls` (the `labor_levels` group — CPI, unemployment, payrolls,
+//! wages) — and the `CompositeMarketDataSource` below runs them and merges them into
+//! one baseline.
 //!
 //! `BaselineMarketData` is the Step-6 baseline scan
 //! (`docs/weekly-report-workflow.md §Step 6`), gathered before agent reasoning.
 //! FMP fills indices, sectors, and the VIX + gold internals; FRED appends its
 //! commodity / yield series to the same `internals` group and fills the
 //! `macro_levels` group (Fed-funds target range, inflation breakevens, consumer
-//! sentiment, PCE). The remaining Step-6 macro items — the CPI / PCE / jobs release
-//! calendar and BLS labor data — are a later slice.
+//! sentiment, PCE); BLS fills the `labor_levels` group (CPI, unemployment, payrolls,
+//! wages). The remaining Step-6 macro item — the economic-release calendar — is a
+//! later slice.
 
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +53,11 @@ pub struct BaselineMarketData {
     /// its change from the prior observation (day-over-day for daily series,
     /// month-over-month for monthly).
     pub macro_levels: Vec<Quote>,
+    /// Step-6 labor levels (CPI, unemployment rate, nonfarm payrolls, average hourly
+    /// earnings) — point-in-time BLS series, kept distinct from the FRED `macro_levels`
+    /// by source and concern. Same `Quote` shape: `price` is the latest reported level
+    /// and `change_pct` its month-over-month change from the prior reading.
+    pub labor_levels: Vec<Quote>,
 }
 
 /// The data-source stage. One method: gather the required baseline scan. Sync,
@@ -104,17 +111,25 @@ impl MarketDataSource for StubMarketDataSource {
                 price: 4.5,
                 change_pct: 0.0,
             }],
+            labor_levels: vec![Quote {
+                symbol: "LNS14000000".into(),
+                name: "Unemployment Rate".into(),
+                price: 4.1,
+                change_pct: 0.0,
+            }],
         })
     }
 }
 
 /// Compose two `MarketDataSource`s into one baseline scan: run the `primary`
-/// (FMP — indices, sectors, VIX, gold), then the `secondary` (FRED — its internals), and
-/// merge them group-by-group. Both contributions are required: either child's
-/// failure propagates, so a FRED failure fails the run exactly as an FMP failure
-/// does (FRED now sources non-optional Step-6 series — `docs/configuration.md`).
-/// Order is primary-then-secondary, so the merged `internals` reads FMP's (VIX,
-/// gold) first, then the FRED series.
+/// (e.g. FMP — indices, sectors, VIX, gold), then the `secondary`, and merge them
+/// across every group (`indices`, `internals`, `sectors`, `macro_levels`,
+/// `labor_levels`). Both contributions are required: either child's failure
+/// propagates, so a secondary failure fails the run exactly as a primary failure does
+/// (the secondaries now source non-optional Step-6 series — `docs/configuration.md`).
+/// Order is primary-then-secondary, so the merged `internals` reads the primary's
+/// quotes first. Sources compose by nesting: the run path wraps FMP+FRED, then nests
+/// `bls` as the outer secondary to fold in the `labor_levels` group.
 pub struct CompositeMarketDataSource<P, S> {
     pub primary: P,
     pub secondary: S,
@@ -136,6 +151,7 @@ impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
         merged.internals.extend(extra.internals);
         merged.sectors.extend(extra.sectors);
         merged.macro_levels.extend(extra.macro_levels);
+        merged.labor_levels.extend(extra.labor_levels);
         Ok(merged)
     }
 }
@@ -144,12 +160,13 @@ impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
 mod tests {
     use super::*;
 
-    /// A stub shaped like `fred::FredDataSource` — it contributes `internals` and
-    /// `macro_levels` (the two groups FRED owns), so the composite merge can be
-    /// exercised offline.
+    /// A stub shaped like the secondary sources (`fred` + `bls`) — it contributes the
+    /// `internals` / `macro_levels` (FRED) and `labor_levels` (BLS) groups the
+    /// secondaries own, so the composite merge can be exercised offline.
     struct FredShapedStub {
         internals: Vec<Quote>,
         macro_levels: Vec<Quote>,
+        labor_levels: Vec<Quote>,
     }
 
     impl MarketDataSource for FredShapedStub {
@@ -157,6 +174,7 @@ mod tests {
             Ok(BaselineMarketData {
                 internals: self.internals.clone(),
                 macro_levels: self.macro_levels.clone(),
+                labor_levels: self.labor_levels.clone(),
                 ..Default::default()
             })
         }
@@ -183,14 +201,15 @@ mod tests {
     #[test]
     fn composite_merges_both_sources_into_one_baseline() {
         // Primary (FMP-shaped) carries indices + a VIX internal + sectors + one macro
-        // level (the stub's DFEDTARU); the secondary (FRED-shaped) adds two more
-        // internals and a macro level. The merge keeps every group and orders each
-        // primary-first.
-        let fred = FredShapedStub {
+        // level (DFEDTARU) + one labor level (LNS14000000); the secondary adds two more
+        // internals, a macro level, and a labor level. The merge keeps every group and
+        // orders each primary-first.
+        let secondary = FredShapedStub {
             internals: vec![quote("DGS10"), quote("DTWEXBGS")],
             macro_levels: vec![quote("T10YIE")],
+            labor_levels: vec![quote("CUUR0000SA0")],
         };
-        let composite = CompositeMarketDataSource::new(StubMarketDataSource, fred);
+        let composite = CompositeMarketDataSource::new(StubMarketDataSource, secondary);
         let data = composite.baseline_scan().unwrap();
 
         assert!(!data.indices.is_empty(), "primary indices survive");
@@ -204,6 +223,11 @@ mod tests {
         assert_eq!(data.macro_levels.len(), 2);
         assert_eq!(data.macro_levels[0].symbol, "DFEDTARU");
         assert_eq!(data.macro_levels[1].symbol, "T10YIE");
+        // labor_levels merges primary-first too: the stub's LNS14000000, then the
+        // secondary's BLS series.
+        assert_eq!(data.labor_levels.len(), 2);
+        assert_eq!(data.labor_levels[0].symbol, "LNS14000000");
+        assert_eq!(data.labor_levels[1].symbol, "CUUR0000SA0");
     }
 
     #[test]
@@ -221,6 +245,7 @@ mod tests {
         assert!(!data.internals.is_empty());
         assert!(!data.sectors.is_empty());
         assert!(!data.macro_levels.is_empty());
+        assert!(!data.labor_levels.is_empty());
 
         // The whole packet serializes and parses back unchanged — the contract
         // the agent input and the model prompt both lean on.

@@ -311,6 +311,8 @@ impl MarketDataSource for FredDataSource {
             internals,
             sectors: Vec::new(),
             macro_levels,
+            // BLS owns the labor levels; FRED contributes none.
+            labor_levels: Vec::new(),
         })
     }
 }

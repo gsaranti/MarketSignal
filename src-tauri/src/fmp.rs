@@ -278,8 +278,10 @@ impl MarketDataSource for FmpDataSource {
             indices,
             internals: self.fetch_quotes(INTERNAL_SYMBOLS)?,
             sectors: self.fetch_sectors()?,
-            // FRED owns the macro levels; FMP contributes none.
+            // FRED owns the macro levels and BLS the labor levels; FMP contributes
+            // neither.
             macro_levels: Vec::new(),
+            labor_levels: Vec::new(),
         })
     }
 }
