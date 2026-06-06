@@ -3,6 +3,7 @@ pub mod config;
 pub mod connection_test;
 pub mod data_sources;
 pub mod fmp;
+pub mod fred;
 pub mod jobs;
 pub mod model_agent;
 pub mod pipeline;
@@ -22,7 +23,9 @@ use tauri_plugin_opener::OpenerExt;
 
 use config::{AppConfig, ValidationReport};
 use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
+use data_sources::CompositeMarketDataSource;
 use fmp::FmpDataSource;
+use fred::FredDataSource;
 use model_agent::ModelMainAgent;
 use pipeline::{GeneratedReport, ReportPaths};
 
@@ -139,6 +142,7 @@ async fn generate_report_manual(
     }
     let main_config = cfg.main_agent_config().map_err(|e| e.to_string())?;
     let fmp_key = cfg.fmp_key().map_err(|e| e.to_string())?;
+    let fred_key = cfg.fred_key().map_err(|e| e.to_string())?;
 
     let paths = report_paths(&app)?;
 
@@ -146,7 +150,12 @@ async fn generate_report_manual(
 
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let agent = ModelMainAgent::new(main_config).map_err(|e| e.to_string())?;
-        let data = FmpDataSource::new(fmp_key).map_err(|e| e.to_string())?;
+        // The baseline scan is FMP (indices / VIX / gold / sectors) + FRED (yields,
+        // dollar index, oil, gas) merged behind one trait (`docs/weekly-report
+        // -workflow.md §Step 6`).
+        let fmp = FmpDataSource::new(fmp_key).map_err(|e| e.to_string())?;
+        let fred = FredDataSource::new(fred_key).map_err(|e| e.to_string())?;
+        let data = CompositeMarketDataSource::new(fmp, fred);
         run_job(&agent, &data, &paths, &guard).map_err(|e| e.to_string())
     })
     .await
@@ -311,6 +320,7 @@ async fn test_connection(
             CredentialProvider::OpenAi => &cfg.openai_api_key,
             CredentialProvider::Anthropic => &cfg.anthropic_api_key,
             CredentialProvider::Fmp => &cfg.fmp_api_key,
+            CredentialProvider::Fred => &cfg.fred_api_key,
             CredentialProvider::Tavily => &cfg.tavily_api_key,
         };
         stored
@@ -491,7 +501,11 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
     let guard = app.state::<RunGuard>().inner().clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let agent = ModelMainAgent::new(run_config.main).map_err(|e| e.to_string())?;
-        let data = FmpDataSource::new(run_config.fmp_api_key).map_err(|e| e.to_string())?;
+        // FMP + FRED merged behind one trait, identical to the manual command's
+        // baseline source (`docs/weekly-report-workflow.md §Step 6`).
+        let fmp = FmpDataSource::new(run_config.fmp_api_key).map_err(|e| e.to_string())?;
+        let fred = FredDataSource::new(run_config.fred_api_key).map_err(|e| e.to_string())?;
+        let data = CompositeMarketDataSource::new(fmp, fred);
         run_job(&agent, &data, &paths, &guard).map_err(|e| e.to_string())
     })
     .await;

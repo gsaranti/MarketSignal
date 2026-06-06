@@ -40,6 +40,7 @@ pub const KEY_BALANCED_AGENT_MODEL: &str = "balanced_agent_model";
 pub const KEY_OPENAI_API_KEY: &str = "openai_api_key";
 pub const KEY_ANTHROPIC_API_KEY: &str = "anthropic_api_key";
 pub const KEY_FMP_API_KEY: &str = "fmp_api_key";
+pub const KEY_FRED_API_KEY: &str = "fred_api_key";
 pub const KEY_TAVILY_API_KEY: &str = "tavily_api_key";
 
 /// The five de-duplicating Persistent Warning Area categories (walk Q4,
@@ -99,6 +100,7 @@ pub struct AppConfig {
     pub openai_api_key: Option<String>,
     pub anthropic_api_key: Option<String>,
     pub fmp_api_key: Option<String>,
+    pub fred_api_key: Option<String>,
     pub tavily_api_key: Option<String>,
 }
 
@@ -121,6 +123,7 @@ impl AppConfig {
             openai_api_key: get("OPENAI_API_KEY"),
             anthropic_api_key: get("ANTHROPIC_API_KEY"),
             fmp_api_key: get("FMP_API_KEY"),
+            fred_api_key: get("FRED_API_KEY"),
             tavily_api_key: get("TAVILY_API_KEY"),
         }
     }
@@ -144,6 +147,7 @@ impl AppConfig {
             openai_api_key: saved(KEY_OPENAI_API_KEY, env.openai_api_key),
             anthropic_api_key: saved(KEY_ANTHROPIC_API_KEY, env.anthropic_api_key),
             fmp_api_key: saved(KEY_FMP_API_KEY, env.fmp_api_key),
+            fred_api_key: saved(KEY_FRED_API_KEY, env.fred_api_key),
             tavily_api_key: saved(KEY_TAVILY_API_KEY, env.tavily_api_key),
         }
     }
@@ -175,6 +179,18 @@ impl AppConfig {
         Ok(present(&self.fmp_api_key)
             .ok_or_else(|| {
                 anyhow!("FMP_API_KEY is not set (required for the baseline market-data scan)")
+            })?
+            .to_string())
+    }
+
+    /// The FRED API key for the macro / commodity half of the baseline scan
+    /// (`docs/weekly-report-workflow.md §Step 6`), resolved from validated
+    /// configuration. Mirrors `fmp_key`: after a passing `validate` the credential
+    /// is present, so the error arm is defensive.
+    pub fn fred_key(&self) -> Result<String> {
+        Ok(present(&self.fred_api_key)
+            .ok_or_else(|| {
+                anyhow!("FRED_API_KEY is not set (required for the baseline market-data scan)")
             })?
             .to_string())
     }
@@ -260,11 +276,16 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
         });
     }
 
-    // External data-provider credentials: FMP and Tavily are both required to
-    // run (docs/configuration.md §External Data Provider Credentials).
+    // External data-provider credentials: FMP, FRED, and Tavily are all required
+    // to run (docs/configuration.md §External Data Provider Credentials). FRED
+    // joined the gate when its adapter landed — it now sources non-optional Step-6
+    // baseline series (Treasury yields, the dollar index, commodities).
     let mut missing_creds: Vec<&str> = Vec::new();
     if present(&cfg.fmp_api_key).is_none() {
         missing_creds.push("Financial Modeling Prep");
+    }
+    if present(&cfg.fred_api_key).is_none() {
+        missing_creds.push("FRED");
     }
     if present(&cfg.tavily_api_key).is_none() {
         missing_creds.push("Tavily");
@@ -298,11 +319,12 @@ pub fn blocked_summary(report: &ValidationReport) -> String {
 }
 
 /// The resolved inputs a run needs once the gate has passed: the Main Agent
-/// adapter config and the FMP data-source key. No `Debug` derive — both fields
-/// carry secrets that must never be printed.
+/// adapter config and the FMP + FRED data-source keys. No `Debug` derive — every
+/// field carries a secret that must never be printed.
 pub struct RunConfig {
     pub main: MainAgentConfig,
     pub fmp_api_key: String,
+    pub fred_api_key: String,
 }
 
 /// The scheduler's pre-run decision for a *scheduled* fire. Distinct from a
@@ -321,14 +343,14 @@ pub enum ScheduledRun {
 }
 
 /// Decide whether a scheduled fire should proceed: the enable flag, then the
-/// execution gate, then a resolvable Main Agent model + key and the FMP
-/// data-source key (`docs/weekly-report-workflow.md §Step 1`). Pure over its
-/// inputs — `validate`, `main_agent_config`, and `fmp_key` read only from `cfg`
-/// — so the enabled / blocked / proceed composition the scheduler walks is
-/// unit-testable without the environment or a running app. Both resolution error
+/// execution gate, then a resolvable Main Agent model + key and the FMP + FRED
+/// data-source keys (`docs/weekly-report-workflow.md §Step 1`). Pure over its
+/// inputs — `validate`, `main_agent_config`, `fmp_key`, and `fred_key` read only
+/// from `cfg` — so the enabled / blocked / proceed composition the scheduler walks
+/// is unit-testable without the environment or a running app. The resolution error
 /// arms are defensive: after a passing `validate` (which already requires both
-/// provider keys, the FMP credential, and a parseable main model) they are
-/// effectively unreachable, mirroring the manual command's pattern.
+/// provider keys, the FMP and FRED credentials, and a parseable main model) they
+/// are effectively unreachable, mirroring the manual command's pattern.
 pub fn decide_scheduled_run(cfg: &AppConfig, enabled: bool) -> ScheduledRun {
     if !enabled {
         return ScheduledRun::Disabled;
@@ -336,9 +358,13 @@ pub fn decide_scheduled_run(cfg: &AppConfig, enabled: bool) -> ScheduledRun {
     if validate(cfg).is_blocked {
         return ScheduledRun::Blocked("configuration incomplete — run skipped".to_string());
     }
-    match (cfg.main_agent_config(), cfg.fmp_key()) {
-        (Ok(main), Ok(fmp_api_key)) => ScheduledRun::Proceed(RunConfig { main, fmp_api_key }),
-        (Err(e), _) | (_, Err(e)) => ScheduledRun::Blocked(e.to_string()),
+    match (cfg.main_agent_config(), cfg.fmp_key(), cfg.fred_key()) {
+        (Ok(main), Ok(fmp_api_key), Ok(fred_api_key)) => ScheduledRun::Proceed(RunConfig {
+            main,
+            fmp_api_key,
+            fred_api_key,
+        }),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => ScheduledRun::Blocked(e.to_string()),
     }
 }
 
@@ -356,6 +382,7 @@ mod tests {
             openai_api_key: Some("sk-openai".into()),
             anthropic_api_key: Some("sk-anthropic".into()),
             fmp_api_key: Some("fmp-key".into()),
+            fred_api_key: Some("fred-key".into()),
             tavily_api_key: Some("tavily-key".into()),
         }
     }
@@ -458,6 +485,17 @@ mod tests {
     }
 
     #[test]
+    fn missing_fred_credential_blocks_with_credential_category() {
+        let mut cfg = complete();
+        cfg.fred_api_key = None;
+        let report = validate(&cfg);
+        assert!(report.is_blocked);
+        let cat = category(&report, WarningKind::ProviderCredentials).expect("credential category");
+        assert_eq!(cat.items.len(), 1);
+        assert!(cat.items[0].contains("FRED"), "{:?}", cat.items);
+    }
+
+    #[test]
     fn multiple_gaps_produce_multiple_categories() {
         let cfg = AppConfig::default(); // everything missing
         let report = validate(&cfg);
@@ -477,7 +515,9 @@ mod tests {
         let creds = category(&report, WarningKind::ProviderCredentials).unwrap();
         assert_eq!(creds.items.len(), 1);
         assert!(
-            creds.items[0].contains("Financial Modeling Prep") && creds.items[0].contains("Tavily")
+            creds.items[0].contains("Financial Modeling Prep")
+                && creds.items[0].contains("FRED")
+                && creds.items[0].contains("Tavily")
         );
     }
 
@@ -524,6 +564,17 @@ mod tests {
     }
 
     #[test]
+    fn fred_key_resolves_present_value_and_errors_when_missing() {
+        let cfg = complete();
+        assert_eq!(cfg.fred_key().unwrap(), "fred-key");
+
+        let mut blank = complete();
+        blank.fred_api_key = Some("   ".into()); // present-but-blank reads as unset
+        let err = blank.fred_key().unwrap_err();
+        assert!(err.to_string().contains("FRED_API_KEY"), "{err}");
+    }
+
+    #[test]
     fn job_warning_kinds_are_non_blocking() {
         assert!(!WarningKind::FailedJob.is_blocking());
         assert!(!WarningKind::MissedScheduledJob.is_blocking());
@@ -538,6 +589,7 @@ mod tests {
             ScheduledRun::Proceed(rc) => {
                 assert_eq!(rc.main.model, AgentModel::ClaudeOpus);
                 assert_eq!(rc.fmp_api_key, "fmp-key");
+                assert_eq!(rc.fred_api_key, "fred-key");
             }
             _ => panic!("expected Proceed for a complete, enabled config"),
         }

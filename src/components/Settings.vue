@@ -44,7 +44,7 @@ const emit = defineEmits<{
 }>();
 
 type ModelKey = "main" | "bull" | "bear" | "balanced";
-type CredKey = "openai" | "anthropic" | "fmp" | "tavily";
+type CredKey = "openai" | "anthropic" | "fmp" | "fred" | "tavily";
 
 const agentFields: { key: ModelKey; label: string }[] = [
   { key: "main", label: "Main Agent" },
@@ -60,6 +60,7 @@ const tokenFields: { key: CredKey; label: string }[] = [
 
 const credentialFields: { key: CredKey; label: string }[] = [
   { key: "fmp", label: "Financial Modeling Prep" },
+  { key: "fred", label: "FRED" },
   { key: "tavily", label: "Tavily" },
 ];
 
@@ -70,6 +71,7 @@ const creds = ref<Record<CredKey, string>>({
   openai: "",
   anthropic: "",
   fmp: "",
+  fred: "",
   tavily: "",
 });
 const justSaved = ref(false);
@@ -82,7 +84,7 @@ watch(
   (s) => {
     if (!s) return;
     local.value = { ...s.models };
-    creds.value = { openai: "", anthropic: "", fmp: "", tavily: "" };
+    creds.value = { openai: "", anthropic: "", fmp: "", fred: "", tavily: "" };
   },
   { immediate: true }
 );
@@ -177,6 +179,7 @@ function onSave() {
     openai: creds.value.openai.trim() ? creds.value.openai : null,
     anthropic: creds.value.anthropic.trim() ? creds.value.anthropic : null,
     fmp: creds.value.fmp.trim() ? creds.value.fmp : null,
+    fred: creds.value.fred.trim() ? creds.value.fred : null,
     tavily: creds.value.tavily.trim() ? creds.value.tavily : null,
   };
   emit("save", { models: { ...local.value }, credentials: credUpdate });
@@ -347,9 +350,8 @@ function credDirty(key: CredKey): boolean {
           <section class="settings-section" aria-labelledby="sec-creds">
             <h3 id="sec-creds" class="section-eyebrow">Data provider credentials</h3>
             <p class="section-note">
-              Both are required to run a job. BLS and GDELT need no credential.
-              FRED requires a free API key and will be added here when its data
-              adapter lands.
+              Financial Modeling Prep, FRED, and Tavily are all required to run a
+              job. FRED needs a free API key; BLS and GDELT need no credential.
             </p>
             <div v-for="field in credentialFields" :key="field.key" class="field">
               <label class="label" :for="`cred-${field.key}`">{{ field.label }}</label>

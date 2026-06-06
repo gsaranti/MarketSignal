@@ -4,12 +4,12 @@
 //! (`data_sources`). On FMP's free tier the provider is effectively an *equities*
 //! API, so this adapter owns the equity-market half of the Step-6 baseline:
 //! the market **indices** (Dow / S&P 500 / Nasdaq / Russell 2000), the **VIX**,
-//! and **sector performance**. The macro / commodity internals the baseline also
-//! lists — Treasury yields, the dollar index, oil, natural gas, gold — are gated
-//! behind FMP premium (verified live: HTTP 402 "not available under your current
-//! subscription") and are sourced from FRED in the macro slice instead. Each is a
-//! canonical free FRED series; see `docs/data-sources.md` (amended to reflect this
-//! split).
+//! **gold** (`GCUSD`, free on the quote endpoint), and **sector performance**. The
+//! remaining macro / commodity internals — Treasury yields, the dollar index, oil,
+//! and natural gas — are gated behind FMP premium (verified live: HTTP 402 "not
+//! available under your current subscription") and are sourced from FRED instead.
+//! Each is a canonical free FRED series; see `docs/data-sources.md` (amended to
+//! reflect this split).
 //!
 //! Like `model_agent`, the HTTP call is synchronous (`reqwest::blocking`) so the
 //! trait stays sync; the blocking work is offloaded via `spawn_blocking` at the
@@ -68,10 +68,13 @@ const INDEX_SYMBOLS: &[(&str, &str)] = &[
     ("^RUT", "Russell 2000"),
 ];
 
-/// The free-tier market internals FMP serves. Only the VIX qualifies — the dollar
-/// index, oil, natural gas, and gold are FMP-premium and come from FRED instead
-/// (see the module header).
-const INTERNAL_SYMBOLS: &[(&str, &str)] = &[("^VIX", "CBOE Volatility Index")];
+/// The free-tier market internals FMP serves: the VIX and gold (`GCUSD`, verified
+/// live on the free quote endpoint). The dollar index, oil, and natural gas are
+/// FMP-premium and come from FRED instead (see the module header).
+const INTERNAL_SYMBOLS: &[(&str, &str)] = &[
+    ("^VIX", "CBOE Volatility Index"),
+    ("GCUSD", "Gold"),
+];
 
 /// FMP's quote object, trimmed to the fields the baseline needs. `name` is optional
 /// (filled from the local label when absent), but `price` and the percent change are
@@ -411,10 +414,21 @@ mod tests {
             eprintln!("  {:<24} change_pct={}", s.sector, s.change_pct);
         }
 
-        // Each FMP-owned group should resolve to at least one live row on the free
-        // tier — an empty group means the symbols or the endpoint did not map.
-        assert!(!data.indices.is_empty(), "no index quotes resolved");
-        assert!(!data.internals.is_empty(), "no VIX quote resolved");
+        // Every named symbol must resolve individually — not just "the group is
+        // non-empty". A group-level check lets one symbol leaving the free tier
+        // (e.g. GCUSD going premium) hide behind its siblings; the per-symbol
+        // assert is what actually catches a symbol regressing, the lesson of the
+        // removed FRED gold series.
+        let assert_resolved = |label: &str, quotes: &[Quote], symbols: &[(&str, &str)]| {
+            for (sym, _) in symbols {
+                assert!(
+                    quotes.iter().any(|q| q.symbol == *sym),
+                    "{label}: {sym} did not resolve — it may have left FMP's free tier"
+                );
+            }
+        };
+        assert_resolved("indices", &data.indices, INDEX_SYMBOLS);
+        assert_resolved("internals", &data.internals, INTERNAL_SYMBOLS);
         assert!(!data.sectors.is_empty(), "no sector rows resolved");
     }
 }

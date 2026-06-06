@@ -89,12 +89,13 @@ export interface CredentialStatus {
   openai: boolean;
   anthropic: boolean;
   fmp: boolean;
+  fred: boolean;
   tavily: boolean;
 }
 
-// The four testable credentials — the keys shared by CredentialStatus /
+// The five testable credentials — the keys shared by CredentialStatus /
 // CredentialUpdate and used to drive per-credential "Test connection" state.
-export type CredentialKey = "openai" | "anthropic" | "fmp" | "tavily";
+export type CredentialKey = "openai" | "anthropic" | "fmp" | "fred" | "tavily";
 
 // Returned by `test_connection`: whether the saved credential was accepted by a
 // single live authenticated request, plus a short message. Mirrors the Rust
@@ -117,5 +118,6 @@ export interface CredentialUpdate {
   openai: string | null;
   anthropic: string | null;
   fmp: string | null;
+  fred: string | null;
   tavily: string | null;
 }

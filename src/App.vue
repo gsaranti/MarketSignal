@@ -108,6 +108,7 @@ const emptyConnectionState = <T,>(value: T): Record<CredentialKey, T> => ({
   openai: value,
   anthropic: value,
   fmp: value,
+  fred: value,
   tavily: value,
 });
 const connectionTesting = ref<Record<CredentialKey, boolean>>(

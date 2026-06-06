@@ -65,15 +65,17 @@ The application also requires configuration for external data providers that use
 
 The Settings section includes credential configuration for:
 - Financial Modeling Prep
+- FRED
 - Tavily
 
-Both the **Financial Modeling Prep** and **Tavily** credentials are required to run a job:
+The **Financial Modeling Prep**, **FRED**, and **Tavily** credentials are all required to run a job:
 - **Tavily** is the primary research and news-ingestion system, and news gathering is a mandatory workflow step (see [weekly-report-workflow.md §Step 7](weekly-report-workflow.md#step-7-gather-and-filter-news)).
-- **Financial Modeling Prep** is the primary financial-data source and provides the equity-market portion of the baseline market-data scan — indices, volatility (VIX), and sector performance (see [weekly-report-workflow.md §Step 6](weekly-report-workflow.md#step-6-gather-baseline-market-data)) — which is not optional, so a missing FMP credential blocks execution. (The scan's macro and commodity series — the dollar index, oil, natural gas, gold, and Treasury yields — come from FRED, which requires a free API key, and are sourced when the FRED data adapter lands.)
+- **Financial Modeling Prep** is the primary financial-data source and provides the equity-market portion of the baseline market-data scan — indices, volatility (VIX), gold, and sector performance (see [weekly-report-workflow.md §Step 6](weekly-report-workflow.md#step-6-gather-baseline-market-data)) — which is not optional, so a missing FMP credential blocks execution.
+- **FRED** supplies the macro and commodity portion of the same baseline scan — the dollar index, oil, natural gas, and the 2Y/10Y Treasury yields — which is likewise not optional, so a missing FRED credential blocks execution. FRED requires a free API key on every request.
 
-FRED, BLS, and GDELT are accessed through their public APIs, but their key requirements differ: **FRED** requires a free API key on every request, **BLS** works keyless (an optional free key raises its rate limits), and **GDELT** needs no key. The FRED key is not yet wired into Settings — it joins the required external credentials when the FRED data adapter lands, since FRED then supplies non-optional baseline series; until then those series (the dollar index, commodities, and Treasury yields) are not gathered.
+BLS and GDELT are also accessed through public APIs but need no Settings credential: **BLS** works keyless (an optional free key raises its rate limits), and **GDELT** needs no key.
 
-If a required external provider credential (the Financial Modeling Prep or Tavily credential) is missing:
+If a required external provider credential (the Financial Modeling Prep, FRED, or Tavily credential) is missing:
 - dependent jobs do not execute
 - manual report execution is disabled
 - the application displays a validation warning explaining which credential is missing

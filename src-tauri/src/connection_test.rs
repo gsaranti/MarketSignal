@@ -34,6 +34,7 @@ use serde_json::Value;
 const OPENAI_MODELS_URL: &str = "https://api.openai.com/v1/models";
 const ANTHROPIC_MODELS_URL: &str = "https://api.anthropic.com/v1/models";
 const FMP_QUOTE_URL: &str = "https://financialmodelingprep.com/stable/quote";
+const FRED_OBSERVATIONS_URL: &str = "https://api.stlouisfed.org/fred/series/observations";
 const TAVILY_USAGE_URL: &str = "https://api.tavily.com/usage";
 
 /// Short timeout: a health check should fail fast, not park for the model
@@ -48,6 +49,7 @@ pub enum CredentialProvider {
     OpenAi,
     Anthropic,
     Fmp,
+    Fred,
     Tavily,
 }
 
@@ -59,6 +61,7 @@ impl CredentialProvider {
             "openai" => Ok(Self::OpenAi),
             "anthropic" => Ok(Self::Anthropic),
             "fmp" => Ok(Self::Fmp),
+            "fred" => Ok(Self::Fred),
             "tavily" => Ok(Self::Tavily),
             other => bail!("unknown credential provider {other:?}"),
         }
@@ -70,6 +73,7 @@ impl CredentialProvider {
             Self::OpenAi => "OpenAI",
             Self::Anthropic => "Anthropic",
             Self::Fmp => "Financial Modeling Prep",
+            Self::Fred => "FRED",
             Self::Tavily => "Tavily",
         }
     }
@@ -159,6 +163,29 @@ pub fn run_test(provider: CredentialProvider, api_key: &str) -> ConnectionTestRe
                 Err(e) => network_failure(provider, &e),
             }
         }
+        CredentialProvider::Fred => {
+            // FRED takes the key as the `api_key` query param; a bad key returns
+            // HTTP 400 with a JSON `error_message` that names api_key (read by
+            // interpret_fred). A known-good series keeps a 400 attributable to the
+            // key, not a bad series_id.
+            let sent = http
+                .get(FRED_OBSERVATIONS_URL)
+                .query(&[
+                    ("series_id", "DGS10"),
+                    ("api_key", api_key),
+                    ("file_type", "json"),
+                    ("limit", "1"),
+                ])
+                .send();
+            match sent {
+                Ok(r) => {
+                    let status = r.status().as_u16();
+                    let body = r.text().unwrap_or_default();
+                    interpret_fred(status, &body)
+                }
+                Err(e) => network_failure(provider, &e),
+            }
+        }
     }
 }
 
@@ -215,6 +242,31 @@ fn interpret_fmp(status: u16, body: &str) -> ConnectionTestResult {
     ConnectionTestResult::ok()
 }
 
+/// FRED's observations endpoint returns 200 for a valid key. A bad / missing key
+/// is an HTTP 400 whose JSON `error_message` names `api_key` — distinct from FMP's
+/// 401, and the reason this provider needs its own interpreter. A 400 whose message
+/// is not an api_key problem (e.g. a bad series_id, which the fixed known-good
+/// series should preclude) is reported as unexpected rather than a key rejection.
+fn interpret_fred(status: u16, body: &str) -> ConnectionTestResult {
+    if (200..300).contains(&status) {
+        return ConnectionTestResult::ok();
+    }
+    if status == 400 {
+        let msg = serde_json::from_str::<Value>(body)
+            .ok()
+            .and_then(|v| {
+                v.get("error_message")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        if msg.to_ascii_lowercase().contains("api_key") {
+            return ConnectionTestResult::fail("FRED rejected the key (HTTP 400).");
+        }
+    }
+    ConnectionTestResult::fail(format!("FRED returned an unexpected response (HTTP {status})."))
+}
+
 /// Tavily's `/usage` returns 200 for a valid key and 401 for a bad one. A 404 is
 /// distinct — the endpoint may be unavailable on the key's plan — so it is
 /// reported separately rather than as an auth failure.
@@ -242,6 +294,7 @@ mod tests {
             ("openai", CredentialProvider::OpenAi),
             ("anthropic", CredentialProvider::Anthropic),
             ("fmp", CredentialProvider::Fmp),
+            ("fred", CredentialProvider::Fred),
             ("tavily", CredentialProvider::Tavily),
         ] {
             assert_eq!(CredentialProvider::from_label(label).unwrap(), want);
@@ -315,6 +368,31 @@ mod tests {
     #[test]
     fn fmp_non_2xx_is_a_failure() {
         assert!(!interpret_fmp(500, "").ok);
+    }
+
+    #[test]
+    fn fred_200_is_success() {
+        let body = r#"{"observations":[{"date":"2026-06-04","value":"4.30"}]}"#;
+        assert!(interpret_fred(200, body).ok);
+    }
+
+    #[test]
+    fn fred_400_with_api_key_message_is_a_rejection() {
+        // FRED's bad-key signal: HTTP 400 with an error_message that names api_key.
+        let body = r#"{"error_code":400,"error_message":"Bad Request. The value for variable api_key is not registered, is not active, or is otherwise invalid."}"#;
+        let res = interpret_fred(400, body);
+        assert!(!res.ok);
+        assert!(res.detail.contains("rejected"), "{}", res.detail);
+    }
+
+    #[test]
+    fn fred_other_400_and_5xx_are_unexpected_not_rejections() {
+        // A 400 without an api_key message (e.g. a bad series_id) is not a key
+        // rejection, and a 5xx is a provider-side problem — both report "unexpected".
+        let other_400 = interpret_fred(400, r#"{"error_message":"Bad Request. Something else."}"#);
+        assert!(!other_400.ok);
+        assert!(other_400.detail.contains("unexpected"), "{}", other_400.detail);
+        assert!(interpret_fred(500, "").detail.contains("unexpected"));
     }
 
     #[test]

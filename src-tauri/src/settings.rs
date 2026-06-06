@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{
     AppConfig, KEY_ANTHROPIC_API_KEY, KEY_BALANCED_AGENT_MODEL, KEY_BEAR_AGENT_MODEL,
-    KEY_BULL_AGENT_MODEL, KEY_FMP_API_KEY, KEY_MAIN_AGENT_MODEL, KEY_OPENAI_API_KEY,
-    KEY_TAVILY_API_KEY,
+    KEY_BULL_AGENT_MODEL, KEY_FMP_API_KEY, KEY_FRED_API_KEY, KEY_MAIN_AGENT_MODEL,
+    KEY_OPENAI_API_KEY, KEY_TAVILY_API_KEY,
 };
 use crate::model_agent::AgentModel;
 use crate::storage;
@@ -47,6 +47,7 @@ pub struct CredentialStatus {
     pub openai: bool,
     pub anthropic: bool,
     pub fmp: bool,
+    pub fred: bool,
     pub tavily: bool,
 }
 
@@ -67,6 +68,7 @@ pub struct CredentialUpdate {
     pub openai: Option<String>,
     pub anthropic: Option<String>,
     pub fmp: Option<String>,
+    pub fred: Option<String>,
     pub tavily: Option<String>,
 }
 
@@ -103,6 +105,7 @@ pub fn view_from_config(cfg: &AppConfig) -> SettingsView {
             openai: is_configured(&cfg.openai_api_key),
             anthropic: is_configured(&cfg.anthropic_api_key),
             fmp: is_configured(&cfg.fmp_api_key),
+            fred: is_configured(&cfg.fred_api_key),
             tavily: is_configured(&cfg.tavily_api_key),
         },
         available_models: available_models(),
@@ -171,6 +174,7 @@ pub fn save(conn: &Connection, models: &AgentModels, credentials: &CredentialUpd
     put(KEY_OPENAI_API_KEY, &credentials.openai)?;
     put(KEY_ANTHROPIC_API_KEY, &credentials.anthropic)?;
     put(KEY_FMP_API_KEY, &credentials.fmp)?;
+    put(KEY_FRED_API_KEY, &credentials.fred)?;
     put(KEY_TAVILY_API_KEY, &credentials.tavily)?;
     Ok(())
 }
@@ -218,6 +222,7 @@ mod tests {
                 openai: Some("sk-o".into()),
                 anthropic: Some("sk-a".into()),
                 fmp: Some("fmp".into()),
+                fred: Some("fred".into()),
                 tavily: Some("tav".into()),
             },
         )
@@ -240,7 +245,7 @@ mod tests {
         let view = load_view(&conn);
         assert_eq!(view.models.main, "claude-opus");
         let c = &view.credentials;
-        assert!(c.openai && c.anthropic && c.fmp && c.tavily);
+        assert!(c.openai && c.anthropic && c.fmp && c.fred && c.tavily);
     }
 
     #[test]
