@@ -27,8 +27,10 @@
 //!   missing most of its data.
 //! - **Per-symbol skip** — a premium 402, a 404, or an unexpected shape: the
 //!   provider works but this one symbol is unavailable, so it is skipped and the
-//!   rest of the scan still lands. (Per-symbol "no data" is an empty array, never an
-//!   error object — so an error body is treated as fatal above, not skipped here.)
+//!   rest of the scan still lands. Disposition here is by *status*, not body: a 402
+//!   skips whether or not its body carries an error message. (The error-body channel
+//!   is fatal only on a 2xx — the rate-limit case above; a per-symbol "no data" is an
+//!   empty array, never an error object.)
 //! - **Floor** — even with per-symbol skips, a scan that resolves *no* index quotes
 //!   at all fails rather than returning an empty baseline (Step 6 is not optional).
 
@@ -106,15 +108,22 @@ fn is_systemic_failure(status: u16) -> bool {
     status == 429 || (500..600).contains(&status)
 }
 
-/// FMP signals account / request-level errors (rate limit, plan, bad request) as a
-/// 200 body that is an `{"Error Message": ...}` object — distinct from a 200 *array*
-/// (real data, possibly an empty `[]` for "no data"). Because a per-symbol absence
-/// is an empty array, never an error object, any such body is an abnormal,
-/// scan-level condition the caller treats as **fatal** — not a skippable per-symbol
-/// miss. Returns the message when present so the failure carries FMP's own wording.
-/// (We don't string-match the message: rate-limit vs plan vs bad-request all warrant
-/// failing the scan rather than silently producing a partial baseline.)
-fn fmp_error_message(body: &str) -> Option<String> {
+/// FMP signals rate-limit / plan conditions as a **200** body that is an
+/// `{"Error Message": ...}` object — distinct from a 200 *array* (real data, possibly
+/// an empty `[]` for "no data"). On a successful status that is an abnormal,
+/// scan-level condition the caller treats as **fatal**, never a per-symbol miss (a
+/// per-symbol absence is an empty array, not an error object).
+///
+/// Gated on a 2xx status on purpose: a non-2xx is already classified by its status
+/// (402 premium / 404 → per-symbol skip; 429 / 5xx → systemic-fatal), so the *body*
+/// encoding must not change a non-2xx disposition — otherwise a 402 with a JSON error
+/// body would be fatal while the same 402 with a plain-text body would skip. Returns
+/// the message (on a 2xx) so the failure carries FMP's own wording; we don't
+/// string-match it — rate-limit, plan, and bad-request all warrant failing the scan.
+fn fmp_error_message(status: u16, body: &str) -> Option<String> {
+    if !(200..300).contains(&status) {
+        return None;
+    }
     serde_json::from_str::<Value>(body)
         .ok()?
         .get("Error Message")
@@ -246,7 +255,7 @@ impl FmpDataSource {
                      rather than returning a partial baseline"
                 );
             }
-            if let Some(msg) = fmp_error_message(&body) {
+            if let Some(msg) = fmp_error_message(status, &body) {
                 bail!(
                     "Financial Modeling Prep returned an error response (\"{msg}\") — failing \
                      the scan rather than returning a partial baseline"
@@ -279,7 +288,7 @@ impl FmpDataSource {
                      rather than returning a partial baseline"
                 );
             }
-            if let Some(msg) = fmp_error_message(&body) {
+            if let Some(msg) = fmp_error_message(status, &body) {
                 bail!(
                     "Financial Modeling Prep returned an error response (\"{msg}\") — failing \
                      the scan rather than returning a partial baseline"
@@ -395,20 +404,26 @@ mod tests {
     }
 
     #[test]
-    fn error_message_body_is_detected_so_the_loop_can_fail_fatally() {
-        // FMP's rate-limit / plan signal: HTTP 200 with an {"Error Message"} object.
-        // Detected so the fetch loop fails the scan instead of soft-skipping it.
+    fn error_message_body_is_fatal_only_on_a_successful_status() {
         let body = r#"{"Error Message":"Limit Reach. Please upgrade your plan or visit our documentation."}"#;
+        // A 200 with an error body is FMP's rate-limit / plan signal -> fatal.
         assert_eq!(
-            fmp_error_message(body).as_deref(),
+            fmp_error_message(200, body).as_deref(),
             Some("Limit Reach. Please upgrade your plan or visit our documentation.")
         );
+        // The SAME body on a non-2xx must not be promoted to fatal: the status
+        // already classifies it (402 premium / 404 -> per-symbol skip), so the body
+        // encoding cannot change a non-2xx disposition.
+        assert!(fmp_error_message(402, body).is_none());
+        assert!(fmp_error_message(404, body).is_none());
         // A normal array — including the empty "no data" array — is data, not an
         // error, so it is never misread as a fatal condition.
-        assert!(
-            fmp_error_message(r#"[{"symbol":"^GSPC","price":1.0,"changePercentage":0.1}]"#).is_none()
-        );
-        assert!(fmp_error_message("[]").is_none());
+        assert!(fmp_error_message(
+            200,
+            r#"[{"symbol":"^GSPC","price":1.0,"changePercentage":0.1}]"#
+        )
+        .is_none());
+        assert!(fmp_error_message(200, "[]").is_none());
     }
 
     #[test]
