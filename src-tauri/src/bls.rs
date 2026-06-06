@@ -54,23 +54,30 @@ const BLS_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 /// §Step 6`, `docs/data-sources.md §BLS`): the CPI-U headline index (NSA, all items),
 /// the U-3 unemployment rate, total nonfarm payroll employment, and average hourly
 /// earnings for total private. Monthly series; `change_pct` reads month-over-month.
-/// `(series_id, display name)`, with the BLS `series_id` doubling as the quote
+/// `(series_id, display name, unit)`, with the BLS `series_id` doubling as the quote
 /// `symbol` — the same shape as `fred`'s series tables.
 ///
-/// Each display name carries its **unit inline**. The baseline `Quote` has no `unit`
-/// field yet, and an unlabeled payroll level (thousands of persons) is a credible
-/// 1000× misread for the model reading the serialized baseline; until a `unit` field
-/// lands across the adapters (FMP / FRED / BLS), the unit rides in the name.
-const LABOR_SERIES: &[(&str, &str)] = &[
+/// The `unit` labels `price` so the model reading the serialized baseline can't make a
+/// 1000× misread of the payroll level (counted in thousands of persons) or confuse the
+/// CPI index level with a percent. (This unit previously rode inline in the display
+/// name as a stopgap; it now lives in the `Quote.unit` field across all three
+/// adapters.)
+const LABOR_SERIES: &[(&str, &str, &str)] = &[
     (
         "CUUR0000SA0",
-        "Consumer Price Index (CPI-U, All Items, index 1982-84=100)",
+        "Consumer Price Index (CPI-U, All Items)",
+        "index (1982-84=100)",
     ),
-    ("LNS14000000", "Unemployment Rate (percent)"),
-    ("CES0000000001", "Total Nonfarm Payrolls (thousands of persons)"),
+    ("LNS14000000", "Unemployment Rate", "percent"),
+    (
+        "CES0000000001",
+        "Total Nonfarm Payrolls",
+        "thousands of persons",
+    ),
     (
         "CES0500000003",
-        "Average Hourly Earnings, Total Private (USD per hour)",
+        "Average Hourly Earnings, Total Private",
+        "USD per hour",
     ),
 ];
 
@@ -155,7 +162,12 @@ fn interpret_response(http_status: u16, body: &str) -> Result<BlsResponse> {
 /// being silently dropped (which would let a stale reading masquerade as current, or a
 /// `NaN` contaminate the change math). BLS signals "no datum" by omitting the
 /// observation, not with a sentinel string, so there is no FRED-style `"."` to skip.
-fn series_to_quote(data: &[BlsDataPoint], symbol: &str, name: &str) -> Result<Option<Quote>> {
+fn series_to_quote(
+    data: &[BlsDataPoint],
+    symbol: &str,
+    name: &str,
+    unit: &str,
+) -> Result<Option<Quote>> {
     // The most-recent numeric observations, newest-first; latest + prior is all the
     // change needs, so stop at two.
     let mut numeric: Vec<f64> = Vec::with_capacity(2);
@@ -187,6 +199,7 @@ fn series_to_quote(data: &[BlsDataPoint], symbol: &str, name: &str) -> Result<Op
         name: name.to_string(),
         price: latest,
         change_pct,
+        unit: unit.to_string(),
     }))
 }
 
@@ -227,14 +240,14 @@ fn check_completeness(labor_levels: &[Quote]) -> Result<()> {
 ///   than silently thinning the baseline.
 fn assemble_labor_levels(results: &BlsResults) -> Result<Vec<Quote>> {
     let mut labor_levels = Vec::with_capacity(LABOR_SERIES.len());
-    for (id, name) in LABOR_SERIES {
+    for (id, name, unit) in LABOR_SERIES {
         let Some(series) = results.series.iter().find(|s| s.series_id == *id) else {
             bail!(
                 "BLS omitted requested series {id} from a successful response — failing the \
                  scan rather than masking a truncated response as missing data"
             );
         };
-        if let Some(quote) = series_to_quote(&series.data, id, name)? {
+        if let Some(quote) = series_to_quote(&series.data, id, name, unit)? {
             labor_levels.push(quote);
         }
     }
@@ -267,7 +280,7 @@ impl BlsDataSource {
     /// body for `interpret_response` to judge. A transport error (the provider is
     /// unreachable) propagates as a fatal scan error.
     fn post(&self) -> Result<(u16, String)> {
-        let ids: Vec<&str> = LABOR_SERIES.iter().map(|(id, _)| *id).collect();
+        let ids: Vec<&str> = LABOR_SERIES.iter().map(|(id, _, _)| *id).collect();
         let (start, end) = year_window(chrono::Local::now().year());
         let payload = serde_json::json!({
             "seriesid": ids,
@@ -363,13 +376,15 @@ mod tests {
                 {"year":"2026","period":"M03","value":"319.0"}
             ]"#,
         );
-        let q = series_to_quote(&data, "CUUR0000SA0", "CPI-U")
+        let q = series_to_quote(&data, "CUUR0000SA0", "CPI-U", "index (1982-84=100)")
             .unwrap()
             .expect("a quote");
         assert_eq!(q.symbol, "CUUR0000SA0");
         assert_eq!(q.name, "CPI-U");
         assert!((q.price - 320.5).abs() < 1e-9);
         assert!((q.change_pct - (1.5 / 319.0 * 100.0)).abs() < 1e-9);
+        // The series' unit rides onto the quote from the table, labelling `price`.
+        assert_eq!(q.unit, "index (1982-84=100)");
     }
 
     #[test]
@@ -377,14 +392,16 @@ mod tests {
         // A series with no observation contributes nothing, but is not an error — the
         // per-series absence the floor tolerates (a renamed/absent series id).
         let data = data_points("[]");
-        assert!(series_to_quote(&data, "LNS14000000", "x").unwrap().is_none());
+        assert!(series_to_quote(&data, "LNS14000000", "x", "percent")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn series_to_quote_single_value_has_no_change() {
         // One observation -> a quote with a 0.0 change (no prior to diff).
         let data = data_points(r#"[{"year":"2026","period":"M04","value":"4.1"}]"#);
-        let q = series_to_quote(&data, "LNS14000000", "Unemployment Rate")
+        let q = series_to_quote(&data, "LNS14000000", "Unemployment Rate", "percent")
             .unwrap()
             .expect("a quote");
         assert!((q.price - 4.1).abs() < 1e-9);
@@ -401,7 +418,7 @@ mod tests {
                 r#"[{{"year":"2026","period":"M04","value":"{bad}"}}]"#
             ));
             assert!(
-                series_to_quote(&data, "CES0000000001", "x").is_err(),
+                series_to_quote(&data, "CES0000000001", "x", "thousands of persons").is_err(),
                 "value {bad:?} must fail closed, not skip"
             );
         }
@@ -413,7 +430,7 @@ mod tests {
 
         // All requested series present -> a quote each.
         let full: Vec<(&str, &str)> =
-            LABOR_SERIES.iter().map(|(id, _)| (*id, with_data)).collect();
+            LABOR_SERIES.iter().map(|(id, _, _)| (*id, with_data)).collect();
         assert_eq!(
             assemble_labor_levels(&results_with(&full)).unwrap().len(),
             LABOR_SERIES.len()
@@ -435,7 +452,7 @@ mod tests {
         // absence (the gold-lesson case) — skipped, not fatal; the others still resolve.
         let with_data = r#"[{"year":"2026","period":"M04","value":"1.0"}]"#;
         let mut entries: Vec<(&str, &str)> =
-            LABOR_SERIES.iter().map(|(id, _)| (*id, with_data)).collect();
+            LABOR_SERIES.iter().map(|(id, _, _)| (*id, with_data)).collect();
         entries[0].1 = "[]"; // first series returns no observations
         let quotes = assemble_labor_levels(&results_with(&entries)).unwrap();
         assert_eq!(quotes.len(), LABOR_SERIES.len() - 1);
@@ -448,6 +465,7 @@ mod tests {
             name: "Unemployment Rate".into(),
             price: 4.1,
             change_pct: 0.0,
+            unit: "percent".into(),
         };
         assert!(check_completeness(&[q]).is_ok());
         let err = check_completeness(&[]).unwrap_err().to_string();
@@ -474,8 +492,8 @@ mod tests {
         eprintln!("labor_levels ({}):", data.labor_levels.len());
         for q in &data.labor_levels {
             eprintln!(
-                "  {:<16} {:<42} price={:<12} change_pct={}",
-                q.symbol, q.name, q.price, q.change_pct
+                "  {:<16} {:<42} price={:<12} change_pct={:<10} unit={}",
+                q.symbol, q.name, q.price, q.change_pct, q.unit
             );
         }
 

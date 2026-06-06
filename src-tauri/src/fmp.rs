@@ -59,21 +59,24 @@ const FMP_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 const SECTOR_LOOKBACK_DAYS: i64 = 5;
 
 /// The four headline indices of the baseline scan (`docs/weekly-report-workflow
-/// .md §Step 6`), paired with a display name used when FMP omits one. All four
-/// are free-tier on FMP (verified live).
-const INDEX_SYMBOLS: &[(&str, &str)] = &[
-    ("^DJI", "Dow Jones Industrial Average"),
-    ("^GSPC", "S&P 500"),
-    ("^IXIC", "Nasdaq Composite"),
-    ("^RUT", "Russell 2000"),
+/// .md §Step 6`), paired with a display name used when FMP omits one and the `price`
+/// unit. All four are free-tier on FMP (verified live). The unit rides from the table,
+/// not the wire — FMP's quote object carries no unit — and labels the level for the
+/// model the same way `fred`'s and `bls`'s series tables do.
+const INDEX_SYMBOLS: &[(&str, &str, &str)] = &[
+    ("^DJI", "Dow Jones Industrial Average", "index points"),
+    ("^GSPC", "S&P 500", "index points"),
+    ("^IXIC", "Nasdaq Composite", "index points"),
+    ("^RUT", "Russell 2000", "index points"),
 ];
 
 /// The free-tier market internals FMP serves: the VIX and gold (`GCUSD`, verified
-/// live on the free quote endpoint). The dollar index, oil, and natural gas are
-/// FMP-premium and come from FRED instead (see the module header).
-const INTERNAL_SYMBOLS: &[(&str, &str)] = &[
-    ("^VIX", "CBOE Volatility Index"),
-    ("GCUSD", "Gold"),
+/// live on the free quote endpoint), each with its `price` unit. The dollar index,
+/// oil, and natural gas are FMP-premium and come from FRED instead (see the module
+/// header).
+const INTERNAL_SYMBOLS: &[(&str, &str, &str)] = &[
+    ("^VIX", "CBOE Volatility Index", "index points"),
+    ("GCUSD", "Gold", "USD per troy ounce"),
 ];
 
 /// FMP's quote object, trimmed to the fields the baseline needs. `name` is optional
@@ -143,8 +146,9 @@ fn interpret_response(status: u16, body: &str) -> Result<Option<Value>> {
 
 /// Shape a successful quote response (a single-symbol `/stable/quote` call returns a
 /// one-element array) into typed quotes, falling back to `fallback_name` when FMP omits
-/// the instrument name. A body that is not the expected array of quotes is an error.
-fn quotes_from_value(value: Value, fallback_name: &str) -> Result<Vec<Quote>> {
+/// the instrument name and stamping each with the requested symbol's `unit` (FMP's quote
+/// object carries none). A body that is not the expected array of quotes is an error.
+fn quotes_from_value(value: Value, fallback_name: &str, unit: &str) -> Result<Vec<Quote>> {
     let raws: Vec<FmpQuoteRaw> = serde_json::from_value(value)
         .context("FMP quote response did not match the expected array shape")?;
     Ok(raws
@@ -158,6 +162,7 @@ fn quotes_from_value(value: Value, fallback_name: &str) -> Result<Vec<Quote>> {
             symbol: r.symbol,
             price: r.price,
             change_pct: r.change_pct,
+            unit: unit.to_string(),
         })
         .collect())
 }
@@ -225,12 +230,12 @@ impl FmpDataSource {
     /// responses fail the whole scan; a 2xx array is shaped into quotes. So the rest of
     /// the scan lands around a legitimately-absent symbol, but anything we can't
     /// understand fails loudly.
-    fn fetch_quotes(&self, symbols: &[(&str, &str)]) -> Result<Vec<Quote>> {
+    fn fetch_quotes(&self, symbols: &[(&str, &str, &str)]) -> Result<Vec<Quote>> {
         let mut out = Vec::with_capacity(symbols.len());
-        for (symbol, fallback_name) in symbols {
+        for (symbol, fallback_name, unit) in symbols {
             let (status, body) = self.get(FMP_QUOTE_URL, &[("symbol", symbol)])?;
             if let Some(value) = interpret_response(status, &body)? {
-                out.extend(quotes_from_value(value, fallback_name)?);
+                out.extend(quotes_from_value(value, fallback_name, unit)?);
             }
         }
         Ok(out)
@@ -322,22 +327,24 @@ mod tests {
         let v: Value =
             serde_json::from_str(r#"[{"symbol":"^GSPC","name":"S&P 500","price":5500.5,"changePercentage":0.42}]"#)
                 .unwrap();
-        let quotes = quotes_from_value(v, "fallback").unwrap();
+        let quotes = quotes_from_value(v, "fallback", "index points").unwrap();
         assert_eq!(quotes.len(), 1);
         assert_eq!(quotes[0].symbol, "^GSPC");
         assert_eq!(quotes[0].name, "S&P 500");
         assert!((quotes[0].price - 5500.5).abs() < 1e-9);
         assert!((quotes[0].change_pct - 0.42).abs() < 1e-9);
+        // The requested symbol's unit rides onto the quote from the table, not the wire.
+        assert_eq!(quotes[0].unit, "index points");
 
         // No name -> local fallback; legacy `changesPercentage` accepted.
         let v2: Value =
             serde_json::from_str(r#"[{"symbol":"^DJI","price":40000.0,"changesPercentage":-1.5}]"#).unwrap();
-        let q2 = quotes_from_value(v2, "Dow Jones").unwrap();
+        let q2 = quotes_from_value(v2, "Dow Jones", "index points").unwrap();
         assert_eq!(q2[0].name, "Dow Jones");
         assert!((q2[0].change_pct + 1.5).abs() < 1e-9);
 
         // An empty array is "no quotes", not an error.
-        assert!(quotes_from_value(serde_json::from_str("[]").unwrap(), "x").unwrap().is_empty());
+        assert!(quotes_from_value(serde_json::from_str("[]").unwrap(), "x", "index points").unwrap().is_empty());
     }
 
     #[test]
@@ -346,12 +353,12 @@ mod tests {
         // neither a false 0.0 nor a silent skip; the loop fails the scan.
         let no_price: Value =
             serde_json::from_str(r#"[{"symbol":"^GSPC","changePercentage":0.4}]"#).unwrap();
-        assert!(quotes_from_value(no_price, "x").is_err());
+        assert!(quotes_from_value(no_price, "x", "index points").is_err());
         let no_change: Value = serde_json::from_str(r#"[{"symbol":"^GSPC","price":5500.0}]"#).unwrap();
-        assert!(quotes_from_value(no_change, "x").is_err());
+        assert!(quotes_from_value(no_change, "x", "index points").is_err());
         // A non-array 2xx body (object) is also malformed.
         let object: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
-        assert!(quotes_from_value(object, "x").is_err());
+        assert!(quotes_from_value(object, "x", "index points").is_err());
     }
 
     #[test]
@@ -406,8 +413,8 @@ mod tests {
             eprintln!("{label} ({}):", quotes.len());
             for q in quotes {
                 eprintln!(
-                    "  {:<10} {:<28} price={:<12} change_pct={}",
-                    q.symbol, q.name, q.price, q.change_pct
+                    "  {:<10} {:<28} price={:<12} change_pct={:<10} unit={}",
+                    q.symbol, q.name, q.price, q.change_pct, q.unit
                 );
             }
         };
@@ -423,8 +430,8 @@ mod tests {
         // (e.g. GCUSD going premium) hide behind its siblings; the per-symbol
         // assert is what actually catches a symbol regressing, the lesson of the
         // removed FRED gold series.
-        let assert_resolved = |label: &str, quotes: &[Quote], symbols: &[(&str, &str)]| {
-            for (sym, _) in symbols {
+        let assert_resolved = |label: &str, quotes: &[Quote], symbols: &[(&str, &str, &str)]| {
+            for (sym, _, _) in symbols {
                 assert!(
                     quotes.iter().any(|q| q.symbol == *sym),
                     "{label}: {sym} did not resolve — it may have left FMP's free tier"

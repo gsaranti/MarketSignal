@@ -519,6 +519,7 @@ mod tests {
                 name: "S&P 500".into(),
                 price: 5500.0,
                 change_pct: 0.4,
+                unit: "index points".into(),
             }],
             ..Default::default()
         };
@@ -526,6 +527,9 @@ mod tests {
         assert!(prompt.starts_with(USER_PROMPT), "{prompt}");
         assert!(prompt.contains("^GSPC"), "{prompt}");
         assert!(prompt.contains("Baseline market data"), "{prompt}");
+        // The unit rides into the serialized baseline, so the model sees what `price` is
+        // quoted in — the whole point of the field reaching the prompt.
+        assert!(prompt.contains("index points"), "{prompt}");
     }
 
     #[test]

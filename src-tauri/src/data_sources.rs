@@ -24,12 +24,20 @@ use serde::{Deserialize, Serialize};
 /// One quoted instrument in the baseline scan: a market index or a market
 /// internal (VIX, the dollar index, a commodity). `change_pct` is the percent
 /// change the provider reports for the quote.
+///
+/// `unit` annotates **`price`** — the unit the level is quoted in ("index points",
+/// "percent", "USD per barrel", "thousands of persons", …), supplied per series from
+/// each adapter's own table rather than the wire, so the model reading the serialized
+/// baseline can't misread an unlabeled level (a payroll count of thousands as ones, a
+/// yield level as a dollar figure). It does **not** describe `change_pct`, which is a
+/// percent for every series regardless of the level's unit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Quote {
     pub symbol: String,
     pub name: String,
     pub price: f64,
     pub change_pct: f64,
+    pub unit: String,
 }
 
 /// One sector's period performance, as a percentage.
@@ -81,12 +89,14 @@ impl MarketDataSource for StubMarketDataSource {
                     name: "S&P 500".into(),
                     price: 5_500.0,
                     change_pct: 0.4,
+                    unit: "index points".into(),
                 },
                 Quote {
                     symbol: "^IXIC".into(),
                     name: "Nasdaq Composite".into(),
                     price: 17_800.0,
                     change_pct: 0.6,
+                    unit: "index points".into(),
                 },
             ],
             internals: vec![Quote {
@@ -94,6 +104,7 @@ impl MarketDataSource for StubMarketDataSource {
                 name: "CBOE Volatility Index".into(),
                 price: 14.2,
                 change_pct: -1.1,
+                unit: "index points".into(),
             }],
             sectors: vec![
                 SectorPerformance {
@@ -110,12 +121,14 @@ impl MarketDataSource for StubMarketDataSource {
                 name: "Fed Funds Target Range — Upper Limit".into(),
                 price: 4.5,
                 change_pct: 0.0,
+                unit: "percent".into(),
             }],
             labor_levels: vec![Quote {
                 symbol: "LNS14000000".into(),
                 name: "Unemployment Rate".into(),
                 price: 4.1,
                 change_pct: 0.0,
+                unit: "percent".into(),
             }],
         })
     }
@@ -195,6 +208,7 @@ mod tests {
             name: symbol.into(),
             price: 1.0,
             change_pct: 0.0,
+            unit: "index points".into(),
         }
     }
 

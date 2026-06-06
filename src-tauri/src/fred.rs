@@ -58,14 +58,17 @@ const FRED_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 const OBSERVATION_LIMIT: &str = "10";
 
 /// The FRED-owned market internals of the Step-6 baseline (`docs/weekly-report
-/// -workflow.md §Step 6`), paired with a display name. Each is a free FRED daily
-/// series; the FRED `series_id` doubles as the quote `symbol`.
-const INTERNALS_SERIES: &[(&str, &str)] = &[
-    ("DGS2", "2-Year Treasury Yield"),
-    ("DGS10", "10-Year Treasury Yield"),
-    ("DTWEXBGS", "US Dollar Index (Broad)"),
-    ("DCOILWTICO", "WTI Crude Oil"),
-    ("DHHNGSP", "Henry Hub Natural Gas"),
+/// -workflow.md §Step 6`), paired with a display name and the `price` unit. Each is a
+/// free FRED daily series; the FRED `series_id` doubles as the quote `symbol`. Yields
+/// and the breakevens are quoted in percent; the dollar index is an index level; oil
+/// and gas are dollar prices — the unit labels which, so the model doesn't read a yield
+/// as a dollar figure.
+const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
+    ("DGS2", "2-Year Treasury Yield", "percent"),
+    ("DGS10", "10-Year Treasury Yield", "percent"),
+    ("DTWEXBGS", "US Dollar Index (Broad)", "index (Jan 2006=100)"),
+    ("DCOILWTICO", "WTI Crude Oil", "USD per barrel"),
+    ("DHHNGSP", "Henry Hub Natural Gas", "USD per million BTU"),
 ];
 
 /// The FRED-owned macro levels of the Step-6 baseline (`docs/weekly-report
@@ -74,15 +77,17 @@ const INTERNALS_SERIES: &[(&str, &str)] = &[
 /// the 5y / 10y inflation breakevens, U. Michigan consumer sentiment, and the PCE
 /// price index. Mixed daily (target range, breakevens) and monthly (sentiment, PCE)
 /// series; the `change_pct` math reads day-over-day or month-over-month accordingly.
-/// Same `(series_id, display name)` shape as the internals — the `series_id` doubles
-/// as the quote `symbol`.
-const MACRO_SERIES: &[(&str, &str)] = &[
-    ("DFEDTARU", "Fed Funds Target Range — Upper Limit"),
-    ("DFEDTARL", "Fed Funds Target Range — Lower Limit"),
-    ("T5YIE", "5-Year Breakeven Inflation Rate"),
-    ("T10YIE", "10-Year Breakeven Inflation Rate"),
-    ("UMCSENT", "U. Michigan Consumer Sentiment"),
-    ("PCEPI", "PCE Price Index"),
+/// Same `(series_id, display name, unit)` shape as the internals — the `series_id`
+/// doubles as the quote `symbol`. The target range and breakevens are quoted in
+/// percent; sentiment and the PCE price index are index levels (with their base period
+/// in the unit) — the unit labels which.
+const MACRO_SERIES: &[(&str, &str, &str)] = &[
+    ("DFEDTARU", "Fed Funds Target Range — Upper Limit", "percent"),
+    ("DFEDTARL", "Fed Funds Target Range — Lower Limit", "percent"),
+    ("T5YIE", "5-Year Breakeven Inflation Rate", "percent"),
+    ("T10YIE", "10-Year Breakeven Inflation Rate", "percent"),
+    ("UMCSENT", "U. Michigan Consumer Sentiment", "index (1966Q1=100)"),
+    ("PCEPI", "PCE Price Index", "index (2017=100)"),
 ];
 
 /// FRED's observations response, trimmed to the one field the baseline needs. Each
@@ -162,7 +167,12 @@ fn interpret_response(status: u16, body: &str) -> Result<Option<Value>> {
 /// the scan rather than being silently dropped as a gap (which would let a stale
 /// observation masquerade as current, or a `NaN` contaminate the change math). A
 /// body that is not the expected observations shape is likewise an error.
-fn observations_to_quote(value: Value, symbol: &str, name: &str) -> Result<Option<Quote>> {
+fn observations_to_quote(
+    value: Value,
+    symbol: &str,
+    name: &str,
+    unit: &str,
+) -> Result<Option<Quote>> {
     let raw: FredObservations = serde_json::from_value(value)
         .context("FRED observations response did not match the expected shape")?;
     // The most-recent numeric observations, newest-first; latest + prior is all the
@@ -199,6 +209,7 @@ fn observations_to_quote(value: Value, symbol: &str, name: &str) -> Result<Optio
         name: name.to_string(),
         price: latest,
         change_pct,
+        unit: unit.to_string(),
     }))
 }
 
@@ -282,12 +293,12 @@ impl FredDataSource {
     /// shaped into a quote. So the rest of the scan lands around a legitimately absent
     /// series, but anything we can't understand fails loudly. Shared by the internals
     /// and macro-levels groups, which differ only in their series list.
-    fn fetch_series(&self, series: &[(&str, &str)]) -> Result<Vec<Quote>> {
+    fn fetch_series(&self, series: &[(&str, &str, &str)]) -> Result<Vec<Quote>> {
         let mut out = Vec::with_capacity(series.len());
-        for (series_id, name) in series {
+        for (series_id, name, unit) in series {
             let (status, body) = self.get(series_id)?;
             if let Some(value) = interpret_response(status, &body)? {
-                if let Some(quote) = observations_to_quote(value, series_id, name)? {
+                if let Some(quote) = observations_to_quote(value, series_id, name, unit)? {
                     out.push(quote);
                 }
             }
@@ -365,13 +376,15 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let q = observations_to_quote(v, "DGS10", "10-Year Treasury Yield")
+        let q = observations_to_quote(v, "DGS10", "10-Year Treasury Yield", "percent")
             .unwrap()
             .expect("a quote");
         assert_eq!(q.symbol, "DGS10");
         assert_eq!(q.name, "10-Year Treasury Yield");
         assert!((q.price - 4.30).abs() < 1e-9);
         assert!((q.change_pct - (0.10 / 4.20 * 100.0)).abs() < 1e-9);
+        // The series' unit rides onto the quote from the table, labelling `price`.
+        assert_eq!(q.unit, "percent");
     }
 
     #[test]
@@ -387,7 +400,7 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let q = observations_to_quote(v, "DCOILWTICO", "WTI Crude Oil")
+        let q = observations_to_quote(v, "DCOILWTICO", "WTI Crude Oil", "USD per barrel")
             .unwrap()
             .expect("a quote past the gaps");
         assert!((q.price - 78.0).abs() < 1e-9);
@@ -400,7 +413,7 @@ mod tests {
         // but is not an error — the per-series absence the floor tolerates.
         let v: Value =
             serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#).unwrap();
-        assert!(observations_to_quote(v, "DGS2", "x").unwrap().is_none());
+        assert!(observations_to_quote(v, "DGS2", "x", "percent").unwrap().is_none());
     }
 
     #[test]
@@ -409,7 +422,7 @@ mod tests {
         let v: Value =
             serde_json::from_str(r#"{"observations":[{"date":"2026-06-04","value":"4.30"}]}"#)
                 .unwrap();
-        let q = observations_to_quote(v, "DGS2", "2-Year Treasury Yield")
+        let q = observations_to_quote(v, "DGS2", "2-Year Treasury Yield", "percent")
             .unwrap()
             .expect("a quote");
         assert!((q.price - 4.30).abs() < 1e-9);
@@ -420,7 +433,7 @@ mod tests {
     fn observations_to_quote_rejects_a_malformed_body() {
         // A 2xx body without the `observations` array is a contract violation.
         let v: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
-        assert!(observations_to_quote(v, "DGS2", "x").is_err());
+        assert!(observations_to_quote(v, "DGS2", "x", "percent").is_err());
     }
 
     #[test]
@@ -435,7 +448,7 @@ mod tests {
             ))
             .unwrap();
             assert!(
-                observations_to_quote(v, "DGS2", "x").is_err(),
+                observations_to_quote(v, "DGS2", "x", "percent").is_err(),
                 "value {bad:?} must fail closed, not skip"
             );
         }
@@ -448,6 +461,7 @@ mod tests {
             name: s.into(),
             price: 1.0,
             change_pct: 0.0,
+            unit: "percent".into(),
         };
         let internals = [q("DGS10")];
         let macro_levels = [q("DFEDTARU")];
@@ -482,8 +496,8 @@ mod tests {
             eprintln!("{label} ({}):", quotes.len());
             for q in quotes {
                 eprintln!(
-                    "  {:<20} {:<34} price={:<12} change_pct={}",
-                    q.symbol, q.name, q.price, q.change_pct
+                    "  {:<20} {:<34} price={:<12} change_pct={:<10} unit={}",
+                    q.symbol, q.name, q.price, q.change_pct, q.unit
                 );
             }
         };
