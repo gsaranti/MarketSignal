@@ -23,6 +23,7 @@ use serde::Serialize;
 
 use crate::agent::MainAgent;
 use crate::config::{WarningCategory, WarningKind};
+use crate::data_sources::MarketDataSource;
 use crate::pipeline::{generate_report, GeneratedReport, ReportPaths};
 use crate::storage;
 
@@ -142,6 +143,7 @@ impl Drop for RunToken {
 /// `job_runs` (and `reports`) to write to.
 pub fn run_job(
     agent: &dyn MainAgent,
+    data: &dyn MarketDataSource,
     paths: &ReportPaths,
     guard: &RunGuard,
 ) -> Result<JobOutcome> {
@@ -170,7 +172,7 @@ pub fn run_job(
     };
 
     let started_at = now_rfc3339();
-    match generate_report(agent, paths) {
+    match generate_report(agent, data, paths) {
         Ok(report) => {
             let finished_at = now_rfc3339();
             record_run(

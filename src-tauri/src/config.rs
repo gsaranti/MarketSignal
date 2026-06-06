@@ -166,6 +166,18 @@ impl AppConfig {
             .to_string();
         Ok(MainAgentConfig { model, api_key })
     }
+
+    /// The FMP API key for the baseline market-data scan (`docs/weekly-report
+    /// -workflow.md §Step 6`), resolved from validated configuration. Mirrors
+    /// `main_agent_config`'s post-gate resolution: after a passing `validate` the
+    /// credential is present, so the error arm is defensive.
+    pub fn fmp_key(&self) -> Result<String> {
+        Ok(present(&self.fmp_api_key)
+            .ok_or_else(|| {
+                anyhow!("FMP_API_KEY is not set (required for the baseline market-data scan)")
+            })?
+            .to_string())
+    }
 }
 
 /// One configured agent slot, paired with its display name for warning copy.
@@ -285,14 +297,22 @@ pub fn blocked_summary(report: &ValidationReport) -> String {
     )
 }
 
+/// The resolved inputs a run needs once the gate has passed: the Main Agent
+/// adapter config and the FMP data-source key. No `Debug` derive — both fields
+/// carry secrets that must never be printed.
+pub struct RunConfig {
+    pub main: MainAgentConfig,
+    pub fmp_api_key: String,
+}
+
 /// The scheduler's pre-run decision for a *scheduled* fire. Distinct from a
 /// manual run, which ignores the enable flag — disabling the weekly schedule
 /// must not block a manual "Generate". No `Debug` derive: the `Proceed` variant
-/// carries `MainAgentConfig`, which deliberately has no `Debug` so an API key
-/// can never be printed.
+/// carries `RunConfig`, which deliberately has no `Debug` so an API key can
+/// never be printed.
 pub enum ScheduledRun {
-    /// Gate passed: carries the resolved Main Agent adapter config to run with.
-    Proceed(MainAgentConfig),
+    /// Gate passed: carries the resolved run inputs (model config + FMP key).
+    Proceed(RunConfig),
     /// The weekly job is disabled — an expected, quiet no-op (no diagnostic).
     Disabled,
     /// Blocked by a noteworthy reason (incomplete config or an unresolved model
@@ -301,13 +321,14 @@ pub enum ScheduledRun {
 }
 
 /// Decide whether a scheduled fire should proceed: the enable flag, then the
-/// execution gate, then a resolvable Main Agent model + key (`docs/weekly-report
-/// -workflow.md §Step 1`). Pure over its inputs — `validate` and
-/// `main_agent_config` read only from `cfg` — so the enabled / blocked / proceed
-/// composition the scheduler walks is unit-testable without the environment or a
-/// running app. The `main_agent_config` error arm is defensive: after a passing
-/// `validate` (which already requires both provider keys and a parseable main
-/// model) it is effectively unreachable, mirroring the manual command's pattern.
+/// execution gate, then a resolvable Main Agent model + key and the FMP
+/// data-source key (`docs/weekly-report-workflow.md §Step 1`). Pure over its
+/// inputs — `validate`, `main_agent_config`, and `fmp_key` read only from `cfg`
+/// — so the enabled / blocked / proceed composition the scheduler walks is
+/// unit-testable without the environment or a running app. Both resolution error
+/// arms are defensive: after a passing `validate` (which already requires both
+/// provider keys, the FMP credential, and a parseable main model) they are
+/// effectively unreachable, mirroring the manual command's pattern.
 pub fn decide_scheduled_run(cfg: &AppConfig, enabled: bool) -> ScheduledRun {
     if !enabled {
         return ScheduledRun::Disabled;
@@ -315,9 +336,9 @@ pub fn decide_scheduled_run(cfg: &AppConfig, enabled: bool) -> ScheduledRun {
     if validate(cfg).is_blocked {
         return ScheduledRun::Blocked("configuration incomplete — run skipped".to_string());
     }
-    match cfg.main_agent_config() {
-        Ok(main_config) => ScheduledRun::Proceed(main_config),
-        Err(e) => ScheduledRun::Blocked(e.to_string()),
+    match (cfg.main_agent_config(), cfg.fmp_key()) {
+        (Ok(main), Ok(fmp_api_key)) => ScheduledRun::Proceed(RunConfig { main, fmp_api_key }),
+        (Err(e), _) | (_, Err(e)) => ScheduledRun::Blocked(e.to_string()),
     }
 }
 
@@ -492,6 +513,17 @@ mod tests {
     }
 
     #[test]
+    fn fmp_key_resolves_present_value_and_errors_when_missing() {
+        let cfg = complete();
+        assert_eq!(cfg.fmp_key().unwrap(), "fmp-key");
+
+        let mut blank = complete();
+        blank.fmp_api_key = Some("   ".into()); // present-but-blank reads as unset
+        let err = blank.fmp_key().unwrap_err();
+        assert!(err.to_string().contains("FMP_API_KEY"), "{err}");
+    }
+
+    #[test]
     fn job_warning_kinds_are_non_blocking() {
         assert!(!WarningKind::FailedJob.is_blocking());
         assert!(!WarningKind::MissedScheduledJob.is_blocking());
@@ -503,7 +535,10 @@ mod tests {
         // Match rather than unwrap so `MainAgentConfig` never needs a `Debug`
         // impl that could print the secret.
         match decide_scheduled_run(&complete(), true) {
-            ScheduledRun::Proceed(mac) => assert_eq!(mac.model, AgentModel::ClaudeOpus),
+            ScheduledRun::Proceed(rc) => {
+                assert_eq!(rc.main.model, AgentModel::ClaudeOpus);
+                assert_eq!(rc.fmp_api_key, "fmp-key");
+            }
             _ => panic!("expected Proceed for a complete, enabled config"),
         }
     }

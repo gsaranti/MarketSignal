@@ -13,9 +13,10 @@
 //! which is where it is actually needed. The seed of the future
 //! `adapters::models` module lives here.
 //!
-//! This slice hands the agent an empty `MainAgentInput`, so the report reflects
-//! the model's own knowledge rather than live market data — expected until the
-//! condensed-packet/data-source slice grounds it.
+//! The agent's `MainAgentInput` now carries the Step-6 baseline market-data scan
+//! (`data_sources`); this adapter serializes it into the user message so the
+//! report is grounded in this run's live data. The rest of the condensed packet
+//! (news clusters, deep research, vector memory) joins it as later slices land.
 
 use std::time::Duration;
 
@@ -28,6 +29,7 @@ use crate::agent::{
     MainAgent, MainAgentInput, MainAgentOutput, MarketCycle, ReportSummary, RiskPosture,
     ThesisStance,
 };
+use crate::data_sources::BaselineMarketData;
 
 /// Which provider an agent model is served by. Selects the request shape, the
 /// auth header, and the endpoint.
@@ -178,6 +180,21 @@ key_risks, unresolved_questions, and forward_outlook_themes. Any of the three ar
 const USER_PROMPT: &str =
     "Write this week's Market Signal weekly market report, including its structured summary.";
 
+/// Build the user message: the standing instruction plus, when present, the
+/// Step-6 baseline market-data scan serialized as JSON so the model grounds the
+/// report in this run's live data rather than its own prior knowledge. An empty
+/// baseline (no data gathered — e.g. an offline smoke) falls back to the bare
+/// instruction so the prompt never carries an empty data block.
+fn build_user_prompt(baseline: &BaselineMarketData) -> String {
+    if baseline == &BaselineMarketData::default() {
+        return USER_PROMPT.to_string();
+    }
+    match serde_json::to_string_pretty(baseline) {
+        Ok(json) => format!("{USER_PROMPT}\n\nBaseline market data gathered for this report:\n{json}"),
+        Err(_) => USER_PROMPT.to_string(),
+    }
+}
+
 /// The model's structured return: the Markdown body plus the analytical fields.
 /// `report_id` / `report_type` / `created_at` are deliberately absent — the
 /// application layer owns those.
@@ -237,7 +254,7 @@ fn response_envelope_schema() -> Value {
 /// arm's strict json_schema). `cache_control` on the system block is correct
 /// placement for when the condensed packet grows the prefix past Opus's
 /// ~4096-token cache minimum; below that it is a no-op, not an error.
-fn build_anthropic_request(model_id: &str, system: &str, schema: &Value) -> Value {
+fn build_anthropic_request(model_id: &str, system: &str, user: &str, schema: &Value) -> Value {
     json!({
         "model": model_id,
         "max_tokens": MAX_TOKENS,
@@ -253,12 +270,12 @@ fn build_anthropic_request(model_id: &str, system: &str, schema: &Value) -> Valu
             }
         ],
         "tool_choice": { "type": "tool", "name": TOOL_NAME },
-        "messages": [ { "role": "user", "content": USER_PROMPT } ]
+        "messages": [ { "role": "user", "content": user } ]
     })
 }
 
 /// OpenAI Chat Completions request with strict json_schema structured output.
-fn build_openai_request(model_id: &str, system: &str, schema: &Value) -> Value {
+fn build_openai_request(model_id: &str, system: &str, user: &str, schema: &Value) -> Value {
     json!({
         "model": model_id,
         "max_completion_tokens": MAX_TOKENS,
@@ -268,7 +285,7 @@ fn build_openai_request(model_id: &str, system: &str, schema: &Value) -> Value {
         },
         "messages": [
             { "role": "system", "content": system },
-            { "role": "user", "content": USER_PROMPT }
+            { "role": "user", "content": user }
         ]
     })
 }
@@ -397,13 +414,14 @@ impl ModelMainAgent {
 }
 
 impl MainAgent for ModelMainAgent {
-    fn generate(&self, _input: MainAgentInput) -> Result<MainAgentOutput> {
+    fn generate(&self, input: MainAgentInput) -> Result<MainAgentOutput> {
         let provider = self.config.model.provider();
         let model_id = self.config.model.model_id();
         let schema = response_envelope_schema();
+        let user = build_user_prompt(&input.baseline);
         let body = match provider {
-            Provider::Anthropic => build_anthropic_request(model_id, SYSTEM_PROMPT, &schema),
-            Provider::OpenAi => build_openai_request(model_id, SYSTEM_PROMPT, &schema),
+            Provider::Anthropic => build_anthropic_request(model_id, SYSTEM_PROMPT, &user, &schema),
+            Provider::OpenAi => build_openai_request(model_id, SYSTEM_PROMPT, &user, &schema),
         };
         let raw = self.call(provider, &body)?;
 
@@ -467,21 +485,52 @@ mod tests {
 
     #[test]
     fn anthropic_request_forces_the_tool_and_caches_system() {
-        let body = build_anthropic_request("claude-opus-4-8", SYSTEM_PROMPT, &response_envelope_schema());
+        let body = build_anthropic_request(
+            "claude-opus-4-8",
+            SYSTEM_PROMPT,
+            USER_PROMPT,
+            &response_envelope_schema(),
+        );
         assert_eq!(body["model"], "claude-opus-4-8");
         assert_eq!(body["tool_choice"]["type"], "tool");
         assert_eq!(body["tool_choice"]["name"], TOOL_NAME);
         assert_eq!(body["tools"][0]["name"], TOOL_NAME);
         assert_eq!(body["tools"][0]["strict"], true);
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["messages"][0]["content"], USER_PROMPT);
     }
 
     #[test]
     fn openai_request_uses_strict_json_schema() {
-        let body = build_openai_request("gpt-5", SYSTEM_PROMPT, &response_envelope_schema());
+        let body =
+            build_openai_request("gpt-5", SYSTEM_PROMPT, USER_PROMPT, &response_envelope_schema());
         assert_eq!(body["model"], "gpt-5");
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(body["messages"][1]["content"], USER_PROMPT);
+    }
+
+    #[test]
+    fn user_prompt_embeds_baseline_when_present() {
+        use crate::data_sources::Quote;
+        let baseline = BaselineMarketData {
+            indices: vec![Quote {
+                symbol: "^GSPC".into(),
+                name: "S&P 500".into(),
+                price: 5500.0,
+                change_pct: 0.4,
+            }],
+            ..Default::default()
+        };
+        let prompt = build_user_prompt(&baseline);
+        assert!(prompt.starts_with(USER_PROMPT), "{prompt}");
+        assert!(prompt.contains("^GSPC"), "{prompt}");
+        assert!(prompt.contains("Baseline market data"), "{prompt}");
+    }
+
+    #[test]
+    fn user_prompt_is_bare_when_baseline_empty() {
+        assert_eq!(build_user_prompt(&BaselineMarketData::default()), USER_PROMPT);
     }
 
     #[test]
@@ -559,7 +608,9 @@ mod tests {
     #[ignore = "hits the live provider API; set MARKET_SIGNAL_MAIN_AGENT_MODEL + the provider key"]
     fn live_generate_smoke() {
         let agent = ModelMainAgent::from_env().expect("env configured for a live run");
-        let out = agent.generate(MainAgentInput).expect("live generate");
+        let out = agent
+            .generate(MainAgentInput::default())
+            .expect("live generate");
         assert!(!out.markdown.is_empty());
         assert!((3..=6).contains(&out.summary.header_summary_bullets.len()));
     }

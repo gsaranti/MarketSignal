@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::agent::{MainAgent, MainAgentInput, ReportSummary};
+use crate::data_sources::MarketDataSource;
 use crate::storage::{self, ReportRecord};
 
 /// Filesystem locations a run reads and writes. Injected so tests can point at
@@ -33,10 +34,23 @@ pub struct GeneratedReport {
     pub summary: ReportSummary,
 }
 
-/// Run one manual report end to end: invoke the agent, write the canonical
-/// Markdown file, and persist the record to SQLite.
-pub fn generate_report(agent: &dyn MainAgent, paths: &ReportPaths) -> Result<GeneratedReport> {
-    let output = agent.generate(MainAgentInput)?;
+/// Run one manual report end to end: gather the baseline market-data scan (Step
+/// 6), invoke the agent, write the canonical Markdown file, and persist the
+/// record to SQLite. A failed baseline scan (an unreachable / rejecting data
+/// provider) propagates here, which `jobs::run_job` records as a failed job
+/// (`docs/scheduling.md §Offline Behavior`).
+pub fn generate_report(
+    agent: &dyn MainAgent,
+    data: &dyn MarketDataSource,
+    paths: &ReportPaths,
+) -> Result<GeneratedReport> {
+    // Step 6: baseline market data is gathered before agent reasoning and is not
+    // optional (`docs/weekly-report-workflow.md §Step 6`). The data-source error
+    // propagates unwrapped — like the agent error below — so `jobs::run_job`
+    // persists the provider's own message (e.g. an FMP rejection) as the
+    // failed-job detail rather than a vague outer wrapper.
+    let baseline = data.baseline_scan()?;
+    let output = agent.generate(MainAgentInput { baseline })?;
     let summary = output.summary;
 
     std::fs::create_dir_all(&paths.reports_dir)

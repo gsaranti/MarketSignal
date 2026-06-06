@@ -4,6 +4,9 @@
 //! `job_runs` row and the right side effects, all offline.
 
 use market_signal_temp_lib::agent::{MainAgent, MainAgentInput, MainAgentOutput, StubMainAgent};
+use market_signal_temp_lib::data_sources::{
+    BaselineMarketData, MarketDataSource, StubMarketDataSource,
+};
 use market_signal_temp_lib::jobs::{run_job, JobOutcome, RunGuard};
 use market_signal_temp_lib::pipeline::ReportPaths;
 
@@ -14,6 +17,16 @@ struct FailingAgent;
 impl MainAgent for FailingAgent {
     fn generate(&self, _input: MainAgentInput) -> anyhow::Result<MainAgentOutput> {
         anyhow::bail!("provider unreachable (simulated)")
+    }
+}
+
+/// A data source that always fails, standing in for an unreachable / rejecting
+/// data provider so the Step-6-failure-is-a-job-failure path can be exercised.
+struct FailingDataSource;
+
+impl MarketDataSource for FailingDataSource {
+    fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData> {
+        anyhow::bail!("data provider unreachable (simulated)")
     }
 }
 
@@ -34,7 +47,8 @@ fn successful_run_records_successful_job_and_writes_report() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths_in(dir.path());
 
-    let outcome = run_job(&StubMainAgent, &paths, &RunGuard::default()).unwrap();
+    let outcome =
+        run_job(&StubMainAgent, &StubMarketDataSource, &paths, &RunGuard::default()).unwrap();
 
     match outcome {
         JobOutcome::Successful(report) => assert!(
@@ -57,7 +71,8 @@ fn failing_agent_records_failed_job_and_writes_no_report() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths_in(dir.path());
 
-    let outcome = run_job(&FailingAgent, &paths, &RunGuard::default()).unwrap();
+    let outcome =
+        run_job(&FailingAgent, &StubMarketDataSource, &paths, &RunGuard::default()).unwrap();
 
     match outcome {
         JobOutcome::Failed(msg) => {
@@ -81,6 +96,24 @@ fn failing_agent_records_failed_job_and_writes_no_report() {
 }
 
 #[test]
+fn failing_data_source_records_failed_job_and_writes_no_report() {
+    // Step 6 runs before the agent, so an unreachable data provider fails the job
+    // (`docs/scheduling.md §Offline Behavior`) even with a working agent.
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths_in(dir.path());
+
+    let outcome = run_job(&StubMainAgent, &FailingDataSource, &paths, &RunGuard::default()).unwrap();
+
+    match outcome {
+        JobOutcome::Failed(msg) => {
+            assert!(msg.contains("data provider unreachable"), "detail was: {msg}")
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert_eq!(count(&paths.db_path, "SELECT COUNT(*) FROM reports"), 0);
+}
+
+#[test]
 fn second_run_while_one_is_in_flight_is_skipped() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths_in(dir.path());
@@ -89,7 +122,7 @@ fn second_run_while_one_is_in_flight_is_skipped() {
     // Simulate an in-flight run by holding the single run slot.
     let token = guard.try_begin().expect("first claim succeeds");
 
-    let outcome = run_job(&StubMainAgent, &paths, &guard).unwrap();
+    let outcome = run_job(&StubMainAgent, &StubMarketDataSource, &paths, &guard).unwrap();
     match outcome {
         JobOutcome::Skipped(_) => {}
         other => panic!("expected Skipped, got {other:?}"),
@@ -104,7 +137,7 @@ fn second_run_while_one_is_in_flight_is_skipped() {
 
     // Releasing the slot lets the next run proceed to completion.
     drop(token);
-    let outcome = run_job(&StubMainAgent, &paths, &guard).unwrap();
+    let outcome = run_job(&StubMainAgent, &StubMarketDataSource, &paths, &guard).unwrap();
     assert!(matches!(outcome, JobOutcome::Successful(_)));
     assert_eq!(
         count(&paths.db_path, "SELECT COUNT(*) FROM job_runs WHERE state = 'successful'"),

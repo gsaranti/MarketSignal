@@ -8,6 +8,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::data_sources::BaselineMarketData;
+
 /// The market's risk stance (`docs/storage.md`). Serializes to the canonical
 /// kebab labels (`risk-on`, `risk-off`, `mixed`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,10 +91,14 @@ pub struct ReportSummary {
     pub forward_outlook_themes: Vec<String>,
 }
 
-/// Input handed to the main agent. Minimal for the first slice — the real
-/// condensed research packet arrives with the data-source adapters.
+/// Input handed to the main agent. Carries the Step-6 baseline market-data scan
+/// (`docs/weekly-report-workflow.md §Step 6`), gathered by the application layer
+/// before agent reasoning; the rest of the condensed research packet (news
+/// clusters, deep research, vector memory) joins it as later slices land.
 #[derive(Debug, Clone, Default)]
-pub struct MainAgentInput;
+pub struct MainAgentInput {
+    pub baseline: BaselineMarketData,
+}
 
 /// What the main agent returns: the canonical Markdown body plus the structured
 /// summary. No HTML — agents never see or emit HTML.
@@ -226,7 +232,7 @@ mod tests {
 
     #[test]
     fn stub_populates_required_fields_and_serializes_kebab_labels() {
-        let out = StubMainAgent.generate(MainAgentInput).unwrap();
+        let out = StubMainAgent.generate(MainAgentInput::default()).unwrap();
         let s = &out.summary;
 
         assert!(!s.report_id.is_empty());

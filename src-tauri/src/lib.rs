@@ -1,6 +1,8 @@
 pub mod agent;
 pub mod config;
 pub mod connection_test;
+pub mod data_sources;
+pub mod fmp;
 pub mod jobs;
 pub mod model_agent;
 pub mod pipeline;
@@ -20,6 +22,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use config::{AppConfig, ValidationReport};
 use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
+use fmp::FmpDataSource;
 use model_agent::ModelMainAgent;
 use pipeline::{GeneratedReport, ReportPaths};
 
@@ -135,6 +138,7 @@ async fn generate_report_manual(
         return Err(config::blocked_summary(&report));
     }
     let main_config = cfg.main_agent_config().map_err(|e| e.to_string())?;
+    let fmp_key = cfg.fmp_key().map_err(|e| e.to_string())?;
 
     let paths = report_paths(&app)?;
 
@@ -142,7 +146,8 @@ async fn generate_report_manual(
 
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let agent = ModelMainAgent::new(main_config).map_err(|e| e.to_string())?;
-        run_job(&agent, &paths, &guard).map_err(|e| e.to_string())
+        let data = FmpDataSource::new(fmp_key).map_err(|e| e.to_string())?;
+        run_job(&agent, &data, &paths, &guard).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("report generation task failed: {e}"))??;
@@ -477,16 +482,17 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
 
     // The same pre-run decision the manual command makes, plus the enable flag,
     // as one pure step (`config::decide_scheduled_run`).
-    let main_config = match config::decide_scheduled_run(&cfg, enabled) {
-        config::ScheduledRun::Proceed(main_config) => main_config,
+    let run_config = match config::decide_scheduled_run(&cfg, enabled) {
+        config::ScheduledRun::Proceed(run_config) => run_config,
         config::ScheduledRun::Disabled => return, // expected, quiet no-op
         config::ScheduledRun::Blocked(reason) => return log_scheduler(reason),
     };
 
     let guard = app.state::<RunGuard>().inner().clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let agent = ModelMainAgent::new(main_config).map_err(|e| e.to_string())?;
-        run_job(&agent, &paths, &guard).map_err(|e| e.to_string())
+        let agent = ModelMainAgent::new(run_config.main).map_err(|e| e.to_string())?;
+        let data = FmpDataSource::new(run_config.fmp_api_key).map_err(|e| e.to_string())?;
+        run_job(&agent, &data, &paths, &guard).map_err(|e| e.to_string())
     })
     .await;
 
