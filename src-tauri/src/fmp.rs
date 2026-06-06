@@ -23,6 +23,9 @@
 //! (`docs/scheduling.md §Offline Behavior`). A *per-symbol* failure (a premium
 //! 402, a 404, an error body, an unexpected shape) skips only that symbol so the
 //! rest of the scan still lands; the absent data simply does not reach the agent.
+//! As a floor, a scan that resolves *no* index quotes at all fails rather than
+//! returning an empty baseline — Step 6 is not optional, so a systemic provider
+//! failure (e.g. a rate limit hitting every request) must not look like success.
 
 use std::collections::HashSet;
 use std::time::Duration as StdDuration;
@@ -67,17 +70,18 @@ const INDEX_SYMBOLS: &[(&str, &str)] = &[
 const INTERNAL_SYMBOLS: &[(&str, &str)] = &[("^VIX", "CBOE Volatility Index")];
 
 /// FMP's quote object, trimmed to the fields the baseline needs. `name` is
-/// optional (filled from the local label when absent); the percent-change field
-/// is `changePercentage` on the stable API, with the legacy `changesPercentage`
-/// accepted as an alias.
+/// optional (filled from the local label when absent), but `price` and the
+/// percent change are **required**: a quote missing either fails the parse so the
+/// symbol is skipped rather than reaching the model as a false `0.0`. The change
+/// field is `changePercentage` on the stable API, with the legacy
+/// `changesPercentage` accepted as an alias.
 #[derive(Debug, Deserialize)]
 struct FmpQuoteRaw {
     symbol: String,
     #[serde(default)]
     name: String,
-    #[serde(default)]
     price: f64,
-    #[serde(default, rename = "changePercentage", alias = "changesPercentage")]
+    #[serde(rename = "changePercentage", alias = "changesPercentage")]
     change_pct: f64,
 }
 
@@ -145,13 +149,18 @@ fn parse_sectors(status: u16, body: &str) -> Result<Vec<SectorPerformance>> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        if sector.is_empty() || !seen.insert(sector.clone()) {
+        if sector.is_empty() {
             continue;
         }
-        let change_pct = item
-            .get("averageChange")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
+        // A row without a usable numeric averageChange is dropped, not reported as
+        // a false 0.0 ("flat") move.
+        let change_pct = match item.get("averageChange").and_then(Value::as_f64) {
+            Some(v) => v,
+            None => continue,
+        };
+        if !seen.insert(sector.clone()) {
+            continue;
+        }
         out.push(SectorPerformance { sector, change_pct });
     }
     Ok(out)
@@ -238,8 +247,21 @@ impl FmpDataSource {
 
 impl MarketDataSource for FmpDataSource {
     fn baseline_scan(&self) -> Result<BaselineMarketData> {
+        let indices = self.fetch_quotes(INDEX_SYMBOLS)?;
+        // Completeness floor: per-symbol failures soft-skip, but resolving *no*
+        // index quotes at all means the provider is unreachable, rate-limited, or
+        // returning an unrecognized shape — fail the scan rather than hand the
+        // agent an empty, ungrounded baseline (Step 6 is not optional). Checked on
+        // indices because the report's Index Picture structurally needs them; an
+        // empty VIX or sector list still soft-degrades.
+        if indices.is_empty() {
+            bail!(
+                "FMP baseline scan resolved no index quotes — the data provider is \
+                 unreachable, rate-limited, or returned an unrecognized response"
+            );
+        }
         Ok(BaselineMarketData {
-            indices: self.fetch_quotes(INDEX_SYMBOLS)?,
+            indices,
             internals: self.fetch_quotes(INTERNAL_SYMBOLS)?,
             sectors: self.fetch_sectors()?,
         })
@@ -264,9 +286,23 @@ mod tests {
 
     #[test]
     fn quote_falls_back_to_local_name_when_fmp_omits_it() {
-        let quotes =
-            parse_quotes(200, r#"[{"symbol":"^DJI","price":40000.0}]"#, "Dow Jones").unwrap();
+        let quotes = parse_quotes(
+            200,
+            r#"[{"symbol":"^DJI","price":40000.0,"changePercentage":0.1}]"#,
+            "Dow Jones",
+        )
+        .unwrap();
         assert_eq!(quotes[0].name, "Dow Jones");
+    }
+
+    #[test]
+    fn quote_missing_a_required_numeric_is_an_error() {
+        // A required field absent (schema drift / partial response) fails the parse
+        // so fetch_quotes skips the symbol rather than reporting a false 0.0.
+        let no_price = parse_quotes(200, r#"[{"symbol":"^GSPC","changePercentage":0.4}]"#, "x");
+        assert!(no_price.is_err(), "missing price should error");
+        let no_change = parse_quotes(200, r#"[{"symbol":"^GSPC","price":5500.0}]"#, "x");
+        assert!(no_change.is_err(), "missing changePercentage should error");
     }
 
     #[test]
@@ -332,6 +368,18 @@ mod tests {
         let sectors = parse_sectors(200, body).unwrap();
         assert_eq!(sectors.len(), 1);
         assert!((sectors[0].change_pct - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sector_row_missing_average_change_is_skipped() {
+        // A row without a usable averageChange is dropped, not zeroed to "flat".
+        let body = r#"[
+            {"sector":"Technology","exchange":"NASDAQ","averageChange":1.5},
+            {"sector":"Energy","exchange":"NASDAQ"}
+        ]"#;
+        let sectors = parse_sectors(200, body).unwrap();
+        assert_eq!(sectors.len(), 1);
+        assert_eq!(sectors[0].sector, "Technology");
     }
 
     #[test]
