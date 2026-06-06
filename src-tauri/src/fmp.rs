@@ -18,17 +18,19 @@
 //! `{"Error Message": ...}` body) are the same ones `connection_test` verified
 //! live (Jun 2026).
 //!
-//! Degradation policy. Disposition is decided by status first (`classify_status`),
-//! with an explicit *skip allowlist* — only a premium-gated (402) or not-found (404)
-//! symbol is a legitimate per-symbol absence. Everything else resolves to:
+//! Degradation policy. The guiding rule: **skip only when FMP explicitly signals an
+//! absence; fail on anything we can't understand.** Disposition is decided by status
+//! first (`classify_status`), with an explicit *skip allowlist*.
 //! - **Fatal** — auth (401/403); a systemic failure (a 429 rate limit, a 5xx, or a
 //!   200 `{"Error Message"}` body — FMP's rate-limit / plan signal); a request-contract
 //!   error (400/408/422/any other non-2xx), so a broken request fails loudly instead
-//!   of vanishing into empty data; or a transport error. The whole scan fails, which
-//!   `jobs::run_job` records as a failed job (`docs/scheduling.md §Offline Behavior`).
-//! - **Per-symbol skip** — a 402/404 (or, on a 2xx, an unexpected shape): the provider
-//!   works but this one symbol is unavailable, so it is skipped and the rest lands.
-//!   (A per-symbol "no data" is an empty array, never an error object.)
+//!   of vanishing into empty data; a **malformed 2xx body** that won't parse into the
+//!   expected shape (a contract violation, distinct from an empty "no data" array); or
+//!   a transport error. The whole scan fails, which `jobs::run_job` records as a failed
+//!   job (`docs/scheduling.md §Offline Behavior`).
+//! - **Per-symbol skip** — a 402 (premium) or 404 (not found): FMP explicitly signals
+//!   this one symbol is absent, so it is skipped and the rest of the scan lands. An
+//!   empty "no data" array likewise contributes nothing but is not an error.
 //! - **Floor** — even with skips, a scan that resolves *no* index quotes at all fails
 //!   rather than returning an empty baseline (Step 6 is not optional).
 
@@ -279,9 +281,16 @@ impl FmpDataSource {
                              failing the scan rather than returning a partial baseline"
                         );
                     }
-                    if let Ok(quotes) = parse_quotes(status, &body, fallback_name) {
-                        out.extend(quotes);
-                    }
+                    // A 2xx that won't parse into quotes is a contract violation, not a
+                    // legitimate absence (which is an empty array) — fail rather than
+                    // silently dropping the symbol and hiding schema drift.
+                    let quotes = parse_quotes(status, &body, fallback_name).with_context(|| {
+                        format!(
+                            "Financial Modeling Prep returned an unparseable quote for {symbol} \
+                             (HTTP {status}) — failing the scan rather than dropping it silently"
+                        )
+                    })?;
+                    out.extend(quotes);
                 }
             }
         }
@@ -319,10 +328,16 @@ impl FmpDataSource {
                              failing the scan rather than returning a partial baseline"
                         );
                     }
-                    if let Ok(sectors) = parse_sectors(status, &body) {
-                        if !sectors.is_empty() {
-                            return Ok(sectors);
-                        }
+                    // A 2xx that won't parse is a contract violation -> fatal; an empty
+                    // array is just "no snapshot for this date" -> try the prior day.
+                    let sectors = parse_sectors(status, &body).with_context(|| {
+                        format!(
+                            "Financial Modeling Prep returned an unparseable sector snapshot for \
+                             {date} (HTTP {status}) — failing the scan rather than masking it"
+                        )
+                    })?;
+                    if !sectors.is_empty() {
+                        return Ok(sectors);
                     }
                 }
             }
@@ -383,8 +398,9 @@ mod tests {
 
     #[test]
     fn quote_missing_a_required_numeric_is_an_error() {
-        // A required field absent (schema drift / partial response) fails the parse
-        // so fetch_quotes skips the symbol rather than reporting a false 0.0.
+        // A required field absent (schema drift / partial response) fails the parse,
+        // which fetch_quotes treats as a fatal contract violation — neither a false
+        // 0.0 nor a silent per-symbol skip.
         let no_price = parse_quotes(200, r#"[{"symbol":"^GSPC","changePercentage":0.4}]"#, "x");
         assert!(no_price.is_err(), "missing price should error");
         let no_change = parse_quotes(200, r#"[{"symbol":"^GSPC","price":5500.0}]"#, "x");
