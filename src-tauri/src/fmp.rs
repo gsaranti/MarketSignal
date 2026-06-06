@@ -19,14 +19,16 @@
 //! live (Jun 2026).
 //!
 //! Degradation policy. Three classes of failure, by blast radius:
-//! - **Fatal** — an auth failure (401/403), a *systemic* failure (a 429 rate limit
-//!   or a 5xx, which will hit every request), or a transport error. The whole scan
-//!   fails, which `jobs::run_job` records as a failed job (`docs/scheduling.md
-//!   §Offline Behavior`). A mid-scan rate limit must not pass as a "successful"
-//!   report missing most of its data.
-//! - **Per-symbol skip** — a premium 402, a 404, an error body, or an unexpected
-//!   shape: the provider works but this one symbol is unavailable, so it is skipped
-//!   and the rest of the scan still lands.
+//! - **Fatal** — an auth failure (401/403); a *systemic* failure (a 429 rate limit,
+//!   a 5xx, or a 200 `{"Error Message"}` body — FMP's rate-limit / plan signal —
+//!   each of which hits every request); or a transport error. The whole scan fails,
+//!   which `jobs::run_job` records as a failed job (`docs/scheduling.md §Offline
+//!   Behavior`); a mid-scan rate limit must not pass as a "successful" report
+//!   missing most of its data.
+//! - **Per-symbol skip** — a premium 402, a 404, or an unexpected shape: the
+//!   provider works but this one symbol is unavailable, so it is skipped and the
+//!   rest of the scan still lands. (Per-symbol "no data" is an empty array, never an
+//!   error object — so an error body is treated as fatal above, not skipped here.)
 //! - **Floor** — even with per-symbol skips, a scan that resolves *no* index quotes
 //!   at all fails rather than returning an empty baseline (Step 6 is not optional).
 
@@ -104,23 +106,31 @@ fn is_systemic_failure(status: u16) -> bool {
     status == 429 || (500..600).contains(&status)
 }
 
-/// FMP's error detection for a body that should be a JSON array on success: any
-/// non-2xx is an error, and a 200 body that is an `{"Error Message": ...}` object
-/// is an error too (FMP's premium / rate-limit conditions return this, sometimes
-/// alongside a 402). On success returns the parsed JSON value for the caller to
-/// shape. Auth failures (401/403) surface as errors here as well, but callers
-/// check `is_auth_failure` *first* because auth is fatal, not skippable.
+/// FMP signals account / request-level errors (rate limit, plan, bad request) as a
+/// 200 body that is an `{"Error Message": ...}` object — distinct from a 200 *array*
+/// (real data, possibly an empty `[]` for "no data"). Because a per-symbol absence
+/// is an empty array, never an error object, any such body is an abnormal,
+/// scan-level condition the caller treats as **fatal** — not a skippable per-symbol
+/// miss. Returns the message when present so the failure carries FMP's own wording.
+/// (We don't string-match the message: rate-limit vs plan vs bad-request all warrant
+/// failing the scan rather than silently producing a partial baseline.)
+fn fmp_error_message(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()?
+        .get("Error Message")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Parse an FMP body that should be a JSON array on success. Any non-2xx is an
+/// error; the 200-`Error Message` case is handled by the caller via
+/// `fmp_error_message` (it is fatal, not a parse failure). Auth (401/403) is also a
+/// non-2xx here, but callers check `is_auth_failure` *first* because auth is fatal.
 fn fmp_json(status: u16, body: &str) -> Result<Value> {
     if !(200..300).contains(&status) {
         bail!("Financial Modeling Prep returned HTTP {status}");
     }
-    let value: Value = serde_json::from_str(body).context("parsing FMP response JSON")?;
-    if let Value::Object(map) = &value {
-        if let Some(msg) = map.get("Error Message") {
-            bail!("Financial Modeling Prep returned an error: {msg}");
-        }
-    }
-    Ok(value)
+    serde_json::from_str(body).context("parsing FMP response JSON")
 }
 
 /// Map an FMP quote response (a single-symbol `/stable/quote` call returns a
@@ -236,6 +246,12 @@ impl FmpDataSource {
                      rather than returning a partial baseline"
                 );
             }
+            if let Some(msg) = fmp_error_message(&body) {
+                bail!(
+                    "Financial Modeling Prep returned an error response (\"{msg}\") — failing \
+                     the scan rather than returning a partial baseline"
+                );
+            }
             match parse_quotes(status, &body, fallback_name) {
                 Ok(quotes) => out.extend(quotes),
                 Err(_) => continue,
@@ -261,6 +277,12 @@ impl FmpDataSource {
                 bail!(
                     "Financial Modeling Prep is failing (HTTP {status}) — failing the scan \
                      rather than returning a partial baseline"
+                );
+            }
+            if let Some(msg) = fmp_error_message(&body) {
+                bail!(
+                    "Financial Modeling Prep returned an error response (\"{msg}\") — failing \
+                     the scan rather than returning a partial baseline"
                 );
             }
             if let Ok(sectors) = parse_sectors(status, &body) {
@@ -373,11 +395,20 @@ mod tests {
     }
 
     #[test]
-    fn quote_200_with_error_message_is_an_error() {
-        // The case a status-only check misses: HTTP 200, error in the body.
-        let body = r#"{"Error Message":"Invalid API KEY. Please retry or visit our documentation"}"#;
-        let err = parse_quotes(200, body, "x").unwrap_err();
-        assert!(err.to_string().contains("error"), "{err}");
+    fn error_message_body_is_detected_so_the_loop_can_fail_fatally() {
+        // FMP's rate-limit / plan signal: HTTP 200 with an {"Error Message"} object.
+        // Detected so the fetch loop fails the scan instead of soft-skipping it.
+        let body = r#"{"Error Message":"Limit Reach. Please upgrade your plan or visit our documentation."}"#;
+        assert_eq!(
+            fmp_error_message(body).as_deref(),
+            Some("Limit Reach. Please upgrade your plan or visit our documentation.")
+        );
+        // A normal array — including the empty "no data" array — is data, not an
+        // error, so it is never misread as a fatal condition.
+        assert!(
+            fmp_error_message(r#"[{"symbol":"^GSPC","price":1.0,"changePercentage":0.1}]"#).is_none()
+        );
+        assert!(fmp_error_message("[]").is_none());
     }
 
     #[test]
