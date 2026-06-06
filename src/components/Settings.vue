@@ -347,8 +347,9 @@ function credDirty(key: CredKey): boolean {
           <section class="settings-section" aria-labelledby="sec-creds">
             <h3 id="sec-creds" class="section-eyebrow">Data provider credentials</h3>
             <p class="section-note">
-              Both are required to run a job. FRED, BLS, and GDELT are public and
-              need no credential.
+              Both are required to run a job. BLS and GDELT need no credential.
+              FRED requires a free API key and will be added here when its data
+              adapter lands.
             </p>
             <div v-for="field in credentialFields" :key="field.key" class="field">
               <label class="label" :for="`cred-${field.key}`">{{ field.label }}</label>

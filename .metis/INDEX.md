@@ -26,7 +26,7 @@
 - Settings overview — configuration.md §Settings Overview; interface.md (Settings tree)
 - Agent model selection (default = none selected) — configuration.md §Agent Model Configuration
 - API tokens (OpenAI, Anthropic) — configuration.md §API Tokens; data-sources.md §LLM Providers
-- External data provider credentials (FMP + Tavily required; public FRED/BLS/GDELT) — configuration.md §External Data Provider Credentials; data-sources.md
+- External data provider credentials (FMP + Tavily required; FRED needs a free API key; BLS/GDELT keyless) — configuration.md §External Data Provider Credentials; data-sources.md
 - Execution gate / pre-run validation — configuration.md; scheduling.md §Job Controls; weekly-report-workflow.md §Step 1
 
 ## Scheduling & runtime

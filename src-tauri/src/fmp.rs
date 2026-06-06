@@ -18,14 +18,17 @@
 //! `{"Error Message": ...}` body) are the same ones `connection_test` verified
 //! live (Jun 2026).
 //!
-//! Degradation policy: an auth failure (401/403) or a transport error is fatal —
-//! the whole scan fails, which `jobs::run_job` records as a failed job
-//! (`docs/scheduling.md §Offline Behavior`). A *per-symbol* failure (a premium
-//! 402, a 404, an error body, an unexpected shape) skips only that symbol so the
-//! rest of the scan still lands; the absent data simply does not reach the agent.
-//! As a floor, a scan that resolves *no* index quotes at all fails rather than
-//! returning an empty baseline — Step 6 is not optional, so a systemic provider
-//! failure (e.g. a rate limit hitting every request) must not look like success.
+//! Degradation policy. Three classes of failure, by blast radius:
+//! - **Fatal** — an auth failure (401/403), a *systemic* failure (a 429 rate limit
+//!   or a 5xx, which will hit every request), or a transport error. The whole scan
+//!   fails, which `jobs::run_job` records as a failed job (`docs/scheduling.md
+//!   §Offline Behavior`). A mid-scan rate limit must not pass as a "successful"
+//!   report missing most of its data.
+//! - **Per-symbol skip** — a premium 402, a 404, an error body, or an unexpected
+//!   shape: the provider works but this one symbol is unavailable, so it is skipped
+//!   and the rest of the scan still lands.
+//! - **Floor** — even with per-symbol skips, a scan that resolves *no* index quotes
+//!   at all fails rather than returning an empty baseline (Step 6 is not optional).
 
 use std::collections::HashSet;
 use std::time::Duration as StdDuration;
@@ -89,6 +92,16 @@ struct FmpQuoteRaw {
 /// key itself is bad), as opposed to a per-symbol data issue that is skippable.
 fn is_auth_failure(status: u16) -> bool {
     status == 401 || status == 403
+}
+
+/// Whether a status signals a *systemic* provider failure — a rate limit (429) or
+/// a server error (5xx) — that will affect every request, not just this symbol.
+/// Fatal like auth: the scan fails rather than soft-degrading to partial data,
+/// which would otherwise let a mid-scan rate limit pass as a "successful" report
+/// missing most of its data. Distinct from a per-symbol absence (402 premium, 404)
+/// where the provider works but this one symbol is unavailable.
+fn is_systemic_failure(status: u16) -> bool {
+    status == 429 || (500..600).contains(&status)
 }
 
 /// FMP's error detection for a body that should be a JSON array on success: any
@@ -205,15 +218,23 @@ impl FmpDataSource {
         Ok((status, body))
     }
 
-    /// Fetch one quote per symbol. An auth failure is fatal (the key is bad); any
-    /// other per-symbol failure (premium 402, 404, error body, unexpected shape)
-    /// skips just that symbol so the rest of the scan still lands.
+    /// Fetch one quote per symbol. Auth (401/403) and systemic failures (429/5xx)
+    /// are fatal — the key is bad or the provider is failing for every request, so
+    /// the scan fails rather than returning partial data. Any other per-symbol
+    /// failure (premium 402, 404, error body, unexpected shape) skips just that
+    /// symbol so the rest of the scan still lands.
     fn fetch_quotes(&self, symbols: &[(&str, &str)]) -> Result<Vec<Quote>> {
         let mut out = Vec::with_capacity(symbols.len());
         for (symbol, fallback_name) in symbols {
             let (status, body) = self.get(FMP_QUOTE_URL, &[("symbol", symbol)])?;
             if is_auth_failure(status) {
                 bail!("Financial Modeling Prep rejected the key (HTTP {status})");
+            }
+            if is_systemic_failure(status) {
+                bail!(
+                    "Financial Modeling Prep is failing (HTTP {status}) — failing the scan \
+                     rather than returning a partial baseline"
+                );
             }
             match parse_quotes(status, &body, fallback_name) {
                 Ok(quotes) => out.extend(quotes),
@@ -224,9 +245,10 @@ impl FmpDataSource {
     }
 
     /// Fetch the most recent sector-performance snapshot, walking back from today
-    /// to the last trading day that has data (weekends / holidays have none). An
-    /// auth failure is fatal; if no day in the window has a snapshot, the scan
-    /// soft-degrades to no sector data rather than failing.
+    /// to the last trading day that has data (weekends / holidays have none). Auth
+    /// (401/403) and systemic failures (429/5xx) are fatal — walking back through
+    /// more dates would just repeat a rate limit or outage; if no day in the window
+    /// has a snapshot, the scan soft-degrades to no sector data rather than failing.
     fn fetch_sectors(&self) -> Result<Vec<SectorPerformance>> {
         let today = Utc::now().date_naive();
         for back in 0..=SECTOR_LOOKBACK_DAYS {
@@ -234,6 +256,12 @@ impl FmpDataSource {
             let (status, body) = self.get(FMP_SECTOR_URL, &[("date", date.as_str())])?;
             if is_auth_failure(status) {
                 bail!("Financial Modeling Prep rejected the key (HTTP {status})");
+            }
+            if is_systemic_failure(status) {
+                bail!(
+                    "Financial Modeling Prep is failing (HTTP {status}) — failing the scan \
+                     rather than returning a partial baseline"
+                );
             }
             if let Ok(sectors) = parse_sectors(status, &body) {
                 if !sectors.is_empty() {
@@ -327,6 +355,21 @@ mod tests {
         assert!(is_auth_failure(403));
         assert!(!is_auth_failure(402)); // premium is per-symbol skippable, not fatal
         assert!(!is_auth_failure(200));
+    }
+
+    #[test]
+    fn systemic_failures_are_classified_fatal() {
+        // A rate limit or server error affects every request, so the scan fails
+        // rather than soft-degrading to partial data...
+        assert!(is_systemic_failure(429));
+        assert!(is_systemic_failure(500));
+        assert!(is_systemic_failure(503));
+        // ...whereas a per-symbol absence (premium / not-found) only skips that one,
+        // and auth is handled separately by is_auth_failure.
+        assert!(!is_systemic_failure(402));
+        assert!(!is_systemic_failure(404));
+        assert!(!is_systemic_failure(401));
+        assert!(!is_systemic_failure(200));
     }
 
     #[test]
