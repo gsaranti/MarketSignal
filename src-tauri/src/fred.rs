@@ -12,6 +12,15 @@
 //! there — FRED's former gold benchmark series were removed, so this adapter owns no
 //! gold series.)
 //!
+//! It also owns the Step-6 **macro levels** group (`macro_levels`): the Fed-funds
+//! target range as the policy-stance proxy (futures-implied expectations aren't on
+//! FRED's free tier, and no other data source supplies them free), the 5y / 10y
+//! inflation breakevens, U. Michigan consumer sentiment, and the PCE price index.
+//! These are point-in-time levels reusing the same observations machinery, kept in a
+//! group distinct from the market internals. Daily series (target range, breakevens)
+//! report a day-over-day `change_pct`; monthly series (sentiment, PCE), month-over-
+//! month.
+//!
 //! Like `fmp`, the HTTP call is synchronous (`reqwest::blocking`) so the trait
 //! stays sync; the blocking work is offloaded via `spawn_blocking` at the Tauri
 //! command seam. The key rides as a query param (`api_key`), FRED's required
@@ -51,12 +60,29 @@ const OBSERVATION_LIMIT: &str = "10";
 /// The FRED-owned market internals of the Step-6 baseline (`docs/weekly-report
 /// -workflow.md §Step 6`), paired with a display name. Each is a free FRED daily
 /// series; the FRED `series_id` doubles as the quote `symbol`.
-const SERIES: &[(&str, &str)] = &[
+const INTERNALS_SERIES: &[(&str, &str)] = &[
     ("DGS2", "2-Year Treasury Yield"),
     ("DGS10", "10-Year Treasury Yield"),
     ("DTWEXBGS", "US Dollar Index (Broad)"),
     ("DCOILWTICO", "WTI Crude Oil"),
     ("DHHNGSP", "Henry Hub Natural Gas"),
+];
+
+/// The FRED-owned macro levels of the Step-6 baseline (`docs/weekly-report
+/// -workflow.md §Step 6`, the "Macro" group): the Fed-funds target range as the
+/// policy-stance proxy (futures-implied expectations aren't on FRED's free tier),
+/// the 5y / 10y inflation breakevens, U. Michigan consumer sentiment, and the PCE
+/// price index. Mixed daily (target range, breakevens) and monthly (sentiment, PCE)
+/// series; the `change_pct` math reads day-over-day or month-over-month accordingly.
+/// Same `(series_id, display name)` shape as the internals — the `series_id` doubles
+/// as the quote `symbol`.
+const MACRO_SERIES: &[(&str, &str)] = &[
+    ("DFEDTARU", "Fed Funds Target Range — Upper Limit"),
+    ("DFEDTARL", "Fed Funds Target Range — Lower Limit"),
+    ("T5YIE", "5-Year Breakeven Inflation Rate"),
+    ("T10YIE", "10-Year Breakeven Inflation Rate"),
+    ("UMCSENT", "U. Michigan Consumer Sentiment"),
+    ("PCEPI", "PCE Price Index"),
 ];
 
 /// FRED's observations response, trimmed to the one field the baseline needs. Each
@@ -176,6 +202,37 @@ fn observations_to_quote(value: Value, symbol: &str, name: &str) -> Result<Optio
     }))
 }
 
+/// Per-group completeness floor for the FRED scan. Each Step-6 group FRED owns — the
+/// market `internals` and the `macro_levels` — is non-optional, so an **empty group**
+/// fails the scan rather than handing the agent an incomplete baseline. This is
+/// distinct from a single absent series, which soft-skips (the gold lesson): a whole
+/// group coming back empty means the provider is unreachable, rate-limited, the key is
+/// bad, the response is unrecognized, or an entire series set was discontinued at once
+/// — none of which should pass silently. Each group is checked independently, so a
+/// resolved sibling group cannot paper over an empty one (mirrors `fmp`'s floor on its
+/// required `indices` group, and keeps the runtime in step with the smoke, which
+/// asserts both groups resolve).
+///
+/// Pure, so the floor is unit-testable without an HTTP round-trip — the live scan is
+/// otherwise exercised only by the ignored smoke.
+fn check_completeness(internals: &[Quote], macro_levels: &[Quote]) -> Result<()> {
+    if internals.is_empty() {
+        bail!(
+            "FRED baseline scan resolved no market-internals series (Treasury yields, \
+             dollar index, oil, natural gas) — the data provider is unreachable, \
+             rate-limited, or returned an unrecognized response"
+        );
+    }
+    if macro_levels.is_empty() {
+        bail!(
+            "FRED baseline scan resolved no macro-levels series (Fed-funds target range, \
+             inflation breakevens, consumer sentiment, PCE) — the data provider is \
+             unreachable, rate-limited, or returned an unrecognized response"
+        );
+    }
+    Ok(())
+}
+
 /// Live FRED adapter behind the `MarketDataSource` trait.
 pub struct FredDataSource {
     api_key: String,
@@ -219,14 +276,15 @@ impl FredDataSource {
         Ok((status, body))
     }
 
-    /// Fetch one quote per FRED series. `interpret_response` decides each response:
-    /// a "does not exist" 400 (or an all-gap series) skips just that series; an
-    /// `api_key` / systemic / unrecognized response fails the whole scan; a 2xx is
-    /// shaped into a quote. So the rest of the scan lands around a legitimately
-    /// absent series, but anything we can't understand fails loudly.
-    fn fetch_series(&self) -> Result<Vec<Quote>> {
-        let mut out = Vec::with_capacity(SERIES.len());
-        for (series_id, name) in SERIES {
+    /// Fetch one quote per FRED series in `series`. `interpret_response` decides each
+    /// response: a "does not exist" 400 (or an all-gap series) skips just that series;
+    /// an `api_key` / systemic / unrecognized response fails the whole scan; a 2xx is
+    /// shaped into a quote. So the rest of the scan lands around a legitimately absent
+    /// series, but anything we can't understand fails loudly. Shared by the internals
+    /// and macro-levels groups, which differ only in their series list.
+    fn fetch_series(&self, series: &[(&str, &str)]) -> Result<Vec<Quote>> {
+        let mut out = Vec::with_capacity(series.len());
+        for (series_id, name) in series {
             let (status, body) = self.get(series_id)?;
             if let Some(value) = interpret_response(status, &body)? {
                 if let Some(quote) = observations_to_quote(value, series_id, name)? {
@@ -240,23 +298,19 @@ impl FredDataSource {
 
 impl MarketDataSource for FredDataSource {
     fn baseline_scan(&self) -> Result<BaselineMarketData> {
-        let internals = self.fetch_series()?;
-        // Completeness floor: per-series absences soft-skip, but resolving *no*
-        // series at all means the provider is unreachable, rate-limited, the key is
-        // bad, or the response shape is unrecognized — fail the scan rather than
-        // hand the agent an empty FRED contribution (Step 6 is not optional). FRED
-        // owns only the internals group, so indices / sectors are left empty for
-        // the composite to fill from FMP.
-        if internals.is_empty() {
-            bail!(
-                "FRED baseline scan resolved no series — the data provider is unreachable, \
-                 rate-limited, or returned an unrecognized response"
-            );
-        }
+        let internals = self.fetch_series(INTERNALS_SERIES)?;
+        let macro_levels = self.fetch_series(MACRO_SERIES)?;
+        // Each group FRED owns is a non-optional Step-6 group, so an empty group fails
+        // the scan (`check_completeness`) rather than handing the agent an incomplete
+        // baseline. An individual renamed series still soft-skips (the gold lesson) and
+        // surfaces as a missing row in the smoke. FRED owns the internals + macro
+        // groups; indices / sectors are left empty for the composite to fill from FMP.
+        check_completeness(&internals, &macro_levels)?;
         Ok(BaselineMarketData {
             indices: Vec::new(),
             internals,
             sectors: Vec::new(),
+            macro_levels,
         })
     }
 }
@@ -386,6 +440,32 @@ mod tests {
     }
 
     #[test]
+    fn check_completeness_requires_each_group_nonempty() {
+        let q = |s: &str| Quote {
+            symbol: s.into(),
+            name: s.into(),
+            price: 1.0,
+            change_pct: 0.0,
+        };
+        let internals = [q("DGS10")];
+        let macro_levels = [q("DFEDTARU")];
+
+        // Both groups present -> ok.
+        assert!(check_completeness(&internals, &macro_levels).is_ok());
+
+        // Each non-optional group has its own floor: a resolved sibling group must not
+        // paper over an empty one (the regression the earlier `&&` floor introduced),
+        // and the error names which group is missing.
+        let err = check_completeness(&[], &macro_levels).unwrap_err().to_string();
+        assert!(err.contains("market-internals"), "{err}");
+        let err = check_completeness(&internals, &[]).unwrap_err().to_string();
+        assert!(err.contains("macro-levels"), "{err}");
+
+        // Both empty -> still fails (internals checked first).
+        assert!(check_completeness(&[], &[]).is_err());
+    }
+
+    #[test]
     #[ignore = "hits the live FRED API; set FRED_API_KEY"]
     fn fred_baseline_smoke() {
         let src = FredDataSource::from_env().expect("FRED_API_KEY set");
@@ -395,15 +475,32 @@ mod tests {
         // back (run with `-- --ignored --nocapture`); the offline tests can only
         // check fixture shapes, not the live series — this is where a removed or
         // renamed series id surfaces (the lesson of the original gold id, since
-        // moved to FMP). A per-series absence soft-skips; the floor catches a
-        // wholesale failure.
-        eprintln!("internals ({}):", data.internals.len());
-        for q in &data.internals {
-            eprintln!(
-                "  {:<20} {:<28} price={:<12} change_pct={}",
-                q.symbol, q.name, q.price, q.change_pct
-            );
-        }
-        assert!(!data.internals.is_empty(), "no FRED series resolved");
+        // moved to FMP).
+        let dump = |label: &str, quotes: &[Quote]| {
+            eprintln!("{label} ({}):", quotes.len());
+            for q in quotes {
+                eprintln!(
+                    "  {:<20} {:<34} price={:<12} change_pct={}",
+                    q.symbol, q.name, q.price, q.change_pct
+                );
+            }
+        };
+        dump("internals", &data.internals);
+        dump("macro_levels", &data.macro_levels);
+
+        // Both groups are non-optional Step-6 baseline data. Assert each resolves in
+        // full so a silently dropped (renamed / discontinued) series fails the smoke
+        // loudly rather than thinning the baseline unnoticed — the per-symbol-assert
+        // discipline `fmp_baseline_smoke` uses for its free-tier-sensitive symbols.
+        assert_eq!(
+            data.internals.len(),
+            INTERNALS_SERIES.len(),
+            "an internals series did not resolve"
+        );
+        assert_eq!(
+            data.macro_levels.len(),
+            MACRO_SERIES.len(),
+            "a macro series did not resolve"
+        );
     }
 }

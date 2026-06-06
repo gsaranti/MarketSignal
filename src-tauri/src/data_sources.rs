@@ -4,17 +4,18 @@
 //! data source is a trait the orchestrator drives, and a deterministic stub
 //! stands in for the live provider in offline tests. Two real adapters implement
 //! this trait — `fmp` (equity indices, VIX, gold, sectors) and `fred` (the Treasury
-//! yields, dollar index, and the oil / natural-gas internals FMP's free tier omits)
-//! — and the `CompositeMarketDataSource` below runs both and merges them into one
-//! baseline.
+//! yields, dollar index, and oil / natural-gas internals FMP's free tier omits, plus
+//! the `macro_levels` group — Fed-funds target range, inflation breakevens, consumer
+//! sentiment, PCE) — and the `CompositeMarketDataSource` below runs both and merges
+//! them into one baseline.
 //!
 //! `BaselineMarketData` is the Step-6 baseline scan
 //! (`docs/weekly-report-workflow.md §Step 6`), gathered before agent reasoning.
 //! FMP fills indices, sectors, and the VIX + gold internals; FRED appends its
-//! series to the same `internals` group. The remaining Step-6 macro group (Fed
-//! expectations,
-//! the CPI / PCE / jobs calendar, inflation expectations, consumer confidence) and
-//! BLS labor data are a later slice.
+//! commodity / yield series to the same `internals` group and fills the
+//! `macro_levels` group (Fed-funds target range, inflation breakevens, consumer
+//! sentiment, PCE). The remaining Step-6 macro items — the CPI / PCE / jobs release
+//! calendar and BLS labor data — are a later slice.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +45,12 @@ pub struct BaselineMarketData {
     pub indices: Vec<Quote>,
     pub internals: Vec<Quote>,
     pub sectors: Vec<SectorPerformance>,
+    /// Step-6 macro levels (Fed-funds target range, inflation breakevens, consumer
+    /// sentiment, PCE) — point-in-time FRED series, kept distinct from the market
+    /// `internals`. Same `Quote` shape: `price` is the latest level and `change_pct`
+    /// its change from the prior observation (day-over-day for daily series,
+    /// month-over-month for monthly).
+    pub macro_levels: Vec<Quote>,
 }
 
 /// The data-source stage. One method: gather the required baseline scan. Sync,
@@ -91,6 +98,12 @@ impl MarketDataSource for StubMarketDataSource {
                     change_pct: -0.8,
                 },
             ],
+            macro_levels: vec![Quote {
+                symbol: "DFEDTARU".into(),
+                name: "Fed Funds Target Range — Upper Limit".into(),
+                price: 4.5,
+                change_pct: 0.0,
+            }],
         })
     }
 }
@@ -122,6 +135,7 @@ impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
         merged.indices.extend(extra.indices);
         merged.internals.extend(extra.internals);
         merged.sectors.extend(extra.sectors);
+        merged.macro_levels.extend(extra.macro_levels);
         Ok(merged)
     }
 }
@@ -130,14 +144,19 @@ impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
 mod tests {
     use super::*;
 
-    /// A stub that contributes only `internals` — the shape `fred::FredDataSource`
-    /// returns, so the composite merge can be exercised offline.
-    struct InternalsOnlyStub(Vec<Quote>);
+    /// A stub shaped like `fred::FredDataSource` — it contributes `internals` and
+    /// `macro_levels` (the two groups FRED owns), so the composite merge can be
+    /// exercised offline.
+    struct FredShapedStub {
+        internals: Vec<Quote>,
+        macro_levels: Vec<Quote>,
+    }
 
-    impl MarketDataSource for InternalsOnlyStub {
+    impl MarketDataSource for FredShapedStub {
         fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData> {
             Ok(BaselineMarketData {
-                internals: self.0.clone(),
+                internals: self.internals.clone(),
+                macro_levels: self.macro_levels.clone(),
                 ..Default::default()
             })
         }
@@ -163,10 +182,14 @@ mod tests {
 
     #[test]
     fn composite_merges_both_sources_into_one_baseline() {
-        // Primary (FMP-shaped) carries indices + a VIX internal + sectors; the
-        // secondary (FRED-shaped) adds two more internals. The merge keeps every
-        // group and orders the internals primary-first.
-        let fred = InternalsOnlyStub(vec![quote("DGS10"), quote("DTWEXBGS")]);
+        // Primary (FMP-shaped) carries indices + a VIX internal + sectors + one macro
+        // level (the stub's DFEDTARU); the secondary (FRED-shaped) adds two more
+        // internals and a macro level. The merge keeps every group and orders each
+        // primary-first.
+        let fred = FredShapedStub {
+            internals: vec![quote("DGS10"), quote("DTWEXBGS")],
+            macro_levels: vec![quote("T10YIE")],
+        };
         let composite = CompositeMarketDataSource::new(StubMarketDataSource, fred);
         let data = composite.baseline_scan().unwrap();
 
@@ -177,6 +200,10 @@ mod tests {
         assert_eq!(data.internals[0].symbol, "^VIX");
         assert_eq!(data.internals[1].symbol, "DGS10");
         assert_eq!(data.internals[2].symbol, "DTWEXBGS");
+        // macro_levels merges primary-first too: the stub's DFEDTARU, then FRED's.
+        assert_eq!(data.macro_levels.len(), 2);
+        assert_eq!(data.macro_levels[0].symbol, "DFEDTARU");
+        assert_eq!(data.macro_levels[1].symbol, "T10YIE");
     }
 
     #[test]
@@ -193,6 +220,7 @@ mod tests {
         assert!(!data.indices.is_empty());
         assert!(!data.internals.is_empty());
         assert!(!data.sectors.is_empty());
+        assert!(!data.macro_levels.is_empty());
 
         // The whole packet serializes and parses back unchanged — the contract
         // the agent input and the model prompt both lean on.

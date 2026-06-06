@@ -278,6 +278,8 @@ impl MarketDataSource for FmpDataSource {
             indices,
             internals: self.fetch_quotes(INTERNAL_SYMBOLS)?,
             sectors: self.fetch_sectors()?,
+            // FRED owns the macro levels; FMP contributes none.
+            macro_levels: Vec::new(),
         })
     }
 }
