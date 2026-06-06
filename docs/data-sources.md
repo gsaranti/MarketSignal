@@ -4,7 +4,7 @@ This file lists the external data and model providers the application depends on
 
 ## Market and Financial Data
 
-The application accesses market and financial data by calling provider REST APIs directly from the Rust backend (`reqwest`/`serde`). **Financial Modeling Prep** is the primary financial-data source; **FRED** and **BLS** supply macroeconomic and labor data through their public APIs.
+The application accesses market and financial data by calling provider REST APIs directly from the Rust backend (`reqwest`/`serde`). **Financial Modeling Prep** is the primary financial-data source, supplying equity-market data — indices, volatility, sector performance, and company financials. **FRED** and **BLS** supply macroeconomic and labor data through their public APIs; FRED additionally provides the US dollar index, commodity prices (oil, natural gas, gold), and Treasury yields.
 
 ### Financial Modeling Prep
 Docs - https://site.financialmodelingprep.com/developer/docs
@@ -14,7 +14,7 @@ Financial Modeling Prep is the primary financial-data source for the application
 Responsibilities:
 - market prices
 - index data (Dow, S&P 500, Nasdaq, Russell 2000)
-- market internals (VIX, dollar index, oil, natural gas, gold)
+- market volatility (VIX)
 - sector performance
 - company financials
 - earnings information
@@ -22,7 +22,7 @@ Responsibilities:
 - market metrics
 - economic calendar
 
-The application calls Financial Modeling Prep directly for the baseline market-data scan ([weekly-report-workflow.md §Step 6](weekly-report-workflow.md#step-6-gather-baseline-market-data)) and for company-specific financial data surfaced during research.
+The application calls Financial Modeling Prep directly for the equity-market portion of the baseline market-data scan ([weekly-report-workflow.md §Step 6](weekly-report-workflow.md#step-6-gather-baseline-market-data)) — indices, volatility, and sector performance — and for company-specific financial data surfaced during research. The scan's dollar-index, commodity, and Treasury-yield series come from FRED (below).
 
 ### FRED (Federal Reserve Economic Data)
 Docs - https://fred.stlouisfed.org/docs/api/fred/
@@ -32,13 +32,15 @@ FRED provides official macroeconomic and financial data maintained by the Federa
 Responsibilities:
 - Treasury yields
 - interest rates
+- the US dollar index
+- commodity prices (oil, natural gas, gold)
 - inflation metrics
 - recession indicators
 - unemployment data
 - consumer data
 - broader macroeconomic indicators
 
-The application uses FRED for macroeconomic analysis and long-term market-regime evaluation.
+The application uses FRED for macroeconomic analysis and long-term market-regime evaluation, and for the market-internal series — the dollar index and commodity prices — that sit outside Financial Modeling Prep's coverage.
 
 ### BLS (Bureau of Labor Statistics)
 Docs - https://www.bls.gov/developers/

@@ -69,7 +69,7 @@ The Settings section includes credential configuration for:
 
 Both the **Financial Modeling Prep** and **Tavily** credentials are required to run a job:
 - **Tavily** is the primary research and news-ingestion system, and news gathering is a mandatory workflow step (see [weekly-report-workflow.md §Step 7](weekly-report-workflow.md#step-7-gather-and-filter-news)).
-- **Financial Modeling Prep** is the primary financial-data source and the sole source of the baseline market-data scan — indices, market internals, sector performance (see [weekly-report-workflow.md §Step 6](weekly-report-workflow.md#step-6-gather-baseline-market-data)) — which is not optional, so a missing FMP credential blocks execution.
+- **Financial Modeling Prep** is the primary financial-data source and provides the equity-market portion of the baseline market-data scan — indices, volatility (VIX), and sector performance (see [weekly-report-workflow.md §Step 6](weekly-report-workflow.md#step-6-gather-baseline-market-data)) — which is not optional, so a missing FMP credential blocks execution. (The scan's macro and commodity series — the dollar index, oil, natural gas, gold, and Treasury yields — come from FRED's public API, which needs no credential.)
 
 FRED, BLS, and GDELT are accessed through their publicly available APIs and require no user credential.
 
