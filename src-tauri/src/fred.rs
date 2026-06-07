@@ -99,6 +99,17 @@ const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
     ("BAMLC0A0CM", "US Investment-Grade Corporate OAS", "percent"),
     ("T10Y3M", "10-Year minus 3-Month Treasury Spread", "percent"),
     ("T10Y2Y", "10-Year minus 2-Year Treasury Spread", "percent"),
+    // Volatility term structure (pair VXVCLS with the FMP VIX for a backwardation read)
+    // and the Nasdaq-100 implied-vol gauge; the level is the signal, like the spreads
+    // above. NB use VXNCLS (the CBOE VXN, ~20s), NOT the similarly-named NASDAQVOLNDX —
+    // that series was discontinued (frozen Jan 2026) and reads ~11,900, an index level not
+    // a vol gauge (live-verified Jun 2026).
+    ("VXVCLS", "CBOE S&P 500 3-Month Volatility (VXV)", "index points"),
+    ("VXNCLS", "CBOE NASDAQ-100 Volatility Index (VXN)", "index points"),
+    // Credit-quality dispersion on top of the aggregate HY/IG OAS: BBB (lowest IG rung)
+    // and single-B (mid HY) widen at different speeds as risk appetite deteriorates.
+    ("BAMLC0A4CBBB", "US Corporate BBB OAS", "percent"),
+    ("BAMLH0A2HYB", "US High-Yield B OAS", "percent"),
 ];
 
 /// The FRED-owned macro levels of the Step-6 baseline (`docs/weekly-report
@@ -583,6 +594,10 @@ impl MarketDataSource for FredDataSource {
             labor_levels: Vec::new(),
             calendar,
             index_performance: Vec::new(),
+            // FMP owns the equity-market movers and earnings calendar; FRED contributes
+            // neither.
+            movers: Vec::new(),
+            earnings: Vec::new(),
             gaps,
         })
     }

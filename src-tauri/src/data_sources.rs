@@ -87,6 +87,48 @@ pub struct IndexPerformance {
     pub pct_from_52w_high: f64,
 }
 
+/// Which of FMP's market-mover lists a [`StockMover`] came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MoverCategory {
+    Gainer,
+    Loser,
+    MostActive,
+}
+
+/// One row from FMP's free market-mover lists (biggest gainers / losers / most actives),
+/// tagged with the list it came from — a micro-breadth signal for which individual names
+/// moved most this run, surfacing rotation the index/sector reads can't. FMP's mover rows
+/// carry **no sector** (the model infers it from the ticker) and no volume, so the shape
+/// is the ticker, its latest `price` + `change_pct`, and the listing `exchange`. The
+/// application filters the raw lists (penny-stock price floor, major-exchange allowlist,
+/// top-N per category) before they reach the packet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StockMover {
+    pub category: MoverCategory,
+    pub symbol: String,
+    pub name: String,
+    pub price: f64,
+    pub change_pct: f64,
+    pub exchange: String,
+}
+
+/// One company's earnings event in the Step-6 window — a recent or upcoming report from
+/// FMP's free earnings calendar, filtered to large-cap names by revenue estimate. A
+/// forward date carries estimates with null actuals; a past date in the window carries
+/// both, so the model can read beats / misses. Every figure is optional: FMP omits
+/// actuals for dates that haven't reported and can omit estimates for thinly-covered
+/// names. Revenue is the quarter's figure in USD; EPS is per share.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EarningsEvent {
+    pub symbol: String,
+    pub date: String,
+    pub eps_estimated: Option<f64>,
+    pub eps_actual: Option<f64>,
+    pub revenue_estimated: Option<f64>,
+    pub revenue_actual: Option<f64>,
+}
+
 /// Which Step-6 baseline group a [`DataGap`] belongs to. Serializes to a stable kebab
 /// label so the model reading the manifest sees the same group names the data groups
 /// carry, and the coverage gate (`pipeline::enforce_coverage`) can match on it.
@@ -100,6 +142,8 @@ pub enum GroupKind {
     LaborLevels,
     Calendar,
     IndexPerformance,
+    Movers,
+    Earnings,
 }
 
 impl GroupKind {
@@ -115,6 +159,8 @@ impl GroupKind {
             GroupKind::LaborLevels => "labor-levels",
             GroupKind::Calendar => "calendar",
             GroupKind::IndexPerformance => "index-performance",
+            GroupKind::Movers => "movers",
+            GroupKind::Earnings => "earnings",
         }
     }
 }
@@ -234,6 +280,19 @@ pub struct BaselineMarketData {
     /// the `calendar` it carries no completeness floor and soft-degrades if the history
     /// fetch fails, since the daily `indices` quotes already satisfy Step 6.
     pub index_performance: Vec<IndexPerformance>,
+    /// Step-6 market movers: the filtered top gainers / losers / most-active US names this
+    /// run (FMP's free mover lists). A micro-breadth signal the index/sector groups can't
+    /// give — which individual names moved most. Empty is valid; like `calendar` /
+    /// `index_performance` it carries no completeness floor and soft-degrades, since the
+    /// breadth read is additive over the required index/internals grounding.
+    #[serde(default)]
+    pub movers: Vec<StockMover>,
+    /// Step-6 earnings calendar: large-cap US companies reporting in the prior-week +
+    /// upcoming window (FMP's free earnings calendar, filtered by revenue estimate). Recent
+    /// rows carry actual-vs-estimate; upcoming rows carry estimates only. Empty is valid —
+    /// additive and non-floor like `movers`, soft-degrading rather than failing the run.
+    #[serde(default)]
+    pub earnings: Vec<EarningsEvent>,
     /// Step-6 missing-data manifest: the series / releases a provider failed to resolve
     /// this run (`DataGap`), each tagged with its group and reason. Populated by the
     /// adapters as they degrade instead of failing, merged across providers by the
@@ -350,6 +409,32 @@ impl MarketDataSource for StubMarketDataSource {
                 high_52w: 5_600.0,
                 pct_from_52w_high: -1.8,
             }],
+            movers: vec![
+                StockMover {
+                    category: MoverCategory::Gainer,
+                    symbol: "NVDA".into(),
+                    name: "NVIDIA Corporation".into(),
+                    price: 142.0,
+                    change_pct: 4.2,
+                    exchange: "NASDAQ".into(),
+                },
+                StockMover {
+                    category: MoverCategory::Loser,
+                    symbol: "INTC".into(),
+                    name: "Intel Corporation".into(),
+                    price: 21.5,
+                    change_pct: -3.1,
+                    exchange: "NASDAQ".into(),
+                },
+            ],
+            earnings: vec![EarningsEvent {
+                symbol: "ADBE".into(),
+                date: "2026-06-11".into(),
+                eps_estimated: Some(5.83),
+                eps_actual: None,
+                revenue_estimated: Some(6_453_568_000.0),
+                revenue_actual: None,
+            }],
             gaps: Vec::new(),
         })
     }
@@ -391,6 +476,8 @@ impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
         merged.labor_levels.extend(extra.labor_levels);
         merged.calendar.extend(extra.calendar);
         merged.index_performance.extend(extra.index_performance);
+        merged.movers.extend(extra.movers);
+        merged.earnings.extend(extra.earnings);
         merged.gaps.extend(extra.gaps);
         Ok(merged)
     }

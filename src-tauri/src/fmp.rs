@@ -4,9 +4,11 @@
 //! (`data_sources`). On FMP's free tier the provider is effectively an *equities*
 //! API, so this adapter owns the equity-market half of the Step-6 baseline:
 //! the market **indices** (Dow / S&P 500 / Nasdaq / Russell 2000), the **VIX**,
-//! **gold** (`GCUSD`, free on the quote endpoint), and **sector performance**, plus
-//! each index's **multi-horizon performance** (weekly / MTD / YTD / 52-week range)
-//! derived from FMP's free end-of-day history. The
+//! **gold** and **silver** (`GCUSD` / `SIUSD`, free on the quote endpoint), **sector
+//! performance**, each index's **multi-horizon performance** (weekly / MTD / YTD /
+//! 52-week range) derived from FMP's free end-of-day history, the **market movers**
+//! (biggest gainers / losers / most-active names), and the **earnings calendar** (the
+//! prior-week + upcoming large-cap reporters). The
 //! remaining macro / commodity internals — Treasury yields, the dollar index, oil,
 //! and natural gas — are gated behind FMP premium (verified live: HTTP 402 "not
 //! available under your current subscription") and are sourced from FRED instead.
@@ -48,8 +50,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::data_sources::{
-    emit_series_row, BaselineMarketData, DataGap, GapReason, GroupKind, IndexPerformance,
-    MarketDataSource, Quote, SectorPerformance,
+    emit_series_row, BaselineMarketData, DataGap, EarningsEvent, GapReason, GroupKind,
+    IndexPerformance, MarketDataSource, MoverCategory, Quote, SectorPerformance, StockMover,
 };
 use crate::progress::RunContext;
 
@@ -80,6 +82,53 @@ const FMP_EOD_URL: &str = "https://financialmodelingprep.com/stable/historical-p
 /// the year-to-date anchor both sit inside the window with margin.
 const EOD_LOOKBACK_DAYS: i64 = 371;
 
+/// FMP's free market-mover lists — biggest gainers / losers and the most-active names.
+/// Each returns the whole US mover list in one call (no params). NB the most-active path
+/// is **plural** (`most-actives`); the singular `most-active` 404s (probed live Jun 2026).
+const FMP_GAINERS_URL: &str = "https://financialmodelingprep.com/stable/biggest-gainers";
+const FMP_LOSERS_URL: &str = "https://financialmodelingprep.com/stable/biggest-losers";
+const FMP_MOST_ACTIVE_URL: &str = "https://financialmodelingprep.com/stable/most-actives";
+
+/// FMP's free earnings calendar — every US ticker reporting in a date window. Free on a
+/// ~1-month history window (probed live Jun 2026: forward dates return estimates with
+/// null actuals, past dates return both).
+const FMP_EARNINGS_URL: &str = "https://financialmodelingprep.com/stable/earnings-calendar";
+
+/// Mover-list filters (the raw lists are dominated by sub-$1 micro-caps that are noise for
+/// a market thesis). Keep only names priced at or above the floor, listed on a major US
+/// exchange, then the top N per list in FMP's own ranking order (gainers/losers by percent
+/// move, most-actives by volume). Tunable after a live run.
+const MOVER_MIN_PRICE: f64 = 5.0;
+const MOVER_TOP_N: usize = 10;
+const MOVER_EXCHANGES: &[&str] = &["NASDAQ", "NYSE", "AMEX"];
+
+/// Case-insensitive name fragments that mark a mover row as a fund / ETF / ETN or a
+/// leveraged-and-inverse product rather than an individual company. The free mover lists
+/// carry no fund flag and are dominated by leveraged ETFs (TQQQ, SOXS, "Daily Target 2X
+/// …"), which would otherwise be sector-tagged as companies; this name heuristic is the
+/// only free signal. It necessarily errs toward false negatives, not false positives — the
+/// prompt's "a mover may be a fund" caveat is the backstop for products it misses, whereas
+/// dropping a real company is the worse error. So markers must be fund-specific:
+/// - `" etf"` / `" etn"` carry a leading space to match the suffix, not a substring of a
+///   company name (e.g. "Aetna").
+/// - The leverage tokens (`2x`/`3x`/`leveraged`/`inverse`/`ultrapro`/`ultrashort`), the
+///   issuer names, and the `" etf"`/`" etn"` suffix already catch every leveraged
+///   *directional* product, so bare `"bull"`/`"bear"` are deliberately NOT markers — they
+///   would drop real companies like "Build-A-Bear Workshop" for no added coverage.
+const MOVER_FUND_MARKERS: &[&str] = &[
+    " etf", " etn", " fund", "2x", "3x", "leveraged", "inverse", "ultrapro", "ultrashort",
+    "daily target", "proshares", "direxion", "graniteshares", "microsectors",
+];
+
+/// Earnings-calendar window and filter: the prior week + the upcoming fortnight, then keep
+/// only large-cap reporters (quarterly revenue estimate at or above the floor — no free
+/// index-membership list to filter by, so revenue magnitude is the proxy), capped at the
+/// largest N by revenue estimate. Tunable after a live run.
+const EARNINGS_BACK_DAYS: i64 = 7;
+const EARNINGS_FWD_DAYS: i64 = 14;
+const EARNINGS_MIN_REVENUE: f64 = 5_000_000_000.0;
+const EARNINGS_MAX_ROWS: usize = 25;
+
 /// The four headline indices of the baseline scan (`docs/weekly-report-workflow
 /// .md §Step 6`), paired with a display name used when FMP omits one and the `price`
 /// unit. All four are free-tier on FMP (verified live). The unit rides from the table,
@@ -99,6 +148,7 @@ const INDEX_SYMBOLS: &[(&str, &str, &str)] = &[
 const INTERNAL_SYMBOLS: &[(&str, &str, &str)] = &[
     ("^VIX", "CBOE Volatility Index", "index points"),
     ("GCUSD", "Gold", "USD per troy ounce"),
+    ("SIUSD", "Silver", "USD per troy ounce"),
 ];
 
 /// FMP's quote object, trimmed to the fields the baseline needs. `name` is optional
@@ -136,6 +186,40 @@ struct FmpSectorRaw {
 struct FmpEodRaw {
     date: String,
     price: f64,
+}
+
+/// One row of FMP's mover lists (gainers / losers / most-actives share this shape).
+/// `price` and the percent change are required; `name` / `exchange` fall back to empty
+/// when absent. The percent change is `changesPercentage` (plural) on the mover lists,
+/// with the singular `changePercentage` accepted as an alias — the inverse of the quote
+/// endpoint's spelling (probed live Jun 2026). `volume` is not returned by these lists.
+#[derive(Debug, Deserialize)]
+struct FmpMoverRaw {
+    symbol: String,
+    #[serde(default)]
+    name: String,
+    price: f64,
+    #[serde(rename = "changesPercentage", alias = "changePercentage")]
+    change_pct: f64,
+    #[serde(default)]
+    exchange: String,
+}
+
+/// One row of FMP's earnings calendar. `symbol` and `date` are required; the EPS /
+/// revenue estimate and actual fields are all optional — FMP omits actuals for dates that
+/// haven't reported and can omit estimates for thinly-covered names.
+#[derive(Debug, Deserialize)]
+struct FmpEarningsRaw {
+    symbol: String,
+    date: String,
+    #[serde(rename = "epsEstimated")]
+    eps_estimated: Option<f64>,
+    #[serde(rename = "epsActual")]
+    eps_actual: Option<f64>,
+    #[serde(rename = "revenueEstimated")]
+    revenue_estimated: Option<f64>,
+    #[serde(rename = "revenueActual")]
+    revenue_actual: Option<f64>,
 }
 
 /// One FMP response classified into what the loop should do with it — the single place
@@ -218,6 +302,94 @@ fn sectors_from_value(value: Value) -> Result<Vec<SectorPerformance>> {
         }
     }
     Ok(out)
+}
+
+/// Shape a successful mover-list response into typed [`StockMover`]s tagged with the list's
+/// `category`, falling back to the symbol when FMP omits the name. A body that is not the
+/// expected array of mover rows is an error.
+fn movers_from_value(value: Value, category: MoverCategory) -> Result<Vec<StockMover>> {
+    let raws: Vec<FmpMoverRaw> = serde_json::from_value(value)
+        .context("FMP mover response did not match the expected array shape")?;
+    Ok(raws
+        .into_iter()
+        .map(|r| StockMover {
+            category,
+            name: if r.name.trim().is_empty() {
+                r.symbol.clone()
+            } else {
+                r.name
+            },
+            symbol: r.symbol,
+            price: r.price,
+            change_pct: r.change_pct,
+            exchange: r.exchange,
+        })
+        .collect())
+}
+
+/// Whether a mover's name marks it as a fund / ETF / ETN or leveraged-inverse product
+/// rather than an individual company — a [`MOVER_FUND_MARKERS`] substring match,
+/// case-insensitive. Imperfect by nature (no free fund flag); the prompt caveat backs it.
+fn is_fund_or_leveraged(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    MOVER_FUND_MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
+/// Filter one raw mover list down to thesis-relevant individual-company names: priced at or
+/// above [`MOVER_MIN_PRICE`] (strips the sub-$1 micro-caps the raw lists are dominated by),
+/// listed on a [`MOVER_EXCHANGES`] exchange, and not a fund / leveraged-inverse ETF
+/// ([`is_fund_or_leveraged`] — the raw lists are otherwise full of TQQQ/SOXS-type products
+/// that aren't single-company signals), capped at the first [`MOVER_TOP_N`] in FMP's
+/// ranking order (the order the list arrives in — by percent move for gainers/losers, by
+/// volume for most-actives). Pure.
+fn filter_movers(movers: Vec<StockMover>) -> Vec<StockMover> {
+    movers
+        .into_iter()
+        .filter(|m| {
+            m.price >= MOVER_MIN_PRICE
+                && MOVER_EXCHANGES.contains(&m.exchange.as_str())
+                && !is_fund_or_leveraged(&m.name)
+        })
+        .take(MOVER_TOP_N)
+        .collect()
+}
+
+/// Shape a successful earnings-calendar response into typed [`EarningsEvent`]s. A body that
+/// is not the expected array of earnings rows is an error.
+fn earnings_from_value(value: Value) -> Result<Vec<EarningsEvent>> {
+    let raws: Vec<FmpEarningsRaw> = serde_json::from_value(value)
+        .context("FMP earnings response did not match the expected array shape")?;
+    Ok(raws
+        .into_iter()
+        .map(|r| EarningsEvent {
+            symbol: r.symbol,
+            date: r.date,
+            eps_estimated: r.eps_estimated,
+            eps_actual: r.eps_actual,
+            revenue_estimated: r.revenue_estimated,
+            revenue_actual: r.revenue_actual,
+        })
+        .collect())
+}
+
+/// Filter the raw earnings calendar to large-cap reporters: keep rows whose quarterly
+/// revenue estimate clears [`EARNINGS_MIN_REVENUE`] (no free index-membership list to
+/// filter by, so revenue magnitude is the large-cap proxy), ordered by that estimate
+/// descending and capped at [`EARNINGS_MAX_ROWS`]. Rows without a revenue estimate are
+/// dropped — they can't clear the floor and are overwhelmingly thinly-covered small-caps.
+/// Pure.
+fn filter_earnings(events: Vec<EarningsEvent>) -> Vec<EarningsEvent> {
+    let mut kept: Vec<EarningsEvent> = events
+        .into_iter()
+        .filter(|e| e.revenue_estimated.is_some_and(|r| r >= EARNINGS_MIN_REVENUE))
+        .collect();
+    kept.sort_by(|a, b| {
+        b.revenue_estimated
+            .partial_cmp(&a.revenue_estimated)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    kept.truncate(EARNINGS_MAX_ROWS);
+    kept
 }
 
 /// The ordered sector-snapshot candidate dates for a run: the most recent weekday on
@@ -570,6 +742,121 @@ impl FmpDataSource {
         }
         out
     }
+
+    /// Fetch the three mover lists (gainers / losers / most-actives), one call each, and
+    /// shape + filter them into tagged [`StockMover`]s. Additive enrichment like
+    /// `index_performance`: a permanent absence (402/404) or an empty / all-filtered list is
+    /// skipped silently — the breadth read sits on top of the required index/internals
+    /// grounding — while a this-run failure (auth / quota / 5xx / transport / malformed)
+    /// records a `Movers` gap so the agent sees the loss; a `Rejected` stops the loop and
+    /// records the remaining lists, like the quote groups.
+    fn fetch_movers(&self, gaps: &mut Vec<DataGap>) -> Vec<StockMover> {
+        let endpoints = [
+            (MoverCategory::Gainer, FMP_GAINERS_URL, "biggest-gainers", "Biggest Gainers"),
+            (MoverCategory::Loser, FMP_LOSERS_URL, "biggest-losers", "Biggest Losers"),
+            (MoverCategory::MostActive, FMP_MOST_ACTIVE_URL, "most-actives", "Most Active"),
+        ];
+        let mut out = Vec::new();
+        let mut rejected = false;
+        for (category, url, series_id, name) in endpoints {
+            if self.progress.is_cancelled() {
+                break;
+            }
+            if rejected {
+                // No request made for a short-circuited list — no tracker row.
+                gaps.push(DataGap::new(GroupKind::Movers, series_id, name, GapReason::Rejected));
+                continue;
+            }
+            self.progress
+                .request_started("FMP", GroupKind::Movers.as_str(), series_id, name);
+            let gaps_before = gaps.len();
+            let out_before = out.len();
+            let disposition = match self.get(url, &[]) {
+                Ok((status, body)) => interpret_response(status, &body),
+                Err(_) => Disposition::Gap(GapReason::Unavailable),
+            };
+            match disposition {
+                Disposition::Value(value) => match movers_from_value(value, category) {
+                    Ok(movers) => out.extend(filter_movers(movers)),
+                    Err(_) => {
+                        gaps.push(DataGap::new(GroupKind::Movers, series_id, name, GapReason::Malformed))
+                    }
+                },
+                // Permanent absence (402/404) is silent for this additive group.
+                Disposition::Gap(GapReason::OutOfScope) => {}
+                Disposition::Gap(reason) => {
+                    if reason == GapReason::Rejected {
+                        rejected = true;
+                    }
+                    gaps.push(DataGap::new(GroupKind::Movers, series_id, name, reason));
+                }
+            }
+            emit_series_row(
+                &self.progress,
+                "FMP",
+                GroupKind::Movers,
+                series_id,
+                name,
+                gaps,
+                gaps_before,
+                out.len() > out_before,
+            );
+        }
+        out
+    }
+
+    /// Fetch the earnings calendar over the prior-week + upcoming-fortnight window in one
+    /// call, then filter to large-cap reporters. Additive and non-floor like `movers`: a
+    /// permanent absence or an empty / all-filtered window is silent; a this-run failure
+    /// (auth / quota / 5xx / transport / malformed) records one `Earnings` gap.
+    fn fetch_earnings(&self, gaps: &mut Vec<DataGap>) -> Vec<EarningsEvent> {
+        if self.progress.is_cancelled() {
+            return Vec::new();
+        }
+        let today = Utc::now().date_naive();
+        let from = (today - Duration::days(EARNINGS_BACK_DAYS))
+            .format("%Y-%m-%d")
+            .to_string();
+        let to = (today + Duration::days(EARNINGS_FWD_DAYS))
+            .format("%Y-%m-%d")
+            .to_string();
+        let series_id = "earnings-calendar";
+        let name = "Earnings Calendar";
+        self.progress
+            .request_started("FMP", GroupKind::Earnings.as_str(), series_id, name);
+        let gaps_before = gaps.len();
+        let disposition =
+            match self.get(FMP_EARNINGS_URL, &[("from", from.as_str()), ("to", to.as_str())]) {
+                Ok((status, body)) => interpret_response(status, &body),
+                Err(_) => Disposition::Gap(GapReason::Unavailable),
+            };
+        let out = match disposition {
+            Disposition::Value(value) => match earnings_from_value(value) {
+                Ok(events) => filter_earnings(events),
+                Err(_) => {
+                    gaps.push(DataGap::new(GroupKind::Earnings, series_id, name, GapReason::Malformed));
+                    Vec::new()
+                }
+            },
+            // Permanent absence (402/404) is silent for this additive group.
+            Disposition::Gap(GapReason::OutOfScope) => Vec::new(),
+            Disposition::Gap(reason) => {
+                gaps.push(DataGap::new(GroupKind::Earnings, series_id, name, reason));
+                Vec::new()
+            }
+        };
+        emit_series_row(
+            &self.progress,
+            "FMP",
+            GroupKind::Earnings,
+            series_id,
+            name,
+            gaps,
+            gaps_before,
+            !out.is_empty(),
+        );
+        out
+    }
 }
 
 impl MarketDataSource for FmpDataSource {
@@ -586,11 +873,15 @@ impl MarketDataSource for FmpDataSource {
         let internals = self.fetch_quotes(INTERNAL_SYMBOLS, GroupKind::Internals, &mut gaps);
         let sectors = self.fetch_sectors(&mut gaps);
         let index_performance = self.fetch_index_performance(&mut gaps);
+        let movers = self.fetch_movers(&mut gaps);
+        let earnings = self.fetch_earnings(&mut gaps);
         Ok(BaselineMarketData {
             indices,
             internals,
             sectors,
             index_performance,
+            movers,
+            earnings,
             // FRED owns the macro levels and the economic-release calendar, and BLS the
             // labor levels; FMP contributes none of them.
             macro_levels: Vec::new(),
@@ -824,6 +1115,125 @@ mod tests {
     }
 
     #[test]
+    fn movers_parse_tags_category_and_filters_noise() {
+        // The mover lists key the move as `changesPercentage` (plural); parsing stamps the
+        // list's category. filter_movers drops the sub-$5 micro-cap and the off-exchange
+        // row, keeping major-exchange names in FMP's arrival order.
+        let body = serde_json::json!([
+            {"symbol":"NVDA","name":"NVIDIA","price":142.0,"changesPercentage":4.2,"exchange":"NASDAQ"},
+            {"symbol":"SCAG","name":"Scage","price":0.84,"changesPercentage":194.0,"exchange":"NASDAQ"},
+            {"symbol":"OTCX","name":"OTC Co","price":50.0,"changesPercentage":9.0,"exchange":"OTC"},
+            {"symbol":"AAPL","name":"Apple","price":210.0,"changesPercentage":2.0,"exchange":"NYSE"}
+        ]);
+        let parsed = movers_from_value(body, MoverCategory::Gainer).unwrap();
+        assert_eq!(parsed.len(), 4);
+        assert!(parsed.iter().all(|m| m.category == MoverCategory::Gainer));
+        let filtered = filter_movers(parsed);
+        let symbols: Vec<&str> = filtered.iter().map(|m| m.symbol.as_str()).collect();
+        assert_eq!(symbols, vec!["NVDA", "AAPL"]);
+    }
+
+    #[test]
+    fn movers_singular_alias_parses_and_name_falls_back() {
+        // The quote-endpoint spelling `changePercentage` (singular) is accepted as an
+        // alias, and a missing name falls back to the symbol.
+        let body =
+            serde_json::json!([{"symbol":"MSFT","price":410.0,"changePercentage":1.5,"exchange":"NASDAQ"}]);
+        let parsed = movers_from_value(body, MoverCategory::MostActive).unwrap();
+        assert_eq!(parsed[0].name, "MSFT");
+        assert_eq!(parsed[0].change_pct, 1.5);
+    }
+
+    #[test]
+    fn movers_filter_excludes_funds_and_leveraged_etfs() {
+        // The raw lists are dominated by leveraged/inverse ETFs that clear the price +
+        // exchange gate but aren't single-company signals; the name heuristic drops them
+        // while keeping ordinary companies.
+        let movers = vec![
+            StockMover { category: MoverCategory::Gainer, symbol: "NVDA".into(),
+                name: "NVIDIA Corporation".into(), price: 142.0, change_pct: 4.0, exchange: "NASDAQ".into() },
+            StockMover { category: MoverCategory::Gainer, symbol: "TQQQ".into(),
+                name: "ProShares - UltraPro QQQ".into(), price: 60.0, change_pct: 5.0, exchange: "NASDAQ".into() },
+            StockMover { category: MoverCategory::Gainer, symbol: "SOXS".into(),
+                name: "Direxion Daily Semiconductor Bear 3X ETF".into(), price: 7.0, change_pct: 9.0, exchange: "AMEX".into() },
+            StockMover { category: MoverCategory::Gainer, symbol: "AAL".into(),
+                name: "American Airlines Group Inc.".into(), price: 14.0, change_pct: 1.5, exchange: "NASDAQ".into() },
+        ];
+        let kept = filter_movers(movers);
+        let symbols: Vec<&str> = kept.iter().map(|m| m.symbol.as_str()).collect();
+        assert_eq!(symbols, vec!["NVDA", "AAL"]);
+    }
+
+    #[test]
+    fn movers_filter_keeps_companies_with_bull_or_bear_in_name() {
+        // Regression: bare "bull "/"bear " markers would drop real companies. Build-A-Bear
+        // stays; the leveraged directional ETF is still caught (by "direxion" / "3x" /
+        // " etf"), so dropping the bare markers cost no coverage.
+        let movers = vec![
+            StockMover { category: MoverCategory::Gainer, symbol: "BBW".into(),
+                name: "Build-A-Bear Workshop, Inc.".into(), price: 40.0, change_pct: 6.0, exchange: "NYSE".into() },
+            StockMover { category: MoverCategory::Gainer, symbol: "SOXL".into(),
+                name: "Direxion Daily Semiconductor Bull 3X ETF".into(), price: 25.0, change_pct: 8.0, exchange: "AMEX".into() },
+        ];
+        let kept = filter_movers(movers);
+        let symbols: Vec<&str> = kept.iter().map(|m| m.symbol.as_str()).collect();
+        assert_eq!(symbols, vec!["BBW"]);
+    }
+
+    #[test]
+    fn movers_filter_caps_at_top_n() {
+        let many: Vec<StockMover> = (0..MOVER_TOP_N + 5)
+            .map(|i| StockMover {
+                category: MoverCategory::MostActive,
+                symbol: format!("T{i}"),
+                name: format!("Ticker {i}"),
+                price: 100.0,
+                change_pct: 1.0,
+                exchange: "NYSE".into(),
+            })
+            .collect();
+        assert_eq!(filter_movers(many).len(), MOVER_TOP_N);
+    }
+
+    #[test]
+    fn earnings_filter_keeps_large_caps_sorted_by_revenue() {
+        // A forward row (null actuals) and a past row (both) are kept when large-cap; the
+        // sub-threshold and missing-revenue rows are dropped; output is revenue-descending.
+        let body = serde_json::json!([
+            {"symbol":"ADBE","date":"2026-06-11","epsEstimated":5.83,"epsActual":null,
+             "revenueEstimated":6453568000.0,"revenueActual":null},
+            {"symbol":"DOCU","date":"2026-06-04","epsEstimated":0.99,"epsActual":1.09,
+             "revenueEstimated":830235000.0,"revenueActual":840000000.0},
+            {"symbol":"BIG","date":"2026-06-10","epsEstimated":1.0,"epsActual":null,
+             "revenueEstimated":20000000000.0,"revenueActual":null},
+            {"symbol":"NOREV","date":"2026-06-10","epsEstimated":0.1,"epsActual":null,
+             "revenueEstimated":null,"revenueActual":null}
+        ]);
+        let parsed = earnings_from_value(body).unwrap();
+        assert_eq!(parsed.len(), 4);
+        let filtered = filter_earnings(parsed);
+        let symbols: Vec<&str> = filtered.iter().map(|e| e.symbol.as_str()).collect();
+        assert_eq!(symbols, vec!["BIG", "ADBE"]); // DOCU (<$5B) + NOREV (no estimate) dropped
+        let adbe = filtered.iter().find(|e| e.symbol == "ADBE").unwrap();
+        assert!(adbe.eps_actual.is_none() && adbe.eps_estimated == Some(5.83));
+    }
+
+    #[test]
+    fn earnings_filter_caps_at_max_rows() {
+        let many: Vec<EarningsEvent> = (0..EARNINGS_MAX_ROWS + 10)
+            .map(|i| EarningsEvent {
+                symbol: format!("S{i}"),
+                date: "2026-06-10".into(),
+                eps_estimated: Some(1.0),
+                eps_actual: None,
+                revenue_estimated: Some(EARNINGS_MIN_REVENUE + i as f64),
+                revenue_actual: None,
+            })
+            .collect();
+        assert_eq!(filter_earnings(many).len(), EARNINGS_MAX_ROWS);
+    }
+
+    #[test]
     #[ignore = "hits the live FMP API; set FMP_API_KEY"]
     fn fmp_baseline_smoke() {
         let src = FmpDataSource::from_env().expect("FMP_API_KEY set");
@@ -882,5 +1292,142 @@ mod tests {
                 "index_performance: {sym} did not resolve"
             );
         }
+
+        // Movers + earnings: the micro-breadth groups. Dump and assert each resolved at
+        // least one filtered row — a trading day always has large-cap movers and reporters
+        // in the window, so empty means the endpoint left the free tier or the filters are
+        // too tight. (Silver is asserted by `assert_resolved` over INTERNAL_SYMBOLS above.)
+        eprintln!("movers ({}):", data.movers.len());
+        for m in &data.movers {
+            eprintln!(
+                "  {:<10} {:<28} {:<12} change_pct={:<8} {}",
+                m.symbol,
+                m.name,
+                format!("{:?}", m.category),
+                m.change_pct,
+                m.exchange
+            );
+        }
+        eprintln!("earnings ({}):", data.earnings.len());
+        for e in &data.earnings {
+            eprintln!(
+                "  {:<8} {} eps_est={:?} eps_act={:?} rev_est={:?}",
+                e.symbol, e.date, e.eps_estimated, e.eps_actual, e.revenue_estimated
+            );
+        }
+        assert!(
+            !data.movers.is_empty(),
+            "no movers resolved — the mover lists may have left the free tier or the filters are too tight"
+        );
+        assert!(
+            !data.earnings.is_empty(),
+            "no earnings resolved — the calendar may have left the free tier or the revenue floor is too high"
+        );
+    }
+
+    /// Free-vs-premium probe for candidate Step-6 baseline endpoints whose tier the
+    /// FMP docs (403 to scrapers, identical boilerplate per page) won't settle.
+    /// Prints the HTTP status (200 ≈ free, 402 = premium) plus a sample of the body so
+    /// a maintainer can read the real field names before any adapter is written. Hits
+    /// the live API (~15 one-shot calls, trivial against the 250/day free cap); run:
+    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///     src-tauri/Cargo.toml fmp_freetier_probe -- --ignored --nocapture
+    #[test]
+    #[ignore = "hits the live FMP API; set FMP_API_KEY. Probes candidate endpoints' free tier."]
+    fn fmp_freetier_probe() {
+        use chrono::{Datelike, Duration, Utc, Weekday};
+
+        let key = crate::config::AppConfig::from_env()
+            .fmp_key()
+            .expect("FMP_API_KEY set");
+        let http = reqwest::blocking::Client::builder()
+            .timeout(FMP_TIMEOUT)
+            .build()
+            .expect("http client");
+
+        // A recent trading day for the date-keyed snapshot endpoints (walk back over
+        // the weekend), and a ~3-week window straddling it for the calendar.
+        let mut day = Utc::now().date_naive();
+        while matches!(day.weekday(), Weekday::Sat | Weekday::Sun) {
+            day -= Duration::days(1);
+        }
+        let date = day.format("%Y-%m-%d").to_string();
+        let from = (day - Duration::days(7)).format("%Y-%m-%d").to_string();
+        let to = (day + Duration::days(14)).format("%Y-%m-%d").to_string();
+
+        let probe = |label: &str, url: &str, extra: &[(&str, &str)]| {
+            let mut q: Vec<(&str, &str)> = vec![("apikey", key.as_str())];
+            q.extend_from_slice(extra);
+            match http.get(url).query(&q).send() {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().unwrap_or_default();
+                    let verdict = match status.as_u16() {
+                        200 if body.contains("Error Message") => "200-but-Error-body",
+                        200 => "FREE?",
+                        402 => "PREMIUM",
+                        other => return eprintln!("\n=== {label} [{other}] ===\n{body}"),
+                    };
+                    let mut shown: String = body.chars().take(700).collect();
+                    if body.chars().count() > 700 {
+                        shown.push_str(" …(truncated)");
+                    }
+                    eprintln!("\n=== {label} [{status}] {verdict} ===\n{shown}");
+                }
+                Err(e) => eprintln!("\n=== {label} [transport error] ===\n{e}"),
+            }
+        };
+
+        let base = "https://financialmodelingprep.com/stable";
+        // Movers — expected FREE; confirm exact %-change key + whether sector/exchange present.
+        probe("biggest-gainers", &format!("{base}/biggest-gainers"), &[]);
+        probe("biggest-losers", &format!("{base}/biggest-losers"), &[]);
+        probe("most-active", &format!("{base}/most-active"), &[]);
+        probe("most-actives (plural alias)", &format!("{base}/most-actives"), &[]);
+        // Earnings calendar — docs say "Free: historical up to 1 month"; confirm forward dates populate.
+        probe(
+            "earnings-calendar",
+            &format!("{base}/earnings-calendar"),
+            &[("from", from.as_str()), ("to", to.as_str())],
+        );
+        // Constituent lists (keystone: free ticker→sector map). Confirm free + sector field.
+        probe("sp-500 constituents", &format!("{base}/sp-500"), &[]);
+        probe("dow-jones constituents", &format!("{base}/dow-jones"), &[]);
+        // Sector/industry valuation + finer rotation — date-keyed.
+        probe(
+            "sector-pe-snapshot",
+            &format!("{base}/sector-pe-snapshot"),
+            &[("date", date.as_str())],
+        );
+        probe(
+            "industry-performance-snapshot",
+            &format!("{base}/industry-performance-snapshot"),
+            &[("date", date.as_str())],
+        );
+        probe(
+            "industry-pe-snapshot",
+            &format!("{base}/industry-pe-snapshot"),
+            &[("date", date.as_str())],
+        );
+        // Valuation context constant (near-static, per-country ERP).
+        probe("market-risk-premium", &format!("{base}/market-risk-premium"), &[]);
+        // Commodities: gold already free via /quote; do copper/silver resolve on free?
+        probe("commodities-quote GCUSD (gold)", &format!("{base}/commodities-quote"), &[("symbol", "GCUSD")]);
+        probe("commodities-quote HGUSD (copper)", &format!("{base}/commodities-quote"), &[("symbol", "HGUSD")]);
+        probe("commodities-quote SIUSD (silver)", &format!("{base}/commodities-quote"), &[("symbol", "SIUSD")]);
+        // 1-call consolidation candidate: does it cover the 4 indices (and ^VIX)?
+        probe("all-index-quotes", &format!("{base}/all-index-quotes"), &[]);
+
+        // --- Corrected paths for the endpoints that 404'd above (404 = wrong path,
+        // not premium; premium is 402, which none of these returned) ---
+        // Constituent lists use the `*-constituent` paths, not the bare index name.
+        probe("sp500-constituent", &format!("{base}/sp500-constituent"), &[]);
+        probe("dowjones-constituent", &format!("{base}/dowjones-constituent"), &[]);
+        probe("nasdaq-constituent", &format!("{base}/nasdaq-constituent"), &[]);
+        // Batch index quotes — the likely real name of the 1-call index consolidation.
+        probe("batch-index-quotes", &format!("{base}/batch-index-quotes"), &[]);
+        // Copper / silver via the generic quote endpoint we already use for GCUSD gold.
+        probe("quote HGUSD (copper)", &format!("{base}/quote"), &[("symbol", "HGUSD")]);
+        probe("quote SIUSD (silver)", &format!("{base}/quote"), &[("symbol", "SIUSD")]);
     }
 }

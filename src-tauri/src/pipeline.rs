@@ -192,6 +192,8 @@ fn group_present_count(data: &BaselineMarketData, group: GroupKind) -> usize {
         GroupKind::LaborLevels => data.labor_levels.len(),
         GroupKind::Calendar => data.calendar.len(),
         GroupKind::IndexPerformance => data.index_performance.len(),
+        GroupKind::Movers => data.movers.len(),
+        GroupKind::Earnings => data.earnings.len(),
     }
 }
 
@@ -459,6 +461,23 @@ mod tests {
             internals: covq(9),
             macro_levels: covq(17),
             gaps: covgaps(GroupKind::Indices, GapReason::OutOfScope, 1),
+            ..Default::default()
+        };
+        assert!(enforce_coverage(&data).is_ok());
+    }
+
+    #[test]
+    fn enforce_coverage_ignores_additive_movers_and_earnings_groups() {
+        // movers / earnings are additive, non-floor groups: empty groups and even a
+        // this-run gap in them never gate a run whose floor groups (indices + a posture
+        // group) are covered.
+        let mut gaps = covgaps(GroupKind::Movers, GapReason::Unavailable, 3);
+        gaps.extend(covgaps(GroupKind::Earnings, GapReason::Rejected, 1));
+        let data = BaselineMarketData {
+            indices: covq(4),
+            internals: covq(9),
+            // movers / earnings deliberately left empty
+            gaps,
             ..Default::default()
         };
         assert!(enforce_coverage(&data).is_ok());

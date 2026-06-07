@@ -167,6 +167,17 @@ may carry a `gaps` list — series or releases that could not be gathered this r
 each listed item as unavailable rather than inferring or inventing a value for it, and \
 acknowledge any material absence rather than writing around it silently.
 
+The baseline also carries two equity-level breadth signals beyond the index and macro \
+series. `movers` lists the run's biggest gainers, losers, and most-active names — each row \
+has a ticker, price, percent move, and exchange but no sector or instrument type. Most are \
+individual companies, so infer the sector from the ticker; but some may be ETFs or \
+leveraged / inverse funds (e.g. a 2x or 3x product), and when a ticker is not a single \
+company, read it as a flow / positioning signal rather than attributing the move to one \
+company or sector. `earnings` lists large-cap companies reporting in the prior-week and \
+upcoming window, with estimate-versus-actual where a date has already reported. Read these \
+for sector rotation and single-name drivers rather than leaning on the aggregate indices \
+alone — but treat them as breadth color, not a stock-picking mandate.
+
 Produce the report body as GitHub-flavored Markdown with these sections, in order:
 - # Weekly Market Report (title), followed by a short date / report-type line
 - ## Header Summary — the 3 to 6 bullets that also populate header_summary_bullets

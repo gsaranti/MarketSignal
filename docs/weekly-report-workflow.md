@@ -151,6 +151,7 @@ Market internals:
 - oil
 - natural gas
 - gold
+- silver
 - sector performance
 
 Macro:
@@ -159,6 +160,14 @@ Macro:
 - inflation expectations
 - consumer confidence
 - major economic reports from the prior week
+
+Market movers:
+- biggest gainers
+- biggest losers
+- most-active names
+
+Earnings:
+- large-cap companies reporting in the prior-week and upcoming window
 
 News categories:
 - politics
