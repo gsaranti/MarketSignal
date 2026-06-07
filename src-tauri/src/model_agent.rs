@@ -31,6 +31,7 @@ use crate::agent::{
     MainAgent, MainAgentInput, MainAgentOutput, MarketCycle, ReportSummary, RiskPosture,
     ThesisStance,
 };
+use crate::baseline_delta::BaselineDeltas;
 use crate::data_sources::BaselineMarketData;
 use crate::progress::RunContext;
 
@@ -223,14 +224,37 @@ const USER_PROMPT: &str =
 /// report in this run's live data rather than its own prior knowledge. An empty
 /// baseline (no data gathered — e.g. an offline smoke) falls back to the bare
 /// instruction so the prompt never carries an empty data block.
-fn build_user_prompt(baseline: &BaselineMarketData) -> String {
-    if baseline == &BaselineMarketData::default() {
-        return USER_PROMPT.to_string();
+fn build_user_prompt(baseline: &BaselineMarketData, deltas: Option<&BaselineDeltas>) -> String {
+    let mut prompt = if baseline == &BaselineMarketData::default() {
+        USER_PROMPT.to_string()
+    } else {
+        match serde_json::to_string_pretty(baseline) {
+            Ok(json) => {
+                format!("{USER_PROMPT}\n\nBaseline market data gathered for this report:\n{json}")
+            }
+            Err(_) => USER_PROMPT.to_string(),
+        }
+    };
+
+    // When a prior report exists, append the deterministic change view computed by the
+    // application layer (`baseline_delta`). The framing names the actual elapsed interval
+    // rather than assuming a week — the report cadence is not fixed weekly — so the model
+    // reads a same-hour regeneration's near-zero moves correctly instead of as a flat market.
+    if let Some(d) = deltas {
+        if let Ok(json) = serde_json::to_string_pretty(d) {
+            prompt.push_str(&format!(
+                "\n\nChange since the previous report (its baseline was captured ~{:.1} days ago). \
+                 `changed` is level moves keyed by series. `new` / `missing` are series present \
+                 in only one run's *gathered* baseline — when an entry carries a `reason` (or the \
+                 baseline `gaps` manifest names it), its absence is a data-availability gap \
+                 (`unavailable` / `rejected` / `malformed`), not the series itself entering or \
+                 leaving the market:\n{json}",
+                d.elapsed_days
+            ));
+        }
     }
-    match serde_json::to_string_pretty(baseline) {
-        Ok(json) => format!("{USER_PROMPT}\n\nBaseline market data gathered for this report:\n{json}"),
-        Err(_) => USER_PROMPT.to_string(),
-    }
+
+    prompt
 }
 
 /// The model's structured return: the Markdown body plus the analytical fields.
@@ -708,7 +732,7 @@ impl MainAgent for ModelMainAgent {
         let provider = self.config.model.provider();
         let model_id = self.config.model.model_id();
         let schema = response_envelope_schema();
-        let user = build_user_prompt(&input.baseline);
+        let user = build_user_prompt(&input.baseline, input.deltas.as_ref());
         let body = match provider {
             Provider::Anthropic => build_anthropic_request(model_id, SYSTEM_PROMPT, &user, &schema),
             Provider::OpenAi => build_openai_request(model_id, SYSTEM_PROMPT, &user, &schema),
@@ -825,7 +849,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let prompt = build_user_prompt(&baseline);
+        let prompt = build_user_prompt(&baseline, None);
         assert!(prompt.starts_with(USER_PROMPT), "{prompt}");
         assert!(prompt.contains("^GSPC"), "{prompt}");
         assert!(prompt.contains("Baseline market data"), "{prompt}");
@@ -843,7 +867,63 @@ mod tests {
 
     #[test]
     fn user_prompt_is_bare_when_baseline_empty() {
-        assert_eq!(build_user_prompt(&BaselineMarketData::default()), USER_PROMPT);
+        assert_eq!(
+            build_user_prompt(&BaselineMarketData::default(), None),
+            USER_PROMPT
+        );
+    }
+
+    fn one_index_baseline() -> BaselineMarketData {
+        use crate::data_sources::Quote;
+        BaselineMarketData {
+            indices: vec![Quote {
+                symbol: "^GSPC".into(),
+                name: "S&P 500".into(),
+                price: 5_610.0,
+                change_pct: 0.4,
+                unit: "index points".into(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn user_prompt_appends_change_block_when_deltas_present() {
+        use crate::baseline_delta::{BaselineDeltas, Direction, SeriesDelta};
+        use crate::data_sources::GroupKind;
+        let deltas = BaselineDeltas {
+            elapsed_days: 6.0,
+            changed: vec![SeriesDelta {
+                group: GroupKind::Indices,
+                id: "^GSPC".into(),
+                name: "S&P 500".into(),
+                current: 5_610.0,
+                prior: 5_500.0,
+                abs_change: 110.0,
+                pct_change: Some(2.0),
+                direction: Direction::Up,
+            }],
+            new: vec![],
+            missing: vec![],
+        };
+        let prompt = build_user_prompt(&one_index_baseline(), Some(&deltas));
+        assert!(
+            prompt.contains("Change since the previous report"),
+            "{prompt}"
+        );
+        // Cadence-honest framing names the actual elapsed interval, not a week.
+        assert!(prompt.contains("6.0 days"), "{prompt}");
+        // The serialized change view rides in, so the model reads the move, not just the level.
+        assert!(prompt.contains("abs_change"), "{prompt}");
+    }
+
+    #[test]
+    fn user_prompt_omits_change_block_when_no_deltas() {
+        let prompt = build_user_prompt(&one_index_baseline(), None);
+        assert!(
+            !prompt.contains("Change since the previous report"),
+            "{prompt}"
+        );
     }
 
     #[test]

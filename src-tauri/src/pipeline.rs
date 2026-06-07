@@ -11,7 +11,10 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::agent::{MainAgent, MainAgentInput, ReportSummary};
-use crate::data_sources::{BaselineMarketData, GroupKind, MarketDataSource};
+use crate::baseline_delta::{self, BaselineDeltas};
+use crate::data_sources::{
+    BaselineMarketData, GroupKind, MarketDataSource, BASELINE_SCHEMA_VERSION,
+};
 use crate::progress::RunContext;
 use crate::storage::{self, ReportRecord};
 
@@ -58,6 +61,12 @@ pub fn generate_report(
     paths: &ReportPaths,
     ctx: &RunContext,
 ) -> Result<GeneratedReport> {
+    // The app-minted "as of" time for this run's baseline: the anchor both for the
+    // persisted snapshot's `captured_at` and for the elapsed interval in the change view
+    // below. Deliberately distinct from the report's agent-minted `created_at` (they
+    // differ by the agent's runtime); the snapshot↔report join is by `report_id`, not time.
+    let as_of = chrono::Utc::now();
+
     // Step 6: baseline market data is gathered before agent reasoning and is not
     // optional (`docs/weekly-report-workflow.md §Step 6`). Each adapter records what it
     // couldn't resolve in `baseline.gaps` instead of failing; the coverage gate then
@@ -85,8 +94,15 @@ pub fn generate_report(
     ctx.step_finished("coverage", "ok", None);
     bail_if_cancelled(ctx)?;
 
+    // Compute the change view against the previous report's snapshot, and serialize this
+    // run's baseline for persistence — both before `baseline` is moved into the agent
+    // input. Reads/compute are best-effort (`None` on a first report or any failure); the
+    // serialization is captured here because `baseline` is consumed by the agent below.
+    let deltas = compute_prior_deltas(&paths.db_path, &baseline, as_of);
+    let baseline_json = serde_json::to_string(&baseline).ok();
+
     ctx.step_started("agent", "Main agent writing the report");
-    let output = match agent.generate(MainAgentInput { baseline }) {
+    let output = match agent.generate(MainAgentInput { baseline, deltas }) {
         Ok(output) => output,
         Err(e) => {
             // A cancel observed mid-stream surfaces as a parse error here; mark the
@@ -129,6 +145,31 @@ pub fn generate_report(
         )
         .context("inserting report record")?;
 
+        // Best-effort: persist this run's baseline snapshot for the next report's change
+        // view, then prune to the retention cap. A snapshot or prune failure must never
+        // lose a report that already generated and persisted, so errors are logged to
+        // stderr and swallowed rather than propagated — a persistent schema/permission
+        // fault would otherwise silently disable baseline history with no diagnostic trail.
+        if let Some(json) = &baseline_json {
+            if let Err(e) = storage::insert_baseline_snapshot(
+                &conn,
+                &summary.report_id,
+                &as_of.to_rfc3339(),
+                BASELINE_SCHEMA_VERSION,
+                json,
+            ) {
+                eprintln!(
+                    "baseline-snapshot persist failed for report {}: {e:#}",
+                    summary.report_id
+                );
+            }
+            if let Err(e) =
+                storage::prune_baseline_snapshots(&conn, storage::BASELINE_SNAPSHOT_RETENTION)
+            {
+                eprintln!("baseline-snapshot prune failed: {e:#}");
+            }
+        }
+
         Ok(GeneratedReport {
             report_id: summary.report_id.clone(),
             markdown: output.markdown,
@@ -153,6 +194,28 @@ fn bail_if_cancelled(ctx: &RunContext) -> Result<()> {
         bail!("run cancelled before completion");
     }
     Ok(())
+}
+
+/// Best-effort change view for this run: read the previous report's baseline snapshot and
+/// diff this run's scan against it (`baseline_delta::compute_deltas`), anchored on the
+/// elapsed interval `as_of − captured_at`. Returns `None` — and the run proceeds without
+/// deltas — for the first report, any DB error, or a prior blob that won't decode. The
+/// deltas are additive context, never a gate, so every failure degrades to `None` rather
+/// than propagating.
+fn compute_prior_deltas(
+    db_path: &std::path::Path,
+    current: &BaselineMarketData,
+    as_of: chrono::DateTime<chrono::Utc>,
+) -> Option<BaselineDeltas> {
+    let conn = storage::open(db_path).ok()?;
+    storage::init_schema(&conn).ok()?;
+    let (captured_at, baseline_json) = storage::latest_baseline_snapshot(&conn).ok()??;
+    let prior: BaselineMarketData = serde_json::from_str(&baseline_json).ok()?;
+    let prior_at = chrono::DateTime::parse_from_rfc3339(&captured_at)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let elapsed_days = (as_of - prior_at).num_seconds() as f64 / 86_400.0;
+    Some(baseline_delta::compute_deltas(current, &prior, elapsed_days))
 }
 
 /// The minimum fraction of a Step-6 group's *expected* series that must resolve for the

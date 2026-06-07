@@ -6,22 +6,68 @@
 use std::sync::Mutex;
 
 use market_signal_temp_lib::agent::{MainAgent, MainAgentInput, MainAgentOutput, StubMainAgent};
+use market_signal_temp_lib::baseline_delta::{BaselineDeltas, Direction};
 use market_signal_temp_lib::data_sources::{
-    BaselineMarketData, MarketDataSource, StubMarketDataSource,
+    BaselineMarketData, MarketDataSource, Quote, StubMarketDataSource,
 };
 use market_signal_temp_lib::pipeline::{generate_report, ReportPaths};
 use market_signal_temp_lib::progress::RunContext;
 
-/// Wraps the stub agent and records the baseline it was handed, so the test can
-/// assert the pipeline's Step-6 gather reached the agent stage.
+/// Wraps the stub agent and records the baseline *and* the change view it was handed, so
+/// the tests can assert both the Step-6 gather and the prior-snapshot diff reached the
+/// agent stage. `seen_deltas` is `Some(None)` once the agent ran with no change view,
+/// `Some(Some(_))` once it ran with one.
 struct RecordingAgent {
     seen: Mutex<Option<BaselineMarketData>>,
+    seen_deltas: Mutex<Option<Option<BaselineDeltas>>>,
+}
+
+impl RecordingAgent {
+    fn new() -> Self {
+        Self {
+            seen: Mutex::new(None),
+            seen_deltas: Mutex::new(None),
+        }
+    }
 }
 
 impl MainAgent for RecordingAgent {
     fn generate(&self, input: MainAgentInput) -> anyhow::Result<MainAgentOutput> {
         *self.seen.lock().unwrap() = Some(input.baseline.clone());
+        *self.seen_deltas.lock().unwrap() = Some(input.deltas.clone());
         StubMainAgent.generate(input)
+    }
+}
+
+/// A data source that returns a fixed baseline, so two successive runs can be given
+/// baselines that differ by a known amount.
+struct FixedMarketDataSource(BaselineMarketData);
+
+impl MarketDataSource for FixedMarketDataSource {
+    fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData> {
+        Ok(self.0.clone())
+    }
+}
+
+/// A minimal coverage-passing baseline (indices + internals clear the floor) with the
+/// S&P 500 at `sp_price`.
+fn base_with_sp(sp_price: f64) -> BaselineMarketData {
+    BaselineMarketData {
+        indices: vec![Quote {
+            symbol: "^GSPC".into(),
+            name: "S&P 500".into(),
+            price: sp_price,
+            change_pct: 0.0,
+            unit: "index points".into(),
+        }],
+        internals: vec![Quote {
+            symbol: "^VIX".into(),
+            name: "CBOE Volatility Index".into(),
+            price: 14.0,
+            change_pct: 0.0,
+            unit: "index points".into(),
+        }],
+        ..Default::default()
     }
 }
 
@@ -64,9 +110,7 @@ fn step_6_baseline_scan_reaches_the_agent_input() {
         reports_dir: dir.path().join("reports"),
     };
 
-    let agent = RecordingAgent {
-        seen: Mutex::new(None),
-    };
+    let agent = RecordingAgent::new();
     generate_report(&agent, &StubMarketDataSource, &paths, &RunContext::noop()).unwrap();
 
     // The pipeline gathered the data source's baseline and handed it to the agent
@@ -74,4 +118,60 @@ fn step_6_baseline_scan_reaches_the_agent_input() {
     let seen = agent.seen.lock().unwrap().clone().expect("agent was invoked");
     let expected = StubMarketDataSource.baseline_scan().unwrap();
     assert_eq!(seen, expected);
+}
+
+#[test]
+fn second_report_diffs_against_the_first_and_snapshots_persist() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+
+    // Run 1: the first report has no prior snapshot, so the agent sees no change view.
+    // The run still persists this run's baseline for the next report to diff against.
+    let agent1 = RecordingAgent::new();
+    generate_report(
+        &agent1,
+        &FixedMarketDataSource(base_with_sp(5_500.0)),
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+    assert!(
+        agent1.seen_deltas.lock().unwrap().clone().flatten().is_none(),
+        "first report has no prior snapshot to diff"
+    );
+
+    // Run 2: the S&P moved +110. The pipeline reads run 1's snapshot and hands the agent
+    // the deterministic change view.
+    let agent2 = RecordingAgent::new();
+    generate_report(
+        &agent2,
+        &FixedMarketDataSource(base_with_sp(5_610.0)),
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+    let deltas = agent2
+        .seen_deltas
+        .lock()
+        .unwrap()
+        .clone()
+        .flatten()
+        .expect("second report carries a change view");
+    let sp = deltas
+        .changed
+        .iter()
+        .find(|d| d.id == "^GSPC")
+        .expect("S&P delta present");
+    assert!((sp.abs_change - 110.0).abs() < 1e-9);
+    assert_eq!(sp.direction, Direction::Up);
+
+    // Both runs persisted a baseline snapshot.
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM baseline_snapshots", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
 }

@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod baseline_delta;
 pub mod bls;
 pub mod config;
 pub mod connection_test;
