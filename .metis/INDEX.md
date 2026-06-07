@@ -31,7 +31,7 @@
 
 ## Scheduling & runtime
 - Weekly job schedule (Sunday 9:00 AM local) — scheduling.md §Weekly Market Report Job
-- Job states (Successful / Failed / Missed / Skipped) — scheduling.md §Job States
+- Job states (Successful / Failed / Missed / Skipped / Cancelled) — scheduling.md §Job States
 - App-must-be-running / system tray — scheduling.md §Application Runtime Requirements
 - System sleep behavior — scheduling.md §System Sleep Behavior
 - Offline behavior — scheduling.md §Offline Behavior
@@ -41,6 +41,14 @@
 - Manual report generation — scheduling.md §Manual Report Generation
 - Error handling — scheduling.md §Error Handling
 - Missed job detection (no replay/queue) — scheduling.md §Missed Job Detection
+
+## Run tracking & cancellation
+- Live run tracker (replaces the report pane while a job runs; latest-run-only) — run-tracking.md §What the Tracker Shows; interface.md
+- Per-request pass/fail rows (one row per actual API call) — run-tracking.md §What the Tracker Shows
+- Streamed main-agent output (report text token-by-token) — run-tracking.md §What the Tracker Shows
+- Job cancellation (cooperative; Cancelled state, raises no warning) — run-tracking.md §Cancellation; scheduling.md §Job States
+- Run-is-not-a-report invariant — run-tracking.md §A Run Is Not a Report
+- Reaching the tracker (footer: View progress / View run log) — run-tracking.md §Reaching the Tracker
 
 ## Weekly report workflow (17 steps)
 - End-to-end step list — weekly-report-workflow.md §Steps 1–17
@@ -92,6 +100,7 @@
 ## Interface
 - Main layout tree — interface.md §Main Layout
 - Latest Report View / Recent Reports Sidebar — interface.md; weekly-report-workflow.md §Step 17
+- Run Tracker (live job progress; replaces report pane) — interface.md; run-tracking.md
 - Persistent Warning Area (5 categories, de-dup, dismiss) — interface.md §Persistent Warning Area; scheduling.md §Error Handling
 
 ## Export

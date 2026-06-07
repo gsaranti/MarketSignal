@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::agent::{MainAgent, MainAgentInput, ReportSummary};
 use crate::data_sources::{BaselineMarketData, GroupKind, MarketDataSource};
+use crate::progress::RunContext;
 use crate::storage::{self, ReportRecord};
 
 /// Filesystem locations a run reads and writes. Injected so tests can point at
@@ -41,10 +42,21 @@ pub struct GeneratedReport {
 /// `enforce_coverage` gate below is the single place a too-thin baseline fails the
 /// run, which `jobs::run_job` records as a failed job (`docs/scheduling.md §Offline
 /// Behavior`).
+///
+/// `ctx` is the run's progress/cancel context (`progress::RunContext`). Each of the
+/// four stages below brackets its work in a `step_started` / `step_finished` pair so
+/// an open window can render the run live; the real data adapters and the streaming
+/// model adapter emit their own finer-grained events *inside* the baseline and agent
+/// steps. A cancel requested mid-run is observed at the boundaries between stages
+/// (`bail_if_cancelled`) — a `reqwest::blocking` call already in flight is not
+/// interrupted — and surfaces as a recognizable error that `jobs::run_job` maps to a
+/// Cancelled outcome. Tests and offline smokes pass `RunContext::noop()`, which
+/// reports nowhere and is never cancelled, so this stays the same pure spine.
 pub fn generate_report(
     agent: &dyn MainAgent,
     data: &dyn MarketDataSource,
     paths: &ReportPaths,
+    ctx: &RunContext,
 ) -> Result<GeneratedReport> {
     // Step 6: baseline market data is gathered before agent reasoning and is not
     // optional (`docs/weekly-report-workflow.md §Step 6`). Each adapter records what it
@@ -54,40 +66,93 @@ pub fn generate_report(
     // the floor message as the failed-job detail. The gaps that *don't* trip the floor
     // ride into `MainAgentInput` and on into the model prompt, so the agent reasons over
     // what's known-absent rather than inferring it.
-    let baseline = data.baseline_scan()?;
-    enforce_coverage(&baseline)?;
-    let output = agent.generate(MainAgentInput { baseline })?;
-    let summary = output.summary;
+    ctx.step_started("baseline", "Gathering baseline market data");
+    let baseline = match data.baseline_scan() {
+        Ok(baseline) => baseline,
+        Err(e) => {
+            ctx.step_finished("baseline", "failed", Some(e.to_string()));
+            return Err(e);
+        }
+    };
+    ctx.step_finished("baseline", "ok", None);
+    bail_if_cancelled(ctx)?;
 
-    std::fs::create_dir_all(&paths.reports_dir)
-        .with_context(|| format!("creating reports directory {:?}", paths.reports_dir))?;
+    ctx.step_started("coverage", "Checking baseline coverage");
+    if let Err(e) = enforce_coverage(&baseline) {
+        ctx.step_finished("coverage", "failed", Some(e.to_string()));
+        return Err(e);
+    }
+    ctx.step_finished("coverage", "ok", None);
+    bail_if_cancelled(ctx)?;
 
-    let filename =
-        canonical_report_filename(&summary.created_at, &summary.report_id, &chrono::Local)?;
-    let markdown_path = paths.reports_dir.join(&filename);
-    std::fs::write(&markdown_path, &output.markdown)
-        .with_context(|| format!("writing report markdown {:?}", markdown_path))?;
-    let markdown_path_str = markdown_path.to_string_lossy().into_owned();
+    ctx.step_started("agent", "Main agent writing the report");
+    let output = match agent.generate(MainAgentInput { baseline }) {
+        Ok(output) => output,
+        Err(e) => {
+            // A cancel observed mid-stream surfaces as a parse error here; mark the
+            // step cancelled (not failed) so the tracker reads consistently with the
+            // run's Cancelled outcome.
+            let status = if ctx.is_cancelled() { "cancelled" } else { "failed" };
+            ctx.step_finished("agent", status, Some(e.to_string()));
+            return Err(e);
+        }
+    };
+    ctx.step_finished("agent", "ok", None);
+    bail_if_cancelled(ctx)?;
 
-    let conn = storage::open(&paths.db_path)?;
-    storage::init_schema(&conn)?;
-    let summary_json = serde_json::to_string(&summary)?;
-    storage::insert_report(
-        &conn,
-        &ReportRecord {
-            summary: &summary,
-            markdown_path: &markdown_path_str,
-            summary_json: &summary_json,
-        },
-    )
-    .context("inserting report record")?;
+    // Persist: write the canonical Markdown file and the SQLite record. The `?`
+    // ergonomics stay inside an immediately-invoked closure so any failure still
+    // flips the persist step to `failed` with its reason.
+    ctx.step_started("persist", "Saving the report");
+    let report = (|| -> Result<GeneratedReport> {
+        let summary = output.summary;
+        std::fs::create_dir_all(&paths.reports_dir)
+            .with_context(|| format!("creating reports directory {:?}", paths.reports_dir))?;
 
-    Ok(GeneratedReport {
-        report_id: summary.report_id.clone(),
-        markdown: output.markdown,
-        markdown_path: markdown_path_str,
-        summary,
-    })
+        let filename =
+            canonical_report_filename(&summary.created_at, &summary.report_id, &chrono::Local)?;
+        let markdown_path = paths.reports_dir.join(&filename);
+        std::fs::write(&markdown_path, &output.markdown)
+            .with_context(|| format!("writing report markdown {:?}", markdown_path))?;
+        let markdown_path_str = markdown_path.to_string_lossy().into_owned();
+
+        let conn = storage::open(&paths.db_path)?;
+        storage::init_schema(&conn)?;
+        let summary_json = serde_json::to_string(&summary)?;
+        storage::insert_report(
+            &conn,
+            &ReportRecord {
+                summary: &summary,
+                markdown_path: &markdown_path_str,
+                summary_json: &summary_json,
+            },
+        )
+        .context("inserting report record")?;
+
+        Ok(GeneratedReport {
+            report_id: summary.report_id.clone(),
+            markdown: output.markdown,
+            markdown_path: markdown_path_str,
+            summary,
+        })
+    })();
+    match &report {
+        Ok(_) => ctx.step_finished("persist", "ok", None),
+        Err(e) => ctx.step_finished("persist", "failed", Some(e.to_string())),
+    }
+    report
+}
+
+/// Cancel checkpoint between pipeline stages. A cancel requested mid-run lands
+/// here: the run stops with a recognizable error that `jobs::run_job` reclassifies
+/// as a Cancelled outcome (keyed off the same shared cancel flag) rather than a
+/// Failed one. An in-flight HTTP request is never interrupted — the cancel takes
+/// effect at the next boundary.
+fn bail_if_cancelled(ctx: &RunContext) -> Result<()> {
+    if ctx.is_cancelled() {
+        bail!("run cancelled before completion");
+    }
+    Ok(())
 }
 
 /// The minimum fraction of a Step-6 group's *expected* series that must resolve for the

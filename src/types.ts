@@ -61,6 +61,7 @@ export interface JobStatus {
   last_failed_at: string | null;
   last_failure_detail: string | null;
   last_skipped_at: string | null;
+  last_cancelled_at: string | null;
 }
 
 // Mirrors the Rust `settings::*` structs (docs/configuration.md). The Settings
@@ -120,4 +121,76 @@ export interface CredentialUpdate {
   fmp: string | null;
   fred: string | null;
   tavily: string | null;
+}
+
+// --- Live job tracker -------------------------------------------------------
+// Mirrors the Rust `progress::ProgressMessage` streamed over the "job-progress"
+// Tauri event while a run is in flight. Discriminated by `kind`; every message
+// also carries `run_id` (to discard stragglers from a prior run) and a monotonic
+// `seq`. Fields beyond those two are present only on the variants that use them.
+export type ProgressKind =
+  | "run-started"
+  | "step-started"
+  | "step-finished"
+  | "request-started"
+  | "request-finished"
+  | "agent-token"
+  | "run-finished";
+
+export interface ProgressMessage {
+  run_id: string;
+  seq: number;
+  kind: ProgressKind;
+  // run-started: a short human title for the run.
+  label?: string;
+  // step-started / step-finished: the stable step key + its human label.
+  step?: string;
+  // step-finished ("ok" | "failed" | "cancelled"), request-finished ("ok" or a
+  // gap reason), run-finished ("successful" | "failed" | "cancelled").
+  status?: string;
+  detail?: string | null;
+  // request-finished: one baseline series' provider / group / id / name.
+  provider?: string;
+  group?: string;
+  series_id?: string;
+  name?: string;
+  // agent-token: a coalesced chunk of the streamed report text.
+  delta?: string;
+  // run-finished: the new report's id, on success only.
+  report_id?: string | null;
+}
+
+// One baseline data request, as shown in the tracker (one row per actual HTTP
+// call). `status` is "running" while in-flight, then "ok", "empty" (a 2xx with no
+// usable data), or a gap reason (unavailable / rejected / malformed / out-of-scope).
+export interface TrackerRequest {
+  provider: string;
+  group: string;
+  seriesId: string;
+  name: string;
+  status: string;
+  detail: string | null;
+}
+
+export type StepStatus = "pending" | "running" | "ok" | "failed" | "cancelled";
+
+// One pipeline step in the tracker. `requests` carries the baseline step's
+// per-series rows; `agentText` accumulates the main-agent step's streamed report.
+export interface TrackerStep {
+  key: string;
+  label: string;
+  status: StepStatus;
+  detail: string | null;
+  requests: TrackerRequest[];
+  agentText: string;
+}
+
+// The assembled trace for one run, built in App.vue from the event stream and
+// rendered by JobTrackerView. `terminal` is null until the run finishes; it then
+// carries the outcome so the trace can linger (reopenable) after the run ends.
+export interface RunTrace {
+  runId: string;
+  label: string;
+  steps: TrackerStep[];
+  terminal: { status: string; detail: string | null } | null;
 }

@@ -12,6 +12,7 @@ pub mod jobs;
 pub mod model_agent;
 pub mod news;
 pub mod pipeline;
+pub mod progress;
 pub mod research;
 pub mod schedule;
 pub mod settings;
@@ -19,6 +20,8 @@ pub mod storage;
 pub mod tavily;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::menu::{Menu, MenuItem};
@@ -35,12 +38,57 @@ use fmp::FmpDataSource;
 use fred::FredDataSource;
 use model_agent::ModelMainAgent;
 use pipeline::{GeneratedReport, ReportPaths};
+use progress::{ProgressMessage, ProgressReporter, RunContext};
 
 /// How long the scheduler sleeps between wake-ups while waiting for the next
 /// window. Bounded (rather than one long sleep to the window) so a clock change
 /// or a suspend/resume is re-evaluated within the hour instead of overshooting
 /// silently.
 const SCHEDULER_POLL_CHUNK: Duration = Duration::from_secs(60 * 60);
+
+/// Tauri event name carrying every [`ProgressMessage`] for the live job tracker.
+/// The frontend listens on this and accumulates the run's trace by `run_id`.
+const JOB_PROGRESS_EVENT: &str = "job-progress";
+
+/// Shared cancel flag for the in-flight run. Managed once by the app; the
+/// `cancel_run` command flips it, and each run's `RunContext` reads the same bool —
+/// the run resets it to `false` as it begins (`live_run_context`), so a stale cancel
+/// from a dismissed prior run never carries over. A single flag suffices because the
+/// `RunGuard` allows only one run at a time.
+#[derive(Clone, Default)]
+struct CancelFlag(Arc<AtomicBool>);
+
+/// A [`ProgressReporter`] that forwards each message to the webview as a
+/// `job-progress` Tauri event. Defined here, not in `progress`, so that module keeps
+/// no `tauri` dependency and stays unit-testable.
+struct TauriReporter {
+    app: tauri::AppHandle,
+}
+
+impl ProgressReporter for TauriReporter {
+    fn report(&self, message: &ProgressMessage) {
+        // Best-effort: a closed/hidden window just means no one is listening.
+        let _ = self.app.emit(JOB_PROGRESS_EVENT, message);
+    }
+}
+
+/// Build the run context for one live run: a fresh run id, a Tauri-event reporter,
+/// and the shared cancel flag. The flag is *not* reset here — `run_job` clears it
+/// once it owns the concurrency slot (`RunContext::reset_cancel`), so a competing
+/// attempt that is then skipped can't wipe an active run's cancellation.
+fn live_run_context(app: &tauri::AppHandle, cancel: Arc<AtomicBool>) -> Arc<RunContext> {
+    let reporter: Arc<dyn ProgressReporter> = Arc::new(TauriReporter { app: app.clone() });
+    RunContext::new(uuid::Uuid::new_v4().to_string(), reporter, cancel)
+}
+
+/// Request cancellation of the in-flight run (the tracker's Cancel button). Sets the
+/// shared cancel flag the run polls at its step / request boundaries; an HTTP call
+/// already in flight is not interrupted, so the run stops at the next checkpoint. A
+/// no-op when no run is active — the next run resets the flag as it begins.
+#[tauri::command]
+fn cancel_run(cancel: tauri::State<'_, CancelFlag>) {
+    cancel.0.store(true, Ordering::Relaxed);
+}
 
 /// Report the current warning state for the Persistent Warning Area. Read-only:
 /// it validates the config substrate (`docs/weekly-report-workflow.md §Step 1`)
@@ -134,6 +182,7 @@ fn research_archive_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 async fn generate_report_manual(
     app: tauri::AppHandle,
     guard: tauri::State<'_, RunGuard>,
+    cancel: tauri::State<'_, CancelFlag>,
 ) -> Result<GeneratedReport, String> {
     // Execution gate: refuse a blocked run before doing any work. The config is
     // read from the saved Settings store (env fallback) on a connection opened and
@@ -154,19 +203,32 @@ async fn generate_report_manual(
     let paths = report_paths(&app)?;
 
     let guard = guard.inner().clone();
+    // One run context for the whole run: a fresh id, the Tauri-event reporter, and the
+    // shared cancel flag (reset here for this run). Cloned into each adapter and the
+    // agent so the baseline scan streams per-series rows and the agent streams its
+    // report text; borrowed by `run_job` for the step events + cancel checkpoints.
+    let ctx = live_run_context(&app, cancel.inner().0.clone());
 
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let agent = ModelMainAgent::new(main_config).map_err(|e| e.to_string())?;
+        let agent = ModelMainAgent::new(main_config)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
         // The baseline scan is FMP (indices / VIX / gold / sectors) + FRED (yields,
         // dollar index, oil, gas, macro levels) + BLS (labor levels) merged behind one
         // trait (`docs/weekly-report-workflow.md §Step 6`). BLS is keyless (not in the
         // execution gate); it nests as the outer secondary so its labor_levels group
         // folds into the FMP+FRED baseline.
-        let fmp = FmpDataSource::new(fmp_key).map_err(|e| e.to_string())?;
-        let fred = FredDataSource::new(fred_key).map_err(|e| e.to_string())?;
-        let bls = BlsDataSource::new().map_err(|e| e.to_string())?;
+        let fmp = FmpDataSource::new(fmp_key)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let fred = FredDataSource::new(fred_key)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let bls = BlsDataSource::new()
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
         let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
-        run_job(&agent, &data, &paths, &guard).map_err(|e| e.to_string())
+        run_job(&agent, &data, &paths, &guard, &ctx).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("report generation task failed: {e}"))??;
@@ -175,6 +237,10 @@ async fn generate_report_manual(
         JobOutcome::Successful(report) => Ok(*report),
         JobOutcome::Failed(msg) => Err(msg),
         JobOutcome::Skipped(reason) => Err(reason),
+        // The tracker shows the cancelled terminal state from the `run-finished` event;
+        // the command still resolves to `Err` so the frontend's generate() settles
+        // (its catch suppresses the failure banner when the user asked to cancel).
+        JobOutcome::Cancelled(reason) => Err(reason),
     }
 }
 
@@ -509,16 +575,27 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
     };
 
     let guard = app.state::<RunGuard>().inner().clone();
+    // A scheduled run streams to an open window through the same context as a manual
+    // run, so the tracker shows a Sunday-9AM run live and its Cancel button works.
+    let ctx = live_run_context(app, app.state::<CancelFlag>().inner().0.clone());
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let agent = ModelMainAgent::new(run_config.main).map_err(|e| e.to_string())?;
+        let agent = ModelMainAgent::new(run_config.main)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
         // FMP + FRED + BLS merged behind one trait, identical to the manual command's
         // baseline source (`docs/weekly-report-workflow.md §Step 6`). BLS is keyless,
         // nested as the outer secondary to fold in the labor_levels group.
-        let fmp = FmpDataSource::new(run_config.fmp_api_key).map_err(|e| e.to_string())?;
-        let fred = FredDataSource::new(run_config.fred_api_key).map_err(|e| e.to_string())?;
-        let bls = BlsDataSource::new().map_err(|e| e.to_string())?;
+        let fmp = FmpDataSource::new(run_config.fmp_api_key)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let fred = FredDataSource::new(run_config.fred_api_key)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let bls = BlsDataSource::new()
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
         let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
-        run_job(&agent, &data, &paths, &guard).map_err(|e| e.to_string())
+        run_job(&agent, &data, &paths, &guard, &ctx).map_err(|e| e.to_string())
     })
     .await;
 
@@ -536,6 +613,10 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
         }
         Ok(Ok(JobOutcome::Skipped(reason))) => {
             log_scheduler(format!("skipped: {reason}"));
+            None
+        }
+        Ok(Ok(JobOutcome::Cancelled(reason))) => {
+            log_scheduler(format!("cancelled: {reason}"));
             None
         }
         Ok(Err(e)) => {
@@ -571,8 +652,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(RunGuard::default())
+        .manage(CancelFlag::default())
         .invoke_handler(tauri::generate_handler![
             generate_report_manual,
+            cancel_run,
             list_reports,
             load_report,
             export_report_markdown,

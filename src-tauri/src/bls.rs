@@ -37,6 +37,7 @@
 //! the report (recorded in the manifest) rather than blocking it; the central coverage
 //! gate (`pipeline::enforce_coverage`) owns the run's floor.
 
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use anyhow::{anyhow, Context, Result};
@@ -47,6 +48,7 @@ use serde_json::Value;
 use crate::data_sources::{
     BaselineMarketData, DataGap, GapReason, GroupKind, MarketDataSource, Quote,
 };
+use crate::progress::RunContext;
 
 /// BLS Public Data API v2 time-series endpoint — a JSON POST batch of series ids.
 const BLS_DATA_URL: &str = "https://api.bls.gov/publicAPI/v2/timeseries/data/";
@@ -266,6 +268,9 @@ fn year_window(current_year: i32) -> (String, String) {
 /// Live BLS adapter behind the `MarketDataSource` trait.
 pub struct BlsDataSource {
     http: reqwest::blocking::Client,
+    /// Run context for live progress + cooperative cancellation; a no-op by default
+    /// (tests / smokes), the live one attached via [`BlsDataSource::with_context`].
+    progress: Arc<RunContext>,
 }
 
 impl BlsDataSource {
@@ -274,7 +279,18 @@ impl BlsDataSource {
             .timeout(BLS_TIMEOUT)
             .build()
             .context("building the BLS HTTP client")?;
-        Ok(Self { http })
+        Ok(Self {
+            http,
+            progress: RunContext::noop(),
+        })
+    }
+
+    /// Attach a live run context. BLS is a single batched request, so it streams one
+    /// tracker row per labor series after the batch resolves (the per-series status
+    /// comes from the assembled gaps), and honors a cancel observed before the POST.
+    pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
+        self.progress = ctx;
+        self
     }
 
     /// POST the full labor-series batch in one request, returning the status and raw
@@ -295,10 +311,38 @@ impl BlsDataSource {
 
 impl MarketDataSource for BlsDataSource {
     fn baseline_scan(&self) -> Result<BaselineMarketData> {
-        // One batched POST, so a request-level failure (transport, non-2xx, rejected, or
-        // a mis-shaped body) degrades the whole labor group to gaps at once rather than
-        // failing the scan; the central coverage gate owns the run's floor, and labor
-        // isn't a floor group. So this scan returns `Ok` for all data outcomes.
+        // Cancel before the single request: skip the POST and let the pipeline's
+        // post-baseline checkpoint unwind the run.
+        if self.progress.is_cancelled() {
+            return Ok(BaselineMarketData::default());
+        }
+        // BLS is one batched POST for all labor series, so the tracker shows exactly one
+        // request row (not one per series). Its status reflects the request outcome: `ok`
+        // when the batch returned data, otherwise the batch-level failure reason. The
+        // per-series gaps still ride into the data manifest for the agent.
+        let group = GroupKind::LaborLevels.as_str();
+        let id = "labor-batch";
+        let name = "Labor series (CPI, unemployment, payrolls, wages)";
+        self.progress.request_started("BLS", group, id, name);
+        let data = self.gather_labor();
+        let status = if !data.labor_levels.is_empty() {
+            "ok"
+        } else {
+            data.gaps.first().map(|g| g.reason.as_str()).unwrap_or("empty")
+        };
+        self.progress.request_finished("BLS", group, id, name, status, None);
+        Ok(data)
+    }
+}
+
+impl BlsDataSource {
+    /// Gather the labor group, degrading any request- or shape-level failure to a full
+    /// gap set. One batched POST, so a request-level failure (transport, non-2xx,
+    /// rejected, or a mis-shaped body) degrades the whole labor group to gaps at once
+    /// rather than failing the scan; the central coverage gate owns the run's floor, and
+    /// labor isn't a floor group. So this returns a value for all data outcomes — the
+    /// per-series tracker rows are layered on by `baseline_scan`.
+    fn gather_labor(&self) -> BaselineMarketData {
         let outcome = match self.post() {
             Ok((status, body)) => interpret_response(status, &body),
             Err(_) => Err((GapReason::Unavailable, "transport error".to_string())),
@@ -307,14 +351,14 @@ impl MarketDataSource for BlsDataSource {
             Ok(resp) => resp,
             Err((reason, detail)) => {
                 eprintln!("BLS labor batch unavailable ({detail}); recording all labor series as gaps");
-                return Ok(all_labor_gapped(reason));
+                return all_labor_gapped(reason);
             }
         };
         let results: BlsResults = match serde_json::from_value(resp.results) {
             Ok(results) => results,
             Err(_) => {
                 eprintln!("BLS Results did not match the expected shape; recording all labor series as gaps");
-                return Ok(all_labor_gapped(GapReason::Malformed));
+                return all_labor_gapped(GapReason::Malformed);
             }
         };
 
@@ -322,11 +366,11 @@ impl MarketDataSource for BlsDataSource {
         // each record a gap — see `assemble_labor_levels`. BLS fills only labor_levels;
         // the other groups are left empty for the composite to fill from FMP / FRED.
         let (labor_levels, gaps) = assemble_labor_levels(&results);
-        Ok(BaselineMarketData {
+        BaselineMarketData {
             labor_levels,
             gaps,
             ..Default::default()
-        })
+        }
     }
 }
 

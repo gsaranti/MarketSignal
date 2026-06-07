@@ -5,6 +5,7 @@
 use market_signal_temp_lib::agent::StubMainAgent;
 use market_signal_temp_lib::data_sources::StubMarketDataSource;
 use market_signal_temp_lib::pipeline::{generate_report, list_reports, load_report, ReportPaths};
+use market_signal_temp_lib::progress::RunContext;
 
 fn paths(dir: &std::path::Path) -> ReportPaths {
     ReportPaths {
@@ -18,8 +19,8 @@ fn lists_reports_newest_first_and_loads_one_back_by_id() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(dir.path());
 
-    let first = generate_report(&StubMainAgent, &StubMarketDataSource, &paths).unwrap();
-    let second = generate_report(&StubMainAgent, &StubMarketDataSource, &paths).unwrap();
+    let first = generate_report(&StubMainAgent, &StubMarketDataSource, &paths, &RunContext::noop()).unwrap();
+    let second = generate_report(&StubMainAgent, &StubMarketDataSource, &paths, &RunContext::noop()).unwrap();
 
     // Both reports list, newest (second) first. The rowid tiebreak in the query
     // keeps this stable even if the two stub timestamps collide.

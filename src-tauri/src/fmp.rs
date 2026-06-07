@@ -39,6 +39,7 @@
 //! (`pipeline::enforce_coverage`) decides whether that's below the run's floor.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use anyhow::{Context, Result};
@@ -47,9 +48,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::data_sources::{
-    BaselineMarketData, DataGap, GapReason, GroupKind, IndexPerformance, MarketDataSource, Quote,
-    SectorPerformance,
+    emit_series_row, BaselineMarketData, DataGap, GapReason, GroupKind, IndexPerformance,
+    MarketDataSource, Quote, SectorPerformance,
 };
+use crate::progress::RunContext;
 
 /// FMP's stable single-symbol quote endpoint — the one `connection_test` exercises.
 const FMP_QUOTE_URL: &str = "https://financialmodelingprep.com/stable/quote";
@@ -322,6 +324,10 @@ fn eod_to_performance(value: Value, symbol: &str, name: &str) -> Result<Option<I
 pub struct FmpDataSource {
     api_key: String,
     http: reqwest::blocking::Client,
+    /// Run context for live progress + cooperative cancellation. Defaults to a no-op
+    /// (tests / offline smokes); the live command path attaches the real one via
+    /// [`FmpDataSource::with_context`].
+    progress: Arc<RunContext>,
 }
 
 impl FmpDataSource {
@@ -330,7 +336,19 @@ impl FmpDataSource {
             .timeout(FMP_TIMEOUT)
             .build()
             .context("building the FMP HTTP client")?;
-        Ok(Self { api_key, http })
+        Ok(Self {
+            api_key,
+            http,
+            progress: RunContext::noop(),
+        })
+    }
+
+    /// Attach a live run context so the per-series scan streams a tracker row per
+    /// request and stops making requests once a cancel is observed. Without it the
+    /// adapter keeps its no-op context.
+    pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
+        self.progress = ctx;
+        self
     }
 
     /// Resolve the adapter from the environment, for the live smoke and any
@@ -366,10 +384,22 @@ impl FmpDataSource {
         let mut out = Vec::with_capacity(symbols.len());
         let mut rejected = false;
         for (symbol, fallback_name, unit) in symbols {
+            // Cancel checkpoint between series: stop hitting the API once a cancel is
+            // requested. The series already fetched are kept; the run unwinds at the
+            // pipeline's post-baseline checkpoint.
+            if self.progress.is_cancelled() {
+                break;
+            }
             if rejected {
+                // No request is made for a short-circuited series, so it gets no
+                // tracker row — rows stay one-to-one with actual HTTP calls.
                 gaps.push(DataGap::new(group, *symbol, *fallback_name, GapReason::Rejected));
                 continue;
             }
+            self.progress
+                .request_started("FMP", group.as_str(), *symbol, *fallback_name);
+            let gaps_before = gaps.len();
+            let out_before = out.len();
             let disposition = match self.get(FMP_QUOTE_URL, &[("symbol", symbol)]) {
                 Ok((status, body)) => interpret_response(status, &body),
                 Err(_) => Disposition::Gap(GapReason::Unavailable), // transport — unreachable
@@ -394,6 +424,16 @@ impl FmpDataSource {
                     gaps.push(DataGap::new(group, *symbol, *fallback_name, reason));
                 }
             }
+            emit_series_row(
+                &self.progress,
+                "FMP",
+                group,
+                symbol,
+                fallback_name,
+                gaps,
+                gaps_before,
+                out.len() > out_before,
+            );
         }
         out
     }
@@ -408,25 +448,44 @@ impl FmpDataSource {
     fn fetch_sectors(&self, gaps: &mut Vec<DataGap>) -> Vec<SectorPerformance> {
         let today = Utc::now().date_naive();
         for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
+            // Cancel checkpoint: the date-walk can fire several probes, so stop here
+            // rather than working through them after a cancel during an earlier group.
+            if self.progress.is_cancelled() {
+                return Vec::new();
+            }
+            // Each date probe is a real HTTP request, so each gets its own tracker row.
             let date_str = date.format("%Y-%m-%d").to_string();
+            let name = format!("Sector performance ({date_str})");
+            let group = GroupKind::Sectors.as_str();
+            self.progress
+                .request_started("FMP", group, date_str.as_str(), name.as_str());
             let disposition = match self.get(FMP_SECTOR_URL, &[("date", date_str.as_str())]) {
                 Ok((status, body)) => interpret_response(status, &body),
                 Err(_) => Disposition::Gap(GapReason::Unavailable),
             };
+            let finish = |status: &str| {
+                self.progress
+                    .request_finished("FMP", group, date_str.as_str(), name.as_str(), status, None)
+            };
             match disposition {
                 Disposition::Value(value) => match sectors_from_value(value) {
-                    Ok(sectors) if !sectors.is_empty() => return sectors,
+                    Ok(sectors) if !sectors.is_empty() => {
+                        finish("ok");
+                        return sectors;
+                    }
                     // An empty array — no snapshot for this weekday; try the prior one.
-                    Ok(_) => {}
+                    Ok(_) => finish("empty"),
                     Err(_) => {
+                        finish("malformed");
                         gaps.push(sector_gap(GapReason::Malformed));
                         return Vec::new();
                     }
                 },
                 // A legitimate per-date absence (404) — try the prior weekday.
-                Disposition::Gap(GapReason::OutOfScope) => {}
+                Disposition::Gap(GapReason::OutOfScope) => finish("out-of-scope"),
                 // Auth / quota / 5xx / transport — the snapshot is unavailable this run.
                 Disposition::Gap(reason) => {
+                    finish(reason.as_str());
                     gaps.push(sector_gap(reason));
                     return Vec::new();
                 }
@@ -453,7 +512,11 @@ impl FmpDataSource {
         let mut out = Vec::with_capacity(INDEX_SYMBOLS.len());
         let mut rejected = false;
         for &(symbol, name, _) in INDEX_SYMBOLS {
+            if self.progress.is_cancelled() {
+                break;
+            }
             if rejected {
+                // No request made for a short-circuited symbol — no tracker row.
                 gaps.push(DataGap::new(
                     GroupKind::IndexPerformance,
                     symbol,
@@ -462,6 +525,10 @@ impl FmpDataSource {
                 ));
                 continue;
             }
+            self.progress
+                .request_started("FMP", GroupKind::IndexPerformance.as_str(), symbol, name);
+            let gaps_before = gaps.len();
+            let out_before = out.len();
             let disposition = match self.get(
                 FMP_EOD_URL,
                 &[("symbol", symbol), ("from", from_s.as_str()), ("to", to_s.as_str())],
@@ -490,6 +557,16 @@ impl FmpDataSource {
                     gaps.push(DataGap::new(GroupKind::IndexPerformance, symbol, name, reason));
                 }
             }
+            emit_series_row(
+                &self.progress,
+                "FMP",
+                GroupKind::IndexPerformance,
+                symbol,
+                name,
+                gaps,
+                gaps_before,
+                out.len() > out_before,
+            );
         }
         out
     }
@@ -503,6 +580,8 @@ impl MarketDataSource for FmpDataSource {
         // merged baseline. So this scan returns `Ok` for all data outcomes; only a
         // catastrophic (non-data) fault would be an `Err`, and none arises here.
         let mut gaps = Vec::new();
+        // Each fetch streams its own per-request tracker rows (one per series / date
+        // probe / EOD-history call), so the scan emits no group-level summary rows.
         let indices = self.fetch_quotes(INDEX_SYMBOLS, GroupKind::Indices, &mut gaps);
         let internals = self.fetch_quotes(INTERNAL_SYMBOLS, GroupKind::Internals, &mut gaps);
         let sectors = self.fetch_sectors(&mut gaps);

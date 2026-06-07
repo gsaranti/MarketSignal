@@ -6,6 +6,7 @@
 use market_signal_temp_lib::agent::StubMainAgent;
 use market_signal_temp_lib::data_sources::StubMarketDataSource;
 use market_signal_temp_lib::pipeline::{export_markdown_to, generate_report, ReportPaths};
+use market_signal_temp_lib::progress::RunContext;
 
 fn paths(dir: &std::path::Path) -> ReportPaths {
     ReportPaths {
@@ -19,7 +20,7 @@ fn exports_stored_markdown_to_a_chosen_destination() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(dir.path());
 
-    let report = generate_report(&StubMainAgent, &StubMarketDataSource, &paths).unwrap();
+    let report = generate_report(&StubMainAgent, &StubMarketDataSource, &paths, &RunContext::noop()).unwrap();
 
     let dest = dir.path().join("exported.md");
     export_markdown_to(&paths, &report.report_id, &dest).unwrap();
@@ -37,7 +38,7 @@ fn exporting_an_unknown_id_is_a_typed_error() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(dir.path());
     // Persist one report so the schema exists; then export a different id.
-    generate_report(&StubMainAgent, &StubMarketDataSource, &paths).unwrap();
+    generate_report(&StubMainAgent, &StubMarketDataSource, &paths, &RunContext::noop()).unwrap();
 
     let dest = dir.path().join("exported.md");
     assert!(export_markdown_to(&paths, "does-not-exist", &dest).is_err());

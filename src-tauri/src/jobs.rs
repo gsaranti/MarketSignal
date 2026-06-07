@@ -25,6 +25,7 @@ use crate::agent::MainAgent;
 use crate::config::{WarningCategory, WarningKind};
 use crate::data_sources::MarketDataSource;
 use crate::pipeline::{generate_report, GeneratedReport, ReportPaths};
+use crate::progress::RunContext;
 use crate::storage;
 
 /// The only job type today; the schema carries it so additional recurring jobs
@@ -36,6 +37,9 @@ const WEEKLY_JOB_ENABLED_KEY: &str = "weekly_job_enabled";
 
 /// Reason recorded and returned when a run is rejected by the concurrency guard.
 const SKIP_REASON: &str = "another report run is already in progress";
+
+/// Human title for the run tracker, emitted as the run starts.
+const RUN_LABEL: &str = "Weekly market report";
 
 /// Whether the Weekly Market job is enabled. Enabled by default
 /// (`docs/scheduling.md §Job Controls`): an absent setting reads as `true`, so a
@@ -52,12 +56,16 @@ pub fn set_weekly_job_enabled(conn: &Connection, enabled: bool) -> Result<()> {
 
 /// How a job run ended (`docs/scheduling.md §Job States`). `Missed` is modeled by
 /// the scheduler slice that owns scheduled-window detection, not here, so it is
-/// intentionally absent from this enum until that slice lands.
+/// intentionally absent from this enum until that slice lands. `Cancelled` is the
+/// user-initiated stop from the live run tracker — recorded like `Skipped` (it never
+/// produced a report and never raises a failed-job warning), but kept distinct so the
+/// status panel and history can tell an aborted run from a concurrency skip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobState {
     Successful,
     Failed,
     Skipped,
+    Cancelled,
 }
 
 impl JobState {
@@ -67,6 +75,7 @@ impl JobState {
             JobState::Successful => "successful",
             JobState::Failed => "failed",
             JobState::Skipped => "skipped",
+            JobState::Cancelled => "cancelled",
         }
     }
 }
@@ -92,6 +101,7 @@ pub enum JobOutcome {
     Successful(Box<GeneratedReport>),
     Failed(String),
     Skipped(String),
+    Cancelled(String),
 }
 
 /// The single-workflow-at-a-time guard. A shared atomic flag (cloneable via the
@@ -146,6 +156,7 @@ pub fn run_job(
     data: &dyn MarketDataSource,
     paths: &ReportPaths,
     guard: &RunGuard,
+    ctx: &RunContext,
 ) -> Result<JobOutcome> {
     let conn = storage::open(&paths.db_path)?;
     storage::init_schema(&conn)?;
@@ -171,11 +182,21 @@ pub fn run_job(
         }
     };
 
+    // The run owns the slot now. Reset the cancel flag and open the tracker's lifecycle
+    // here — *after* the guard claim — so a concurrency-skipped run (which returned
+    // above) never emits a `run-started` and never resets the cancellation of the run
+    // that actually holds the slot.
+    ctx.reset_cancel();
+    ctx.run_started(RUN_LABEL);
+
     let started_at = now_rfc3339();
-    match generate_report(agent, data, paths) {
+    match generate_report(agent, data, paths, ctx) {
         Ok(report) => {
             let finished_at = now_rfc3339();
-            record_run(
+            // Emit the terminal tracker event even if the job-history write fails, so a
+            // (rare) database error can't leave the UI stuck showing a run in progress.
+            // The DB error still propagates after, as the infrastructure failure it is.
+            let recorded = record_run(
                 &conn,
                 &JobRun {
                     job_type: WEEKLY_MARKET_JOB,
@@ -185,13 +206,38 @@ pub fn run_job(
                     report_id: Some(&report.report_id),
                     detail: None,
                 },
-            )?;
+            );
+            ctx.run_finished("successful", None, Some(report.report_id.clone()));
+            recorded?;
             Ok(JobOutcome::Successful(Box::new(report)))
+        }
+        // A cancel requested mid-run surfaces as an error from `generate_report`; the
+        // shared cancel flag tells a user-initiated stop apart from a genuine failure.
+        // A cancel that lands after the report was already persisted is honored as the
+        // Ok(report) above — the work is done — so this branch only fires on a true
+        // mid-run stop.
+        Err(_) if ctx.is_cancelled() => {
+            let finished_at = now_rfc3339();
+            let detail = "run cancelled by user".to_string();
+            let recorded = record_run(
+                &conn,
+                &JobRun {
+                    job_type: WEEKLY_MARKET_JOB,
+                    state: JobState::Cancelled,
+                    started_at: &started_at,
+                    finished_at: &finished_at,
+                    report_id: None,
+                    detail: Some(&detail),
+                },
+            );
+            ctx.run_finished("cancelled", Some(detail.clone()), None);
+            recorded?;
+            Ok(JobOutcome::Cancelled(detail))
         }
         Err(e) => {
             let finished_at = now_rfc3339();
             let msg = e.to_string();
-            record_run(
+            let recorded = record_run(
                 &conn,
                 &JobRun {
                     job_type: WEEKLY_MARKET_JOB,
@@ -201,7 +247,9 @@ pub fn run_job(
                     report_id: None,
                     detail: Some(&msg),
                 },
-            )?;
+            );
+            ctx.run_finished("failed", Some(msg.clone()), None);
+            recorded?;
             Ok(JobOutcome::Failed(msg))
         }
     }
@@ -340,6 +388,7 @@ pub struct JobStatus {
     pub last_failed_at: Option<String>,
     pub last_failure_detail: Option<String>,
     pub last_skipped_at: Option<String>,
+    pub last_cancelled_at: Option<String>,
 }
 
 /// Assemble the current `JobStatus` from job history, the enable flag, and the
@@ -365,6 +414,7 @@ pub fn job_status(conn: &Connection, guard: &RunGuard) -> Result<JobStatus> {
         last_failed_at: failed.as_ref().map(|(at, _)| at.clone()),
         last_failure_detail: failed.and_then(|(_, detail)| detail),
         last_skipped_at: last_of(JobState::Skipped.as_str())?.map(|(at, _)| at),
+        last_cancelled_at: last_of(JobState::Cancelled.as_str())?.map(|(at, _)| at),
     })
 }
 
