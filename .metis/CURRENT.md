@@ -2,29 +2,25 @@
 
 ## What happened
 
-**Shipped Step-6 partial-failure tolerance — squash-merged to `main` as `4c73537` (PR #10).** The baseline scan no longer aborts the weekly report when a single series/provider fails:
-- **Adapters degrade to a recorded gap, not a `bail!`.** Each unresolved series/release → a `DataGap{group, series_id, series_name, reason}` on `BaselineMarketData.gaps`, merged across providers by the composite, serialized into the main agent's prompt so it reasons over what's absent. The per-adapter completeness floors (`check_completeness`, the FMP `indices.is_empty()` bail) are deleted.
-- **One central gate replaces them:** `pipeline::enforce_coverage` (runs in `generate_report` right after `baseline_scan()?`) fails the run only if `indices` **and** ≥1 of {`internals`, `macro_levels`} fall below `COVERAGE_FLOOR` (0.6 of a group's expected, OutOfScope excluded).
+**Shipped the live job run tracker — squash-merged to `main` as `6be21ce` (PR #11).** An in-session UI surface (an undocumented feature, outside the 17-step spec) replaces the report pane while a weekly-report run is in flight: per-step progress, **one tracker row per actual HTTP request** (in-flight → pass/fail with reason; short-circuited series emit none; sectors per-date, index-perf per-symbol, BLS one batch), the main agent's report **streamed token-by-token**, and **cancel at any point**. Added a fifth `JobState::Cancelled` (recorded like Skipped — no report, no warning).
 
-**Load-bearing decisions (don't relitigate):**
-- **`OutOfScope` = explicit provider permanent-absence signals ONLY** (FMP 402/404, FRED "does not exist"). A 2xx that merely carried *no value* — empty array, all-`.` FRED window, BLS empty-`data` — is **`Unavailable`** (counts against coverage). This split was the Codex fix; folding no-value cases back into OutOfScope re-opens a hole that bypasses the floor.
-- **The floor's shape is what makes "degrade everything" safe:** a rejected FMP key (empties `indices`) or FRED key (empties `macro`; `internals` can't clear on FMP's VIX+gold alone) still **fails the run loudly**; only BLS/labor + the additive `calendar`/`index_performance` degrade silently.
-- Gaps ride as a field on `BaselineMarketData` (no `MarketDataSource` trait-signature change); the composite now propagates only a *catastrophic* (non-data) child `Err`. `COVERAGE_FLOOR = 0.6` kept as a tunable in code + BUILD.md, not the docs.
+**Load-bearing decisions (don't relitigate; full architecture in `.metis/BUILD.md` + `docs/run-tracking.md`):**
+- **Tauri-free `progress` seam** (`ProgressReporter` + per-run `RunContext`) injected via `with_context` builders, so the `MarketDataSource`/`MainAgent` trait signatures stay unchanged and a no-op context keeps the spine offline-testable.
+- **Token streaming is a pure side-channel** — the full envelope is accumulated and parsed exactly as the non-streaming path, so the (resumable) decoder can't corrupt the report. Don't fold streaming into the structured parse.
+- Run log is **in-session, latest-run-only, session-scoped** ("Back to report" keeps it; cleared only by the next run or app quit). Retries are deliberately one logical request.
 
-Reviews: metis-task-reviewer (approve) + Codex ×3 rounds (two functional findings — empty FMP arrays + FRED all-gap windows bypassing the floor; then a stale-comment pass — all fixed). `docs/` (§Step 6, data-sources.md) + BUILD.md amended.
+Reviews: metis-task-reviewer (approve-with-nits) + Codex ×3 rounds, all findings fixed (UI stranded by a history-write failure; a competing run clearing a cancel; missing sector cancel checkpoint; 1:1 rows; a stale log masking a new failure; reports auto-select clobbering a surfaced error).
 
 ## Current state
 
-On **`main`** at **`4c73537`**, merged + pulled, **working tree clean, nothing in flight**, branch deleted. Verified **offline**: `cargo test` (150 lib + 9 integration) + `cargo clippy` clean + `npm run build`. **Live smokes were NOT re-run this session** — the happy path (all series resolve → no gaps) is unchanged from the prior live-verify, but the new failure-degradation paths have no live coverage.
+On **`main`** at **`6be21ce`**, merged + pulled, **working tree clean, nothing in flight**, branch deleted. Verified **offline**: `cargo test` (160 lib + 11 integration) + `cargo clippy` clean + `npm run build`. Visually inspected via a dev-only mock-event preview (since removed). **The live OpenAI/Anthropic `stream: true` wire format is NOT verified** — streaming tests use synthetic fixtures only.
 
 ## Open questions
 
-- **`COVERAGE_FLOOR = 0.6` is the live knob** — revisit if the Russell-gated "2-of-3 majors" case bites: because OutOfScope is excluded from the denominator, a permanently-premium Russell makes `indices` effectively "2 of 3 majors" at 0.6. The fix, if needed, is a named must-have set (S&P/Nasdaq), not a higher constant (which over-tightens elsewhere).
-- **Slice (B) — frontend "degraded-but-successful job" UI signal** (deferred this session): a degraded run now *succeeds*, so a silently-dropped BLS isn't surfaced to the reader. Needs a per-report "degraded data" badge / warning-area entry; likely a design-system extension.
-- **`wiremock` still deferred** → the partial-tolerance **in-loop gap wiring** (FMP/FRED empty→Unavailable, all-gap→Unavailable, `Rejected` short-circuit, transport→Unavailable) has **no offline coverage**; only the pure `interpret_response` classifiers, `enforce_coverage`, and BLS `assemble_labor_levels` are offline-tested. Loop paths ride on live smokes only — unrun.
-- **Step-7 news funnel never run live** — `news_ingestion_smoke` + `headline_filter_funnel_smoke` need `TAVILY_API_KEY`/`OPENAI_API_KEY` + a cool GDELT egress IP.
-- *(carried)* snippets omitted from the filter prompt (`format_headlines` sends title+source only); spread absolute-bps field if percent proves insufficient; *(parked)* retention-cascade + step-5 auto-archive; *(deferred/paid)* calendar `expected` consensus + FOMC; GDP `change_pct` not annualized; *(low)* no Vue component-test harness; `cargo fmt` dirty repo-wide (pre-existing).
+- **Tracker live-SSE smoke unrun** — confirm the real OpenAI/Anthropic streamed-response shapes (the `stream_delta` paths) with a `tauri dev` run + real keys before relying on the live token stream.
+- *(carried, untouched)* **`COVERAGE_FLOOR = 0.6`** — the Russell "2-of-3 majors" fix is a named must-have set, not a higher constant. **Slice (B)** degraded-but-successful *reader* signal still missing (the tracker shows a *running* job, not a *degraded past report*). **`wiremock` / in-loop gap** offline coverage still deferred. **Step-7 news funnel** never run live (Tavily/OpenAI keys + cool GDELT IP).
+- *(low / parked)* filter-prompt snippets; retention-cascade + step-5 auto-archive; calendar `expected` consensus; GDP not annualized; no Vue component-test harness; `cargo fmt` dirty repo-wide.
 
 ## Where to start
 
-Forward slice is still **Step 8: research routing** (`/metis-plan-task`) — the fixed Claude Sonnet router turns the 7b clusters + the now-richer baseline into a bounded research plan, retiring the "unwired" clusters flag. Alternatives surfaced this session: **slice (B)** the degraded-job UI signal (self-contained frontend), the **Step-7 news-funnel live smokes** (needs a cool GDELT IP), or the parked retention-cascade / step-5 auto-archive slice.
+Forward slice is still **Step 8: research routing** (`/metis-plan-task`) — the fixed Claude Sonnet router turns the 7b clusters + the richer baseline into a bounded research plan. Alternatives: **slice (B)** the degraded-job reader signal (self-contained frontend), the **Step-7 news-funnel live smokes**, or the parked retention-cascade. Quick win regardless: the tracker's **live-SSE smoke** above.
