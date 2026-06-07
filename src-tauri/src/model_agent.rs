@@ -308,8 +308,10 @@ fn extract_anthropic_envelope(raw: &Value) -> Result<Value> {
 }
 
 /// Pull the envelope value out of an OpenAI response: the first choice's message
-/// content, which strict json_schema returns as a JSON string.
-fn extract_openai_envelope(raw: &Value) -> Result<Value> {
+/// content, which strict json_schema returns as a JSON string. Shared with the
+/// fixed-internal OpenAI stages (`headline_filter`), whose strict-json-schema
+/// responses have the identical envelope shape.
+pub(crate) fn extract_openai_envelope(raw: &Value) -> Result<Value> {
     let content = raw
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)

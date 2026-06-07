@@ -206,6 +206,20 @@ impl AppConfig {
             })?
             .to_string())
     }
+
+    /// The OpenAI API key for the fixed internal headline-filter model (GPT-5
+    /// mini, `docs/agents.md §Headline Filtering`), resolved from validated
+    /// configuration. Distinct from `main_agent_config`, which resolves the
+    /// user-selected agent model's provider key — this is for the non-configurable
+    /// internal stages, which always use OpenAI. After a passing `validate` the
+    /// OpenAI token is present (always required), so the error arm is defensive.
+    pub fn openai_key(&self) -> Result<String> {
+        Ok(present(&self.openai_api_key)
+            .ok_or_else(|| {
+                anyhow!("OPENAI_API_KEY is not set (required for the fixed internal headline-filter model)")
+            })?
+            .to_string())
+    }
 }
 
 /// One configured agent slot, paired with its display name for warning copy.
@@ -595,6 +609,17 @@ mod tests {
         blank.tavily_api_key = Some("   ".into()); // present-but-blank reads as unset
         let err = blank.tavily_key().unwrap_err();
         assert!(err.to_string().contains("TAVILY_API_KEY"), "{err}");
+    }
+
+    #[test]
+    fn openai_key_resolves_present_value_and_errors_when_missing() {
+        let cfg = complete();
+        assert_eq!(cfg.openai_key().unwrap(), "sk-openai");
+
+        let mut blank = complete();
+        blank.openai_api_key = Some("   ".into()); // present-but-blank reads as unset
+        let err = blank.openai_key().unwrap_err();
+        assert!(err.to_string().contains("OPENAI_API_KEY"), "{err}");
     }
 
     #[test]
