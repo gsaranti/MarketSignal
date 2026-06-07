@@ -18,32 +18,37 @@
 //! Tauri command seam. The key rides as a query param, never an Authorization
 //! header — the convention `connection_test` verified live (Jun 2026).
 //!
-//! Degradation policy. The guiding rule: **skip only when FMP explicitly signals an
-//! absence; fail on anything we can't understand.** One pure function,
-//! `interpret_response`, decides this for every response:
-//! - **Fatal** (`Err`) — auth (401/403); a systemic failure (a 429 rate limit, a 5xx,
-//!   or a 200 `{"Error Message"}` body — FMP's rate-limit / plan signal); a
-//!   request-contract error (400/408/422/any other non-2xx), so a broken request fails
-//!   loudly instead of vanishing into empty data; a malformed 2xx body that won't parse;
-//!   or a transport error. The whole scan fails, which `jobs::run_job` records as a
-//!   failed job (`docs/scheduling.md §Offline Behavior`).
-//! - **Per-symbol skip** (`Ok(None)`) — a 402 (premium) or 404 (not found): FMP
-//!   explicitly signals this one symbol is absent, so it is skipped and the rest of the
-//!   scan lands. An empty "no data" array (`Ok(Some([]))`) likewise contributes nothing
-//!   but is not an error.
-//! - **Floor** — even with skips, a scan that resolves *no* index quotes at all fails
-//!   rather than returning an empty baseline (Step 6 is not optional).
+//! Degradation policy. The guiding rule: **every failure degrades to a recorded gap, so
+//! one flaky symbol or a whole-provider outage never throws away the rest of the scan.**
+//! One pure function, `interpret_response`, classifies each response into a
+//! [`Disposition`] — either a 2xx value to shape, or a `Gap(reason)` the loop records
+//! and steps past:
+//! - `OutOfScope` — a 402 (premium) or 404 (not found): FMP explicitly signals this one
+//!   symbol is permanently absent. Excluded from the coverage denominator. (A 2xx that
+//!   parses but carries *no* rows is instead an `Unavailable` gap — see `fetch_quotes` —
+//!   so an empty response for an expected symbol still counts against coverage.)
+//! - `Rejected` — auth (401/403) or a 200 `{"Error Message"}` rate-limit / plan body. A
+//!   whole-provider condition, so the loop stops calling and records the remaining
+//!   symbols as `Rejected` too.
+//! - `Unavailable` — a 429 / 5xx that survived the retry layer, or a transport error.
+//! - `Malformed` — a request-contract error (400/408/422/other non-2xx), an unparseable
+//!   2xx body, or a response that won't shape into the expected array.
+//!
+//! No floor lives here anymore: a scan that resolves no index quotes returns an empty
+//! `indices` group plus its gaps, and the central coverage gate
+//! (`pipeline::enforce_coverage`) decides whether that's below the run's floor.
 
 use std::collections::HashSet;
 use std::time::Duration as StdDuration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::data_sources::{
-    BaselineMarketData, IndexPerformance, MarketDataSource, Quote, SectorPerformance,
+    BaselineMarketData, DataGap, GapReason, GroupKind, IndexPerformance, MarketDataSource, Quote,
+    SectorPerformance,
 };
 
 /// FMP's stable single-symbol quote endpoint — the one `connection_test` exercises.
@@ -96,8 +101,8 @@ const INTERNAL_SYMBOLS: &[(&str, &str, &str)] = &[
 
 /// FMP's quote object, trimmed to the fields the baseline needs. `name` is optional
 /// (filled from the local label when absent), but `price` and the percent change are
-/// **required**: a quote missing either fails the parse, which the scan treats as a
-/// fatal contract violation rather than reaching the model as a false `0.0`. The change
+/// **required**: a quote missing either fails the parse, which the loop records as a
+/// `Malformed` gap rather than reaching the model as a false `0.0`. The change
 /// field is `changePercentage` on the stable API, with the legacy `changesPercentage`
 /// accepted as an alias.
 #[derive(Debug, Deserialize)]
@@ -111,8 +116,8 @@ struct FmpQuoteRaw {
 }
 
 /// One row of FMP's sector-performance snapshot. `sector` and `averageChange` are
-/// **required** — a row missing either fails the parse (a fatal contract violation),
-/// rather than being silently dropped. The snapshot's `date` / `exchange` fields are
+/// **required** — a row missing either fails the parse, which `fetch_sectors` records as
+/// a `Malformed` gap rather than dropping silently. The snapshot's `date` / `exchange` fields are
 /// ignored.
 #[derive(Debug, Deserialize)]
 struct FmpSectorRaw {
@@ -122,8 +127,8 @@ struct FmpSectorRaw {
 }
 
 /// One row of FMP's EOD light history: the close (`price`) on a `date` (`"YYYY-MM-DD"`).
-/// Both are required — a row missing either fails the parse, a fatal contract violation
-/// rather than a silent gap. The `symbol` / `volume` fields the endpoint also returns
+/// Both are required — a row missing either fails the parse, which the loop records as a
+/// `Malformed` gap rather than dropping the row silently. The `symbol` / `volume` fields the endpoint also returns
 /// are ignored.
 #[derive(Debug, Deserialize)]
 struct FmpEodRaw {
@@ -131,42 +136,44 @@ struct FmpEodRaw {
     price: f64,
 }
 
-/// Interpret one FMP response by the full status × body matrix — the single place the
-/// degradation policy lives. Pure and total:
-/// - `Err(..)` — fatal (auth, systemic, request-contract, a 200 `{"Error Message"}`
-///   body, or an unparseable body): fail the whole scan.
-/// - `Ok(None)` — a legitimate per-symbol absence (402 premium / 404 not found): skip.
-/// - `Ok(Some(value))` — a successful 2xx JSON value (an array, possibly empty) for the
-///   caller to shape; an empty array is `Ok(Some([]))` ("no data"), not an error.
-///
-/// Status decides disposition first, with an explicit *skip allowlist* (402/404), so a
-/// non-2xx is never reclassified by its body (a 402 with a JSON error body must skip
+/// One FMP response classified into what the loop should do with it — the single place
+/// the degradation policy lives, now in terms of [`GapReason`] rather than a fatal
+/// `Err`. Either a 2xx value to shape, or a gap the loop records and steps past.
+enum Disposition {
+    Value(Value),
+    Gap(GapReason),
+}
+
+/// Interpret one FMP response by the full status × body matrix. Pure and total. Status
+/// decides disposition first, with an explicit *skip allowlist* (402/404 → `OutOfScope`),
+/// so a non-2xx is never reclassified by its body (a 402 with a JSON error body skips
 /// just like a 402 with a plain-text body). Only on a 2xx is the body inspected, where
-/// FMP's `{"Error Message"}` rate-limit / plan signal and an unparseable body are both
-/// fatal — distinct from an empty "no data" array, which parses fine.
-fn interpret_response(status: u16, body: &str) -> Result<Option<Value>> {
+/// FMP's `{"Error Message"}` rate-limit / plan signal is a `Rejected` gap and an
+/// unparseable body a `Malformed` gap — distinct from an empty "no data" array, which
+/// parses fine and shapes to zero quotes.
+fn interpret_response(status: u16, body: &str) -> Disposition {
     match status {
-        200..=299 => {} // fall through to body handling
-        402 | 404 => return Ok(None),
-        401 | 403 => bail!("Financial Modeling Prep rejected the key (HTTP {status})"),
-        429 | 500..=599 => bail!(
-            "Financial Modeling Prep is unavailable (HTTP {status}) — failing the scan \
-             rather than returning a partial baseline"
-        ),
-        _ => bail!(
-            "Financial Modeling Prep rejected the request (HTTP {status}) — failing the scan \
-             rather than masking a broken request as missing data"
-        ),
+        200..=299 => match serde_json::from_str::<Value>(body) {
+            Ok(value) => {
+                if value.get("Error Message").and_then(Value::as_str).is_some() {
+                    Disposition::Gap(GapReason::Rejected) // rate-limit / plan signal
+                } else {
+                    Disposition::Value(value)
+                }
+            }
+            Err(_) => Disposition::Gap(GapReason::Malformed),
+        },
+        402 | 404 => Disposition::Gap(GapReason::OutOfScope),
+        401 | 403 => Disposition::Gap(GapReason::Rejected),
+        429 | 500..=599 => Disposition::Gap(GapReason::Unavailable),
+        _ => Disposition::Gap(GapReason::Malformed), // 400/408/422/other request-contract
     }
-    let value: Value = serde_json::from_str(body)
-        .context("Financial Modeling Prep returned an unparseable 2xx body")?;
-    if let Some(msg) = value.get("Error Message").and_then(Value::as_str) {
-        bail!(
-            "Financial Modeling Prep returned an error response (\"{msg}\") — failing the scan \
-             rather than returning a partial baseline"
-        );
-    }
-    Ok(Some(value))
+}
+
+/// One gap for the `sectors` group, which is a whole-snapshot (no per-series symbols),
+/// so it carries a synthetic series id / name rather than one per sector.
+fn sector_gap(reason: GapReason) -> DataGap {
+    DataGap::new(GroupKind::Sectors, "sector-performance", "Sector Performance", reason)
 }
 
 /// Shape a successful quote response (a single-symbol `/stable/quote` call returns a
@@ -335,60 +342,108 @@ impl FmpDataSource {
 
     /// GET one FMP endpoint with the key as a query param, returning the status
     /// and raw body for `interpret_response` to judge. A transport error (the
-    /// provider is unreachable) propagates as a fatal scan error.
+    /// provider is unreachable) returns `Err` to the caller, which records it as an
+    /// `Unavailable` gap rather than failing the scan.
     fn get(&self, url: &str, extra: &[(&str, &str)]) -> Result<(u16, String)> {
         let mut query: Vec<(&str, &str)> = vec![("apikey", self.api_key.as_str())];
         query.extend_from_slice(extra);
         crate::http_retry::send_with_retry("FMP", || self.http.get(url).query(&query))
     }
 
-    /// Fetch one quote per symbol. `interpret_response` decides each response: a
-    /// 402/404 skips just that symbol; auth / systemic / request-contract / malformed
-    /// responses fail the whole scan; a 2xx array is shaped into quotes. So the rest of
-    /// the scan lands around a legitimately-absent symbol, but anything we can't
-    /// understand fails loudly.
-    fn fetch_quotes(&self, symbols: &[(&str, &str, &str)]) -> Result<Vec<Quote>> {
+    /// Fetch one quote per symbol, recording a [`DataGap`] in `group` for any that don't
+    /// resolve rather than failing the scan. `interpret_response` decides each response;
+    /// a `Rejected` (auth / quota) is a whole-provider condition, so the loop stops
+    /// calling and records the remaining symbols without hammering. A 2xx that won't
+    /// shape into quotes is a `Malformed` gap; an empty "no data" array for an expected
+    /// symbol is an `Unavailable` gap (no value this run), so it still counts against
+    /// coverage rather than vanishing.
+    fn fetch_quotes(
+        &self,
+        symbols: &[(&str, &str, &str)],
+        group: GroupKind,
+        gaps: &mut Vec<DataGap>,
+    ) -> Vec<Quote> {
         let mut out = Vec::with_capacity(symbols.len());
+        let mut rejected = false;
         for (symbol, fallback_name, unit) in symbols {
-            let (status, body) = self.get(FMP_QUOTE_URL, &[("symbol", symbol)])?;
-            if let Some(value) = interpret_response(status, &body)? {
-                out.extend(quotes_from_value(value, fallback_name, unit)?);
+            if rejected {
+                gaps.push(DataGap::new(group, *symbol, *fallback_name, GapReason::Rejected));
+                continue;
+            }
+            let disposition = match self.get(FMP_QUOTE_URL, &[("symbol", symbol)]) {
+                Ok((status, body)) => interpret_response(status, &body),
+                Err(_) => Disposition::Gap(GapReason::Unavailable), // transport — unreachable
+            };
+            match disposition {
+                Disposition::Value(value) => match quotes_from_value(value, fallback_name, unit) {
+                    // An empty "no data" 2xx array for an expected symbol is a this-run
+                    // absence, not silence: record it so it counts against coverage and
+                    // shows in the manifest rather than vanishing from both.
+                    Ok(quotes) if quotes.is_empty() => {
+                        gaps.push(DataGap::new(group, *symbol, *fallback_name, GapReason::Unavailable))
+                    }
+                    Ok(quotes) => out.extend(quotes),
+                    Err(_) => {
+                        gaps.push(DataGap::new(group, *symbol, *fallback_name, GapReason::Malformed))
+                    }
+                },
+                Disposition::Gap(reason) => {
+                    if reason == GapReason::Rejected {
+                        rejected = true;
+                    }
+                    gaps.push(DataGap::new(group, *symbol, *fallback_name, reason));
+                }
             }
         }
-        Ok(out)
+        out
     }
 
     /// Fetch the most recent sector-performance snapshot, walking back over weekday
     /// candidates (`sector_candidate_dates` skips the closed-market weekend) to the last
-    /// trading day with data (holidays have none). `interpret_response` decides each
-    /// date's response: a 404 (or an empty array) means no snapshot for that date — try
-    /// the prior weekday; auth / systemic / request-contract / malformed responses fail
-    /// the scan; a 2xx with rows returns. If no candidate has a snapshot, the scan
-    /// soft-degrades to no sector data.
-    fn fetch_sectors(&self) -> Result<Vec<SectorPerformance>> {
+    /// trading day with data (holidays have none). A 404 / empty array means no snapshot
+    /// for that date — try the prior weekday; a this-run failure (auth / quota / 5xx /
+    /// transport / malformed) records one group-level `sectors` gap and stops walking
+    /// back. If no candidate has a snapshot, returns empty with no gap — a quiet window,
+    /// not a failure.
+    fn fetch_sectors(&self, gaps: &mut Vec<DataGap>) -> Vec<SectorPerformance> {
         let today = Utc::now().date_naive();
         for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
             let date_str = date.format("%Y-%m-%d").to_string();
-            let (status, body) = self.get(FMP_SECTOR_URL, &[("date", date_str.as_str())])?;
-            if let Some(value) = interpret_response(status, &body)? {
-                let sectors = sectors_from_value(value)?;
-                if !sectors.is_empty() {
-                    return Ok(sectors);
+            let disposition = match self.get(FMP_SECTOR_URL, &[("date", date_str.as_str())]) {
+                Ok((status, body)) => interpret_response(status, &body),
+                Err(_) => Disposition::Gap(GapReason::Unavailable),
+            };
+            match disposition {
+                Disposition::Value(value) => match sectors_from_value(value) {
+                    Ok(sectors) if !sectors.is_empty() => return sectors,
+                    // An empty array — no snapshot for this weekday; try the prior one.
+                    Ok(_) => {}
+                    Err(_) => {
+                        gaps.push(sector_gap(GapReason::Malformed));
+                        return Vec::new();
+                    }
+                },
+                // A legitimate per-date absence (404) — try the prior weekday.
+                Disposition::Gap(GapReason::OutOfScope) => {}
+                // Auth / quota / 5xx / transport — the snapshot is unavailable this run.
+                Disposition::Gap(reason) => {
+                    gaps.push(sector_gap(reason));
+                    return Vec::new();
                 }
             }
-            // None (404) or an empty array — no snapshot for this weekday; try the prior one.
         }
-        Ok(Vec::new())
+        Vec::new()
     }
 
     /// Fetch each index's EOD history and shape it into multi-horizon performance, one
-    /// `historical-price-eod/light` call per index over the trailing window. Degrades
-    /// **per index**: a legitimately-absent symbol (402 / 404) or one whose history is
-    /// too short to anchor is skipped, and a fatal response for one symbol (a 429 / 5xx
-    /// after retries, a contract error, or an unparseable body) is logged and skips just
-    /// that symbol — the other indices still resolve. Soft enrichment over the required
-    /// `indices` quotes, so it never fails the scan; the caller takes the result as-is.
-    fn fetch_index_performance(&self) -> Vec<IndexPerformance> {
+    /// `historical-price-eod/light` call per index over the trailing window. Additive
+    /// enrichment over the required daily `indices` quotes, so a permanent absence
+    /// (402 / 404) or a history too short to anchor is skipped *silently* — the daily
+    /// quote already covers that symbol and a recurring premium gap would be noise. A
+    /// this-run failure (auth / quota / 5xx / transport / malformed), by contrast, is
+    /// recorded as a gap so the agent sees the enrichment was lost this week; a
+    /// `Rejected` stops the loop, like the quote groups.
+    fn fetch_index_performance(&self, gaps: &mut Vec<DataGap>) -> Vec<IndexPerformance> {
         let to = Utc::now().date_naive();
         let from = to - Duration::days(EOD_LOOKBACK_DAYS);
         let (from_s, to_s) = (
@@ -396,72 +451,73 @@ impl FmpDataSource {
             to.format("%Y-%m-%d").to_string(),
         );
         let mut out = Vec::with_capacity(INDEX_SYMBOLS.len());
+        let mut rejected = false;
         for &(symbol, name, _) in INDEX_SYMBOLS {
-            match self.fetch_one_index_performance(symbol, name, &from_s, &to_s) {
-                Ok(Some(perf)) => out.push(perf),
-                // Legitimately absent (402 / 404) or too short to anchor — skip silently.
-                Ok(None) => {}
-                // Fatal for this one symbol — log and skip it; the rest of the batch lands.
-                Err(e) => {
-                    eprintln!("FMP index performance for {symbol} unavailable, skipping it: {e:#}")
+            if rejected {
+                gaps.push(DataGap::new(
+                    GroupKind::IndexPerformance,
+                    symbol,
+                    name,
+                    GapReason::Rejected,
+                ));
+                continue;
+            }
+            let disposition = match self.get(
+                FMP_EOD_URL,
+                &[("symbol", symbol), ("from", from_s.as_str()), ("to", to_s.as_str())],
+            ) {
+                Ok((status, body)) => interpret_response(status, &body),
+                Err(_) => Disposition::Gap(GapReason::Unavailable),
+            };
+            match disposition {
+                Disposition::Value(value) => match eod_to_performance(value, symbol, name) {
+                    Ok(Some(perf)) => out.push(perf),
+                    // Too short to anchor — skip silently; the daily quote still covers it.
+                    Ok(None) => {}
+                    Err(_) => gaps.push(DataGap::new(
+                        GroupKind::IndexPerformance,
+                        symbol,
+                        name,
+                        GapReason::Malformed,
+                    )),
+                },
+                // Permanent absence (402/404) is silent for this additive group.
+                Disposition::Gap(GapReason::OutOfScope) => {}
+                Disposition::Gap(reason) => {
+                    if reason == GapReason::Rejected {
+                        rejected = true;
+                    }
+                    gaps.push(DataGap::new(GroupKind::IndexPerformance, symbol, name, reason));
                 }
             }
         }
         out
     }
-
-    /// Fetch and shape one index's EOD performance. `Ok(None)` is a legitimate absence
-    /// (a 402 / 404 per-symbol skip, or a history too short to anchor the weekly return);
-    /// `Err` is a fatal response for this one symbol, which the caller soft-skips so the
-    /// other indices still resolve.
-    fn fetch_one_index_performance(
-        &self,
-        symbol: &str,
-        name: &str,
-        from_s: &str,
-        to_s: &str,
-    ) -> Result<Option<IndexPerformance>> {
-        let (status, body) = self.get(
-            FMP_EOD_URL,
-            &[("symbol", symbol), ("from", from_s), ("to", to_s)],
-        )?;
-        match interpret_response(status, &body)? {
-            Some(value) => eod_to_performance(value, symbol, name),
-            None => Ok(None),
-        }
-    }
 }
 
 impl MarketDataSource for FmpDataSource {
     fn baseline_scan(&self) -> Result<BaselineMarketData> {
-        let indices = self.fetch_quotes(INDEX_SYMBOLS)?;
-        // Completeness floor: per-symbol failures soft-skip, but resolving *no* index
-        // quotes at all means the provider is unreachable, rate-limited, or returning an
-        // unrecognized shape — fail the scan rather than hand the agent an empty,
-        // ungrounded baseline (Step 6 is not optional). Checked on indices because the
-        // report's Index Picture structurally needs them; an empty VIX or sector list
-        // still soft-degrades.
-        if indices.is_empty() {
-            bail!(
-                "FMP baseline scan resolved no index quotes — the data provider is \
-                 unreachable, rate-limited, or returned an unrecognized response"
-            );
-        }
-        // Multi-horizon index performance is soft enrichment over the required daily
-        // index quotes above: `fetch_index_performance` degrades per index (one symbol's
-        // failure skips only that symbol), so a partial or empty result never fails a
-        // scan whose core indices already landed.
-        let index_performance = self.fetch_index_performance();
+        // Every group degrades to recorded gaps rather than failing: a thin or empty
+        // `indices` group is no longer this adapter's call to abort on — the central
+        // coverage gate (`pipeline::enforce_coverage`) decides the run's floor over the
+        // merged baseline. So this scan returns `Ok` for all data outcomes; only a
+        // catastrophic (non-data) fault would be an `Err`, and none arises here.
+        let mut gaps = Vec::new();
+        let indices = self.fetch_quotes(INDEX_SYMBOLS, GroupKind::Indices, &mut gaps);
+        let internals = self.fetch_quotes(INTERNAL_SYMBOLS, GroupKind::Internals, &mut gaps);
+        let sectors = self.fetch_sectors(&mut gaps);
+        let index_performance = self.fetch_index_performance(&mut gaps);
         Ok(BaselineMarketData {
             indices,
-            internals: self.fetch_quotes(INTERNAL_SYMBOLS)?,
-            sectors: self.fetch_sectors()?,
+            internals,
+            sectors,
             index_performance,
             // FRED owns the macro levels and the economic-release calendar, and BLS the
             // labor levels; FMP contributes none of them.
             macro_levels: Vec::new(),
             labor_levels: Vec::new(),
             calendar: Vec::new(),
+            gaps,
         })
     }
 }
@@ -472,29 +528,46 @@ mod tests {
 
     #[test]
     fn interpret_response_covers_the_full_matrix() {
-        // 2xx array (incl. the empty "no data" array) -> Some(value) to shape.
-        assert!(interpret_response(200, r#"[{"symbol":"^GSPC","price":1.0,"changePercentage":0.1}]"#)
-            .unwrap()
-            .is_some());
-        assert!(interpret_response(200, "[]").unwrap().is_some());
+        use GapReason::*;
+        // 2xx array (incl. the empty "no data" array) -> a value to shape.
+        assert!(matches!(
+            interpret_response(200, r#"[{"symbol":"^GSPC","price":1.0,"changePercentage":0.1}]"#),
+            Disposition::Value(_)
+        ));
+        assert!(matches!(interpret_response(200, "[]"), Disposition::Value(_)));
 
-        // Explicit skip allowlist: a legitimate per-symbol absence -> None.
-        assert!(interpret_response(402, "Premium Query Parameter").unwrap().is_none());
-        assert!(interpret_response(404, "").unwrap().is_none());
+        // Explicit skip allowlist: a legitimate per-symbol absence -> OutOfScope gap.
+        assert!(matches!(
+            interpret_response(402, "Premium Query Parameter"),
+            Disposition::Gap(OutOfScope)
+        ));
+        assert!(matches!(interpret_response(404, ""), Disposition::Gap(OutOfScope)));
 
-        // Auth / systemic / request-contract -> fatal, regardless of body. In
-        // particular a 400 (e.g. a malformed sector date) fails loudly rather than
-        // silently skipping.
-        for status in [401, 403, 429, 500, 503, 400, 408, 422] {
-            assert!(interpret_response(status, "").is_err(), "HTTP {status} should be fatal");
+        // Auth -> Rejected; systemic 429/5xx -> Unavailable; request-contract -> Malformed
+        // (a 400, e.g. a malformed sector date, degrades to a gap rather than skipping
+        // silently).
+        for status in [401, 403] {
+            assert!(matches!(interpret_response(status, ""), Disposition::Gap(Rejected)), "HTTP {status}");
+        }
+        for status in [429, 500, 503] {
+            assert!(matches!(interpret_response(status, ""), Disposition::Gap(Unavailable)), "HTTP {status}");
+        }
+        for status in [400, 408, 422] {
+            assert!(matches!(interpret_response(status, ""), Disposition::Gap(Malformed)), "HTTP {status}");
         }
 
-        // A 200 {"Error Message"} body (rate-limit / plan) is fatal...
-        assert!(interpret_response(200, r#"{"Error Message":"Limit Reach"}"#).is_err());
+        // A 200 {"Error Message"} body (rate-limit / plan) -> Rejected...
+        assert!(matches!(
+            interpret_response(200, r#"{"Error Message":"Limit Reach"}"#),
+            Disposition::Gap(Rejected)
+        ));
         // ...but the SAME body on a non-2xx is classified by status, not body (402 skips).
-        assert!(interpret_response(402, r#"{"Error Message":"Premium"}"#).unwrap().is_none());
-        // A 2xx that isn't valid JSON is a contract violation -> fatal.
-        assert!(interpret_response(200, "not json at all").is_err());
+        assert!(matches!(
+            interpret_response(402, r#"{"Error Message":"Premium"}"#),
+            Disposition::Gap(OutOfScope)
+        ));
+        // A 2xx that isn't valid JSON is a contract violation -> Malformed.
+        assert!(matches!(interpret_response(200, "not json at all"), Disposition::Gap(Malformed)));
     }
 
     #[test]
@@ -525,7 +598,7 @@ mod tests {
     #[test]
     fn quotes_from_value_requires_price_and_change() {
         // A required field absent (schema drift / partial response) fails the parse —
-        // neither a false 0.0 nor a silent skip; the loop fails the scan.
+        // neither a false 0.0 nor a silent skip; the loop records a Malformed gap.
         let no_price: Value =
             serde_json::from_str(r#"[{"symbol":"^GSPC","changePercentage":0.4}]"#).unwrap();
         assert!(quotes_from_value(no_price, "x", "index points").is_err());
@@ -566,8 +639,8 @@ mod tests {
 
     #[test]
     fn sectors_from_value_requires_average_change() {
-        // Fail-closed: a row missing averageChange fails the parse (fatal in the loop),
-        // rather than being silently dropped as a false "flat" move.
+        // Fail-closed: a row missing averageChange fails the parse (a Malformed gap in
+        // the loop), rather than being silently dropped as a false "flat" move.
         let v: Value = serde_json::from_str(
             r#"[{"sector":"Technology","averageChange":1.5},{"sector":"Energy"}]"#,
         )

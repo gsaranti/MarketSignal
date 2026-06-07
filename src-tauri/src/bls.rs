@@ -20,28 +20,33 @@
 //! stays sync; the blocking work is offloaded via `spawn_blocking` at the Tauri
 //! command seam.
 //!
-//! Degradation policy. The same rule as the sibling adapters: **skip only when BLS
-//! signals a per-series absence; fail on anything we can't understand.** BLS differs
-//! from FRED in *how* it signals: it answers HTTP 200 even for a rejected request,
-//! reporting the outcome in the JSON `status` field (`REQUEST_SUCCEEDED` vs
-//! `REQUEST_NOT_PROCESSED`) with a human `message`. So `interpret_response` classifies
-//! by that in-body status — a not-processed request (malformed batch or the daily
-//! threshold) is systemic-fatal, fail-closed — rather than by HTTP status alone. An
-//! explicit per-series absence — a requested series returned with an empty `data`
-//! array — is a soft per-series skip, like FRED's `"."` gaps. A series *omitted* from
-//! a successful response is different: BLS returns invalid series as explicit empty
-//! entries, so an omission signals a truncated / anomalous response and fails the scan
-//! (fail-closed). The per-group completeness floor backstops both, failing if the whole
-//! `labor_levels` group comes back empty (Step 6 is not optional).
+//! Degradation policy. The same rule as the sibling adapters: **every failure degrades
+//! to a recorded gap rather than failing the scan.** BLS is one batched POST, so a
+//! request-level failure is all-or-nothing — every labor series degrades to a gap of the
+//! same reason at once. BLS differs from FRED in *how* it signals: it answers HTTP 200
+//! even for a rejected request, reporting the outcome in the JSON `status` field
+//! (`REQUEST_SUCCEEDED` vs `REQUEST_NOT_PROCESSED`) with a human `message`. So
+//! `interpret_response` classifies by that in-body status — a not-processed request (the
+//! daily threshold or a malformed batch) is `Rejected`, a non-2xx `Unavailable`, an
+//! unparseable body `Malformed`. Within a successful batch, a requested series returned
+//! with an empty `data` array is an `Unavailable` per-series absence (no value this run —
+//! BLS is keyless, so there's no permanent/premium tier to call it `OutOfScope`), and a
+//! series *omitted* entirely is a `Malformed` gap (BLS returns invalid series as explicit
+//! empty entries, so an omission signals a truncated / anomalous response). No floor lives
+//! here — `labor_levels` isn't a coverage-floor group, so a total BLS outage degrades
+//! the report (recorded in the manifest) rather than blocking it; the central coverage
+//! gate (`pipeline::enforce_coverage`) owns the run's floor.
 
 use std::time::Duration as StdDuration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::Datelike;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::data_sources::{BaselineMarketData, MarketDataSource, Quote};
+use crate::data_sources::{
+    BaselineMarketData, DataGap, GapReason, GroupKind, MarketDataSource, Quote,
+};
 
 /// BLS Public Data API v2 time-series endpoint — a JSON POST batch of series ids.
 const BLS_DATA_URL: &str = "https://api.bls.gov/publicAPI/v2/timeseries/data/";
@@ -122,32 +127,31 @@ struct BlsDataPoint {
 /// Interpret one BLS batch response by HTTP status × in-body `status` — the single
 /// place the request-level degradation policy lives. Pure and total:
 /// - `Ok(resp)` — a `REQUEST_SUCCEEDED` 2xx, for the caller to read series from.
-/// - `Err(..)` — fatal: a non-2xx (transport / server), a `REQUEST_NOT_PROCESSED`
-///   (malformed batch, rejected/over-limit key, or the keyless daily threshold), an
-///   unrecognized `status`, or an unparseable body.
+/// - `Err((reason, detail))` — the whole batch failed: a non-2xx (`Unavailable`), an
+///   unparseable body (`Malformed`), or a `REQUEST_NOT_PROCESSED` / unrecognized status
+///   (`Rejected` — the daily threshold or a malformed batch). `detail` carries BLS's own
+///   message for the runtime log; the structured `reason` is what the gap records.
 ///
 /// Unlike FMP's status allowlist and FRED's by-body 400 split, BLS answers **HTTP 200
 /// for errors too**, carrying the real outcome in the JSON `status`. So a not-processed
-/// request fails closed here rather than vanishing into missing data; a genuinely
-/// absent *series* is handled downstream (empty `data` → per-series skip), not here.
-fn interpret_response(http_status: u16, body: &str) -> Result<BlsResponse> {
+/// request degrades to a `Rejected` batch here rather than vanishing; a genuinely absent
+/// *series* within a successful batch is handled downstream (empty `data`), not here.
+fn interpret_response(http_status: u16, body: &str) -> Result<BlsResponse, (GapReason, String)> {
     if !(200..=299).contains(&http_status) {
         // BLS normally answers 200 even for rejected requests, so a non-2xx is a
-        // transport/server fault: systemic-fatal, like FRED's 429 / 5xx.
-        bail!(
-            "BLS is unavailable (HTTP {http_status}) — failing the scan rather than returning a \
-             partial baseline"
-        );
+        // transport/server fault: a this-run outage, like FRED's 429 / 5xx.
+        return Err((GapReason::Unavailable, format!("HTTP {http_status}")));
     }
-    let resp: BlsResponse =
-        serde_json::from_str(body).context("BLS returned an unparseable body")?;
+    let resp: BlsResponse = match serde_json::from_str(body) {
+        Ok(resp) => resp,
+        Err(_) => return Err((GapReason::Malformed, "unparseable body".to_string())),
+    };
     match resp.status.as_str() {
         "REQUEST_SUCCEEDED" => Ok(resp),
-        other => bail!(
-            "BLS did not process the request (status {other}: {}) — failing the scan rather than \
-             masking it as missing data",
-            resp.message.join("; ")
-        ),
+        other => Err((
+            GapReason::Rejected,
+            format!("{other}: {}", resp.message.join("; ")),
+        )),
     }
 }
 
@@ -158,9 +162,9 @@ fn interpret_response(http_status: u16, body: &str) -> Result<BlsResponse> {
 ///
 /// Fail-closed on the value: a present BLS observation is expected numeric, so any
 /// non-numeric value — or one that parses to a non-finite float (`NaN` / `inf`, which
-/// `f64::parse` accepts) — is a contract violation that fails the scan rather than
-/// being silently dropped (which would let a stale reading masquerade as current, or a
-/// `NaN` contaminate the change math). BLS signals "no datum" by omitting the
+/// `f64::parse` accepts) — is a contract violation that `assemble_labor_levels` records
+/// as a `Malformed` gap rather than dropping silently (which would let a stale reading
+/// masquerade as current, or a `NaN` contaminate the change math). BLS signals "no datum" by omitting the
 /// observation, not with a sentinel string, so there is no FRED-style `"."` to skip.
 fn series_to_quote(
     data: &[BlsDataPoint],
@@ -203,55 +207,52 @@ fn series_to_quote(
     }))
 }
 
-/// Per-group completeness floor for the BLS scan. The single Step-6 group BLS owns —
-/// `labor_levels` — is non-optional, so an **empty group** fails the scan rather than
-/// handing the agent an incomplete baseline. This is distinct from a single absent
-/// series, which soft-skips (the gold lesson): a whole group coming back empty means
-/// the provider is unreachable, rate-limited (the keyless daily cap), or every series
-/// was renamed at once — none of which should pass silently. Mirrors `fred`'s and
-/// `fmp`'s required-group floors, and keeps the runtime in step with the smoke, which
-/// asserts the group resolves in full.
-///
-/// Pure, so the floor is unit-testable without an HTTP round-trip — the live scan is
-/// otherwise exercised only by the ignored smoke.
-fn check_completeness(labor_levels: &[Quote]) -> Result<()> {
-    if labor_levels.is_empty() {
-        bail!(
-            "BLS baseline scan resolved no labor-levels series (CPI, unemployment, payrolls, \
-             wages) — the data provider is unreachable, rate-limited, or returned an \
-             unrecognized response"
-        );
+/// A `BaselineMarketData` whose `labor_levels` is empty and whose manifest records every
+/// `LABOR_SERIES` entry as a gap of `reason` — the all-or-nothing degradation for a
+/// batch-level BLS failure (a non-2xx, a rejected/over-limit request, an unparseable or
+/// mis-shaped body). Labor isn't a coverage-floor group, so the run continues with this
+/// recorded in the manifest.
+fn all_labor_gapped(reason: GapReason) -> BaselineMarketData {
+    BaselineMarketData {
+        gaps: LABOR_SERIES
+            .iter()
+            .map(|(id, name, _)| DataGap::new(GroupKind::LaborLevels, *id, *name, reason))
+            .collect(),
+        ..Default::default()
     }
-    Ok(())
 }
 
 /// Match the parsed BLS results against the authoritative `LABOR_SERIES` list and shape
-/// each into a quote, preserving the const's display names and order. Split from the
-/// HTTP-bound `baseline_scan` so the omission policy below is unit-testable without a
-/// round-trip.
+/// each into a quote, recording a `labor_levels` [`DataGap`] for any that don't resolve
+/// rather than failing the scan. Split from the HTTP-bound `baseline_scan` so the
+/// per-series policy below is unit-testable without a round-trip.
 ///
-/// Two absence cases, deliberately handled differently to honor the fail-closed policy:
-/// - A requested series **present but with empty `data`** is an explicit per-series
-///   absence (`series_to_quote` returns `None`) — a soft skip, like FRED's all-gap
-///   series (the gold lesson).
-/// - A requested series **omitted from the response entirely** is not a signal BLS
-///   sends in normal operation (it returns invalid series as explicit empty entries),
-///   so an omission means a truncated / anomalous response and fails the scan rather
-///   than silently thinning the baseline.
-fn assemble_labor_levels(results: &BlsResults) -> Result<Vec<Quote>> {
+/// Two absence cases, tagged differently:
+/// - A requested series **present but with empty `data`** (`series_to_quote` returns
+///   `None`) is no value this run — an `Unavailable` gap that counts against coverage,
+///   the same as FRED's all-gap window. (Not `OutOfScope`: BLS is keyless with no
+///   premium tier, so an empty window is a this-run absence, not a permanent one.)
+/// - A requested series **omitted from the response entirely** is not a signal BLS sends
+///   in normal operation (it returns invalid series as explicit empty entries), so an
+///   omission means a truncated / anomalous response — a `Malformed` gap. A non-numeric
+///   observation is likewise `Malformed`.
+fn assemble_labor_levels(results: &BlsResults) -> (Vec<Quote>, Vec<DataGap>) {
     let mut labor_levels = Vec::with_capacity(LABOR_SERIES.len());
+    let mut gaps = Vec::new();
     for (id, name, unit) in LABOR_SERIES {
         let Some(series) = results.series.iter().find(|s| s.series_id == *id) else {
-            bail!(
-                "BLS omitted requested series {id} from a successful response — failing the \
-                 scan rather than masking a truncated response as missing data"
-            );
+            gaps.push(DataGap::new(GroupKind::LaborLevels, *id, *name, GapReason::Malformed));
+            continue;
         };
-        if let Some(quote) = series_to_quote(&series.data, id, name, unit)? {
-            labor_levels.push(quote);
+        match series_to_quote(&series.data, id, name, unit) {
+            Ok(Some(quote)) => labor_levels.push(quote),
+            // Present but empty `data` for an expected series — no value this run, not a
+            // permanent absence; counts against coverage (Unavailable).
+            Ok(None) => gaps.push(DataGap::new(GroupKind::LaborLevels, *id, *name, GapReason::Unavailable)),
+            Err(_) => gaps.push(DataGap::new(GroupKind::LaborLevels, *id, *name, GapReason::Malformed)),
         }
     }
-    Ok(labor_levels)
+    (labor_levels, gaps)
 }
 
 /// The `(startyear, endyear)` request window: the prior and current calendar year.
@@ -278,7 +279,8 @@ impl BlsDataSource {
 
     /// POST the full labor-series batch in one request, returning the status and raw
     /// body for `interpret_response` to judge. A transport error (the provider is
-    /// unreachable) propagates as a fatal scan error.
+    /// unreachable) returns `Err` to `baseline_scan`, which degrades the whole labor
+    /// group to gaps rather than failing the scan.
     fn post(&self) -> Result<(u16, String)> {
         let ids: Vec<&str> = LABOR_SERIES.iter().map(|(id, _, _)| *id).collect();
         let (start, end) = year_window(chrono::Local::now().year());
@@ -293,22 +295,36 @@ impl BlsDataSource {
 
 impl MarketDataSource for BlsDataSource {
     fn baseline_scan(&self) -> Result<BaselineMarketData> {
-        let (status, body) = self.post()?;
-        let resp = interpret_response(status, &body)?;
-        let results: BlsResults = serde_json::from_value(resp.results)
-            .context("BLS Results did not match the expected shape")?;
+        // One batched POST, so a request-level failure (transport, non-2xx, rejected, or
+        // a mis-shaped body) degrades the whole labor group to gaps at once rather than
+        // failing the scan; the central coverage gate owns the run's floor, and labor
+        // isn't a floor group. So this scan returns `Ok` for all data outcomes.
+        let outcome = match self.post() {
+            Ok((status, body)) => interpret_response(status, &body),
+            Err(_) => Err((GapReason::Unavailable, "transport error".to_string())),
+        };
+        let resp = match outcome {
+            Ok(resp) => resp,
+            Err((reason, detail)) => {
+                eprintln!("BLS labor batch unavailable ({detail}); recording all labor series as gaps");
+                return Ok(all_labor_gapped(reason));
+            }
+        };
+        let results: BlsResults = match serde_json::from_value(resp.results) {
+            Ok(results) => results,
+            Err(_) => {
+                eprintln!("BLS Results did not match the expected shape; recording all labor series as gaps");
+                return Ok(all_labor_gapped(GapReason::Malformed));
+            }
+        };
 
-        // Match the expected series, shaping each. Omission fails closed; an explicit
-        // empty-data series soft-skips — see `assemble_labor_levels`.
-        let labor_levels = assemble_labor_levels(&results)?;
-
-        // The one group BLS owns is a non-optional Step-6 group, so an empty group fails
-        // the scan rather than handing the agent an incomplete baseline. BLS fills only
-        // labor_levels; the other groups are left empty for the composite to fill from
-        // FMP / FRED.
-        check_completeness(&labor_levels)?;
+        // Match the expected series, shaping each; omission / empty-data / non-numeric
+        // each record a gap — see `assemble_labor_levels`. BLS fills only labor_levels;
+        // the other groups are left empty for the composite to fill from FMP / FRED.
+        let (labor_levels, gaps) = assemble_labor_levels(&results);
         Ok(BaselineMarketData {
             labor_levels,
+            gaps,
             ..Default::default()
         })
     }
@@ -341,21 +357,21 @@ mod tests {
         let ok = r#"{"status":"REQUEST_SUCCEEDED","message":[],"Results":{"series":[]}}"#;
         assert!(interpret_response(200, ok).is_ok());
 
-        // A 2xx REQUEST_NOT_PROCESSED (BLS reports errors at HTTP 200) -> fatal, with
-        // the BLS message surfaced rather than masked as missing data.
+        // A 2xx REQUEST_NOT_PROCESSED (BLS reports errors at HTTP 200) -> a Rejected
+        // batch, with the BLS message preserved in the detail for the runtime log.
         let not_processed = r#"{"status":"REQUEST_NOT_PROCESSED","message":["daily threshold for number of requests exceeded"],"Results":{}}"#;
-        let err = interpret_response(200, not_processed).unwrap_err().to_string();
-        assert!(err.contains("daily threshold"), "{err}");
+        let (reason, detail) = interpret_response(200, not_processed).unwrap_err();
+        assert_eq!(reason, GapReason::Rejected);
+        assert!(detail.contains("daily threshold"), "{detail}");
 
-        // A 2xx body that isn't valid JSON is a contract violation -> fatal.
-        assert!(interpret_response(200, "not json at all").is_err());
+        // A 2xx body that isn't valid JSON is a contract violation -> Malformed.
+        let (reason, _) = interpret_response(200, "not json at all").unwrap_err();
+        assert_eq!(reason, GapReason::Malformed);
 
-        // Non-2xx transport/server statuses are fatal regardless of body.
+        // Non-2xx transport/server statuses -> Unavailable regardless of body.
         for status in [429, 500, 503] {
-            assert!(
-                interpret_response(status, "").is_err(),
-                "HTTP {status} should be fatal"
-            );
+            let (reason, _) = interpret_response(status, "").unwrap_err();
+            assert_eq!(reason, GapReason::Unavailable, "HTTP {status}");
         }
     }
 
@@ -381,8 +397,8 @@ mod tests {
 
     #[test]
     fn series_to_quote_empty_data_is_a_skip_not_an_error() {
-        // A series with no observation contributes nothing, but is not an error — the
-        // per-series absence the floor tolerates (a renamed/absent series id).
+        // A series with no observation returns Ok(None) (a skip, not an error) — the
+        // caller then records it as an Unavailable gap.
         let data = data_points("[]");
         assert!(series_to_quote(&data, "LNS14000000", "x", "percent")
             .unwrap()
@@ -417,51 +433,40 @@ mod tests {
     }
 
     #[test]
-    fn assemble_labor_levels_requires_every_series_present() {
+    fn assemble_labor_levels_records_a_gap_for_an_omitted_series() {
         let with_data = r#"[{"year":"2026","period":"M04","value":"1.0"}]"#;
 
-        // All requested series present -> a quote each.
+        // All requested series present -> a quote each, no gaps.
         let full: Vec<(&str, &str)> =
             LABOR_SERIES.iter().map(|(id, _, _)| (*id, with_data)).collect();
-        assert_eq!(
-            assemble_labor_levels(&results_with(&full)).unwrap().len(),
-            LABOR_SERIES.len()
-        );
+        let (quotes, gaps) = assemble_labor_levels(&results_with(&full));
+        assert_eq!(quotes.len(), LABOR_SERIES.len());
+        assert!(gaps.is_empty());
 
-        // A requested series omitted from the response -> fail closed. BLS returns
-        // invalid series as explicit empty entries, never by omission, so an omission is
-        // a truncated / anomalous response that must not silently thin the baseline.
+        // A requested series omitted from the response -> a Malformed gap, the rest
+        // resolve. BLS returns invalid series as explicit empty entries, never by
+        // omission, so an omission is a truncated / anomalous response.
         let omitted = &full[..full.len() - 1];
-        let err = assemble_labor_levels(&results_with(omitted))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("omitted"), "{err}");
+        let (quotes, gaps) = assemble_labor_levels(&results_with(omitted));
+        assert_eq!(quotes.len(), LABOR_SERIES.len() - 1);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].reason, GapReason::Malformed);
+        assert_eq!(gaps[0].series_id, LABOR_SERIES[LABOR_SERIES.len() - 1].0);
     }
 
     #[test]
-    fn assemble_labor_levels_soft_skips_an_explicit_empty_series() {
-        // A requested series present but with empty `data` is an explicit per-series
-        // absence (the gold-lesson case) — skipped, not fatal; the others still resolve.
+    fn assemble_labor_levels_records_an_unavailable_gap_for_an_empty_series() {
+        // A requested series present but with empty `data` is no value this run — an
+        // Unavailable gap that counts against coverage; the others still resolve.
         let with_data = r#"[{"year":"2026","period":"M04","value":"1.0"}]"#;
         let mut entries: Vec<(&str, &str)> =
             LABOR_SERIES.iter().map(|(id, _, _)| (*id, with_data)).collect();
         entries[0].1 = "[]"; // first series returns no observations
-        let quotes = assemble_labor_levels(&results_with(&entries)).unwrap();
+        let (quotes, gaps) = assemble_labor_levels(&results_with(&entries));
         assert_eq!(quotes.len(), LABOR_SERIES.len() - 1);
-    }
-
-    #[test]
-    fn check_completeness_requires_the_group_nonempty() {
-        let q = Quote {
-            symbol: "LNS14000000".into(),
-            name: "Unemployment Rate".into(),
-            price: 4.1,
-            change_pct: 0.0,
-            unit: "percent".into(),
-        };
-        assert!(check_completeness(&[q]).is_ok());
-        let err = check_completeness(&[]).unwrap_err().to_string();
-        assert!(err.contains("labor-levels"), "{err}");
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].reason, GapReason::Unavailable);
+        assert_eq!(gaps[0].series_id, LABOR_SERIES[0].0);
     }
 
     #[test]

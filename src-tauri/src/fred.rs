@@ -35,24 +35,30 @@
 //! per-request credential (`docs/configuration.md` — FRED, unlike BLS/GDELT, is
 //! not keyless).
 //!
-//! Degradation policy. The same rule as `fmp`: **skip only when FRED explicitly
-//! signals an absence; fail on anything we can't understand.** One pure function,
-//! `interpret_response`, decides this. FRED differs from FMP in *how* it signals:
-//! a rejected key and a missing series are **both HTTP 400**, distinguished only by
-//! the JSON `error_message`, so this classifies 400 by body (series "does not
-//! exist" → skip; an `api_key` problem or any other 400 → fatal) rather than by a
-//! status allowlist. A 429 / 5xx is systemic-fatal; a 2xx whose observations are
-//! all FRED's `"."` gap marker contributes nothing (per-series skip), and resolving
-//! *no* series at all fails the scan (Step 6 is not optional).
+//! Degradation policy. The same rule as `fmp`: **every failure degrades to a recorded
+//! gap, so one flaky series or a whole-provider outage never throws away the rest of the
+//! scan.** One pure function, `interpret_response`, classifies each response into a
+//! [`Disposition`] — a 2xx value to shape, or a `Gap(reason)`. FRED differs from FMP in
+//! *how* it signals: a rejected key and a missing series are **both HTTP 400**,
+//! distinguished only by the JSON `error_message`, so this classifies 400 by body (series
+//! "does not exist" → `OutOfScope`; an `api_key` problem → `Rejected`; any other 400 →
+//! `Malformed`) rather than by a status allowlist. A 429 / 5xx is `Unavailable`; a 2xx
+//! whose observations are all FRED's `"."` gap marker is also `Unavailable` (no value
+//! this run, not a permanent absence — only an explicit "does not exist" is `OutOfScope`).
+//! No floor lives here — resolving no series leaves the groups empty plus their
+//! gaps, and the central coverage gate (`pipeline::enforce_coverage`) decides the run's
+//! floor.
 
 use std::time::Duration as StdDuration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{Duration, NaiveDate, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::data_sources::{BaselineMarketData, EconomicRelease, MarketDataSource, Quote};
+use crate::data_sources::{
+    BaselineMarketData, DataGap, EconomicRelease, GapReason, GroupKind, MarketDataSource, Quote,
+};
 
 /// FRED's observations endpoint — the series time-series the baseline reads.
 const FRED_OBSERVATIONS_URL: &str = "https://api.stlouisfed.org/fred/series/observations";
@@ -197,25 +203,25 @@ struct FredReleaseDate {
     date: String,
 }
 
-/// Interpret one FRED response by status × body — the single place the degradation
-/// policy lives. Pure and total:
-/// - `Err(..)` — fatal (an `api_key` rejection, a systemic 429 / 5xx, an
-///   unrecognized 400, or an unparseable 2xx body): fail the whole scan.
-/// - `Ok(None)` — a legitimate per-series absence (a 400/404 whose `error_message`
-///   says the series "does not exist"): skip just that series.
-/// - `Ok(Some(value))` — a successful 2xx JSON value for the caller to shape.
-///
-/// Unlike FMP's status allowlist, FRED returns **400 for both** a rejected key and
-/// a missing series, so the body's `error_message` is what disambiguates them: only
-/// an explicit "does not exist" skips; an `api_key` problem and any other 400 are
-/// fatal (fail-closed — a broken request must not vanish into missing data).
-fn interpret_response(status: u16, body: &str) -> Result<Option<Value>> {
+/// One FRED response classified into what the loop should do with it — the single place
+/// the degradation policy lives, in terms of [`GapReason`] rather than a fatal `Err`.
+enum Disposition {
+    Value(Value),
+    Gap(GapReason),
+}
+
+/// Interpret one FRED response by status × body. Pure and total. Unlike FMP's status
+/// allowlist, FRED returns **400 for both** a rejected key and a missing series, so the
+/// body's `error_message` disambiguates them: an explicit "does not exist" is an
+/// `OutOfScope` per-series absence; an `api_key` problem is `Rejected`; any other 400 is
+/// `Malformed` (fail-closed — a broken request degrades to a recorded gap, not a silent
+/// skip). A 429 / 5xx is `Unavailable`; an unparseable 2xx body is `Malformed`.
+fn interpret_response(status: u16, body: &str) -> Disposition {
     match status {
-        200..=299 => {
-            let value: Value =
-                serde_json::from_str(body).context("FRED returned an unparseable 2xx body")?;
-            Ok(Some(value))
-        }
+        200..=299 => match serde_json::from_str::<Value>(body) {
+            Ok(value) => Disposition::Value(value),
+            Err(_) => Disposition::Gap(GapReason::Malformed),
+        },
         400 | 404 => {
             let msg = serde_json::from_str::<Value>(body)
                 .ok()
@@ -227,24 +233,15 @@ fn interpret_response(status: u16, body: &str) -> Result<Option<Value>> {
                 .unwrap_or_default();
             let lower = msg.to_ascii_lowercase();
             if lower.contains("does not exist") {
-                Ok(None) // explicit series absence — skip, like FMP's 404
+                Disposition::Gap(GapReason::OutOfScope) // explicit series absence
             } else if lower.contains("api_key") || lower.contains("api key") {
-                bail!("FRED rejected the key (HTTP {status}: {msg})")
+                Disposition::Gap(GapReason::Rejected) // key rejected
             } else {
-                bail!(
-                    "FRED rejected the request (HTTP {status}: {msg}) — failing the scan \
-                     rather than masking a broken request as missing data"
-                )
+                Disposition::Gap(GapReason::Malformed) // unrecognized 400 — fail closed
             }
         }
-        429 | 500..=599 => bail!(
-            "FRED is unavailable (HTTP {status}) — failing the scan rather than returning a \
-             partial baseline"
-        ),
-        _ => bail!(
-            "FRED returned an unexpected response (HTTP {status}) — failing the scan rather than \
-             masking it as missing data"
-        ),
+        429 | 500..=599 => Disposition::Gap(GapReason::Unavailable),
+        _ => Disposition::Gap(GapReason::Malformed),
     }
 }
 
@@ -312,7 +309,8 @@ fn observations_to_quote(
 /// later). The release `name` rides from the `RELEASES` table (the scoped endpoint omits
 /// it). The window is also enforced server-side by the query's realtime params; the
 /// re-check here keeps the function self-contained and testable. An unparseable date is a
-/// contract violation that fails the scan rather than being silently dropped.
+/// contract violation that `fetch_calendar` records as a `Malformed` gap rather than
+/// dropping silently.
 fn releases_to_calendar(
     value: Value,
     name: &str,
@@ -342,37 +340,6 @@ fn releases_to_calendar(
     Ok(out)
 }
 
-/// Per-group completeness floor for the FRED scan. Each Step-6 group FRED owns — the
-/// market `internals` and the `macro_levels` — is non-optional, so an **empty group**
-/// fails the scan rather than handing the agent an incomplete baseline. This is
-/// distinct from a single absent series, which soft-skips (the gold lesson): a whole
-/// group coming back empty means the provider is unreachable, rate-limited, the key is
-/// bad, the response is unrecognized, or an entire series set was discontinued at once
-/// — none of which should pass silently. Each group is checked independently, so a
-/// resolved sibling group cannot paper over an empty one (mirrors `fmp`'s floor on its
-/// required `indices` group, and keeps the runtime in step with the smoke, which
-/// asserts both groups resolve).
-///
-/// Pure, so the floor is unit-testable without an HTTP round-trip — the live scan is
-/// otherwise exercised only by the ignored smoke.
-fn check_completeness(internals: &[Quote], macro_levels: &[Quote]) -> Result<()> {
-    if internals.is_empty() {
-        bail!(
-            "FRED baseline scan resolved no market-internals series (Treasury yields, \
-             dollar index, oil, natural gas) — the data provider is unreachable, \
-             rate-limited, or returned an unrecognized response"
-        );
-    }
-    if macro_levels.is_empty() {
-        bail!(
-            "FRED baseline scan resolved no macro-levels series (Fed-funds target range, \
-             inflation breakevens, consumer sentiment, PCE) — the data provider is \
-             unreachable, rate-limited, or returned an unrecognized response"
-        );
-    }
-    Ok(())
-}
-
 /// Live FRED adapter behind the `MarketDataSource` trait.
 pub struct FredDataSource {
     api_key: String,
@@ -397,7 +364,8 @@ impl FredDataSource {
 
     /// GET one series' most recent observations (newest-first), returning the
     /// status and raw body for `interpret_response` to judge. A transport error
-    /// (the provider is unreachable) propagates as a fatal scan error.
+    /// (the provider is unreachable) returns `Err` to the caller, which records it as an
+    /// `Unavailable` gap rather than failing the scan.
     fn get(&self, series_id: &str) -> Result<(u16, String)> {
         crate::http_retry::send_with_retry("FRED", || {
             self.http.get(FRED_OBSERVATIONS_URL).query(&[
@@ -410,30 +378,56 @@ impl FredDataSource {
         })
     }
 
-    /// Fetch one quote per FRED series in `series`. `interpret_response` decides each
-    /// response: a "does not exist" 400 (or an all-gap series) skips just that series;
-    /// an `api_key` / systemic / unrecognized response fails the whole scan; a 2xx is
-    /// shaped into a quote. So the rest of the scan lands around a legitimately absent
-    /// series, but anything we can't understand fails loudly. Shared by the internals
-    /// and macro-levels groups, which differ only in their series list.
-    fn fetch_series(&self, series: &[(&str, &str, &str)]) -> Result<Vec<Quote>> {
+    /// Fetch one quote per FRED series in `series`, recording a [`DataGap`] in `group`
+    /// for any that don't resolve rather than failing the scan. A "does not exist" 400 is
+    /// an `OutOfScope` gap; an all-gap window is `Unavailable` (no value this run, so it
+    /// counts against coverage); an `api_key` rejection is `Rejected`
+    /// and — being a whole-provider condition — stops the loop, recording the rest
+    /// without hammering; a systemic / unrecognized response or a body that won't shape
+    /// is `Unavailable` / `Malformed`. Shared by the internals and macro-levels groups,
+    /// which differ only in their series list and `group` tag.
+    fn fetch_series(
+        &self,
+        series: &[(&str, &str, &str)],
+        group: GroupKind,
+        gaps: &mut Vec<DataGap>,
+    ) -> Vec<Quote> {
         let mut out = Vec::with_capacity(series.len());
+        let mut rejected = false;
         for (series_id, name, unit) in series {
-            let (status, body) = self.get(series_id)?;
-            if let Some(value) = interpret_response(status, &body)? {
-                if let Some(quote) = observations_to_quote(value, series_id, name, unit)? {
-                    out.push(quote);
+            if rejected {
+                gaps.push(DataGap::new(group, *series_id, *name, GapReason::Rejected));
+                continue;
+            }
+            let disposition = match self.get(series_id) {
+                Ok((status, body)) => interpret_response(status, &body),
+                Err(_) => Disposition::Gap(GapReason::Unavailable), // transport — unreachable
+            };
+            match disposition {
+                Disposition::Value(value) => match observations_to_quote(value, series_id, name, unit) {
+                    Ok(Some(quote)) => out.push(quote),
+                    // Every observation in the window was a "." gap — no value published
+                    // this run, not a permanent/premium absence, so it counts against
+                    // coverage (Unavailable), unlike an explicit "does not exist".
+                    Ok(None) => gaps.push(DataGap::new(group, *series_id, *name, GapReason::Unavailable)),
+                    Err(_) => gaps.push(DataGap::new(group, *series_id, *name, GapReason::Malformed)),
+                },
+                Disposition::Gap(reason) => {
+                    if reason == GapReason::Rejected {
+                        rejected = true;
+                    }
+                    gaps.push(DataGap::new(group, *series_id, *name, reason));
                 }
             }
         }
-        Ok(out)
+        out
     }
 
     /// GET one release's scheduled dates within the calendar window, returning the status
     /// and raw body for `interpret_response`. `include_release_dates_with_no_data=true`
     /// surfaces *upcoming* (not-yet-released) dates; the realtime window bounds the dates
-    /// to the calendar's `[start, end]` span server-side. A transport error propagates as
-    /// a fatal scan error.
+    /// to the calendar's `[start, end]` span server-side. A transport error returns `Err`
+    /// to `fetch_calendar`, which records it as an `Unavailable` calendar gap.
     fn get_release_dates(
         &self,
         release_id: u32,
@@ -455,12 +449,14 @@ impl FredDataSource {
     }
 
     /// Gather the Step-6 economic-release calendar: each curated release's prior-week and
-    /// upcoming dates within the window, shaped into `EconomicRelease`s. Mirrors
-    /// `fetch_series`' degradation — a per-release "does not exist" 400 skips just that
-    /// release; an `api_key` / systemic / unrecognized response fails the scan. The
-    /// calendar carries no completeness floor: an empty result (a quiet window) is valid,
-    /// the actual figures reaching the model through the series groups instead.
-    fn fetch_calendar(&self, today: NaiveDate) -> Result<Vec<EconomicRelease>> {
+    /// upcoming dates within the window, shaped into `EconomicRelease`s. The calendar is
+    /// an additive group with no floor, so it degrades quietly: a per-release "does not
+    /// exist" 400 is silent (a permanent absence shouldn't clutter the manifest), while a
+    /// this-run failure (auth / quota / 5xx / transport / malformed) is recorded as a
+    /// `Calendar` gap so the agent knows the schedule was thinned this week. An empty
+    /// result (a quiet window) is valid; the actual figures reach the model through the
+    /// series groups regardless.
+    fn fetch_calendar(&self, today: NaiveDate, gaps: &mut Vec<DataGap>) -> Vec<EconomicRelease> {
         let start = (today - Duration::days(CALENDAR_BACK_DAYS))
             .format("%Y-%m-%d")
             .to_string();
@@ -468,50 +464,59 @@ impl FredDataSource {
             .format("%Y-%m-%d")
             .to_string();
         let mut out = Vec::new();
+        let mut rejected = false;
         for (release_id, name) in RELEASES {
-            let (status, body) = self.get_release_dates(*release_id, &start, &end)?;
-            if let Some(value) = interpret_response(status, &body)? {
-                out.extend(releases_to_calendar(value, name, today)?);
+            let id_str = release_id.to_string();
+            if rejected {
+                gaps.push(DataGap::new(GroupKind::Calendar, id_str, *name, GapReason::Rejected));
+                continue;
+            }
+            let disposition = match self.get_release_dates(*release_id, &start, &end) {
+                Ok((status, body)) => interpret_response(status, &body),
+                Err(_) => Disposition::Gap(GapReason::Unavailable),
+            };
+            match disposition {
+                Disposition::Value(value) => match releases_to_calendar(value, name, today) {
+                    Ok(entries) => out.extend(entries),
+                    Err(_) => {
+                        gaps.push(DataGap::new(GroupKind::Calendar, id_str, *name, GapReason::Malformed))
+                    }
+                },
+                // Additive group: a permanent absence (does-not-exist) is silent.
+                Disposition::Gap(GapReason::OutOfScope) => {}
+                Disposition::Gap(reason) => {
+                    if reason == GapReason::Rejected {
+                        rejected = true;
+                    }
+                    gaps.push(DataGap::new(GroupKind::Calendar, id_str, *name, reason));
+                }
             }
         }
-        Ok(out)
+        out
     }
 }
 
 impl MarketDataSource for FredDataSource {
     fn baseline_scan(&self) -> Result<BaselineMarketData> {
-        let internals = self.fetch_series(INTERNALS_SERIES)?;
-        let macro_levels = self.fetch_series(MACRO_SERIES)?;
-        // Each group FRED owns is a non-optional Step-6 group, so an empty group fails
-        // the scan (`check_completeness`) rather than handing the agent an incomplete
-        // baseline. An individual renamed series still soft-skips (the gold lesson) and
-        // surfaces as a missing row in the smoke. FRED owns the internals + macro
-        // groups; indices / sectors are left empty for the composite to fill from FMP.
-        check_completeness(&internals, &macro_levels)?;
-        // The economic-release calendar is non-essential and floor-free: it is gathered
-        // after the floor-checked series groups, and if it fails for *any* reason —
-        // transport, a 5xx, schema drift — it is logged and degraded to empty rather than
-        // failing the whole report (the fail-soft policy the research inbox uses). The
-        // valid baseline already gathered above is far more valuable than aborting the run
-        // over an optional schedule; a wrong release_id / schema drift surfaces in the
-        // smoke, not at runtime. The report's figures come from the series groups; the
-        // calendar only schedules them.
-        let calendar = self
-            .fetch_calendar(Utc::now().date_naive())
-            .unwrap_or_else(|e| {
-                eprintln!("FRED economic-release calendar unavailable, continuing without it: {e:#}");
-                Vec::new()
-            });
+        // Each series degrades to a recorded gap rather than failing the scan; an empty
+        // `internals` or `macro_levels` group is no longer this adapter's call to abort
+        // on — the central coverage gate (`pipeline::enforce_coverage`) decides the run's
+        // floor over the merged baseline. So this scan returns `Ok` for all data
+        // outcomes. FRED owns the internals + macro groups and the calendar; indices /
+        // sectors / labor are left empty for the composite to fill from FMP / BLS.
+        let mut gaps = Vec::new();
+        let internals = self.fetch_series(INTERNALS_SERIES, GroupKind::Internals, &mut gaps);
+        let macro_levels = self.fetch_series(MACRO_SERIES, GroupKind::MacroLevels, &mut gaps);
+        let calendar = self.fetch_calendar(Utc::now().date_naive(), &mut gaps);
         Ok(BaselineMarketData {
             indices: Vec::new(),
             internals,
             sectors: Vec::new(),
             macro_levels,
-            // BLS owns the labor levels; FRED contributes none.
             labor_levels: Vec::new(),
             calendar,
-            // FMP owns the index-performance enrichment; FRED contributes none.
             index_performance: Vec::new(),
+            gaps,
         })
     }
 }
@@ -522,36 +527,32 @@ mod tests {
 
     #[test]
     fn interpret_response_covers_the_full_matrix() {
-        // 2xx observations body -> Some(value) to shape.
-        assert!(interpret_response(
-            200,
-            r#"{"observations":[{"date":"2026-06-04","value":"4.30"}]}"#
-        )
-        .unwrap()
-        .is_some());
+        use GapReason::*;
+        // 2xx observations body -> a value to shape.
+        assert!(matches!(
+            interpret_response(200, r#"{"observations":[{"date":"2026-06-04","value":"4.30"}]}"#),
+            Disposition::Value(_)
+        ));
 
-        // A 400 whose error_message says the series is absent -> per-series skip.
+        // A 400 whose error_message says the series is absent -> OutOfScope per-series gap.
         let absent = r#"{"error_code":400,"error_message":"Bad Request. The series does not exist."}"#;
-        assert!(interpret_response(400, absent).unwrap().is_none());
+        assert!(matches!(interpret_response(400, absent), Disposition::Gap(OutOfScope)));
 
-        // A 400 whose error_message is an api_key problem -> fatal (key rejected).
+        // A 400 whose error_message is an api_key problem -> Rejected (key rejected).
         let bad_key = r#"{"error_code":400,"error_message":"Bad Request. The value for variable api_key is not registered, is not active, or is otherwise invalid."}"#;
-        assert!(interpret_response(400, bad_key).is_err());
+        assert!(matches!(interpret_response(400, bad_key), Disposition::Gap(Rejected)));
 
-        // An unrecognized 400 (empty / unfamiliar message) fails closed rather than
-        // being misread as a missing series.
-        assert!(interpret_response(400, "{}").is_err());
+        // An unrecognized 400 (empty / unfamiliar message) fails closed as Malformed
+        // rather than being misread as a missing series.
+        assert!(matches!(interpret_response(400, "{}"), Disposition::Gap(Malformed)));
 
-        // Systemic statuses are fatal regardless of body.
+        // Systemic statuses -> Unavailable regardless of body.
         for status in [429, 500, 503] {
-            assert!(
-                interpret_response(status, "").is_err(),
-                "HTTP {status} should be fatal"
-            );
+            assert!(matches!(interpret_response(status, ""), Disposition::Gap(Unavailable)), "HTTP {status}");
         }
 
-        // A 2xx that isn't valid JSON is a contract violation -> fatal.
-        assert!(interpret_response(200, "not json at all").is_err());
+        // A 2xx that isn't valid JSON is a contract violation -> Malformed.
+        assert!(matches!(interpret_response(200, "not json at all"), Disposition::Gap(Malformed)));
     }
 
     #[test]
@@ -597,8 +598,8 @@ mod tests {
 
     #[test]
     fn observations_to_quote_all_gaps_is_a_skip_not_an_error() {
-        // A series with no numeric observation in the window contributes nothing,
-        // but is not an error — the per-series absence the floor tolerates.
+        // A series with no numeric observation in the window returns Ok(None) (a skip,
+        // not an error) — the caller then records it as an Unavailable gap.
         let v: Value =
             serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#).unwrap();
         assert!(observations_to_quote(v, "DGS2", "x", "percent").unwrap().is_none());
@@ -627,9 +628,9 @@ mod tests {
     #[test]
     fn observations_to_quote_rejects_nonnumeric_and_nonfinite_values() {
         // "." is the only skippable marker. A non-numeric value — or one that parses
-        // to a non-finite float (NaN / inf, which f64::parse accepts) — is a contract
-        // violation that fails the scan, not a silent gap. Otherwise a stale value
-        // could read as current, or a NaN could contaminate the change math.
+        // to a non-finite float (NaN / inf, which f64::parse accepts) — returns an error
+        // the caller records as a Malformed gap, not a silent drop. Otherwise a stale
+        // value could read as current, or a NaN could contaminate the change math.
         for bad in ["garbage", "NaN", "inf", "-inf", "infinity"] {
             let v: Value = serde_json::from_str(&format!(
                 r#"{{"observations":[{{"date":"2026-06-04","value":"{bad}"}}]}}"#
@@ -640,33 +641,6 @@ mod tests {
                 "value {bad:?} must fail closed, not skip"
             );
         }
-    }
-
-    #[test]
-    fn check_completeness_requires_each_group_nonempty() {
-        let q = |s: &str| Quote {
-            symbol: s.into(),
-            name: s.into(),
-            price: 1.0,
-            change_pct: 0.0,
-            unit: "percent".into(),
-        };
-        let internals = [q("DGS10")];
-        let macro_levels = [q("DFEDTARU")];
-
-        // Both groups present -> ok.
-        assert!(check_completeness(&internals, &macro_levels).is_ok());
-
-        // Each non-optional group has its own floor: a resolved sibling group must not
-        // paper over an empty one (the regression the earlier `&&` floor introduced),
-        // and the error names which group is missing.
-        let err = check_completeness(&[], &macro_levels).unwrap_err().to_string();
-        assert!(err.contains("market-internals"), "{err}");
-        let err = check_completeness(&internals, &[]).unwrap_err().to_string();
-        assert!(err.contains("macro-levels"), "{err}");
-
-        // Both empty -> still fails (internals checked first).
-        assert!(check_completeness(&[], &[]).is_err());
     }
 
     #[test]
@@ -841,9 +815,12 @@ mod tests {
             let (status, body) = src
                 .get_release_dates(*id, &wide_start, &wide_end)
                 .expect("release-dates request");
-            let value = interpret_response(status, &body)
-                .expect("release-dates response")
-                .unwrap_or_else(|| panic!("release {id} ({name}) returned no data — retired id"));
+            let value = match interpret_response(status, &body) {
+                Disposition::Value(v) => v,
+                Disposition::Gap(reason) => {
+                    panic!("release {id} ({name}) did not resolve ({reason:?}) — wrong/retired id")
+                }
+            };
             let parsed: FredReleaseDates =
                 serde_json::from_value(value).expect("release-dates shape");
             assert!(

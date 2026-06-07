@@ -159,6 +159,11 @@ voice — the Market Signal Thesis — that reads like a professional market pub
 thesis-driven, forward-looking, and focused on structural developments rather than reactive \
 daily commentary.
 
+Ground your analysis in the baseline market data provided with this prompt. That data \
+may carry a `gaps` list — series or releases that could not be gathered this run; treat \
+each listed item as unavailable rather than inferring or inventing a value for it, and \
+acknowledge any material absence rather than writing around it silently.
+
 Produce the report body as GitHub-flavored Markdown with these sections, in order:
 - # Weekly Market Report (title), followed by a short date / report-type line
 - ## Header Summary — the 3 to 6 bullets that also populate header_summary_bullets
@@ -514,7 +519,7 @@ mod tests {
 
     #[test]
     fn user_prompt_embeds_baseline_when_present() {
-        use crate::data_sources::{EconomicRelease, Quote};
+        use crate::data_sources::{DataGap, EconomicRelease, GapReason, GroupKind, Quote};
         let baseline = BaselineMarketData {
             indices: vec![Quote {
                 symbol: "^GSPC".into(),
@@ -529,6 +534,12 @@ mod tests {
                 status: "released".into(),
                 expected: None,
             }],
+            gaps: vec![DataGap::new(
+                GroupKind::LaborLevels,
+                "CES0500000003",
+                "Average Hourly Earnings, Total Private",
+                GapReason::Rejected,
+            )],
             ..Default::default()
         };
         let prompt = build_user_prompt(&baseline);
@@ -541,6 +552,10 @@ mod tests {
         // The economic-release calendar reaches the model the same way — through the
         // whole-baseline serialization, no formatter change.
         assert!(prompt.contains("Employment Situation"), "{prompt}");
+        // The missing-data manifest rides in the same way: the agent sees which series
+        // were absent this run, and why, rather than inferring values for them.
+        assert!(prompt.contains("CES0500000003"), "{prompt}");
+        assert!(prompt.contains("rejected"), "{prompt}");
     }
 
     #[test]
