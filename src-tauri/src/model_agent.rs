@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn user_prompt_embeds_baseline_when_present() {
-        use crate::data_sources::Quote;
+        use crate::data_sources::{EconomicRelease, Quote};
         let baseline = BaselineMarketData {
             indices: vec![Quote {
                 symbol: "^GSPC".into(),
@@ -520,6 +520,12 @@ mod tests {
                 price: 5500.0,
                 change_pct: 0.4,
                 unit: "index points".into(),
+            }],
+            calendar: vec![EconomicRelease {
+                release: "Employment Situation".into(),
+                date: "2026-06-05".into(),
+                status: "released".into(),
+                expected: None,
             }],
             ..Default::default()
         };
@@ -530,6 +536,9 @@ mod tests {
         // The unit rides into the serialized baseline, so the model sees what `price` is
         // quoted in — the whole point of the field reaching the prompt.
         assert!(prompt.contains("index points"), "{prompt}");
+        // The economic-release calendar reaches the model the same way — through the
+        // whole-baseline serialization, no formatter change.
+        assert!(prompt.contains("Employment Situation"), "{prompt}");
     }
 
     #[test]

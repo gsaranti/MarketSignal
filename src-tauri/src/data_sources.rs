@@ -6,18 +6,19 @@
 //! this trait — `fmp` (equity indices, VIX, gold, sectors), `fred` (the Treasury
 //! yields, dollar index, and oil / natural-gas internals FMP's free tier omits, plus
 //! the `macro_levels` group — Fed-funds target range, inflation breakevens, consumer
-//! sentiment, PCE), and `bls` (the `labor_levels` group — CPI, unemployment, payrolls,
-//! wages) — and the `CompositeMarketDataSource` below runs them and merges them into
-//! one baseline.
+//! sentiment, PCE — and the economic-release `calendar`), and `bls` (the `labor_levels`
+//! group — CPI, unemployment, payrolls, wages) — and the `CompositeMarketDataSource`
+//! below runs them and merges them into one baseline.
 //!
 //! `BaselineMarketData` is the Step-6 baseline scan
 //! (`docs/weekly-report-workflow.md §Step 6`), gathered before agent reasoning.
 //! FMP fills indices, sectors, and the VIX + gold internals; FRED appends its
 //! commodity / yield series to the same `internals` group and fills the
 //! `macro_levels` group (Fed-funds target range, inflation breakevens, consumer
-//! sentiment, PCE); BLS fills the `labor_levels` group (CPI, unemployment, payrolls,
-//! wages). The remaining Step-6 macro item — the economic-release calendar — is a
-//! later slice.
+//! sentiment, PCE) and the economic-release `calendar` (the prior-week + upcoming US
+//! reports, from FRED's free release-dates schedule — FMP's economic-calendar endpoint
+//! is premium-gated); BLS fills the `labor_levels` group (CPI, unemployment, payrolls,
+//! wages).
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +48,24 @@ pub struct SectorPerformance {
     pub change_pct: f64,
 }
 
+/// One entry in the Step-6 economic-release calendar: a scheduled or just-released US
+/// economic report (`docs/weekly-report-workflow.md §Step 6` — the "CPI/PCE/jobs
+/// calendar" and "major economic reports from the prior week"). Sourced from FRED's
+/// free release-dates schedule (FMP's economic-calendar endpoint is premium-gated), so
+/// it carries the release **name** and **date** but not the report's figures — those
+/// reach the model through the `macro_levels` / `labor_levels` series quotes. `status`
+/// is `"released"` for a date in the prior-week window or `"upcoming"` for a scheduled
+/// future date. `expected` is the analyst-consensus slot reserved for a future paid
+/// source — no free provider supplies US consensus, so it is always `None` on the FRED
+/// path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EconomicRelease {
+    pub release: String,
+    pub date: String,
+    pub status: String,
+    pub expected: Option<f64>,
+}
+
 /// The baseline market-data scan handed to the main agent as part of its input.
 /// Empty vectors are valid — a provider that returns no data for a group leaves
 /// it empty rather than failing the whole scan.
@@ -56,16 +75,24 @@ pub struct BaselineMarketData {
     pub internals: Vec<Quote>,
     pub sectors: Vec<SectorPerformance>,
     /// Step-6 macro levels (Fed-funds target range, inflation breakevens, consumer
-    /// sentiment, PCE) — point-in-time FRED series, kept distinct from the market
-    /// `internals`. Same `Quote` shape: `price` is the latest level and `change_pct`
-    /// its change from the prior observation (day-over-day for daily series,
-    /// month-over-month for monthly).
+    /// sentiment, PCE, plus the headline activity reports — PPI, retail sales, JOLTS,
+    /// real GDP — that back the `calendar`'s prior-week entries) — point-in-time FRED
+    /// series, kept distinct from the market `internals`. Same `Quote` shape: `price` is
+    /// the latest level and `change_pct` its change from the prior observation
+    /// (day-over-day, month-over-month, or quarter-over-quarter by series frequency).
     pub macro_levels: Vec<Quote>,
     /// Step-6 labor levels (CPI, unemployment rate, nonfarm payrolls, average hourly
     /// earnings) — point-in-time BLS series, kept distinct from the FRED `macro_levels`
     /// by source and concern. Same `Quote` shape: `price` is the latest reported level
     /// and `change_pct` its month-over-month change from the prior reading.
     pub labor_levels: Vec<Quote>,
+    /// Step-6 economic-release calendar (`docs/weekly-report-workflow.md §Step 6`): the
+    /// prior-week and upcoming US economic reports (CPI, PCE, jobs, GDP, …) as a
+    /// release schedule from FRED's free release-dates endpoint. A schedule of names +
+    /// dates, not figures — the actual readings reach the model via `macro_levels` /
+    /// `labor_levels`. Empty is valid (a quiet window, or the calendar soft-degraded); it
+    /// carries no completeness floor, unlike the series groups.
+    pub calendar: Vec<EconomicRelease>,
 }
 
 /// The data-source stage. One method: gather the required baseline scan. Sync,
@@ -130,6 +157,12 @@ impl MarketDataSource for StubMarketDataSource {
                 change_pct: 0.0,
                 unit: "percent".into(),
             }],
+            calendar: vec![EconomicRelease {
+                release: "Employment Situation".into(),
+                date: "2026-06-05".into(),
+                status: "released".into(),
+                expected: None,
+            }],
         })
     }
 }
@@ -137,7 +170,7 @@ impl MarketDataSource for StubMarketDataSource {
 /// Compose two `MarketDataSource`s into one baseline scan: run the `primary`
 /// (e.g. FMP — indices, sectors, VIX, gold), then the `secondary`, and merge them
 /// across every group (`indices`, `internals`, `sectors`, `macro_levels`,
-/// `labor_levels`). Both contributions are required: either child's failure
+/// `labor_levels`, `calendar`). Both contributions are required: either child's failure
 /// propagates, so a secondary failure fails the run exactly as a primary failure does
 /// (the secondaries now source non-optional Step-6 series — `docs/configuration.md`).
 /// Order is primary-then-secondary, so the merged `internals` reads the primary's
@@ -165,6 +198,7 @@ impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
         merged.sectors.extend(extra.sectors);
         merged.macro_levels.extend(extra.macro_levels);
         merged.labor_levels.extend(extra.labor_levels);
+        merged.calendar.extend(extra.calendar);
         Ok(merged)
     }
 }
@@ -180,6 +214,7 @@ mod tests {
         internals: Vec<Quote>,
         macro_levels: Vec<Quote>,
         labor_levels: Vec<Quote>,
+        calendar: Vec<EconomicRelease>,
     }
 
     impl MarketDataSource for FredShapedStub {
@@ -188,6 +223,7 @@ mod tests {
                 internals: self.internals.clone(),
                 macro_levels: self.macro_levels.clone(),
                 labor_levels: self.labor_levels.clone(),
+                calendar: self.calendar.clone(),
                 ..Default::default()
             })
         }
@@ -222,6 +258,12 @@ mod tests {
             internals: vec![quote("DGS10"), quote("DTWEXBGS")],
             macro_levels: vec![quote("T10YIE")],
             labor_levels: vec![quote("CUUR0000SA0")],
+            calendar: vec![EconomicRelease {
+                release: "Consumer Price Index".into(),
+                date: "2026-06-10".into(),
+                status: "upcoming".into(),
+                expected: None,
+            }],
         };
         let composite = CompositeMarketDataSource::new(StubMarketDataSource, secondary);
         let data = composite.baseline_scan().unwrap();
@@ -242,6 +284,11 @@ mod tests {
         assert_eq!(data.labor_levels.len(), 2);
         assert_eq!(data.labor_levels[0].symbol, "LNS14000000");
         assert_eq!(data.labor_levels[1].symbol, "CUUR0000SA0");
+        // calendar merges primary-first too: the stub's Employment Situation, then the
+        // secondary's CPI release.
+        assert_eq!(data.calendar.len(), 2);
+        assert_eq!(data.calendar[0].release, "Employment Situation");
+        assert_eq!(data.calendar[1].release, "Consumer Price Index");
     }
 
     #[test]
@@ -260,6 +307,7 @@ mod tests {
         assert!(!data.sectors.is_empty());
         assert!(!data.macro_levels.is_empty());
         assert!(!data.labor_levels.is_empty());
+        assert!(!data.calendar.is_empty());
 
         // The whole packet serializes and parses back unchanged — the contract
         // the agent input and the model prompt both lean on.

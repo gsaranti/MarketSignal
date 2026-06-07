@@ -21,6 +21,14 @@
 //! report a day-over-day `change_pct`; monthly series (sentiment, PCE), month-over-
 //! month.
 //!
+//! It additionally owns the Step-6 **economic-release calendar** (`calendar`): the
+//! prior-week and upcoming US economic reports (CPI, PCE, jobs, GDP, …), built
+//! from FRED's free *release-dates* schedule rather than the observations endpoint.
+//! FMP's economic-calendar endpoint is premium-gated (verified live: HTTP 402), so the
+//! schedule comes from FRED; the actual figures reach the model through the series
+//! groups above, not the calendar. Unlike the series groups the calendar has no
+//! completeness floor — an empty window is valid.
+//!
 //! Like `fmp`, the HTTP call is synchronous (`reqwest::blocking`) so the trait
 //! stays sync; the blocking work is offloaded via `spawn_blocking` at the Tauri
 //! command seam. The key rides as a query param (`api_key`), FRED's required
@@ -40,10 +48,11 @@
 use std::time::Duration as StdDuration;
 
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::{Duration, NaiveDate, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::data_sources::{BaselineMarketData, MarketDataSource, Quote};
+use crate::data_sources::{BaselineMarketData, EconomicRelease, MarketDataSource, Quote};
 
 /// FRED's observations endpoint — the series time-series the baseline reads.
 const FRED_OBSERVATIONS_URL: &str = "https://api.stlouisfed.org/fred/series/observations";
@@ -73,14 +82,17 @@ const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
 
 /// The FRED-owned macro levels of the Step-6 baseline (`docs/weekly-report
 /// -workflow.md §Step 6`, the "Macro" group): the Fed-funds target range as the
-/// policy-stance proxy (futures-implied expectations aren't on FRED's free tier),
-/// the 5y / 10y inflation breakevens, U. Michigan consumer sentiment, and the PCE
-/// price index. Mixed daily (target range, breakevens) and monthly (sentiment, PCE)
-/// series; the `change_pct` math reads day-over-day or month-over-month accordingly.
-/// Same `(series_id, display name, unit)` shape as the internals — the `series_id`
-/// doubles as the quote `symbol`. The target range and breakevens are quoted in
-/// percent; sentiment and the PCE price index are index levels (with their base period
-/// in the unit) — the unit labels which.
+/// policy-stance proxy (futures-implied expectations aren't on FRED's free tier), the
+/// 5y / 10y inflation breakevens, U. Michigan consumer sentiment, the PCE price index,
+/// and the headline activity reports — PPI, retail sales, job openings (JOLTS), and real
+/// GDP — that supply the **actual readings** for the economic-release `calendar`'s
+/// prior-week entries (so the report sees what each release printed, not just that it
+/// landed). Mixed daily (target range, breakevens), monthly (sentiment, PCE, PPI, retail,
+/// JOLTS) and quarterly (GDP) series; `change_pct` reads the change off the prior
+/// observation accordingly. Same `(series_id, display name, unit)` shape as the internals
+/// — the `series_id` doubles as the quote `symbol`, and the unit labels what each `price`
+/// level is quoted in (percent, an index level with its base period, a dollar figure, or
+/// a count).
 const MACRO_SERIES: &[(&str, &str, &str)] = &[
     ("DFEDTARU", "Fed Funds Target Range — Upper Limit", "percent"),
     ("DFEDTARL", "Fed Funds Target Range — Lower Limit", "percent"),
@@ -88,6 +100,48 @@ const MACRO_SERIES: &[(&str, &str, &str)] = &[
     ("T10YIE", "10-Year Breakeven Inflation Rate", "percent"),
     ("UMCSENT", "U. Michigan Consumer Sentiment", "index (1966Q1=100)"),
     ("PCEPI", "PCE Price Index", "index (2017=100)"),
+    ("PPIFIS", "Producer Price Index (Final Demand)", "index (Nov 2009=100)"),
+    (
+        "RSAFS",
+        "Advance Retail Sales (Retail & Food Services)",
+        "millions of USD",
+    ),
+    ("JTSJOL", "Job Openings: Total Nonfarm (JOLTS)", "thousands of openings"),
+    ("GDPC1", "Real Gross Domestic Product", "billions of chained 2017 USD"),
+];
+
+/// FRED's release-dates endpoint — the economic-release *schedule* the Step-6 calendar
+/// reads, distinct from the series observations above. `include_release_dates_with_no_data`
+/// surfaces upcoming (not-yet-released) dates; the realtime window bounds the dates to
+/// the calendar span.
+const FRED_RELEASE_DATES_URL: &str = "https://api.stlouisfed.org/fred/release/dates";
+
+/// The economic-release calendar window: days back (prior-week reports already released)
+/// and forward (the upcoming schedule) of today to keep. Applied both server-side (the
+/// `realtime_start` / `realtime_end` query params) and again in `releases_to_calendar`.
+const CALENDAR_BACK_DAYS: i64 = 10;
+const CALENDAR_FWD_DAYS: i64 = 21;
+
+/// The curated market-moving US economic releases of the Step-6 calendar, as
+/// `(FRED release_id, display name)`. The ids are pinned against FRED's `releases`
+/// catalog, and each is verified live by `fred_baseline_smoke` two ways — by **name**
+/// against FRED's `releases` catalog (a wrong-but-valid id points at a different release,
+/// which `release/dates` can't catch since it just echoes the queried id) and by a
+/// **wide-window per-id probe** that it resolves to real dates (catching a retired id) —
+/// the per-symbol-resolution discipline the series groups use, so a wrong or retired id
+/// fails the smoke rather than silently thinning the calendar. FOMC is deliberately
+/// excluded: FRED has no
+/// scheduled-date calendar for the "FOMC Press Release" release, so requesting its
+/// upcoming dates fabricates one row per day (live-verified); the Fed's policy stance is
+/// instead carried by the Fed-funds target-range series in `macro_levels`.
+const RELEASES: &[(u32, &str)] = &[
+    (50, "Employment Situation"),
+    (10, "Consumer Price Index"),
+    (46, "Producer Price Index"),
+    (54, "Personal Income and Outlays"),
+    (9, "Advance Monthly Sales for Retail and Food Services"),
+    (192, "Job Openings and Labor Turnover Survey"),
+    (53, "Gross Domestic Product"),
 ];
 
 /// FRED's observations response, trimmed to the one field the baseline needs. Each
@@ -102,6 +156,19 @@ struct FredObservations {
 #[derive(Debug, Deserialize)]
 struct FredObservation {
     value: String,
+}
+
+/// FRED's release-dates response, trimmed to the one field the calendar needs. Each
+/// entry's `date` is the scheduled / actual release date (`"YYYY-MM-DD"`); the scoped
+/// endpoint omits the release name, so the name rides from the `RELEASES` table.
+#[derive(Debug, Deserialize)]
+struct FredReleaseDates {
+    release_dates: Vec<FredReleaseDate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FredReleaseDate {
+    date: String,
 }
 
 /// Interpret one FRED response by status × body — the single place the degradation
@@ -213,6 +280,42 @@ fn observations_to_quote(
     }))
 }
 
+/// Shape a FRED release-dates response into calendar entries for one release, keeping
+/// only dates within the `[today − CALENDAR_BACK_DAYS, today + CALENDAR_FWD_DAYS]`
+/// window and classifying each as `"released"` (before today) or `"upcoming"` (today or
+/// later). The release `name` rides from the `RELEASES` table (the scoped endpoint omits
+/// it). The window is also enforced server-side by the query's realtime params; the
+/// re-check here keeps the function self-contained and testable. An unparseable date is a
+/// contract violation that fails the scan rather than being silently dropped.
+fn releases_to_calendar(
+    value: Value,
+    name: &str,
+    today: NaiveDate,
+) -> Result<Vec<EconomicRelease>> {
+    let raw: FredReleaseDates = serde_json::from_value(value)
+        .context("FRED release/dates response did not match the expected shape")?;
+    let earliest = today - Duration::days(CALENDAR_BACK_DAYS);
+    let latest = today + Duration::days(CALENDAR_FWD_DAYS);
+    let mut out = Vec::with_capacity(raw.release_dates.len());
+    for rd in raw.release_dates {
+        let date_str = rd.date.trim();
+        let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").with_context(|| {
+            format!("FRED returned an unparseable release date {date_str:?} for release {name}")
+        })?;
+        if date < earliest || date > latest {
+            continue; // outside the window (defensive — the query already bounds it)
+        }
+        let status = if date < today { "released" } else { "upcoming" };
+        out.push(EconomicRelease {
+            release: name.to_string(),
+            date: date_str.to_string(),
+            status: status.to_string(),
+            expected: None,
+        });
+    }
+    Ok(out)
+}
+
 /// Per-group completeness floor for the FRED scan. Each Step-6 group FRED owns — the
 /// market `internals` and the `macro_levels` — is non-optional, so an **empty group**
 /// fails the scan rather than handing the agent an incomplete baseline. This is
@@ -305,6 +408,62 @@ impl FredDataSource {
         }
         Ok(out)
     }
+
+    /// GET one release's scheduled dates within the calendar window, returning the status
+    /// and raw body for `interpret_response`. `include_release_dates_with_no_data=true`
+    /// surfaces *upcoming* (not-yet-released) dates; the realtime window bounds the dates
+    /// to the calendar's `[start, end]` span server-side. A transport error propagates as
+    /// a fatal scan error.
+    fn get_release_dates(
+        &self,
+        release_id: u32,
+        realtime_start: &str,
+        realtime_end: &str,
+    ) -> Result<(u16, String)> {
+        let id = release_id.to_string();
+        let resp = self
+            .http
+            .get(FRED_RELEASE_DATES_URL)
+            .query(&[
+                ("release_id", id.as_str()),
+                ("api_key", self.api_key.as_str()),
+                ("file_type", "json"),
+                ("include_release_dates_with_no_data", "true"),
+                ("realtime_start", realtime_start),
+                ("realtime_end", realtime_end),
+                ("sort_order", "asc"),
+            ])
+            .send()
+            .context("sending FRED release-dates request")?;
+        let status = resp.status().as_u16();
+        let body = resp
+            .text()
+            .context("reading FRED release-dates response body")?;
+        Ok((status, body))
+    }
+
+    /// Gather the Step-6 economic-release calendar: each curated release's prior-week and
+    /// upcoming dates within the window, shaped into `EconomicRelease`s. Mirrors
+    /// `fetch_series`' degradation — a per-release "does not exist" 400 skips just that
+    /// release; an `api_key` / systemic / unrecognized response fails the scan. The
+    /// calendar carries no completeness floor: an empty result (a quiet window) is valid,
+    /// the actual figures reaching the model through the series groups instead.
+    fn fetch_calendar(&self, today: NaiveDate) -> Result<Vec<EconomicRelease>> {
+        let start = (today - Duration::days(CALENDAR_BACK_DAYS))
+            .format("%Y-%m-%d")
+            .to_string();
+        let end = (today + Duration::days(CALENDAR_FWD_DAYS))
+            .format("%Y-%m-%d")
+            .to_string();
+        let mut out = Vec::new();
+        for (release_id, name) in RELEASES {
+            let (status, body) = self.get_release_dates(*release_id, &start, &end)?;
+            if let Some(value) = interpret_response(status, &body)? {
+                out.extend(releases_to_calendar(value, name, today)?);
+            }
+        }
+        Ok(out)
+    }
 }
 
 impl MarketDataSource for FredDataSource {
@@ -317,6 +476,20 @@ impl MarketDataSource for FredDataSource {
         // surfaces as a missing row in the smoke. FRED owns the internals + macro
         // groups; indices / sectors are left empty for the composite to fill from FMP.
         check_completeness(&internals, &macro_levels)?;
+        // The economic-release calendar is non-essential and floor-free: it is gathered
+        // after the floor-checked series groups, and if it fails for *any* reason —
+        // transport, a 5xx, schema drift — it is logged and degraded to empty rather than
+        // failing the whole report (the fail-soft policy the research inbox uses). The
+        // valid baseline already gathered above is far more valuable than aborting the run
+        // over an optional schedule; a wrong release_id / schema drift surfaces in the
+        // smoke, not at runtime. The report's figures come from the series groups; the
+        // calendar only schedules them.
+        let calendar = self
+            .fetch_calendar(Utc::now().date_naive())
+            .unwrap_or_else(|e| {
+                eprintln!("FRED economic-release calendar unavailable, continuing without it: {e:#}");
+                Vec::new()
+            });
         Ok(BaselineMarketData {
             indices: Vec::new(),
             internals,
@@ -324,6 +497,7 @@ impl MarketDataSource for FredDataSource {
             macro_levels,
             // BLS owns the labor levels; FRED contributes none.
             labor_levels: Vec::new(),
+            calendar,
         })
     }
 }
@@ -482,6 +656,54 @@ mod tests {
     }
 
     #[test]
+    fn releases_to_calendar_classifies_status_and_windows() {
+        let today = NaiveDate::from_ymd_opt(2026, 6, 6).unwrap();
+        // Window is [2026-05-27, 2026-06-27]. A too-old date and a too-far-ahead date
+        // are dropped; a past date is "released", today and a future in-window date are
+        // "upcoming".
+        let v: Value = serde_json::from_str(
+            r#"{"release_dates":[
+                {"release_id":10,"date":"2026-05-01"},
+                {"release_id":10,"date":"2026-06-05"},
+                {"release_id":10,"date":"2026-06-06"},
+                {"release_id":10,"date":"2026-06-10"},
+                {"release_id":10,"date":"2026-07-14"}
+            ]}"#,
+        )
+        .unwrap();
+        let cal = releases_to_calendar(v, "Consumer Price Index", today).unwrap();
+        assert_eq!(cal.len(), 3, "out-of-window dates dropped: {cal:?}");
+        assert_eq!(cal[0].date, "2026-06-05");
+        assert_eq!(cal[0].status, "released");
+        assert_eq!(cal[0].release, "Consumer Price Index");
+        assert!(cal[0].expected.is_none(), "no free consensus on the FRED path");
+        // Today counts as upcoming — not yet confirmed released at an arbitrary run time.
+        assert_eq!(cal[1].date, "2026-06-06");
+        assert_eq!(cal[1].status, "upcoming");
+        assert_eq!(cal[2].date, "2026-06-10");
+        assert_eq!(cal[2].status, "upcoming");
+    }
+
+    #[test]
+    fn releases_to_calendar_empty_is_empty() {
+        let today = NaiveDate::from_ymd_opt(2026, 6, 6).unwrap();
+        let v: Value = serde_json::from_str(r#"{"release_dates":[]}"#).unwrap();
+        assert!(releases_to_calendar(v, "x", today).unwrap().is_empty());
+    }
+
+    #[test]
+    fn releases_to_calendar_rejects_malformed_body_and_bad_date() {
+        let today = NaiveDate::from_ymd_opt(2026, 6, 6).unwrap();
+        // A body without the `release_dates` array is a contract violation.
+        let bad_shape: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
+        assert!(releases_to_calendar(bad_shape, "x", today).is_err());
+        // An unparseable date fails closed rather than being silently dropped.
+        let bad_date: Value =
+            serde_json::from_str(r#"{"release_dates":[{"date":"June 6th"}]}"#).unwrap();
+        assert!(releases_to_calendar(bad_date, "x", today).is_err());
+    }
+
+    #[test]
     #[ignore = "hits the live FRED API; set FRED_API_KEY"]
     fn fred_baseline_smoke() {
         let src = FredDataSource::from_env().expect("FRED_API_KEY set");
@@ -518,5 +740,102 @@ mod tests {
             MACRO_SERIES.len(),
             "a macro series did not resolve"
         );
+
+        // The economic-release calendar is additive (no completeness floor), so assert it
+        // resolved *something* and that every entry is well-formed — a curated release
+        // name, a released/upcoming status, and an in-window date. A wrong / retired
+        // release_id surfaces in the per-release dump below by contributing no rows; a
+        // strict per-id assert would be flaky for the lower-cadence releases (GDP and
+        // other quarterly reports) that legitimately have no date in a given ~month
+        // window.
+        eprintln!("calendar ({}):", data.calendar.len());
+        for c in &data.calendar {
+            eprintln!("  {:<9} {:<46} {}", c.status, c.release, c.date);
+        }
+        assert!(
+            !data.calendar.is_empty(),
+            "the economic-release calendar resolved no releases"
+        );
+        let names: std::collections::HashSet<&str> = RELEASES.iter().map(|(_, n)| *n).collect();
+        for c in &data.calendar {
+            assert!(
+                names.contains(c.release.as_str()),
+                "calendar carried an uncurated release {:?}",
+                c.release
+            );
+            assert!(
+                c.status == "released" || c.status == "upcoming",
+                "calendar entry has a bad status {:?}",
+                c.status
+            );
+            assert!(
+                NaiveDate::parse_from_str(&c.date, "%Y-%m-%d").is_ok(),
+                "calendar entry has an unparseable date {:?}",
+                c.date
+            );
+        }
+
+        // Per-id validation — two distinct failure modes, each caught explicitly:
+        //  (1) wrong-but-valid id (points at a *different* real release): `release/dates`
+        //      can't catch it — it echoes whatever id you query — so verify each id by
+        //      name against FRED's `releases` catalog.
+        //  (2) retired / scheduleless id: verify each resolves to >=1 real date over a
+        //      wide window (the windowed calendar can't — a low-cadence release like GDP
+        //      legitimately has no date in the ±~month window).
+        // Together these are the per-symbol-resolution discipline the series smokes use.
+        #[derive(Deserialize)]
+        struct Catalog {
+            releases: Vec<CatalogEntry>,
+        }
+        #[derive(Deserialize)]
+        struct CatalogEntry {
+            id: u32,
+            name: String,
+        }
+        let catalog_body = src
+            .http
+            .get("https://api.stlouisfed.org/fred/releases")
+            .query(&[
+                ("api_key", src.api_key.as_str()),
+                ("file_type", "json"),
+                ("limit", "1000"),
+            ])
+            .send()
+            .expect("releases catalog request")
+            .text()
+            .expect("releases catalog body");
+        let catalog: Catalog =
+            serde_json::from_str(&catalog_body).expect("releases catalog shape");
+        let id_to_name: std::collections::HashMap<u32, &str> = catalog
+            .releases
+            .iter()
+            .map(|r| (r.id, r.name.as_str()))
+            .collect();
+
+        let today = Utc::now().date_naive();
+        let wide_start = (today - Duration::days(400)).format("%Y-%m-%d").to_string();
+        let wide_end = today.format("%Y-%m-%d").to_string();
+        for (id, name) in RELEASES {
+            // (1) the id is the release we think it is.
+            assert_eq!(
+                id_to_name.get(id),
+                Some(name),
+                "release id {id} maps to {:?} in FRED's catalog, not {name:?} — wrong id",
+                id_to_name.get(id)
+            );
+            // (2) it resolves to real scheduled dates.
+            let (status, body) = src
+                .get_release_dates(*id, &wide_start, &wide_end)
+                .expect("release-dates request");
+            let value = interpret_response(status, &body)
+                .expect("release-dates response")
+                .unwrap_or_else(|| panic!("release {id} ({name}) returned no data — retired id"));
+            let parsed: FredReleaseDates =
+                serde_json::from_value(value).expect("release-dates shape");
+            assert!(
+                !parsed.release_dates.is_empty(),
+                "release {id} ({name}) resolved no dates over a wide window — retired id"
+            );
+        }
     }
 }
