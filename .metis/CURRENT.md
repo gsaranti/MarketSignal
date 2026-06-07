@@ -18,7 +18,7 @@ Reviews: metis-task-reviewer approve; 2 Codex rounds (P2 gap-reason + P3 diagnos
 
 On **`main` @ `fdc65a4`**, in sync with origin, **working tree clean**, feature branch deleted (local + remote). Nothing in flight. Verified pre-merge: **`cargo test` 189 lib + 12 integration, `cargo clippy --all-targets --all-features` clean, `npm run build` clean**. Backend-only.
 
-**Docs + BUILD.md updated for this slice** (this session, uncommitted on `main`): `BUILD.md` (SQLite store, the `BaselineMarketData` data-model paragraph — the stale "not a persisted store" claim is gone, `app` module, testing), `docs/storage.md` (new §Baseline Snapshots), `docs/weekly-report-workflow.md` (Step 6 + Step 10 packet list), `docs/agents.md` (Main Agent inputs), and `.metis/INDEX.md`. These still need a commit.
+**Docs + BUILD.md updated for this slice** (this session, uncommitted on `main`): `BUILD.md` (SQLite store, the `BaselineMarketData` data-model paragraph — the stale "not a persisted store" claim is gone, `app` module, testing), `docs/storage.md` (new §Baseline Snapshots), `docs/weekly-report-workflow.md` (Step 6 + Step 10 packet list), `docs/agents.md` (Main Agent inputs), and `.metis/INDEX.md` — committed to `main` as `d987570`.
 
 ## Open questions
 
@@ -30,4 +30,4 @@ On **`main` @ `fdc65a4`**, in sync with origin, **working tree clean**, feature 
 
 ## Where to start
 
-**Step 8: research routing** via `/metis-plan-task` — the natural forward slice, and the deferred consumer of this session's deltas: the `deltas` local in `generate_report` (and `MainAgentInput.deltas`) is ready for the fixed Claude Sonnet router to read alongside the Step-7 clusters → a bounded research plan (`docs/weekly-report-workflow.md §Step 8`). First, **commit the uncommitted docs/BUILD.md/INDEX.md edits** from this session. Quick wins if preferred: live FMP smoke (once quota resets), FRED freshness guard.
+**Step 8: research routing** via `/metis-plan-task` — the natural forward slice, and the deferred consumer of this session's deltas: the `deltas` local in `generate_report` (and `MainAgentInput.deltas`) is ready for the fixed Claude Sonnet router to read alongside the Step-7 clusters → a bounded research plan (`docs/weekly-report-workflow.md §Step 8`). Quick wins if preferred: live FMP smoke (once quota resets), FRED freshness guard.
