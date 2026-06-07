@@ -8,6 +8,8 @@ The application accesses market and financial data by calling provider REST APIs
 
 The gated REST adapters (FMP, FRED, BLS, Tavily) share a bounded retry-with-backoff for transient HTTP-status/transport failures (HTTP 429, 5xx, dropped connections; `Retry-After`-aware). GDELT is deliberately excluded — its escalating per-IP lockout makes a retry harmful, so it keeps its single-shot fail-soft.
 
+Where retries don't recover, the Step-6 baseline scan degrades rather than aborting: an unresolved series or release (a rejected key, a sustained outage, or a malformed / empty response) is recorded as a gap in a missing-data manifest instead of failing the whole scan, and a central coverage floor then decides whether what resolved is sufficient to generate the report (see [weekly-report-workflow.md §Step 6](weekly-report-workflow.md#step-6-gather-baseline-market-data)).
+
 ### Financial Modeling Prep
 Docs - https://site.financialmodelingprep.com/developer/docs
 

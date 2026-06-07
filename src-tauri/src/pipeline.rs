@@ -7,11 +7,11 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::agent::{MainAgent, MainAgentInput, ReportSummary};
-use crate::data_sources::MarketDataSource;
+use crate::data_sources::{BaselineMarketData, GroupKind, MarketDataSource};
 use crate::storage::{self, ReportRecord};
 
 /// Filesystem locations a run reads and writes. Injected so tests can point at
@@ -35,21 +35,27 @@ pub struct GeneratedReport {
 }
 
 /// Run one manual report end to end: gather the baseline market-data scan (Step
-/// 6), invoke the agent, write the canonical Markdown file, and persist the
-/// record to SQLite. A failed baseline scan (an unreachable / rejecting data
-/// provider) propagates here, which `jobs::run_job` records as a failed job
-/// (`docs/scheduling.md §Offline Behavior`).
+/// 6), enforce its coverage floor, invoke the agent, write the canonical Markdown
+/// file, and persist the record to SQLite. The adapters degrade partial failures to
+/// a recorded gap manifest rather than aborting, so the scan itself rarely errs; the
+/// `enforce_coverage` gate below is the single place a too-thin baseline fails the
+/// run, which `jobs::run_job` records as a failed job (`docs/scheduling.md §Offline
+/// Behavior`).
 pub fn generate_report(
     agent: &dyn MainAgent,
     data: &dyn MarketDataSource,
     paths: &ReportPaths,
 ) -> Result<GeneratedReport> {
     // Step 6: baseline market data is gathered before agent reasoning and is not
-    // optional (`docs/weekly-report-workflow.md §Step 6`). The data-source error
-    // propagates unwrapped — like the agent error below — so `jobs::run_job`
-    // persists the provider's own message (e.g. an FMP rejection) as the
-    // failed-job detail rather than a vague outer wrapper.
+    // optional (`docs/weekly-report-workflow.md §Step 6`). Each adapter records what it
+    // couldn't resolve in `baseline.gaps` instead of failing; the coverage gate then
+    // decides whether what landed clears the run's mandatory floor. A gate failure
+    // propagates unwrapped — like the agent error below — so `jobs::run_job` persists
+    // the floor message as the failed-job detail. The gaps that *don't* trip the floor
+    // ride into `MainAgentInput` and on into the model prompt, so the agent reasons over
+    // what's known-absent rather than inferring it.
     let baseline = data.baseline_scan()?;
+    enforce_coverage(&baseline)?;
     let output = agent.generate(MainAgentInput { baseline })?;
     let summary = output.summary;
 
@@ -82,6 +88,87 @@ pub fn generate_report(
         markdown_path: markdown_path_str,
         summary,
     })
+}
+
+/// The minimum fraction of a Step-6 group's *expected* series that must resolve for the
+/// group to count as present for the coverage floor. "Expected" excludes permanently
+/// out-of-scope items (premium / discontinued series), so a series a deployment never had
+/// doesn't drag the ratio down — only this-run failures (`Unavailable` / `Rejected` /
+/// `Malformed` gaps) count against it. 0.6 ≈ three of four indices, or ~60% of a posture
+/// group.
+const COVERAGE_FLOOR: f64 = 0.6;
+
+/// One group's coverage: resolved series over expected (resolved + this-run gaps).
+/// Permanent (`OutOfScope`) gaps are excluded from the denominator. An expected count of
+/// zero reads as fully covered, but `clears_floor` additionally requires a non-empty
+/// group, so a vacuous 1.0 over zero series can't satisfy the floor.
+fn group_coverage(data: &BaselineMarketData, group: GroupKind) -> f64 {
+    let present = group_present_count(data, group);
+    let missing_this_run = data
+        .gaps
+        .iter()
+        .filter(|g| g.group == group && g.reason.counts_against_coverage())
+        .count();
+    let expected = present + missing_this_run;
+    if expected == 0 {
+        1.0
+    } else {
+        present as f64 / expected as f64
+    }
+}
+
+/// How many series resolved in `group`.
+fn group_present_count(data: &BaselineMarketData, group: GroupKind) -> usize {
+    match group {
+        GroupKind::Indices => data.indices.len(),
+        GroupKind::Internals => data.internals.len(),
+        GroupKind::Sectors => data.sectors.len(),
+        GroupKind::MacroLevels => data.macro_levels.len(),
+        GroupKind::LaborLevels => data.labor_levels.len(),
+        GroupKind::Calendar => data.calendar.len(),
+        GroupKind::IndexPerformance => data.index_performance.len(),
+    }
+}
+
+/// Whether `group` clears the coverage floor: at least one resolved series *and* a
+/// coverage ratio of at least `COVERAGE_FLOOR`. The non-empty requirement guards the
+/// vacuous "0 of 0 = 100%" case — a floor group always has a fixed expected set, so zero
+/// resolved is a failure regardless of the ratio.
+fn clears_floor(data: &BaselineMarketData, group: GroupKind) -> bool {
+    group_present_count(data, group) > 0 && group_coverage(data, group) >= COVERAGE_FLOOR
+}
+
+/// The Step-6 coverage gate — the single, centralized replacement for the per-adapter
+/// completeness floors. The adapters now degrade every failure to a recorded gap; this
+/// is the one place a too-thin merged baseline fails the run. The floor (resolved in
+/// planning): the report is structurally impossible without the Index Picture, and its
+/// risk-posture / market-cycle reads need at least one grounded macro/internals group —
+/// so `indices` must clear, AND at least one of {`internals`, `macro_levels`} must clear.
+/// Everything else (sectors, labor, calendar, index performance, and whichever of
+/// internals/macro didn't clear) degrades to a manifest gap the agent reasons over. A
+/// failure here propagates like any Step-6 error, which `jobs::run_job` records as a
+/// failed job.
+pub fn enforce_coverage(data: &BaselineMarketData) -> Result<()> {
+    if !clears_floor(data, GroupKind::Indices) {
+        bail!(
+            "Step-6 baseline below floor: the index picture is missing — indices coverage \
+             {:.0}% (need {:.0}%). The report can't be written without the Dow / S&P / Nasdaq \
+             reads; the data provider is unreachable, rejecting the key, or rate-limited.",
+            group_coverage(data, GroupKind::Indices) * 100.0,
+            COVERAGE_FLOOR * 100.0
+        );
+    }
+    if !clears_floor(data, GroupKind::Internals) && !clears_floor(data, GroupKind::MacroLevels) {
+        bail!(
+            "Step-6 baseline below floor: neither market internals ({:.0}%) nor macro levels \
+             ({:.0}%) reached {:.0}% — the risk-posture / market-cycle reads would be \
+             ungrounded. FRED is unreachable, rejecting the key, or rate-limited.",
+            group_coverage(data, GroupKind::Internals) * 100.0,
+            group_coverage(data, GroupKind::MacroLevels) * 100.0,
+            COVERAGE_FLOOR * 100.0
+        );
+    }
+    Ok(())
 }
 
 /// List the most recent reports (newest first), capped at the retention display
@@ -206,6 +293,124 @@ where
 mod tests {
     use super::*;
     use chrono::FixedOffset;
+
+    use crate::data_sources::{DataGap, GapReason, Quote};
+
+    // ---- Step-6 coverage gate ----
+
+    /// `n` placeholder resolved quotes for a group.
+    fn covq(n: usize) -> Vec<Quote> {
+        (0..n)
+            .map(|i| Quote {
+                symbol: format!("S{i}"),
+                name: format!("S{i}"),
+                price: 1.0,
+                change_pct: 0.0,
+                unit: "x".into(),
+            })
+            .collect()
+    }
+
+    /// `n` gaps of one reason for `group`.
+    fn covgaps(group: GroupKind, reason: GapReason, n: usize) -> Vec<DataGap> {
+        (0..n)
+            .map(|_| DataGap::new(group, "id", "name", reason))
+            .collect()
+    }
+
+    #[test]
+    fn enforce_coverage_passes_a_full_baseline() {
+        let data = BaselineMarketData {
+            indices: covq(4),
+            internals: covq(9),
+            macro_levels: covq(17),
+            ..Default::default()
+        };
+        assert!(enforce_coverage(&data).is_ok());
+    }
+
+    #[test]
+    fn enforce_coverage_fails_without_the_index_picture() {
+        // Every index gapped (a rejected FMP key) -> the report can't be written.
+        let data = BaselineMarketData {
+            internals: covq(9),
+            macro_levels: covq(17),
+            gaps: covgaps(GroupKind::Indices, GapReason::Unavailable, 4),
+            ..Default::default()
+        };
+        let err = enforce_coverage(&data).unwrap_err().to_string();
+        assert!(err.contains("index picture"), "{err}");
+    }
+
+    #[test]
+    fn enforce_coverage_fails_without_posture_grounding() {
+        // Indices present, but both internals and macro fully gone (a rejected FRED key)
+        // -> risk-posture / market-cycle would be ungrounded.
+        let mut gaps = covgaps(GroupKind::Internals, GapReason::Rejected, 9);
+        gaps.extend(covgaps(GroupKind::MacroLevels, GapReason::Rejected, 17));
+        let data = BaselineMarketData {
+            indices: covq(4),
+            gaps,
+            ..Default::default()
+        };
+        let err = enforce_coverage(&data).unwrap_err().to_string();
+        assert!(err.contains("macro levels") && err.contains("internals"), "{err}");
+    }
+
+    #[test]
+    fn enforce_coverage_passes_when_one_posture_group_degrades_above_floor() {
+        // Internals 6 of 9 (0.67 >= floor) clears even though macro is gone.
+        let mut gaps = covgaps(GroupKind::Internals, GapReason::Unavailable, 3);
+        gaps.extend(covgaps(GroupKind::MacroLevels, GapReason::Unavailable, 17));
+        let data = BaselineMarketData {
+            indices: covq(4),
+            internals: covq(6),
+            gaps,
+            ..Default::default()
+        };
+        assert!(enforce_coverage(&data).is_ok());
+    }
+
+    #[test]
+    fn enforce_coverage_passes_on_macro_when_internals_is_gone() {
+        // Internals fully gapped but macro intact -> the posture-grounding clause is met
+        // by macro alone.
+        let data = BaselineMarketData {
+            indices: covq(4),
+            macro_levels: covq(17),
+            gaps: covgaps(GroupKind::Internals, GapReason::Unavailable, 9),
+            ..Default::default()
+        };
+        assert!(enforce_coverage(&data).is_ok());
+    }
+
+    #[test]
+    fn enforce_coverage_excludes_out_of_scope_from_the_floor() {
+        // Russell permanently premium: 3 resolved + 1 OutOfScope gap -> 3/3 = 100%, so a
+        // permanent absence never fails the floor (the whole reason OutOfScope is split
+        // from the this-run reasons).
+        let data = BaselineMarketData {
+            indices: covq(3),
+            internals: covq(9),
+            macro_levels: covq(17),
+            gaps: covgaps(GroupKind::Indices, GapReason::OutOfScope, 1),
+            ..Default::default()
+        };
+        assert!(enforce_coverage(&data).is_ok());
+    }
+
+    #[test]
+    fn enforce_coverage_fails_when_indices_below_floor() {
+        // 2 resolved + 2 this-run gaps = 50% < 60%.
+        let data = BaselineMarketData {
+            indices: covq(2),
+            internals: covq(9),
+            macro_levels: covq(17),
+            gaps: covgaps(GroupKind::Indices, GapReason::Unavailable, 2),
+            ..Default::default()
+        };
+        assert!(enforce_coverage(&data).is_err());
+    }
 
     /// UTC-3 so a late-evening UTC stamp lands on the *previous* local day —
     /// pins that the filename date is the local calendar date, not the UTC one.

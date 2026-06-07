@@ -85,9 +85,95 @@ pub struct IndexPerformance {
     pub pct_from_52w_high: f64,
 }
 
+/// Which Step-6 baseline group a [`DataGap`] belongs to. Serializes to a stable kebab
+/// label so the model reading the manifest sees the same group names the data groups
+/// carry, and the coverage gate (`pipeline::enforce_coverage`) can match on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GroupKind {
+    Indices,
+    Internals,
+    Sectors,
+    MacroLevels,
+    LaborLevels,
+    Calendar,
+    IndexPerformance,
+}
+
+/// Why a requested series / release didn't land in the baseline this run. The
+/// distinction drives two things: the coverage gate counts only the *this-run* reasons
+/// against a group's coverage (`OutOfScope` is permanent and excluded, so a series a
+/// deployment never had doesn't drag the ratio down every week), and the agent reads a
+/// transient outage differently from a permanent absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GapReason {
+    /// Permanently absent for this deployment — the provider explicitly signalled the
+    /// item isn't available (FMP 402 premium / 404, FRED "does not exist"). Not a
+    /// this-run failure; excluded from the coverage denominator. Reserved for explicit
+    /// provider signals only: a 2xx that simply carried no value (an empty array, an
+    /// all-gap window, an empty `data` block) is `Unavailable`, not this.
+    OutOfScope,
+    /// Unavailable this run — a 429 / 5xx that survived the retry layer, a transport
+    /// error, or a successful response that carried no usable value for an expected
+    /// series (an empty array, an all-gap FRED window, a BLS empty-`data` series).
+    /// Counts against coverage.
+    Unavailable,
+    /// The provider rejected the request — a bad / expired key (401/403, FRED `api_key`)
+    /// or a quota / plan limit (FMP `Error Message`, BLS `REQUEST_NOT_PROCESSED`).
+    /// Counts against coverage.
+    Rejected,
+    /// The response didn't match the expected contract — an unparseable body, a wrong
+    /// shape, a non-numeric observation, or a truncated / omitted series. Counts against
+    /// coverage.
+    Malformed,
+}
+
+impl GapReason {
+    /// Whether this gap counts against its group's coverage ratio. Every reason except
+    /// `OutOfScope` (a permanent, expected absence) is a this-run failure that lowers
+    /// coverage.
+    pub fn counts_against_coverage(self) -> bool {
+        !matches!(self, GapReason::OutOfScope)
+    }
+}
+
+/// One entry in the Step-6 missing-data manifest: a series / release a provider failed
+/// to resolve this run, tagged with its group and the reason it's absent. Carried on
+/// [`BaselineMarketData::gaps`], merged across providers by the composite, evaluated by
+/// the coverage gate, and serialized into the agent's prompt so the model reasons over
+/// what's known-absent rather than silently inferring it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DataGap {
+    pub group: GroupKind,
+    pub series_id: String,
+    pub series_name: String,
+    pub reason: GapReason,
+}
+
+impl DataGap {
+    /// Build a gap for `series_id` / `series_name` in `group`. The string-ish args take
+    /// `&str` (the adapters' series tables) or `String` alike.
+    pub fn new(
+        group: GroupKind,
+        series_id: impl Into<String>,
+        series_name: impl Into<String>,
+        reason: GapReason,
+    ) -> Self {
+        Self {
+            group,
+            series_id: series_id.into(),
+            series_name: series_name.into(),
+            reason,
+        }
+    }
+}
+
 /// The baseline market-data scan handed to the main agent as part of its input.
-/// Empty vectors are valid — a provider that returns no data for a group leaves
-/// it empty rather than failing the whole scan.
+/// Empty vectors are valid — a provider that fails to resolve a group degrades it to
+/// empty and records the reason in [`gaps`](Self::gaps) rather than failing the whole
+/// scan. The mandatory-coverage floor (`pipeline::enforce_coverage`), not the adapters,
+/// is the single place a too-thin baseline fails the run.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BaselineMarketData {
     pub indices: Vec<Quote>,
@@ -118,6 +204,14 @@ pub struct BaselineMarketData {
     /// the `calendar` it carries no completeness floor and soft-degrades if the history
     /// fetch fails, since the daily `indices` quotes already satisfy Step 6.
     pub index_performance: Vec<IndexPerformance>,
+    /// Step-6 missing-data manifest: the series / releases a provider failed to resolve
+    /// this run (`DataGap`), each tagged with its group and reason. Populated by the
+    /// adapters as they degrade instead of failing, merged across providers by the
+    /// composite, read by the coverage gate (`pipeline::enforce_coverage`) to decide the
+    /// floor, and serialized into the agent's prompt so the model knows what's absent.
+    /// Empty when a scan resolved everything.
+    #[serde(default)]
+    pub gaps: Vec<DataGap>,
 }
 
 /// The data-source stage. One method: gather the required baseline scan. Sync,
@@ -198,6 +292,7 @@ impl MarketDataSource for StubMarketDataSource {
                 high_52w: 5_600.0,
                 pct_from_52w_high: -1.8,
             }],
+            gaps: Vec::new(),
         })
     }
 }
@@ -205,9 +300,12 @@ impl MarketDataSource for StubMarketDataSource {
 /// Compose two `MarketDataSource`s into one baseline scan: run the `primary`
 /// (e.g. FMP — indices, sectors, VIX, gold), then the `secondary`, and merge them
 /// across every group (`indices`, `internals`, `sectors`, `macro_levels`,
-/// `labor_levels`, `calendar`). Both contributions are required: either child's failure
-/// propagates, so a secondary failure fails the run exactly as a primary failure does
-/// (the secondaries now source non-optional Step-6 series — `docs/configuration.md`).
+/// `labor_levels`, `calendar`, `index_performance`) plus the `gaps` manifest. The
+/// adapters degrade to recorded gaps rather than failing for data reasons, so a
+/// provider that can't reach a group contributes empty data + gaps here instead of
+/// aborting the run; the mandatory-coverage floor (`pipeline::enforce_coverage`)
+/// downstream is the single place a too-thin merged baseline fails. A child returning
+/// `Err` is now reserved for a catastrophic (non-data) fault and still propagates.
 /// Order is primary-then-secondary, so the merged `internals` reads the primary's
 /// quotes first. Sources compose by nesting: the run path wraps FMP+FRED, then nests
 /// `bls` as the outer secondary to fold in the `labor_levels` group.
@@ -235,6 +333,7 @@ impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
         merged.labor_levels.extend(extra.labor_levels);
         merged.calendar.extend(extra.calendar);
         merged.index_performance.extend(extra.index_performance);
+        merged.gaps.extend(extra.gaps);
         Ok(merged)
     }
 }
@@ -251,6 +350,7 @@ mod tests {
         macro_levels: Vec<Quote>,
         labor_levels: Vec<Quote>,
         calendar: Vec<EconomicRelease>,
+        gaps: Vec<DataGap>,
     }
 
     impl MarketDataSource for FredShapedStub {
@@ -260,6 +360,7 @@ mod tests {
                 macro_levels: self.macro_levels.clone(),
                 labor_levels: self.labor_levels.clone(),
                 calendar: self.calendar.clone(),
+                gaps: self.gaps.clone(),
                 ..Default::default()
             })
         }
@@ -300,6 +401,14 @@ mod tests {
                 status: "upcoming".into(),
                 expected: None,
             }],
+            // A FRED-side gap (an oil series that 5xx'd this run) must survive the merge
+            // into the unified manifest the gate and the agent read.
+            gaps: vec![DataGap::new(
+                GroupKind::Internals,
+                "DCOILWTICO",
+                "WTI Crude Oil",
+                GapReason::Unavailable,
+            )],
         };
         let composite = CompositeMarketDataSource::new(StubMarketDataSource, secondary);
         let data = composite.baseline_scan().unwrap();
@@ -325,6 +434,10 @@ mod tests {
         assert_eq!(data.calendar.len(), 2);
         assert_eq!(data.calendar[0].release, "Employment Situation");
         assert_eq!(data.calendar[1].release, "Consumer Price Index");
+        // The secondary's gap rides into the merged manifest (the primary stub has none).
+        assert_eq!(data.gaps.len(), 1);
+        assert_eq!(data.gaps[0].series_id, "DCOILWTICO");
+        assert_eq!(data.gaps[0].reason, GapReason::Unavailable);
     }
 
     #[test]
@@ -346,8 +459,15 @@ mod tests {
         assert!(!data.calendar.is_empty());
         assert!(!data.index_performance.is_empty());
 
-        // The whole packet serializes and parses back unchanged — the contract
-        // the agent input and the model prompt both lean on.
+        // The whole packet — including the gaps manifest — serializes and parses back
+        // unchanged: the contract the agent input and the model prompt both lean on.
+        let mut data = data;
+        data.gaps.push(DataGap::new(
+            GroupKind::LaborLevels,
+            "CES0500000003",
+            "Average Hourly Earnings, Total Private",
+            GapReason::Rejected,
+        ));
         let json = serde_json::to_string(&data).unwrap();
         let back: BaselineMarketData = serde_json::from_str(&json).unwrap();
         assert_eq!(data, back);

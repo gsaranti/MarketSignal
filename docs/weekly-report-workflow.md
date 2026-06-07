@@ -169,6 +169,8 @@ News categories:
 - AI/semiconductors
 - major economic developments
 
+Individual series and releases degrade gracefully rather than aborting the scan: when a provider cannot return one, the application records it in a missing-data manifest, which is handed to the agents so they reason over what is absent instead of inferring it. A mandatory coverage floor still gates the run — the report is not generated unless the index picture and at least one macro or market-internals grounding are sufficiently covered — so a partially-degraded scan continues to a report while a too-thin one is treated as a failed job (see [scheduling.md §Error Handling](scheduling.md#error-handling)).
+
 ## Step 7: Gather and Filter News
 
 The application gathers a broad set of headlines and research candidates from the configured news and research sources — Tavily and GDELT (see [data-sources.md](data-sources.md)). Tavily contributes AI-oriented market and research headlines; GDELT contributes geopolitical and large-scale news trend coverage.
