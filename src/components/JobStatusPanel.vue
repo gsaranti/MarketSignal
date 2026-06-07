@@ -12,13 +12,32 @@ const props = defineProps<{
   error: string | null;
   blocked: boolean;
   generating: boolean;
+  // A run is in flight right now (event-driven, immediate — independent of the
+  // periodically-refreshed job status).
+  runActive: boolean;
+  // A latest-run trace exists in this session (terminal or not), so the tracker is
+  // reopenable.
+  hasRunLog: boolean;
+  // The tracker is currently the active pane, so the handle would be a no-op.
+  viewingTracker: boolean;
 }>();
 
-defineEmits<{ (e: "generate"): void }>();
+defineEmits<{ (e: "generate"): void; (e: "view-tracker"): void }>();
+
+// Whether a run is in flight: prefer the immediate event-driven flag, falling back
+// to the backend guard state.
+const isRunning = computed(() => props.runActive || props.status?.is_running === true);
 
 // Stay silent until the first status resolves (mirrors the warning area), so the
-// footer doesn't flash empty on load. Surface as soon as there's status or error.
-const visible = computed(() => props.status !== null || props.error !== null);
+// footer doesn't flash empty on load. Surface as soon as there's status, an error,
+// a live run, or a reopenable run log.
+const visible = computed(
+  () =>
+    props.status !== null ||
+    props.error !== null ||
+    props.runActive ||
+    props.hasRunLog
+);
 
 // The backend persists UTC; render in the viewer's local time. Fall back to the
 // raw string if unparseable.
@@ -38,7 +57,7 @@ function formatLocal(iso: string): string {
 <template>
   <footer v-if="visible" class="job-panel">
     <div class="job-status" aria-live="polite">
-      <div v-if="status?.is_running" class="job-running">
+      <div v-if="isRunning" class="job-running">
         <span class="job-running-label">Generating this week's report…</span>
         <span class="job-running-bar" aria-hidden="true">
           <span class="job-running-fill"></span>
@@ -64,6 +83,10 @@ function formatLocal(iso: string): string {
           <dt>Last failure</dt>
           <dd>{{ formatLocal(status.last_failed_at) }}</dd>
         </div>
+        <div v-if="status?.last_cancelled_at" class="job-fact">
+          <dt>Last cancelled</dt>
+          <dd>{{ formatLocal(status.last_cancelled_at) }}</dd>
+        </div>
         <div v-if="status?.last_skipped_at" class="job-fact">
           <dt>Last skipped</dt>
           <dd>{{ formatLocal(status.last_skipped_at) }}</dd>
@@ -71,23 +94,48 @@ function formatLocal(iso: string): string {
       </dl>
     </div>
 
-    <!-- Persistent manual trigger. Hidden while a run is in flight (the bar to
-         the left already says so). Disabled when the gate blocks a run; the
-         reason lives in the warning band above and the report empty state. -->
-    <button
-      v-if="!status?.is_running"
-      type="button"
-      class="btn btn-secondary btn-generate"
-      :disabled="generating || blocked"
-      :title="
-        blocked
-          ? 'Resolve the configuration warnings above to generate a report'
-          : undefined
-      "
-      @click="$emit('generate')"
-    >
-      {{ generating ? "Generating…" : "Generate now" }}
-    </button>
+    <div class="job-actions">
+      <!-- The footer is the run's home: this handle opens (or returns to) the
+           tracker — "View progress" during a run, "View run log" for the lingering
+           terminal trace afterward. Hidden when the tracker is already showing. -->
+      <!-- Only offered when a trace actually exists to show. If the UI missed this
+           run's start (e.g. a dev reload mid-run), `isRunning` may be true with no
+           trace; the handle stays hidden rather than opening an empty tracker. -->
+      <button
+        v-if="isRunning && hasRunLog && !viewingTracker"
+        type="button"
+        class="btn btn-ghost btn-handle"
+        @click="$emit('view-tracker')"
+      >
+        View progress
+      </button>
+      <button
+        v-else-if="!isRunning && hasRunLog && !viewingTracker"
+        type="button"
+        class="btn btn-ghost btn-handle"
+        @click="$emit('view-tracker')"
+      >
+        View run log
+      </button>
+
+      <!-- Persistent manual trigger. Hidden while a run is in flight (the bar to
+           the left already says so). Disabled when the gate blocks a run; the
+           reason lives in the warning band above and the report empty state. -->
+      <button
+        v-if="!isRunning"
+        type="button"
+        class="btn btn-secondary btn-generate"
+        :disabled="generating || blocked"
+        :title="
+          blocked
+            ? 'Resolve the configuration warnings above to generate a report'
+            : undefined
+        "
+        @click="$emit('generate')"
+      >
+        {{ generating ? "Generating…" : "Generate now" }}
+      </button>
+    </div>
   </footer>
 </template>
 
@@ -163,6 +211,24 @@ function formatLocal(iso: string): string {
 }
 
 .btn-generate:hover:not(:disabled) {
+  background: var(--paper-edge);
+}
+
+/* The run-handle + generate buttons share the footer's right edge. */
+.job-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+/* Quiet ghost handle that opens the tracker — recedes next to the generate
+   button and the facts. Sized to the footer's tight chrome. */
+.btn-handle {
+  padding: var(--s-2) var(--s-3);
+  font-size: var(--t-ui-sm);
+}
+.btn-handle:hover {
   background: var(--paper-edge);
 }
 

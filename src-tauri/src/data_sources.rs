@@ -23,6 +23,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::progress::RunContext;
+
 /// One quoted instrument in the baseline scan: a market index or a market
 /// internal (VIX, the dollar index, a commodity). `change_pct` is the percent
 /// change the provider reports for the quote.
@@ -100,6 +102,23 @@ pub enum GroupKind {
     IndexPerformance,
 }
 
+impl GroupKind {
+    /// The stable kebab label, matching the serde rename. Used by the progress
+    /// stream (`progress::ProgressEvent::RequestFinished`) so a tracker row's group
+    /// reads the same name the serialized baseline carries.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GroupKind::Indices => "indices",
+            GroupKind::Internals => "internals",
+            GroupKind::Sectors => "sectors",
+            GroupKind::MacroLevels => "macro-levels",
+            GroupKind::LaborLevels => "labor-levels",
+            GroupKind::Calendar => "calendar",
+            GroupKind::IndexPerformance => "index-performance",
+        }
+    }
+}
+
 /// Why a requested series / release didn't land in the baseline this run. The
 /// distinction drives two things: the coverage gate counts only the *this-run* reasons
 /// against a group's coverage (`OutOfScope` is permanent and excluded, so a series a
@@ -135,6 +154,17 @@ impl GapReason {
     /// coverage.
     pub fn counts_against_coverage(self) -> bool {
         !matches!(self, GapReason::OutOfScope)
+    }
+
+    /// The stable kebab label, matching the serde rename — the status a tracker row
+    /// shows for a series that degraded to a gap (`progress::ProgressEvent`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GapReason::OutOfScope => "out-of-scope",
+            GapReason::Unavailable => "unavailable",
+            GapReason::Rejected => "rejected",
+            GapReason::Malformed => "malformed",
+        }
     }
 }
 
@@ -212,6 +242,34 @@ pub struct BaselineMarketData {
     /// Empty when a scan resolved everything.
     #[serde(default)]
     pub gaps: Vec<DataGap>,
+}
+
+/// Emit the `RequestFinished` row for one baseline request, derived from the adapter's
+/// existing gap/value bookkeeping so its (well-tested) branch logic stays untouched.
+/// Always emits exactly one row — pairing the `RequestStarted` the caller sent before
+/// the HTTP call. `gaps_before` is `gaps.len()` captured before the request; `produced`
+/// is whether it yielded a value. Produced wins (`ok`); otherwise a gap pushed this
+/// request carries its reason; otherwise `empty` (a 2xx that yielded nothing and
+/// recorded no gap — e.g. an additive enrichment skipped silently).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_series_row(
+    ctx: &RunContext,
+    provider: &str,
+    group: GroupKind,
+    series_id: &str,
+    name: &str,
+    gaps: &[DataGap],
+    gaps_before: usize,
+    produced: bool,
+) {
+    let status = if produced {
+        "ok"
+    } else if gaps.len() > gaps_before {
+        gaps[gaps.len() - 1].reason.as_str()
+    } else {
+        "empty"
+    };
+    ctx.request_finished(provider, group.as_str(), series_id, name, status, None);
 }
 
 /// The data-source stage. One method: gather the required baseline scan. Sync,

@@ -49,6 +49,7 @@
 //! gaps, and the central coverage gate (`pipeline::enforce_coverage`) decides the run's
 //! floor.
 
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use anyhow::{anyhow, Context, Result};
@@ -57,8 +58,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::data_sources::{
-    BaselineMarketData, DataGap, EconomicRelease, GapReason, GroupKind, MarketDataSource, Quote,
+    emit_series_row, BaselineMarketData, DataGap, EconomicRelease, GapReason, GroupKind,
+    MarketDataSource, Quote,
 };
+use crate::progress::RunContext;
 
 /// FRED's observations endpoint — the series time-series the baseline reads.
 const FRED_OBSERVATIONS_URL: &str = "https://api.stlouisfed.org/fred/series/observations";
@@ -344,6 +347,9 @@ fn releases_to_calendar(
 pub struct FredDataSource {
     api_key: String,
     http: reqwest::blocking::Client,
+    /// Run context for live progress + cooperative cancellation; a no-op by default
+    /// (tests / smokes), the live one attached via [`FredDataSource::with_context`].
+    progress: Arc<RunContext>,
 }
 
 impl FredDataSource {
@@ -352,7 +358,18 @@ impl FredDataSource {
             .timeout(FRED_TIMEOUT)
             .build()
             .context("building the FRED HTTP client")?;
-        Ok(Self { api_key, http })
+        Ok(Self {
+            api_key,
+            http,
+            progress: RunContext::noop(),
+        })
+    }
+
+    /// Attach a live run context so the per-series scan streams a tracker row per
+    /// request and stops making requests once a cancel is observed.
+    pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
+        self.progress = ctx;
+        self
     }
 
     /// Resolve the adapter from the environment, for the live smoke and any caller
@@ -395,10 +412,18 @@ impl FredDataSource {
         let mut out = Vec::with_capacity(series.len());
         let mut rejected = false;
         for (series_id, name, unit) in series {
+            if self.progress.is_cancelled() {
+                break;
+            }
             if rejected {
+                // No request made for a short-circuited series — no tracker row.
                 gaps.push(DataGap::new(group, *series_id, *name, GapReason::Rejected));
                 continue;
             }
+            self.progress
+                .request_started("FRED", group.as_str(), *series_id, *name);
+            let gaps_before = gaps.len();
+            let out_before = out.len();
             let disposition = match self.get(series_id) {
                 Ok((status, body)) => interpret_response(status, &body),
                 Err(_) => Disposition::Gap(GapReason::Unavailable), // transport — unreachable
@@ -419,6 +444,16 @@ impl FredDataSource {
                     gaps.push(DataGap::new(group, *series_id, *name, reason));
                 }
             }
+            emit_series_row(
+                &self.progress,
+                "FRED",
+                group,
+                series_id,
+                name,
+                gaps,
+                gaps_before,
+                out.len() > out_before,
+            );
         }
         out
     }
@@ -466,11 +501,30 @@ impl FredDataSource {
         let mut out = Vec::new();
         let mut rejected = false;
         for (release_id, name) in RELEASES {
+            if self.progress.is_cancelled() {
+                break;
+            }
+            // `id_str` is borrowed (not moved) into the gaps so it survives for the
+            // tracker row emitted at the end of the iteration.
             let id_str = release_id.to_string();
             if rejected {
-                gaps.push(DataGap::new(GroupKind::Calendar, id_str, *name, GapReason::Rejected));
+                // No request made for a short-circuited release — no tracker row.
+                gaps.push(DataGap::new(
+                    GroupKind::Calendar,
+                    id_str.as_str(),
+                    *name,
+                    GapReason::Rejected,
+                ));
                 continue;
             }
+            self.progress.request_started(
+                "FRED release-dates",
+                GroupKind::Calendar.as_str(),
+                &id_str,
+                *name,
+            );
+            let gaps_before = gaps.len();
+            let out_before = out.len();
             let disposition = match self.get_release_dates(*release_id, &start, &end) {
                 Ok((status, body)) => interpret_response(status, &body),
                 Err(_) => Disposition::Gap(GapReason::Unavailable),
@@ -478,9 +532,12 @@ impl FredDataSource {
             match disposition {
                 Disposition::Value(value) => match releases_to_calendar(value, name, today) {
                     Ok(entries) => out.extend(entries),
-                    Err(_) => {
-                        gaps.push(DataGap::new(GroupKind::Calendar, id_str, *name, GapReason::Malformed))
-                    }
+                    Err(_) => gaps.push(DataGap::new(
+                        GroupKind::Calendar,
+                        id_str.as_str(),
+                        *name,
+                        GapReason::Malformed,
+                    )),
                 },
                 // Additive group: a permanent absence (does-not-exist) is silent.
                 Disposition::Gap(GapReason::OutOfScope) => {}
@@ -488,9 +545,19 @@ impl FredDataSource {
                     if reason == GapReason::Rejected {
                         rejected = true;
                     }
-                    gaps.push(DataGap::new(GroupKind::Calendar, id_str, *name, reason));
+                    gaps.push(DataGap::new(GroupKind::Calendar, id_str.as_str(), *name, reason));
                 }
             }
+            emit_series_row(
+                &self.progress,
+                "FRED release-dates",
+                GroupKind::Calendar,
+                &id_str,
+                name,
+                gaps,
+                gaps_before,
+                out.len() > out_before,
+            );
         }
         out
     }

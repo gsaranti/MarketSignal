@@ -18,6 +18,8 @@
 //! report is grounded in this run's live data. The rest of the condensed packet
 //! (news clusters, deep research, vector memory) joins it as later slices land.
 
+use std::io::{BufRead, BufReader};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -30,6 +32,7 @@ use crate::agent::{
     ThesisStance,
 };
 use crate::data_sources::BaselineMarketData;
+use crate::progress::RunContext;
 
 /// Which provider an agent model is served by. Selects the request shape, the
 /// auth header, and the endpoint.
@@ -263,6 +266,7 @@ fn build_anthropic_request(model_id: &str, system: &str, user: &str, schema: &Va
     json!({
         "model": model_id,
         "max_tokens": MAX_TOKENS,
+        "stream": true,
         "system": [
             { "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }
         ],
@@ -284,6 +288,7 @@ fn build_openai_request(model_id: &str, system: &str, user: &str, schema: &Value
     json!({
         "model": model_id,
         "max_completion_tokens": MAX_TOKENS,
+        "stream": true,
         "response_format": {
             "type": "json_schema",
             "json_schema": { "name": "weekly_market_report", "strict": true, "schema": schema }
@@ -377,6 +382,11 @@ fn parse_response(
 pub struct ModelMainAgent {
     config: MainAgentConfig,
     http: reqwest::blocking::Client,
+    /// Run context for live token streaming. Defaults to a no-op (tests / offline
+    /// smokes); the live command attaches the real one via
+    /// [`ModelMainAgent::with_context`], and the streamed report text is emitted to it
+    /// as the model writes.
+    progress: Arc<RunContext>,
 }
 
 impl ModelMainAgent {
@@ -385,7 +395,19 @@ impl ModelMainAgent {
             .timeout(Duration::from_secs(120))
             .build()
             .context("building the HTTP client")?;
-        Ok(Self { config, http })
+        Ok(Self {
+            config,
+            http,
+            progress: RunContext::noop(),
+        })
+    }
+
+    /// Attach a live run context so the streamed report text reaches the run tracker.
+    /// Without it the adapter keeps its no-op context and streams to nowhere (the HTTP
+    /// call still streams; the deltas are simply dropped).
+    pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
+        self.progress = ctx;
+        self
     }
 
     /// Resolve the adapter from the environment. Delegates to the single
@@ -398,6 +420,15 @@ impl ModelMainAgent {
         Self::new(crate::config::AppConfig::from_env().main_agent_config()?)
     }
 
+    /// Send the (streaming) model request and consume its Server-Sent-Events body,
+    /// emitting the report text to the run tracker as the model writes it while
+    /// accumulating the structured envelope for the final parse. Returns a `Value`
+    /// shaped exactly like the old non-streaming response so `parse_response` —
+    /// and all its tests — stay unchanged.
+    ///
+    /// The envelope accumulation is the source of truth for the report: the live
+    /// token extraction is a pure side-channel to the progress reporter, so a bug in
+    /// the decoder can only affect what the tracker shows, never the parsed report.
     fn call(&self, provider: Provider, body: &Value) -> Result<Value> {
         let request = match provider {
             Provider::Anthropic => self
@@ -412,12 +443,234 @@ impl ModelMainAgent {
         };
         let resp = request.json(body).send().context("sending model request")?;
         let status = resp.status();
-        let text = resp.text().context("reading model response body")?;
         if !status.is_success() {
+            // A rejected streaming request answers with a normal (non-SSE) error body.
+            let text = resp.text().unwrap_or_default();
             bail!("model provider returned {status}: {text}");
         }
-        serde_json::from_str(&text).context("parsing model response JSON")
+
+        // Accumulate the structured envelope from the SSE deltas while streaming the
+        // decoded `markdown` field to the tracker. Token emits are coalesced to bound
+        // the event count over a long report.
+        let mut envelope = String::new();
+        let mut extractor = MarkdownStreamExtractor::default();
+        let mut pending = String::new();
+        let reader = BufReader::new(resp);
+        for line in reader.lines() {
+            // Cancel checkpoint mid-stream: stop reading so a cancel requested during
+            // generation lands promptly. The partial envelope then fails to parse,
+            // which `run_job` classifies as Cancelled (the shared flag is set).
+            if self.progress.is_cancelled() {
+                break;
+            }
+            let line = line.context("reading streamed model response")?;
+            // SSE: only `data:` lines carry payload; `event:`/comment/blank lines and
+            // the terminal `[DONE]` sentinel are skipped.
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            // Tolerate any non-JSON keep-alive line rather than failing the stream.
+            let Ok(event) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
+            if let Some(fragment) = stream_delta(provider, &event) {
+                envelope.push_str(fragment);
+                pending.push_str(&extractor.update(&envelope));
+                if pending.chars().count() >= TOKEN_FLUSH_CHARS {
+                    self.progress.agent_token(std::mem::take(&mut pending));
+                }
+            }
+        }
+        if !pending.is_empty() {
+            self.progress.agent_token(pending);
+        }
+
+        reconstruct_response(provider, &envelope)
     }
+}
+
+/// Coalesce streamed report text into chunks of at least this many characters before
+/// emitting a progress event, so a long report streams as a few hundred events rather
+/// than one per model token.
+const TOKEN_FLUSH_CHARS: usize = 24;
+
+/// Pull the incremental text fragment out of one SSE event, per provider:
+/// - OpenAI Chat Completions stream: `choices[0].delta.content` — fragments of the
+///   structured-output JSON string.
+/// - Anthropic Messages stream: a `content_block_delta` carrying an `input_json_delta`,
+///   whose `partial_json` are fragments of the forced tool's input JSON.
+///
+/// Every other event type (role deltas, `message_start`/`_stop`, `ping`) carries no
+/// envelope text and returns `None`.
+fn stream_delta(provider: Provider, event: &Value) -> Option<&str> {
+    match provider {
+        Provider::OpenAi => event.pointer("/choices/0/delta/content").and_then(Value::as_str),
+        Provider::Anthropic => {
+            if event.get("type").and_then(Value::as_str) != Some("content_block_delta") {
+                return None;
+            }
+            let delta = event.get("delta")?;
+            if delta.get("type").and_then(Value::as_str) != Some("input_json_delta") {
+                return None;
+            }
+            delta.get("partial_json").and_then(Value::as_str)
+        }
+    }
+}
+
+/// Rebuild the `Value` `parse_response` expects from the accumulated streamed
+/// envelope, so the streaming and non-streaming paths share one parse/validation path:
+/// - OpenAI: the envelope *is* the message content JSON string.
+/// - Anthropic: the envelope is the tool input JSON, re-nested as a `tool_use` block.
+///
+/// A truncated stream (a dropped connection mid-body) surfaces here as a parse error —
+/// the same failure shape a truncated non-streaming body would have produced.
+fn reconstruct_response(provider: Provider, envelope: &str) -> Result<Value> {
+    match provider {
+        Provider::OpenAi => Ok(json!({
+            "choices": [ { "message": { "role": "assistant", "content": envelope } } ]
+        })),
+        Provider::Anthropic => {
+            let input: Value = serde_json::from_str(envelope)
+                .context("parsing streamed Anthropic tool input")?;
+            Ok(json!({
+                "content": [ { "type": "tool_use", "name": TOOL_NAME, "input": input } ]
+            }))
+        }
+    }
+}
+
+/// Streams the decoded `markdown` field out of the growing response envelope so the
+/// tracker shows the report as readable prose rather than escaped JSON.
+///
+/// Resumable by design: it keeps a byte cursor into the envelope and, on each update,
+/// decodes only the bytes that have arrived since the last call — O(n) over the whole
+/// stream rather than re-decoding the full envelope on every delta. The cursor never
+/// advances into an incomplete trailing escape (a lone `\` or a partial `\uXXXX`), so
+/// that escape is re-read intact once its remainder streams in; the emitted text only
+/// ever grows and is never emitted half-formed. Each call's argument must be an
+/// extension of the previous one (the `call` loop only ever appends), which the cursor
+/// relies on.
+#[derive(Default)]
+struct MarkdownStreamExtractor {
+    /// Byte offset in the envelope to resume decoding from — `None` until the
+    /// `"markdown": "` opener has streamed in, then the first not-yet-decoded byte of
+    /// the value (always on a char boundary, never inside an escape).
+    cursor: Option<usize>,
+    /// The value's closing quote has been seen; nothing further is emitted.
+    done: bool,
+}
+
+impl MarkdownStreamExtractor {
+    /// Decode whatever new markdown-field text has arrived in `envelope` and return
+    /// just that suffix — empty until the field opens, and again once it closes.
+    fn update(&mut self, envelope: &str) -> String {
+        if self.done {
+            return String::new();
+        }
+        let start = match self.cursor {
+            Some(start) => start,
+            None => match markdown_value_start(envelope) {
+                Some(start) => {
+                    self.cursor = Some(start);
+                    start
+                }
+                None => return String::new(),
+            },
+        };
+        let (decoded, consumed, closed) = decode_json_string_chunk(&envelope[start..]);
+        self.cursor = Some(start + consumed);
+        self.done = closed;
+        decoded
+    }
+}
+
+/// Byte offset just after the opening quote of the `"markdown"` string value in a
+/// (possibly partial) JSON object, or `None` until `"markdown": "` has streamed in.
+fn markdown_value_start(envelope: &str) -> Option<usize> {
+    const KEY: &str = "\"markdown\"";
+    let after_key = envelope.find(KEY)? + KEY.len();
+    // Expect optional whitespace, the ':' separator, more whitespace, then the opening
+    // '"' of the value.
+    let mut seen_colon = false;
+    for (idx, c) in envelope[after_key..].char_indices() {
+        if c.is_whitespace() {
+            continue;
+        }
+        if !seen_colon {
+            if c == ':' {
+                seen_colon = true;
+                continue;
+            }
+            return None;
+        }
+        if c == '"' {
+            return Some(after_key + idx + c.len_utf8());
+        }
+        return None;
+    }
+    None
+}
+
+/// Decode a JSON string body (the bytes *after* the opening quote) from the start of
+/// `s`, up to the first unescaped closing quote or the last fully-formed character.
+/// Returns `(decoded_text, bytes_consumed, closed)`. `bytes_consumed` stops *before*
+/// any incomplete trailing escape (a lone `\` or a partial `\uXXXX`), so a resumed call
+/// re-reads that escape once its remainder arrives. `closed` is true once the value's
+/// closing quote was reached.
+fn decode_json_string_chunk(s: &str) -> (String, usize, bool) {
+    let mut out = String::new();
+    let mut consumed = 0;
+    let mut chars = s.char_indices();
+    while let Some((idx, c)) = chars.next() {
+        match c {
+            '"' => return (out, idx + 1, true), // closing quote of the value
+            '\\' => {
+                let Some((esc_idx, esc)) = chars.next() else {
+                    return (out, idx, false); // lone trailing '\' — resume here
+                };
+                let mut next_consumed = esc_idx + esc.len_utf8();
+                match esc {
+                    'n' => out.push('\n'),
+                    't' => out.push('\t'),
+                    'r' => out.push('\r'),
+                    'b' => out.push('\u{0008}'),
+                    'f' => out.push('\u{000C}'),
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    '/' => out.push('/'),
+                    'u' => {
+                        let mut hex = String::with_capacity(4);
+                        for _ in 0..4 {
+                            match chars.next() {
+                                Some((j, h)) => {
+                                    hex.push(h);
+                                    next_consumed = j + h.len_utf8();
+                                }
+                                None => return (out, idx, false), // partial \uXXXX
+                            }
+                        }
+                        if let Some(ch) =
+                            u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                        {
+                            out.push(ch);
+                        }
+                    }
+                    other => out.push(other),
+                }
+                consumed = next_consumed;
+            }
+            c => {
+                out.push(c);
+                consumed = idx + c.len_utf8();
+            }
+        }
+    }
+    (out, consumed, false)
 }
 
 impl MainAgent for ModelMainAgent {
@@ -632,6 +885,109 @@ mod tests {
     fn rejects_openai_non_json_content() {
         let raw = json!({ "choices": [ { "message": { "content": "not json at all" } } ] });
         assert!(parse_response(Provider::OpenAi, &raw, "r".into(), "t".into()).is_err());
+    }
+
+    #[test]
+    fn both_request_arms_enable_streaming() {
+        let a = build_anthropic_request(
+            "claude-opus-4-8",
+            SYSTEM_PROMPT,
+            USER_PROMPT,
+            &response_envelope_schema(),
+        );
+        assert_eq!(a["stream"], true);
+        let o = build_openai_request("gpt-5", SYSTEM_PROMPT, USER_PROMPT, &response_envelope_schema());
+        assert_eq!(o["stream"], true);
+    }
+
+    #[test]
+    fn stream_delta_reads_each_provider_fragment_and_ignores_the_rest() {
+        // OpenAI: the content delta is the fragment; a role-only delta is not.
+        let oai = json!({ "choices": [ { "delta": { "content": "# He" } } ] });
+        assert_eq!(stream_delta(Provider::OpenAi, &oai), Some("# He"));
+        let oai_role = json!({ "choices": [ { "delta": { "role": "assistant" } } ] });
+        assert_eq!(stream_delta(Provider::OpenAi, &oai_role), None);
+
+        // Anthropic: only an input_json_delta carries envelope text.
+        let ant = json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": { "type": "input_json_delta", "partial_json": "{\"mark" }
+        });
+        assert_eq!(stream_delta(Provider::Anthropic, &ant), Some("{\"mark"));
+        assert_eq!(stream_delta(Provider::Anthropic, &json!({ "type": "ping" })), None);
+        let text_delta = json!({
+            "type": "content_block_delta",
+            "delta": { "type": "text_delta", "text": "ignored preamble" }
+        });
+        assert_eq!(stream_delta(Provider::Anthropic, &text_delta), None);
+    }
+
+    #[test]
+    fn markdown_extractor_streams_decoded_prose_one_char_at_a_time() {
+        // A realistic envelope: markdown first, with newline / quote / backslash escapes,
+        // then the structured fields. Fed one character at a time — the worst case for a
+        // partial escape landing on a chunk boundary.
+        let envelope =
+            r##"{"markdown":"# Title\n\nA \"quoted\" word and a slash \\ end.","risk_posture":"mixed"}"##;
+        let expected = "# Title\n\nA \"quoted\" word and a slash \\ end.";
+
+        let mut extractor = MarkdownStreamExtractor::default();
+        let mut grown = String::new();
+        let mut streamed = String::new();
+        for ch in envelope.chars() {
+            grown.push(ch);
+            streamed.push_str(&extractor.update(&grown));
+        }
+        assert_eq!(streamed, expected);
+        // Once the value's closing quote is in, no further suffix is emitted.
+        assert_eq!(extractor.update(envelope), "");
+    }
+
+    #[test]
+    fn markdown_extractor_resumes_a_unicode_escape_split_across_chunks() {
+        // U+2014 is an em dash, written here as the JSON escape —. Fed one char
+        // at a time, the partial "\u20..." must be held back (the cursor parks before
+        // the backslash) and completed on a later call, never emitted half-formed.
+        let envelope = "{\"markdown\":\"a\\u2014b\"}";
+        let mut extractor = MarkdownStreamExtractor::default();
+        let mut grown = String::new();
+        let mut streamed = String::new();
+        for ch in envelope.chars() {
+            grown.push(ch);
+            streamed.push_str(&extractor.update(&grown));
+        }
+        assert_eq!(streamed, "a\u{2014}b");
+    }
+
+    #[test]
+    fn markdown_extractor_is_empty_until_the_field_opens() {
+        let mut extractor = MarkdownStreamExtractor::default();
+        assert_eq!(extractor.update("{\"risk_posture\":\"mixed\","), "");
+        assert_eq!(extractor.update("{\"risk_posture\":\"mixed\",\"markdown\":\"Hi"), "Hi");
+    }
+
+    #[test]
+    fn reconstruct_response_feeds_the_unchanged_parse_path() {
+        // The streamed envelope text, reconstructed, must parse through `parse_response`
+        // exactly as a non-streaming body would — both provider arms.
+        let env = serde_json::to_string(&valid_envelope()).unwrap();
+
+        let raw = reconstruct_response(Provider::OpenAi, &env).unwrap();
+        let out =
+            parse_response(Provider::OpenAi, &raw, "rid".into(), "2026-06-02T00:00:00Z".into())
+                .unwrap();
+        assert_eq!(out.summary.header_summary_bullets.len(), 3);
+
+        let raw = reconstruct_response(Provider::Anthropic, &env).unwrap();
+        let out =
+            parse_response(Provider::Anthropic, &raw, "rid".into(), "2026-06-02T00:00:00Z".into())
+                .unwrap();
+        assert!(!out.markdown.is_empty());
+
+        // A truncated stream is a typed parse error, not a panic (Anthropic arm parses
+        // the tool input eagerly).
+        assert!(reconstruct_response(Provider::Anthropic, "{\"markdown\":\"unterminated").is_err());
     }
 
     #[test]

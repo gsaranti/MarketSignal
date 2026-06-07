@@ -9,6 +9,7 @@ use market_signal_temp_lib::data_sources::{
 };
 use market_signal_temp_lib::jobs::{run_job, JobOutcome, RunGuard};
 use market_signal_temp_lib::pipeline::ReportPaths;
+use market_signal_temp_lib::progress::RunContext;
 
 /// A stub that always fails, standing in for an unreachable provider so the
 /// Failed lifecycle path can be exercised without live keys.
@@ -48,7 +49,7 @@ fn successful_run_records_successful_job_and_writes_report() {
     let paths = paths_in(dir.path());
 
     let outcome =
-        run_job(&StubMainAgent, &StubMarketDataSource, &paths, &RunGuard::default()).unwrap();
+        run_job(&StubMainAgent, &StubMarketDataSource, &paths, &RunGuard::default(), &RunContext::noop()).unwrap();
 
     match outcome {
         JobOutcome::Successful(report) => assert!(
@@ -72,7 +73,7 @@ fn failing_agent_records_failed_job_and_writes_no_report() {
     let paths = paths_in(dir.path());
 
     let outcome =
-        run_job(&FailingAgent, &StubMarketDataSource, &paths, &RunGuard::default()).unwrap();
+        run_job(&FailingAgent, &StubMarketDataSource, &paths, &RunGuard::default(), &RunContext::noop()).unwrap();
 
     match outcome {
         JobOutcome::Failed(msg) => {
@@ -102,7 +103,7 @@ fn failing_data_source_records_failed_job_and_writes_no_report() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths_in(dir.path());
 
-    let outcome = run_job(&StubMainAgent, &FailingDataSource, &paths, &RunGuard::default()).unwrap();
+    let outcome = run_job(&StubMainAgent, &FailingDataSource, &paths, &RunGuard::default(), &RunContext::noop()).unwrap();
 
     match outcome {
         JobOutcome::Failed(msg) => {
@@ -122,7 +123,7 @@ fn second_run_while_one_is_in_flight_is_skipped() {
     // Simulate an in-flight run by holding the single run slot.
     let token = guard.try_begin().expect("first claim succeeds");
 
-    let outcome = run_job(&StubMainAgent, &StubMarketDataSource, &paths, &guard).unwrap();
+    let outcome = run_job(&StubMainAgent, &StubMarketDataSource, &paths, &guard, &RunContext::noop()).unwrap();
     match outcome {
         JobOutcome::Skipped(_) => {}
         other => panic!("expected Skipped, got {other:?}"),
@@ -137,10 +138,76 @@ fn second_run_while_one_is_in_flight_is_skipped() {
 
     // Releasing the slot lets the next run proceed to completion.
     drop(token);
-    let outcome = run_job(&StubMainAgent, &StubMarketDataSource, &paths, &guard).unwrap();
+    let outcome = run_job(&StubMainAgent, &StubMarketDataSource, &paths, &guard, &RunContext::noop()).unwrap();
     assert!(matches!(outcome, JobOutcome::Successful(_)));
     assert_eq!(
         count(&paths.db_path, "SELECT COUNT(*) FROM job_runs WHERE state = 'successful'"),
         1
+    );
+}
+
+#[test]
+fn cancelled_run_records_cancelled_job_and_writes_no_report() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use market_signal_temp_lib::progress::NoopReporter;
+
+    // A data source that requests cancellation mid-run (as it gathers the baseline),
+    // so the pipeline's post-baseline checkpoint trips. This is the realistic cancel
+    // path — and it survives run_job's reset of the shared flag at run start (a
+    // pre-set flag would be cleared before the run polls it).
+    struct CancellingData(Arc<AtomicBool>);
+    impl MarketDataSource for CancellingData {
+        fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData> {
+            self.0.store(true, Ordering::Relaxed);
+            StubMarketDataSource.baseline_scan()
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths_in(dir.path());
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let ctx = RunContext::new("t", Arc::new(NoopReporter), cancel.clone());
+    let data = CancellingData(cancel);
+    let outcome = run_job(&StubMainAgent, &data, &paths, &RunGuard::default(), &ctx).unwrap();
+
+    match outcome {
+        JobOutcome::Cancelled(detail) => assert!(detail.contains("cancelled"), "{detail}"),
+        other => panic!("expected Cancelled, got {other:?}"),
+    }
+
+    assert_eq!(
+        count(&paths.db_path, "SELECT COUNT(*) FROM job_runs WHERE state = 'cancelled'"),
+        1
+    );
+    assert_eq!(count(&paths.db_path, "SELECT COUNT(*) FROM reports"), 0);
+}
+
+#[test]
+fn a_skipped_run_does_not_reset_an_active_runs_cancel_flag() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use market_signal_temp_lib::progress::NoopReporter;
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths_in(dir.path());
+    let guard = RunGuard::default();
+
+    // Simulate an active run holding the slot with a cancel already requested.
+    let _token = guard.try_begin().expect("first claim succeeds");
+    let cancel = Arc::new(AtomicBool::new(true));
+    let ctx = RunContext::new("competing", Arc::new(NoopReporter), cancel.clone());
+
+    // A competing run is skipped (guard busy) before it owns the slot, so it must not
+    // reach reset_cancel and wipe the active run's pending cancellation.
+    let outcome =
+        run_job(&StubMainAgent, &StubMarketDataSource, &paths, &guard, &ctx).unwrap();
+    assert!(matches!(outcome, JobOutcome::Skipped(_)));
+    assert!(
+        cancel.load(Ordering::Relaxed),
+        "a skipped run must not reset the active run's cancel flag"
     );
 }

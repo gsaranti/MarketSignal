@@ -10,6 +10,7 @@ use market_signal_temp_lib::data_sources::{
     BaselineMarketData, MarketDataSource, StubMarketDataSource,
 };
 use market_signal_temp_lib::pipeline::{generate_report, ReportPaths};
+use market_signal_temp_lib::progress::RunContext;
 
 /// Wraps the stub agent and records the baseline it was handed, so the test can
 /// assert the pipeline's Step-6 gather reached the agent stage.
@@ -32,7 +33,7 @@ fn generate_report_writes_markdown_file_and_db_row() {
         reports_dir: dir.path().join("reports"),
     };
 
-    let report = generate_report(&StubMainAgent, &StubMarketDataSource, &paths).unwrap();
+    let report = generate_report(&StubMainAgent, &StubMarketDataSource, &paths, &RunContext::noop()).unwrap();
 
     // The canonical Markdown file was written to disk.
     assert!(
@@ -66,7 +67,7 @@ fn step_6_baseline_scan_reaches_the_agent_input() {
     let agent = RecordingAgent {
         seen: Mutex::new(None),
     };
-    generate_report(&agent, &StubMarketDataSource, &paths).unwrap();
+    generate_report(&agent, &StubMarketDataSource, &paths, &RunContext::noop()).unwrap();
 
     // The pipeline gathered the data source's baseline and handed it to the agent
     // unchanged.

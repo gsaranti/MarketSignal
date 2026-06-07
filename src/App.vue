@@ -6,6 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import RecentReportsSidebar from "./components/RecentReportsSidebar.vue";
 import LatestReportView from "./components/LatestReportView.vue";
+import JobTrackerView from "./components/JobTrackerView.vue";
 import ResearchDocuments from "./components/ResearchDocuments.vue";
 import Settings from "./components/Settings.vue";
 import PersistentWarningArea from "./components/PersistentWarningArea.vue";
@@ -18,9 +19,13 @@ import type {
   CredentialUpdate,
   GeneratedReport,
   JobStatus,
+  ProgressMessage,
   ReportSummary,
   ResearchDocument,
+  RunTrace,
   SettingsView,
+  StepStatus,
+  TrackerStep,
   ValidationReport,
 } from "./types";
 import { readDark, writeDark } from "./theme";
@@ -53,6 +58,157 @@ const reportError = ref<string | null>(null);
 const reportsError = ref<string | null>(null);
 const generating = ref(false);
 const error = ref<string | null>(null);
+
+// --- Live job tracker ------------------------------------------------------
+// While a run is in flight the report pane shows the tracker instead of a report.
+// `reportPaneMode` is the toggle; `runTrace` is the assembled event stream for the
+// latest run (in-session, latest-run-only); `runActive` is true between
+// run-started and run-finished; `cancelRequested` disables Cancel after a click.
+const reportPaneMode = ref<"report" | "tracker">("report");
+const runTrace = ref<RunTrace | null>(null);
+const runActive = ref(false);
+const cancelRequested = ref(false);
+
+// The synthetic first step: the run only ever starts once the execution gate has
+// passed (`check_configuration`), so we show that as a completed step rather than
+// emitting a backend event for an instant, already-done check.
+const GATE_STEP_LABEL = "Credentials & configuration";
+
+// Find or create a step by key. step-started always precedes its requests/tokens
+// and step-finished, so the lookup normally hits; the create is a safety net.
+function ensureStep(trace: RunTrace, key: string, label: string): TrackerStep {
+  let step = trace.steps.find((s) => s.key === key);
+  if (!step) {
+    step = { key, label, status: "running", detail: null, requests: [], agentText: "" };
+    trace.steps.push(step);
+  }
+  return step;
+}
+
+// Fold one streamed progress message into the trace. Events are filtered to the
+// current run by `run_id`, so a straggler from a prior run can't corrupt it.
+function handleProgress(msg: ProgressMessage) {
+  if (msg.kind === "run-started") {
+    runTrace.value = {
+      runId: msg.run_id,
+      label: msg.label ?? "Report run",
+      steps: [
+        {
+          key: "gate",
+          label: GATE_STEP_LABEL,
+          status: "ok",
+          detail: null,
+          requests: [],
+          agentText: "",
+        },
+      ],
+      terminal: null,
+    };
+    runActive.value = true;
+    cancelRequested.value = false;
+    return;
+  }
+
+  const trace = runTrace.value;
+  if (!trace || msg.run_id !== trace.runId) return;
+
+  switch (msg.kind) {
+    case "step-started":
+      ensureStep(trace, msg.step ?? "", msg.label ?? msg.step ?? "").status = "running";
+      break;
+    case "step-finished": {
+      const step = ensureStep(trace, msg.step ?? "", msg.step ?? "");
+      step.status = (msg.status as StepStatus) ?? "ok";
+      step.detail = msg.detail ?? null;
+      break;
+    }
+    case "request-started": {
+      // One row per actual HTTP request, shown in-flight ("running") until it
+      // resolves. Skipped (no-request) series never emit this, so rows stay
+      // one-to-one with network calls.
+      const step = ensureStep(trace, "baseline", "Baseline market data");
+      step.requests.push({
+        provider: msg.provider ?? "",
+        group: msg.group ?? "",
+        seriesId: msg.series_id ?? "",
+        name: msg.name ?? msg.series_id ?? "",
+        status: "running",
+        detail: null,
+      });
+      break;
+    }
+    case "request-finished": {
+      const step = ensureStep(trace, "baseline", "Baseline market data");
+      // Resolve the matching in-flight row. Requests are sequential, so the running
+      // row for this group+series is the one to update; fall back to appending a
+      // resolved row if a started was somehow missed.
+      const row = step.requests.find(
+        (r) =>
+          r.status === "running" &&
+          r.group === (msg.group ?? "") &&
+          r.seriesId === (msg.series_id ?? "")
+      );
+      if (row) {
+        row.status = msg.status ?? "ok";
+        row.detail = msg.detail ?? null;
+      } else {
+        step.requests.push({
+          provider: msg.provider ?? "",
+          group: msg.group ?? "",
+          seriesId: msg.series_id ?? "",
+          name: msg.name ?? msg.series_id ?? "",
+          status: msg.status ?? "ok",
+          detail: msg.detail ?? null,
+        });
+      }
+      break;
+    }
+    case "agent-token":
+      ensureStep(trace, "agent", "Main agent").agentText += msg.delta ?? "";
+      break;
+    case "run-finished": {
+      trace.terminal = { status: msg.status ?? "", detail: msg.detail ?? null };
+      runActive.value = false;
+      // Reconcile any step still "running" at the end (a cancel mid-step) so it
+      // doesn't read as in-progress forever.
+      const fallback: StepStatus = msg.status === "cancelled" ? "cancelled" : "failed";
+      for (const step of trace.steps) {
+        if (step.status === "running") step.status = fallback;
+      }
+      break;
+    }
+  }
+}
+
+// Request cancellation of the in-flight run. The backend stops at its next
+// checkpoint and emits run-finished{cancelled}; we mark cancelRequested so the
+// Cancel button reads "Cancelling…" until then.
+async function cancelRun() {
+  if (!runActive.value) return;
+  cancelRequested.value = true;
+  try {
+    await invoke("cancel_run");
+  } catch (e) {
+    // A failed cancel invoke is rare; surface it on the run-status channel and let
+    // the user retry. Re-enable the button.
+    cancelRequested.value = false;
+    jobStatusError.value = String(e);
+  }
+}
+
+// Dismiss the lingering terminal run log and return to the report.
+function dismissRunLog() {
+  runTrace.value = null;
+  reportPaneMode.value = "report";
+}
+
+// Open the tracker for the current/last run (the footer's "View progress" /
+// "View run log" handle). Brings the report surface forward if another view is
+// active, since the tracker lives in the report pane.
+function viewTracker() {
+  view.value = "report";
+  reportPaneMode.value = "tracker";
+}
 
 // Markdown export state, kept on its own channel (like the others above):
 // `exportingMarkdown` drives the toolbar button's busy state; `exportError`
@@ -180,25 +336,52 @@ async function generate() {
   if (blocked.value) return;
   generating.value = true;
   error.value = null;
+  // Show the live tracker for the run the user just kicked off; run-started will
+  // populate it (and reset cancelRequested, but set it here too for the gap before
+  // the first event lands).
+  reportPaneMode.value = "tracker";
+  cancelRequested.value = false;
+  // Drop any prior run's trace up front. The new run replaces it via run-started; but
+  // if this attempt fails *before* run-started (a gate/key/adapter error, or a
+  // concurrency skip), runTrace stays null so the catch surfaces the error rather than
+  // leaving the previous run's (possibly successful) log on screen.
+  runTrace.value = null;
   try {
-    // A fresh run returns the full report (with Markdown) — show it directly and
-    // refresh the list so its new row appears, selected, at the top.
+    // A fresh run returns the full report (with Markdown). Surface its sidebar row
+    // either way; refreshReports() reconciles ordering against the DB.
     const fresh = await invoke<GeneratedReport>("generate_report_manual");
-    selectedReport.value = fresh;
-    selectedReportId.value = fresh.report_id;
-    reportError.value = null;
-    // Surface its row immediately so the sidebar never lags the pane, even if the
-    // refresh below fails; refreshReports() reconciles ordering against the DB.
     upsertReportSummary(fresh.summary);
     void refreshReports();
+    // Show the new report only if the user is still watching the run. If they
+    // navigated to an older report mid-run (reportPaneMode === "report"), leave
+    // them there — the new row appears in the sidebar and the run log lingers.
+    if (reportPaneMode.value === "tracker") {
+      selectedReport.value = fresh;
+      selectedReportId.value = fresh.report_id;
+      reportError.value = null;
+      reportPaneMode.value = "report";
+    }
   } catch (e) {
-    error.value = String(e);
+    // A user-initiated cancel is intentional, not an error surface — the tracker
+    // shows the cancelled terminal state and the footer offers the run log.
+    if (cancelRequested.value) {
+      // nothing to surface
+    } else if (!runTrace.value) {
+      // The run never produced a tracker (e.g. a concurrency skip) — surface the
+      // reason on the report pane so the failure isn't silent.
+      error.value = String(e);
+      reportPaneMode.value = "report";
+    }
+    // Otherwise the tracker's failed terminal state + the warning area carry it.
   } finally {
     generating.value = false;
     // Re-check after a run: config may have changed, and a run updates job
-    // history (failed/missed warnings, last-run status). Fire-and-forget.
+    // history (failed/missed warnings, last-run status). Refresh reports too, so a
+    // report that persisted but whose command then errored (e.g. a job-history write
+    // failure after the report itself was written) still appears in the sidebar.
     void refreshValidation();
     void refreshJobStatus();
+    void refreshReports();
   }
 }
 
@@ -234,11 +417,19 @@ async function refreshReports() {
     return;
   }
   // On first load — or after the selected report fell out of the list — default
-  // to the newest report so the pane is never blank when reports exist.
+  // to the newest report so the pane is never blank when reports exist. But only to
+  // fill a blank *report* pane: never when the tracker is showing or a generation
+  // error is surfaced, since selectReport() would switch the pane and clear that
+  // error (a post-failure list refresh must not erase the failure it follows).
   const stillSelected =
     selectedReportId.value !== null &&
     reports.value.some((r) => r.report_id === selectedReportId.value);
-  if (!stillSelected && reports.value.length > 0) {
+  if (
+    !stillSelected &&
+    reports.value.length > 0 &&
+    reportPaneMode.value === "report" &&
+    error.value === null
+  ) {
     void selectReport(reports.value[0].report_id);
   }
 }
@@ -246,6 +437,9 @@ async function refreshReports() {
 async function selectReport(id: string) {
   selectedReportId.value = id;
   reportError.value = null;
+  // Viewing a specific report leaves the run tracker (it keeps running in the
+  // background; the footer's "View progress" returns to it).
+  reportPaneMode.value = "report";
   // Viewing a specific report dismisses any prior generation-failure banner —
   // otherwise LatestReportView's `error` block (which has render precedence)
   // would mask the report we just loaded.
@@ -468,18 +662,30 @@ onMounted(async () => {
   // detects an overslept window), so an open window reflects the new state
   // without a manual refresh. A successful run carries its report so the Latest
   // Report View updates too; failure/skip/missed send null.
+  // Live run progress: the backend streams one of these per step / per baseline
+  // request / per coalesced agent-token chunk while a run is in flight. They feed
+  // the tracker for both manual and scheduled runs.
+  unlisteners.push(
+    await listen<ProgressMessage>("job-progress", (event) =>
+      handleProgress(event.payload)
+    )
+  );
   unlisteners.push(
     await listen<GeneratedReport | null>("job-finished", (event) => {
       if (event.payload) {
-        selectedReport.value = event.payload;
-        selectedReportId.value = event.payload.report_id;
-        reportError.value = null;
-        // A fresh report supersedes any stale generation-failure banner.
-        error.value = null;
         // Surface its row immediately (see generate) so a scheduled run's report
         // appears in the sidebar even if the list refresh below fails.
         upsertReportSummary(event.payload.summary);
         void refreshReports();
+        // Switch to the fresh report only if the user was watching this run's
+        // tracker; otherwise stay put (a scheduled run shouldn't yank a reader).
+        if (reportPaneMode.value === "tracker") {
+          selectedReport.value = event.payload;
+          selectedReportId.value = event.payload.report_id;
+          reportError.value = null;
+          error.value = null;
+          reportPaneMode.value = "report";
+        }
       }
       void refreshValidation();
       void refreshJobStatus();
@@ -536,16 +742,29 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
     <div class="main-column">
       <PersistentWarningArea :report="validation" :error="validationError" />
       <div class="view-area">
-        <LatestReportView
-          v-if="view === 'report'"
-          :report="selectedReport"
-          :error="error"
-          :load-error="reportError"
-          :is-latest="selectedIsLatest"
-          :exporting-markdown="exportingMarkdown"
-          :export-error="exportError"
-          @export-markdown="exportMarkdown"
-        />
+        <template v-if="view === 'report'">
+          <!-- While a run is in flight (or its terminal log is reopened) the pane
+               shows the tracker in place of a report; selecting any report row
+               flips reportPaneMode back to "report". -->
+          <JobTrackerView
+            v-if="reportPaneMode === 'tracker' && runTrace"
+            :trace="runTrace"
+            :active="runActive"
+            :cancel-requested="cancelRequested"
+            @cancel="cancelRun"
+            @dismiss="dismissRunLog"
+          />
+          <LatestReportView
+            v-else
+            :report="selectedReport"
+            :error="error"
+            :load-error="reportError"
+            :is-latest="selectedIsLatest"
+            :exporting-markdown="exportingMarkdown"
+            :export-error="exportError"
+            @export-markdown="exportMarkdown"
+          />
+        </template>
         <ResearchDocuments
           v-else-if="view === 'inbox'"
           :documents="documents"
@@ -601,7 +820,11 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
         :error="jobStatusError"
         :blocked="blocked"
         :generating="generating"
+        :run-active="runActive"
+        :has-run-log="runTrace !== null"
+        :viewing-tracker="view === 'report' && reportPaneMode === 'tracker'"
         @generate="generate"
+        @view-tracker="viewTracker"
       />
       </div>
     </div>
