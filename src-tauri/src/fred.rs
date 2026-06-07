@@ -594,10 +594,13 @@ impl MarketDataSource for FredDataSource {
             labor_levels: Vec::new(),
             calendar,
             index_performance: Vec::new(),
-            // FMP owns the equity-market movers and earnings calendar; FRED contributes
-            // neither.
+            // FMP owns the equity-market movers, earnings calendar, and valuation +
+            // finer-rotation snapshots; FRED contributes none of them.
             movers: Vec::new(),
             earnings: Vec::new(),
+            sector_pe: Vec::new(),
+            industries: Vec::new(),
+            market_risk_premium: Vec::new(),
             gaps,
         })
     }

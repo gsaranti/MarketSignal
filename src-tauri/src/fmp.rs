@@ -7,8 +7,10 @@
 //! **gold** and **silver** (`GCUSD` / `SIUSD`, free on the quote endpoint), **sector
 //! performance**, each index's **multi-horizon performance** (weekly / MTD / YTD /
 //! 52-week range) derived from FMP's free end-of-day history, the **market movers**
-//! (biggest gainers / losers / most-active names), and the **earnings calendar** (the
-//! prior-week + upcoming large-cap reporters). The
+//! (biggest gainers / losers / most-active names), the **earnings calendar** (the
+//! prior-week + upcoming large-cap reporters), and the **valuation + finer-rotation**
+//! snapshots — per-sector P/E, the strongest / weakest industries (average move joined
+//! with aggregate P/E), and the US equity-risk-premium. The
 //! remaining macro / commodity internals — Treasury yields, the dollar index, oil,
 //! and natural gas — are gated behind FMP premium (verified live: HTTP 402 "not
 //! available under your current subscription") and are sourced from FRED instead.
@@ -40,7 +42,7 @@
 //! `indices` group plus its gaps, and the central coverage gate
 //! (`pipeline::enforce_coverage`) decides whether that's below the run's floor.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
@@ -51,7 +53,8 @@ use serde_json::Value;
 
 use crate::data_sources::{
     emit_series_row, BaselineMarketData, DataGap, EarningsEvent, GapReason, GroupKind,
-    IndexPerformance, MarketDataSource, MoverCategory, Quote, SectorPerformance, StockMover,
+    IndexPerformance, IndustrySnapshot, MarketDataSource, MarketRiskPremium, MoverCategory, Quote,
+    SectorPe, SectorPerformance, StockMover,
 };
 use crate::progress::RunContext;
 
@@ -93,6 +96,39 @@ const FMP_MOST_ACTIVE_URL: &str = "https://financialmodelingprep.com/stable/most
 /// ~1-month history window (probed live Jun 2026: forward dates return estimates with
 /// null actuals, past dates return both).
 const FMP_EARNINGS_URL: &str = "https://financialmodelingprep.com/stable/earnings-calendar";
+
+/// FMP's free valuation + finer-rotation snapshots — all date-keyed like the
+/// sector-performance snapshot (a dateless call returns HTTP 400), all free-tier (probed
+/// live Jun 2026). `sector-pe-snapshot` is the per-sector aggregate P/E (a valuation
+/// complement to `sector-performance-snapshot`); the two `industry-*` snapshots are the
+/// finer ~130-industry cut (average move + aggregate P/E), joined by industry name.
+const FMP_SECTOR_PE_URL: &str = "https://financialmodelingprep.com/stable/sector-pe-snapshot";
+const FMP_INDUSTRY_PERF_URL: &str =
+    "https://financialmodelingprep.com/stable/industry-performance-snapshot";
+const FMP_INDUSTRY_PE_URL: &str = "https://financialmodelingprep.com/stable/industry-pe-snapshot";
+
+/// FMP's free market-risk-premium endpoint — Damodaran's per-country equity-risk-premium
+/// dataset (no params). Filtered to the US row; a near-static annual constant (probed live
+/// Jun 2026: US total ERP ≈ 4.46%).
+const FMP_RISK_PREMIUM_URL: &str = "https://financialmodelingprep.com/stable/market-risk-premium";
+
+/// The exchanges the valuation snapshots are gathered for. FMP's sector / industry snapshots
+/// are **exchange-specific** (verified live: a no-`exchange` call defaults to NASDAQ only;
+/// `NYSE` and `AMEX` are also free). We pin both major boards so the model sees the
+/// growth/tech-tilted NASDAQ read *and* the broader, more value-weighted NYSE read rather
+/// than silently treating one exchange's valuation as whole-market. Each call is pinned to a
+/// single exchange, so the per-industry performance↔P/E join is always within one exchange.
+const SNAPSHOT_EXCHANGES: &[&str] = &["NASDAQ", "NYSE"];
+
+/// Industry-snapshot cap: keep the `INDUSTRY_TOP_N` strongest and `INDUSTRY_TOP_N` weakest
+/// industries by average move (FMP reports ~130 per exchange), applied **per exchange**, so
+/// the finer-rotation read surfaces the extremes without flooding the packet with the flat
+/// middle. Tunable after a live run.
+const INDUSTRY_TOP_N: usize = 10;
+
+/// The exact `country` label to keep from the market-risk-premium dataset. Exact-match, not
+/// a substring — "United Kingdom" and "United Arab Emirates" also start with "United".
+const RISK_PREMIUM_COUNTRY: &str = "United States";
 
 /// Mover-list filters (the raw lists are dominated by sub-$1 micro-caps that are noise for
 /// a market thesis). Keep only names priced at or above the floor, listed on a major US
@@ -222,6 +258,49 @@ struct FmpEarningsRaw {
     revenue_actual: Option<f64>,
 }
 
+/// One row of FMP's sector-PE snapshot. `sector`, `exchange`, and `pe` are all required — a
+/// row missing any fails the parse (a `Malformed` gap in the loop) rather than dropping
+/// silently. `exchange` is read from the wire (not assumed from the request) so the row is
+/// labelled by the board FMP actually reported, even if the `exchange` query param were ever
+/// ignored or regressed. `date` is ignored.
+#[derive(Debug, Deserialize)]
+struct FmpSectorPeRaw {
+    sector: String,
+    exchange: String,
+    pe: f64,
+}
+
+/// One row of FMP's industry-performance snapshot. `industry`, `exchange`, and
+/// `averageChange` are required; `exchange` is read from the wire (see [`FmpSectorPeRaw`]).
+/// `date` is ignored.
+#[derive(Debug, Deserialize)]
+struct FmpIndustryPerfRaw {
+    industry: String,
+    exchange: String,
+    #[serde(rename = "averageChange")]
+    average_change: f64,
+}
+
+/// One row of FMP's industry-PE snapshot. `industry`, `exchange`, and `pe` are required;
+/// `exchange` is read from the wire (see [`FmpSectorPeRaw`]). `date` is ignored.
+#[derive(Debug, Deserialize)]
+struct FmpIndustryPeRaw {
+    industry: String,
+    exchange: String,
+    pe: f64,
+}
+
+/// One row of FMP's market-risk-premium dataset. `country` and both premiums are required;
+/// the `continent` field is ignored.
+#[derive(Debug, Deserialize)]
+struct FmpRiskPremiumRaw {
+    country: String,
+    #[serde(rename = "countryRiskPremium")]
+    country_risk_premium: f64,
+    #[serde(rename = "totalEquityRiskPremium")]
+    total_equity_risk_premium: f64,
+}
+
 /// One FMP response classified into what the loop should do with it — the single place
 /// the degradation policy lives, now in terms of [`GapReason`] rather than a fatal
 /// `Err`. Either a 2xx value to shape, or a gap the loop records and steps past.
@@ -260,6 +339,38 @@ fn interpret_response(status: u16, body: &str) -> Disposition {
 /// so it carries a synthetic series id / name rather than one per sector.
 fn sector_gap(reason: GapReason) -> DataGap {
     DataGap::new(GroupKind::Sectors, "sector-performance", "Sector Performance", reason)
+}
+
+/// One gap for the `sector-pe` group on `exchange` — like `sector_gap`, a whole-snapshot
+/// group whose gap carries a synthetic, exchange-tagged series id / name rather than one per
+/// sector (so a NASDAQ failure and an NYSE failure are distinct manifest entries).
+fn sector_pe_gap(exchange: &str, reason: GapReason) -> DataGap {
+    DataGap::new(
+        GroupKind::SectorPe,
+        format!("sector-pe-{}", exchange.to_ascii_lowercase()),
+        format!("Sector P/E ({exchange})"),
+        reason,
+    )
+}
+
+/// One gap for the industry-performance leg of the `industries` group on `exchange`.
+fn industry_perf_gap(exchange: &str, reason: GapReason) -> DataGap {
+    DataGap::new(
+        GroupKind::Industries,
+        format!("industry-performance-{}", exchange.to_ascii_lowercase()),
+        format!("Industry Performance ({exchange})"),
+        reason,
+    )
+}
+
+/// One gap for the industry-P/E leg of the `industries` group on `exchange`.
+fn industry_pe_gap(exchange: &str, reason: GapReason) -> DataGap {
+    DataGap::new(
+        GroupKind::Industries,
+        format!("industry-pe-{}", exchange.to_ascii_lowercase()),
+        format!("Industry P/E ({exchange})"),
+        reason,
+    )
 }
 
 /// Shape a successful quote response (a single-symbol `/stable/quote` call returns a
@@ -390,6 +501,146 @@ fn filter_earnings(events: Vec<EarningsEvent>) -> Vec<EarningsEvent> {
     });
     kept.truncate(EARNINGS_MAX_ROWS);
     kept
+}
+
+/// Shape a successful sector-PE snapshot into typed rows. Every row's wire `exchange` must
+/// match `expected_exchange` (the board the call was pinned to); a single mismatch fails the
+/// whole leg as an error (→ a `Malformed` gap in the loop) rather than silently accepting
+/// off-board rows — the guard against FMP ignoring the `exchange` query param and returning,
+/// say, NASDAQ data for an NYSE request (which would otherwise duplicate one board and drop
+/// the other with no gap). Rows are then labelled by their (validated) wire exchange and
+/// deduplicated by (sector, exchange), keep first. A body that is not the expected array, or
+/// that carries an off-board row, is an error.
+fn sector_pe_from_value(value: Value, expected_exchange: &str) -> Result<Vec<SectorPe>> {
+    let raws: Vec<FmpSectorPeRaw> = serde_json::from_value(value)
+        .context("FMP sector-PE response did not match the expected array shape")?;
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(raws.len());
+    for raw in raws {
+        if raw.exchange != expected_exchange {
+            anyhow::bail!(
+                "FMP sector-PE returned exchange {:?} for an {expected_exchange:?} request — \
+                 the exchange filter was ignored",
+                raw.exchange
+            );
+        }
+        if seen.insert((raw.sector.clone(), raw.exchange.clone())) {
+            out.push(SectorPe {
+                sector: raw.sector,
+                exchange: raw.exchange,
+                pe: raw.pe,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Shape a successful industry-performance snapshot into `(industry, exchange, average_change)`
+/// rows. Every row's wire `exchange` must match `expected_exchange`; a mismatch fails the leg
+/// (see [`sector_pe_from_value`] for the rationale — the same off-board guard). Rows are then
+/// labelled by their validated wire exchange and deduplicated by (industry, exchange), keep
+/// first, preserving arrival order. A body that is not the expected array, or that carries an
+/// off-board row, is an error.
+fn industry_perf_from_value(value: Value, expected_exchange: &str) -> Result<Vec<(String, String, f64)>> {
+    let raws: Vec<FmpIndustryPerfRaw> = serde_json::from_value(value)
+        .context("FMP industry-performance response did not match the expected array shape")?;
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(raws.len());
+    for raw in raws {
+        if raw.exchange != expected_exchange {
+            anyhow::bail!(
+                "FMP industry-performance returned exchange {:?} for an {expected_exchange:?} \
+                 request — the exchange filter was ignored",
+                raw.exchange
+            );
+        }
+        if seen.insert((raw.industry.clone(), raw.exchange.clone())) {
+            out.push((raw.industry, raw.exchange, raw.average_change));
+        }
+    }
+    Ok(out)
+}
+
+/// Shape a successful industry-PE snapshot into an `(industry, exchange) -> pe` map. Every
+/// row's wire `exchange` must match `expected_exchange`; a mismatch fails the leg (the same
+/// off-board guard as [`sector_pe_from_value`]). The map keys by (industry, exchange) so the
+/// performance↔P/E join can only ever pair same-board figures. Non-positive ratios are
+/// dropped: FMP reports `pe: 0.0` (not null) for an industry with no positive aggregate
+/// earnings, and a P/E is only a meaningful valuation when positive — so such an industry is
+/// left out of the map and joins to `None`, rather than reaching the model as a misleading
+/// near-zero "cheap" multiple. A body that is not the expected array, or that carries an
+/// off-board row, is an error.
+fn industry_pe_map_from_value(
+    value: Value,
+    expected_exchange: &str,
+) -> Result<HashMap<(String, String), f64>> {
+    let raws: Vec<FmpIndustryPeRaw> = serde_json::from_value(value)
+        .context("FMP industry-PE response did not match the expected array shape")?;
+    let mut map = HashMap::with_capacity(raws.len());
+    for raw in raws {
+        if raw.exchange != expected_exchange {
+            anyhow::bail!(
+                "FMP industry-PE returned exchange {:?} for an {expected_exchange:?} request — \
+                 the exchange filter was ignored",
+                raw.exchange
+            );
+        }
+        if raw.pe > 0.0 {
+            map.entry((raw.industry, raw.exchange)).or_insert(raw.pe);
+        }
+    }
+    Ok(map)
+}
+
+/// Join the industry-performance rows with the PE map into the capped finer-rotation read:
+/// the [`INDUSTRY_TOP_N`] strongest and [`INDUSTRY_TOP_N`] weakest industries by average move
+/// (FMP reports ~130 per exchange, mostly a flat middle), each carrying the wire `exchange`
+/// from its performance row and its aggregate `pe` where the PE snapshot had it for that same
+/// (industry, exchange) (`None` otherwise — a missing/failed PE call, a non-positive ratio, or
+/// a board mismatch degrades to no valuation, never drops the rotation row). Keying the lookup
+/// by (industry, exchange) means a row's P/E can never come from a different board than its
+/// performance. The two slices never overlap: the bottom count is clamped to what's left after
+/// the top, so a short list yields each industry once. Pure.
+fn top_bottom_industries(
+    perf: Vec<(String, String, f64)>,
+    pe: &HashMap<(String, String), f64>,
+) -> Vec<IndustrySnapshot> {
+    let mut sorted = perf;
+    sorted.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    let take_top = INDUSTRY_TOP_N.min(sorted.len());
+    let take_bottom = INDUSTRY_TOP_N.min(sorted.len() - take_top);
+    let mut chosen: Vec<(String, String, f64)> = Vec::with_capacity(take_top + take_bottom);
+    chosen.extend_from_slice(&sorted[..take_top]);
+    chosen.extend_from_slice(&sorted[sorted.len() - take_bottom..]);
+    chosen
+        .into_iter()
+        .map(|(industry, exchange, change_pct)| {
+            let pe = pe.get(&(industry.clone(), exchange.clone())).copied();
+            IndustrySnapshot {
+                industry,
+                exchange,
+                change_pct,
+                pe,
+            }
+        })
+        .collect()
+}
+
+/// Shape a successful market-risk-premium response, filtering to the US row
+/// ([`RISK_PREMIUM_COUNTRY`], exact match). Zero or one row in practice. A body that is not
+/// the expected array is an error.
+fn risk_premium_from_value(value: Value) -> Result<Vec<MarketRiskPremium>> {
+    let raws: Vec<FmpRiskPremiumRaw> = serde_json::from_value(value)
+        .context("FMP market-risk-premium response did not match the expected array shape")?;
+    Ok(raws
+        .into_iter()
+        .filter(|r| r.country == RISK_PREMIUM_COUNTRY)
+        .map(|r| MarketRiskPremium {
+            country: r.country,
+            country_risk_premium: r.country_risk_premium,
+            total_equity_risk_premium: r.total_equity_risk_premium,
+        })
+        .collect())
 }
 
 /// The ordered sector-snapshot candidate dates for a run: the most recent weekday on
@@ -857,6 +1108,248 @@ impl FmpDataSource {
         );
         out
     }
+
+    /// Fetch the per-sector P/E for each exchange in [`SNAPSHOT_EXCHANGES`] (NASDAQ + NYSE),
+    /// accumulating the exchange-tagged rows so the model sees the growth and value reads
+    /// side by side. Each exchange walks independently via [`Self::fetch_sector_pe_for_exchange`].
+    fn fetch_sector_pe(&self, gaps: &mut Vec<DataGap>) -> Vec<SectorPe> {
+        let mut out = Vec::new();
+        for exchange in SNAPSHOT_EXCHANGES {
+            if self.progress.is_cancelled() {
+                break;
+            }
+            out.extend(self.fetch_sector_pe_for_exchange(exchange, gaps));
+        }
+        out
+    }
+
+    /// Fetch one exchange's most recent sector-PE snapshot, walking back over weekday
+    /// candidates like `fetch_sectors` (the snapshot is date-keyed, and weekends / holidays
+    /// have none). The call is pinned to `exchange`. Additive and non-floor: a 404 / empty
+    /// array for a date means no snapshot — try the prior weekday; a this-run failure
+    /// (auth / quota / 5xx / transport / malformed) records one exchange-tagged `sector-pe`
+    /// gap and stops walking; an exhausted walk returns empty with no gap.
+    fn fetch_sector_pe_for_exchange(&self, exchange: &str, gaps: &mut Vec<DataGap>) -> Vec<SectorPe> {
+        let today = Utc::now().date_naive();
+        for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
+            if self.progress.is_cancelled() {
+                return Vec::new();
+            }
+            let date_str = date.format("%Y-%m-%d").to_string();
+            let name = format!("Sector P/E {exchange} ({date_str})");
+            let series_id = format!("sector-pe-{}-{date_str}", exchange.to_ascii_lowercase());
+            let group = GroupKind::SectorPe.as_str();
+            self.progress
+                .request_started("FMP", group, series_id.as_str(), name.as_str());
+            let disposition =
+                match self.get(FMP_SECTOR_PE_URL, &[("date", date_str.as_str()), ("exchange", exchange)]) {
+                    Ok((status, body)) => interpret_response(status, &body),
+                    Err(_) => Disposition::Gap(GapReason::Unavailable),
+                };
+            let finish = |status: &str| {
+                self.progress
+                    .request_finished("FMP", group, series_id.as_str(), name.as_str(), status, None)
+            };
+            match disposition {
+                Disposition::Value(value) => match sector_pe_from_value(value, exchange) {
+                    Ok(rows) if !rows.is_empty() => {
+                        finish("ok");
+                        return rows;
+                    }
+                    Ok(_) => finish("empty"),
+                    Err(_) => {
+                        finish("malformed");
+                        gaps.push(sector_pe_gap(exchange, GapReason::Malformed));
+                        return Vec::new();
+                    }
+                },
+                Disposition::Gap(GapReason::OutOfScope) => finish("out-of-scope"),
+                Disposition::Gap(reason) => {
+                    finish(reason.as_str());
+                    gaps.push(sector_pe_gap(exchange, reason));
+                    return Vec::new();
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Fetch the finer-rotation read for each exchange in [`SNAPSHOT_EXCHANGES`], accumulating
+    /// each exchange's top/bottom industries (so the NASDAQ growth and NYSE value rotations
+    /// are both surfaced, the cap applied per exchange).
+    fn fetch_industries(&self, gaps: &mut Vec<DataGap>) -> Vec<IndustrySnapshot> {
+        let mut out = Vec::new();
+        for exchange in SNAPSHOT_EXCHANGES {
+            if self.progress.is_cancelled() {
+                break;
+            }
+            out.extend(self.fetch_industries_for_exchange(exchange, gaps));
+        }
+        out
+    }
+
+    /// Fetch one exchange's finer-rotation read: walk weekday candidates for the
+    /// industry-performance snapshot (the spine), then on the first date with data fetch the
+    /// industry-PE snapshot for that same date and exchange and join them by industry name.
+    /// Both calls are pinned to `exchange`, so the performance↔P/E join is within one
+    /// exchange. Additive and non-floor: a performance this-run failure records one
+    /// exchange-tagged `industry-performance` gap and stops; an exhausted walk returns empty
+    /// with no gap. The PE leg degrades independently — its failure leaves the industries with
+    /// `pe: None` plus one recorded `industry-pe` gap rather than dropping the rotation read.
+    fn fetch_industries_for_exchange(
+        &self,
+        exchange: &str,
+        gaps: &mut Vec<DataGap>,
+    ) -> Vec<IndustrySnapshot> {
+        let today = Utc::now().date_naive();
+        for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
+            if self.progress.is_cancelled() {
+                return Vec::new();
+            }
+            let date_str = date.format("%Y-%m-%d").to_string();
+            let name = format!("Industry performance {exchange} ({date_str})");
+            let series_id = format!("industry-performance-{}-{date_str}", exchange.to_ascii_lowercase());
+            let group = GroupKind::Industries.as_str();
+            self.progress
+                .request_started("FMP", group, series_id.as_str(), name.as_str());
+            let disposition = match self.get(
+                FMP_INDUSTRY_PERF_URL,
+                &[("date", date_str.as_str()), ("exchange", exchange)],
+            ) {
+                Ok((status, body)) => interpret_response(status, &body),
+                Err(_) => Disposition::Gap(GapReason::Unavailable),
+            };
+            let finish = |status: &str| {
+                self.progress
+                    .request_finished("FMP", group, series_id.as_str(), name.as_str(), status, None)
+            };
+            match disposition {
+                Disposition::Value(value) => match industry_perf_from_value(value, exchange) {
+                    Ok(perf) if !perf.is_empty() => {
+                        finish("ok");
+                        let pe = self.fetch_industry_pe(date_str.as_str(), exchange, gaps);
+                        return top_bottom_industries(perf, &pe);
+                    }
+                    Ok(_) => finish("empty"),
+                    Err(_) => {
+                        finish("malformed");
+                        gaps.push(industry_perf_gap(exchange, GapReason::Malformed));
+                        return Vec::new();
+                    }
+                },
+                Disposition::Gap(GapReason::OutOfScope) => finish("out-of-scope"),
+                Disposition::Gap(reason) => {
+                    finish(reason.as_str());
+                    gaps.push(industry_perf_gap(exchange, reason));
+                    return Vec::new();
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Fetch one exchange's industry-PE snapshot for the date the performance leg resolved —
+    /// the optional valuation join. Any failure or emptiness degrades to an empty map (the
+    /// industries carry `pe: None`); a this-run failure additionally records one exchange-tagged
+    /// `industry-pe` gap so the agent sees valuation was lost. Never aborts the group.
+    fn fetch_industry_pe(
+        &self,
+        date_str: &str,
+        exchange: &str,
+        gaps: &mut Vec<DataGap>,
+    ) -> HashMap<(String, String), f64> {
+        if self.progress.is_cancelled() {
+            return HashMap::new();
+        }
+        let name = format!("Industry P/E {exchange} ({date_str})");
+        let series_id = format!("industry-pe-{}-{date_str}", exchange.to_ascii_lowercase());
+        let group = GroupKind::Industries.as_str();
+        self.progress
+            .request_started("FMP", group, series_id.as_str(), name.as_str());
+        let disposition = match self.get(FMP_INDUSTRY_PE_URL, &[("date", date_str), ("exchange", exchange)]) {
+            Ok((status, body)) => interpret_response(status, &body),
+            Err(_) => Disposition::Gap(GapReason::Unavailable),
+        };
+        let finish = |status: &str| {
+            self.progress
+                .request_finished("FMP", group, series_id.as_str(), name.as_str(), status, None)
+        };
+        match disposition {
+            Disposition::Value(value) => match industry_pe_map_from_value(value, exchange) {
+                Ok(map) if !map.is_empty() => {
+                    finish("ok");
+                    map
+                }
+                Ok(_) => {
+                    finish("empty");
+                    HashMap::new()
+                }
+                Err(_) => {
+                    finish("malformed");
+                    gaps.push(industry_pe_gap(exchange, GapReason::Malformed));
+                    HashMap::new()
+                }
+            },
+            Disposition::Gap(GapReason::OutOfScope) => {
+                finish("out-of-scope");
+                HashMap::new()
+            }
+            Disposition::Gap(reason) => {
+                finish(reason.as_str());
+                gaps.push(industry_pe_gap(exchange, reason));
+                HashMap::new()
+            }
+        }
+    }
+
+    /// Fetch the US equity-risk-premium in one call (no date), then filter to the US row.
+    /// Additive and non-floor like `earnings`: a permanent absence or an empty / no-US-row
+    /// response is silent; a this-run failure (auth / quota / 5xx / transport / malformed)
+    /// records one `market-risk-premium` gap.
+    fn fetch_market_risk_premium(&self, gaps: &mut Vec<DataGap>) -> Vec<MarketRiskPremium> {
+        if self.progress.is_cancelled() {
+            return Vec::new();
+        }
+        let series_id = "market-risk-premium";
+        let name = "US Equity Risk Premium";
+        self.progress
+            .request_started("FMP", GroupKind::MarketRiskPremium.as_str(), series_id, name);
+        let gaps_before = gaps.len();
+        let disposition = match self.get(FMP_RISK_PREMIUM_URL, &[]) {
+            Ok((status, body)) => interpret_response(status, &body),
+            Err(_) => Disposition::Gap(GapReason::Unavailable),
+        };
+        let out = match disposition {
+            Disposition::Value(value) => match risk_premium_from_value(value) {
+                Ok(rows) => rows,
+                Err(_) => {
+                    gaps.push(DataGap::new(
+                        GroupKind::MarketRiskPremium,
+                        series_id,
+                        name,
+                        GapReason::Malformed,
+                    ));
+                    Vec::new()
+                }
+            },
+            Disposition::Gap(GapReason::OutOfScope) => Vec::new(),
+            Disposition::Gap(reason) => {
+                gaps.push(DataGap::new(GroupKind::MarketRiskPremium, series_id, name, reason));
+                Vec::new()
+            }
+        };
+        emit_series_row(
+            &self.progress,
+            "FMP",
+            GroupKind::MarketRiskPremium,
+            series_id,
+            name,
+            gaps,
+            gaps_before,
+            !out.is_empty(),
+        );
+        out
+    }
 }
 
 impl MarketDataSource for FmpDataSource {
@@ -875,6 +1368,9 @@ impl MarketDataSource for FmpDataSource {
         let index_performance = self.fetch_index_performance(&mut gaps);
         let movers = self.fetch_movers(&mut gaps);
         let earnings = self.fetch_earnings(&mut gaps);
+        let sector_pe = self.fetch_sector_pe(&mut gaps);
+        let industries = self.fetch_industries(&mut gaps);
+        let market_risk_premium = self.fetch_market_risk_premium(&mut gaps);
         Ok(BaselineMarketData {
             indices,
             internals,
@@ -882,6 +1378,9 @@ impl MarketDataSource for FmpDataSource {
             index_performance,
             movers,
             earnings,
+            sector_pe,
+            industries,
+            market_risk_premium,
             // FRED owns the macro levels and the economic-release calendar, and BLS the
             // labor levels; FMP contributes none of them.
             macro_levels: Vec::new(),
@@ -1234,6 +1733,176 @@ mod tests {
     }
 
     #[test]
+    fn sector_pe_from_value_labels_by_wire_exchange_and_dedupes() {
+        // A response whose rows all match the requested board is labelled by the (validated)
+        // wire exchange and deduped by (sector, exchange), keep first.
+        let v = serde_json::json!([
+            {"date":"2026-06-05","sector":"Technology","exchange":"NASDAQ","pe":38.4},
+            {"date":"2026-06-05","sector":"Energy","exchange":"NASDAQ","pe":12.1},
+            {"date":"2026-06-05","sector":"Technology","exchange":"NASDAQ","pe":99.0}
+        ]);
+        let out = sector_pe_from_value(v, "NASDAQ").unwrap();
+        assert_eq!(out.len(), 2); // the duplicate (Technology, NASDAQ) is dropped
+        assert_eq!((out[0].sector.as_str(), out[0].exchange.as_str()), ("Technology", "NASDAQ"));
+        assert!((out[0].pe - 38.4).abs() < 1e-9); // first kept, not 99.0
+        assert_eq!((out[1].sector.as_str(), out[1].exchange.as_str()), ("Energy", "NASDAQ"));
+    }
+
+    #[test]
+    fn sector_pe_from_value_rejects_off_board_rows() {
+        // The guard against FMP ignoring the exchange filter: an NYSE request that comes back
+        // with a NASDAQ row fails the whole leg (→ a Malformed gap) rather than silently
+        // accepting off-board data, which would duplicate one board and drop the other.
+        let v = serde_json::json!([
+            {"sector":"Technology","exchange":"NYSE","pe":24.6},
+            {"sector":"Energy","exchange":"NASDAQ","pe":12.1}
+        ]);
+        assert!(sector_pe_from_value(v, "NYSE").is_err());
+    }
+
+    #[test]
+    fn sector_pe_from_value_requires_exchange_and_pe() {
+        // Fail-closed: a row missing the wire exchange OR pe fails the parse (a Malformed gap
+        // in the loop) rather than being stamped with a guessed exchange or a false 0.0.
+        assert!(
+            sector_pe_from_value(serde_json::json!([{"sector":"Technology","pe":1.0}]), "NASDAQ").is_err()
+        );
+        assert!(sector_pe_from_value(
+            serde_json::json!([{"sector":"Technology","exchange":"NASDAQ"}]),
+            "NASDAQ"
+        )
+        .is_err());
+    }
+
+    /// Build an industry-PE map fixture keyed by (industry, exchange), as the wire-keyed map.
+    fn pe_map(rows: &[(&str, &str, f64)]) -> HashMap<(String, String), f64> {
+        rows.iter()
+            .map(|(ind, ex, pe)| ((ind.to_string(), ex.to_string()), *pe))
+            .collect()
+    }
+
+    #[test]
+    fn industries_join_caps_top_and_bottom_and_attaches_pe() {
+        // Five performance rows; INDUSTRY_TOP_N caps each side, but with only 5 rows the
+        // top-N and bottom-N slices must not double-count — assert no industry repeats and
+        // the strongest + weakest are present, sorted move-descending. The exchange label and
+        // the PE both come from the wire row, joined on (industry, exchange).
+        let perf = vec![
+            ("Semiconductors".to_string(), "NASDAQ".to_string(), 4.0),
+            ("Banks".to_string(), "NASDAQ".to_string(), 1.0),
+            ("Utilities".to_string(), "NASDAQ".to_string(), 0.0),
+            ("Airlines".to_string(), "NASDAQ".to_string(), -2.0),
+            ("Biotech".to_string(), "NASDAQ".to_string(), -5.0),
+        ];
+        let pe = pe_map(&[("Semiconductors", "NASDAQ", 41.2), ("Biotech", "NASDAQ", 18.0)]);
+        let out = top_bottom_industries(perf, &pe);
+        let names: Vec<&str> = out.iter().map(|i| i.industry.as_str()).collect();
+        assert_eq!(names, ["Semiconductors", "Banks", "Utilities", "Airlines", "Biotech"]);
+        assert!(out.iter().all(|i| i.exchange == "NASDAQ"));
+        // PE joins where present; absent industries carry None rather than dropping the row.
+        assert_eq!(out[0].pe, Some(41.2));
+        assert_eq!(out[1].pe, None);
+        assert_eq!(out[4].pe, Some(18.0));
+    }
+
+    #[test]
+    fn industries_join_is_same_exchange_only() {
+        // A PE that exists for the same industry on a DIFFERENT board must not attach: the
+        // (industry, exchange) key keeps a row's P/E and performance on the same board.
+        let perf = vec![("Semiconductors".to_string(), "NYSE".to_string(), 3.0)];
+        let pe = pe_map(&[("Semiconductors", "NASDAQ", 63.9)]); // NASDAQ PE only
+        let out = top_bottom_industries(perf, &pe);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].exchange, "NYSE");
+        assert_eq!(out[0].pe, None, "NASDAQ PE must not attach to the NYSE row");
+    }
+
+    #[test]
+    fn industries_join_picks_extremes_when_list_exceeds_cap() {
+        // 2*INDUSTRY_TOP_N + 4 industries: keep only the N strongest and N weakest, drop the
+        // flat middle, with no overlap.
+        let mut perf: Vec<(String, String, f64)> = (0..2 * INDUSTRY_TOP_N + 4)
+            .map(|i| (format!("Ind{i}"), "NYSE".to_string(), i as f64)) // ascending move
+            .collect();
+        perf.reverse(); // arrival order need not be sorted
+        let out = top_bottom_industries(perf, &HashMap::new());
+        assert_eq!(out.len(), 2 * INDUSTRY_TOP_N);
+        // Strongest is the highest move; weakest is the lowest; the middle is dropped.
+        assert_eq!(out.first().unwrap().industry, format!("Ind{}", 2 * INDUSTRY_TOP_N + 3));
+        assert_eq!(out.last().unwrap().industry, "Ind0");
+        // No industry appears twice.
+        let unique: HashSet<&str> = out.iter().map(|i| i.industry.as_str()).collect();
+        assert_eq!(unique.len(), out.len());
+    }
+
+    #[test]
+    fn industry_perf_and_pe_parse_keep_wire_exchange_and_dedupe() {
+        // A matching-board response is labelled by its (validated) wire exchange and deduped by
+        // (industry, exchange), keep first.
+        let perf_v = serde_json::json!([
+            {"date":"2026-06-05","industry":"Semiconductors","exchange":"NASDAQ","averageChange":2.4},
+            {"date":"2026-06-05","industry":"Banks","exchange":"NASDAQ","averageChange":1.1},
+            {"date":"2026-06-05","industry":"Semiconductors","exchange":"NASDAQ","averageChange":-1.0}
+        ]);
+        let perf = industry_perf_from_value(perf_v, "NASDAQ").unwrap();
+        assert_eq!(perf.len(), 2); // the duplicate (Semiconductors, NASDAQ) is dropped
+        assert_eq!((perf[0].0.as_str(), perf[0].1.as_str()), ("Semiconductors", "NASDAQ"));
+        assert!((perf[0].2 - 2.4).abs() < 1e-9); // first kept, not -1.0
+        let pe_v = serde_json::json!([{"industry":"Semiconductors","exchange":"NASDAQ","pe":41.2}]);
+        let pe = industry_pe_map_from_value(pe_v, "NASDAQ").unwrap();
+        assert!((pe[&("Semiconductors".to_string(), "NASDAQ".to_string())] - 41.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn industry_snapshots_reject_off_board_rows() {
+        // Same off-board guard as sector P/E, for both industry legs.
+        let perf_v = serde_json::json!([{"industry":"Semiconductors","exchange":"NASDAQ","averageChange":2.4}]);
+        assert!(industry_perf_from_value(perf_v, "NYSE").is_err());
+        let pe_v = serde_json::json!([{"industry":"Semiconductors","exchange":"NASDAQ","pe":41.2}]);
+        assert!(industry_pe_map_from_value(pe_v, "NYSE").is_err());
+    }
+
+    #[test]
+    fn industry_pe_map_drops_non_positive_ratios() {
+        // FMP reports pe: 0.0 (or negative) for an industry with no positive aggregate
+        // earnings; those are dropped so the join yields None (no meaningful P/E) rather
+        // than a misleading near-zero "cheap" multiple reaching the model.
+        let v = serde_json::json!([
+            {"industry":"Oil & Gas Energy","exchange":"NASDAQ","pe":0.0},
+            {"industry":"Biotech","exchange":"NASDAQ","pe":-3.0},
+            {"industry":"Semiconductors","exchange":"NASDAQ","pe":63.9}
+        ]);
+        let map = industry_pe_map_from_value(v, "NASDAQ").unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&("Semiconductors".to_string(), "NASDAQ".to_string())));
+        // The join carries None for the dropped industries.
+        let perf = vec![
+            ("Oil & Gas Energy".to_string(), "NASDAQ".to_string(), -16.3),
+            ("Semiconductors".to_string(), "NASDAQ".to_string(), -5.5),
+        ];
+        let joined = top_bottom_industries(perf, &map);
+        let oil = joined.iter().find(|i| i.industry == "Oil & Gas Energy").unwrap();
+        assert_eq!(oil.pe, None);
+        let semi = joined.iter().find(|i| i.industry == "Semiconductors").unwrap();
+        assert_eq!(semi.pe, Some(63.9));
+    }
+
+    #[test]
+    fn risk_premium_filters_to_us_exactly() {
+        // Exact-match: "United Kingdom" / "United Arab Emirates" share the "United" prefix
+        // but must not pass; only "United States" survives.
+        let v = serde_json::json!([
+            {"country":"United States","continent":"North America","countryRiskPremium":0.23,"totalEquityRiskPremium":4.46},
+            {"country":"United Kingdom","continent":"Europe","countryRiskPremium":0.78,"totalEquityRiskPremium":5.01},
+            {"country":"United Arab Emirates","continent":"Asia","countryRiskPremium":0.64,"totalEquityRiskPremium":4.87}
+        ]);
+        let out = risk_premium_from_value(v).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].country, "United States");
+        assert!((out[0].total_equity_risk_premium - 4.46).abs() < 1e-9);
+    }
+
+    #[test]
     #[ignore = "hits the live FMP API; set FMP_API_KEY"]
     fn fmp_baseline_smoke() {
         let src = FmpDataSource::from_env().expect("FMP_API_KEY set");
@@ -1322,6 +1991,60 @@ mod tests {
         assert!(
             !data.earnings.is_empty(),
             "no earnings resolved — the calendar may have left the free tier or the revenue floor is too high"
+        );
+
+        // Valuation + finer-rotation groups. Dump, assert each resolved, and sanity-check
+        // magnitude (not mere existence) — the lesson of the frozen NASDAQVOLNDX series:
+        // a stale / wrong value still "resolves", so the smoke pins it to a sane range.
+        eprintln!("sector_pe ({}):", data.sector_pe.len());
+        for s in &data.sector_pe {
+            eprintln!("  {:<8} {:<24} pe={:.2}", s.exchange, s.sector, s.pe);
+        }
+        eprintln!("industries ({}):", data.industries.len());
+        for i in &data.industries {
+            eprintln!(
+                "  {:<8} {:<32} change_pct={:<8.2} pe={:?}",
+                i.exchange, i.industry, i.change_pct, i.pe
+            );
+        }
+        eprintln!("market_risk_premium ({}):", data.market_risk_premium.len());
+        for r in &data.market_risk_premium {
+            eprintln!(
+                "  {:<16} crp={:.2} total_erp={:.2}",
+                r.country, r.country_risk_premium, r.total_equity_risk_premium
+            );
+        }
+        assert!(!data.sector_pe.is_empty(), "no sector P/E rows resolved");
+        assert!(
+            data.sector_pe.iter().any(|s| s.pe.is_finite() && s.pe > 0.0),
+            "no sector carried a finite positive P/E — the snapshot may have regressed"
+        );
+        assert!(!data.industries.is_empty(), "no industry rows resolved");
+        assert!(
+            data.industries.iter().any(|i| i.pe.is_some()),
+            "no industry carried a P/E — the industry-PE join may have regressed"
+        );
+        // Both boards must resolve — a silent drop of one exchange would otherwise hide behind
+        // the other and re-introduce the single-exchange-as-aggregate bias this layer fixes.
+        for ex in SNAPSHOT_EXCHANGES {
+            assert!(
+                data.sector_pe.iter().any(|s| s.exchange == *ex),
+                "sector_pe missing the {ex} board — it may have left the free tier"
+            );
+            assert!(
+                data.industries.iter().any(|i| i.exchange == *ex),
+                "industries missing the {ex} board — it may have left the free tier"
+            );
+        }
+        let us = data
+            .market_risk_premium
+            .iter()
+            .find(|r| r.country == RISK_PREMIUM_COUNTRY)
+            .expect("US equity-risk-premium did not resolve");
+        assert!(
+            (2.0..=10.0).contains(&us.total_equity_risk_premium),
+            "US total ERP {} outside the sane 2-10% range — the dataset or filter may have regressed",
+            us.total_equity_risk_premium
         );
     }
 

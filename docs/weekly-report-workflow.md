@@ -169,6 +169,11 @@ Market movers:
 Earnings:
 - large-cap companies reporting in the prior-week and upcoming window
 
+Valuation and finer rotation (per exchange — NASDAQ growth + NYSE value):
+- sector valuation (per-sector aggregate P/E)
+- strongest and weakest industries (average move, joined with aggregate P/E)
+- US equity-risk-premium
+
 News categories:
 - politics
 - geopolitics

@@ -178,6 +178,25 @@ upcoming window, with estimate-versus-actual where a date has already reported. 
 for sector rotation and single-name drivers rather than leaning on the aggregate indices \
 alone — but treat them as breadth color, not a stock-picking mandate.
 
+The baseline also carries valuation and finer-rotation context. These valuation snapshots are \
+exchange-specific: every row is tagged with its `exchange`, and the baseline gathers both \
+NASDAQ-listed (growth / tech-tilted) and NYSE-listed (broader, more value / financials / \
+industrials) reads. A P/E is therefore the aggregate for that one exchange's companies, not a \
+whole-market multiple — read sector and industry valuations cross-sectionally (which groups \
+are rich versus cheap relative to one another, and how the NASDAQ growth read differs from \
+the NYSE value read) rather than as an absolute market level. `sector_pe` gives each sector's \
+aggregate P/E per exchange, a valuation read to set against the `sectors` performance group. \
+`industries` is a finer cut than the broad sectors: per exchange, the run's strongest and \
+weakest industries by average daily move, each joined with that industry's aggregate P/E where \
+available (`pe` may be null when earnings are non-positive or the snapshot lacked it), so you \
+can read which narrow groups are rotating and whether they are richly or cheaply valued as \
+they do. Treat this as a level read — whether a group is expensive or cheap right now — not as \
+a claim about multiple expansion or de-rating over time, which a single snapshot cannot \
+support. `market_risk_premium` is the US equity-risk-premium (a near-static annual constant, \
+so read its level, not week-to-week change) — the excess return demanded over the risk-free \
+rate, a valuation anchor for how richly equities are priced. Use these to ground the regime \
+and strategy reads in valuation, not momentum alone.
+
 Produce the report body as GitHub-flavored Markdown with these sections, in order:
 - # Weekly Market Report (title), followed by a short date / report-type line
 - ## Header Summary — the 3 to 6 bullets that also populate header_summary_bullets
