@@ -2,26 +2,30 @@
 
 ## What happened
 
-**Shipped the systemic `unit`-field fix — the small self-contained slice that was a standing open question. Committed `028ddac`, pushed to `origin/main` (`7fc1088..028ddac`).**
+**Shipped the FRED-sourced economic-release calendar — completes the Step-6 macro/calendar group. Commit `f46ebe7`, pushed (`f48bb61..f46ebe7`).**
 
-- Added `unit: String` to the baseline `Quote` (`data_sources.rs`), populated **per-series from each adapter's own const table** rather than the wire. The five tables (FMP `INDEX_SYMBOLS`/`INTERNAL_SYMBOLS`, FRED `INTERNALS_SERIES`/`MACRO_SERIES`, BLS `LABOR_SERIES`) became `(symbol, name, unit)` 3-tuples; the unit is threaded through the three shaping fns (`quotes_from_value` / `observations_to_quote` / `series_to_quote`) and their callers.
-- **Removed the BLS inline-units stopgap:** display names de-unitized (e.g. "Total Nonfarm Payrolls (thousands of persons)" → name "Total Nonfarm Payrolls" + unit "thousands of persons"); the `LABOR_SERIES` "unit rides in the name" doc paragraph dropped.
-- **Field annotates `price` only** (not `change_pct`, which stays a percent for every series). It reaches the model via the whole-baseline `serde_json` serialization in `build_user_prompt` — **no formatter change** (the property the BLS slice already leaned on), proved by a new `contains("index points")` assertion on the prompt.
-- Review: metis-task-reviewer **approve** (clean — reviewer re-ran all gates, no nits, empty scope report confirmed honest).
+- **Load-bearing pivot (FMP→FRED):** FMP's `economic-calendar` endpoint is premium-gated (live-verified HTTP 402 stable / 403 legacy), so the calendar is built on **FRED's free `release/dates` schedule**, not FMP — the same free-tier split as dollar/oil/gas. No free source carries analyst **consensus**, so an optional `expected: Option<f64>` is reserved for a future paid tier.
+- **Shape:** new `EconomicRelease {release, date, status, expected}` + `calendar` field on `BaselineMarketData`; curated `RELEASES` table (CPI, PCE, jobs, PPI, retail, JOLTS, GDP), windowed `[today-10d,+21d]`, classified released/upcoming. Reaches the model via the existing whole-baseline serialization (no formatter change).
+- **FOMC dropped** — FRED has no scheduled-date series for "FOMC Press Release"; with the no-data flag it **fabricates one row per day** (live-discovered). Don't retry it via FRED release-dates; Fed stance stays in the target-range series.
+- **Backing actuals:** added 4 FRED series to `MACRO_SERIES` (`PPIFIS`, `RSAFS`, `JTSJOL`, `GDPC1`) so every curated release's figure reaches the model via `macro_levels`/`labor_levels`.
+- **Fail-soft:** a failed calendar fetch degrades to empty + `eprintln!` (research-inbox policy); off the completeness floor. Required series groups still fail loud.
+- **Two Codex rounds folded in:** P1 (abort→fail-soft), P2 (4 backing series), P3 (smoke now validates each id by **name** against FRED's `releases` catalog — catches a wrong-but-valid id, proven to bite — plus a wide-window dates probe). Codex's `realtime_*` finding withdrawn on live evidence. **Both metis-task-reviewer and Codex approve.**
 
-Verified: `cargo test` (110) + `cargo clippy` (clean) + `npm run build`.
+Verified: `cargo test` (113) + `cargo clippy` (clean) + live `fred_baseline_smoke`.
 
 ## Current state
 
-On **`main`** at **`028ddac`**, **pushed**, in sync with `origin/main`, working tree clean. **Nothing in flight.** The unit-field slice is done, reviewed, committed. **One Step-6 sibling remains:** the **economic calendar** — a different event shape (release schedule + prior-week reports with name/date/actual/expected/prior, from FMP's economic-calendar endpoint), the last third of the macro/calendar group.
+On **`main`** at **`f46ebe7`**, **pushed**, in sync with `origin/main`, **working tree clean. Nothing in flight.** The **Step-6 baseline scan is now complete** — indices, internals, sectors, macro_levels, labor_levels, and the calendar all ship. `docs/data-sources.md` amended (calendar FMP→FRED); `.metis/BUILD.md` adapters line updated this session.
 
 ## Open questions
 
-- **Economic calendar** — the remaining third of the Step-6 macro/calendar group (shape in *Current state*). The natural next slice.
-- **`change_pct` reads 0 on level series** — the FRED rate/breakeven series *and* the BLS unemployment rate in the live run, when the two most recent readings were equal. The **level (`price`) is always correct**; the obs-window limit is the knob if a day/month-over-month delta ever matters. Low priority; **candidate to retire** as a recurring question.
+- **GDP `change_pct` is raw quarter-over-quarter, not annualized** (markets quote annualized). Same family as the level-series change_pct question below; level is correct. Low priority.
+- **`change_pct` reads 0 on level series** when the two most recent readings are equal — level (`price`) always correct. Low priority; **candidate to retire**.
+- **Calendar `expected` consensus + a FOMC meeting schedule** — both need a future **paid** source (no free US consensus; FRED has no FOMC schedule series). Deferred enhancement.
+- A **`/metis-reconcile`** could fold in the `data-sources.md` calendar amendment.
 - *(parked)* **retention-cascade enforcement** (30-report cap + cascade, durable-learning survival) and **step-5 auto-archive** — self-contained slices.
-- *(carried, low priority)* no Vue component-test harness; data-source floors tested via pure helpers, not an HTTP mock (`wiremock` deferred); `cargo fmt` dirty repo-wide (pre-existing; not the gate).
+- *(carried, low)* no Vue component-test harness; data-source floors via pure helpers not an HTTP mock (`wiremock` deferred); `cargo fmt` dirty repo-wide (pre-existing; not the gate).
 
 ## Where to start
 
-Pick the next slice → `/metis-plan-task`. Natural follow-on: the **economic calendar** (a new event model — completes the Step-6 macro/calendar group). **Retention-cascade enforcement** is the parked self-contained alternative.
+Step-6 is done — pick the next slice → `/metis-plan-task`. The forward direction is the **news/research pipeline (Steps 7–10)**; the parked self-contained alternative is **retention-cascade enforcement**.
