@@ -7,6 +7,7 @@ pub mod fmp;
 pub mod fred;
 pub mod gdelt;
 pub mod headline_filter;
+pub mod http_retry;
 pub mod jobs;
 pub mod model_agent;
 pub mod news;
