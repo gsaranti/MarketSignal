@@ -58,9 +58,11 @@ running job:
 
 - **While a run is in flight**, the footer offers **View progress**, which opens
   the live tracker.
-- **After a run ends**, its trace lingers as a reopenable **run log** — for the
-  latest run, until the next run begins or it is dismissed — reached from the
-  footer's **View run log**.
+- **After a run ends**, its trace lingers as a reopenable **run log** for the
+  latest run, reached from the footer's **Latest run log**, and remains available
+  for the rest of the session. Returning to the report from the log (**Back to
+  report**) leaves it reopenable; it is replaced only when the next run begins
+  (latest-run-only), and cleared only when the application quits.
 
 Selecting any report from the sidebar while a run is in flight shows that report
 and leaves the run running in the background; the footer returns the user to the

@@ -23,7 +23,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "cancel"): void;
-  (e: "dismiss"): void;
+  (e: "close"): void;
 }>();
 
 // The toolbar headline, announced politely to screen readers as it changes.
@@ -135,9 +135,9 @@ watch(contentSignature, async () => {
           v-else
           type="button"
           class="btn btn-secondary"
-          @click="emit('dismiss')"
+          @click="emit('close')"
         >
-          Dismiss
+          Back to report
         </button>
       </div>
     </div>

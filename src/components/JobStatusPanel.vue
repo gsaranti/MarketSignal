@@ -96,7 +96,7 @@ function formatLocal(iso: string): string {
 
     <div class="job-actions">
       <!-- The footer is the run's home: this handle opens (or returns to) the
-           tracker — "View progress" during a run, "View run log" for the lingering
+           tracker — "View progress" during a run, "Latest run log" for the lingering
            terminal trace afterward. Hidden when the tracker is already showing. -->
       <!-- Only offered when a trace actually exists to show. If the UI missed this
            run's start (e.g. a dev reload mid-run), `isRunning` may be true with no
@@ -115,7 +115,7 @@ function formatLocal(iso: string): string {
         class="btn btn-ghost btn-handle"
         @click="$emit('view-tracker')"
       >
-        View run log
+        Latest run log
       </button>
 
       <!-- Persistent manual trigger. Hidden while a run is in flight (the bar to

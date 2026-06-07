@@ -196,14 +196,16 @@ async function cancelRun() {
   }
 }
 
-// Dismiss the lingering terminal run log and return to the report.
-function dismissRunLog() {
-  runTrace.value = null;
+// Return to the report from the run log, leaving the log behind. It stays
+// reopenable from the footer ("Latest run log") for the rest of the session; it is
+// only replaced when the next run begins (latest-run-only) or cleared when the app
+// quits — never discarded by this action.
+function closeRunLog() {
   reportPaneMode.value = "report";
 }
 
 // Open the tracker for the current/last run (the footer's "View progress" /
-// "View run log" handle). Brings the report surface forward if another view is
+// "Latest run log" handle). Brings the report surface forward if another view is
 // active, since the tracker lives in the report pane.
 function viewTracker() {
   view.value = "report";
@@ -752,7 +754,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
             :active="runActive"
             :cancel-requested="cancelRequested"
             @cancel="cancelRun"
-            @dismiss="dismissRunLog"
+            @close="closeRunLog"
           />
           <LatestReportView
             v-else
