@@ -3,7 +3,8 @@
 //! Mirrors the `agent` module's spine — the application layer owns all I/O, the
 //! data source is a trait the orchestrator drives, and a deterministic stub
 //! stands in for the live provider in offline tests. Three real adapters implement
-//! this trait — `fmp` (equity indices, VIX, gold, sectors), `fred` (the Treasury
+//! this trait — `fmp` (equity indices, VIX, gold, sectors, and multi-horizon index
+//! performance from end-of-day history), `fred` (the Treasury
 //! yields, dollar index, and oil / natural-gas internals FMP's free tier omits, plus
 //! the `macro_levels` group — Fed-funds target range, inflation breakevens, consumer
 //! sentiment, PCE — and the economic-release `calendar`), and `bls` (the `labor_levels`
@@ -66,6 +67,24 @@ pub struct EconomicRelease {
     pub expected: Option<f64>,
 }
 
+/// One index's multi-horizon performance, derived from FMP's end-of-day history
+/// (`historical-price-eod`). Complements the daily `Quote` in `indices` with the
+/// longer-horizon returns a *weekly* thesis needs: week-over-week, month-to-date, and
+/// year-to-date returns, plus where the latest close sits inside its trailing 52-week
+/// range. Every `*_pct` is a percent; `pct_from_52w_high` is ≤ 0 (distance below the
+/// high). `low_52w` / `high_52w` are price levels in the index's own units.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IndexPerformance {
+    pub symbol: String,
+    pub name: String,
+    pub weekly_pct: f64,
+    pub mtd_pct: f64,
+    pub ytd_pct: f64,
+    pub low_52w: f64,
+    pub high_52w: f64,
+    pub pct_from_52w_high: f64,
+}
+
 /// The baseline market-data scan handed to the main agent as part of its input.
 /// Empty vectors are valid — a provider that returns no data for a group leaves
 /// it empty rather than failing the whole scan.
@@ -93,6 +112,12 @@ pub struct BaselineMarketData {
     /// `labor_levels`. Empty is valid (a quiet window, or the calendar soft-degraded); it
     /// carries no completeness floor, unlike the series groups.
     pub calendar: Vec<EconomicRelease>,
+    /// Step-6 multi-horizon index performance, derived from FMP's end-of-day history
+    /// (`historical-price-eod`): week-over-week / MTD / YTD returns and 52-week-range
+    /// position per index, enriching the daily `indices` quotes. Empty is valid — like
+    /// the `calendar` it carries no completeness floor and soft-degrades if the history
+    /// fetch fails, since the daily `indices` quotes already satisfy Step 6.
+    pub index_performance: Vec<IndexPerformance>,
 }
 
 /// The data-source stage. One method: gather the required baseline scan. Sync,
@@ -163,6 +188,16 @@ impl MarketDataSource for StubMarketDataSource {
                 status: "released".into(),
                 expected: None,
             }],
+            index_performance: vec![IndexPerformance {
+                symbol: "^GSPC".into(),
+                name: "S&P 500".into(),
+                weekly_pct: 1.1,
+                mtd_pct: 2.3,
+                ytd_pct: 8.4,
+                low_52w: 4_200.0,
+                high_52w: 5_600.0,
+                pct_from_52w_high: -1.8,
+            }],
         })
     }
 }
@@ -199,6 +234,7 @@ impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
         merged.macro_levels.extend(extra.macro_levels);
         merged.labor_levels.extend(extra.labor_levels);
         merged.calendar.extend(extra.calendar);
+        merged.index_performance.extend(extra.index_performance);
         Ok(merged)
     }
 }
@@ -308,6 +344,7 @@ mod tests {
         assert!(!data.macro_levels.is_empty());
         assert!(!data.labor_levels.is_empty());
         assert!(!data.calendar.is_empty());
+        assert!(!data.index_performance.is_empty());
 
         // The whole packet serializes and parses back unchanged — the contract
         // the agent input and the model prompt both lean on.

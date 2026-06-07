@@ -72,12 +72,24 @@ const OBSERVATION_LIMIT: &str = "10";
 /// and the breakevens are quoted in percent; the dollar index is an index level; oil
 /// and gas are dollar prices — the unit labels which, so the model doesn't read a yield
 /// as a dollar figure.
+///
+/// The credit spreads (high-yield and investment-grade OAS) and the 10y−3m / 10y−2y
+/// Treasury curve spreads join here too: daily, market-priced risk gauges feeding the
+/// report's risk-posture and market-cycle reads. For these the **level** is the signal
+/// — `change_pct` keeps the same percent-of-prior convention as every other series,
+/// which is low-signal for a spread that can sit near zero or invert, so downstream
+/// reasoning should lean on the level, not its percent move.
 const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
     ("DGS2", "2-Year Treasury Yield", "percent"),
     ("DGS10", "10-Year Treasury Yield", "percent"),
     ("DTWEXBGS", "US Dollar Index (Broad)", "index (Jan 2006=100)"),
     ("DCOILWTICO", "WTI Crude Oil", "USD per barrel"),
     ("DHHNGSP", "Henry Hub Natural Gas", "USD per million BTU"),
+    // Credit + curve spreads (daily, market-priced) — the level is the signal.
+    ("BAMLH0A0HYM2", "US High-Yield Corporate OAS", "percent"),
+    ("BAMLC0A0CM", "US Investment-Grade Corporate OAS", "percent"),
+    ("T10Y3M", "10-Year minus 3-Month Treasury Spread", "percent"),
+    ("T10Y2Y", "10-Year minus 2-Year Treasury Spread", "percent"),
 ];
 
 /// The FRED-owned macro levels of the Step-6 baseline (`docs/weekly-report
@@ -93,6 +105,12 @@ const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
 /// — the `series_id` doubles as the quote `symbol`, and the unit labels what each `price`
 /// level is quoted in (percent, an index level with its base period, a dollar figure, or
 /// a count).
+///
+/// The weekly risk/cycle gauges added alongside join this group too: the financial-
+/// conditions composites (NFCI, the adjusted ANFCI, and the St. Louis stress index
+/// STLFSI4), the weekly jobless-claims series (initial and continued), the Fed balance
+/// sheet (WALCL), and the 30-year mortgage rate — each read the same way (latest level
+/// + change off the prior observation).
 const MACRO_SERIES: &[(&str, &str, &str)] = &[
     ("DFEDTARU", "Fed Funds Target Range — Upper Limit", "percent"),
     ("DFEDTARL", "Fed Funds Target Range — Lower Limit", "percent"),
@@ -108,6 +126,14 @@ const MACRO_SERIES: &[(&str, &str, &str)] = &[
     ),
     ("JTSJOL", "Job Openings: Total Nonfarm (JOLTS)", "thousands of openings"),
     ("GDPC1", "Real Gross Domestic Product", "billions of chained 2017 USD"),
+    // Weekly/daily risk + cycle gauges (financial conditions, claims, liquidity, housing).
+    ("NFCI", "Chicago Fed National Financial Conditions Index", "index (0 = average)"),
+    ("ANFCI", "Chicago Fed Adjusted NFCI", "index (0 = average)"),
+    ("STLFSI4", "St. Louis Fed Financial Stress Index", "index (0 = normal)"),
+    ("ICSA", "Initial Jobless Claims", "persons"),
+    ("CCSA", "Continued Jobless Claims (Insured Unemployment)", "persons"),
+    ("WALCL", "Fed Total Assets (Balance Sheet)", "millions of USD"),
+    ("MORTGAGE30US", "30-Year Fixed Mortgage Rate", "percent"),
 ];
 
 /// FRED's release-dates endpoint — the economic-release *schedule* the Step-6 calendar
@@ -373,21 +399,15 @@ impl FredDataSource {
     /// status and raw body for `interpret_response` to judge. A transport error
     /// (the provider is unreachable) propagates as a fatal scan error.
     fn get(&self, series_id: &str) -> Result<(u16, String)> {
-        let resp = self
-            .http
-            .get(FRED_OBSERVATIONS_URL)
-            .query(&[
+        crate::http_retry::send_with_retry("FRED", || {
+            self.http.get(FRED_OBSERVATIONS_URL).query(&[
                 ("series_id", series_id),
                 ("api_key", self.api_key.as_str()),
                 ("file_type", "json"),
                 ("sort_order", "desc"),
                 ("limit", OBSERVATION_LIMIT),
             ])
-            .send()
-            .context("sending FRED request")?;
-        let status = resp.status().as_u16();
-        let body = resp.text().context("reading FRED response body")?;
-        Ok((status, body))
+        })
     }
 
     /// Fetch one quote per FRED series in `series`. `interpret_response` decides each
@@ -421,10 +441,8 @@ impl FredDataSource {
         realtime_end: &str,
     ) -> Result<(u16, String)> {
         let id = release_id.to_string();
-        let resp = self
-            .http
-            .get(FRED_RELEASE_DATES_URL)
-            .query(&[
+        crate::http_retry::send_with_retry("FRED release-dates", || {
+            self.http.get(FRED_RELEASE_DATES_URL).query(&[
                 ("release_id", id.as_str()),
                 ("api_key", self.api_key.as_str()),
                 ("file_type", "json"),
@@ -433,13 +451,7 @@ impl FredDataSource {
                 ("realtime_end", realtime_end),
                 ("sort_order", "asc"),
             ])
-            .send()
-            .context("sending FRED release-dates request")?;
-        let status = resp.status().as_u16();
-        let body = resp
-            .text()
-            .context("reading FRED release-dates response body")?;
-        Ok((status, body))
+        })
     }
 
     /// Gather the Step-6 economic-release calendar: each curated release's prior-week and
@@ -498,6 +510,8 @@ impl MarketDataSource for FredDataSource {
             // BLS owns the labor levels; FRED contributes none.
             labor_levels: Vec::new(),
             calendar,
+            // FMP owns the index-performance enrichment; FRED contributes none.
+            index_performance: Vec::new(),
         })
     }
 }

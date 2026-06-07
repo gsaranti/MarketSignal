@@ -125,15 +125,12 @@ impl TavilyNewsSource {
             "max_results": RESULTS_PER_QUERY,
             "search_depth": "basic",
         });
-        let resp = self
-            .http
-            .post(TAVILY_SEARCH_URL)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .context("sending Tavily request")?;
-        let status = resp.status().as_u16();
-        let text = resp.text().context("reading Tavily response body")?;
+        let (status, text) = crate::http_retry::send_with_retry("Tavily", || {
+            self.http
+                .post(TAVILY_SEARCH_URL)
+                .bearer_auth(&self.api_key)
+                .json(&body)
+        })?;
         Ok(headlines_from_response(interpret_tavily(status, &text)?))
     }
 }

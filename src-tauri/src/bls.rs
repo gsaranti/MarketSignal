@@ -287,15 +287,7 @@ impl BlsDataSource {
             "startyear": start,
             "endyear": end,
         });
-        let resp = self
-            .http
-            .post(BLS_DATA_URL)
-            .json(&payload)
-            .send()
-            .context("sending BLS request")?;
-        let status = resp.status().as_u16();
-        let body = resp.text().context("reading BLS response body")?;
-        Ok((status, body))
+        crate::http_retry::send_with_retry("BLS", || self.http.post(BLS_DATA_URL).json(&payload))
     }
 }
 

@@ -4,7 +4,9 @@ This file lists the external data and model providers the application depends on
 
 ## Market and Financial Data
 
-The application accesses market and financial data by calling provider REST APIs directly from the Rust backend (`reqwest`/`serde`). **Financial Modeling Prep** is the primary financial-data source, supplying equity-market data — indices, volatility, gold, sector performance, and company financials. **FRED** and **BLS** supply macroeconomic and labor data through their public APIs; FRED additionally provides the US dollar index, commodity prices (oil, natural gas), and Treasury yields.
+The application accesses market and financial data by calling provider REST APIs directly from the Rust backend (`reqwest`/`serde`). **Financial Modeling Prep** is the primary financial-data source, supplying equity-market data — indices, volatility, gold, sector performance, multi-horizon index returns, and company financials. **FRED** and **BLS** supply macroeconomic and labor data through their public APIs; FRED additionally provides the US dollar index, commodity prices (oil, natural gas), Treasury yields, credit and yield-curve spreads, and financial-conditions indices.
+
+The gated REST adapters (FMP, FRED, BLS, Tavily) share a bounded retry-with-backoff for transient HTTP-status/transport failures (HTTP 429, 5xx, dropped connections; `Retry-After`-aware). GDELT is deliberately excluded — its escalating per-IP lockout makes a retry harmful, so it keeps its single-shot fail-soft.
 
 ### Financial Modeling Prep
 Docs - https://site.financialmodelingprep.com/developer/docs
@@ -16,13 +18,15 @@ Responsibilities:
 - index data (Dow, S&P 500, Nasdaq, Russell 2000)
 - market volatility (VIX)
 - sector performance
+- historical end-of-day prices (free tier)
+- multi-horizon index performance (weekly / MTD / YTD / 52-week range)
 - company financials
 - earnings information
 - analyst estimates
 - market metrics
 - economic calendar (premium tier only — see below)
 
-The application calls Financial Modeling Prep directly for the equity-market portion of the baseline market-data scan ([weekly-report-workflow.md §Step 6](weekly-report-workflow.md#step-6-gather-baseline-market-data)) — indices, volatility, gold, and sector performance — and for company-specific financial data surfaced during research. The scan's dollar-index, oil, natural-gas, and Treasury-yield series come from FRED (below). (Gold is on FMP's free tier via `GCUSD`; FRED's former free gold benchmark series were discontinued, so gold stays on FMP.) The **economic-release calendar** is likewise gated behind FMP premium (verified live: the `economic-calendar` endpoint returns HTTP 402 on the free tier), so the Step-6 calendar's release schedule comes from FRED's free release-dates endpoint (below) rather than FMP.
+The application calls Financial Modeling Prep directly for the equity-market portion of the baseline market-data scan ([weekly-report-workflow.md §Step 6](weekly-report-workflow.md#step-6-gather-baseline-market-data)) — indices, volatility, gold, and sector performance, plus each index's multi-horizon performance (weekly, month-to-date, year-to-date, and 52-week-range position) derived from FMP's free historical end-of-day prices (verified live: the indices and the VIX return on the free tier) — and for company-specific financial data surfaced during research. The scan's dollar-index, oil, natural-gas, and Treasury-yield series come from FRED (below). (Gold is on FMP's free tier via `GCUSD`; FRED's former free gold benchmark series were discontinued, so gold stays on FMP.) The **economic-release calendar** is likewise gated behind FMP premium (verified live: the `economic-calendar` endpoint returns HTTP 402 on the free tier), so the Step-6 calendar's release schedule comes from FRED's free release-dates endpoint (below) rather than FMP.
 
 ### FRED (Federal Reserve Economic Data)
 Docs - https://fred.stlouisfed.org/docs/api/fred/
@@ -35,13 +39,16 @@ Responsibilities:
 - the US dollar index
 - commodity prices (oil, natural gas)
 - inflation metrics
-- recession indicators
-- unemployment data
+- recession indicators (yield-curve spreads: 10y–3m, 10y–2y)
+- credit spreads (high-yield and investment-grade OAS)
+- financial-conditions indices (NFCI, ANFCI, St. Louis stress index)
+- unemployment data (incl. weekly initial and continued jobless claims)
+- Fed balance sheet and mortgage rates
 - consumer data
 - broader macroeconomic indicators
 - economic-release calendar (release schedule)
 
-The application uses FRED for macroeconomic analysis and long-term market-regime evaluation, and for the market-internal series — the dollar index, oil, and natural gas — that sit outside Financial Modeling Prep's free-tier coverage. It also supplies the Step-6 **economic-release calendar** — the prior-week and upcoming US release schedule (CPI, PCE, jobs, GDP, …) via FRED's free release-dates API — since FMP's economic-calendar endpoint is premium-gated. (FOMC meetings are excluded from the calendar — FRED has no scheduled-date series for them; the Fed's policy stance is carried by the Fed-funds target-range series instead.) FRED provides release dates (and the underlying series values, gathered separately), but no analyst-consensus estimates; no free source supplies US consensus, so the calendar's "expected" value is omitted and reserved for a future paid source.
+The application uses FRED for macroeconomic analysis and long-term market-regime evaluation, and for the market-internal series — the dollar index, oil, and natural gas — that sit outside Financial Modeling Prep's free-tier coverage. It also supplies the risk- and cycle-oriented series that anchor the report's risk-posture and market-cycle reads: credit spreads (high-yield and investment-grade OAS), the 10y–3m and 10y–2y curve spreads, the Chicago Fed financial-conditions indices (NFCI, ANFCI) and the St. Louis stress index (STLFSI4), weekly initial and continued jobless claims, the Fed balance sheet, and the 30-year mortgage rate. (FRED's documented limit is 120 requests/minute with no daily cap; the weekly scan's ~33 requests sit far under it.) It also supplies the Step-6 **economic-release calendar** — the prior-week and upcoming US release schedule (CPI, PCE, jobs, GDP, …) via FRED's free release-dates API — since FMP's economic-calendar endpoint is premium-gated. (FOMC meetings are excluded from the calendar — FRED has no scheduled-date series for them; the Fed's policy stance is carried by the Fed-funds target-range series instead.) FRED provides release dates (and the underlying series values, gathered separately), but no analyst-consensus estimates; no free source supplies US consensus, so the calendar's "expected" value is omitted and reserved for a future paid source.
 
 ### BLS (Bureau of Labor Statistics)
 Docs - https://www.bls.gov/developers/
