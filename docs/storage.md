@@ -18,6 +18,7 @@ Stores:
 - HTML output
 - job history
 - warning states
+- per-report baseline snapshots (for cross-report change detection)
 
 Each report stores:
 - creation timestamp
@@ -68,6 +69,14 @@ When a report is removed:
 - metadata
 - associated vector-memory summary references
 are deleted together.
+
+### Baseline Snapshots
+
+Each report stores a snapshot of the baseline market-data scan that produced it (the Step-6 gather, serialized as JSON). On the next report, the application diffs the current scan against the most recent prior snapshot to produce a per-report change view — the level moves since the previous report — handed to the main agent so the thesis can ground "what changed" in measured deltas rather than the prior report's prose.
+
+The most recent 14 snapshots are retained, pruned independently of the 30-report report-retention window. The cadence is report-indexed, not calendar-indexed: because reports can be generated manually at any time (see [scheduling.md §Manual Report Generation](scheduling.md#manual-report-generation)), the change view reports the actual elapsed interval since the previous report rather than assuming a week.
+
+A missing or unreadable prior snapshot is non-fatal: the report is generated without a change view. Snapshots are additive context, never a precondition for a report.
 
 ## LanceDB Vector Memory
 

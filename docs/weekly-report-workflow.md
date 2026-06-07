@@ -185,6 +185,8 @@ News categories:
 
 Individual series and releases degrade gracefully rather than aborting the scan: when a provider cannot return one, the application records it in a missing-data manifest, which is handed to the agents so they reason over what is absent instead of inferring it. A mandatory coverage floor still gates the run — the report is not generated unless the index picture and at least one macro or market-internals grounding are sufficiently covered — so a partially-degraded scan continues to a report while a too-thin one is treated as a failed job (see [scheduling.md §Error Handling](scheduling.md#error-handling)).
 
+The application also persists each run's baseline scan and, when a previous report's snapshot exists, computes a change view against it — the level-by-level moves since the previous report, over the actual elapsed interval — which travels with the baseline into the main agent's reasoning so the report grounds change in measured deltas rather than the prior report's prose. The change view is additive: a first report, or an unreadable prior snapshot, simply omits it. See [storage.md §Baseline Snapshots](storage.md#baseline-snapshots).
+
 ## Step 7: Gather and Filter News
 
 The application gathers a broad set of headlines and research candidates from the configured news and research sources — Tavily and GDELT (see [data-sources.md](data-sources.md)). Tavily contributes AI-oriented market and research headlines; GDELT contributes geopolitical and large-scale news trend coverage.
@@ -296,6 +298,7 @@ The research packet is the canonical input for the analyst agents.
 
 It may include:
 - baseline market data
+- baseline change view (level moves since the previous report)
 - filtered news clusters
 - deep research findings
 - source links

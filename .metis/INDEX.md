@@ -57,6 +57,7 @@
 - Dynamic research + limits (50 requests / 30 min / depth 2) — weekly-report-workflow.md §Step 9
 - Condensed research packet — weekly-report-workflow.md §Step 10; agents.md §Main Agent
 - Baseline market data scan — weekly-report-workflow.md §Step 6
+- Baseline change view (deltas since previous report) — weekly-report-workflow.md §Step 6; storage.md §Baseline Snapshots
 
 ## Data sources
 - Financial Modeling Prep (primary financial-data source) — data-sources.md §Financial Modeling Prep
@@ -90,10 +91,12 @@
 
 ## Storage & retention
 - Markdown file storage + naming — storage.md §Markdown File Storage; export.md §Export Naming
-- SQLite (records, metadata, HTML, job history, warnings) — storage.md §SQLite
+- SQLite (records, metadata, HTML, job history, warnings, baseline snapshots) — storage.md §SQLite
 - market_regime fixed vocabulary (6 labels) — storage.md §SQLite
 - Report summary metadata schema (JSON, required/optional fields) — storage.md §Report Summary Metadata Schema
 - Retention (30 reports, cascade delete) — storage.md §SQLite
+- Per-report baseline snapshots + change view (deltas vs previous report) — storage.md §Baseline Snapshots; weekly-report-workflow.md §Step 6
+- Baseline-snapshot retention (14, independent of report retention) — storage.md §Baseline Snapshots
 - LanceDB vector memory (summaries, durable learnings) — storage.md §LanceDB Vector Memory; weekly-report-workflow.md §Steps 4, 16
 - Durable learnings survive report deletion — storage.md §LanceDB Vector Memory
 
