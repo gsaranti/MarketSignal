@@ -194,6 +194,18 @@ impl AppConfig {
             })?
             .to_string())
     }
+
+    /// The Tavily API key for Step-7 news ingestion (`docs/weekly-report-workflow
+    /// .md §Step 7`), resolved from validated configuration. Mirrors `fmp_key` /
+    /// `fred_key`: after a passing `validate` the credential is present (Tavily is
+    /// a required provider credential), so the error arm is defensive.
+    pub fn tavily_key(&self) -> Result<String> {
+        Ok(present(&self.tavily_api_key)
+            .ok_or_else(|| {
+                anyhow!("TAVILY_API_KEY is not set (required for Step-7 news ingestion)")
+            })?
+            .to_string())
+    }
 }
 
 /// One configured agent slot, paired with its display name for warning copy.
@@ -572,6 +584,17 @@ mod tests {
         blank.fred_api_key = Some("   ".into()); // present-but-blank reads as unset
         let err = blank.fred_key().unwrap_err();
         assert!(err.to_string().contains("FRED_API_KEY"), "{err}");
+    }
+
+    #[test]
+    fn tavily_key_resolves_present_value_and_errors_when_missing() {
+        let cfg = complete();
+        assert_eq!(cfg.tavily_key().unwrap(), "tavily-key");
+
+        let mut blank = complete();
+        blank.tavily_api_key = Some("   ".into()); // present-but-blank reads as unset
+        let err = blank.tavily_key().unwrap_err();
+        assert!(err.to_string().contains("TAVILY_API_KEY"), "{err}");
     }
 
     #[test]

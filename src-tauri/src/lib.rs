@@ -5,13 +5,16 @@ pub mod connection_test;
 pub mod data_sources;
 pub mod fmp;
 pub mod fred;
+pub mod gdelt;
 pub mod jobs;
 pub mod model_agent;
+pub mod news;
 pub mod pipeline;
 pub mod research;
 pub mod schedule;
 pub mod settings;
 pub mod storage;
+pub mod tavily;
 
 use std::path::PathBuf;
 use std::time::Duration;
