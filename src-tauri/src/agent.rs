@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::baseline_delta::BaselineDeltas;
 use crate::data_sources::BaselineMarketData;
 
 /// The market's risk stance (`docs/storage.md`). Serializes to the canonical
@@ -98,6 +99,11 @@ pub struct ReportSummary {
 #[derive(Debug, Clone, Default)]
 pub struct MainAgentInput {
     pub baseline: BaselineMarketData,
+    /// Deterministic change view of `baseline` against the previous report's persisted
+    /// snapshot (`baseline_delta`), computed by the application layer. `None` on the
+    /// first report, or when no prior snapshot could be read or decoded — the deltas are
+    /// additive and never gate a run.
+    pub deltas: Option<BaselineDeltas>,
 }
 
 /// What the main agent returns: the canonical Markdown body plus the structured

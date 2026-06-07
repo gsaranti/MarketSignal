@@ -175,7 +175,7 @@ pub struct MarketRiskPremium {
 /// Which Step-6 baseline group a [`DataGap`] belongs to. Serializes to a stable kebab
 /// label so the model reading the manifest sees the same group names the data groups
 /// carry, and the coverage gate (`pipeline::enforce_coverage`) can match on it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GroupKind {
     Indices,
@@ -294,15 +294,31 @@ impl DataGap {
     }
 }
 
+/// Schema version stamped on each persisted baseline snapshot (`storage::baseline_snapshots`).
+/// The struct evolves as enrichment groups are added, so a snapshot persisted by an older
+/// build may lack groups a newer build expects; every field carries `#[serde(default)]` so an
+/// older blob still deserializes (missing groups read as empty). This version is recorded
+/// alongside each snapshot for future migration tooling — the current decode path relies on
+/// the serde defaults, not on inspecting it. Bump it when a change can't be absorbed by a
+/// field default alone.
+pub const BASELINE_SCHEMA_VERSION: u32 = 1;
+
 /// The baseline market-data scan handed to the main agent as part of its input.
 /// Empty vectors are valid — a provider that fails to resolve a group degrades it to
 /// empty and records the reason in [`gaps`](Self::gaps) rather than failing the whole
 /// scan. The mandatory-coverage floor (`pipeline::enforce_coverage`), not the adapters,
 /// is the single place a too-thin baseline fails the run.
+///
+/// Every field carries `#[serde(default)]` so the struct round-trips through persistence
+/// forward-compatibly: a snapshot written before a group existed still deserializes, with
+/// the absent group defaulting to empty (see [`BASELINE_SCHEMA_VERSION`]).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BaselineMarketData {
+    #[serde(default)]
     pub indices: Vec<Quote>,
+    #[serde(default)]
     pub internals: Vec<Quote>,
+    #[serde(default)]
     pub sectors: Vec<SectorPerformance>,
     /// Step-6 macro levels (Fed-funds target range, inflation breakevens, consumer
     /// sentiment, PCE, plus the headline activity reports — PPI, retail sales, JOLTS,
@@ -310,11 +326,13 @@ pub struct BaselineMarketData {
     /// series, kept distinct from the market `internals`. Same `Quote` shape: `price` is
     /// the latest level and `change_pct` its change from the prior observation
     /// (day-over-day, month-over-month, or quarter-over-quarter by series frequency).
+    #[serde(default)]
     pub macro_levels: Vec<Quote>,
     /// Step-6 labor levels (CPI, unemployment rate, nonfarm payrolls, average hourly
     /// earnings) — point-in-time BLS series, kept distinct from the FRED `macro_levels`
     /// by source and concern. Same `Quote` shape: `price` is the latest reported level
     /// and `change_pct` its month-over-month change from the prior reading.
+    #[serde(default)]
     pub labor_levels: Vec<Quote>,
     /// Step-6 economic-release calendar (`docs/weekly-report-workflow.md §Step 6`): the
     /// prior-week and upcoming US economic reports (CPI, PCE, jobs, GDP, …) as a
@@ -322,12 +340,14 @@ pub struct BaselineMarketData {
     /// dates, not figures — the actual readings reach the model via `macro_levels` /
     /// `labor_levels`. Empty is valid (a quiet window, or the calendar soft-degraded); it
     /// carries no completeness floor, unlike the series groups.
+    #[serde(default)]
     pub calendar: Vec<EconomicRelease>,
     /// Step-6 multi-horizon index performance, derived from FMP's end-of-day history
     /// (`historical-price-eod`): week-over-week / MTD / YTD returns and 52-week-range
     /// position per index, enriching the daily `indices` quotes. Empty is valid — like
     /// the `calendar` it carries no completeness floor and soft-degrades if the history
     /// fetch fails, since the daily `indices` quotes already satisfy Step 6.
+    #[serde(default)]
     pub index_performance: Vec<IndexPerformance>,
     /// Step-6 market movers: the filtered top gainers / losers / most-active US names this
     /// run (FMP's free mover lists). A micro-breadth signal the index/sector groups can't
@@ -724,5 +744,27 @@ mod tests {
         let json = serde_json::to_string(&data).unwrap();
         let back: BaselineMarketData = serde_json::from_str(&json).unwrap();
         assert_eq!(data, back);
+    }
+
+    #[test]
+    fn baseline_deserializes_an_older_snapshot_missing_groups() {
+        // Simulates a snapshot persisted by a build that predates several groups: the
+        // JSON carries only `indices` and omits everything else. `#[serde(default)]` on
+        // every field must let it decode, with the absent groups reading as empty — the
+        // forward-compatibility the persisted-history feature relies on.
+        let older = r#"{
+            "indices": [
+                {"symbol":"^GSPC","name":"S&P 500","price":5500.0,"change_pct":0.4,"unit":"index points"}
+            ]
+        }"#;
+        let back: BaselineMarketData = serde_json::from_str(older).unwrap();
+        assert_eq!(back.indices.len(), 1);
+        assert_eq!(back.indices[0].symbol, "^GSPC");
+        // Groups absent from the older blob decode to empty, not an error.
+        assert!(back.internals.is_empty());
+        assert!(back.macro_levels.is_empty());
+        assert!(back.sector_pe.is_empty());
+        assert!(back.market_risk_premium.is_empty());
+        assert!(back.gaps.is_empty());
     }
 }

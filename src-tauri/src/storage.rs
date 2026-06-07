@@ -63,6 +63,21 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+    // Per-report baseline snapshots: the full Step-6 scan serialized as JSON, one row
+    // per generated report, so the next run can diff this run's levels against the prior
+    // report's (`baseline_delta`). `captured_at` is the app-minted scan time (the Δt
+    // anchor); `schema_version` records the baseline shape for future migration tooling.
+    // Capped to the newest `BASELINE_SNAPSHOT_RETENTION` rows by `prune_baseline_snapshots`.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS baseline_snapshots (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id      TEXT NOT NULL,
+            captured_at    TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            baseline_json  TEXT NOT NULL
+        )",
+        [],
+    )?;
     Ok(())
 }
 
@@ -155,6 +170,63 @@ pub fn insert_report(conn: &Connection, record: &ReportRecord) -> Result<()> {
     Ok(())
 }
 
+/// How many of the most recent baseline snapshots to retain (`baseline_snapshots`).
+/// Report-indexed, not calendar-indexed: 14 *reports*, whatever their cadence. Only the
+/// immediately-prior snapshot is needed for the change view today; the headroom leaves
+/// room for a future trajectory-over-N read. Decoupled from the report retention window
+/// (`RECENT_REPORTS_LIMIT`); `report_id` is stored so a later report-cascade can join.
+pub const BASELINE_SNAPSHOT_RETENTION: u32 = 14;
+
+/// Persist one run's baseline snapshot: the serialized `BaselineMarketData`, the report
+/// it backs, the app-minted `captured_at` scan time, and the baseline `schema_version`.
+/// Serialization is the caller's concern — storage stays agnostic of the baseline shape.
+pub fn insert_baseline_snapshot(
+    conn: &Connection,
+    report_id: &str,
+    captured_at: &str,
+    schema_version: u32,
+    baseline_json: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO baseline_snapshots
+            (report_id, captured_at, schema_version, baseline_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![report_id, captured_at, schema_version as i64, baseline_json],
+    )?;
+    Ok(())
+}
+
+/// The most recent baseline snapshot's `(captured_at, baseline_json)`, or `None` before
+/// any snapshot exists (the first report). Ordered newest-first by `captured_at` with a
+/// `rowid` tiebreak so same-timestamp inserts resolve to the latest insertion.
+pub fn latest_baseline_snapshot(conn: &Connection) -> Result<Option<(String, String)>> {
+    let row = conn
+        .query_row(
+            "SELECT captured_at, baseline_json FROM baseline_snapshots
+             ORDER BY captured_at DESC, id DESC
+             LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    Ok(row)
+}
+
+/// Delete all but the newest `keep` baseline snapshots (same newest-first ordering as
+/// [`latest_baseline_snapshot`]). Idempotent; a no-op when at or under the cap.
+pub fn prune_baseline_snapshots(conn: &Connection, keep: u32) -> Result<()> {
+    conn.execute(
+        "DELETE FROM baseline_snapshots
+         WHERE id NOT IN (
+             SELECT id FROM baseline_snapshots
+             ORDER BY captured_at DESC, id DESC
+             LIMIT ?1
+         )",
+        [keep],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +311,53 @@ mod tests {
         assert_eq!(
             get_setting(&conn, "weekly_job_enabled").unwrap().as_deref(),
             Some("true")
+        );
+    }
+
+    #[test]
+    fn latest_baseline_snapshot_is_none_before_any_insert() {
+        assert!(latest_baseline_snapshot(&mem()).unwrap().is_none());
+    }
+
+    #[test]
+    fn baseline_snapshots_report_latest_and_prune_to_the_cap() {
+        let conn = mem();
+        // 16 snapshots, strictly ascending captured_at; the body marks insertion order.
+        for i in 0..16 {
+            let captured_at = format!("2026-01-{:02}T00:00:00Z", i + 1);
+            insert_baseline_snapshot(
+                &conn,
+                &format!("rep-{i:02}"),
+                &captured_at,
+                crate::data_sources::BASELINE_SCHEMA_VERSION,
+                &format!("{{\"marker\":{i}}}"),
+            )
+            .unwrap();
+        }
+
+        // Latest is the newest captured_at (the 16th insert).
+        let (captured_at, json) = latest_baseline_snapshot(&conn).unwrap().unwrap();
+        assert_eq!(captured_at, "2026-01-16T00:00:00Z");
+        assert_eq!(json, "{\"marker\":15}");
+
+        // Prune keeps only the newest 14; the two oldest fall off, the latest survives.
+        prune_baseline_snapshots(&conn, BASELINE_SNAPSHOT_RETENTION).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM baseline_snapshots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, BASELINE_SNAPSHOT_RETENTION as i64);
+        let oldest_remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM baseline_snapshots
+                 WHERE captured_at IN ('2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(oldest_remaining, 0);
+        assert_eq!(
+            latest_baseline_snapshot(&conn).unwrap().unwrap().0,
+            "2026-01-16T00:00:00Z"
         );
     }
 }
