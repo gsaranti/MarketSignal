@@ -36,6 +36,7 @@ A scheduled or manual job ends in one of these states:
 - **Failed** — execution started but could not complete because required services, APIs, or model providers were unavailable, or because of API limits, token exhaustion, malformed responses, or model execution errors. See [Offline Behavior](#offline-behavior) and [Error Handling](#error-handling).
 - **Missed** — the scheduled execution never started because the application was not running, the machine was asleep, or the application could not start the scheduled execution during the scheduled window. See [System Sleep Behavior](#system-sleep-behavior) and [Missed Job Detection](#missed-job-detection).
 - **Skipped** — a second execution was rejected because another report-generation workflow was already running. See [Concurrent Job Protection](#concurrent-job-protection).
+- **Cancelled** — the user stopped a running execution from the run tracker before it completed. A cancelled run produces no report and, unlike a failed run, raises no warning. See [run-tracking.md §Cancellation](run-tracking.md#cancellation).
 
 ## Application Runtime Requirements
 
@@ -94,8 +95,9 @@ The application logs the skipped execution.
 
 The application displays:
 - last successful run time
-- currently running job state
+- currently running job state, with live per-step and per-request progress in the run tracker (see [run-tracking.md](run-tracking.md))
 - last failure state
+- last cancelled run
 - skipped job events
 
 ## Job Controls
@@ -105,6 +107,8 @@ Users can:
 - Disable Weekly Market Job
 
 The Weekly Market Job is enabled by default.
+
+Users can also **cancel a running job** at any point from the run tracker. Cancellation is cooperative and the run is recorded as a Cancelled job — see [run-tracking.md §Cancellation](run-tracking.md#cancellation).
 
 The execution gate that prevents jobs from running until all required agent models and provider credentials are configured lives in [configuration.md](configuration.md).
 

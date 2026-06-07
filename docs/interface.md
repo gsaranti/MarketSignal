@@ -8,6 +8,12 @@ Market Signal
 │   ├── Rendered HTML report
 │   └── Export actions
 │
+├── Run Tracker (shown in place of the report while a job runs)
+│   ├── Per-step progress
+│   ├── Per-request pass / fail
+│   ├── Streamed agent output
+│   └── Cancel control
+│
 ├── Recent Reports Sidebar
 │   ├── Ordered descending
 │   ├── Report timestamps
@@ -34,6 +40,7 @@ Market Signal
 
 The operational behavior of each panel is defined in the relevant concern files:
 - Latest Report View / Recent Reports Sidebar — see [report-structure.md](report-structure.md) and [storage.md](storage.md).
+- Run Tracker — see [run-tracking.md](run-tracking.md).
 - Export actions — see [export.md](export.md).
 - Research Documents (Inbox / Archive) — see [research-documents.md](research-documents.md).
 - Persistent Warning Area triggers — see [scheduling.md](scheduling.md) and [configuration.md](configuration.md). De-duplication behavior is described below.
