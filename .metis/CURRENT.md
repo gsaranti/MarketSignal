@@ -2,29 +2,33 @@
 
 ## What happened
 
-**Shipped Step 7 ("Gather and Filter News") complete — the news funnel runs end-to-end in code.** Two slices, both pushed to `main`:
+**Shipped the Step-6 baseline enrichment — squash-merged to `main` as `320c097` (PR #9).** One slice, four bundled changes:
+- **FRED +11 series** (no schema change; folded into the two existing groups): credit spreads (HY/IG OAS) + 10y–3m / 10y–2y curve spreads in `internals`; NFCI/ANFCI/STLFSI4, initial+continued jobless claims (ICSA/CCSA), Fed balance sheet (WALCL), 30y mortgage (MORTGAGE30US) in `macro_levels`. These feed `risk_posture` / `market_cycle`.
+- **FMP index historical EOD** → new additive `index_performance` group (`IndexPerformance`: weekly/MTD/YTD/52-week-range per index), **fail-soft per-index**.
+- **Sector lookback** now skips weekends (`sector_candidate_dates`) — the Sunday job stops burning 2 empty weekend calls/run.
+- **Shared `http_retry`** (bounded exponential backoff, 429/5xx/transport incl. mid-body, `Retry-After`-aware) over FMP/FRED/BLS/Tavily; **GDELT excluded** (lockout).
 
-- **7a — news ingestion** (commit `5ee5ddb`): a `NewsSource` trait (stub + composite) with **Tavily** (`/search` per topic, fail-loud — gated provider) and **GDELT** (DOC 2.0 ArtList, keyless, fail-soft) adapters, plus the deterministic `dedupe_headlines` pre-pass and a `tavily_key()` accessor.
-- **7b — headline filter** (commit `274a36b`): a pure `HeadlineFilter` stage (stub) + the real **GPT-5 mini** `ModelHeadlineFilter` (fixed internal model). The model returns clusters **by headline index, not echoed text**, and `envelope_to_clusters` enforces the funnel invariants *deterministically* (rank by relevance; dedup membership within/across clusters; drop out-of-range indices and blank-topic/summary clusters; cap at **~40 retained headlines across ≤10 clusters**). Added `openai_key()`; promoted `extract_openai_envelope` to `pub(crate)`.
+**Load-bearing facts/decisions (don't relitigate):**
+- **Retry is HTTP-status/transport only.** Provider rate/plan limits arriving as **HTTP 200** bodies (FMP `Error Message`, BLS `REQUEST_NOT_PROCESSED`) are *deliberately fatal* — quota/plan/malformed, not transient; body semantics stay in the adapters, not the retry layer. Don't push them into `http_retry`.
+- **FMP free tier** = US EOD-equities sandbox: `historical-price-eod/light` is free for the 4 indices + VIX (probed live); commodities/FX/crypto beyond gold are premium.
+- **FRED limit** = 120 req/min, no daily cap (~33-req scan is well under).
+- **Spread `change_pct` is low-signal** (percent of a near-zero/inverted spread); the **level** is the documented signal. Use **`STLFSI4`** — `STLFSI`/`2`/`3` are discontinued.
 
-**Load-bearing facts discovered this session:**
-- **GDELT rate limit** — 1 req/5s + an *escalating* IP lockout + **User-Agent gating**. Fix: one consolidated OR query per gather (not per-topic) + descriptive UA + fail-soft. Don't reintroduce per-topic GDELT requests. (Memory: [[gdelt-doc-api-rate-limit]].)
-- The **~40 retained-headline cap** was a plan-level miss (the plan modeled the ~10-cluster cap but treated the doc's "~40 relevant headlines" stage as model-internal); Codex caught it — now a deterministic backstop.
-
-Reviews: metis-task-reviewer approved both; Codex ran 1 round on 7a + 3 on 7b (High→Low, all resolved). Neither slice is wired into `generate_report` — the clusters' consumer is Step 8.
+Reviews: metis-task-reviewer (approve-with-nits; per-index EOD nit fixed) + Codex (3 findings: mid-body-retry fixed, HTTP-200-limits resolved via doc, `Retry-After`-HTTP-date deferred-low). Docs amended (`data-sources.md`, `BUILD.md`).
 
 ## Current state
 
-On **`main`** at **`274a36b`**, **pushed**, in sync with `origin/main`, **working tree clean. Nothing in flight.** Step 7 (gather + filter) is complete; both `#[ignore]` live smokes (`news_ingestion_smoke`, `headline_filter_funnel_smoke`) exist but were never run with keys. Verified: `cargo test` (138 lib + integration) + `cargo clippy` clean.
+On **`main`** at **`320c097`**, merged + pulled, **working tree clean, nothing in flight**; feature branch deleted. Verified: `cargo test` (145 lib + integration) + `cargo clippy` clean + `npm run build`, **and the live `fred_baseline_smoke` + `fmp_baseline_smoke` ran green** — all 11 new FRED ids resolve and the EOD path resolves per index. The **baseline data path (FMP/FRED/BLS) is now live-verified**; the **Step-7 news funnel was NOT exercised this session** (still unrun).
 
 ## Open questions
 
-- **Live funnel never run against real providers** — the one remaining real unknown. Needs `TAVILY_API_KEY` + `OPENAI_API_KEY` and a **cool GDELT egress IP** (this session's testing put our IP in an extended lockout). Run the two `#[ignore]` smokes to close it.
-- **Snippets omitted from the filter prompt** — `format_headlines` sends title + source only. Revisit against live output to see if snippets sharpen relevance/dedup.
-- *(parked)* **retention-cascade enforcement** (30-report cap + cascade, durable-learning survival) and **step-5 auto-archive** — self-contained slices.
-- *(deferred, paid source)* calendar `expected` consensus + a FOMC meeting schedule; *(low)* GDP `change_pct` not annualized; `change_pct` reads 0 when two latest readings are equal (candidate to retire).
-- *(carried, low)* no Vue component-test harness; data-source floors via pure helpers not an HTTP mock (`wiremock` deferred); `cargo fmt` dirty repo-wide (pre-existing; not the gate).
+- **Step-7 news funnel never run live** — `news_ingestion_smoke` + `headline_filter_funnel_smoke` still need `TAVILY_API_KEY`/`OPENAI_API_KEY` and a **cool GDELT egress IP**. (Distinct from the baseline smokes, now green.)
+- **Snippets omitted from the filter prompt** — `format_headlines` sends title+source only; revisit against live output.
+- *(follow-up)* spread **absolute-bps change field** if percent-of-spread proves insufficient (level is the signal today).
+- *(parked)* retention-cascade enforcement (30-report cap + cascade, durable-learning survival) and step-5 auto-archive — self-contained slices.
+- *(deferred, paid)* calendar `expected` consensus + FOMC schedule; *(low)* GDP `change_pct` not annualized / reads 0 when two latest readings are equal.
+- *(carried, low)* no Vue component-test harness; **`wiremock` still deferred** — so the `http_retry` loop and data-source floors have no HTTP-level unit coverage (pure predicate/backoff + live smokes only); `cargo fmt` dirty repo-wide (pre-existing, not the gate).
 
 ## Where to start
 
-Step 7 is done — the forward slice is **Step 8: research routing** (`/metis-plan-task`). The fixed **Claude Sonnet** routing model turns the 7b clusters (+ baseline, recent reports, vector memory, inbox, upcoming events) into a bounded research plan — and the clusters are its first consumer, which retires the "unwired" flag. Alternatives: run the live funnel smokes to close the unverified path, or take the parked retention-cascade slice.
+Forward slice is still **Step 8: research routing** (`/metis-plan-task`). The fixed **Claude Sonnet** router turns the 7b clusters (+ the now-richer baseline — credit/curve spreads, financial conditions, index performance — recent reports, vector memory, inbox, upcoming events) into a bounded research plan; the clusters are its first consumer, retiring the "unwired" flag. Alternatives: run the Step-7 news-funnel live smokes (needs a cool GDELT IP), or take the parked retention-cascade / step-5 auto-archive slice.

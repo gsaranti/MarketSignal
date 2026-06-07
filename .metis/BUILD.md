@@ -26,6 +26,8 @@ Three stores, by responsibility (`docs/storage.md`):
 
 One deliberate exception to *persisted config lives in SQLite*: the **Light/Dark appearance** preference is stored in webview `localStorage`, not `app_settings` — it is pure presentation with no backend consumer (agents never see HTML; PDF export reuses the same themed DOM), and a synchronous pre-mount read in `main.ts` avoids a first-paint theme flash. `src/theme.ts` is its only writer.
 
+Distinct from the three persisted stores, the **Step-6 baseline scan** handed to the main agent (`BaselineMarketData`) is an **in-memory packet, not a persisted store** — seven groups: `indices`, `internals`, `sectors`, `macro_levels`, `labor_levels`, `calendar`, and `index_performance` (the multi-horizon index returns added in the Step-6 enrichment). The series adapters merge their contributions into it; `internals` / `macro_levels` / `labor_levels` carry per-group completeness floors (a non-optional group coming back empty fails the scan), while `calendar` and `index_performance` are additive and fail-soft.
+
 ## Module boundaries
 
 - **`app` (Rust orchestrator)** — the 17-step pipeline, the bounded research executor, the scheduler, validation/gating, and warning-state management. This is where determinism lives.
