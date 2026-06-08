@@ -13,7 +13,7 @@
 //! which is where it is actually needed. The seed of the future
 //! `adapters::models` module lives here.
 //!
-//! The agent's `MainAgentInput` now carries the Step-6 baseline market-data scan
+//! The agent's `MainAgentInput` now carries the Step-3 baseline market-data scan
 //! (`data_sources`); this adapter serializes it into the user message so the
 //! report is grounded in this run's live data. The rest of the condensed packet
 //! (news clusters, deep research, vector memory) joins it as later slices land.
@@ -220,7 +220,7 @@ const USER_PROMPT: &str =
     "Write this week's Market Signal weekly market report, including its structured summary.";
 
 /// Build the user message: the standing instruction plus, when present, the
-/// Step-6 baseline market-data scan serialized as JSON so the model grounds the
+/// Step-3 baseline market-data scan serialized as JSON so the model grounds the
 /// report in this run's live data rather than its own prior knowledge. An empty
 /// baseline (no data gathered — e.g. an offline smoke) falls back to the bare
 /// instruction so the prompt never carries an empty data block.

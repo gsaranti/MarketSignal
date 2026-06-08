@@ -218,7 +218,7 @@ async fn generate_report_manual(
             .with_context(ctx.clone());
         // The baseline scan is FMP (indices / VIX / gold / sectors) + FRED (yields,
         // dollar index, oil, gas, macro levels) + BLS (labor levels) merged behind one
-        // trait (`docs/weekly-report-workflow.md §Step 6`). BLS is keyless (not in the
+        // trait (`docs/weekly-report-workflow.md §Step 3`). BLS is keyless (not in the
         // execution gate); it nests as the outer secondary so its labor_levels group
         // folds into the FMP+FRED baseline.
         let fmp = FmpDataSource::new(fmp_key)
@@ -259,7 +259,7 @@ fn list_reports(app: tauri::AppHandle) -> Result<Vec<agent::ReportSummary>, Stri
 
 /// Load one persisted report by id for the Latest Report View: its summary plus
 /// its canonical Markdown read back from disk (`docs/weekly-report-workflow.md
-/// §Step 17`). An unknown id, or a Markdown file removed out-of-band, surfaces as
+/// §Step 18`). An unknown id, or a Markdown file removed out-of-band, surfaces as
 /// an error the view renders.
 #[tauri::command]
 fn load_report(app: tauri::AppHandle, report_id: String) -> Result<GeneratedReport, String> {
@@ -586,7 +586,7 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         // FMP + FRED + BLS merged behind one trait, identical to the manual command's
-        // baseline source (`docs/weekly-report-workflow.md §Step 6`). BLS is keyless,
+        // baseline source (`docs/weekly-report-workflow.md §Step 3`). BLS is keyless,
         // nested as the outer secondary to fold in the labor_levels group.
         let fmp = FmpDataSource::new(run_config.fmp_api_key)
             .map_err(|e| e.to_string())?
@@ -604,7 +604,7 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
 
     // Carry the freshly generated report to an open window so its Latest Report
     // View updates without a manual refresh (`docs/weekly-report-workflow.md
-    // §Step 17`); on failure/skip the payload is None and only the warning area
+    // §Step 18`); on failure/skip the payload is None and only the warning area
     // and status panel refresh. The Recent Reports sidebar re-lists via
     // `list_reports` on this same event, so a scheduled run's new report also
     // appears in the sidebar.

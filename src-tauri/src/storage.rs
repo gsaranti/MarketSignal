@@ -63,7 +63,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // Per-report baseline snapshots: the full Step-6 scan serialized as JSON, one row
+    // Per-report baseline snapshots: the full Step-3 scan serialized as JSON, one row
     // per generated report, so the next run can diff this run's levels against the prior
     // report's (`baseline_delta`). `captured_at` is the app-minted scan time (the Δt
     // anchor); `schema_version` records the baseline shape for future migration tooling.

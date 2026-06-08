@@ -4,7 +4,7 @@
 //! to investigate, this stage executes it: it walks the plan's topics in priority
 //! order, issues each query against a search backend, and returns the curated
 //! evidence the main agent will eventually reason over (via the not-yet-built
-//! Step-10 condensed packet).
+//! Step-11 condensed packet).
 //!
 //! This is the one stage that may loop or branch, so the three hard bounds live
 //! here, in the application layer, not in any model: at most
@@ -23,7 +23,7 @@
 //! sleeping), not an async timeout — no `tokio` is needed here.
 //!
 //! Nothing is wired into the report pipeline yet (the Step-7/8 posture): the
-//! evidence's consumer is the Step-10 condensed packet, which isn't built. The
+//! evidence's consumer is the Step-11 condensed packet, which isn't built. The
 //! *dynamic branching* itself ships as machinery only — the [`NoBranch`] default
 //! does no branching; the follow-up generator (a model call or deterministic
 //! rules keyed off the baseline deltas) is a deferred decision.
@@ -89,7 +89,7 @@ pub struct EvidenceItem {
 }
 
 /// The output of Step 9: the per-topic evidence, the total request count spent
-/// against the budget, and the truncation reason (if any). What the Step-10
+/// against the budget, and the truncation reason (if any). What the Step-11
 /// condensed packet will draw on.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResearchEvidence {

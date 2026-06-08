@@ -67,8 +67,8 @@ pub fn generate_report(
     // differ by the agent's runtime); the snapshot↔report join is by `report_id`, not time.
     let as_of = chrono::Utc::now();
 
-    // Step 6: baseline market data is gathered before agent reasoning and is not
-    // optional (`docs/weekly-report-workflow.md §Step 6`). Each adapter records what it
+    // Step 3: baseline market data is gathered before agent reasoning and is not
+    // optional (`docs/weekly-report-workflow.md §Step 3`). Each adapter records what it
     // couldn't resolve in `baseline.gaps` instead of failing; the coverage gate then
     // decides whether what landed clears the run's mandatory floor. A gate failure
     // propagates unwrapped — like the agent error below — so `jobs::run_job` persists
@@ -218,7 +218,7 @@ fn compute_prior_deltas(
     Some(baseline_delta::compute_deltas(current, &prior, elapsed_days))
 }
 
-/// The minimum fraction of a Step-6 group's *expected* series that must resolve for the
+/// The minimum fraction of a Step-3 group's *expected* series that must resolve for the
 /// group to count as present for the coverage floor. "Expected" excludes permanently
 /// out-of-scope items (premium / discontinued series), so a series a deployment never had
 /// doesn't drag the ratio down — only this-run failures (`Unavailable` / `Rejected` /
@@ -271,7 +271,7 @@ fn clears_floor(data: &BaselineMarketData, group: GroupKind) -> bool {
     group_present_count(data, group) > 0 && group_coverage(data, group) >= COVERAGE_FLOOR
 }
 
-/// The Step-6 coverage gate — the single, centralized replacement for the per-adapter
+/// The Step-3 coverage gate — the single, centralized replacement for the per-adapter
 /// completeness floors. The adapters now degrade every failure to a recorded gap; this
 /// is the one place a too-thin merged baseline fails the run. The floor (resolved in
 /// planning): the report is structurally impossible without the Index Picture, and its
@@ -279,12 +279,12 @@ fn clears_floor(data: &BaselineMarketData, group: GroupKind) -> bool {
 /// so `indices` must clear, AND at least one of {`internals`, `macro_levels`} must clear.
 /// Everything else (sectors, labor, calendar, index performance, and whichever of
 /// internals/macro didn't clear) degrades to a manifest gap the agent reasons over. A
-/// failure here propagates like any Step-6 error, which `jobs::run_job` records as a
+/// failure here propagates like any Step-3 error, which `jobs::run_job` records as a
 /// failed job.
 pub fn enforce_coverage(data: &BaselineMarketData) -> Result<()> {
     if !clears_floor(data, GroupKind::Indices) {
         bail!(
-            "Step-6 baseline below floor: the index picture is missing — indices coverage \
+            "Step-3 baseline below floor: the index picture is missing — indices coverage \
              {:.0}% (need {:.0}%). The report can't be written without the Dow / S&P / Nasdaq \
              reads; the data provider is unreachable, rejecting the key, or rate-limited.",
             group_coverage(data, GroupKind::Indices) * 100.0,
@@ -293,7 +293,7 @@ pub fn enforce_coverage(data: &BaselineMarketData) -> Result<()> {
     }
     if !clears_floor(data, GroupKind::Internals) && !clears_floor(data, GroupKind::MacroLevels) {
         bail!(
-            "Step-6 baseline below floor: neither market internals ({:.0}%) nor macro levels \
+            "Step-3 baseline below floor: neither market internals ({:.0}%) nor macro levels \
              ({:.0}%) reached {:.0}% — the risk-posture / market-cycle reads would be \
              ungrounded. FRED is unreachable, rejecting the key, or rate-limited.",
             group_coverage(data, GroupKind::Internals) * 100.0,
@@ -429,7 +429,7 @@ mod tests {
 
     use crate::data_sources::{DataGap, GapReason, Quote};
 
-    // ---- Step-6 coverage gate ----
+    // ---- Step-3 coverage gate ----
 
     /// `n` placeholder resolved quotes for a group.
     fn covq(n: usize) -> Vec<Quote> {

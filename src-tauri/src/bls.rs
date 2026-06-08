@@ -2,10 +2,10 @@
 //! baseline market-data scan.
 //!
 //! The third data-source adapter behind the `MarketDataSource` trait
-//! (`data_sources`), sibling to `fmp` and `fred`. It owns the Step-6 **labor levels**
+//! (`data_sources`), sibling to `fmp` and `fred`. It owns the Step-3 **labor levels**
 //! group (`labor_levels`): the CPI-U headline index, the U-3 unemployment rate, total
 //! nonfarm payrolls, and average hourly earnings (`docs/weekly-report-workflow.md
-//! §Step 6`, `docs/data-sources.md §BLS`). These are point-in-time monthly levels
+//! §Step 3`, `docs/data-sources.md §BLS`). These are point-in-time monthly levels
 //! reusing the same quote shape as `fred`'s macro levels, kept in a group distinct
 //! from the FRED `macro_levels` by source and concern. `price` is the latest reported
 //! level; `change_pct` is its month-over-month change from the prior reading.
@@ -57,8 +57,8 @@ const BLS_DATA_URL: &str = "https://api.bls.gov/publicAPI/v2/timeseries/data/";
 /// ceiling so a hung provider doesn't park the scan.
 const BLS_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
-/// The BLS-owned labor levels of the Step-6 baseline (`docs/weekly-report-workflow.md
-/// §Step 6`, `docs/data-sources.md §BLS`): the CPI-U headline index (NSA, all items),
+/// The BLS-owned labor levels of the Step-3 baseline (`docs/weekly-report-workflow.md
+/// §Step 3`, `docs/data-sources.md §BLS`): the CPI-U headline index (NSA, all items),
 /// the U-3 unemployment rate, total nonfarm payroll employment, and average hourly
 /// earnings for total private. Monthly series; `change_pct` reads month-over-month.
 /// `(series_id, display name, unit)`, with the BLS `series_id` doubling as the quote
@@ -538,7 +538,7 @@ mod tests {
             );
         }
 
-        // labor_levels is non-optional Step-6 baseline data. Assert it resolves in full
+        // labor_levels is non-optional Step-3 baseline data. Assert it resolves in full
         // so a silently dropped (renamed / discontinued) series fails the smoke loudly
         // rather than thinning the baseline unnoticed — the per-symbol-assert discipline
         // the sibling smokes use.

@@ -55,7 +55,7 @@ const GDELT_TIMESPAN: &str = "1w";
 const GDELT_USER_AGENT: &str =
     "MarketSignal/0.1 (weekly market report; news ingestion via GDELT DOC 2.0)";
 
-/// The single broad query covering the Step-6 news categories (politics,
+/// The single broad query covering the Step-3 news categories (politics,
 /// geopolitics, China/trade, energy, earnings, AI/semiconductors, major economic
 /// developments), as GDELT-specific keywords OR'd together. One query rather than
 /// one per category keeps the adapter under GDELT's burst rate limit; multi-word

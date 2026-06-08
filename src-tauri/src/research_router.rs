@@ -63,7 +63,7 @@ pub struct ResearchPlan {
 }
 
 /// What the router reasons over. Carries the Step-8 inputs that exist today: the
-/// Step-6 baseline scan, its deterministic change view (`baseline_delta`), and the
+/// Step-3 baseline scan, its deterministic change view (`baseline_delta`), and the
 /// Step-7 clusters. The remaining Step-8 inputs the doc lists — recent Markdown
 /// report context, vector memory, parsed inbox documents, upcoming known
 /// events — are not built yet and join this struct as those slices land (the same
