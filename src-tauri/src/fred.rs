@@ -610,6 +610,187 @@ impl MarketDataSource for FredDataSource {
 mod tests {
     use super::*;
 
+    /// Publication cadence of a FRED series, the axis the freshness guard reads.
+    /// `fetch_series` requests the newest observations with **no date bound**, so a
+    /// **discontinued / frozen** series (its last datum published months ago — the
+    /// `NASDAQVOLNDX` class of bug, `fred.rs` internals doc-comment) still "resolves"
+    /// to a stale quote and slips past the smoke's count assert. The freshness guard
+    /// fails the live smoke when a series' latest observation is older than its cadence
+    /// allows. Bounds are deliberately **loose** — sized to catch a multi-month freeze,
+    /// not to nitpick normal publication lag (e.g. JOLTS prints ~6 weeks after its
+    /// reference month, GDP a month after quarter-end with later revisions).
+    #[derive(Debug, Clone, Copy)]
+    enum Cadence {
+        Daily,
+        Weekly,
+        Monthly,
+        Quarterly,
+    }
+
+    impl Cadence {
+        /// Maximum acceptable staleness (today − latest observation date), in days,
+        /// before a series reads as discontinued rather than merely lagging.
+        ///
+        /// FRED dates each observation at its period **start**, so staleness peaks
+        /// just before the *next* period's value is published — that peak, not the
+        /// cadence interval, sets the bound. The monthly/quarterly bounds are sized to
+        /// the laggiest member of each bucket (JOLTS lags ~6 weeks; GDP's Qn advance
+        /// estimate lands ~1 month after Qn ends, ~7 months after Qn started), so the
+        /// guard is coarse for slow series by design — it reliably catches a multi-month
+        /// freeze, not a one-cycle delay. The daily/weekly bounds stay tight, where the
+        /// guard has the most value.
+        fn max_staleness_days(self) -> i64 {
+            match self {
+                Cadence::Daily => 16,    // business-day series + weekends/holidays/lag (DTWEXBGS lags ~1wk)
+                Cadence::Weekly => 21,   // one-week cadence + publication lag + a holiday week
+                Cadence::Monthly => 110, // JOLTS: ~6wk lag peaks ~95d before the next print
+                Cadence::Quarterly => 230, // GDP: dated quarter-start, peaks ~209d before the next advance estimate
+            }
+        }
+    }
+
+    /// Cadence for every `INTERNALS_SERIES` + `MACRO_SERIES` id. The
+    /// `freshness_table_covers_every_series` parity test asserts this set equals the
+    /// two series tables exactly, so a new series with no cadence fails offline CI
+    /// rather than going unguarded in the live smoke.
+    const FRESHNESS: &[(&str, Cadence)] = &[
+        // Internals — all daily, market-priced series.
+        ("DGS2", Cadence::Daily),
+        ("DGS10", Cadence::Daily),
+        ("DTWEXBGS", Cadence::Daily),
+        ("DCOILWTICO", Cadence::Daily),
+        ("DHHNGSP", Cadence::Daily),
+        ("BAMLH0A0HYM2", Cadence::Daily),
+        ("BAMLC0A0CM", Cadence::Daily),
+        ("T10Y3M", Cadence::Daily),
+        ("T10Y2Y", Cadence::Daily),
+        ("VXVCLS", Cadence::Daily),
+        ("VXNCLS", Cadence::Daily),
+        ("BAMLC0A4CBBB", Cadence::Daily),
+        ("BAMLH0A2HYB", Cadence::Daily),
+        // Macro levels — mixed cadence.
+        ("DFEDTARU", Cadence::Daily),
+        ("DFEDTARL", Cadence::Daily),
+        ("T5YIE", Cadence::Daily),
+        ("T10YIE", Cadence::Daily),
+        ("UMCSENT", Cadence::Monthly),
+        ("PCEPI", Cadence::Monthly),
+        ("PPIFIS", Cadence::Monthly),
+        ("RSAFS", Cadence::Monthly),
+        ("JTSJOL", Cadence::Monthly),
+        ("GDPC1", Cadence::Quarterly),
+        ("NFCI", Cadence::Weekly),
+        ("ANFCI", Cadence::Weekly),
+        ("STLFSI4", Cadence::Weekly),
+        ("ICSA", Cadence::Weekly),
+        ("CCSA", Cadence::Weekly),
+        ("WALCL", Cadence::Weekly),
+        ("MORTGAGE30US", Cadence::Weekly),
+    ];
+
+    /// Look up a series' cadence, panicking if absent — the parity test guarantees
+    /// every series id is present, so an absence here is a contract violation.
+    fn cadence_for(series_id: &str) -> Cadence {
+        FRESHNESS
+            .iter()
+            .find(|(id, _)| *id == series_id)
+            .map(|(_, c)| *c)
+            .unwrap_or_else(|| panic!("no FRESHNESS cadence for series {series_id}"))
+    }
+
+    #[test]
+    fn freshness_table_covers_every_series() {
+        use std::collections::HashSet;
+        let series: HashSet<&str> = INTERNALS_SERIES
+            .iter()
+            .chain(MACRO_SERIES)
+            .map(|(id, _, _)| *id)
+            .collect();
+        let freshness: HashSet<&str> = FRESHNESS.iter().map(|(id, _)| *id).collect();
+        let missing: Vec<&str> = series.difference(&freshness).copied().collect();
+        let stray: Vec<&str> = freshness.difference(&series).copied().collect();
+        assert!(
+            missing.is_empty(),
+            "series with no FRESHNESS cadence (add them): {missing:?}"
+        );
+        assert!(
+            stray.is_empty(),
+            "FRESHNESS entries for unknown series (remove them): {stray:?}"
+        );
+        // No duplicate ids in the table (a dup would mask a missing entry).
+        assert_eq!(
+            FRESHNESS.len(),
+            freshness.len(),
+            "FRESHNESS has duplicate series ids"
+        );
+    }
+
+    /// The newest *numeric* observation's date in a FRED observations response, selecting
+    /// the value **exactly as [`observations_to_quote`] does**: skip FRED's `"."` gap
+    /// markers (newest-first, so the first non-`"."` row wins), and require that winning
+    /// value to parse to a **finite `f64`** — production rejects a non-numeric / non-finite
+    /// value (`"garbage"`, `"NaN"`, `"inf"`) by failing closed rather than skipping past it,
+    /// so this stops at the same row and returns `None` rather than dating a value the
+    /// baseline would never carry. `None` also when the body has no numeric observation or
+    /// doesn't match the observations shape; the freshness guard turns that `None` into a
+    /// loud panic, mirroring production's fail-closed. Used to date the value the baseline
+    /// would carry, catching a series frozen months ago.
+    fn latest_numeric_observation_date(value: &Value) -> Option<NaiveDate> {
+        let observations = value.get("observations")?.as_array()?;
+        for obs in observations {
+            let raw = obs.get("value")?.as_str()?.trim();
+            if raw == "." {
+                continue; // documented gap — not a real datum
+            }
+            // Mirror observations_to_quote: the latest non-gap value must be a finite
+            // number, else it's a contract violation — fail closed, don't let a malformed
+            // value masquerade as a fresh datum. Production errors here rather than skipping
+            // to the next row, so this returns `None` at the same row instead of searching on.
+            raw.parse::<f64>().ok().filter(|n: &f64| n.is_finite())?;
+            let date_str = obs.get("date")?.as_str()?.trim();
+            return NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok();
+        }
+        None
+    }
+
+    #[test]
+    fn latest_numeric_observation_date_skips_gaps() {
+        // Newest-first with leading "." gaps: the first numeric row dates the value.
+        let v: Value = serde_json::from_str(
+            r#"{"observations":[
+                {"date":"2026-06-07","value":"."},
+                {"date":"2026-06-06","value":"."},
+                {"date":"2026-06-05","value":"78.00"},
+                {"date":"2026-06-04","value":"80.00"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            latest_numeric_observation_date(&v),
+            Some(NaiveDate::from_ymd_opt(2026, 6, 5).unwrap())
+        );
+        // All gaps -> no dated value.
+        let all_gaps: Value =
+            serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#).unwrap();
+        assert!(latest_numeric_observation_date(&all_gaps).is_none());
+        // Wrong shape -> None, not a panic.
+        let bad: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
+        assert!(latest_numeric_observation_date(&bad).is_none());
+        // A non-numeric / non-finite latest value fails closed -> None (the smoke then
+        // panics), mirroring observations_to_quote's rejection. It must not date the bogus
+        // value, nor skip past it to an older numeric row.
+        for bad in ["garbage", "NaN", "inf", "-inf", "infinity"] {
+            let v: Value = serde_json::from_str(&format!(
+                r#"{{"observations":[{{"date":"2026-06-05","value":"{bad}"}},{{"date":"2026-06-04","value":"4.30"}}]}}"#
+            ))
+            .unwrap();
+            assert!(
+                latest_numeric_observation_date(&v).is_none(),
+                "value {bad:?} must fail closed, not date a bogus or older value"
+            );
+        }
+    }
+
     #[test]
     fn interpret_response_covers_the_full_matrix() {
         use GapReason::*;
@@ -814,6 +995,41 @@ mod tests {
             "a macro series did not resolve"
         );
 
+        let today = Utc::now().date_naive();
+
+        // Freshness guard — the count asserts above prove each series *resolves*, but a
+        // discontinued / frozen series still resolves to a stale value (it just stops
+        // getting new observations, so the no-date-bound `get` returns its last real
+        // datum from months ago — the `NASDAQVOLNDX` class of bug). Re-fetch each series
+        // (FRED is 120 req/min with no daily cap) and assert its latest *numeric*
+        // observation is recent enough for its cadence, so a series going discontinued
+        // fails the smoke loudly rather than feeding a stale level into the baseline.
+        eprintln!("freshness (today = {today}):");
+        for (series_id, name, _unit) in INTERNALS_SERIES.iter().chain(MACRO_SERIES) {
+            let (status, body) = src.get(series_id).expect("freshness re-fetch");
+            let value = match interpret_response(status, &body) {
+                Disposition::Value(v) => v,
+                Disposition::Gap(reason) => {
+                    panic!("series {series_id} ({name}) did not resolve on re-fetch ({reason:?})")
+                }
+            };
+            let date = latest_numeric_observation_date(&value).unwrap_or_else(|| {
+                panic!("series {series_id} ({name}) had no numeric observation to date")
+            });
+            let staleness = (today - date).num_days();
+            let cadence = cadence_for(series_id);
+            let bound = cadence.max_staleness_days();
+            eprintln!(
+                "  {series_id:<14} {name:<34} latest={date} stale={staleness:>4}d \
+                 (<= {bound}d, {cadence:?})"
+            );
+            assert!(
+                staleness <= bound,
+                "series {series_id} ({name}) latest observation {date} is {staleness} days \
+                 stale (> {bound} for {cadence:?}) — likely discontinued; check the id"
+            );
+        }
+
         // The economic-release calendar is additive (no completeness floor), so assert it
         // resolved *something* and that every entry is well-formed — a curated release
         // name, a released/upcoming status, and an in-window date. A wrong / retired
@@ -885,7 +1101,6 @@ mod tests {
             .map(|r| (r.id, r.name.as_str()))
             .collect();
 
-        let today = Utc::now().date_naive();
         let wide_start = (today - Duration::days(400)).format("%Y-%m-%d").to_string();
         let wide_end = today.format("%Y-%m-%d").to_string();
         for (id, name) in RELEASES {
