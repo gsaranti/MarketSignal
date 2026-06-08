@@ -354,9 +354,11 @@ fn build_openai_request(model_id: &str, system: &str, user: &str, schema: &Value
     })
 }
 
-/// Pull the envelope value out of an Anthropic response: the first `tool_use`
-/// block matching our forced tool, by its `input`.
-fn extract_anthropic_envelope(raw: &Value) -> Result<Value> {
+/// Pull a forced tool's `input` out of an Anthropic response: the first
+/// `tool_use` block whose `name` matches `tool_name`. Shared with the fixed
+/// internal Anthropic stages (`research_router`), whose forced-tool responses
+/// have the identical block shape under a different tool name.
+pub(crate) fn extract_anthropic_tool_input(raw: &Value, tool_name: &str) -> Result<Value> {
     let blocks = raw
         .get("content")
         .and_then(Value::as_array)
@@ -365,10 +367,10 @@ fn extract_anthropic_envelope(raw: &Value) -> Result<Value> {
         .iter()
         .find(|b| {
             b.get("type").and_then(Value::as_str) == Some("tool_use")
-                && b.get("name").and_then(Value::as_str) == Some(TOOL_NAME)
+                && b.get("name").and_then(Value::as_str) == Some(tool_name)
         })
         .and_then(|b| b.get("input").cloned())
-        .ok_or_else(|| anyhow!("Anthropic response contained no {TOOL_NAME} tool_use block"))
+        .ok_or_else(|| anyhow!("Anthropic response contained no {tool_name} tool_use block"))
 }
 
 /// Pull the envelope value out of an OpenAI response: the first choice's message
@@ -424,7 +426,7 @@ fn parse_response(
     created_at: String,
 ) -> Result<MainAgentOutput> {
     let value = match provider {
-        Provider::Anthropic => extract_anthropic_envelope(raw)?,
+        Provider::Anthropic => extract_anthropic_tool_input(raw, TOOL_NAME)?,
         Provider::OpenAi => extract_openai_envelope(raw)?,
     };
     let env: ResponseEnvelope =
