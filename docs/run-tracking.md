@@ -15,12 +15,18 @@ job's progress as it happens:
   start and resolve — the credential and configuration check, the baseline
   market-data gather, the coverage check, the main agent writing the report, and
   saving the result.
-- **Every data request, one row per request.** During the baseline gather, each
-  external API request appears as its own row as it is made, then resolves to a
-  pass or a fail. A failed request shows why it failed (for example *unavailable*,
-  *rejected*, or *malformed*). A request that is never made — because an earlier
-  request to the same provider was rejected, short-circuiting the rest — produces
-  no row, so the rows stay one-to-one with the network calls actually made.
+- **Every data request, one row per request.** During the baseline gather — and
+  the research phase, when it runs — each external request appears as its own row
+  as it is made, then resolves to a pass or a fail. A failed request shows why it
+  failed (for example *unavailable*, *rejected*, or *malformed*). A *request* here
+  is one logical fetch — a single data series, or a single research query — not a
+  single network packet: when a request meets a transient failure (a rate limit or
+  a brief server error) the application retries it a bounded number of times
+  automatically, and those retries belong to that one request's row rather than
+  spawning new ones. A request that is never made — because an earlier request to
+  the same provider was rejected, short-circuiting the rest — produces no row. So
+  each row corresponds to one request the workflow chose to make, resolved to its
+  final outcome.
 - **The main agent's report, streamed live.** As the main agent writes the weekly
   report, its text streams into the tracker as it is produced, rather than
   appearing only once the report is finished.

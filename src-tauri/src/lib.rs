@@ -15,6 +15,7 @@ pub mod news;
 pub mod pipeline;
 pub mod progress;
 pub mod research;
+pub mod research_executor;
 pub mod research_router;
 pub mod schedule;
 pub mod settings;
