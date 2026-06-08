@@ -2,7 +2,7 @@
 //!
 //! The first data-source adapter behind the `MarketDataSource` trait
 //! (`data_sources`). On FMP's free tier the provider is effectively an *equities*
-//! API, so this adapter owns the equity-market half of the Step-6 baseline:
+//! API, so this adapter owns the equity-market half of the Step-3 baseline:
 //! the market **indices** (Dow / S&P 500 / Nasdaq / Russell 2000), the **VIX**,
 //! **gold** and **silver** (`GCUSD` / `SIUSD`, free on the quote endpoint), **sector
 //! performance**, each index's **multi-horizon performance** (weekly / MTD / YTD /
@@ -166,7 +166,7 @@ const EARNINGS_MIN_REVENUE: f64 = 5_000_000_000.0;
 const EARNINGS_MAX_ROWS: usize = 25;
 
 /// The four headline indices of the baseline scan (`docs/weekly-report-workflow
-/// .md §Step 6`), paired with a display name used when FMP omits one and the `price`
+/// .md §Step 3`), paired with a display name used when FMP omits one and the `price`
 /// unit. All four are free-tier on FMP (verified live). The unit rides from the table,
 /// not the wire — FMP's quote object carries no unit — and labels the level for the
 /// model the same way `fred`'s and `bls`'s series tables do.
@@ -2048,7 +2048,7 @@ mod tests {
         );
     }
 
-    /// Free-vs-premium probe for candidate Step-6 baseline endpoints whose tier the
+    /// Free-vs-premium probe for candidate Step-3 baseline endpoints whose tier the
     /// FMP docs (403 to scrapers, identical boilerplate per page) won't settle.
     /// Prints the HTTP status (200 ≈ free, 402 = premium) plus a sample of the body so
     /// a maintainer can read the real field names before any adapter is written. Hits

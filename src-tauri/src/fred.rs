@@ -2,17 +2,17 @@
 //! half of the baseline market-data scan.
 //!
 //! The second data-source adapter behind the `MarketDataSource` trait
-//! (`data_sources`), the sibling of `fmp`. It owns the Step-6 market internals FMP
+//! (`data_sources`), the sibling of `fmp`. It owns the Step-3 market internals FMP
 //! does not serve on its free tier (verified live: HTTP 402 "premium"): the
 //! **2Y / 10Y Treasury yields**, the **US dollar index**, and the **oil / natural
-//! gas** commodity prices (`docs/weekly-report-workflow.md §Step 6`,
+//! gas** commodity prices (`docs/weekly-report-workflow.md §Step 3`,
 //! `docs/data-sources.md §FRED`). Each is a canonical free FRED daily series; the
 //! results are appended to the baseline's `internals` group alongside FMP's VIX and
 //! gold by the composite source. (Gold is served free on FMP via `GCUSD` and stays
 //! there — FRED's former gold benchmark series were removed, so this adapter owns no
 //! gold series.)
 //!
-//! It also owns the Step-6 **macro levels** group (`macro_levels`): the Fed-funds
+//! It also owns the Step-3 **macro levels** group (`macro_levels`): the Fed-funds
 //! target range as the policy-stance proxy (futures-implied expectations aren't on
 //! FRED's free tier, and no other data source supplies them free), the 5y / 10y
 //! inflation breakevens, U. Michigan consumer sentiment, and the PCE price index.
@@ -21,7 +21,7 @@
 //! report a day-over-day `change_pct`; monthly series (sentiment, PCE), month-over-
 //! month.
 //!
-//! It additionally owns the Step-6 **economic-release calendar** (`calendar`): the
+//! It additionally owns the Step-3 **economic-release calendar** (`calendar`): the
 //! prior-week and upcoming US economic reports (CPI, PCE, jobs, GDP, …), built
 //! from FRED's free *release-dates* schedule rather than the observations endpoint.
 //! FMP's economic-calendar endpoint is premium-gated (verified live: HTTP 402), so the
@@ -75,8 +75,8 @@ const FRED_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 /// (weekends / holidays / unpublished days) so the day-over-day change resolves.
 const OBSERVATION_LIMIT: &str = "10";
 
-/// The FRED-owned market internals of the Step-6 baseline (`docs/weekly-report
-/// -workflow.md §Step 6`), paired with a display name and the `price` unit. Each is a
+/// The FRED-owned market internals of the Step-3 baseline (`docs/weekly-report
+/// -workflow.md §Step 3`), paired with a display name and the `price` unit. Each is a
 /// free FRED daily series; the FRED `series_id` doubles as the quote `symbol`. Yields
 /// and the breakevens are quoted in percent; the dollar index is an index level; oil
 /// and gas are dollar prices — the unit labels which, so the model doesn't read a yield
@@ -112,8 +112,8 @@ const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
     ("BAMLH0A2HYB", "US High-Yield B OAS", "percent"),
 ];
 
-/// The FRED-owned macro levels of the Step-6 baseline (`docs/weekly-report
-/// -workflow.md §Step 6`, the "Macro" group): the Fed-funds target range as the
+/// The FRED-owned macro levels of the Step-3 baseline (`docs/weekly-report
+/// -workflow.md §Step 3`, the "Macro" group): the Fed-funds target range as the
 /// policy-stance proxy (futures-implied expectations aren't on FRED's free tier), the
 /// 5y / 10y inflation breakevens, U. Michigan consumer sentiment, the PCE price index,
 /// and the headline activity reports — PPI, retail sales, job openings (JOLTS), and real
@@ -156,7 +156,7 @@ const MACRO_SERIES: &[(&str, &str, &str)] = &[
     ("MORTGAGE30US", "30-Year Fixed Mortgage Rate", "percent"),
 ];
 
-/// FRED's release-dates endpoint — the economic-release *schedule* the Step-6 calendar
+/// FRED's release-dates endpoint — the economic-release *schedule* the Step-3 calendar
 /// reads, distinct from the series observations above. `include_release_dates_with_no_data`
 /// surfaces upcoming (not-yet-released) dates; the realtime window bounds the dates to
 /// the calendar span.
@@ -168,7 +168,7 @@ const FRED_RELEASE_DATES_URL: &str = "https://api.stlouisfed.org/fred/release/da
 const CALENDAR_BACK_DAYS: i64 = 10;
 const CALENDAR_FWD_DAYS: i64 = 21;
 
-/// The curated market-moving US economic releases of the Step-6 calendar, as
+/// The curated market-moving US economic releases of the Step-3 calendar, as
 /// `(FRED release_id, display name)`. The ids are pinned against FRED's `releases`
 /// catalog, and each is verified live by `fred_baseline_smoke` two ways — by **name**
 /// against FRED's `releases` catalog (a wrong-but-valid id points at a different release,
@@ -494,7 +494,7 @@ impl FredDataSource {
         })
     }
 
-    /// Gather the Step-6 economic-release calendar: each curated release's prior-week and
+    /// Gather the Step-3 economic-release calendar: each curated release's prior-week and
     /// upcoming dates within the window, shaped into `EconomicRelease`s. The calendar is
     /// an additive group with no floor, so it degrades quietly: a per-release "does not
     /// exist" 400 is silent (a permanent absence shouldn't clutter the manifest), while a
@@ -980,7 +980,7 @@ mod tests {
         dump("internals", &data.internals);
         dump("macro_levels", &data.macro_levels);
 
-        // Both groups are non-optional Step-6 baseline data. Assert each resolves in
+        // Both groups are non-optional Step-3 baseline data. Assert each resolves in
         // full so a silently dropped (renamed / discontinued) series fails the smoke
         // loudly rather than thinning the baseline unnoticed — the per-symbol-assert
         // discipline `fmp_baseline_smoke` uses for its free-tier-sensitive symbols.

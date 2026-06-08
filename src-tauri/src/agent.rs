@@ -92,8 +92,8 @@ pub struct ReportSummary {
     pub forward_outlook_themes: Vec<String>,
 }
 
-/// Input handed to the main agent. Carries the Step-6 baseline market-data scan
-/// (`docs/weekly-report-workflow.md §Step 6`), gathered by the application layer
+/// Input handed to the main agent. Carries the Step-3 baseline market-data scan
+/// (`docs/weekly-report-workflow.md §Step 3`), gathered by the application layer
 /// before agent reasoning; the rest of the condensed research packet (news
 /// clusters, deep research, vector memory) joins it as later slices land.
 #[derive(Debug, Clone, Default)]

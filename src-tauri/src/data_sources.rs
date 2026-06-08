@@ -11,8 +11,8 @@
 //! group — CPI, unemployment, payrolls, wages) — and the `CompositeMarketDataSource`
 //! below runs them and merges them into one baseline.
 //!
-//! `BaselineMarketData` is the Step-6 baseline scan
-//! (`docs/weekly-report-workflow.md §Step 6`), gathered before agent reasoning.
+//! `BaselineMarketData` is the Step-3 baseline scan
+//! (`docs/weekly-report-workflow.md §Step 3`), gathered before agent reasoning.
 //! FMP fills indices, sectors, and the VIX + gold internals; FRED appends its
 //! commodity / yield series to the same `internals` group and fills the
 //! `macro_levels` group (Fed-funds target range, inflation breakevens, consumer
@@ -51,8 +51,8 @@ pub struct SectorPerformance {
     pub change_pct: f64,
 }
 
-/// One entry in the Step-6 economic-release calendar: a scheduled or just-released US
-/// economic report (`docs/weekly-report-workflow.md §Step 6` — the "CPI/PCE/jobs
+/// One entry in the Step-3 economic-release calendar: a scheduled or just-released US
+/// economic report (`docs/weekly-report-workflow.md §Step 3` — the "CPI/PCE/jobs
 /// calendar" and "major economic reports from the prior week"). Sourced from FRED's
 /// free release-dates schedule (FMP's economic-calendar endpoint is premium-gated), so
 /// it carries the release **name** and **date** but not the report's figures — those
@@ -113,7 +113,7 @@ pub struct StockMover {
     pub exchange: String,
 }
 
-/// One company's earnings event in the Step-6 window — a recent or upcoming report from
+/// One company's earnings event in the Step-3 window — a recent or upcoming report from
 /// FMP's free earnings calendar, filtered to large-cap names by revenue estimate. A
 /// forward date carries estimates with null actuals; a past date in the window carries
 /// both, so the model can read beats / misses. Every figure is optional: FMP omits
@@ -172,7 +172,7 @@ pub struct MarketRiskPremium {
     pub total_equity_risk_premium: f64,
 }
 
-/// Which Step-6 baseline group a [`DataGap`] belongs to. Serializes to a stable kebab
+/// Which Step-3 baseline group a [`DataGap`] belongs to. Serializes to a stable kebab
 /// label so the model reading the manifest sees the same group names the data groups
 /// carry, and the coverage gate (`pipeline::enforce_coverage`) can match on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -263,7 +263,7 @@ impl GapReason {
     }
 }
 
-/// One entry in the Step-6 missing-data manifest: a series / release a provider failed
+/// One entry in the Step-3 missing-data manifest: a series / release a provider failed
 /// to resolve this run, tagged with its group and the reason it's absent. Carried on
 /// [`BaselineMarketData::gaps`], merged across providers by the composite, evaluated by
 /// the coverage gate, and serialized into the agent's prompt so the model reasons over
@@ -320,7 +320,7 @@ pub struct BaselineMarketData {
     pub internals: Vec<Quote>,
     #[serde(default)]
     pub sectors: Vec<SectorPerformance>,
-    /// Step-6 macro levels (Fed-funds target range, inflation breakevens, consumer
+    /// Step-3 macro levels (Fed-funds target range, inflation breakevens, consumer
     /// sentiment, PCE, plus the headline activity reports — PPI, retail sales, JOLTS,
     /// real GDP — that back the `calendar`'s prior-week entries) — point-in-time FRED
     /// series, kept distinct from the market `internals`. Same `Quote` shape: `price` is
@@ -328,13 +328,13 @@ pub struct BaselineMarketData {
     /// (day-over-day, month-over-month, or quarter-over-quarter by series frequency).
     #[serde(default)]
     pub macro_levels: Vec<Quote>,
-    /// Step-6 labor levels (CPI, unemployment rate, nonfarm payrolls, average hourly
+    /// Step-3 labor levels (CPI, unemployment rate, nonfarm payrolls, average hourly
     /// earnings) — point-in-time BLS series, kept distinct from the FRED `macro_levels`
     /// by source and concern. Same `Quote` shape: `price` is the latest reported level
     /// and `change_pct` its month-over-month change from the prior reading.
     #[serde(default)]
     pub labor_levels: Vec<Quote>,
-    /// Step-6 economic-release calendar (`docs/weekly-report-workflow.md §Step 6`): the
+    /// Step-3 economic-release calendar (`docs/weekly-report-workflow.md §Step 3`): the
     /// prior-week and upcoming US economic reports (CPI, PCE, jobs, GDP, …) as a
     /// release schedule from FRED's free release-dates endpoint. A schedule of names +
     /// dates, not figures — the actual readings reach the model via `macro_levels` /
@@ -342,44 +342,44 @@ pub struct BaselineMarketData {
     /// carries no completeness floor, unlike the series groups.
     #[serde(default)]
     pub calendar: Vec<EconomicRelease>,
-    /// Step-6 multi-horizon index performance, derived from FMP's end-of-day history
+    /// Step-3 multi-horizon index performance, derived from FMP's end-of-day history
     /// (`historical-price-eod`): week-over-week / MTD / YTD returns and 52-week-range
     /// position per index, enriching the daily `indices` quotes. Empty is valid — like
     /// the `calendar` it carries no completeness floor and soft-degrades if the history
-    /// fetch fails, since the daily `indices` quotes already satisfy Step 6.
+    /// fetch fails, since the daily `indices` quotes already satisfy Step 3.
     #[serde(default)]
     pub index_performance: Vec<IndexPerformance>,
-    /// Step-6 market movers: the filtered top gainers / losers / most-active US names this
+    /// Step-3 market movers: the filtered top gainers / losers / most-active US names this
     /// run (FMP's free mover lists). A micro-breadth signal the index/sector groups can't
     /// give — which individual names moved most. Empty is valid; like `calendar` /
     /// `index_performance` it carries no completeness floor and soft-degrades, since the
     /// breadth read is additive over the required index/internals grounding.
     #[serde(default)]
     pub movers: Vec<StockMover>,
-    /// Step-6 earnings calendar: large-cap US companies reporting in the prior-week +
+    /// Step-3 earnings calendar: large-cap US companies reporting in the prior-week +
     /// upcoming window (FMP's free earnings calendar, filtered by revenue estimate). Recent
     /// rows carry actual-vs-estimate; upcoming rows carry estimates only. Empty is valid —
     /// additive and non-floor like `movers`, soft-degrading rather than failing the run.
     #[serde(default)]
     pub earnings: Vec<EarningsEvent>,
-    /// Step-6 sector valuation: each sector's aggregate P/E per exchange (FMP's free
+    /// Step-3 sector valuation: each sector's aggregate P/E per exchange (FMP's free
     /// exchange-specific sector-PE snapshot, gathered for both NASDAQ and NYSE), a valuation
     /// complement to the `sectors` performance group. Empty is valid — additive and non-floor
     /// like `movers` / `earnings`, soft-degrading rather than failing the run.
     #[serde(default)]
     pub sector_pe: Vec<SectorPe>,
-    /// Step-6 finer rotation + valuation: per exchange (NASDAQ + NYSE), the strongest and
+    /// Step-3 finer rotation + valuation: per exchange (NASDAQ + NYSE), the strongest and
     /// weakest industries this run (FMP's free industry-performance snapshot), each joined
     /// with its aggregate P/E where available — a finer cut than the ~11 `sectors`. Empty is
     /// valid; additive and non-floor, soft-degrading rather than failing the run.
     #[serde(default)]
     pub industries: Vec<IndustrySnapshot>,
-    /// Step-6 valuation anchor: the US equity-risk-premium (FMP's free market-risk-premium,
+    /// Step-3 valuation anchor: the US equity-risk-premium (FMP's free market-risk-premium,
     /// filtered to the United States) — a near-static annual constant. Zero or one row.
     /// Empty is valid; additive and non-floor, soft-degrading rather than failing the run.
     #[serde(default)]
     pub market_risk_premium: Vec<MarketRiskPremium>,
-    /// Step-6 missing-data manifest: the series / releases a provider failed to resolve
+    /// Step-3 missing-data manifest: the series / releases a provider failed to resolve
     /// this run (`DataGap`), each tagged with its group and reason. Populated by the
     /// adapters as they degrade instead of failing, merged across providers by the
     /// composite, read by the coverage gate (`pipeline::enforce_coverage`) to decide the

@@ -9,10 +9,10 @@
 - Docs corpus map — README.md
 
 ## Agents & models
-- Agent pipeline (fixed multi-agent, not tool-driven) — agents.md (intro); weekly-report-workflow.md §Step 11
+- Agent pipeline (fixed multi-agent, not tool-driven) — agents.md (intro); weekly-report-workflow.md §Step 12
 - Main Agent (Head Market Analyst) responsibilities — agents.md §Main Agent
-- Main Agent synthesis behavior (independent critique, unified voice) — agents.md §Synthesis Behavior; weekly-report-workflow.md §Step 15
-- Analyst Agents (Bull / Bear / Balanced) — agents.md §Analyst Agents; weekly-report-workflow.md §Steps 11–14
+- Main Agent synthesis behavior (independent critique, unified voice) — agents.md §Synthesis Behavior; weekly-report-workflow.md §Step 16
+- Analyst Agents (Bull / Bear / Balanced) — agents.md §Analyst Agents; weekly-report-workflow.md §Steps 12–15
 - Bull / Bear / Balanced postures — agents.md §Bull Analyst, §Bear Analyst, §Balanced Analyst
 - Fixed internal models (non-configurable) — agents.md §Fixed Internal Models
   - Headline Filtering = OpenAI GPT-5 mini — agents.md §Headline Filtering; weekly-report-workflow.md §Step 7
@@ -50,14 +50,15 @@
 - Run-is-not-a-report invariant — run-tracking.md §A Run Is Not a Report
 - Reaching the tracker (footer: View progress / View run log) — run-tracking.md §Reaching the Tracker
 
-## Weekly report workflow (17 steps)
-- End-to-end step list — weekly-report-workflow.md §Steps 1–17
+## Weekly report workflow (18 steps)
+- End-to-end step list — weekly-report-workflow.md §Steps 1–18
 - News ingestion funnel (~500 → ~5 topics) — weekly-report-workflow.md §Step 7
 - Research routing / research plan — weekly-report-workflow.md §Step 8
 - Dynamic research + limits (50 requests / 30 min / depth 2) — weekly-report-workflow.md §Step 9
-- Condensed research packet — weekly-report-workflow.md §Step 10; agents.md §Main Agent
-- Baseline market data scan — weekly-report-workflow.md §Step 6
-- Baseline change view (deltas since previous report) — weekly-report-workflow.md §Step 6; storage.md §Baseline Snapshots
+- Condensed research packet — weekly-report-workflow.md §Step 11; agents.md §Main Agent
+- Baseline market data scan — weekly-report-workflow.md §Step 3
+- Baseline change view (deltas since previous report) — weekly-report-workflow.md §Step 3; storage.md §Baseline Snapshots
+- Vector memory retrieval — pre-research (steers audit + routing) §Step 4; post-research (research-informed) §Step 10 — weekly-report-workflow.md
 
 ## Data sources
 - Financial Modeling Prep (primary financial-data source) — data-sources.md §Financial Modeling Prep
@@ -70,7 +71,7 @@
 ## Research documents
 - /research-inbox and /research-archive — research-documents.md; interface.md (Research Documents)
 - Supported formats (PDF/MD/TXT/CSV/JSON/HTML) — research-documents.md §Research Inbox
-- Processing at job start + auto-archive — research-documents.md §Processing at Job Start; weekly-report-workflow.md §Step 5
+- Processing at job start + auto-archive — research-documents.md §Processing at Job Start; weekly-report-workflow.md §Step 6
 - User permissions (delete yes / archive no) — research-documents.md §User Permissions
 
 ## Thesis & continuity
@@ -78,11 +79,11 @@
 - Report continuity (flow between reports) — thesis-continuity.md §Report Continuity
 - Thesis stability (signal over noise) — thesis-continuity.md §Thesis Stability
 - Thesis pivot conditions — thesis-continuity.md §Thesis Pivot Conditions
-- Memory-guided evolution — thesis-continuity.md §Memory-Guided Evolution; weekly-report-workflow.md §Step 4
-- Retrospective audit of prior reports — weekly-report-workflow.md §Step 3; report-structure.md §Retrospective Audit
+- Memory-guided evolution — thesis-continuity.md §Memory-Guided Evolution; weekly-report-workflow.md §Steps 4, 10
+- Retrospective audit of prior reports — weekly-report-workflow.md §Step 5; report-structure.md §Retrospective Audit
 
 ## Report format & structure
-- Markdown canonical vs HTML presentation rule — report-structure.md; weekly-report-workflow.md §Steps 2, 17
+- Markdown canonical vs HTML presentation rule — report-structure.md; weekly-report-workflow.md §Steps 2, 18
 - markdown-it renderer — report-structure.md §Presentation Format
 - Standard report sections — report-structure.md §Standard Report Structure
 - Market Signal Thesis (unified voice) — report-structure.md §Market Signal Thesis; agents.md §Synthesis Behavior
@@ -95,14 +96,14 @@
 - market_regime fixed vocabulary (6 labels) — storage.md §SQLite
 - Report summary metadata schema (JSON, required/optional fields) — storage.md §Report Summary Metadata Schema
 - Retention (30 reports, cascade delete) — storage.md §SQLite
-- Per-report baseline snapshots + change view (deltas vs previous report) — storage.md §Baseline Snapshots; weekly-report-workflow.md §Step 6
+- Per-report baseline snapshots + change view (deltas vs previous report) — storage.md §Baseline Snapshots; weekly-report-workflow.md §Step 3
 - Baseline-snapshot retention (14, independent of report retention) — storage.md §Baseline Snapshots
-- LanceDB vector memory (summaries, durable learnings) — storage.md §LanceDB Vector Memory; weekly-report-workflow.md §Steps 4, 16
+- LanceDB vector memory (summaries, durable learnings) — storage.md §LanceDB Vector Memory; weekly-report-workflow.md §Steps 4, 10, 17
 - Durable learnings survive report deletion — storage.md §LanceDB Vector Memory
 
 ## Interface
 - Main layout tree — interface.md §Main Layout
-- Latest Report View / Recent Reports Sidebar — interface.md; weekly-report-workflow.md §Step 17
+- Latest Report View / Recent Reports Sidebar — interface.md; weekly-report-workflow.md §Step 18
 - Run Tracker (live job progress; replaces report pane) — interface.md; run-tracking.md
 - Persistent Warning Area (5 categories, de-dup, dismiss) — interface.md §Persistent Warning Area; scheduling.md §Error Handling
 

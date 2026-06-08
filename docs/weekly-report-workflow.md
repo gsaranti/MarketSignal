@@ -77,63 +77,11 @@ Structured metadata may include:
 
 This recent context helps the main agent understand how the broader market thesis has evolved over time, which unresolved risks remain important, whether prior reports were directionally correct, and whether the current report should strengthen, weaken, or revise prior conclusions.
 
-## Step 3: Audit Prior Reports
-
-Before deeper synthesis begins, the application supplies prior report context and actual market developments to the main agent. The main agent then evaluates a bounded set of prior Weekly Market reports against what occurred afterward.
-
-The audit window should usually include the previous 2–6 Weekly Market reports, depending on relevance and context limits.
-
-The retrospective audit process may evaluate:
-- whether major market concerns materialized
-- whether bullish or bearish expectations proved directionally correct
-- whether risks were underestimated or overestimated
-- whether market-moving events evolved differently than expected
-- which analytical signals proved most useful
-- whether the broader thesis strengthened or weakened over time
-
-The goal of the audit system is not prediction scoring or numerical accuracy tracking.
-
-The goal is:
-- improving long-term analytical quality
-- identifying weak assumptions
-- reinforcing useful analytical patterns
-- maintaining intellectual honesty
-- and improving future market-thesis generation
-
-The retrospective audit system behaves similarly to how professional research firms review prior theses and market calls over time.
-
-## Step 4: Retrieve Relevant Vector Memory
-
-The application queries LanceDB for relevant semantic memory before the main agent begins deeper reasoning, then supplies the retrieved memory fragments to the main agent.
-
-Retrieved memory may include:
-- report summaries
-- durable learnings
-- prior thesis changes
-- important historical analogs
-- past analytical mistakes
-- recurring market patterns
-
-Vector memory is used selectively. The system does not inject the full report history into the prompt.
-
-For what is stored in vector memory and the retention rules around it, see [storage.md §LanceDB Vector Memory](storage.md#lancedb-vector-memory). For how memory shapes the main agent's reasoning across reports, see [thesis-continuity.md §Memory-Guided Evolution](thesis-continuity.md#memory-guided-evolution).
-
-## Step 5: Check Research Inbox
-
-The application checks `/research-inbox` at the start of the report job.
-
-Research document handling follows the workflow defined in [research-documents.md](research-documents.md).
-
-Research documents may influence:
-- the research packet
-- analyst agent outputs
-- the final report
-
-## Step 6: Gather Baseline Market Data
+## Step 3: Gather Baseline Market Data
 
 The application gathers required baseline market data before agent reasoning begins.
 
-Baseline market data is not optional and does not depend on the main agent deciding to request it.
+Baseline market data is not optional and does not depend on the main agent deciding to request it. It is gathered early — before the audit and research routing — so the measured market picture and the change view below are available to every downstream stage that reasons about what actually happened.
 
 The baseline scan includes:
 
@@ -187,6 +135,66 @@ Individual series and releases degrade gracefully rather than aborting the scan:
 
 The application also persists each run's baseline scan and, when a previous report's snapshot exists, computes a change view against it — the level-by-level moves since the previous report, over the actual elapsed interval — which travels with the baseline into the main agent's reasoning so the report grounds change in measured deltas rather than the prior report's prose. The change view is additive: a first report, or an unreadable prior snapshot, simply omits it. See [storage.md §Baseline Snapshots](storage.md#baseline-snapshots).
 
+Because the baseline scan and change view are gathered here, ahead of the audit ([Step 5](#step-5-audit-prior-reports)) and research routing ([Step 8](#step-8-perform-research-routing)), those stages can measure prior reports and prioritise topics against what the market actually did rather than against prose alone.
+
+## Step 4: Retrieve Vector Memory (Pre-Research)
+
+Before the audit and research routing, the application queries LanceDB for semantic memory relevant to the current market picture and supplies the retrieved fragments to those stages. This is the first of two vector-memory retrievals in the workflow; the second, research-informed pull runs at [Step 10](#step-10-retrieve-vector-memory-post-research).
+
+The retrieval query is built from the recent report context ([Step 2](#step-2-load-recent-report-context)) and the baseline scan and change view ([Step 3](#step-3-gather-baseline-market-data)) — so memory is recalled against where the market actually is this period, not from a cold query at job start. Its purpose is to **steer investigation**: the recalled material shapes what the audit scrutinises and which themes research routing prioritises.
+
+Retrieved memory may include:
+- report summaries
+- durable learnings
+- prior thesis changes
+- important historical analogs
+- past analytical mistakes
+- recurring market patterns
+
+Vector memory is used selectively. The system does not inject the full report history into the prompt.
+
+This retrieval is additive and fail-soft: if memory cannot be retrieved — an empty store on an early run, or a retrieval error — the workflow proceeds without it rather than failing the job.
+
+For what is stored in vector memory and the retention rules around it, see [storage.md §LanceDB Vector Memory](storage.md#lancedb-vector-memory). For how memory shapes the main agent's reasoning across reports, see [thesis-continuity.md §Memory-Guided Evolution](thesis-continuity.md#memory-guided-evolution).
+
+## Step 5: Audit Prior Reports
+
+With the baseline scan and change view already gathered ([Step 3](#step-3-gather-baseline-market-data)) and relevant memory recalled ([Step 4](#step-4-retrieve-vector-memory-pre-research)), the application supplies prior report context together with the current measured market state to the main agent. The main agent then evaluates a bounded set of prior Weekly Market reports against what actually occurred — grounding the audit in the current measured baseline rather than prose recollection alone.
+
+The change view measures only the most recent interval — the move since the immediately previous report (see [storage.md §Baseline Snapshots](storage.md#baseline-snapshots)) — so reports earlier in the audit window are judged against the current measured baseline levels, not a per-report delta. (The snapshot store retains enough history to diff the current scan against each audited report's snapshot, so per-report measured deltas across the whole window are a possible future enrichment rather than a present guarantee.)
+
+The audit window should usually include the previous 2–6 Weekly Market reports, depending on relevance and context limits.
+
+The retrospective audit process may evaluate:
+- whether major market concerns materialized
+- whether bullish or bearish expectations proved directionally correct
+- whether risks were underestimated or overestimated
+- whether market-moving events evolved differently than expected
+- which analytical signals proved most useful
+- whether the broader thesis strengthened or weakened over time
+
+The goal of the audit system is not prediction scoring or numerical accuracy tracking.
+
+The goal is:
+- improving long-term analytical quality
+- identifying weak assumptions
+- reinforcing useful analytical patterns
+- maintaining intellectual honesty
+- and improving future market-thesis generation
+
+The retrospective audit system behaves similarly to how professional research firms review prior theses and market calls over time.
+
+## Step 6: Check Research Inbox
+
+The application checks `/research-inbox` at the start of the report job.
+
+Research document handling follows the workflow defined in [research-documents.md](research-documents.md).
+
+Research documents may influence:
+- the research packet
+- analyst agent outputs
+- the final report
+
 ## Step 7: Gather and Filter News
 
 The application gathers a broad set of headlines and research candidates from the configured news and research sources — Tavily and GDELT (see [data-sources.md](data-sources.md)). Tavily contributes AI-oriented market and research headlines; GDELT contributes geopolitical and large-scale news trend coverage.
@@ -219,10 +227,10 @@ This step reduces noise before the main agent performs deeper reasoning. The hea
 Research routing determines which topics deserve deeper analysis for the current report. The routing model produces a structured research plan, and the application layer is responsible for executing that plan against configured data sources.
 
 The routing step considers:
-- baseline market data
+- baseline market data and the baseline change view
 - filtered headline clusters
 - recent Markdown report context
-- relevant vector memory
+- relevant vector memory (the pre-research pull from [Step 4](#step-4-retrieve-vector-memory-pre-research))
 - parsed research inbox documents
 - upcoming known market-moving events
 
@@ -290,7 +298,13 @@ If geopolitical tensions escalate:
   Research affected sectors, commodities, supply chains, inflation impact.
 ```
 
-## Step 10: Build Condensed Research Packet
+## Step 10: Retrieve Vector Memory (Post-Research)
+
+After research execution, the application runs a second vector-memory retrieval — this time querying LanceDB against the curated research evidence and the emerging picture it forms. Where the pre-research pull ([Step 4](#step-4-retrieve-vector-memory-pre-research)) steered what to investigate, this pull **deepens interpretation**: it surfaces historical analogs and prior analytical mistakes relevant to what the research actually found, and it is the memory that travels forward into the condensed research packet and the main agent's synthesis.
+
+Like the pre-research pull, this retrieval is selective and fail-soft, and it draws from the same store under the same retention rules (see [storage.md §LanceDB Vector Memory](storage.md#lancedb-vector-memory)). The condensed packet ([Step 11](#step-11-build-condensed-research-packet)) carries **only** this research-informed result set — it replaces, rather than merges with, the pre-research pull ([Step 4](#step-4-retrieve-vector-memory-pre-research)), which is an ephemeral input to the audit and routing and does not flow into the packet. Because both pulls query the same store, they may surface the same item; that is expected, and the packet simply carries the research-informed version retrieved here.
+
+## Step 11: Build Condensed Research Packet
 
 The main agent receives curated evidence from the application layer and creates a condensed research packet.
 
@@ -303,14 +317,14 @@ It may include:
 - deep research findings
 - source links
 - recent Markdown report context
-- relevant vector memory
+- relevant vector memory (the research-informed pull from [Step 10](#step-10-retrieve-vector-memory-post-research))
 - research inbox summaries
 - unresolved thesis questions
 - upcoming events that may affect the market thesis
 
 The research packet must be concise enough to control token usage while still preserving the evidence needed for high-quality analysis.
 
-## Step 11: Run Analyst Agents
+## Step 12: Run Analyst Agents
 
 After the research packet is created, the application runs three analyst agents:
 - Bull Analyst
@@ -319,25 +333,25 @@ After the research packet is created, the application runs three analyst agents:
 
 Each analyst agent receives the same condensed research packet and produces structured analysis from its assigned analytical perspective.
 
-The three analyst agents are independent and run concurrently — each works only from the shared research packet, so there is no ordering dependency between them. Steps 12–14 document each analyst's review individually; their numbering is not an execution order.
+The three analyst agents are independent and run concurrently — each works only from the shared research packet, so there is no ordering dependency between them. Steps 13–15 document each analyst's review individually; their numbering is not an execution order.
 
 Analyst agent outputs are ephemeral pipeline artifacts. They are not persisted independently unless specific insights are extracted into the final report or written as durable learnings.
 
 For each analyst agent's responsibilities, posture, and the shared analytical purpose of the analyst stage, see [agents.md §Analyst Agents](agents.md#analyst-agents).
 
-## Step 12: Bull Analyst Review
+## Step 13: Bull Analyst Review
 
 The Bull Analyst runs its review against the condensed research packet. For the Bull Analyst's responsibilities and posture, see [agents.md §Bull Analyst](agents.md#bull-analyst).
 
-## Step 13: Bear Analyst Review
+## Step 14: Bear Analyst Review
 
 The Bear Analyst runs its review against the condensed research packet. For the Bear Analyst's responsibilities and posture, see [agents.md §Bear Analyst](agents.md#bear-analyst).
 
-## Step 14: Balanced Analyst Review
+## Step 15: Balanced Analyst Review
 
 The Balanced Analyst runs its review against the condensed research packet. For the Balanced Analyst's responsibilities and posture, see [agents.md §Balanced Analyst](agents.md#balanced-analyst).
 
-## Step 15: Main Agent Synthesis
+## Step 16: Main Agent Synthesis
 
 The main agent receives:
 - the original research packet
@@ -349,7 +363,7 @@ The main agent receives:
 
 For the synthesis behavior the main agent applies — independent critique, allowed actions during synthesis, unified-voice constraint, and editorial focus — see [agents.md §Main Agent](agents.md#main-agent).
 
-## Step 16: Save Report and Memory Outputs
+## Step 17: Save Report and Memory Outputs
 
 The main agent writes the final report in Markdown.
 
@@ -368,7 +382,7 @@ Durable learnings may include:
 
 For what is stored in each store, retention rules, and deletion behavior, see [storage.md](storage.md).
 
-## Step 17: Generate HTML and Update UI
+## Step 18: Generate HTML and Update UI
 
 After the Markdown report is saved, the application generates the HTML version from Markdown.
 

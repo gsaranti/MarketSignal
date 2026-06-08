@@ -9,7 +9,7 @@
 //! dirs. The caller passes whichever folder it means.
 //!
 //! Job-start parsing and the move-to-archive step (`docs/weekly-report-workflow.md`
-//! §Step 5) are not implemented yet, so there is no parse-failure error state to
+//! §Step 6) are not implemented yet, so there is no parse-failure error state to
 //! surface here: this lists what is on disk and lets the user delete it
 //! (§User Permissions — delete yes from either folder, manual archive no).
 

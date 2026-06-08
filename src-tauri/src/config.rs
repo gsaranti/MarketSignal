@@ -172,7 +172,7 @@ impl AppConfig {
     }
 
     /// The FMP API key for the baseline market-data scan (`docs/weekly-report
-    /// -workflow.md §Step 6`), resolved from validated configuration. Mirrors
+    /// -workflow.md §Step 3`), resolved from validated configuration. Mirrors
     /// `main_agent_config`'s post-gate resolution: after a passing `validate` the
     /// credential is present, so the error arm is defensive.
     pub fn fmp_key(&self) -> Result<String> {
@@ -184,7 +184,7 @@ impl AppConfig {
     }
 
     /// The FRED API key for the macro / commodity half of the baseline scan
-    /// (`docs/weekly-report-workflow.md §Step 6`), resolved from validated
+    /// (`docs/weekly-report-workflow.md §Step 3`), resolved from validated
     /// configuration. Mirrors `fmp_key`: after a passing `validate` the credential
     /// is present, so the error arm is defensive.
     pub fn fred_key(&self) -> Result<String> {
@@ -318,7 +318,7 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
 
     // External data-provider credentials: FMP, FRED, and Tavily are all required
     // to run (docs/configuration.md §External Data Provider Credentials). FRED
-    // joined the gate when its adapter landed — it now sources non-optional Step-6
+    // joined the gate when its adapter landed — it now sources non-optional Step-3
     // baseline series (Treasury yields, the dollar index, commodities).
     let mut missing_creds: Vec<&str> = Vec::new();
     if present(&cfg.fmp_api_key).is_none() {

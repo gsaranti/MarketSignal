@@ -72,7 +72,7 @@ are deleted together.
 
 ### Baseline Snapshots
 
-Each report stores a snapshot of the baseline market-data scan that produced it (the Step-6 gather, serialized as JSON). On the next report, the application diffs the current scan against the most recent prior snapshot to produce a per-report change view — the level moves since the previous report — handed to the main agent so the thesis can ground "what changed" in measured deltas rather than the prior report's prose.
+Each report stores a snapshot of the baseline market-data scan that produced it (the Step-3 gather, serialized as JSON). On the next report, the application diffs the current scan against the most recent prior snapshot to produce a per-report change view — the level moves since the previous report — handed to the main agent so the thesis can ground "what changed" in measured deltas rather than the prior report's prose.
 
 The most recent 14 snapshots are retained, pruned independently of the 30-report report-retention window. The cadence is report-indexed, not calendar-indexed: because reports can be generated manually at any time (see [scheduling.md §Manual Report Generation](scheduling.md#manual-report-generation)), the change view reports the actual elapsed interval since the previous report rather than assuming a week.
 

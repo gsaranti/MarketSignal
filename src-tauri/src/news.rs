@@ -21,7 +21,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 /// The market-news topics the gathering pass queries each provider for, derived
-/// from the Step-6 news categories (`docs/weekly-report-workflow.md §Step 6` —
+/// from the Step-3 news categories (`docs/weekly-report-workflow.md §Step 3` —
 /// politics, geopolitics, China/trade, energy, earnings, AI/semiconductors, and
 /// major economic developments). Plain free-text queries, accepted by both
 /// Tavily's search API and GDELT's document query.
