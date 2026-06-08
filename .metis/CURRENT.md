@@ -2,29 +2,31 @@
 
 ## What happened
 
-**Research brancher generator settled and shipped** — squash `787b9e2` (PR #18), on `main`. The deferred Step-9 follow-up generator is now `DeltaBranchPolicy`: **deterministic delta-rules** keyed off the baseline change view (chosen over model-backed / hybrid — the unwired stage can't yet measure report-quality gains, and the trait stays the seam for a later model upgrade). Machinery only; `NoBranch` stays the trait default.
+**Step 11 condensed research packet shipped** — squash `8b29a4b` (PR #19), on `main`. The canonical analyst input now exists: `ResearchPacket` + `build_condensed_packet` in `research_packet.rs`.
 
-Three review rounds (Metis reviewer + Codex ×3) produced **load-bearing refinements — don't relitigate:**
-- **Directional gate** — rules fire only on the doc's *direction* ("oil **spikes**" / "yields **rise sharply**" = up-moves). The original plan's `abs()`-magnitude framing was a bug Codex caught: a sharp *decline* is a different thesis and must not emit a rise-flavored follow-up. `TriggerRule` carries a `Direction`; a future crash rule is a one-row `Direction::Down` entry.
-- **Emit-once met, not documented around** — each fired rule emits exactly once when a topic matches; rules **colliding on one finding merge into a single combined query** rather than dropping the lower-priority one — preserving the executor's one-follow-up-per-finding invariant (the 50-request budget math depends on the 1:1 shape). An earlier "documented limitation" was a rationalized reduction; the merge is the real fix.
-- **Word-boundary keyword match** (tokenized, not substring) so "turmoil" can't trip "oil".
+Three scoping decisions, **locked with the user — don't relitigate:**
+- **App-layer deterministic assembler, not a main-agent model stage** — a *conscious deviation from the docs* (`weekly-report-workflow.md §Step 11` and `agents.md §Main Agent` assign packet-building to the main agent). The user chose this over the alternative I recommended (a trait seam on `MainAgent`, deterministic stub now, model later). Rationale: by Step 11 the upstream funnel has already condensed, so assembly is plumbing, not reasoning, and it keeps the pure-stage spine. **Recorded in `BUILD.md:14`** (and `:15` refreshed).
+- **Machinery-first, unwired** — like the executor/brancher; nothing in `generate_report` builds the packet yet.
+- **Memory deferred** — LanceDB is entirely unbuilt, so the Step-10 pull is out of scope; the packet carries an empty `memory` placeholder.
 
-`BUILD.md:15` was hand-updated this session to record the generator shipped.
+Also added `select_branch_policy(deltas)` (→ `DeltaBranchPolicy` vs `NoBranch`) — the only form the "select at the call site" intent could take while the research half is unwired. Reviews: **Metis approve; Codex two Low nits fixed** (stale `research_executor.rs` module header; missing baseline/populated-deltas pass-through test).
 
 ## Current state
 
-On **`main` @ `787b9e2`**, synced with origin, feature branch deleted (local + remote), **nothing in flight**. Verified before merge: **`cargo test` 217 passed, `cargo clippy --all-targets --all-features` clean** (frontend untouched). `DeltaBranchPolicy` is **built-but-unwired**: nothing selects it over `NoBranch` at the `execute_research` call site yet. Trigger table seeds only **oil** (`DCOILWTICO` / Pct / 7%) and **10y yields** (`DGS10` / Abs / 25bp), both `Direction::Up`. 11 `delta_policy_*` tests cover firing/threshold/direction/word-boundary/single-emit/merge + executor integration.
+On **`main` @ `8b29a4b`**, synced with origin, branch deleted, **nothing in flight**. **`cargo test` 225 passed / 10 ignored, clippy `--all-targets --all-features` clean** (frontend untouched). `build_condensed_packet` orders clusters by `relevance` / evidence by `priority`, caps (`MAX_PACKET_CLUSTERS=8`, `MAX_SOURCES_PER_FINDING=5`), passes baseline/deltas through, preserves executor accounting, leaves `memory` empty. `ResearchPacket` is `Serialize`-only (`BaselineDeltas` has no `Deserialize`/`Default`). **Built-but-unwired**, like `DeltaBranchPolicy`/`select_branch_policy` (call-site wiring still deferred).
+
+**Uncommitted:** the `BUILD.md` deviation edits (lines 14–15) — should ride in this `metis session end` commit alongside `CURRENT.md`.
 
 ## Open questions
 
-- **Step 11 condensed packet (next up)** — first real consumer of `ResearchEvidence` (+ the post-research memory pull), **and** the place `DeltaBranchPolicy` is selected over `NoBranch` at the `execute_research` call site (thread the change view into the policy at construction there). Where the research half finally wires onto `MainAgentInput`.
-- **Pipeline unwired** — nothing beyond baseline → coverage → agent → persist is in `generate_report`; audit / memory / inbox / news / routing / executor / brancher all stay standalone.
-- **Reduced `RouterInput`** — still 3 of 7 doc inputs (baseline, deltas, clusters); memory-as-routing-input is in the spec but not the code.
-- **Brancher tuning (deferred)** — thresholds (7% oil / 25bp yields), keyword sets, and the **cadence stance** (raw-magnitude vs normalizing by `elapsed_days`) are all tunable; revisit once the stage is wired and observable. Trigger coverage deliberately ships oil+yields only: geopolitical (news-conditioned), semis-weaken (no price level in `DELTA_GROUPS`), rally-despite-weak-macro (compound) are out of reach for single-series delta rules.
+- **Research-half wiring slice (next up)** — thread news → filter → route → execute (via `select_branch_policy` from the run's change view) → `build_condensed_packet` → `MainAgentInput` into `generate_report`. Newly pulls in **live-adapter selection** and the **execution gate/credentials**. The Step-10 memory field stays empty until LanceDB.
+- **LanceDB / vector memory entirely unbuilt** — no module exists. Blocks the Step-4 pre-research pull, the Step-10 post-research pull, embeddings (`text-embedding-3-large`), and the 30-report/durable-learning retention. Its own multi-slice effort; the packet's `memory` field and `RouterInput`'s memory input both wait on it.
+- **Reduced `RouterInput`** — still 3 of 7 doc inputs (baseline, deltas, clusters).
+- **Brancher tuning (deferred)** — thresholds (7% oil / 25bp yields), keyword sets, cadence stance (raw-magnitude vs normalize by `elapsed_days`); revisit once wired/observable. Ships oil+yields only by design.
 - **Live smokes** — research routing/phase smoke unrun (Tavily + OpenAI + Anthropic + a cool GDELT IP); `fmp_baseline_smoke` awaits a quota reset. Offline-covered.
 - *(carried)* snapshot retention vs. 30-report cascade; tracker live-SSE smoke; `COVERAGE_FLOOR=0.6` not final; degraded-past-report reader signal; wiremock / in-loop offline gap; Step-7 funnel never run live.
 - *(low / parked)* FRED freshness tuning; filter-prompt snippets; step-6 inbox auto-archive; calendar `expected` consensus; GDP not annualized; no Vue component-test harness; `cargo fmt` dirty repo-wide.
 
 ## Where to start
 
-**Step 11: the condensed packet.** `/metis-plan-task` it — it's the first consumer of `ResearchEvidence` + the post-research memory pull, and it carries the deferred executor wiring: select `DeltaBranchPolicy` over `NoBranch` at the `execute_research` call site, constructing it from the run's change view. This is where the research half (gather → filter → route → execute → branch) finally feeds the report via `MainAgentInput`.
+**The research-half wiring slice.** `/metis-plan-task` it: wire news → filter → route → execute (constructing the branch policy via `select_branch_policy` from the run's change view) → `build_condensed_packet` into `generate_report` so the packet reaches `MainAgentInput`. Plan around the gate/credential + live-adapter-selection surface this newly touches, and treat the Step-10 memory pull as a no-op until LanceDB lands (likely its own slice first).
