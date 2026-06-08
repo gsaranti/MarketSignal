@@ -2,31 +2,30 @@
 
 ## What happened
 
-**Step 11 condensed research packet shipped** — squash `8b29a4b` (PR #19), on `main`. The canonical analyst input now exists: `ResearchPacket` + `build_condensed_packet` in `research_packet.rs`.
+**Research-half wiring slice shipped** — squash `1af9f21` (PR #20), on `main`. `generate_report` now runs the research half: `pipeline::assemble_research_packet` threads news → dedupe → filter → route → execute (branch policy via `select_branch_policy` from the change view) → `build_condensed_packet`, and the packet reaches the main agent on `MainAgentInput.research` (the real `ModelMainAgent` prompt serializes its news clusters + evidence).
 
-Three scoping decisions, **locked with the user — don't relitigate:**
-- **App-layer deterministic assembler, not a main-agent model stage** — a *conscious deviation from the docs* (`weekly-report-workflow.md §Step 11` and `agents.md §Main Agent` assign packet-building to the main agent). The user chose this over the alternative I recommended (a trait seam on `MainAgent`, deterministic stub now, model later). Rationale: by Step 11 the upstream funnel has already condensed, so assembly is plumbing, not reasoning, and it keeps the pure-stage spine. **Recorded in `BUILD.md:14`** (and `:15` refreshed).
-- **Machinery-first, unwired** — like the executor/brancher; nothing in `generate_report` builds the packet yet.
-- **Memory deferred** — LanceDB is entirely unbuilt, so the Step-10 pull is out of scope; the packet carries an empty `memory` placeholder.
+Four scoping decisions, **locked with the user — don't relitigate:**
+- **Additive input shape** — `research: Option<ResearchPacket>`; `baseline`/`deltas` stay top-level, so the packet's own copies of them are inert. (Not the packet-as-sole-input refactor BUILD.md's "canonical input" framing could imply.)
+- **Fully fail-soft** — every research stage degrades to empty on failure; the run always reaches the agent; only the Step-3 coverage floor gates a run. **Conscious deviation from `weekly-report-workflow.md §Step 9`** (failing model call → job failure), **recorded in `BUILD.md:15`**.
+- **Full tracker fidelity** — `with_context` + one request row per real API call on the news/filter/router adapters; `App.vue` routes request rows to their owning step by `group`.
+- **News = Tavily + GDELT**; Tavily's gather is now **per-topic fail-soft** (one bad topic no longer discards the rest or GDELT). FMP company-news parked as a follow-on.
 
-Also added `select_branch_policy(deltas)` (→ `DeltaBranchPolicy` vs `NoBranch`) — the only form the "select at the call site" intent could take while the research half is unwired. Reviews: **Metis approve; Codex two Low nits fixed** (stale `research_executor.rs` module header; missing baseline/populated-deltas pass-through test).
+Reviews: **Metis approve-with-nits (nits closed); Codex two High findings fixed** — frontend request rows were mis-bucketed under "baseline"; cancellation could still spend the filter + router model calls (now a cancel checkpoint before each).
 
 ## Current state
 
-On **`main` @ `8b29a4b`**, synced with origin, branch deleted, **nothing in flight**. **`cargo test` 225 passed / 10 ignored, clippy `--all-targets --all-features` clean** (frontend untouched). `build_condensed_packet` orders clusters by `relevance` / evidence by `priority`, caps (`MAX_PACKET_CLUSTERS=8`, `MAX_SOURCES_PER_FINDING=5`), passes baseline/deltas through, preserves executor accounting, leaves `memory` empty. `ResearchPacket` is `Serialize`-only (`BaselineDeltas` has no `Deserialize`/`Default`). **Built-but-unwired**, like `DeltaBranchPolicy`/`select_branch_policy` (call-site wiring still deferred).
-
-**Uncommitted:** the `BUILD.md` deviation edits (lines 14–15) — should ride in this `metis session end` commit alongside `CURRENT.md`.
+On **`main` @ `1af9f21`**, synced with origin, branch deleted, **nothing in flight**. **`cargo test` 236 passed / 10 ignored, clippy `--all-targets --all-features` clean, `npm run build` OK.** `RunConfig` + `decide_scheduled_run` now carry the Tavily/OpenAI/Anthropic keys; both command seams build the real stages via `live_research_stages`. Two Tavily clients per run (deliberate — the composite owns the gather one by value, the executor gets its own; documented). `iris-codex-last.md` in the repo root is gitignored (the Codex review artifact; not committed).
 
 ## Open questions
 
-- **Research-half wiring slice (next up)** — thread news → filter → route → execute (via `select_branch_policy` from the run's change view) → `build_condensed_packet` → `MainAgentInput` into `generate_report`. Newly pulls in **live-adapter selection** and the **execution gate/credentials**. The Step-10 memory field stays empty until LanceDB.
-- **LanceDB / vector memory entirely unbuilt** — no module exists. Blocks the Step-4 pre-research pull, the Step-10 post-research pull, embeddings (`text-embedding-3-large`), and the 30-report/durable-learning retention. Its own multi-slice effort; the packet's `memory` field and `RouterInput`'s memory input both wait on it.
+- **LanceDB / vector memory entirely unbuilt** — no module. Blocks the Step-4 pre-research pull, Step-10 post-research pull, embeddings (`text-embedding-3-large`), and 30-report/durable-learning retention. Its own multi-slice effort; the packet's `memory` field (ships empty) and `RouterInput`'s memory input both wait on it.
+- **FMP company-news follow-on** — ticker-specific press tied to movers/earnings. Needs a live free-tier probe → `data-sources.md` amendment → a new `NewsSource` adapter. Parked by decision.
+- **Live research smoke unrun** — the just-wired news→filter→route→execute path has never run live (Tavily + OpenAI + Anthropic + a cool GDELT IP); `fmp_baseline_smoke` awaits a quota reset. Offline-covered only.
 - **Reduced `RouterInput`** — still 3 of 7 doc inputs (baseline, deltas, clusters).
-- **Brancher tuning (deferred)** — thresholds (7% oil / 25bp yields), keyword sets, cadence stance (raw-magnitude vs normalize by `elapsed_days`); revisit once wired/observable. Ships oil+yields only by design.
-- **Live smokes** — research routing/phase smoke unrun (Tavily + OpenAI + Anthropic + a cool GDELT IP); `fmp_baseline_smoke` awaits a quota reset. Offline-covered.
+- **Brancher tuning (deferred)** — thresholds (7% oil / 25bp yields), keyword sets, cadence stance; revisit now that it's wired/observable. Ships oil+yields only by design.
 - *(carried)* snapshot retention vs. 30-report cascade; tracker live-SSE smoke; `COVERAGE_FLOOR=0.6` not final; degraded-past-report reader signal; wiremock / in-loop offline gap; Step-7 funnel never run live.
 - *(low / parked)* FRED freshness tuning; filter-prompt snippets; step-6 inbox auto-archive; calendar `expected` consensus; GDP not annualized; no Vue component-test harness; `cargo fmt` dirty repo-wide.
 
 ## Where to start
 
-**The research-half wiring slice.** `/metis-plan-task` it: wire news → filter → route → execute (constructing the branch policy via `select_branch_policy` from the run's change view) → `build_condensed_packet` into `generate_report` so the packet reaches `MainAgentInput`. Plan around the gate/credential + live-adapter-selection surface this newly touches, and treat the Step-10 memory pull as a no-op until LanceDB lands (likely its own slice first).
+**Validate the just-wired research path live first** — run the research smoke (Tavily + OpenAI + Anthropic + a cool GDELT IP) to confirm news→filter→route→execute→packet works end-to-end and the tracker rows land under the research step; it's offline-only so far. Then pick the next slice: **LanceDB / vector memory** is the largest unblock (memory pulls, embeddings, retention) and likely its own multi-slice effort; **FMP company-news** is the smaller follow-on. `/metis-plan-task` whichever you choose.
