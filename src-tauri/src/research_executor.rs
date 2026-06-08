@@ -3,8 +3,8 @@
 //! The first consumer of the Step-8 `ResearchPlan`. Where routing decides *what*
 //! to investigate, this stage executes it: it walks the plan's topics in priority
 //! order, issues each query against a search backend, and returns the curated
-//! evidence the main agent will eventually reason over (via the not-yet-built
-//! Step-11 condensed packet).
+//! evidence the main agent will eventually reason over (via the Step-11 condensed
+//! packet in [`crate::research_packet`], not yet wired to this stage).
 //!
 //! This is the one stage that may loop or branch, so the three hard bounds live
 //! here, in the application layer, not in any model: at most
@@ -23,12 +23,14 @@
 //! sleeping), not an async timeout — no `tokio` is needed here.
 //!
 //! Nothing is wired into the report pipeline yet (the Step-7/8 posture): the
-//! evidence's consumer is the Step-11 condensed packet, which isn't built. The
+//! evidence's consumer is the Step-11 condensed packet — now built, in
+//! [`crate::research_packet`] — which nothing yet feeds from this stage. The
 //! *dynamic branching* ships as machinery only — [`NoBranch`] is the trait's
 //! no-op default, and [`DeltaBranchPolicy`] is the real follow-up generator:
 //! deterministic delta-rules keyed off the baseline change view (the §Step 9
-//! "if oil spikes …" triggers). Selecting it over `NoBranch` at the
-//! `execute_research` call site lands with the pipeline/Step-11 wiring.
+//! "if oil spikes …" triggers). [`select_branch_policy`] resolves which of the two
+//! a run uses from its change view; only its call into `execute_research` is
+//! deferred — that wiring lands with the pipeline/Step-11 wiring.
 
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
@@ -294,6 +296,20 @@ impl BranchPolicy for DeltaBranchPolicy {
         } else {
             Some(queries.join(" "))
         }
+    }
+}
+
+/// Pick the branch policy for a run from its baseline change view: the real
+/// [`DeltaBranchPolicy`] when a change view exists, otherwise the [`NoBranch`] no-op
+/// (a first report or an unreadable prior snapshot yields `None`, and a present-but-
+/// no-rule-fired view degrades to no-op inside `DeltaBranchPolicy` anyway). This is the
+/// selection the research phase will make at the `execute_research` call site; that call
+/// site is still deferred — the research half is unwired from `generate_report` — so this
+/// encapsulates the choice ready to drop in.
+pub fn select_branch_policy(deltas: Option<&BaselineDeltas>) -> Box<dyn BranchPolicy> {
+    match deltas {
+        Some(deltas) => Box::new(DeltaBranchPolicy::from_deltas(deltas)),
+        None => Box::new(NoBranch),
     }
 }
 
@@ -896,5 +912,25 @@ mod tests {
             .findings
             .iter()
             .all(|f| f.depth <= MAX_RESEARCH_DEPTH));
+    }
+
+    #[test]
+    fn select_branch_policy_picks_delta_policy_when_a_change_view_is_present() {
+        // A 30 bp rise on the 10y fires the yield rule, so the selected policy must be the
+        // real DeltaBranchPolicy: a matching topic gets its follow-up.
+        let view = deltas(vec![series_delta("DGS10", 0.30, Some(7.1))]);
+        let policy = select_branch_policy(Some(&view));
+        let q = policy
+            .follow_up(&item("Treasury yields repricing", 1, 0.9), &depth1_finding())
+            .expect("delta policy fired the yield rule");
+        assert!(q.contains("Treasury yields"));
+    }
+
+    #[test]
+    fn select_branch_policy_falls_back_to_nobranch_without_a_change_view() {
+        let policy = select_branch_policy(None);
+        assert!(policy
+            .follow_up(&item("Treasury yields repricing", 1, 0.9), &depth1_finding())
+            .is_none());
     }
 }

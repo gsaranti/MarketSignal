@@ -16,6 +16,7 @@ pub mod pipeline;
 pub mod progress;
 pub mod research;
 pub mod research_executor;
+pub mod research_packet;
 pub mod research_router;
 pub mod schedule;
 pub mod settings;
