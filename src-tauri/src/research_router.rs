@@ -17,6 +17,7 @@
 //! user-selectable agent models. Like the Step-7 filter, nothing here is wired
 //! into the report pipeline yet: the plan's consumer is the Step-9 executor.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -28,6 +29,7 @@ use crate::data_sources::BaselineMarketData;
 use crate::headline_filter::HeadlineCluster;
 use crate::model_agent::{extract_anthropic_tool_input, ANTHROPIC_VERSION};
 use crate::news::RawHeadline;
+use crate::progress::RunContext;
 
 /// The bounded ceiling on topics the plan carries — the "~5 deeply analyzed
 /// topics" Step 7's funnel hands to routing (`docs/weekly-report-workflow.md
@@ -335,6 +337,10 @@ fn build_request(input: &RouterInput) -> Value {
 pub struct ModelResearchRouter {
     api_key: String,
     http: reqwest::blocking::Client,
+    /// Run context for the single tracker row the routing call emits. Defaults to a
+    /// no-op (tests / offline smokes); the live command attaches the real one via
+    /// [`ModelResearchRouter::with_context`].
+    progress: Arc<RunContext>,
 }
 
 impl ModelResearchRouter {
@@ -343,7 +349,18 @@ impl ModelResearchRouter {
             .timeout(Duration::from_secs(120))
             .build()
             .context("building the research-router HTTP client")?;
-        Ok(Self { api_key, http })
+        Ok(Self {
+            api_key,
+            http,
+            progress: RunContext::noop(),
+        })
+    }
+
+    /// Attach a live run context so the routing call streams a request row to the tracker.
+    /// Without it the adapter keeps its no-op context.
+    pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
+        self.progress = ctx;
+        self
     }
 
     /// Resolve the adapter from the environment, for the live smoke and any caller
@@ -382,11 +399,35 @@ impl ResearchRouter for ModelResearchRouter {
         {
             return Ok(ResearchPlan::default());
         }
-        let raw = self.call(&build_request(&input))?;
-        let value = extract_anthropic_tool_input(&raw, TOOL_NAME)?;
-        let env: PlanEnvelope = serde_json::from_value(value)
-            .context("research-router response did not match the schema")?;
-        Ok(plan_from_envelope(env))
+        // One tracker row for the Sonnet routing call.
+        self.progress
+            .request_started("Anthropic", "routing", "research-router", "Research routing");
+        let result = (|| -> Result<ResearchPlan> {
+            let raw = self.call(&build_request(&input))?;
+            let value = extract_anthropic_tool_input(&raw, TOOL_NAME)?;
+            let env: PlanEnvelope = serde_json::from_value(value)
+                .context("research-router response did not match the schema")?;
+            Ok(plan_from_envelope(env))
+        })();
+        match &result {
+            Ok(_) => self.progress.request_finished(
+                "Anthropic",
+                "routing",
+                "research-router",
+                "Research routing",
+                "ok",
+                None,
+            ),
+            Err(e) => self.progress.request_finished(
+                "Anthropic",
+                "routing",
+                "research-router",
+                "Research routing",
+                "failed",
+                Some(e.to_string()),
+            ),
+        }
+        result
     }
 }
 

@@ -34,6 +34,7 @@ use crate::agent::{
 use crate::baseline_delta::BaselineDeltas;
 use crate::data_sources::BaselineMarketData;
 use crate::progress::RunContext;
+use crate::research_packet::ResearchPacket;
 
 /// Which provider an agent model is served by. Selects the request shape, the
 /// auth header, and the endpoint.
@@ -198,6 +199,16 @@ so read its level, not week-to-week change) — the excess return demanded over 
 rate, a valuation anchor for how richly equities are priced. Use these to ground the regime \
 and strategy reads in valuation, not momentum alone.
 
+When present, the prompt also carries this week's news and deep research, condensed by the \
+application layer. `news clusters` are the week's most market-significant stories, each a topic \
+with a relevance score and its member headlines. `deep-research evidence` is the bounded \
+follow-up investigation into the topics that mattered most — each item a topic with its \
+findings and their sources, plus the request/stop accounting for the research phase. Use these \
+to explain *why* the data moved and to source the Key Market Drivers, the thesis, and the \
+Sources section; ground every claim in the provided headlines and evidence rather than your own \
+prior knowledge, and treat an absent or empty research block as no qualifying news this run, not \
+a quiet market.
+
 Produce the report body as GitHub-flavored Markdown with these sections, in order:
 - # Weekly Market Report (title), followed by a short date / report-type line
 - ## Header Summary — the 3 to 6 bullets that also populate header_summary_bullets
@@ -224,7 +235,11 @@ const USER_PROMPT: &str =
 /// report in this run's live data rather than its own prior knowledge. An empty
 /// baseline (no data gathered — e.g. an offline smoke) falls back to the bare
 /// instruction so the prompt never carries an empty data block.
-fn build_user_prompt(baseline: &BaselineMarketData, deltas: Option<&BaselineDeltas>) -> String {
+fn build_user_prompt(
+    baseline: &BaselineMarketData,
+    deltas: Option<&BaselineDeltas>,
+    research: Option<&ResearchPacket>,
+) -> String {
     let mut prompt = if baseline == &BaselineMarketData::default() {
         USER_PROMPT.to_string()
     } else {
@@ -251,6 +266,28 @@ fn build_user_prompt(baseline: &BaselineMarketData, deltas: Option<&BaselineDelt
                  leaving the market:\n{json}",
                 d.elapsed_days
             ));
+        }
+    }
+
+    // The Step-11 condensed research packet, when the research half ran. `baseline` and
+    // `deltas` already rode in above from the input's top-level fields, so only the news
+    // and research sections are appended here (the packet's own baseline/deltas copies are
+    // inert). Each block is omitted when empty so a fail-soft-degraded stage never leaves a
+    // blank section in the prompt.
+    if let Some(packet) = research {
+        if !packet.news_clusters.is_empty() {
+            if let Ok(json) = serde_json::to_string_pretty(&packet.news_clusters) {
+                prompt.push_str(&format!(
+                    "\n\nFiltered news clusters for this week (most market-significant first):\n{json}"
+                ));
+            }
+        }
+        if !packet.research.items.is_empty() {
+            if let Ok(json) = serde_json::to_string_pretty(&packet.research) {
+                prompt.push_str(&format!(
+                    "\n\nDeep-research evidence gathered for this week (topics highest-priority first):\n{json}"
+                ));
+            }
         }
     }
 
@@ -734,7 +771,11 @@ impl MainAgent for ModelMainAgent {
         let provider = self.config.model.provider();
         let model_id = self.config.model.model_id();
         let schema = response_envelope_schema();
-        let user = build_user_prompt(&input.baseline, input.deltas.as_ref());
+        let user = build_user_prompt(
+            &input.baseline,
+            input.deltas.as_ref(),
+            input.research.as_ref(),
+        );
         let body = match provider {
             Provider::Anthropic => build_anthropic_request(model_id, SYSTEM_PROMPT, &user, &schema),
             Provider::OpenAi => build_openai_request(model_id, SYSTEM_PROMPT, &user, &schema),
@@ -851,7 +892,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let prompt = build_user_prompt(&baseline, None);
+        let prompt = build_user_prompt(&baseline, None, None);
         assert!(prompt.starts_with(USER_PROMPT), "{prompt}");
         assert!(prompt.contains("^GSPC"), "{prompt}");
         assert!(prompt.contains("Baseline market data"), "{prompt}");
@@ -870,7 +911,7 @@ mod tests {
     #[test]
     fn user_prompt_is_bare_when_baseline_empty() {
         assert_eq!(
-            build_user_prompt(&BaselineMarketData::default(), None),
+            build_user_prompt(&BaselineMarketData::default(), None, None),
             USER_PROMPT
         );
     }
@@ -908,7 +949,7 @@ mod tests {
             new: vec![],
             missing: vec![],
         };
-        let prompt = build_user_prompt(&one_index_baseline(), Some(&deltas));
+        let prompt = build_user_prompt(&one_index_baseline(), Some(&deltas), None);
         assert!(
             prompt.contains("Change since the previous report"),
             "{prompt}"
@@ -921,11 +962,68 @@ mod tests {
 
     #[test]
     fn user_prompt_omits_change_block_when_no_deltas() {
-        let prompt = build_user_prompt(&one_index_baseline(), None);
+        let prompt = build_user_prompt(&one_index_baseline(), None, None);
         assert!(
             !prompt.contains("Change since the previous report"),
             "{prompt}"
         );
+    }
+
+    #[test]
+    fn user_prompt_appends_research_packet_when_present() {
+        use crate::headline_filter::HeadlineCluster;
+        use crate::news::RawHeadline;
+        use crate::research_executor::{EvidenceItem, Finding, ResearchEvidence};
+        use crate::research_packet::ResearchPacket;
+
+        let packet = ResearchPacket {
+            news_clusters: vec![HeadlineCluster {
+                topic: "AI / semiconductors".into(),
+                summary: "Capex intentions stayed the swing factor.".into(),
+                relevance: 0.93,
+                headlines: vec![RawHeadline {
+                    title: "Nvidia raises capex outlook".into(),
+                    url: "https://example.com/nvda".into(),
+                    source: "reuters.com".into(),
+                    published: Some("2026-06-05".into()),
+                    snippet: None,
+                }],
+            }],
+            research: ResearchEvidence {
+                items: vec![EvidenceItem {
+                    topic: "AI capex".into(),
+                    rationale: "Semis led the move.".into(),
+                    priority: 0.9,
+                    findings: vec![Finding {
+                        query: "hyperscaler capex guidance".into(),
+                        depth: 1,
+                        sources: Vec::new(),
+                    }],
+                }],
+                requests_made: 1,
+                stopped_reason: None,
+            },
+            ..Default::default()
+        };
+        let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet));
+        // Both packet sections ride into the prompt, grounding the report in the week's news.
+        assert!(prompt.contains("Filtered news clusters"), "{prompt}");
+        assert!(prompt.contains("AI / semiconductors"), "{prompt}");
+        assert!(prompt.contains("Deep-research evidence"), "{prompt}");
+        assert!(prompt.contains("hyperscaler capex guidance"), "{prompt}");
+    }
+
+    #[test]
+    fn user_prompt_omits_research_sections_for_an_empty_packet() {
+        use crate::research_packet::ResearchPacket;
+        // A fail-soft-degraded run still carries a packet, but with no news or evidence —
+        // neither section should appear, leaving the prompt as the baseline-only form.
+        let empty = ResearchPacket::default();
+        let with_packet = build_user_prompt(&one_index_baseline(), None, Some(&empty));
+        let without = build_user_prompt(&one_index_baseline(), None, None);
+        assert_eq!(with_packet, without, "an empty packet adds nothing to the prompt");
+        assert!(!with_packet.contains("Filtered news clusters"), "{with_packet}");
+        assert!(!with_packet.contains("Deep-research evidence"), "{with_packet}");
     }
 
     #[test]

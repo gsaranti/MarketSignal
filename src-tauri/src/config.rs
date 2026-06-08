@@ -358,13 +358,18 @@ pub fn blocked_summary(report: &ValidationReport) -> String {
     )
 }
 
-/// The resolved inputs a run needs once the gate has passed: the Main Agent
-/// adapter config and the FMP + FRED data-source keys. No `Debug` derive — every
-/// field carries a secret that must never be printed.
+/// The resolved inputs a run needs once the gate has passed: the Main Agent adapter
+/// config, the FMP + FRED data-source keys for the baseline scan, and the Tavily +
+/// OpenAI + Anthropic keys for the research half (Tavily news ingestion, the GPT-5-mini
+/// headline filter, and the Sonnet research router). No `Debug` derive — every field
+/// carries a secret that must never be printed.
 pub struct RunConfig {
     pub main: MainAgentConfig,
     pub fmp_api_key: String,
     pub fred_api_key: String,
+    pub tavily_api_key: String,
+    pub openai_api_key: String,
+    pub anthropic_api_key: String,
 }
 
 /// The scheduler's pre-run decision for a *scheduled* fire. Distinct from a
@@ -373,7 +378,8 @@ pub struct RunConfig {
 /// carries `RunConfig`, which deliberately has no `Debug` so an API key can
 /// never be printed.
 pub enum ScheduledRun {
-    /// Gate passed: carries the resolved run inputs (model config + FMP key).
+    /// Gate passed: carries the resolved run inputs (model config + every API key the
+    /// baseline scan and research half need).
     Proceed(RunConfig),
     /// The weekly job is disabled — an expected, quiet no-op (no diagnostic).
     Disabled,
@@ -383,14 +389,14 @@ pub enum ScheduledRun {
 }
 
 /// Decide whether a scheduled fire should proceed: the enable flag, then the
-/// execution gate, then a resolvable Main Agent model + key and the FMP + FRED
-/// data-source keys (`docs/weekly-report-workflow.md §Step 1`). Pure over its
-/// inputs — `validate`, `main_agent_config`, `fmp_key`, and `fred_key` read only
-/// from `cfg` — so the enabled / blocked / proceed composition the scheduler walks
-/// is unit-testable without the environment or a running app. The resolution error
-/// arms are defensive: after a passing `validate` (which already requires both
-/// provider keys, the FMP and FRED credentials, and a parseable main model) they
-/// are effectively unreachable, mirroring the manual command's pattern.
+/// execution gate, then a resolvable Main Agent model + key, the FMP + FRED
+/// data-source keys, and the Tavily / OpenAI / Anthropic keys the research half needs
+/// (`docs/weekly-report-workflow.md §Step 1`). Pure over its inputs — `validate` and
+/// every accessor read only from `cfg` — so the enabled / blocked / proceed composition
+/// the scheduler walks is unit-testable without the environment or a running app. The
+/// resolution error arm is defensive: after a passing `validate` (which already requires
+/// both provider keys, the FMP / FRED / Tavily credentials, and a parseable main model)
+/// it is effectively unreachable, mirroring the manual command's pattern.
 pub fn decide_scheduled_run(cfg: &AppConfig, enabled: bool) -> ScheduledRun {
     if !enabled {
         return ScheduledRun::Disabled;
@@ -398,13 +404,22 @@ pub fn decide_scheduled_run(cfg: &AppConfig, enabled: bool) -> ScheduledRun {
     if validate(cfg).is_blocked {
         return ScheduledRun::Blocked("configuration incomplete — run skipped".to_string());
     }
-    match (cfg.main_agent_config(), cfg.fmp_key(), cfg.fred_key()) {
-        (Ok(main), Ok(fmp_api_key), Ok(fred_api_key)) => ScheduledRun::Proceed(RunConfig {
-            main,
-            fmp_api_key,
-            fred_api_key,
-        }),
-        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => ScheduledRun::Blocked(e.to_string()),
+    // Resolve every credential the run needs in one fallible block; the first missing one
+    // blocks (defensive after a passing `validate`). Sequential rather than a wide tuple
+    // match now that six inputs ride on `RunConfig`.
+    let resolved = (|| -> Result<RunConfig> {
+        Ok(RunConfig {
+            main: cfg.main_agent_config()?,
+            fmp_api_key: cfg.fmp_key()?,
+            fred_api_key: cfg.fred_key()?,
+            tavily_api_key: cfg.tavily_key()?,
+            openai_api_key: cfg.openai_key()?,
+            anthropic_api_key: cfg.anthropic_key()?,
+        })
+    })();
+    match resolved {
+        Ok(run_config) => ScheduledRun::Proceed(run_config),
+        Err(e) => ScheduledRun::Blocked(e.to_string()),
     }
 }
 
