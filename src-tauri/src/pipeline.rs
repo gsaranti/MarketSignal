@@ -15,7 +15,12 @@ use crate::baseline_delta::{self, BaselineDeltas};
 use crate::data_sources::{
     BaselineMarketData, GroupKind, MarketDataSource, BASELINE_SCHEMA_VERSION,
 };
+use crate::headline_filter::HeadlineFilter;
+use crate::news::{self, NewsSource};
 use crate::progress::RunContext;
+use crate::research_executor::{execute_research, select_branch_policy, SearchBackend, WallClock};
+use crate::research_packet::{build_condensed_packet, ResearchPacket};
+use crate::research_router::{ResearchPlan, ResearchRouter, RouterInput};
 use crate::storage::{self, ReportRecord};
 
 /// Filesystem locations a run reads and writes. Injected so tests can point at
@@ -24,6 +29,35 @@ use crate::storage::{self, ReportRecord};
 pub struct ReportPaths {
     pub db_path: PathBuf,
     pub reports_dir: PathBuf,
+}
+
+/// The research-half stages (Steps 7–11), injected into the pipeline as trait objects
+/// so the spine stays offline-stubbable (`ResearchStages::stub`) while the live command
+/// constructs the real adapters (`lib.rs`). Owned `Box`es rather than borrows so a caller
+/// hands over one value instead of threading several lifetimes; built once per run and
+/// dropped with it. The Step-9 `Clock` is deliberately *not* a member — the 30-minute
+/// research budget anchors at the research phase, so `assemble_research_packet` mints a
+/// fresh `WallClock` there rather than at bundle-construction time (which would let the
+/// baseline scan eat into the budget).
+pub struct ResearchStages {
+    pub news: Box<dyn NewsSource>,
+    pub filter: Box<dyn HeadlineFilter>,
+    pub router: Box<dyn ResearchRouter>,
+    pub search: Box<dyn SearchBackend>,
+}
+
+impl ResearchStages {
+    /// The offline stub bundle: deterministic stand-ins for every research stage, so
+    /// `generate_report` runs end to end against fixtures with no live keys. Used by the
+    /// integration tests and any offline smoke.
+    pub fn stub() -> Self {
+        Self {
+            news: Box::new(crate::news::StubNewsSource),
+            filter: Box::new(crate::headline_filter::StubHeadlineFilter),
+            router: Box::new(crate::research_router::StubResearchRouter),
+            search: Box::new(crate::research_executor::StubSearchBackend),
+        }
+    }
 }
 
 /// The result of a report run, returned to the caller (the Tauri command or a
@@ -39,25 +73,34 @@ pub struct GeneratedReport {
 }
 
 /// Run one manual report end to end: gather the baseline market-data scan (Step
-/// 6), enforce its coverage floor, invoke the agent, write the canonical Markdown
-/// file, and persist the record to SQLite. The adapters degrade partial failures to
-/// a recorded gap manifest rather than aborting, so the scan itself rarely errs; the
+/// 6), enforce its coverage floor, run the research half (Steps 7–11) and condense
+/// it into the analyst packet, invoke the agent, write the canonical Markdown file,
+/// and persist the record to SQLite. The adapters degrade partial failures to a
+/// recorded gap manifest rather than aborting, so the scan itself rarely errs; the
 /// `enforce_coverage` gate below is the single place a too-thin baseline fails the
 /// run, which `jobs::run_job` records as a failed job (`docs/scheduling.md §Offline
-/// Behavior`).
+/// Behavior`). The research half is fully fail-soft and never gates a run (see
+/// `assemble_research_packet`).
 ///
-/// `ctx` is the run's progress/cancel context (`progress::RunContext`). Each of the
-/// four stages below brackets its work in a `step_started` / `step_finished` pair so
-/// an open window can render the run live; the real data adapters and the streaming
-/// model adapter emit their own finer-grained events *inside* the baseline and agent
-/// steps. A cancel requested mid-run is observed at the boundaries between stages
-/// (`bail_if_cancelled`) — a `reqwest::blocking` call already in flight is not
-/// interrupted — and surfaces as a recognizable error that `jobs::run_job` maps to a
-/// Cancelled outcome. Tests and offline smokes pass `RunContext::noop()`, which
-/// reports nowhere and is never cancelled, so this stays the same pure spine.
+/// `research` is the bundle of research-half stages (`ResearchStages`) — the live
+/// command supplies the real news / filter / router / search adapters; tests and
+/// offline smokes pass `ResearchStages::stub()`, keeping this the same offline-driven
+/// spine the agent and data halves already are.
+///
+/// `ctx` is the run's progress/cancel context (`progress::RunContext`). Each stage
+/// below brackets its work in a `step_started` / `step_finished` pair so an open
+/// window can render the run live; the real data adapters, the research adapters, and
+/// the streaming model adapter emit their own finer-grained per-request / token events
+/// *inside* the baseline, research, and agent steps. A cancel requested mid-run is
+/// observed at the boundaries between stages (`bail_if_cancelled`) — a
+/// `reqwest::blocking` call already in flight is not interrupted — and surfaces as a
+/// recognizable error that `jobs::run_job` maps to a Cancelled outcome. Tests and
+/// offline smokes pass `RunContext::noop()`, which reports nowhere and is never
+/// cancelled, so this stays the same pure spine.
 pub fn generate_report(
     agent: &dyn MainAgent,
     data: &dyn MarketDataSource,
+    research: &ResearchStages,
     paths: &ReportPaths,
     ctx: &RunContext,
 ) -> Result<GeneratedReport> {
@@ -101,8 +144,22 @@ pub fn generate_report(
     let deltas = compute_prior_deltas(&paths.db_path, &baseline, as_of);
     let baseline_json = serde_json::to_string(&baseline).ok();
 
+    // Steps 7–11: the research half — news → filter → route → execute → condensed packet,
+    // fully fail-soft (`assemble_research_packet`), bracketed as one step with the adapters'
+    // per-request rows streaming inside it. Computed here, before `baseline` and `deltas`
+    // move into the agent input below.
+    ctx.step_started("research", "Gathering and condensing research");
+    let research_packet = assemble_research_packet(research, &baseline, deltas.as_ref(), ctx);
+    let research_status = if ctx.is_cancelled() { "cancelled" } else { "ok" };
+    ctx.step_finished("research", research_status, None);
+    bail_if_cancelled(ctx)?;
+
     ctx.step_started("agent", "Main agent writing the report");
-    let output = match agent.generate(MainAgentInput { baseline, deltas }) {
+    let output = match agent.generate(MainAgentInput {
+        baseline,
+        deltas,
+        research: Some(research_packet),
+    }) {
         Ok(output) => output,
         Err(e) => {
             // A cancel observed mid-stream surfaces as a parse error here; mark the
@@ -182,6 +239,87 @@ pub fn generate_report(
         Err(e) => ctx.step_finished("persist", "failed", Some(e.to_string())),
     }
     report
+}
+
+/// Run the research half (Steps 7–11) and condense it into the packet the main agent
+/// reasons over (`docs/weekly-report-workflow.md §§7–11`). **Fully fail-soft** — the
+/// locked posture for this slice: a failure in any stage degrades that stage to empty and
+/// the phase continues, so a flaky news, headline-filter, or routing call yields a thinner
+/// report rather than failing the run. Only the baseline coverage floor gates a run; the
+/// research half never does. (This is a conscious deviation from
+/// `docs/weekly-report-workflow.md §250`, which treats a failing model call in any stage as
+/// a job failure — recorded as a flag for the session-end build-spec note.)
+///
+/// The bounded executor is already fail-soft per query (`research_executor`) and
+/// `build_condensed_packet` is pure, so this always returns a packet — never an error.
+/// Per-call progress rows live inside the real adapters; cancellation is polled at each
+/// stage boundary here (before the filter call and before the router call) and at each
+/// request boundary inside the executor, so a cancel requested mid-research skips the
+/// remaining model calls rather than spending them before the run stops. The caller
+/// brackets this under one `research` step. `baseline` and `deltas` are borrowed (the
+/// caller still owns them for the agent input); the packet keeps its own clones.
+fn assemble_research_packet(
+    research: &ResearchStages,
+    baseline: &BaselineMarketData,
+    deltas: Option<&BaselineDeltas>,
+    ctx: &RunContext,
+) -> ResearchPacket {
+    // Step 7: gather raw headlines (Tavily + GDELT) and run the deterministic dedup pre-pass.
+    let headlines = match research.news.gather() {
+        Ok(raw) => news::dedupe_headlines(raw),
+        Err(e) => {
+            eprintln!("research: news gather degraded to empty: {e:#}");
+            Vec::new()
+        }
+    };
+
+    // Step 7 (filter): cluster the headlines into the ~10 important stories. An empty gather
+    // has nothing to cluster, so skip the model call entirely — and a cancel requested during
+    // the gather sweep short-circuits here too, so a stop never still spends the (up to ~120s)
+    // GPT-5-mini call. Cooperative cancellation is polled at this stage boundary, mirroring the
+    // pipeline's step boundaries; the executor below polls it at each request boundary.
+    let clusters = if headlines.is_empty() || ctx.is_cancelled() {
+        Vec::new()
+    } else {
+        match research.filter.filter(headlines) {
+            Ok(clusters) => clusters,
+            Err(e) => {
+                eprintln!("research: headline filter degraded to empty: {e:#}");
+                Vec::new()
+            }
+        }
+    };
+
+    // Step 8: route the baseline, change view, and clusters into a bounded research plan.
+    // Cancel checkpoint before the Sonnet call, mirroring the filter guard: a cancel that
+    // lands between stages must not still spend the routing call.
+    let plan = if ctx.is_cancelled() {
+        ResearchPlan::default()
+    } else {
+        match research.router.route(RouterInput {
+            baseline: baseline.clone(),
+            deltas: deltas.cloned(),
+            clusters: clusters.clone(),
+        }) {
+            Ok(plan) => plan,
+            Err(e) => {
+                eprintln!("research: router degraded to empty: {e:#}");
+                ResearchPlan::default()
+            }
+        }
+    };
+
+    // Step 9: execute the plan under the three hard bounds (`research_executor`), with the
+    // change view's delta-rules driving any depth-2 follow-ups (`select_branch_policy`). The
+    // clock anchors here so the 30-minute budget covers the research phase, not the baseline
+    // scan that preceded it.
+    let clock = WallClock::new();
+    let policy = select_branch_policy(deltas);
+    let evidence = execute_research(&plan, research.search.as_ref(), policy.as_ref(), &clock, ctx);
+
+    // Step 11: condense everything into the token-bounded packet. `memory` stays empty until
+    // the LanceDB slice lands.
+    build_condensed_packet(baseline.clone(), deltas.cloned(), clusters, evidence)
 }
 
 /// Cancel checkpoint between pipeline stages. A cancel requested mid-run lands
@@ -629,5 +767,153 @@ mod tests {
     fn export_basename_non_rfc3339_created_at_is_a_typed_error() {
         let err = export_basename("not-a-timestamp", "md", &minus_three()).unwrap_err();
         assert!(err.to_string().contains("non-RFC3339"), "{err}");
+    }
+
+    // ---- research half: fully fail-soft assembly (`assemble_research_packet`) ----
+
+    use crate::headline_filter::{HeadlineCluster, StubHeadlineFilter};
+    use crate::news::{RawHeadline, StubNewsSource};
+    use crate::research_executor::StubSearchBackend;
+    use crate::research_router::StubResearchRouter;
+
+    /// A news source that always errors, to drive the news-gather fail-soft arm.
+    struct FailingNews;
+    impl NewsSource for FailingNews {
+        fn gather(&self) -> anyhow::Result<Vec<RawHeadline>> {
+            anyhow::bail!("news source down")
+        }
+    }
+
+    /// A news source that returns no headlines, to drive the empty-gather short-circuit.
+    struct EmptyNews;
+    impl NewsSource for EmptyNews {
+        fn gather(&self) -> anyhow::Result<Vec<RawHeadline>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// A filter that panics if called — proves the filter is skipped on an empty gather.
+    struct PanicFilter;
+    impl HeadlineFilter for PanicFilter {
+        fn filter(&self, _: Vec<RawHeadline>) -> anyhow::Result<Vec<HeadlineCluster>> {
+            panic!("filter must not be called when there are no headlines")
+        }
+    }
+
+    /// A filter that always errors, to drive the filter fail-soft arm.
+    struct FailingFilter;
+    impl HeadlineFilter for FailingFilter {
+        fn filter(&self, _: Vec<RawHeadline>) -> anyhow::Result<Vec<HeadlineCluster>> {
+            anyhow::bail!("filter down")
+        }
+    }
+
+    /// A router that always errors, to drive the router fail-soft arm.
+    struct FailingRouter;
+    impl ResearchRouter for FailingRouter {
+        fn route(&self, _: RouterInput) -> anyhow::Result<ResearchPlan> {
+            anyhow::bail!("router down")
+        }
+    }
+
+    /// A router that panics if called — proves routing is skipped under cancellation.
+    struct PanicRouter;
+    impl ResearchRouter for PanicRouter {
+        fn route(&self, _: RouterInput) -> anyhow::Result<ResearchPlan> {
+            panic!("router must not be called after a cancel")
+        }
+    }
+
+    fn assemble_with(stages: ResearchStages) -> ResearchPacket {
+        assemble_research_packet(
+            &stages,
+            &BaselineMarketData::default(),
+            None,
+            &RunContext::noop(),
+        )
+    }
+
+    #[test]
+    fn assemble_packet_happy_path_with_stubs_carries_news_and_evidence() {
+        let packet = assemble_with(ResearchStages::stub());
+        assert!(!packet.news_clusters.is_empty(), "stub chain yields clusters");
+        assert!(!packet.research.items.is_empty(), "stub chain yields evidence");
+    }
+
+    #[test]
+    fn assemble_packet_degrades_to_empty_on_news_failure() {
+        // A failed gather degrades the whole news half to empty without erroring; the run
+        // still gets a (bare) packet rather than failing.
+        let packet = assemble_with(ResearchStages {
+            news: Box::new(FailingNews),
+            filter: Box::new(StubHeadlineFilter),
+            router: Box::new(StubResearchRouter),
+            search: Box::new(StubSearchBackend),
+        });
+        assert!(packet.news_clusters.is_empty());
+        assert!(packet.research.items.is_empty());
+    }
+
+    #[test]
+    fn assemble_packet_skips_the_filter_when_no_headlines() {
+        // EmptyNews → no headlines → the filter must not be called (PanicFilter would blow).
+        let packet = assemble_with(ResearchStages {
+            news: Box::new(EmptyNews),
+            filter: Box::new(PanicFilter),
+            router: Box::new(StubResearchRouter),
+            search: Box::new(StubSearchBackend),
+        });
+        assert!(packet.news_clusters.is_empty());
+    }
+
+    #[test]
+    fn assemble_packet_degrades_to_empty_on_filter_failure() {
+        let packet = assemble_with(ResearchStages {
+            news: Box::new(StubNewsSource),
+            filter: Box::new(FailingFilter),
+            router: Box::new(StubResearchRouter),
+            search: Box::new(StubSearchBackend),
+        });
+        assert!(packet.news_clusters.is_empty(), "a failed filter yields no clusters");
+        assert!(packet.research.items.is_empty(), "and so no routed evidence");
+    }
+
+    #[test]
+    fn assemble_packet_keeps_news_when_only_the_router_fails() {
+        // The router failing must not discard the clusters already gathered — the packet
+        // still carries news for the agent even when deep research can't be planned. This is
+        // the partial-degradation guarantee the fully-fail-soft posture buys.
+        let packet = assemble_with(ResearchStages {
+            news: Box::new(StubNewsSource),
+            filter: Box::new(StubHeadlineFilter),
+            router: Box::new(FailingRouter),
+            search: Box::new(StubSearchBackend),
+        });
+        assert!(!packet.news_clusters.is_empty(), "news survives a router failure");
+        assert!(packet.research.items.is_empty(), "but there is no routed evidence");
+    }
+
+    #[test]
+    fn assemble_packet_skips_model_stages_when_cancelled() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        use crate::progress::{NoopReporter, RunContext};
+
+        // A cancel requested during the gather must skip the filter and router model calls —
+        // PanicFilter / PanicRouter would blow if reached — so a stop never still spends up to
+        // two ~120s model calls. StubNewsSource returns headlines regardless of the flag, so
+        // the filter guard is exercised on the cancellation, not on an empty gather.
+        let stages = ResearchStages {
+            news: Box::new(StubNewsSource),
+            filter: Box::new(PanicFilter),
+            router: Box::new(PanicRouter),
+            search: Box::new(StubSearchBackend),
+        };
+        let ctx = RunContext::new("t", Arc::new(NoopReporter), Arc::new(AtomicBool::new(true)));
+        let packet =
+            assemble_research_packet(&stages, &BaselineMarketData::default(), None, &ctx);
+        assert!(packet.news_clusters.is_empty());
+        assert!(packet.research.items.is_empty());
     }
 }

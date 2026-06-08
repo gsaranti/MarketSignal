@@ -40,9 +40,14 @@ use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
 use data_sources::CompositeMarketDataSource;
 use fmp::FmpDataSource;
 use fred::FredDataSource;
+use gdelt::GdeltNewsSource;
+use headline_filter::ModelHeadlineFilter;
 use model_agent::ModelMainAgent;
-use pipeline::{GeneratedReport, ReportPaths};
+use news::CompositeNewsSource;
+use pipeline::{GeneratedReport, ReportPaths, ResearchStages};
 use progress::{ProgressMessage, ProgressReporter, RunContext};
+use research_router::ModelResearchRouter;
+use tavily::TavilyNewsSource;
 
 /// How long the scheduler sleeps between wake-ups while waiting for the next
 /// window. Bounded (rather than one long sleep to the window) so a clock change
@@ -83,6 +88,29 @@ impl ProgressReporter for TauriReporter {
 fn live_run_context(app: &tauri::AppHandle, cancel: Arc<AtomicBool>) -> Arc<RunContext> {
     let reporter: Arc<dyn ProgressReporter> = Arc::new(TauriReporter { app: app.clone() });
     RunContext::new(uuid::Uuid::new_v4().to_string(), reporter, cancel)
+}
+
+/// Build the live research-half stage bundle (Steps 7–11) for one run, shared by the
+/// manual and scheduled command paths. Tavily + GDELT feed the news gather (one
+/// composite); the GPT-5-mini headline filter and the Sonnet research router are the
+/// fixed internal stages; a *second* Tavily client is the Step-9 search backend, since the
+/// composite owns the gather's Tavily by value. Every adapter carries `ctx` so each call
+/// streams a per-request tracker row. Errors here are HTTP-client build failures only.
+fn live_research_stages(
+    tavily_key: String,
+    openai_key: String,
+    anthropic_key: String,
+    ctx: &Arc<RunContext>,
+) -> anyhow::Result<ResearchStages> {
+    Ok(ResearchStages {
+        news: Box::new(CompositeNewsSource::new(
+            TavilyNewsSource::new(tavily_key.clone())?.with_context(ctx.clone()),
+            GdeltNewsSource::new()?.with_context(ctx.clone()),
+        )),
+        filter: Box::new(ModelHeadlineFilter::new(openai_key)?.with_context(ctx.clone())),
+        router: Box::new(ModelResearchRouter::new(anthropic_key)?.with_context(ctx.clone())),
+        search: Box::new(TavilyNewsSource::new(tavily_key)?.with_context(ctx.clone())),
+    })
 }
 
 /// Request cancellation of the in-flight run (the tracker's Cancel button). Sets the
@@ -203,6 +231,12 @@ async fn generate_report_manual(
     let main_config = cfg.main_agent_config().map_err(|e| e.to_string())?;
     let fmp_key = cfg.fmp_key().map_err(|e| e.to_string())?;
     let fred_key = cfg.fred_key().map_err(|e| e.to_string())?;
+    // Research-half credentials (Steps 7–11): Tavily (news ingestion + the Step-9 search
+    // backend), OpenAI (the GPT-5-mini headline filter), Anthropic (the Sonnet research
+    // router). The gate above already requires all three.
+    let tavily_key = cfg.tavily_key().map_err(|e| e.to_string())?;
+    let openai_key = cfg.openai_key().map_err(|e| e.to_string())?;
+    let anthropic_key = cfg.anthropic_key().map_err(|e| e.to_string())?;
 
     let paths = report_paths(&app)?;
 
@@ -232,7 +266,9 @@ async fn generate_report_manual(
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
-        run_job(&agent, &data, &paths, &guard, &ctx).map_err(|e| e.to_string())
+        let research = live_research_stages(tavily_key, openai_key, anthropic_key, &ctx)
+            .map_err(|e| e.to_string())?;
+        run_job(&agent, &data, &research, &paths, &guard, &ctx).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("report generation task failed: {e}"))??;
@@ -599,7 +635,14 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
-        run_job(&agent, &data, &paths, &guard, &ctx).map_err(|e| e.to_string())
+        let research = live_research_stages(
+            run_config.tavily_api_key,
+            run_config.openai_api_key,
+            run_config.anthropic_api_key,
+            &ctx,
+        )
+        .map_err(|e| e.to_string())?;
+        run_job(&agent, &data, &research, &paths, &guard, &ctx).map_err(|e| e.to_string())
     })
     .await;
 

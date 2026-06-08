@@ -24,7 +24,7 @@ use serde::Serialize;
 use crate::agent::MainAgent;
 use crate::config::{WarningCategory, WarningKind};
 use crate::data_sources::MarketDataSource;
-use crate::pipeline::{generate_report, GeneratedReport, ReportPaths};
+use crate::pipeline::{generate_report, GeneratedReport, ReportPaths, ResearchStages};
 use crate::progress::RunContext;
 use crate::storage;
 
@@ -154,6 +154,7 @@ impl Drop for RunToken {
 pub fn run_job(
     agent: &dyn MainAgent,
     data: &dyn MarketDataSource,
+    research: &ResearchStages,
     paths: &ReportPaths,
     guard: &RunGuard,
     ctx: &RunContext,
@@ -190,7 +191,7 @@ pub fn run_job(
     ctx.run_started(RUN_LABEL);
 
     let started_at = now_rfc3339();
-    match generate_report(agent, data, paths, ctx) {
+    match generate_report(agent, data, research, paths, ctx) {
         Ok(report) => {
             let finished_at = now_rfc3339();
             // Emit the terminal tracker event even if the job-history write fails, so a

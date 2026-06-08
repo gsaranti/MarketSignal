@@ -85,6 +85,19 @@ function ensureStep(trace: RunTrace, key: string, label: string): TrackerStep {
   return step;
 }
 
+// Route a request row to the step that issued it, keyed off the event's `group`. The
+// research half's request groups (Tavily news, the headline filter, the router, and the
+// executor's searches) belong under the "research" step; every other group is a baseline
+// scan series. Without this, every request row would pile under "baseline" and the
+// research step would render empty. The label is a fallback only — step-started always
+// precedes its request rows, so the owning step already exists with its backend label.
+const RESEARCH_REQUEST_GROUPS = new Set(["news", "filter", "routing", "research"]);
+function requestStep(trace: RunTrace, group: string): TrackerStep {
+  return RESEARCH_REQUEST_GROUPS.has(group)
+    ? ensureStep(trace, "research", "Research")
+    : ensureStep(trace, "baseline", "Baseline market data");
+}
+
 // Fold one streamed progress message into the trace. Events are filtered to the
 // current run by `run_id`, so a straggler from a prior run can't corrupt it.
 function handleProgress(msg: ProgressMessage) {
@@ -125,8 +138,9 @@ function handleProgress(msg: ProgressMessage) {
     case "request-started": {
       // One row per actual HTTP request, shown in-flight ("running") until it
       // resolves. Skipped (no-request) series never emit this, so rows stay
-      // one-to-one with network calls.
-      const step = ensureStep(trace, "baseline", "Baseline market data");
+      // one-to-one with network calls. Routed to its owning step by `group` so
+      // research-half rows land under "research", not "baseline".
+      const step = requestStep(trace, msg.group ?? "");
       step.requests.push({
         provider: msg.provider ?? "",
         group: msg.group ?? "",
@@ -138,7 +152,7 @@ function handleProgress(msg: ProgressMessage) {
       break;
     }
     case "request-finished": {
-      const step = ensureStep(trace, "baseline", "Baseline market data");
+      const step = requestStep(trace, msg.group ?? "");
       // Resolve the matching in-flight row. Requests are sequential, so the running
       // row for this group+series is the one to update; fall back to appending a
       // resolved row if a started was somehow missed.

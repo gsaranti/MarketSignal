@@ -24,12 +24,14 @@
 //! rather than failing the gather — the same fail-soft posture the
 //! economic-release calendar uses. So `gather` never errors on GDELT's account.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::news::{host_of, NewsSource, RawHeadline};
+use crate::progress::RunContext;
 
 const GDELT_DOC_URL: &str = "https://api.gdeltproject.org/api/v2/doc/doc";
 
@@ -112,6 +114,10 @@ fn headlines_from_body(body: &str) -> Result<Vec<RawHeadline>> {
 /// keyless.
 pub struct GdeltNewsSource {
     http: reqwest::blocking::Client,
+    /// Run context for the single tracker row the gather emits. Defaults to a no-op
+    /// (tests / offline smokes); the live command attaches the real one via
+    /// [`GdeltNewsSource::with_context`].
+    progress: Arc<RunContext>,
 }
 
 impl GdeltNewsSource {
@@ -121,7 +127,17 @@ impl GdeltNewsSource {
             .user_agent(GDELT_USER_AGENT)
             .build()
             .context("building the GDELT HTTP client")?;
-        Ok(Self { http })
+        Ok(Self {
+            http,
+            progress: RunContext::noop(),
+        })
+    }
+
+    /// Attach a live run context so the single GDELT query streams a request row to the
+    /// tracker. Without it the adapter keeps its no-op context.
+    pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
+        self.progress = ctx;
+        self
     }
 
     /// Run one query, returning its headlines or an error it failed on. `gather`
@@ -154,10 +170,35 @@ impl NewsSource for GdeltNewsSource {
     /// Fail-soft: a failing query logs and degrades to no headlines rather than
     /// failing the gather, so GDELT (keyless, best-effort) can never fail the job.
     fn gather(&self) -> Result<Vec<RawHeadline>> {
+        // Cooperative cancel: skip the call entirely if a stop was already requested.
+        if self.progress.is_cancelled() {
+            return Ok(Vec::new());
+        }
+        // One tracker row for GDELT's single combined query.
+        self.progress
+            .request_started("GDELT", "news", "gdelt-sweep", "Geopolitical news sweep");
         match self.search(GDELT_QUERY) {
-            Ok(headlines) => Ok(headlines),
+            Ok(headlines) => {
+                self.progress.request_finished(
+                    "GDELT",
+                    "news",
+                    "gdelt-sweep",
+                    "Geopolitical news sweep",
+                    "ok",
+                    None,
+                );
+                Ok(headlines)
+            }
             Err(e) => {
                 eprintln!("GDELT news gather degraded to empty: {e}");
+                self.progress.request_finished(
+                    "GDELT",
+                    "news",
+                    "gdelt-sweep",
+                    "Geopolitical news sweep",
+                    "failed",
+                    Some(e.to_string()),
+                );
                 Ok(Vec::new())
             }
         }

@@ -10,12 +10,21 @@
 //! `spawn_blocking` at the Tauri command seam. The key rides as a Bearer token —
 //! the convention `connection_test` already uses for Tavily.
 //!
-//! Degradation policy. Unlike `fmp`'s per-symbol skip, Tavily is a required,
-//! gated provider credential (`config::validate` blocks a run without it) with no
-//! "partial absence" case, so any non-2xx fails the gather loudly rather than
-//! returning a thinned set: 401/403 a rejected key, 429/5xx an availability
-//! problem, anything else unexpected.
+//! Degradation policy. `interpret_tavily` still turns any non-2xx into an error per
+//! call (401/403 a rejected key, 429/5xx an availability problem, anything else
+//! unexpected); that error surfaces on the `SearchBackend` path the Step-9 executor
+//! drives, and as a `failed` tracker row on each topic. But the Step-7 `gather` sweep is
+//! **per-topic fail-soft** (`sweep_topics`): a single failed topic degrades to no
+//! headlines for that topic and the sweep continues — like `fmp`'s per-series skip — so
+//! one bad topic (a persistent 5xx, or a malformed 2xx that retry doesn't cover) never
+//! discards the other topics, nor GDELT's headlines via `CompositeNewsSource`. This is the
+//! research half's fully-fail-soft posture (`pipeline::assemble_research_packet`): a
+//! thinned or empty news set degrades the report rather than failing the run. (Earlier this
+//! gather was loud — fail the whole sweep on any non-2xx — which made sense when a Tavily
+//! failure failed the run; once research went fully fail-soft, loud-gather only turned a
+//! single-topic blip into a silent total news loss, so the sweep degrades per topic now.)
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -23,6 +32,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::news::{host_of, NewsSource, RawHeadline, NEWS_TOPICS};
+use crate::progress::RunContext;
 
 const TAVILY_SEARCH_URL: &str = "https://api.tavily.com/search";
 
@@ -98,6 +108,10 @@ fn headlines_from_response(resp: TavilySearchResponse) -> Vec<RawHeadline> {
 pub struct TavilyNewsSource {
     api_key: String,
     http: reqwest::blocking::Client,
+    /// Run context for the per-topic tracker rows the `gather` sweep emits. Defaults
+    /// to a no-op (tests / offline smokes); the live command attaches the real one via
+    /// [`TavilyNewsSource::with_context`].
+    progress: Arc<RunContext>,
 }
 
 impl TavilyNewsSource {
@@ -106,7 +120,18 @@ impl TavilyNewsSource {
             .timeout(TAVILY_TIMEOUT)
             .build()
             .context("building the Tavily HTTP client")?;
-        Ok(Self { api_key, http })
+        Ok(Self {
+            api_key,
+            http,
+            progress: RunContext::noop(),
+        })
+    }
+
+    /// Attach a live run context so the topic sweep streams one request row per Tavily
+    /// call to the tracker. Without it the adapter keeps its no-op context.
+    pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
+        self.progress = ctx;
+        self
     }
 
     /// Resolve the adapter from the environment, for the live smoke and any caller
@@ -137,13 +162,53 @@ impl TavilyNewsSource {
     }
 }
 
+/// Run the fixed Step-7 topic sweep through `search`, **per-topic fail-soft**: a topic
+/// whose search errors degrades to no headlines for that topic — logged, with a `failed`
+/// tracker row so the loss stays visible — and the sweep continues. One bad topic never
+/// discards the rest (nor GDELT, via `CompositeNewsSource`), matching `fmp`'s per-series
+/// skip and the research half's fully-fail-soft posture. Cooperative cancel breaks the
+/// sweep at the next topic boundary. Extracted from `gather` so the soft-skip is
+/// unit-testable without a live HTTP client.
+fn sweep_topics(
+    topics: &[&str],
+    progress: &RunContext,
+    mut search: impl FnMut(&str) -> Result<Vec<RawHeadline>>,
+) -> Vec<RawHeadline> {
+    let mut out = Vec::new();
+    for &topic in topics {
+        if progress.is_cancelled() {
+            break;
+        }
+        // One tracker row per actual Tavily call (the run-tracking invariant), keyed by
+        // topic. The `SearchBackend::search` path issues no row here — the Step-9 executor
+        // brackets those calls itself, so sharing `run_search` does not double-count.
+        progress.request_started("Tavily", "news", topic, topic);
+        match search(topic) {
+            Ok(headlines) => {
+                progress.request_finished("Tavily", "news", topic, topic, "ok", None);
+                out.extend(headlines);
+            }
+            Err(e) => {
+                eprintln!("Tavily news topic {topic:?} degraded to empty: {e}");
+                progress.request_finished(
+                    "Tavily",
+                    "news",
+                    topic,
+                    topic,
+                    "failed",
+                    Some(e.to_string()),
+                );
+            }
+        }
+    }
+    out
+}
+
 impl NewsSource for TavilyNewsSource {
     fn gather(&self) -> Result<Vec<RawHeadline>> {
-        let mut out = Vec::new();
-        for topic in NEWS_TOPICS {
-            out.extend(self.run_search(topic)?);
-        }
-        Ok(out)
+        Ok(sweep_topics(NEWS_TOPICS, &self.progress, |query| {
+            self.run_search(query)
+        }))
     }
 }
 
@@ -197,6 +262,62 @@ mod tests {
         // A blank content excerpt becomes None rather than an empty string.
         assert_eq!(headlines[1].title, "no snippet");
         assert_eq!(headlines[1].snippet, None);
+    }
+
+    fn topic_headline(q: &str) -> RawHeadline {
+        RawHeadline {
+            title: q.to_string(),
+            url: format!("https://example.com/{q}"),
+            source: "example.com".into(),
+            published: None,
+            snippet: None,
+        }
+    }
+
+    #[test]
+    fn sweep_topics_skips_a_failing_topic_and_keeps_the_rest() {
+        // The middle topic's search errors; the surrounding topics must still land — one
+        // bad topic does not discard the whole sweep (and so does not, via the composite,
+        // discard GDELT either).
+        let topics = ["alpha", "bravo", "charlie"];
+        let ctx = crate::progress::RunContext::noop();
+        let out = sweep_topics(&topics, &ctx, |q| {
+            if q == "bravo" {
+                anyhow::bail!("bravo search failed")
+            }
+            Ok(vec![topic_headline(q)])
+        });
+        let titles: Vec<&str> = out.iter().map(|h| h.title.as_str()).collect();
+        assert_eq!(titles, vec!["alpha", "charlie"]);
+    }
+
+    #[test]
+    fn sweep_topics_returns_empty_when_every_topic_fails() {
+        // A rejected key fails every topic; the sweep degrades to no headlines rather than
+        // erroring — the assembler then sees an empty news set and the run continues.
+        let topics = ["alpha", "bravo"];
+        let ctx = crate::progress::RunContext::noop();
+        let out = sweep_topics(&topics, &ctx, |_| anyhow::bail!("rejected key"));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn sweep_topics_stops_at_cancellation_without_searching() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        use crate::progress::{NoopReporter, RunContext};
+
+        // A context already cancelled: the sweep issues no searches and returns empty.
+        let topics = ["alpha", "bravo"];
+        let ctx = RunContext::new("t", Arc::new(NoopReporter), Arc::new(AtomicBool::new(true)));
+        let mut calls = 0;
+        let out = sweep_topics(&topics, &ctx, |q| {
+            calls += 1;
+            Ok(vec![topic_headline(q)])
+        });
+        assert!(out.is_empty(), "a pre-cancelled sweep gathers nothing");
+        assert_eq!(calls, 0, "a pre-cancelled sweep issues no searches");
     }
 
     #[test]

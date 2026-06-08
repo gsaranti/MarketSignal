@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::baseline_delta::BaselineDeltas;
 use crate::data_sources::BaselineMarketData;
+use crate::research_packet::ResearchPacket;
 
 /// The market's risk stance (`docs/storage.md`). Serializes to the canonical
 /// kebab labels (`risk-on`, `risk-off`, `mixed`).
@@ -104,6 +105,13 @@ pub struct MainAgentInput {
     /// first report, or when no prior snapshot could be read or decoded — the deltas are
     /// additive and never gate a run.
     pub deltas: Option<BaselineDeltas>,
+    /// The Step-11 condensed research packet (`research_packet`): the filtered news
+    /// clusters and bounded deep-research evidence the application layer assembled from
+    /// the research half. `None` on the offline/stub path (no research stages run) — the
+    /// research half is fully fail-soft, so a packet always exists on the live path even
+    /// when a stage degraded to empty. `baseline` and `deltas` ride at the top level here
+    /// rather than being read from the packet's own (inert) copies of them.
+    pub research: Option<ResearchPacket>,
 }
 
 /// What the main agent returns: the canonical Markdown body plus the structured

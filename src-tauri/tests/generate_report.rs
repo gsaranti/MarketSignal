@@ -10,8 +10,9 @@ use market_signal_temp_lib::baseline_delta::{BaselineDeltas, Direction};
 use market_signal_temp_lib::data_sources::{
     BaselineMarketData, MarketDataSource, Quote, StubMarketDataSource,
 };
-use market_signal_temp_lib::pipeline::{generate_report, ReportPaths};
+use market_signal_temp_lib::pipeline::{generate_report, ReportPaths, ResearchStages};
 use market_signal_temp_lib::progress::RunContext;
+use market_signal_temp_lib::research_packet::ResearchPacket;
 
 /// Wraps the stub agent and records the baseline *and* the change view it was handed, so
 /// the tests can assert both the Step-6 gather and the prior-snapshot diff reached the
@@ -20,6 +21,7 @@ use market_signal_temp_lib::progress::RunContext;
 struct RecordingAgent {
     seen: Mutex<Option<BaselineMarketData>>,
     seen_deltas: Mutex<Option<Option<BaselineDeltas>>>,
+    seen_research: Mutex<Option<Option<ResearchPacket>>>,
 }
 
 impl RecordingAgent {
@@ -27,6 +29,7 @@ impl RecordingAgent {
         Self {
             seen: Mutex::new(None),
             seen_deltas: Mutex::new(None),
+            seen_research: Mutex::new(None),
         }
     }
 }
@@ -35,6 +38,7 @@ impl MainAgent for RecordingAgent {
     fn generate(&self, input: MainAgentInput) -> anyhow::Result<MainAgentOutput> {
         *self.seen.lock().unwrap() = Some(input.baseline.clone());
         *self.seen_deltas.lock().unwrap() = Some(input.deltas.clone());
+        *self.seen_research.lock().unwrap() = Some(input.research.clone());
         StubMainAgent.generate(input)
     }
 }
@@ -79,7 +83,14 @@ fn generate_report_writes_markdown_file_and_db_row() {
         reports_dir: dir.path().join("reports"),
     };
 
-    let report = generate_report(&StubMainAgent, &StubMarketDataSource, &paths, &RunContext::noop()).unwrap();
+    let report = generate_report(
+        &StubMainAgent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
 
     // The canonical Markdown file was written to disk.
     assert!(
@@ -111,13 +122,61 @@ fn step_6_baseline_scan_reaches_the_agent_input() {
     };
 
     let agent = RecordingAgent::new();
-    generate_report(&agent, &StubMarketDataSource, &paths, &RunContext::noop()).unwrap();
+    generate_report(
+        &agent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
 
     // The pipeline gathered the data source's baseline and handed it to the agent
     // unchanged.
     let seen = agent.seen.lock().unwrap().clone().expect("agent was invoked");
     let expected = StubMarketDataSource.baseline_scan().unwrap();
     assert_eq!(seen, expected);
+}
+
+#[test]
+fn research_packet_reaches_the_agent_input() {
+    // Drive the spine with the stub research stages: the stub news source yields headlines,
+    // the stub filter clusters them, the stub router routes them, and the stub search backend
+    // returns synthetic evidence — so the assembled packet that reaches the agent carries both
+    // news clusters and research evidence (the whole point of the wiring slice).
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+
+    let agent = RecordingAgent::new();
+    generate_report(
+        &agent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    let packet = agent
+        .seen_research
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("agent was invoked")
+        .expect("the wired pipeline always hands the agent a research packet");
+    assert!(
+        !packet.news_clusters.is_empty(),
+        "the stub news → filter chain produced clusters that reached the agent"
+    );
+    assert!(
+        !packet.research.items.is_empty(),
+        "the stub route → execute chain produced evidence that reached the agent"
+    );
+    // The Step-10 memory pull is still deferred (no LanceDB), so the packet's memory is empty.
+    assert!(packet.memory.is_empty(), "memory stays empty until the LanceDB slice");
 }
 
 #[test]
@@ -134,6 +193,7 @@ fn second_report_diffs_against_the_first_and_snapshots_persist() {
     generate_report(
         &agent1,
         &FixedMarketDataSource(base_with_sp(5_500.0)),
+        &ResearchStages::stub(),
         &paths,
         &RunContext::noop(),
     )
@@ -149,6 +209,7 @@ fn second_report_diffs_against_the_first_and_snapshots_persist() {
     generate_report(
         &agent2,
         &FixedMarketDataSource(base_with_sp(5_610.0)),
+        &ResearchStages::stub(),
         &paths,
         &RunContext::noop(),
     )

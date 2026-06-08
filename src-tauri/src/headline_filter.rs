@@ -17,6 +17,7 @@
 //! into the report pipeline yet.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -25,6 +26,7 @@ use serde_json::{json, Value};
 
 use crate::model_agent::extract_openai_envelope;
 use crate::news::RawHeadline;
+use crate::progress::RunContext;
 
 /// The bounded ceiling on clustered stories the filter returns — the "~10
 /// important stories" the Step-7 funnel narrows to. Enforced in
@@ -270,6 +272,10 @@ fn envelope_to_clusters(env: ClusterEnvelope, headlines: &[RawHeadline]) -> Vec<
 pub struct ModelHeadlineFilter {
     api_key: String,
     http: reqwest::blocking::Client,
+    /// Run context for the single tracker row the filter call emits. Defaults to a
+    /// no-op (tests / offline smokes); the live command attaches the real one via
+    /// [`ModelHeadlineFilter::with_context`].
+    progress: Arc<RunContext>,
 }
 
 impl ModelHeadlineFilter {
@@ -278,7 +284,18 @@ impl ModelHeadlineFilter {
             .timeout(Duration::from_secs(120))
             .build()
             .context("building the headline-filter HTTP client")?;
-        Ok(Self { api_key, http })
+        Ok(Self {
+            api_key,
+            http,
+            progress: RunContext::noop(),
+        })
+    }
+
+    /// Attach a live run context so the filter call streams a request row to the tracker.
+    /// Without it the adapter keeps its no-op context.
+    pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
+        self.progress = ctx;
+        self
     }
 
     /// Resolve the adapter from the environment, for the live smoke and any caller
@@ -307,15 +324,39 @@ impl ModelHeadlineFilter {
 
 impl HeadlineFilter for ModelHeadlineFilter {
     fn filter(&self, headlines: Vec<RawHeadline>) -> Result<Vec<HeadlineCluster>> {
-        // No headlines, no call — an empty gather has nothing to cluster.
+        // No headlines, no call — an empty gather has nothing to cluster, and no row.
         if headlines.is_empty() {
             return Ok(Vec::new());
         }
-        let raw = self.call(&build_request(&headlines))?;
-        let value = extract_openai_envelope(&raw)?;
-        let env: ClusterEnvelope = serde_json::from_value(value)
-            .context("headline-filter response did not match the schema")?;
-        Ok(envelope_to_clusters(env, &headlines))
+        // One tracker row for the GPT-5-mini clustering call.
+        self.progress
+            .request_started("OpenAI", "filter", "headline-filter", "Headline filtering");
+        let result = (|| -> Result<Vec<HeadlineCluster>> {
+            let raw = self.call(&build_request(&headlines))?;
+            let value = extract_openai_envelope(&raw)?;
+            let env: ClusterEnvelope = serde_json::from_value(value)
+                .context("headline-filter response did not match the schema")?;
+            Ok(envelope_to_clusters(env, &headlines))
+        })();
+        match &result {
+            Ok(_) => self.progress.request_finished(
+                "OpenAI",
+                "filter",
+                "headline-filter",
+                "Headline filtering",
+                "ok",
+                None,
+            ),
+            Err(e) => self.progress.request_finished(
+                "OpenAI",
+                "filter",
+                "headline-filter",
+                "Headline filtering",
+                "failed",
+                Some(e.to_string()),
+            ),
+        }
+        result
     }
 }
 
