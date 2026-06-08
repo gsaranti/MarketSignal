@@ -116,9 +116,11 @@ impl TavilyNewsSource {
         Self::new(crate::config::AppConfig::from_env().tavily_key()?)
     }
 
-    /// Search one topic, returning its headlines. A transport error (Tavily
-    /// unreachable) or any non-2xx response propagates as a fatal gather error.
-    fn search(&self, query: &str) -> Result<Vec<RawHeadline>> {
+    /// Issue one search query, returning its headlines. Drives both the fixed
+    /// Step-7 topic sweep (`gather`) and the Step-9 executor's arbitrary plan
+    /// queries (`SearchBackend`). A transport error (Tavily unreachable) or any
+    /// non-2xx response propagates as a fatal error.
+    fn run_search(&self, query: &str) -> Result<Vec<RawHeadline>> {
         let body = json!({
             "query": query,
             "topic": "news",
@@ -139,9 +141,17 @@ impl NewsSource for TavilyNewsSource {
     fn gather(&self) -> Result<Vec<RawHeadline>> {
         let mut out = Vec::new();
         for topic in NEWS_TOPICS {
-            out.extend(self.search(topic)?);
+            out.extend(self.run_search(topic)?);
         }
         Ok(out)
+    }
+}
+
+impl crate::research_executor::SearchBackend for TavilyNewsSource {
+    /// The Step-9 executor drives arbitrary plan queries through the same Tavily
+    /// `/search` path the topic sweep uses.
+    fn search(&self, query: &str) -> Result<Vec<RawHeadline>> {
+        self.run_search(query)
     }
 }
 
@@ -193,7 +203,7 @@ mod tests {
     #[ignore = "hits the live Tavily API; set TAVILY_API_KEY"]
     fn live_search_smoke() {
         let tavily = TavilyNewsSource::from_env().expect("TAVILY_API_KEY set");
-        let headlines = tavily.search("US economy inflation and the Federal Reserve").unwrap();
+        let headlines = tavily.run_search("US economy inflation and the Federal Reserve").unwrap();
         assert!(!headlines.is_empty(), "expected live Tavily results");
         assert!(headlines.iter().all(|h| !h.url.is_empty()));
     }
