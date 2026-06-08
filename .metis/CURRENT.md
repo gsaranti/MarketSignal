@@ -2,27 +2,28 @@
 
 ## What happened
 
-**FRED freshness guard shipped to `main`** — squash `fb795d6` (PR #14). The FRED observations fetch is latest-numeric-desc with **no date bound**, so a discontinued/frozen series (the `NASDAQVOLNDX` class) still "resolves" to a stale value and slips past `fred_baseline_smoke`'s `len`-count assert. The slice adds a cadence-keyed freshness guard, **confined to the `fred.rs` test module**: a `Cadence` enum + `max_staleness_days`, a `FRESHNESS` table mapping every `INTERNALS_SERIES`+`MACRO_SERIES` id to a cadence with an **offline parity drift-guard** (a new unguarded series fails CI), a `latest_numeric_observation_date` helper mirroring `observations_to_quote` (skip `"."`, require finite `f64`), and a per-series freshness assert in the live (`#[ignore]`d) smoke.
+**Step 9 bounded research executor shipped to `main`** — squash `bd3ffb8` (PR #16). New `research_executor.rs`: `execute_research` walks a Step-8 `ResearchPlan`'s topics by priority, issues each query through a `SearchBackend` (`StubSearchBackend` offline + a live `impl` on `TavilyNewsSource` reusing its `/search`), and returns `ResearchEvidence { items, requests_made, stopped_reason }`. The three Step-9 bounds live in the executor, not any model: **≤50 requests**, **≤30 min**, **depth ≤2** — all polled at request boundaries exactly like cancellation, with one progress row per request and fail-soft on a failed search. Tavily's inherent helper was renamed `search` → `run_search` to free the trait name.
 
 **Load-bearing decisions (don't relitigate):**
-- **Smoke-only scope, not a production gate** — `observations_to_quote` stays freshness-blind (fail-soft never gates a run); the smoke is the roster-rot guard, same posture as the calendar's per-id catalog discipline. A production staleness gate remains a separate, larger slice (would touch the `Unavailable`-gap path + `enforce_coverage`).
-- **Bounds keyed to FRED's period-start dating** — obs are dated at period-start, so staleness *peaks just before the next release*; bounds (Daily 16 / Weekly 21 / Monthly 110 / Quarterly 230) were retuned against live data (first live run correctly false-positived on GDP at 157d > original 150d; CCSA at 15d would've tripped the original 14d weekly). Monthly/quarterly are inherently coarse (catch multi-month freezes only); daily/weekly stay tight.
+- **Synchronous executor, no `tokio`** — the 30-min budget is an injectable `Clock` elapsed-check at each boundary (≤50 sequential blocking searches × one backend timeout stays well inside 30 min), consistent with every adapter and the cancellation model. `BUILD.md` was amended to match (it had framed Step 9 as "where the tokio async seam lands").
+- **Branching ships as machinery only** — depth-2 *and* the one-follow-up-per-request shape are both executor-enforced: `BranchPolicy::follow_up -> Option<String>` type-enforces "at most one follow-up" (the shape the router's `5×4×depth-2` budget math depends on). `NoBranch` is the wired default; the real follow-up *generator* is deferred.
+- **Unwired by design** (Step-7/8 posture) — evidence's consumer is the not-yet-built Step-10 packet.
 
-Reviews: metis-task-reviewer **approve**; Codex one **Low** fidelity nit (helper didn't validate numericness) — fixed in-branch with a test.
+**Reviews:** Metis task-reviewer **approve**. Codex two **Medium**s: **finding 2** (a `Vec` follow-up let a policy fan out at depth 2) fixed in-branch via `Option<String>`; **finding 1** (the 50-cap / one-row invariant count *logical* requests, not HTTP attempts incl. retries) is the established project-wide convention (baseline adapters identical) — addressed by a `docs/run-tracking.md` clarification, **not** a code divergence.
 
 ## Current state
 
-On **`main` @ `fb795d6`**, in sync with origin, **working tree clean**, feature branch deleted (local + remote). Nothing in flight. Verified: **`cargo test` 191 lib + 12 integration, `cargo clippy --all-targets --all-features` clean, `npm run build` clean; live `fred_baseline_smoke` green** (all 30 series fresh as of 2026-06-07). Backend-test-only — **no production code changed**.
-
-Memory updated this session: `live-model-smoke.md` now records `~/.config/market-signal/keys.env` holds **all five** live keys (model + `FRED`/`FMP`/`TAVILY`); FRED has **no daily cap** (freely re-runnable smoke), FMP is 250/day.
+On **`main` @ `bd3ffb8`**, in sync with origin, feature branch deleted (local + remote), **nothing in flight**. Working tree carries only this `CURRENT.md` rewrite. Verified: **`cargo test` 206 lib + integration green, 10 ignored; `cargo clippy --all-targets --all-features` clean; `npm run build` unaffected** (no frontend change). The executor is built and tested but unwired from `generate_report`.
 
 ## Open questions
 
-- **Snapshot retention vs. report cascade** — `baseline_snapshots` self-prunes at 14; the 30-report report cascade is still unbuilt. `report_id` is stored so snapshots *can* cascade-delete — decide which when the cascade lands. (Folds into the parked retention-cascade item.)
-- **Live FMP smoke** still deferred — run `fmp_baseline_smoke` once after the 250/day quota resets (confirmation, not a gap; offline-covered).
-- *(carried, untouched)* tracker **live-SSE smoke** unrun; `COVERAGE_FLOOR=0.6` a set must-have not a final constant; slice (B) degraded-past-report reader signal missing; wiremock / in-loop offline gap; **Step-7 news funnel** never run live (Tavily/OpenAI keys + cool GDELT IP).
-- *(low / parked)* FRED freshness bounds may need seasonal tuning at period boundaries (`max_staleness_days` is the single tuning point); filter-prompt snippets; step-5 auto-archive; calendar `expected` consensus; GDP not annualized; no Vue component-test harness; `cargo fmt` dirty repo-wide.
+- **Deferred research brancher** — the follow-up generator (a model call vs. deterministic rules keyed off the baseline change view) is unbuilt; `NoBranch` is wired, so the executor does no dynamic branching yet. *New this session.*
+- **Step 10 condensed packet** — now the first real consumer of `ResearchEvidence`; until it lands the gather→filter→route→execute chain has nowhere to feed and the whole research half stays unwired.
+- **Reduced `RouterInput`** — still 3 of Step-8's 7 doc inputs (baseline, deltas, clusters); recent-report context / vector memory / parsed inbox / upcoming events join later. The executor inherits the same gap.
+- **Live smokes** — research routing/phase smoke unrun (needs Tavily + OpenAI + Anthropic + a cool GDELT IP); `fmp_baseline_smoke` deferred to a quota reset. Offline-covered, so confirmation not a gap.
+- *(carried)* snapshot retention vs. 30-report cascade; tracker live-SSE smoke unrun; `COVERAGE_FLOOR=0.6` not final; slice (B) degraded-past-report reader signal; wiremock / in-loop offline gap; Step-7 funnel never run live.
+- *(low / parked)* FRED freshness seasonal tuning; filter-prompt snippets; step-5 auto-archive; calendar `expected` consensus; GDP not annualized; no Vue component-test harness; `cargo fmt` dirty repo-wide.
 
 ## Where to start
 
-**Step 8: research routing** via `/metis-plan-task` — the natural forward slice and the deferred consumer of the baseline-history deltas: the `deltas` local in `generate_report` (and `MainAgentInput.deltas`) is ready for the fixed Claude Sonnet router to read alongside the Step-7 clusters → a bounded research plan (`docs/weekly-report-workflow.md §Step 8`). Remaining quick win if preferred: live FMP smoke (once quota resets).
+**Step 10: the condensed research packet** via `/metis-plan-task` — the first consumer of `ResearchEvidence`, and where the gather → filter → route → execute chain finally threads onto `MainAgentInput` and into the report. Alternative: settle the **deferred brancher** decision (model vs. deterministic rules) before Step 10, or run a quick-win live smoke once keys/quota allow.
