@@ -24,15 +24,19 @@
 //!
 //! Nothing is wired into the report pipeline yet (the Step-7/8 posture): the
 //! evidence's consumer is the Step-11 condensed packet, which isn't built. The
-//! *dynamic branching* itself ships as machinery only — the [`NoBranch`] default
-//! does no branching; the follow-up generator (a model call or deterministic
-//! rules keyed off the baseline deltas) is a deferred decision.
+//! *dynamic branching* ships as machinery only — [`NoBranch`] is the trait's
+//! no-op default, and [`DeltaBranchPolicy`] is the real follow-up generator:
+//! deterministic delta-rules keyed off the baseline change view (the §Step 9
+//! "if oil spikes …" triggers). Selecting it over `NoBranch` at the
+//! `execute_research` call site lands with the pipeline/Step-11 wiring.
 
-use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::baseline_delta::{BaselineDeltas, Direction};
 use crate::news::RawHeadline;
 use crate::progress::RunContext;
 use crate::research_router::{ResearchItem, ResearchPlan};
@@ -136,10 +140,10 @@ pub trait BranchPolicy {
     fn follow_up(&self, item: &ResearchItem, finding: &Finding) -> Option<String>;
 }
 
-/// The wired default: no dynamic branching. The follow-up *generator* — a model
-/// call or deterministic rules keyed off the baseline change view (`§Step 9`'s
-/// "if oil spikes …" heuristics) — is a deferred decision; this no-op is the slot
-/// the depth machinery is built around.
+/// The trait's no-op default: no dynamic branching. The real follow-up generator is
+/// [`DeltaBranchPolicy`] (deterministic delta-rules keyed off the change view); this
+/// no-op remains the slot the depth machinery is built around and the stand-in
+/// wherever no change view is available.
 #[derive(Debug, Default)]
 pub struct NoBranch;
 
@@ -147,6 +151,177 @@ impl BranchPolicy for NoBranch {
     fn follow_up(&self, _item: &ResearchItem, _finding: &Finding) -> Option<String> {
         None
     }
+}
+
+/// Which series metric a [`TriggerRule`] thresholds against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Metric {
+    /// Absolute level change in the series' natural unit — for a Treasury yield
+    /// (quoted in percent) `0.25` is a 25 bp move. Always present on a `SeriesDelta`.
+    Abs,
+    /// Percent change off the prior level, in the `baseline_delta` convention where a
+    /// +7% move is `7.0` (not `0.07`). Skipped when `pct_change` is absent (the prior
+    /// level was zero or non-finite).
+    Pct,
+}
+
+/// One delta-conditioned branching rule. When any of `series_ids` appears in this run's
+/// change view having moved at least `threshold` (measured by `metric`) **in
+/// `direction`**, the rule fires; it then contributes `follow_up_query` as the depth-2
+/// second-order investigation for a research topic whose label or rationale contains any
+/// of `keywords`. The direction gate keeps the rules faithful to the doc's *directional*
+/// triggers — "if oil **spikes**", "if yields **rise sharply**"
+/// (`docs/weekly-report-workflow.md §Step 9`) — so a sharp *decline* (a different thesis:
+/// demand destruction, flight-to-quality) doesn't fire a rise-flavored follow-up. A
+/// future crash rule is a one-row `Direction::Down` entry with its own query.
+#[derive(Debug)]
+struct TriggerRule {
+    series_ids: &'static [&'static str],
+    metric: Metric,
+    threshold: f64,
+    direction: Direction,
+    keywords: &'static [&'static str],
+    follow_up_query: &'static str,
+}
+
+/// The seeded delta-trigger table. Only delta-conditioned triggers over level-bearing
+/// series the change view actually carries are expressible here, so the first cut ships
+/// **oil** and **Treasury yields** — both FRED `internals` series, inside
+/// `baseline_delta::DELTA_GROUPS`. The doc's other examples are deferred: geopolitical
+/// escalation is news-conditioned (no delta signal), a semiconductor *price* level is
+/// not in the delta groups (sector performance is excluded; only sector P/E is carried),
+/// and "rally despite weak macro" is a compound index-vs-macro condition. Adding a clean
+/// single-series trigger (dollar index, natural gas, a credit spread, VIX) is a one-row
+/// edit here. Thresholds are raw-magnitude, calibrated to the ~weekly cadence (tunable).
+const TRIGGER_RULES: &[TriggerRule] = &[
+    TriggerRule {
+        series_ids: &["DCOILWTICO"],
+        metric: Metric::Pct,
+        threshold: 7.0,
+        direction: Direction::Up,
+        keywords: &["oil", "crude", "wti", "brent", "opec", "petroleum"],
+        follow_up_query: "Second-order effects of the recent oil spike: inflation \
+            pass-through, shipping and freight costs, supply-chain disruption, and \
+            geopolitical energy-supply risk.",
+    },
+    TriggerRule {
+        series_ids: &["DGS10"],
+        metric: Metric::Abs,
+        threshold: 0.25,
+        direction: Direction::Up,
+        keywords: &[
+            "yield", "yields", "treasury", "treasuries", "bond", "bonds", "duration",
+            "10y", "2y", "30y",
+        ],
+        follow_up_query: "Implications of the recent rise in Treasury yields: Fed \
+            rate-path repricing, inflation-expectation shifts, and bond-market and \
+            funding stress.",
+    },
+];
+
+/// The real follow-up generator (`docs/weekly-report-workflow.md §Step 9`): deterministic
+/// delta-rules keyed off this run's baseline change view. Built via
+/// [`DeltaBranchPolicy::from_deltas`], which resolves at construction which
+/// [`TRIGGER_RULES`] fired (a tracked series moved past its threshold in the rule's
+/// direction). During execution each fired rule emits its second-order follow-up query
+/// **at most once**, attached to the first matching topic-finding the executor reaches —
+/// and since the executor walks topics in descending priority, that is the
+/// highest-priority matching topic. With no change view, or no rule fired, it degrades to
+/// the [`NoBranch`] no-op.
+///
+/// One bound is inherited from the trait, not chosen here: `follow_up` returns a single
+/// `Option<String>`, so a finding spawns at most one follow-up (the executor's
+/// per-request budget math depends on this 1:1 shape). When several fired rules match the
+/// *same* finding, their follow-up queries are **merged into one** combined query and all
+/// are marked emitted — so every fired rule with a matching topic contributes exactly
+/// once, without ever spawning a second search for one finding. (A fired rule that no
+/// topic matches simply does not emit; there is nowhere on-thesis to attach it.)
+///
+/// Machinery only, like the rest of the research half: nothing selects it over
+/// [`NoBranch`] at the `execute_research` call site yet (the executor is unwired from
+/// `generate_report`); that selection lands with the pipeline/Step-11 wiring.
+pub struct DeltaBranchPolicy {
+    /// Indices into [`TRIGGER_RULES`] that fired for this run's change view.
+    fired: Vec<usize>,
+    /// Fired rules already emitted, so each contributes at most one follow-up across the
+    /// whole run. Interior mutability because `follow_up` takes `&self`; the executor is
+    /// single-threaded and synchronous, so a `RefCell` is sound here.
+    emitted: RefCell<HashSet<usize>>,
+}
+
+impl DeltaBranchPolicy {
+    /// Resolve the fired triggers from this run's change view. A rule fires when any of
+    /// its `series_ids` appears in `deltas.changed` with a move at or past its `threshold`
+    /// (by the rule's `metric`); a `Pct` rule needs a present `pct_change`.
+    pub fn from_deltas(deltas: &BaselineDeltas) -> Self {
+        let fired = TRIGGER_RULES
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| rule_fired(rule, deltas))
+            .map(|(i, _)| i)
+            .collect();
+        Self {
+            fired,
+            emitted: RefCell::new(HashSet::new()),
+        }
+    }
+}
+
+impl BranchPolicy for DeltaBranchPolicy {
+    fn follow_up(&self, item: &ResearchItem, _finding: &Finding) -> Option<String> {
+        // Delta-conditioned, not finding-conditioned: the follow-up content comes from
+        // which series moved (resolved at construction), not what this search returned —
+        // so `_finding` is unused beyond driving the per-finding invocation.
+        //
+        // Every un-emitted fired rule this topic matches is consumed here and its query
+        // merged into the single returned string: the trait yields one follow-up per
+        // finding, so when two rules collide on one finding a merged query carries both
+        // rather than dropping the lower-priority one.
+        let mut emitted = self.emitted.borrow_mut();
+        let mut queries: Vec<&'static str> = Vec::new();
+        for &idx in &self.fired {
+            if emitted.contains(&idx) {
+                continue;
+            }
+            let rule = &TRIGGER_RULES[idx];
+            if topic_matches(item, rule.keywords) {
+                emitted.insert(idx);
+                queries.push(rule.follow_up_query);
+            }
+        }
+        if queries.is_empty() {
+            None
+        } else {
+            Some(queries.join(" "))
+        }
+    }
+}
+
+/// Whether `rule` fired against `deltas`: any matching series id that moved in the rule's
+/// `direction` and cleared the threshold by the rule's metric. The direction gate is what
+/// keeps "oil spikes" / "yields rise sharply" from firing on a sharp decline.
+fn rule_fired(rule: &TriggerRule, deltas: &BaselineDeltas) -> bool {
+    deltas.changed.iter().any(|d| {
+        rule.series_ids.contains(&d.id.as_str())
+            && d.direction == rule.direction
+            && match rule.metric {
+                Metric::Abs => d.abs_change.abs() >= rule.threshold,
+                Metric::Pct => d.pct_change.is_some_and(|p| p.abs() >= rule.threshold),
+            }
+    })
+}
+
+/// Whether any of `keywords` appears as a whole word in the item's topic or rationale.
+/// Word-boundary (not substring) matching so a domain word like "turmoil" can't trip the
+/// "oil" keyword; the text is split on non-alphanumeric characters so hyphenated labels
+/// tokenize cleanly.
+fn topic_matches(item: &ResearchItem, keywords: &[&str]) -> bool {
+    let text = format!("{} {}", item.topic, item.rationale).to_lowercase();
+    let words: HashSet<&str> = text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    keywords.iter().any(|kw| words.contains(kw))
 }
 
 /// Elapsed-time source for the 30-minute budget. A seam so the budget is testable
@@ -307,6 +482,9 @@ mod tests {
     use std::sync::Arc;
 
     use crate::progress::{ProgressMessage, ProgressReporter, RunContext};
+
+    use crate::baseline_delta::{BaselineDeltas, Direction, SeriesDelta};
+    use crate::data_sources::GroupKind;
 
     /// Build a plan item with `n_queries` deterministic queries.
     fn item(topic: &str, n_queries: usize, priority: f64) -> ResearchItem {
@@ -492,5 +670,231 @@ mod tests {
             &RunContext::noop(),
         );
         assert_eq!(evidence.requests_made, 1, "no follow-ups without a brancher");
+    }
+
+    /// A `SeriesDelta` carrying just the fields a `TriggerRule` reads — its series id and
+    /// move. The level fields are placeholders; the rules key off `id`, `abs_change`, and
+    /// `pct_change` only.
+    fn series_delta(id: &str, abs_change: f64, pct_change: Option<f64>) -> SeriesDelta {
+        SeriesDelta {
+            group: GroupKind::Internals,
+            id: id.into(),
+            name: id.into(),
+            current: 0.0,
+            prior: 0.0,
+            abs_change,
+            pct_change,
+            direction: if abs_change >= 0.0 {
+                Direction::Up
+            } else {
+                Direction::Down
+            },
+        }
+    }
+
+    /// A change view over a ~weekly interval carrying the given level changes.
+    fn deltas(changed: Vec<SeriesDelta>) -> BaselineDeltas {
+        BaselineDeltas {
+            elapsed_days: 7.0,
+            changed,
+            new: Vec::new(),
+            missing: Vec::new(),
+        }
+    }
+
+    /// A depth-1 finding stand-in for the direct `follow_up` unit tests — its content is
+    /// irrelevant, since the delta-rules policy ignores it.
+    fn depth1_finding() -> Finding {
+        Finding {
+            query: "q".into(),
+            depth: 1,
+            sources: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn delta_policy_fires_oil_above_its_pct_threshold() {
+        let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta(
+            "DCOILWTICO",
+            6.0,
+            Some(8.0),
+        )]));
+        let q = policy
+            .follow_up(&item("Energy / oil supply shock", 1, 0.9), &depth1_finding())
+            .expect("oil trigger fired and the topic matched");
+        assert!(q.starts_with("Second-order effects of the recent oil spike"));
+    }
+
+    #[test]
+    fn delta_policy_silent_below_oil_threshold() {
+        // A 3% oil move is below the 7% spike threshold.
+        let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta(
+            "DCOILWTICO",
+            2.0,
+            Some(3.0),
+        )]));
+        assert!(policy
+            .follow_up(&item("Energy / oil supply shock", 1, 0.9), &depth1_finding())
+            .is_none());
+    }
+
+    #[test]
+    fn delta_policy_fires_yields_above_its_bp_threshold() {
+        // 30 bp on the 10y clears the 25 bp (0.25) absolute threshold.
+        let policy =
+            DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta("DGS10", 0.30, Some(7.1))]));
+        let q = policy
+            .follow_up(&item("Treasury yields repricing", 1, 0.9), &depth1_finding())
+            .expect("yield trigger fired and the topic matched");
+        assert!(q.contains("Treasury yields"));
+    }
+
+    #[test]
+    fn delta_policy_ignores_sharp_declines_for_rise_only_rules() {
+        // An 8% oil *decline* and a 30 bp yield *decline* clear the magnitudes but move
+        // the wrong way — the "spike" / "rise sharply" rules must stay silent rather than
+        // emit a rise-flavored follow-up against a decline thesis.
+        let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![
+            series_delta("DCOILWTICO", -6.0, Some(-8.0)),
+            series_delta("DGS10", -0.30, Some(-7.1)),
+        ]));
+        assert!(policy
+            .follow_up(&item("Energy / oil supply shock", 1, 0.9), &depth1_finding())
+            .is_none());
+        assert!(policy
+            .follow_up(&item("Treasury yields repricing", 1, 0.9), &depth1_finding())
+            .is_none());
+    }
+
+    #[test]
+    fn delta_policy_emits_distinct_fired_rules_on_their_own_topics() {
+        // Both oil and yields rose past threshold this week; with a topic matching each,
+        // both follow-ups emit — one per rule, on its own topic (the common case the
+        // single-Option-per-finding bound does not constrain).
+        let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![
+            series_delta("DCOILWTICO", 6.0, Some(8.0)),
+            series_delta("DGS10", 0.30, Some(7.1)),
+        ]));
+        let oil = policy
+            .follow_up(&item("oil supply shock", 1, 0.9), &depth1_finding())
+            .expect("oil rule emits on the oil topic");
+        assert!(oil.contains("oil"));
+        let yields = policy
+            .follow_up(&item("Treasury yields repricing", 1, 0.8), &depth1_finding())
+            .expect("yield rule emits on the yields topic");
+        assert!(yields.contains("Treasury yields"));
+    }
+
+    #[test]
+    fn delta_policy_merges_rules_colliding_on_one_finding() {
+        // Both oil and yields fired; a single-query cross-asset topic matches both keyword
+        // sets. The one-follow-up-per-finding bound means one query must carry both — the
+        // merged query covers each rule and neither is silently lost.
+        let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![
+            series_delta("DCOILWTICO", 6.0, Some(8.0)),
+            series_delta("DGS10", 0.30, Some(7.1)),
+        ]));
+        let q = policy
+            .follow_up(
+                &item("Cross-asset stress: oil and Treasury yields", 1, 0.9),
+                &depth1_finding(),
+            )
+            .expect("a topic matching both fired rules emits a merged follow-up");
+        assert!(q.contains("oil spike"), "merged query covers the oil rule: {q}");
+        assert!(
+            q.contains("Treasury yields"),
+            "merged query covers the yield rule: {q}"
+        );
+        // Both rules are consumed — a later topic matching either gets nothing.
+        assert!(policy
+            .follow_up(&item("oil supply", 1, 0.8), &depth1_finding())
+            .is_none());
+        assert!(policy
+            .follow_up(&item("bond duration", 1, 0.7), &depth1_finding())
+            .is_none());
+    }
+
+    #[test]
+    fn delta_policy_no_follow_up_when_topic_is_unrelated() {
+        // Oil fired, but the topic is about labor — no keyword match, no follow-up.
+        let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta(
+            "DCOILWTICO",
+            6.0,
+            Some(8.0),
+        )]));
+        assert!(policy
+            .follow_up(&item("Labor market softening", 1, 0.9), &depth1_finding())
+            .is_none());
+    }
+
+    #[test]
+    fn delta_policy_emits_each_fired_trigger_once() {
+        let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta(
+            "DCOILWTICO",
+            6.0,
+            Some(8.0),
+        )]));
+        // Two oil-matching topics: the fired trigger attaches to the first, the second
+        // gets nothing.
+        assert!(policy
+            .follow_up(&item("oil supply", 1, 0.9), &depth1_finding())
+            .is_some());
+        assert!(
+            policy
+                .follow_up(&item("crude oil prices", 1, 0.8), &depth1_finding())
+                .is_none(),
+            "each fired trigger contributes at most one follow-up"
+        );
+    }
+
+    #[test]
+    fn delta_policy_with_no_fired_trigger_is_a_noop() {
+        let policy = DeltaBranchPolicy::from_deltas(&deltas(Vec::new()));
+        assert!(policy
+            .follow_up(&item("oil supply", 1, 0.9), &depth1_finding())
+            .is_none());
+    }
+
+    #[test]
+    fn delta_policy_matches_on_word_boundaries_not_substrings() {
+        // Oil fired, but "turmoil" must not match the "oil" keyword.
+        let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta(
+            "DCOILWTICO",
+            6.0,
+            Some(8.0),
+        )]));
+        assert!(policy
+            .follow_up(
+                &item("Geopolitical turmoil in Europe", 1, 0.9),
+                &depth1_finding()
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn delta_policy_branches_through_the_executor() {
+        let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta(
+            "DCOILWTICO",
+            6.0,
+            Some(8.0),
+        )]));
+        let plan = ResearchPlan {
+            items: vec![item("oil supply shock", 1, 1.0)],
+        };
+        let evidence = execute_research(
+            &plan,
+            &StubSearchBackend,
+            &policy,
+            &fast_clock(),
+            &RunContext::noop(),
+        );
+        // One depth-1 plan query spawns one depth-2 follow-up; the depth cap holds.
+        assert_eq!(evidence.requests_made, 2);
+        let depths: Vec<u32> = evidence.items[0].findings.iter().map(|f| f.depth).collect();
+        assert_eq!(depths, vec![1, 2]);
+        assert!(evidence.items[0]
+            .findings
+            .iter()
+            .all(|f| f.depth <= MAX_RESEARCH_DEPTH));
     }
 }
