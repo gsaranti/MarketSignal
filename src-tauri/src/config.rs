@@ -220,6 +220,20 @@ impl AppConfig {
             })?
             .to_string())
     }
+
+    /// The Anthropic API key for the fixed internal research-routing model (Claude
+    /// Sonnet, `docs/agents.md §Research Routing`), resolved from validated
+    /// configuration. Like `openai_key`, this is for a non-configurable internal
+    /// stage, distinct from `main_agent_config`'s user-selected agent key. After a
+    /// passing `validate` the Anthropic token is present (always required, since the
+    /// fixed internal stages span both providers), so the error arm is defensive.
+    pub fn anthropic_key(&self) -> Result<String> {
+        Ok(present(&self.anthropic_api_key)
+            .ok_or_else(|| {
+                anyhow!("ANTHROPIC_API_KEY is not set (required for the fixed internal research-routing model)")
+            })?
+            .to_string())
+    }
 }
 
 /// One configured agent slot, paired with its display name for warning copy.
@@ -620,6 +634,17 @@ mod tests {
         blank.openai_api_key = Some("   ".into()); // present-but-blank reads as unset
         let err = blank.openai_key().unwrap_err();
         assert!(err.to_string().contains("OPENAI_API_KEY"), "{err}");
+    }
+
+    #[test]
+    fn anthropic_key_resolves_present_value_and_errors_when_missing() {
+        let cfg = complete();
+        assert_eq!(cfg.anthropic_key().unwrap(), "sk-anthropic");
+
+        let mut blank = complete();
+        blank.anthropic_api_key = Some("   ".into()); // present-but-blank reads as unset
+        let err = blank.anthropic_key().unwrap_err();
+        assert!(err.to_string().contains("ANTHROPIC_API_KEY"), "{err}");
     }
 
     #[test]
