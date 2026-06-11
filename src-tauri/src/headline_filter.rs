@@ -3,7 +3,7 @@
 //! stories (`docs/weekly-report-workflow.md §Step 7`).
 //!
 //! This is the filtering half of Step 7. The application layer gathers raw
-//! headlines (`news` + the `tavily`/`gdelt` adapters) and runs the deterministic
+//! headlines (`news` + the `tavily`/`gdelt`/`fmp_news` adapters) and runs the deterministic
 //! `news::dedupe_headlines` pre-pass; this stage then performs the model work —
 //! semantic deduplication, relevance scoring, and clustering into major topics —
 //! with the fixed low-cost model (GPT-5 mini, `docs/agents.md §Headline

@@ -62,13 +62,16 @@ impl ResearchStages {
     /// The live stage bundle (Steps 7–11) for one run — the single construction shared
     /// by the production command paths (`lib.rs`) and the live research smoke below, so
     /// the wiring can't drift between what ships and what the smoke validates. Tavily +
-    /// GDELT feed the news gather (one composite); the GPT-5-mini headline filter and
-    /// the Sonnet research router are the fixed internal stages; a *second* Tavily
-    /// client is the Step-9 search backend, since the composite owns the gather's
-    /// Tavily by value. Every adapter carries `ctx` so each call streams a per-request
-    /// tracker row. Errors here are HTTP-client build failures only.
+    /// GDELT + FMP Articles feed the news gather (one nested composite — Tavily first so
+    /// dedup keeps the primary source's framing, the best-effort supplements after); the
+    /// GPT-5-mini headline filter and the Sonnet research router are the fixed internal
+    /// stages; a *second* Tavily client is the Step-9 search backend, since the
+    /// composite owns the gather's Tavily by value. Every adapter carries `ctx` so each
+    /// call streams a per-request tracker row. Errors here are HTTP-client build
+    /// failures only.
     pub fn live(
         tavily_key: String,
+        fmp_key: String,
         openai_key: String,
         anthropic_key: String,
         ctx: &std::sync::Arc<RunContext>,
@@ -77,7 +80,10 @@ impl ResearchStages {
             news: Box::new(news::CompositeNewsSource::new(
                 crate::tavily::TavilyNewsSource::new(tavily_key.clone())?
                     .with_context(ctx.clone()),
-                crate::gdelt::GdeltNewsSource::new()?.with_context(ctx.clone()),
+                news::CompositeNewsSource::new(
+                    crate::gdelt::GdeltNewsSource::new()?.with_context(ctx.clone()),
+                    crate::fmp_news::FmpNewsSource::new(fmp_key)?.with_context(ctx.clone()),
+                ),
             )),
             filter: Box::new(
                 crate::headline_filter::ModelHeadlineFilter::new(openai_key)?
@@ -298,7 +304,8 @@ fn assemble_research_packet(
     deltas: Option<&BaselineDeltas>,
     ctx: &RunContext,
 ) -> ResearchPacket {
-    // Step 7: gather raw headlines (Tavily + GDELT) and run the deterministic dedup pre-pass.
+    // Step 7: gather raw headlines (Tavily + GDELT + FMP Articles) and run the
+    // deterministic dedup pre-pass.
     let headlines = match research.news.gather() {
         Ok(raw) => news::dedupe_headlines(raw),
         Err(e) => {
@@ -955,20 +962,20 @@ mod tests {
 
     /// Live end-to-end smoke for the research half exactly as `generate_report` runs it:
     /// the production stage bundle (`ResearchStages::live` — the same constructor both
-    /// command paths call), the real Tavily+GDELT gather, the GPT-5-mini filter, the
-    /// Sonnet router, and the bounded executor against live Tavily, condensed into the
-    /// packet. Everything in this path is fail-soft — a dead key or a down provider
-    /// degrades to an *empty* packet rather than an error — so every assertion below is
-    /// anti-vacuous: it pins that each stage actually ran and produced something, which
-    /// a bare "returns a packet" check could never show.
+    /// command paths call), the real Tavily+GDELT+FMP-Articles gather, the GPT-5-mini
+    /// filter, the Sonnet router, and the bounded executor against live Tavily,
+    /// condensed into the packet. Everything in this path is fail-soft — a dead key or a
+    /// down provider degrades to an *empty* packet rather than an error — so every
+    /// assertion below is anti-vacuous: it pins that each stage actually ran and
+    /// produced something, which a bare "returns a packet" check could never show.
     ///
-    /// Spend per run: ~8 news searches (7 Tavily topics + 1 GDELT) plus up to 20
-    /// executor searches on Tavily (5 topics × 4 queries; `deltas: None` selects
-    /// `NoBranch`, so no follow-ups), one OpenAI call, one Anthropic call — run it
-    /// deliberately, not repeatedly. A failed GDELT row is expected from a dev IP
-    /// (escalating 429 lockout) and is absorbed by the news group's Tavily rows.
+    /// Spend per run: ~9 news calls (7 Tavily topics + 1 GDELT + 1 FMP articles page)
+    /// plus up to 20 executor searches on Tavily (5 topics × 4 queries; `deltas: None`
+    /// selects `NoBranch`, so no follow-ups), one OpenAI call, one Anthropic call — run
+    /// it deliberately, not repeatedly. A failed GDELT row is expected from a dev IP
+    /// (escalating 429 lockout) and is absorbed by the news group's other rows.
     #[test]
-    #[ignore = "hits live Tavily + GDELT + OpenAI + Anthropic; set TAVILY_API_KEY + OPENAI_API_KEY + ANTHROPIC_API_KEY"]
+    #[ignore = "hits live Tavily + GDELT + FMP + OpenAI + Anthropic; set TAVILY_API_KEY + FMP_API_KEY + OPENAI_API_KEY + ANTHROPIC_API_KEY"]
     fn live_research_packet_smoke() {
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
@@ -991,6 +998,7 @@ mod tests {
         let cfg = AppConfig::from_env();
         let stages = ResearchStages::live(
             cfg.tavily_key().expect("TAVILY_API_KEY set"),
+            cfg.fmp_key().expect("FMP_API_KEY set"),
             cfg.openai_key().expect("OPENAI_API_KEY set"),
             cfg.anthropic_key().expect("ANTHROPIC_API_KEY set"),
             &ctx,
