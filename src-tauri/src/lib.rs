@@ -5,6 +5,7 @@ pub mod config;
 pub mod connection_test;
 pub mod data_sources;
 pub mod fmp;
+pub mod fmp_news;
 pub mod fred;
 pub mod gdelt;
 pub mod headline_filter;
@@ -205,7 +206,8 @@ async fn generate_report_manual(
     let fred_key = cfg.fred_key().map_err(|e| e.to_string())?;
     // Research-half credentials (Steps 7–11): Tavily (news ingestion + the Step-9 search
     // backend), OpenAI (the GPT-5-mini headline filter), Anthropic (the Sonnet research
-    // router). The gate above already requires all three.
+    // router). The gate above already requires all three; the FMP key above is reused
+    // for the supplementary FMP Articles news feed.
     let tavily_key = cfg.tavily_key().map_err(|e| e.to_string())?;
     let openai_key = cfg.openai_key().map_err(|e| e.to_string())?;
     let anthropic_key = cfg.anthropic_key().map_err(|e| e.to_string())?;
@@ -228,7 +230,7 @@ async fn generate_report_manual(
         // trait (`docs/weekly-report-workflow.md §Step 3`). BLS is keyless (not in the
         // execution gate); it nests as the outer secondary so its labor_levels group
         // folds into the FMP+FRED baseline.
-        let fmp = FmpDataSource::new(fmp_key)
+        let fmp = FmpDataSource::new(fmp_key.clone())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let fred = FredDataSource::new(fred_key)
@@ -238,7 +240,7 @@ async fn generate_report_manual(
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
-        let research = ResearchStages::live(tavily_key, openai_key, anthropic_key, &ctx)
+        let research = ResearchStages::live(tavily_key, fmp_key, openai_key, anthropic_key, &ctx)
             .map_err(|e| e.to_string())?;
         run_job(&agent, &data, &research, &paths, &guard, &ctx).map_err(|e| e.to_string())
     })
@@ -597,7 +599,7 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
         // FMP + FRED + BLS merged behind one trait, identical to the manual command's
         // baseline source (`docs/weekly-report-workflow.md §Step 3`). BLS is keyless,
         // nested as the outer secondary to fold in the labor_levels group.
-        let fmp = FmpDataSource::new(run_config.fmp_api_key)
+        let fmp = FmpDataSource::new(run_config.fmp_api_key.clone())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let fred = FredDataSource::new(run_config.fred_api_key)
@@ -609,6 +611,7 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
         let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
         let research = ResearchStages::live(
             run_config.tavily_api_key,
+            run_config.fmp_api_key,
             run_config.openai_api_key,
             run_config.anthropic_api_key,
             &ctx,

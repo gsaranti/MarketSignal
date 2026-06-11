@@ -197,7 +197,7 @@ Research documents may influence:
 
 ## Step 7: Gather and Filter News
 
-The application gathers a broad set of headlines and research candidates from the configured news and research sources — Tavily and GDELT (see [data-sources.md](data-sources.md)). Tavily contributes AI-oriented market and research headlines; GDELT contributes geopolitical and large-scale news trend coverage.
+The application gathers a broad set of headlines and research candidates from the configured news and research sources — Tavily, GDELT, and FMP Articles (see [data-sources.md](data-sources.md)). Tavily contributes AI-oriented market and research headlines; GDELT contributes geopolitical and large-scale news trend coverage; FMP Articles contributes a bounded page of ticker-tagged, company-level market commentary as a best-effort supplement.
 
 The system does not send large raw news volumes into frontier models.
 

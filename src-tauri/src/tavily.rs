@@ -42,7 +42,8 @@ const TAVILY_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Results requested per topic query. With ~7 topics this gathers on the order of
 /// ~140 raw headlines from Tavily before dedup — well inside Step 7's ~500 funnel
-/// budget once GDELT is added. 20 is Tavily's `basic` per-query ceiling.
+/// budget once GDELT and FMP Articles are added. 20 is Tavily's `basic` per-query
+/// ceiling.
 const RESULTS_PER_QUERY: u32 = 20;
 
 /// One Tavily search result, trimmed to the fields a headline needs. `title` and

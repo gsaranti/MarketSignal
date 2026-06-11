@@ -3,10 +3,12 @@
 //!
 //! Mirrors the `data_sources` spine — the application layer owns all I/O, each
 //! news source is a trait the orchestrator drives, and a deterministic stub
-//! stands in for the live providers in offline tests. Two real adapters
-//! implement this trait — `tavily` (AI-oriented market / research headlines) and
-//! `gdelt` (geopolitical and large-scale news-trend coverage) — and the
-//! `CompositeNewsSource` below runs both and concatenates their headlines.
+//! stands in for the live providers in offline tests. Three real adapters
+//! implement this trait — `tavily` (AI-oriented market / research headlines),
+//! `gdelt` (geopolitical and large-scale news-trend coverage), and `fmp_news`
+//! (FMP Articles, ticker-tagged company-level commentary) — and the
+//! `CompositeNewsSource` below nests to run them all and concatenate their
+//! headlines.
 //!
 //! Step 7 gathers a broad set of raw headlines (this module), then a fixed
 //! low-cost model dedupes / scores / clusters them down to the important stories
@@ -36,9 +38,10 @@ pub const NEWS_TOPICS: &[&str] = &[
 ];
 
 /// One raw headline gathered from a news source, before any filtering.
-/// Provider-agnostic: Tavily and GDELT both map their results into this shape,
-/// and the headline-filter stage will consume a flat list of them. `published`
-/// and `snippet` are best-effort — a provider that omits them leaves them `None`.
+/// Provider-agnostic: Tavily, GDELT, and FMP Articles all map their results into
+/// this shape, and the headline-filter stage will consume a flat list of them.
+/// `published` and `snippet` are best-effort — a provider that omits them leaves
+/// them `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawHeadline {
     pub title: String,

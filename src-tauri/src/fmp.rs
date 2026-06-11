@@ -2153,4 +2153,81 @@ mod tests {
         probe("quote HGUSD (copper)", &format!("{base}/quote"), &[("symbol", "HGUSD")]);
         probe("quote SIUSD (silver)", &format!("{base}/quote"), &[("symbol", "SIUSD")]);
     }
+
+    /// Free-vs-premium probe for FMP's news endpoints — the Step-7 company-news
+    /// follow-on. `fmp-articles` (FMP's own ticker-tagged editorial feed) is the
+    /// expected-free candidate (per docs screenshots, never live-verified); the
+    /// `news/*` family was recorded as premium from docs research, also never probed.
+    /// Same conventions as `fmp_freetier_probe`: 200 ≈ free, 402 = premium, 404 =
+    /// wrong path. Prints body samples so the adapter's field mapping (title / link /
+    /// site / date / content / tickers) and pagination behavior can be read off the
+    /// wire. Hits the live API (~5 one-shot calls, trivial against the 250/day cap);
+    /// run once:
+    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///     src-tauri/Cargo.toml fmp_news_probe -- --ignored --nocapture
+    #[test]
+    #[ignore = "hits the live FMP API; set FMP_API_KEY. Probes news endpoints' free tier."]
+    fn fmp_news_probe() {
+        let key = crate::config::AppConfig::from_env()
+            .fmp_key()
+            .expect("FMP_API_KEY set");
+        let http = reqwest::blocking::Client::builder()
+            .timeout(FMP_TIMEOUT)
+            .build()
+            .expect("http client");
+
+        let probe = |label: &str, url: &str, extra: &[(&str, &str)]| {
+            let mut q: Vec<(&str, &str)> = vec![("apikey", key.as_str())];
+            q.extend_from_slice(extra);
+            match http.get(url).query(&q).send() {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().unwrap_or_default();
+                    let verdict = match status.as_u16() {
+                        200 if body.contains("Error Message") => "200-but-Error-body",
+                        200 => "FREE?",
+                        402 => "PREMIUM",
+                        other => return eprintln!("\n=== {label} [{other}] ===\n{body}"),
+                    };
+                    let mut shown: String = body.chars().take(1200).collect();
+                    if body.chars().count() > 1200 {
+                        shown.push_str(" …(truncated)");
+                    }
+                    eprintln!("\n=== {label} [{status}] {verdict} ===\n{shown}");
+                }
+                Err(e) => eprintln!("\n=== {label} [transport error] ===\n{e}"),
+            }
+        };
+
+        let base = "https://financialmodelingprep.com/stable";
+        // The candidate: FMP's own editorial articles. Probe with explicit paging
+        // params so the adapter knows whether `page`/`limit` are honored.
+        probe(
+            "fmp-articles (page+limit)",
+            &format!("{base}/fmp-articles"),
+            &[("page", "0"), ("limit", "5")],
+        );
+        // Re-confirm the news/* family tiers (recorded premium from docs research,
+        // never live-probed).
+        probe(
+            "news/general-latest",
+            &format!("{base}/news/general-latest"),
+            &[("page", "0"), ("limit", "5")],
+        );
+        probe(
+            "news/stock-latest",
+            &format!("{base}/news/stock-latest"),
+            &[("page", "0"), ("limit", "5")],
+        );
+        probe(
+            "news/stock (symbol-scoped)",
+            &format!("{base}/news/stock"),
+            &[("symbols", "AAPL"), ("limit", "5")],
+        );
+        probe(
+            "news/press-releases-latest",
+            &format!("{base}/news/press-releases-latest"),
+            &[("page", "0"), ("limit", "5")],
+        );
+    }
 }
