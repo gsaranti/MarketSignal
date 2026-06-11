@@ -10,11 +10,11 @@
 //!
 //! Step 7 gathers a broad set of raw headlines (this module), then a fixed
 //! low-cost model dedupes / scores / clusters them down to the important stories
-//! (the headline-filter stage, landing in a later slice). This module owns the
-//! gathering half plus the deterministic exact-duplicate pre-pass
-//! (`dedupe_headlines`) that trims obvious repeats before the model ever sees
-//! them. The filtered output has no consumer yet — research routing (Step 8) is
-//! where it is used — so nothing here is wired into the report pipeline.
+//! (the `headline_filter` stage). This module owns the gathering half plus the
+//! deterministic exact-duplicate pre-pass (`dedupe_headlines`) that trims obvious
+//! repeats before the model ever sees them; `pipeline::assemble_research_packet`
+//! runs both halves at the head of the research phase, feeding research routing
+//! (Step 8).
 
 use std::collections::HashSet;
 

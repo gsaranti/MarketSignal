@@ -58,6 +58,40 @@ impl ResearchStages {
             search: Box::new(crate::research_executor::StubSearchBackend),
         }
     }
+
+    /// The live stage bundle (Steps 7–11) for one run — the single construction shared
+    /// by the production command paths (`lib.rs`) and the live research smoke below, so
+    /// the wiring can't drift between what ships and what the smoke validates. Tavily +
+    /// GDELT feed the news gather (one composite); the GPT-5-mini headline filter and
+    /// the Sonnet research router are the fixed internal stages; a *second* Tavily
+    /// client is the Step-9 search backend, since the composite owns the gather's
+    /// Tavily by value. Every adapter carries `ctx` so each call streams a per-request
+    /// tracker row. Errors here are HTTP-client build failures only.
+    pub fn live(
+        tavily_key: String,
+        openai_key: String,
+        anthropic_key: String,
+        ctx: &std::sync::Arc<RunContext>,
+    ) -> Result<Self> {
+        Ok(Self {
+            news: Box::new(news::CompositeNewsSource::new(
+                crate::tavily::TavilyNewsSource::new(tavily_key.clone())?
+                    .with_context(ctx.clone()),
+                crate::gdelt::GdeltNewsSource::new()?.with_context(ctx.clone()),
+            )),
+            filter: Box::new(
+                crate::headline_filter::ModelHeadlineFilter::new(openai_key)?
+                    .with_context(ctx.clone()),
+            ),
+            router: Box::new(
+                crate::research_router::ModelResearchRouter::new(anthropic_key)?
+                    .with_context(ctx.clone()),
+            ),
+            search: Box::new(
+                crate::tavily::TavilyNewsSource::new(tavily_key)?.with_context(ctx.clone()),
+            ),
+        })
+    }
 }
 
 /// The result of a report run, returned to the caller (the Tauri command or a
@@ -915,5 +949,110 @@ mod tests {
             assemble_research_packet(&stages, &BaselineMarketData::default(), None, &ctx);
         assert!(packet.news_clusters.is_empty());
         assert!(packet.research.items.is_empty());
+    }
+
+    // ---- live research-half smoke (news → filter → route → execute → packet) ----
+
+    /// Live end-to-end smoke for the research half exactly as `generate_report` runs it:
+    /// the production stage bundle (`ResearchStages::live` — the same constructor both
+    /// command paths call), the real Tavily+GDELT gather, the GPT-5-mini filter, the
+    /// Sonnet router, and the bounded executor against live Tavily, condensed into the
+    /// packet. Everything in this path is fail-soft — a dead key or a down provider
+    /// degrades to an *empty* packet rather than an error — so every assertion below is
+    /// anti-vacuous: it pins that each stage actually ran and produced something, which
+    /// a bare "returns a packet" check could never show.
+    ///
+    /// Spend per run: ~8 news searches (7 Tavily topics + 1 GDELT) plus up to 20
+    /// executor searches on Tavily (5 topics × 4 queries; `deltas: None` selects
+    /// `NoBranch`, so no follow-ups), one OpenAI call, one Anthropic call — run it
+    /// deliberately, not repeatedly. A failed GDELT row is expected from a dev IP
+    /// (escalating 429 lockout) and is absorbed by the news group's Tavily rows.
+    #[test]
+    #[ignore = "hits live Tavily + GDELT + OpenAI + Anthropic; set TAVILY_API_KEY + OPENAI_API_KEY + ANTHROPIC_API_KEY"]
+    fn live_research_packet_smoke() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        use crate::config::AppConfig;
+        use crate::progress::{ProgressEvent, RecordingReporter, RunContext};
+
+        // A recording context instead of `noop`, so the request rows the adapters emit
+        // can be asserted on — the tracker-attribution half of what this smoke proves.
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new(
+            "research-smoke",
+            rec.clone(),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        // The production constructor, with the keys resolved from the same env vars the
+        // adapters' own from_env seams read — so a wiring regression in the bundle (a
+        // dropped with_context, a swapped backend) fails this smoke too.
+        let cfg = AppConfig::from_env();
+        let stages = ResearchStages::live(
+            cfg.tavily_key().expect("TAVILY_API_KEY set"),
+            cfg.openai_key().expect("OPENAI_API_KEY set"),
+            cfg.anthropic_key().expect("ANTHROPIC_API_KEY set"),
+            &ctx,
+        )
+        .expect("building the live research stages");
+
+        let packet =
+            assemble_research_packet(&stages, &BaselineMarketData::default(), None, &ctx);
+
+        // Each stage produced real output (fail-soft would have let empty through).
+        assert!(!packet.news_clusters.is_empty(), "gather+filter yielded clusters");
+        assert!(!packet.research.items.is_empty(), "router yielded at least one topic");
+        assert!(packet.research.requests_made >= 1, "executor spent at least one search");
+        let total_sources: usize = packet
+            .research
+            .items
+            .iter()
+            .flat_map(|i| &i.findings)
+            .map(|f| f.sources.len())
+            .sum();
+        assert!(total_sources >= 1, "at least one executor search returned sources");
+
+        // Tracker attribution: every request row carries a research-half group, and each
+        // live stage emitted at least one row. The frontend buckets exactly these four
+        // groups under the research step (`App.vue`'s RESEARCH_REQUEST_GROUPS).
+        let msgs = rec.messages();
+        let groups: Vec<&str> = msgs
+            .iter()
+            .filter_map(|m| match &m.event {
+                ProgressEvent::RequestStarted { group, .. }
+                | ProgressEvent::RequestFinished { group, .. } => Some(group.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!groups.is_empty(), "the adapters emitted request rows");
+        for g in &groups {
+            assert!(
+                matches!(*g, "news" | "filter" | "routing" | "research"),
+                "request row carries a non-research group {g:?}"
+            );
+        }
+        for expected in ["news", "filter", "routing", "research"] {
+            assert!(
+                groups.contains(&expected),
+                "no request row for the {expected:?} stage"
+            );
+        }
+
+        eprintln!(
+            "research smoke: {} clusters; {} topics, {} findings, {} sources, \
+             {} requests (stopped: {:?}); rows by group: news {}, filter {}, \
+             routing {}, research {}",
+            packet.news_clusters.len(),
+            packet.research.items.len(),
+            packet.research.items.iter().map(|i| i.findings.len()).sum::<usize>(),
+            total_sources,
+            packet.research.requests_made,
+            packet.research.stopped_reason,
+            groups.iter().filter(|g| **g == "news").count(),
+            groups.iter().filter(|g| **g == "filter").count(),
+            groups.iter().filter(|g| **g == "routing").count(),
+            groups.iter().filter(|g| **g == "research").count(),
+        );
     }
 }

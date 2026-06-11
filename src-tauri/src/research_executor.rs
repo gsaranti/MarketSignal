@@ -3,8 +3,8 @@
 //! The first consumer of the Step-8 `ResearchPlan`. Where routing decides *what*
 //! to investigate, this stage executes it: it walks the plan's topics in priority
 //! order, issues each query against a search backend, and returns the curated
-//! evidence the main agent will eventually reason over (via the Step-11 condensed
-//! packet in [`crate::research_packet`], not yet wired to this stage).
+//! evidence the main agent reasons over (via the Step-11 condensed packet in
+//! [`crate::research_packet`]).
 //!
 //! This is the one stage that may loop or branch, so the three hard bounds live
 //! here, in the application layer, not in any model: at most
@@ -22,15 +22,14 @@
 //! each boundary (the injectable [`Clock`] seam keeps it testable without
 //! sleeping), not an async timeout — no `tokio` is needed here.
 //!
-//! Nothing is wired into the report pipeline yet (the Step-7/8 posture): the
-//! evidence's consumer is the Step-11 condensed packet — now built, in
-//! [`crate::research_packet`] — which nothing yet feeds from this stage. The
-//! *dynamic branching* ships as machinery only — [`NoBranch`] is the trait's
-//! no-op default, and [`DeltaBranchPolicy`] is the real follow-up generator:
-//! deterministic delta-rules keyed off the baseline change view (the §Step 9
-//! "if oil spikes …" triggers). [`select_branch_policy`] resolves which of the two
-//! a run uses from its change view; only its call into `execute_research` is
-//! deferred — that wiring lands with the pipeline/Step-11 wiring.
+//! Wired into the report pipeline since the research-half wiring slice:
+//! `pipeline::assemble_research_packet` executes the routed plan here and feeds
+//! the evidence into the Step-11 condensed packet ([`crate::research_packet`]).
+//! The *dynamic branching* runs through the same wiring — [`NoBranch`] is the
+//! trait's no-op default, and [`DeltaBranchPolicy`] is the real follow-up
+//! generator: deterministic delta-rules keyed off the baseline change view (the
+//! §Step 9 "if oil spikes …" triggers). [`select_branch_policy`] resolves which
+//! of the two a run uses from its change view.
 
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
@@ -239,9 +238,9 @@ const TRIGGER_RULES: &[TriggerRule] = &[
 /// once, without ever spawning a second search for one finding. (A fired rule that no
 /// topic matches simply does not emit; there is nowhere on-thesis to attach it.)
 ///
-/// Machinery only, like the rest of the research half: nothing selects it over
-/// [`NoBranch`] at the `execute_research` call site yet (the executor is unwired from
-/// `generate_report`); that selection lands with the pipeline/Step-11 wiring.
+/// [`select_branch_policy`] picks it over [`NoBranch`] at `generate_report`'s
+/// `execute_research` call site (`pipeline::assemble_research_packet`) whenever a
+/// change view exists for the run.
 pub struct DeltaBranchPolicy {
     /// Indices into [`TRIGGER_RULES`] that fired for this run's change view.
     fired: Vec<usize>,
@@ -303,9 +302,8 @@ impl BranchPolicy for DeltaBranchPolicy {
 /// [`DeltaBranchPolicy`] when a change view exists, otherwise the [`NoBranch`] no-op
 /// (a first report or an unreadable prior snapshot yields `None`, and a present-but-
 /// no-rule-fired view degrades to no-op inside `DeltaBranchPolicy` anyway). This is the
-/// selection the research phase will make at the `execute_research` call site; that call
-/// site is still deferred — the research half is unwired from `generate_report` — so this
-/// encapsulates the choice ready to drop in.
+/// selection the research phase makes at `generate_report`'s `execute_research` call
+/// site (`pipeline::assemble_research_packet`).
 pub fn select_branch_policy(deltas: Option<&BaselineDeltas>) -> Box<dyn BranchPolicy> {
     match deltas {
         Some(deltas) => Box::new(DeltaBranchPolicy::from_deltas(deltas)),

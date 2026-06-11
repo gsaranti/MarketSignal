@@ -9,10 +9,10 @@
 //! the already-pruned parts is plumbing rather than reasoning. A conscious extension of
 //! the doc, noted here so the deviation stays legible.
 //!
-//! Machinery only, like the rest of the research half: nothing builds this inside
-//! `generate_report` yet (the executor and brancher are likewise unwired). Its consumers
-//! — the not-yet-built analyst agents — and its wiring into `MainAgentInput` land with
-//! the research-half pipeline slice.
+//! Wired into `generate_report` since the research-half wiring slice:
+//! `pipeline::assemble_research_packet` builds this packet every run and hands it to
+//! the main agent on `MainAgentInput.research`. The not-yet-built analyst agents join
+//! as its other consumers when their slice lands.
 //!
 //! Scoped, like [`RouterInput`](crate::research_router::RouterInput), to the input types
 //! that exist today: the Step-3 baseline scan and its change view, the Step-7 clusters,

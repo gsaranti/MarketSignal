@@ -94,9 +94,9 @@ pub struct ReportSummary {
 }
 
 /// Input handed to the main agent. Carries the Step-3 baseline market-data scan
-/// (`docs/weekly-report-workflow.md §Step 3`), gathered by the application layer
-/// before agent reasoning; the rest of the condensed research packet (news
-/// clusters, deep research, vector memory) joins it as later slices land.
+/// (`docs/weekly-report-workflow.md §Step 3`) gathered by the application layer
+/// before agent reasoning, its change view, and the Step-11 condensed research
+/// packet; vector memory joins it when the LanceDB slice lands.
 #[derive(Debug, Clone, Default)]
 pub struct MainAgentInput {
     pub baseline: BaselineMarketData,

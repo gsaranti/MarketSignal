@@ -14,8 +14,9 @@
 //! `ModelResearchRouter` (its blocking Claude Sonnet HTTP call) replaces the stub
 //! behind the same trait. Routing uses the fixed mid-tier model (Claude Sonnet,
 //! `docs/agents.md §Research Routing`) — non-configurable, distinct from the
-//! user-selectable agent models. Like the Step-7 filter, nothing here is wired
-//! into the report pipeline yet: the plan's consumer is the Step-9 executor.
+//! user-selectable agent models. Like the Step-7 filter, this stage runs inside
+//! `pipeline::assemble_research_packet`; the plan's consumer is the Step-9
+//! executor.
 
 use std::sync::Arc;
 use std::time::Duration;

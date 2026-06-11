@@ -13,8 +13,9 @@
 //! pure, a deterministic `StubHeadlineFilter` stands in offline, and the real
 //! `ModelHeadlineFilter` (its blocking GPT-5 mini HTTP call) replaces the stub
 //! behind the same trait. Selecting which of these clusters become the ~5 deeply
-//! analyzed topics is research routing's job (Step 8), so nothing here is wired
-//! into the report pipeline yet.
+//! analyzed topics is research routing's job (Step 8); `pipeline::
+//! assemble_research_packet` runs this stage between the news gather and that
+//! routing.
 
 use std::collections::HashSet;
 use std::sync::Arc;
