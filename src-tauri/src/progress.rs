@@ -261,20 +261,32 @@ impl RunContext {
     }
 }
 
+/// A reporter that records every message, for tests that assert on the emitted
+/// stream — this module's unit tests and other modules' (e.g. the live research
+/// smoke in `pipeline`, which checks request-row group attribution). Test builds
+/// only.
+#[cfg(test)]
+#[derive(Default)]
+pub struct RecordingReporter(std::sync::Mutex<Vec<ProgressMessage>>);
+
+#[cfg(test)]
+impl RecordingReporter {
+    /// Snapshot of every message reported so far.
+    pub fn messages(&self) -> Vec<ProgressMessage> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+#[cfg(test)]
+impl ProgressReporter for RecordingReporter {
+    fn report(&self, message: &ProgressMessage) {
+        self.0.lock().unwrap().push(message.clone());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// A reporter that records every message, to assert on the emitted stream.
-    #[derive(Default)]
-    struct RecordingReporter(Mutex<Vec<ProgressMessage>>);
-
-    impl ProgressReporter for RecordingReporter {
-        fn report(&self, message: &ProgressMessage) {
-            self.0.lock().unwrap().push(message.clone());
-        }
-    }
 
     #[test]
     fn emits_carry_a_monotonic_seq_and_the_run_id() {
@@ -284,7 +296,7 @@ mod tests {
         ctx.step_started("baseline", "Baseline scan");
         ctx.step_finished("baseline", "ok", None);
 
-        let msgs = rec.0.lock().unwrap();
+        let msgs = rec.messages();
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].seq, 0);
         assert_eq!(msgs[1].seq, 1);

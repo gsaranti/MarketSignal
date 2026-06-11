@@ -9,14 +9,15 @@
 //! pipeline's RFC3339 parse.
 //!
 //! The HTTP call is synchronous (`reqwest::blocking`) to keep the agent trait
-//! sync — the broader async machinery lands later with the research executor,
-//! which is where it is actually needed. The seed of the future
+//! sync — the research executor stayed synchronous too (`research_executor`), so
+//! `tokio` lives only at the app-layer seams. The seed of the future
 //! `adapters::models` module lives here.
 //!
-//! The agent's `MainAgentInput` now carries the Step-3 baseline market-data scan
-//! (`data_sources`); this adapter serializes it into the user message so the
-//! report is grounded in this run's live data. The rest of the condensed packet
-//! (news clusters, deep research, vector memory) joins it as later slices land.
+//! The agent's `MainAgentInput` carries the Step-3 baseline market-data scan
+//! (`data_sources`), its change view, and the Step-11 condensed research packet;
+//! this adapter serializes them into the user message so the report is grounded
+//! in this run's live data and research. Vector memory joins when the LanceDB
+//! slice lands.
 
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
