@@ -131,8 +131,8 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
 
 /// How many of the most recent reports the sidebar lists (`docs/storage.md` —
 /// only the most recent 30 Weekly Market reports are retained). This bounds the
-/// *display* query; the retention-cascade deletion that enforces the same number
-/// on disk is a separate concern.
+/// *display* query; the retention cascade that enforces the same number on disk
+/// is bounded by [`REPORT_RETENTION`] below.
 pub const RECENT_REPORTS_LIMIT: u32 = 30;
 
 /// List the most recent reports, newest first, capped at `limit`. The stored
@@ -196,11 +196,79 @@ pub fn insert_report(conn: &Connection, record: &ReportRecord) -> Result<()> {
     Ok(())
 }
 
+/// How many reports the retention cascade keeps (`docs/storage.md` — only the
+/// most recent 30 Weekly Market reports are retained; older reports are deleted
+/// automatically). Deliberately a separate constant from [`RECENT_REPORTS_LIMIT`],
+/// which bounds the sidebar's display query; the two agree today, and the shared
+/// `created_at DESC, rowid DESC` ordering keeps the display window and the
+/// retention window from ever disagreeing about which reports those are.
+pub const REPORT_RETENTION: u32 = 30;
+
+/// One report selected for eviction by the retention cascade: the id joins the
+/// SQLite legs (report row, vector summary, baseline snapshots); the stored
+/// markdown path locates the file leg.
+pub struct ReportEvictee {
+    pub report_id: String,
+    pub markdown_path: String,
+}
+
+/// The reports outside the newest-`keep` window, oldest first — selection only;
+/// the caller owns the per-evictee cascade. Uses the same `created_at DESC,
+/// rowid DESC` ordering as [`list_recent_reports`], so retention evicts exactly
+/// the reports the sidebar no longer shows. Empty at or under the cap.
+pub fn select_reports_beyond_retention(
+    conn: &Connection,
+    keep: u32,
+) -> Result<Vec<ReportEvictee>> {
+    let mut stmt = conn.prepare(
+        "SELECT report_id, markdown_path FROM reports
+         WHERE report_id NOT IN (
+             SELECT report_id FROM reports
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT ?1
+         )
+         ORDER BY created_at ASC, rowid ASC",
+    )?;
+    let rows = stmt.query_map([keep], |row| {
+        Ok(ReportEvictee {
+            report_id: row.get(0)?,
+            markdown_path: row.get(1)?,
+        })
+    })?;
+    let mut evictees = Vec::new();
+    for evictee in rows {
+        evictees.push(evictee?);
+    }
+    Ok(evictees)
+}
+
+/// Delete one report's row — the final SQLite leg of the retention cascade,
+/// called after the file and vector legs so a partially-failed cascade leaves
+/// the row (and the next run's selection) behind rather than an untracked
+/// orphan file.
+pub fn delete_report_row(conn: &Connection, report_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM reports WHERE report_id = ?1", [report_id])?;
+    Ok(())
+}
+
+/// Delete one report's baseline-snapshot rows (the join `report_id` was stored
+/// for). The 14-snapshot cap prunes these long before the 30-report window
+/// reaches them, so this leg is belt-and-braces against orphans, not the
+/// primary bound.
+pub fn delete_report_baseline_snapshots(conn: &Connection, report_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM baseline_snapshots WHERE report_id = ?1",
+        [report_id],
+    )?;
+    Ok(())
+}
+
 /// How many of the most recent baseline snapshots to retain (`baseline_snapshots`).
 /// Report-indexed, not calendar-indexed: 14 *reports*, whatever their cadence. Only the
 /// immediately-prior snapshot is needed for the change view today; the headroom leaves
 /// room for a future trajectory-over-N read. Decoupled from the report retention window
-/// (`RECENT_REPORTS_LIMIT`); `report_id` is stored so a later report-cascade can join.
+/// ([`REPORT_RETENTION`]); `report_id` is stored so the report cascade can join
+/// ([`delete_report_baseline_snapshots`]).
 pub const BASELINE_SNAPSHOT_RETENTION: u32 = 14;
 
 /// Persist one run's baseline snapshot: the serialized `BaselineMarketData`, the report
@@ -317,6 +385,78 @@ mod tests {
         assert_eq!(summary.report_id, "abc");
         assert_eq!(summary.created_at, "2026-02-01T00:00:00Z");
         assert!(get_report_record(&conn, "missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn select_reports_beyond_retention_is_empty_at_or_under_the_cap() {
+        let conn = mem();
+        for i in 0..3 {
+            let created_at = format!("2026-01-0{}T00:00:00Z", i + 1);
+            insert_sample(&conn, &format!("id-{i}"), &created_at);
+        }
+        assert!(select_reports_beyond_retention(&conn, 3).unwrap().is_empty());
+        assert!(select_reports_beyond_retention(&conn, REPORT_RETENTION)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn select_reports_beyond_retention_returns_the_oldest_first() {
+        let conn = mem();
+        // 32 reports with strictly ascending timestamps; ids encode insertion order.
+        for i in 0..32 {
+            let created_at = format!("2026-01-{:02}T00:00:00Z", i + 1);
+            insert_sample(&conn, &format!("id-{i:02}"), &created_at);
+        }
+        let evictees = select_reports_beyond_retention(&conn, REPORT_RETENTION).unwrap();
+        assert_eq!(evictees.len(), 2, "two over the cap of 30");
+        assert_eq!(evictees[0].report_id, "id-00");
+        assert_eq!(evictees[1].report_id, "id-01");
+        assert_eq!(evictees[0].markdown_path, "/tmp/id-00.md");
+    }
+
+    #[test]
+    fn select_reports_beyond_retention_breaks_created_at_ties_by_insertion_order() {
+        let conn = mem();
+        // Three reports sharing one timestamp: rowid decides, exactly as it does
+        // in list_recent_reports, so the earliest insertion is the one evicted.
+        for id in ["first", "second", "third"] {
+            insert_sample(&conn, id, "2026-03-01T00:00:00Z");
+        }
+        let evictees = select_reports_beyond_retention(&conn, 2).unwrap();
+        assert_eq!(evictees.len(), 1);
+        assert_eq!(evictees[0].report_id, "first");
+    }
+
+    #[test]
+    fn delete_report_row_and_snapshots_remove_only_the_target() {
+        let conn = mem();
+        insert_sample(&conn, "keep", "2026-01-01T00:00:00Z");
+        insert_sample(&conn, "evict", "2026-01-02T00:00:00Z");
+        insert_baseline_snapshot(&conn, "keep", "2026-01-01T00:00:00Z", 1, "{}").unwrap();
+        insert_baseline_snapshot(&conn, "evict", "2026-01-02T00:00:00Z", 1, "{}").unwrap();
+
+        delete_report_row(&conn, "evict").unwrap();
+        delete_report_baseline_snapshots(&conn, "evict").unwrap();
+
+        assert!(get_report_record(&conn, "evict").unwrap().is_none());
+        assert!(get_report_record(&conn, "keep").unwrap().is_some());
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM baseline_snapshots WHERE report_id = 'keep'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 1);
+        let evicted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM baseline_snapshots WHERE report_id = 'evict'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(evicted, 0);
     }
 
     #[test]

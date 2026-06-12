@@ -381,6 +381,11 @@ pub fn generate_report(
             }
         }
 
+        // Best-effort: the 30-report retention cascade, run after this run's
+        // insert so the new report counts toward the window. No paid calls, so
+        // no cancellation poll; a cascade failure never fails the run.
+        prune_old_reports(&conn);
+
         Ok(GeneratedReport {
             report_id: summary.report_id.clone(),
             markdown: output.markdown,
@@ -393,6 +398,70 @@ pub fn generate_report(
         Err(e) => ctx.step_finished("persist", "failed", Some(e.to_string())),
     }
     report
+}
+
+/// The 30-report retention cascade (`docs/storage.md §SQLite`): every report
+/// beyond the newest [`storage::REPORT_RETENTION`] is deleted together with its
+/// artifacts — the canonical Markdown file, its vector-memory summary row, its
+/// baseline-snapshot rows, and finally the report row itself. Durable learnings
+/// survive by `kind`, never touched whatever their `report_id`
+/// (`vector_memory::delete_report_summary`). Generated HTML is not a persisted
+/// artifact today (`storage::init_schema` defers HTML tables); if an HTML slice
+/// ever lands, it must add its leg here.
+///
+/// Per-evictee best-effort, never failing the run. The file leg goes first: a
+/// file that is already gone counts as removed, but any other removal failure
+/// skips that evictee's DB legs — the row keeps pointing at the still-existing
+/// file and the evictee is simply re-selected on the next run's cascade —
+/// rather than deleting the row and orphaning an untracked file. The three DB
+/// legs then commit or roll back as one transaction: re-selection reads the
+/// `reports` table, so deleting the row while an earlier leg failed would
+/// strand that leg's rows with no retry path — and the vector summary row has
+/// no other reaper, leaving stale memory retrievable forever. A rolled-back
+/// evictee is re-selected next run, where its already-removed file reads as
+/// NotFound and the DB legs run again.
+fn prune_old_reports(conn: &rusqlite::Connection) {
+    let evictees = match storage::select_reports_beyond_retention(conn, storage::REPORT_RETENTION)
+    {
+        Ok(evictees) => evictees,
+        Err(e) => {
+            eprintln!("report-retention: selecting reports beyond the cap failed: {e:#}");
+            return;
+        }
+    };
+    for evictee in evictees {
+        match std::fs::remove_file(&evictee.markdown_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                eprintln!(
+                    "report-retention: removing markdown {:?} for report {} failed \
+                     (will retry next run): {e}",
+                    evictee.markdown_path, evictee.report_id
+                );
+                continue;
+            }
+        }
+        if let Err(e) = delete_report_db_rows(conn, &evictee.report_id) {
+            eprintln!(
+                "report-retention: deleting rows for report {} failed \
+                 (rolled back, will retry next run): {e:#}",
+                evictee.report_id
+            );
+        }
+    }
+}
+
+/// One evictee's three SQLite legs — vector summary, baseline snapshots, report
+/// row — committed together or not at all (`unchecked_transaction`: the helpers
+/// take `&Connection`, and `Transaction` derefs to it).
+fn delete_report_db_rows(conn: &rusqlite::Connection, report_id: &str) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    vector_memory::delete_report_summary(&tx, report_id)?;
+    storage::delete_report_baseline_snapshots(&tx, report_id)?;
+    storage::delete_report_row(&tx, report_id)?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Run the research half (Steps 7–11) and condense it into the packet the main agent
@@ -1331,6 +1400,106 @@ mod tests {
         });
         assert!(!packet.news_clusters.is_empty(), "news survives a router failure");
         assert!(packet.research.items.is_empty(), "but there is no routed evidence");
+    }
+
+    /// Seed one report row whose markdown path never existed (the file leg reads
+    /// it as already removed), so the retention tests exercise the DB legs alone.
+    fn seed_retention_row(conn: &rusqlite::Connection, id: &str, created_at: &str) {
+        use crate::agent::{MarketCycle, RiskPosture, ThesisStance};
+        let summary = ReportSummary {
+            report_id: id.to_string(),
+            report_type: "weekly_market".to_string(),
+            created_at: created_at.to_string(),
+            risk_posture: RiskPosture::Mixed,
+            market_cycle: MarketCycle::LateCycle,
+            thesis_stance: ThesisStance::Uncertain,
+            header_summary_bullets: vec!["a".into(), "b".into(), "c".into()],
+            key_risks: vec![],
+            unresolved_questions: vec![],
+            forward_outlook_themes: vec![],
+        };
+        let summary_json = serde_json::to_string(&summary).unwrap();
+        storage::insert_report(
+            conn,
+            &ReportRecord {
+                summary: &summary,
+                markdown_path: &format!("/nonexistent/{id}.md"),
+                summary_json: &summary_json,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn prune_old_reports_rolls_back_all_db_legs_when_one_fails() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+
+        // One report over the cap; the evictee owns a vector summary row and a
+        // baseline-snapshot row.
+        for i in 0..=storage::REPORT_RETENTION {
+            let created_at = format!("2026-01-{:02}T00:00:00Z", i + 1);
+            seed_retention_row(&conn, &format!("old-{i:02}"), &created_at);
+        }
+        vector_memory::insert_memory(
+            &conn,
+            MemoryKind::Summary,
+            Some("old-00"),
+            "summary for old-00",
+            &[0.1, 0.2],
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        storage::insert_baseline_snapshot(&conn, "old-00", "2026-01-01T00:00:00Z", 1, "{}")
+            .unwrap();
+
+        // Sabotage the *last* DB leg: the summary and snapshot deletes succeed
+        // inside the transaction, then the row delete aborts — proving the
+        // earlier legs roll back with it rather than committing piecemeal.
+        conn.execute_batch(
+            "CREATE TRIGGER block_report_delete BEFORE DELETE ON reports
+             BEGIN SELECT RAISE(ABORT, 'sabotaged'); END;",
+        )
+        .unwrap();
+
+        prune_old_reports(&conn);
+
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(
+            count("SELECT COUNT(*) FROM reports"),
+            storage::REPORT_RETENTION as i64 + 1,
+            "the failed row delete keeps the evictee selectable"
+        );
+        assert_eq!(
+            count(
+                "SELECT COUNT(*) FROM vector_memory
+                 WHERE kind = 'summary' AND report_id = 'old-00'"
+            ),
+            1,
+            "the summary delete rolled back with the failed row delete"
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM baseline_snapshots WHERE report_id = 'old-00'"),
+            1,
+            "the snapshot delete rolled back with the failed row delete"
+        );
+
+        // Next run, sabotage gone: the same evictee is re-selected and fully
+        // evicted — the retry path the rollback preserves.
+        conn.execute("DROP TRIGGER block_report_delete", []).unwrap();
+        prune_old_reports(&conn);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM reports"),
+            storage::REPORT_RETENTION as i64
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM vector_memory WHERE report_id = 'old-00'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM baseline_snapshots WHERE report_id = 'old-00'"),
+            0
+        );
     }
 
     /// An embedder that panics if called — proves the memory pulls are skipped
