@@ -77,9 +77,9 @@ pub struct ResearchPlan {
 /// field. The doc's "recent Markdown report context" ships here in bounded
 /// summary form — whether the full Markdown bodies ever feed routing (rather than
 /// only the Step-2 main-agent context, a later slice) is that slice's call. The
-/// remaining Step-8 inputs the doc lists — vector memory and parsed inbox
-/// documents — are not built yet and join this struct as those slices land
-/// (the same incremental path `MainAgentInput` took when `deltas` was added).
+/// one remaining Step-8 input the doc lists — parsed inbox documents — is not
+/// built yet and joins this struct when its slice lands (the same incremental
+/// path `MainAgentInput` took when `deltas` was added).
 #[derive(Debug, Clone, Default)]
 pub struct RouterInput {
     pub baseline: BaselineMarketData,
@@ -89,6 +89,12 @@ pub struct RouterInput {
     /// read site (`pipeline::load_recent_report_context`). Empty on a first
     /// report or when the best-effort read degraded.
     pub recent_reports: Vec<ReportSummary>,
+    /// The Step-4 pre-research vector-memory pull (`docs/weekly-report-workflow.md
+    /// §Step 4`): recalled fragments, most relevant first, each in the
+    /// `MemoryHit::prompt_fragment` form. Ephemeral routing context only — the
+    /// packet carries the separate Step-10 pull, never this one. Empty on an
+    /// early run's bare store or when the fail-soft pull degraded.
+    pub memory: Vec<String>,
 }
 
 /// The research-routing stage. One method: turn the inputs into a bounded plan.
@@ -146,16 +152,20 @@ const MAX_TOKENS: u32 = 4096;
 
 const SYSTEM_PROMPT: &str = "You are the research router for Market Signal's weekly market report. \
 Given this week's baseline market data, the change since the previous report, the filtered \
-news clusters, and summaries of recent prior reports, decide which topics deserve deeper \
-investigation for this report. Favor topics where the data moved materially, where second-order \
-implications matter, or where a known upcoming event could move markets. When prior-report \
-summaries are provided, weigh thesis continuity: favor topics that answer a prior report's \
-unresolved questions or test its key risks and forward outlook themes against this week's data. \
+news clusters, summaries of recent prior reports, and any recalled long-term memory, decide \
+which topics deserve deeper investigation for this report. Favor topics where the data moved \
+materially, where second-order implications matter, or where a known upcoming event could move \
+markets. When prior-report summaries are provided, weigh thesis continuity: favor topics that \
+answer a prior report's unresolved questions or test its key risks and forward outlook themes \
+against this week's data. When long-term memory fragments are provided — prior report summaries \
+and durable learnings recalled against this week's market picture — use them to steer \
+investigation: favor topics that test a recurring pattern, revisit a past analytical mistake, or \
+probe a historical analog the memory surfaces. \
 Return at most 5 topics — fewer if fewer matter. For each topic give: a \
 short topic label, a one-to-two-sentence rationale tying it to the provided evidence, a priority \
 from 0.0 to 1.0 for how much it matters this week, and at most 4 concrete research questions to \
-investigate. Ground every topic in the provided baseline, change view, clusters, or prior-report \
-summaries; never invent data.";
+investigate. Ground every topic in the provided baseline, change view, clusters, prior-report \
+summaries, or recalled memory; never invent data.";
 
 const USER_INSTRUCTION: &str = "Produce the bounded research plan for this week's report.";
 
@@ -324,6 +334,15 @@ fn build_user_prompt(input: &RouterInput) -> String {
         }
     }
 
+    // The Step-4 pre-research memory pull: fragments are blocks (each carries its
+    // own newlines), so they join on blank lines rather than posing as bullets.
+    if !input.memory.is_empty() {
+        prompt.push_str(&format!(
+            "\n\nRecalled long-term memory, most relevant first (prior report summaries and durable learnings):\n{}",
+            input.memory.join("\n\n")
+        ));
+    }
+
     if !input.clusters.is_empty() {
         prompt.push_str(&format!(
             "\n\nFiltered news clusters:\n{}",
@@ -413,16 +432,22 @@ impl ModelResearchRouter {
     }
 }
 
+/// Nothing to route: no baseline data, no change view, no clusters, no
+/// prior-report context, and no recalled memory means the prompt would carry only
+/// the bare instruction. Pure so the conjunction stays unit-testable as inputs
+/// join it slice by slice.
+fn input_is_empty(input: &RouterInput) -> bool {
+    input.baseline == BaselineMarketData::default()
+        && input.deltas.is_none()
+        && input.clusters.is_empty()
+        && input.recent_reports.is_empty()
+        && input.memory.is_empty()
+}
+
 impl ResearchRouter for ModelResearchRouter {
     fn route(&self, input: RouterInput) -> Result<ResearchPlan> {
-        // Nothing to route: no baseline data, no change view, no clusters, and no
-        // prior-report context means the prompt would carry only the bare
-        // instruction. Short-circuit rather than spend a call on an empty packet.
-        if input.baseline == BaselineMarketData::default()
-            && input.deltas.is_none()
-            && input.clusters.is_empty()
-            && input.recent_reports.is_empty()
-        {
+        // Short-circuit rather than spend a call on an empty packet.
+        if input_is_empty(&input) {
             return Ok(ResearchPlan::default());
         }
         // One tracker row for the Sonnet routing call.
@@ -668,6 +693,44 @@ mod tests {
         // A dummy key is fine: an empty packet short-circuits before any network call.
         let router = ModelResearchRouter::new("sk-test".into()).unwrap();
         assert!(router.route(RouterInput::default()).unwrap().items.is_empty());
+    }
+
+    #[test]
+    fn build_request_carries_recalled_memory_and_omits_it_when_absent() {
+        // With recalled fragments: the prompt carries the block, with the fragments
+        // joined as blocks (blank-line separated), most relevant first.
+        let input = RouterInput {
+            memory: vec![
+                "[summary · 2026-05-28T13:00:00Z] Risk posture: risk-off.".into(),
+                "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".into(),
+            ],
+            ..Default::default()
+        };
+        let body = build_request(&input);
+        let user = body["messages"][0]["content"].as_str().unwrap();
+        assert!(user.contains("Recalled long-term memory"), "{user}");
+        assert!(
+            user.contains("Risk posture: risk-off.\n\n[learning"),
+            "fragments join on blank lines: {user}"
+        );
+
+        // Without them: the block is omitted entirely, never rendered blank.
+        let bare = build_user_prompt(&RouterInput {
+            clusters: vec![cluster("t", 0.5)],
+            ..Default::default()
+        });
+        assert!(!bare.contains("Recalled long-term memory"), "{bare}");
+    }
+
+    #[test]
+    fn memory_alone_clears_the_empty_input_short_circuit() {
+        // A memory-only input is a real routing input (it can steer investigation on
+        // its own), so it must not read as empty and short-circuit to an empty plan.
+        assert!(input_is_empty(&RouterInput::default()));
+        assert!(!input_is_empty(&RouterInput {
+            memory: vec!["[summary · t] Risk posture: mixed.".into()],
+            ..Default::default()
+        }));
     }
 
     #[test]

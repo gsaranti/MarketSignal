@@ -5,9 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use market_signal_temp_lib::agent::{
-    MainAgent, MainAgentInput, MainAgentOutput, ReportSummary, StubMainAgent,
-};
+use market_signal_temp_lib::agent::{MainAgent, MainAgentInput, MainAgentOutput, StubMainAgent};
 use market_signal_temp_lib::baseline_delta::{BaselineDeltas, Direction};
 use market_signal_temp_lib::data_sources::{
     BaselineMarketData, MarketDataSource, Quote, StubMarketDataSource,
@@ -187,27 +185,27 @@ fn research_packet_reaches_the_agent_input() {
         !packet.research.items.is_empty(),
         "the stub route → execute chain produced evidence that reached the agent"
     );
-    // The Step-10 memory pull is still deferred (store landed, retrieval not wired),
-    // so the packet's memory is empty.
-    assert!(packet.memory.is_empty(), "memory stays empty until the retrieval slice");
+    // On a first run the vector store is empty, so the Step-10 pull recalls nothing
+    // and the packet's memory is empty (the two-run test below covers the populated
+    // path).
+    assert!(packet.memory.is_empty(), "first run has no memory to recall");
 }
 
-/// A router that records the recent-report context it was handed and then delegates
-/// to the stub, so the test asserts what reached Step 8 without changing the run.
-/// The recorded value sits behind an `Arc` because the router itself is boxed into
-/// `ResearchStages` and moved into the run.
-struct RecordingRouter(Arc<Mutex<Option<Vec<ReportSummary>>>>);
+/// A router that records the full input it was handed and then delegates to the
+/// stub, so the tests assert what reached Step 8 (recent-report context, the
+/// Step-4 memory pull) without changing the run. The recorded value sits behind
+/// an `Arc` because the router itself is boxed into `ResearchStages` and moved
+/// into the run.
+struct RecordingRouter(Arc<Mutex<Option<RouterInput>>>);
 
 impl ResearchRouter for RecordingRouter {
     fn route(&self, input: RouterInput) -> anyhow::Result<ResearchPlan> {
-        *self.0.lock().unwrap() = Some(input.recent_reports.clone());
+        *self.0.lock().unwrap() = Some(input.clone());
         StubResearchRouter.route(input)
     }
 }
 
-fn stages_with_recording_router(
-    seen: Arc<Mutex<Option<Vec<ReportSummary>>>>,
-) -> ResearchStages {
+fn stages_with_recording_router(seen: Arc<Mutex<Option<RouterInput>>>) -> ResearchStages {
     ResearchStages {
         news: Box::new(StubNewsSource),
         filter: Box::new(StubHeadlineFilter),
@@ -235,8 +233,11 @@ fn second_report_routes_with_the_first_reports_summary() {
         &RunContext::noop(),
     )
     .unwrap();
-    let recent1 = seen1.lock().unwrap().clone().expect("router ran on run 1");
-    assert!(recent1.is_empty(), "first report has no prior reports to route with");
+    let input1 = seen1.lock().unwrap().clone().expect("router ran on run 1");
+    assert!(
+        input1.recent_reports.is_empty(),
+        "first report has no prior reports to route with"
+    );
 
     // Run 2: the router is handed run 1's persisted summary as continuity context.
     let seen2 = Arc::new(Mutex::new(None));
@@ -249,9 +250,95 @@ fn second_report_routes_with_the_first_reports_summary() {
         &RunContext::noop(),
     )
     .unwrap();
-    let recent2 = seen2.lock().unwrap().clone().expect("router ran on run 2");
-    assert_eq!(recent2.len(), 1, "exactly the one prior report rides into routing");
-    assert_eq!(recent2[0].report_id, first.report_id);
+    let input2 = seen2.lock().unwrap().clone().expect("router ran on run 2");
+    assert_eq!(
+        input2.recent_reports.len(),
+        1,
+        "exactly the one prior report rides into routing"
+    );
+    assert_eq!(input2.recent_reports[0].report_id, first.report_id);
+}
+
+#[test]
+fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
+    // The Step-4/10 retrieval slice end to end: run 1 persists its summary to vector
+    // memory (Step 17); run 2's pre-research pull hands it to the router (Step 4) and
+    // its post-research pull carries it into the packet the agent receives (Step 10).
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+
+    // Run 1: the store is empty, so both pulls recall nothing.
+    let seen1 = Arc::new(Mutex::new(None));
+    let agent1 = RecordingAgent::new();
+    generate_report(
+        &agent1,
+        &FixedMarketDataSource(base_with_sp(5_500.0)),
+        &stages_with_recording_router(seen1.clone()),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+    let input1 = seen1.lock().unwrap().clone().expect("router ran on run 1");
+    assert!(input1.memory.is_empty(), "an empty store recalls nothing for routing");
+    let packet1 = agent1
+        .seen_research
+        .lock()
+        .unwrap()
+        .clone()
+        .flatten()
+        .expect("run 1 carried a packet");
+    assert!(packet1.memory.is_empty(), "an empty store recalls nothing for the packet");
+
+    // Run 2: run 1's summary is in the store; both pulls surface it.
+    let seen2 = Arc::new(Mutex::new(None));
+    let agent2 = RecordingAgent::new();
+    generate_report(
+        &agent2,
+        &FixedMarketDataSource(base_with_sp(5_610.0)),
+        &stages_with_recording_router(seen2.clone()),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    let input2 = seen2.lock().unwrap().clone().expect("router ran on run 2");
+    assert_eq!(input2.memory.len(), 1, "the Step-4 pull reached the router");
+    assert!(
+        input2.memory[0].starts_with("[summary · "),
+        "fragments carry their provenance tag: {}",
+        input2.memory[0]
+    );
+    assert!(
+        input2.memory[0].contains("Risk posture:"),
+        "the fragment is run 1's summary text: {}",
+        input2.memory[0]
+    );
+
+    let packet2 = agent2
+        .seen_research
+        .lock()
+        .unwrap()
+        .clone()
+        .flatten()
+        .expect("run 2 carried a packet");
+    assert_eq!(packet2.memory.len(), 1, "the Step-10 pull reached the agent's packet");
+    assert!(
+        packet2.memory[0].contains("Risk posture:"),
+        "the packet fragment is run 1's summary text: {}",
+        packet2.memory[0]
+    );
+
+    // And the store still holds exactly the two runs' summaries — retrieval wrote nothing.
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let memories: i64 = conn
+        .query_row("SELECT COUNT(*) FROM vector_memory", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(memories, 2, "one summary row per persisted report, none from retrieval");
 }
 
 #[test]
