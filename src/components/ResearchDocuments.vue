@@ -9,8 +9,10 @@ import type { ResearchDocument } from "../types";
 // through this one component; the differences are all copy and the toolbar's
 // reveal affordance, passed as props. The list itself is identical: name, format
 // and size, modified date, and a per-row delete (allowed from either folder,
-// docs/research-documents.md §User Permissions). Parse-failure error states are a
-// later slice, so this surfaces only what's on disk.
+// docs/research-documents.md §User Permissions). An inbox row whose last job
+// pass could not parse it carries `parse_error` (§Parse Failures) and renders in
+// an error state — a tag plus the reason — so the user can fix or delete it;
+// archive rows never carry one.
 withDefaults(
   defineProps<{
     documents: ResearchDocument[];
@@ -133,7 +135,12 @@ function formatDate(iso: string | null): string {
             <div class="docs-row-meta">
               {{ formatFormat(doc.format) }} · {{ formatSize(doc.size_bytes) }}
               <span v-if="!doc.supported" class="docs-tag">unsupported</span>
+              <span v-if="doc.parse_error" class="docs-tag docs-tag--error">parse failed</span>
             </div>
+            <!-- The last job pass's failure reason (docs/research-documents.md
+                 §Parse Failures): the file stays in the inbox and is retried next
+                 run unless fixed or deleted. -->
+            <p v-if="doc.parse_error" class="docs-row-error">{{ doc.parse_error }}</p>
           </div>
           <div class="docs-row-date">{{ formatDate(doc.modified) }}</div>
           <div class="docs-row-actions">
@@ -355,6 +362,24 @@ function formatDate(iso: string | null): string {
   border: var(--border-soft);
   border-radius: var(--radius-sm);
   color: var(--ink-2);
+}
+
+/* Parse-failure tag — same chip geometry, but this IS a warning/error, so it
+   carries the accent voice (the error-label idiom this surface already uses;
+   --accent-text is the AA-clearing accent for text). */
+.docs-tag--error {
+  color: var(--accent-text);
+}
+
+/* The failure reason, mirroring the folder-level error block's label/detail
+   split: the tag above is the accent label, the reason reads as quiet detail. */
+.docs-row-error {
+  margin: var(--s-1) 0 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  line-height: var(--lh-ui);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
 }
 
 .docs-row-date {

@@ -405,6 +405,11 @@ async function generate() {
     void refreshValidation();
     void refreshJobStatus();
     void refreshReports();
+    // The run may have consumed inbox documents (archived after persist) or
+    // recorded parse failures — re-read both folders so the panel, error states,
+    // and sidebar badge match disk without waiting for a focus change.
+    void refreshDocuments();
+    void refreshArchive();
   }
 }
 
@@ -712,6 +717,11 @@ onMounted(async () => {
       }
       void refreshValidation();
       void refreshJobStatus();
+      // A scheduled run may have consumed inbox documents or recorded parse
+      // failures — mirror the manual path's post-run folder refresh so an open
+      // window's inbox/archive (and badge) match disk.
+      void refreshDocuments();
+      void refreshArchive();
     })
   );
   // Closing to the tray hides the window but keeps this app mounted, so

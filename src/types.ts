@@ -43,12 +43,17 @@ export interface ValidationReport {
 // flat folder of user-supplied files; `supported` flags the formats the
 // pipeline can parse. `modified` is a canonical UTC RFC3339 string (or null when
 // the platform couldn't report one); the UI renders it in local time.
+// `parse_error` is the last job pass's parse-failure reason, set only while the
+// file on disk is still the one that failed (§Parse Failures — the row renders
+// in an error state so the user can fix or delete it); always null for the
+// archive listing.
 export interface ResearchDocument {
   name: string;
   format: string;
   supported: boolean;
   size_bytes: number;
   modified: string | null;
+  parse_error: string | null;
 }
 
 // Mirrors the Rust `jobs::JobStatus` returned by the `job_status` command

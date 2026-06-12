@@ -15,6 +15,7 @@ use crate::baseline_delta::{self, BaselineDeltas};
 use crate::data_sources::{
     BaselineMarketData, GroupKind, MarketDataSource, BASELINE_SCHEMA_VERSION,
 };
+use crate::document_parser::{self, ParsedResearchDoc};
 use crate::embedding::Embedder;
 use crate::headline_filter::HeadlineFilter;
 use crate::news::{self, NewsSource};
@@ -31,6 +32,26 @@ use crate::vector_memory::{self, MemoryKind};
 pub struct ReportPaths {
     pub db_path: PathBuf,
     pub reports_dir: PathBuf,
+    /// The research inbox the Step-6 stage parses (`docs/research-documents.md`).
+    pub inbox_dir: PathBuf,
+    /// Where successfully processed inbox documents are filed once the run's
+    /// report persists.
+    pub archive_dir: PathBuf,
+}
+
+impl ReportPaths {
+    /// The canonical app-data layout under one base directory — the single
+    /// source for these names, shared by the production commands and scheduler
+    /// (`lib.rs::report_paths`) and every test's temp dir, so the layouts can
+    /// never drift apart.
+    pub fn under(base: &std::path::Path) -> Self {
+        Self {
+            db_path: base.join("market_signal.db"),
+            reports_dir: base.join("reports"),
+            inbox_dir: base.join("research-inbox"),
+            archive_dir: base.join("research-archive"),
+        }
+    }
 }
 
 /// The research-half stages (Steps 7–11), injected into the pipeline as trait objects
@@ -199,6 +220,19 @@ pub fn generate_report(
     // report or any DB failure degrades to empty and never gates the run.
     let recent_reports = load_recent_report_context(&paths.db_path);
 
+    // Step 6: parse the research inbox (`docs/weekly-report-workflow.md §Step 6`,
+    // `docs/research-documents.md`). Fully fail-soft — an unlistable folder or an
+    // unparseable file never gates the run; failures are recorded for the panel's
+    // error state and the file is left in the inbox for the next run. The parsed
+    // documents ride into routing and the condensed packet below; the archive
+    // move waits for the persist step, so a failed or cancelled run never
+    // consumes the user's documents. Local CPU only — no request rows.
+    ctx.step_started("inbox", "Reading research documents");
+    let inbox_docs = process_research_inbox(&paths.inbox_dir, &paths.db_path, ctx);
+    let inbox_status = if ctx.is_cancelled() { "cancelled" } else { "ok" };
+    ctx.step_finished("inbox", inbox_status, None);
+    bail_if_cancelled(ctx)?;
+
     // Steps 7–11: the research half — news → filter → route → execute → condensed packet,
     // fully fail-soft (`assemble_research_packet`), bracketed as one step with the adapters'
     // per-request rows streaming inside it. Computed here, before `baseline` and `deltas`
@@ -209,6 +243,7 @@ pub fn generate_report(
         &baseline,
         deltas.as_ref(),
         &recent_reports,
+        &inbox_docs,
         embedder,
         &paths.db_path,
         ctx,
@@ -386,6 +421,14 @@ pub fn generate_report(
         // no cancellation poll; a cascade failure never fails the run.
         prune_old_reports(&conn);
 
+        // Best-effort: file the successfully parsed inbox documents into the
+        // archive (`docs/research-documents.md §Processing at Job Start`) — only
+        // now, with the report persisted, does the run count as having consumed
+        // them. A failed move logs and leaves the file; the next run's re-parse
+        // is idempotent. A cancel landing during persist doesn't skip this leg:
+        // the documents were used by the report that just persisted.
+        document_parser::archive_processed(&paths.inbox_dir, &paths.archive_dir, &inbox_docs);
+
         Ok(GeneratedReport {
             report_id: summary.report_id.clone(),
             markdown: output.markdown,
@@ -489,11 +532,13 @@ fn delete_report_db_rows(conn: &rusqlite::Connection, report_id: &str) -> Result
 /// the Step-10 post-research pull — queried from the executor's evidence — is the one
 /// the condensed packet carries to the main agent. `embedder` is the same fixed
 /// embedding stage the Step-17 persist write uses; `db_path` locates the store.
+#[allow(clippy::too_many_arguments)] // one parameter per Step-6/7/8/10 input, each documented above
 fn assemble_research_packet(
     research: &ResearchStages,
     baseline: &BaselineMarketData,
     deltas: Option<&BaselineDeltas>,
     recent_reports: &[ReportSummary],
+    inbox_docs: &[ParsedResearchDoc],
     embedder: &dyn Embedder,
     db_path: &std::path::Path,
     ctx: &RunContext,
@@ -555,6 +600,9 @@ fn assemble_research_packet(
             clusters: clusters.clone(),
             recent_reports: recent_reports.to_vec(),
             memory: pre_memory,
+            // Routing picks topics, so it gets each document's head, not the
+            // full condensed text the packet carries below.
+            inbox_documents: inbox_docs.iter().map(ParsedResearchDoc::router_excerpt).collect(),
         }) {
             Ok(plan) => plan,
             Err(e) => {
@@ -586,8 +634,65 @@ fn assemble_research_packet(
         )
     };
 
-    // Step 11: condense everything into the token-bounded packet.
-    build_condensed_packet(baseline.clone(), deltas.cloned(), clusters, evidence, memory)
+    // Step 11: condense everything into the token-bounded packet. The inbox
+    // blocks are already bounded by `document_parser`'s char budgets.
+    build_condensed_packet(
+        baseline.clone(),
+        deltas.cloned(),
+        clusters,
+        evidence,
+        memory,
+        inbox_docs.iter().map(ParsedResearchDoc::prompt_block).collect(),
+    )
+}
+
+/// The Step-6 inbox stage: parse every supported document in the inbox
+/// (`document_parser::process_inbox`, fail-soft with per-file cancellation
+/// polling), log each failure, and record this pass's failure set for the
+/// Research Documents panel's error states. The failure write is best-effort
+/// (stderr on error, never a gate) and is skipped entirely on a cancelled pass —
+/// a partial pass must not clobber the recorded state of files it never reached.
+fn process_research_inbox(
+    inbox_dir: &std::path::Path,
+    db_path: &std::path::Path,
+    ctx: &RunContext,
+) -> Vec<ParsedResearchDoc> {
+    let outcome = document_parser::process_inbox(inbox_dir, ctx);
+    for failure in &outcome.failures {
+        eprintln!(
+            "research-inbox: {} could not be parsed (left in the inbox): {}",
+            failure.name, failure.reason
+        );
+    }
+    if !ctx.is_cancelled() {
+        if let Err(e) = record_parse_failures(db_path, &outcome.failures) {
+            eprintln!("research-inbox: recording parse failures failed: {e:#}");
+        }
+    }
+    outcome.docs
+}
+
+/// Replace the recorded parse-failure set with this pass's
+/// (`storage::replace_parse_failures` — the table holds "the failures of the
+/// most recent inbox pass", so a healed or deleted file self-clears).
+fn record_parse_failures(
+    db_path: &std::path::Path,
+    failures: &[crate::document_parser::ParseFailure],
+) -> Result<()> {
+    let conn = storage::open(db_path)?;
+    storage::init_schema(&conn)?;
+    let failed_at = chrono::Utc::now().to_rfc3339();
+    let rows: Vec<storage::ParseFailureRow> = failures
+        .iter()
+        .map(|f| storage::ParseFailureRow {
+            name: f.name.clone(),
+            size_bytes: f.size_bytes,
+            modified: f.modified.clone(),
+            reason: f.reason.clone(),
+            failed_at: failed_at.clone(),
+        })
+        .collect();
+    storage::replace_parse_failures(&conn, &rows)
 }
 
 /// Cancel checkpoint between pipeline stages. A cancel requested mid-run lands
@@ -1200,6 +1305,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             &[],
+            &[],
             &StubEmbedder,
             &dir.path().join("market_signal.db"),
             &RunContext::noop(),
@@ -1512,6 +1618,40 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_inbox_pass_skips_the_failure_write() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        use crate::progress::{NoopReporter, RunContext};
+
+        // A cancelled pass parses nothing, and — critically — must not replace
+        // the recorded failure set with its partial (empty) view. The skipped
+        // write is observable as the DB never being touched: `record_parse_failures`
+        // is the only DB access in this stage, and opening would create the file.
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("research-inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        std::fs::write(inbox.join("broken.json"), "{ not json").unwrap();
+        let db_path = dir.path().join("market_signal.db");
+
+        let cancelled =
+            RunContext::new("t", Arc::new(NoopReporter), Arc::new(AtomicBool::new(true)));
+        let docs = process_research_inbox(&inbox, &db_path, &cancelled);
+        assert!(docs.is_empty(), "a cancelled pass parses nothing");
+        assert!(!db_path.exists(), "the failure write was skipped, not emptied");
+
+        // The same pass uncancelled records the failure — pinning that the
+        // skip above came from the cancel, not from a quiet no-op.
+        let docs = process_research_inbox(&inbox, &db_path, &RunContext::noop());
+        assert!(docs.is_empty());
+        let conn = storage::open(&db_path).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM research_parse_failures", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
     fn assemble_packet_skips_model_stages_when_cancelled() {
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
@@ -1551,6 +1691,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             &recent,
+            &[],
             &PanicEmbedder,
             &db_path,
             &ctx,
@@ -1616,6 +1757,7 @@ mod tests {
             &stages,
             &BaselineMarketData::default(),
             None,
+            &[],
             &[],
             &crate::embedding::StubEmbedder,
             &dir.path().join("market_signal.db"),

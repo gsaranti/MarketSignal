@@ -4,6 +4,7 @@ pub mod bls;
 pub mod config;
 pub mod connection_test;
 pub mod data_sources;
+pub mod document_parser;
 pub mod embedding;
 pub mod fmp;
 pub mod fmp_news;
@@ -130,40 +131,29 @@ fn check_configuration(app: tauri::AppHandle) -> ValidationReport {
     report
 }
 
-/// The on-disk layout for a run — the SQLite database and the reports directory,
-/// both under the app data directory. One source for the path layout, shared by
-/// the manual command and the scheduler so they can never drift apart.
+/// The on-disk layout for a run — the SQLite database, the reports directory,
+/// and the research inbox/archive, all under the app data directory
+/// (`ReportPaths::under` owns the names). One source for the path layout, shared
+/// by the manual command and the scheduler so they can never drift apart.
 fn report_paths(app: &tauri::AppHandle) -> Result<ReportPaths, String> {
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("resolving app data directory: {e}"))?;
-    Ok(ReportPaths {
-        db_path: data_dir.join("market_signal.db"),
-        reports_dir: data_dir.join("reports"),
-    })
+    Ok(ReportPaths::under(&data_dir))
 }
 
-/// The research-inbox folder under the app data directory
-/// (`docs/research-documents.md`). Resolved here alongside `report_paths` so the
-/// whole app-data layout stays defined in one place.
+/// The research-inbox folder (`docs/research-documents.md`) — the same layout
+/// the pipeline's Step-6 stage reads via `ReportPaths`.
 fn research_inbox_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("resolving app data directory: {e}"))?;
-    Ok(data_dir.join("research-inbox"))
+    Ok(report_paths(app)?.inbox_dir)
 }
 
-/// The research-archive folder under the app data directory
-/// (`docs/research-documents.md`). Successfully-processed inbox documents are
-/// moved here; the user may delete from it but cannot manually archive into it.
+/// The research-archive folder (`docs/research-documents.md`). Successfully
+/// processed inbox documents are moved here by the pipeline's persist step; the
+/// user may delete from it but cannot manually archive into it.
 fn research_archive_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("resolving app data directory: {e}"))?;
-    Ok(data_dir.join("research-archive"))
+    Ok(report_paths(app)?.archive_dir)
 }
 
 /// Manually generate a Weekly Market Report end to end. The execution gate runs
@@ -446,11 +436,20 @@ async fn test_connection(
 
 /// List the user-supplied documents currently in the research inbox
 /// (`docs/research-documents.md`). A fresh install with no inbox folder yet lists
-/// as empty rather than erroring; the frontend renders the empty state.
+/// as empty rather than erroring; the frontend renders the empty state. The last
+/// job pass's parse failures are joined on best-effort (`§Parse Failures` — the
+/// file shows in an error state so the user can fix or delete it); an unreadable
+/// DB costs the error states, never the listing.
 #[tauri::command]
 fn list_research_inbox(app: tauri::AppHandle) -> Result<Vec<research::ResearchDocument>, String> {
     let inbox = research_inbox_dir(&app)?;
-    research::list_folder(&inbox).map_err(|e| e.to_string())
+    let mut docs = research::list_folder(&inbox).map_err(|e| e.to_string())?;
+    if let Ok(conn) = open_app_db(&app) {
+        if let Ok(failures) = storage::list_parse_failures(&conn) {
+            research::annotate_parse_failures(&mut docs, &failures);
+        }
+    }
+    Ok(docs)
 }
 
 /// Delete one document from the research inbox by file name

@@ -76,10 +76,9 @@ pub struct ResearchPlan {
 /// `baseline.calendar` (the economic-release schedule), so they carry no separate
 /// field. The doc's "recent Markdown report context" ships here in bounded
 /// summary form — whether the full Markdown bodies ever feed routing (rather than
-/// only the Step-2 main-agent context, a later slice) is that slice's call. The
-/// one remaining Step-8 input the doc lists — parsed inbox documents — is not
-/// built yet and joins this struct when its slice lands (the same incremental
-/// path `MainAgentInput` took when `deltas` was added).
+/// only the Step-2 main-agent context, a later slice) is that slice's call. With
+/// the inbox-parsing slice's `inbox_documents`, all seven doc-listed Step-8
+/// inputs now ride in.
 #[derive(Debug, Clone, Default)]
 pub struct RouterInput {
     pub baseline: BaselineMarketData,
@@ -95,6 +94,13 @@ pub struct RouterInput {
     /// packet carries the separate Step-10 pull, never this one. Empty on an
     /// early run's bare store or when the fail-soft pull degraded.
     pub memory: Vec<String>,
+    /// The Step-6 parsed research-inbox documents (`docs/weekly-report-workflow.md
+    /// §Step 8`'s "parsed research inbox documents"): one short excerpt block per
+    /// successfully parsed user-supplied document
+    /// (`document_parser::ParsedResearchDoc::router_excerpt`) — routing picks
+    /// topics, so it gets the head, not the full condensed text the packet
+    /// carries. Empty when the inbox was empty or every file failed.
+    pub inbox_documents: Vec<String>,
 }
 
 /// The research-routing stage. One method: turn the inputs into a bounded plan.
@@ -160,12 +166,15 @@ answer a prior report's unresolved questions or test its key risks and forward o
 against this week's data. When long-term memory fragments are provided — prior report summaries \
 and durable learnings recalled against this week's market picture — use them to steer \
 investigation: favor topics that test a recurring pattern, revisit a past analytical mistake, or \
-probe a historical analog the memory surfaces. \
+probe a historical analog the memory surfaces. When user-supplied research documents are \
+provided — files the user placed in the research inbox, parsed and excerpted by the application \
+layer — treat them as deliberately curated, high-signal input: favor topics they raise or \
+substantiate when the market evidence supports them. \
 Return at most 5 topics — fewer if fewer matter. For each topic give: a \
 short topic label, a one-to-two-sentence rationale tying it to the provided evidence, a priority \
 from 0.0 to 1.0 for how much it matters this week, and at most 4 concrete research questions to \
 investigate. Ground every topic in the provided baseline, change view, clusters, prior-report \
-summaries, or recalled memory; never invent data.";
+summaries, recalled memory, or user-supplied documents; never invent data.";
 
 const USER_INSTRUCTION: &str = "Produce the bounded research plan for this week's report.";
 
@@ -350,6 +359,15 @@ fn build_user_prompt(input: &RouterInput) -> String {
         ));
     }
 
+    // The Step-6 parsed inbox documents: like the memory fragments, each entry is
+    // its own block (header + excerpt), so they join on blank lines.
+    if !input.inbox_documents.is_empty() {
+        prompt.push_str(&format!(
+            "\n\nUser-supplied research documents (parsed excerpts from the research inbox):\n{}",
+            input.inbox_documents.join("\n\n")
+        ));
+    }
+
     prompt
 }
 
@@ -433,15 +451,16 @@ impl ModelResearchRouter {
 }
 
 /// Nothing to route: no baseline data, no change view, no clusters, no
-/// prior-report context, and no recalled memory means the prompt would carry only
-/// the bare instruction. Pure so the conjunction stays unit-testable as inputs
-/// join it slice by slice.
+/// prior-report context, no recalled memory, and no inbox documents means the
+/// prompt would carry only the bare instruction. Pure so the conjunction stays
+/// unit-testable as inputs join it slice by slice.
 fn input_is_empty(input: &RouterInput) -> bool {
     input.baseline == BaselineMarketData::default()
         && input.deltas.is_none()
         && input.clusters.is_empty()
         && input.recent_reports.is_empty()
         && input.memory.is_empty()
+        && input.inbox_documents.is_empty()
 }
 
 impl ResearchRouter for ModelResearchRouter {
@@ -731,6 +750,36 @@ mod tests {
             memory: vec!["[summary · t] Risk posture: mixed.".into()],
             ..Default::default()
         }));
+    }
+
+    #[test]
+    fn build_request_carries_inbox_documents_and_omits_them_when_absent() {
+        // With parsed inbox documents: the prompt carries the block, blocks joined on
+        // blank lines like the memory fragments.
+        let input = RouterInput {
+            inbox_documents: vec![
+                "### Research document: notes.md (MD)\n\nRates likely hold.".into(),
+                "### Research document: deck.pdf (PDF)\n\nCapex steady.".into(),
+            ],
+            ..Default::default()
+        };
+        let body = build_request(&input);
+        let user = body["messages"][0]["content"].as_str().unwrap();
+        assert!(user.contains("User-supplied research documents"), "{user}");
+        assert!(
+            user.contains("Rates likely hold.\n\n### Research document: deck.pdf"),
+            "blocks join on blank lines: {user}"
+        );
+
+        // Without them: the block is omitted entirely, never rendered blank.
+        let bare = build_user_prompt(&RouterInput {
+            clusters: vec![cluster("t", 0.5)],
+            ..Default::default()
+        });
+        assert!(!bare.contains("User-supplied research documents"), "{bare}");
+
+        // And inbox documents alone are a real routing input — no empty short-circuit.
+        assert!(!input_is_empty(&input));
     }
 
     #[test]

@@ -16,11 +16,12 @@
 //!
 //! Scoped, like [`RouterInput`](crate::research_router::RouterInput), to the input types
 //! that exist today: the Step-3 baseline scan and its change view, the Step-7 clusters,
-//! the Step-9 evidence, and the Step-10 research-informed vector-memory pull (`memory`,
-//! populated by the retrieval slice). The remaining doc-listed contents — recent report
-//! context (a bounded form of which now feeds routing via `RouterInput.recent_reports`,
-//! but is not yet carried in this packet), research-inbox summaries, unresolved thesis
-//! questions, and upcoming events — join this struct as their slices land.
+//! the Step-9 evidence, the Step-10 research-informed vector-memory pull (`memory`,
+//! populated by the retrieval slice), and the Step-6 research-inbox summaries
+//! (`inbox_summaries`, the inbox-parsing slice). The remaining doc-listed contents —
+//! recent report context (a bounded form of which now feeds routing via
+//! `RouterInput.recent_reports`, but is not yet carried in this packet), unresolved
+//! thesis questions, and upcoming events — join this struct as their slices land.
 
 use serde::Serialize;
 
@@ -66,6 +67,13 @@ pub struct ResearchPacket {
     /// pull — the packet carries only the research-informed result set (replace, not
     /// merge). Empty on an early run's bare store or when the fail-soft pull degraded.
     pub memory: Vec<String>,
+    /// The Step-6 research-inbox documents (`docs/weekly-report-workflow.md §Step 6`,
+    /// "research inbox summaries" in §Step 11): one prompt block per successfully
+    /// parsed user-supplied document, in the inbox's newest-first order. The doc's
+    /// "summaries" ship as deterministic condensed excerpts — bounded upstream by
+    /// `document_parser`'s per-doc and total char budgets, so this section carries
+    /// no cap of its own. Empty when the inbox was empty or every file failed.
+    pub inbox_summaries: Vec<String>,
 }
 
 /// Assemble the condensed packet from the gathered evidence. Deterministic condensation:
@@ -78,6 +86,7 @@ pub fn build_condensed_packet(
     clusters: Vec<HeadlineCluster>,
     evidence: ResearchEvidence,
     memory: Vec<String>,
+    inbox_summaries: Vec<String>,
 ) -> ResearchPacket {
     // News clusters: most market-significant first, then capped.
     let mut news_clusters = clusters;
@@ -101,6 +110,7 @@ pub fn build_condensed_packet(
         news_clusters,
         research,
         memory,
+        inbox_summaries,
     }
 }
 
@@ -158,6 +168,7 @@ mod tests {
             clusters,
             ResearchEvidence::default(),
             Vec::new(),
+            Vec::new(),
         );
 
         assert_eq!(packet.news_clusters.len(), MAX_PACKET_CLUSTERS, "capped");
@@ -190,6 +201,7 @@ mod tests {
             Vec::new(),
             evidence,
             Vec::new(),
+            Vec::new(),
         );
 
         let topics: Vec<&str> = packet.research.items.iter().map(|i| i.topic.as_str()).collect();
@@ -215,6 +227,7 @@ mod tests {
             None,
             Vec::new(),
             evidence,
+            Vec::new(),
             Vec::new(),
         );
 
@@ -250,6 +263,7 @@ mod tests {
             Vec::new(),
             ResearchEvidence::default(),
             Vec::new(),
+            Vec::new(),
         );
 
         assert_eq!(packet.baseline, baseline, "baseline carried through unchanged");
@@ -267,6 +281,7 @@ mod tests {
             None,
             Vec::new(),
             ResearchEvidence::default(),
+            Vec::new(),
             Vec::new(),
         );
 
@@ -295,7 +310,28 @@ mod tests {
                 stopped_reason: None,
             },
             memory.clone(),
+            Vec::new(),
         );
         assert_eq!(packet.memory, memory);
+    }
+
+    #[test]
+    fn inbox_summaries_are_carried_through_untouched() {
+        // The Step-6 inbox blocks ride the packet exactly as handed in — already
+        // ordered (newest first) and bounded by `document_parser`'s char budgets,
+        // so the assembler neither reorders nor trims them.
+        let inbox = vec![
+            "### Research document: notes.md (MD)\n\nRates likely hold.".to_string(),
+            "### Research document: deck.pdf (PDF)\n\nCapex steady.".to_string(),
+        ];
+        let packet = build_condensed_packet(
+            BaselineMarketData::default(),
+            None,
+            Vec::new(),
+            ResearchEvidence::default(),
+            Vec::new(),
+            inbox.clone(),
+        );
+        assert_eq!(packet.inbox_summaries, inbox);
     }
 }
