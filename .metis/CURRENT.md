@@ -2,23 +2,26 @@
 
 ## What happened
 
-**Step-17 durable-learnings slice shipped** — squash `edf4b32` (PR #26), on `main`. The memory loop is now closed: the main agent emits `durable_learnings` (a **sibling** of `summary` on `MainAgentOutput` — the closed report-summary schema is untouched, and `summary_memory_text` never sees them), grown through the envelope + strict schema on both provider arms (a new test pins schema `properties` ≡ `required`, the strict-mode live-only failure). The persist block writes each as a `learning` row: trimmed, empties dropped, capped at `LEARNINGS_PER_REPORT_CAP = 5` (app-layer bound in `pipeline.rs`, not model-trusted), per-item best-effort, `report_id` as provenance, agent-minted `created_at`. `SYSTEM_PROMPT` teaches the five doc categories, a high bar (most weeks zero or one), and self-containedness (fragments are recalled standalone). **Codex round 1 (P2) fixed**: cancellation is now polled before *every* paid embedding call in persist — a guard on the pre-existing summary embed plus a per-iteration poll in the learning loop — so a cancel during persist spends at most the in-flight call; a cancel that late still records **Successful** (the report exists; `jobs.rs` comment documents this). Reviews: Metis approve (12/12 criteria); Codex found nothing else.
+**30-report retention cascade shipped** — squash `7529413` (PR #27), on `main`. The persist step now evicts every report beyond the newest 30: Markdown file, vector summary row, baseline-snapshot rows, and report row together; durable learnings survive by `kind`. Selection (`storage::select_reports_beyond_retention`) shares `list_recent_reports`' exact ordering; `REPORT_RETENTION` is a separate constant from the display cap. Failure semantics: file leg first (NotFound = already gone; other fs errors skip the evictee for next-run retry); the three DB legs commit or roll back as **one transaction** (`unchecked_transaction`) — **Codex round 1 (P2) fix**: a partial DB failure must not delete the report row (the retry key), or the summary row would be stranded in retrievable memory forever. Reviews: Metis approve (9/9), Codex otherwise clean. **HTML has no cascade leg because HTML persistence doesn't exist** (`storage.rs` defers it); the obligation is pinned in `prune_old_reports`' doc comment.
+
+**Report-format direction settled in discussion** (not yet in docs): keep Markdown canonical — agent-authored HTML was rejected (webview injection risk, lossy reverse conversion, presentation coupling). Charts/graphs should ride as fenced ```chart blocks (declarative JSON spec in the Markdown, rendered to SVG by a markdown-it fence plugin with design tokens); a future slice.
 
 ## Current state
 
-On **`main` @ `edf4b32`**, synced with origin, branch deleted, **nothing in flight**. `cargo test` 298 passed / 0 failed / 14 ignored (276 lib + 13 generate_report + 6 + 2 + 1), clippy `--all-targets --all-features` clean, `npm run build` OK (frontend untouched). **No live API spend this session** — stub embedders throughout; live smokes remain deliberately unrun.
+On **`main` @ `7529413`**, synced, branches pruned, **nothing in flight**. `cargo test` 306 passed / 0 failed / 14 ignored, clippy clean, `npm run build` OK. No live API spend this session.
 
 ## Open questions
 
-- **Learning dedup unbuilt** — a lesson the model re-emits weekly accumulates near-duplicate `learning` rows forever (never deleted). Prompt's high bar mitigates; insert-time similarity check or content hash belongs with the tuning bundle below.
-- **Step-4 pull has no audit consumer** — doc says it also steers the Step-5 audit; no audit stage exists, so it lands in routing only (seam ready in `assemble_research_packet`).
+- **Does persisted HTML need to exist at all?** View-time markdown-it rendering + print-to-PDF may make it permanently unnecessary, but `docs/storage.md` still lists "HTML output" in SQLite and names HTML in the deletion list — docs amendment / reconcile item.
+- **Chart-block slice unplanned** — needs SYSTEM_PROMPT teaching, the markdown-it fence renderer, and a design-system extension for chart styling (none exists; extend per CLAUDE.md step 5, don't invent).
+- **Learning dedup unbuilt** — re-emitted lessons accumulate near-duplicate `learning` rows forever; belongs with the tuning bundle.
+- **Step-4 pull has no audit consumer** — no audit stage exists; lands in routing only (seam ready in `assemble_research_packet`).
 - **RouterInput: 6 of 7** — only parsed inbox documents remain (blocked on a Step-6 parsing slice).
-- **Retention cascade still unbuilt** — the 30-report cascade owns Markdown + HTML + metadata + the vector summary row; `vector_memory::delete_report_summary` is its ready hook (learning survival by `kind` already tested).
 - **Tuning deferred together** — brancher thresholds/keywords; `MEMORY_TOP_K=5`, no similarity floor, query composition; `LEARNINGS_PER_REPORT_CAP=5`.
-- **Optional GUI/live run** — would now also show up to 5 learning-embed request rows under the persist step (if the model emits any); ~40 FMP calls + one generation.
+- **Optional GUI/live run** — would now also exercise the retention prune after persist; ~40 FMP calls + one generation.
 - *(carried)* `fmp_baseline_smoke` unrun since quota reset; tracker live-SSE smoke; `COVERAGE_FLOOR=0.6` not final; degraded-past-report reader signal; wiremock / in-loop offline gap.
 - *(low / parked)* FRED freshness tuning; filter-prompt snippets; step-6 inbox auto-archive; calendar `expected` consensus; GDP not annualized; no Vue component-test harness; `cargo fmt` dirty repo-wide.
 
 ## Where to start
 
-**Plan the next slice** (`/metis-plan-task`) — two front-runners now that the memory loop is closed: the **retention cascade** (30-report cascade; `delete_report_summary` hook ready, learning survival tested) or **Step-6 inbox parsing** (unblocks RouterInput 7/7 and the research-documents flow). Either stands alone; pick by priority.
+**Plan the next slice** (`/metis-plan-task`). Front-runner: **Step-6 inbox parsing** (unblocks RouterInput 7/7 and the research-documents flow). Alternatives: the **chart-block slice** (direction settled above, unplanned), or the **HTML docs amendment** (a reconcile/docs walk, not code). Pick by priority.
