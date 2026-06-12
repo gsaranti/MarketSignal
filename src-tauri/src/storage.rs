@@ -78,6 +78,32 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+    // Long-term semantic memory (`docs/storage.md §Vector Memory`), shipped on
+    // SQLite as BLOB-stored embeddings with exact in-Rust cosine search — a conscious
+    // deviation from the doc's LanceDB engine; rationale and the engine-swap seam live
+    // in `vector_memory`'s module header. `kind` ∈ {summary, learning}: a report's
+    // summary row cascades with its report (joined by `report_id`), durable learnings
+    // survive report deletion. `embedding` is little-endian f32 bytes.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS vector_memory (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind       TEXT NOT NULL,
+            report_id  TEXT,
+            content    TEXT NOT NULL,
+            embedding  BLOB NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+    // Encodes the doc's "one embedding per report summary" in the schema rather than
+    // trusting the flow (the persist step runs once per report_id today, but the
+    // invariant is what the retrieval slice will lean on). Partial: learnings are
+    // unconstrained — many may share a report_id, or carry none.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_vector_memory_summary
+         ON vector_memory(report_id) WHERE kind = 'summary'",
+        [],
+    )?;
     Ok(())
 }
 

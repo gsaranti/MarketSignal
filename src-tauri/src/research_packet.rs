@@ -21,7 +21,7 @@
 //! not yet carried in this packet), research-inbox summaries, unresolved thesis
 //! questions, upcoming events, and the Step-10 vector-memory pull — join this struct as
 //! their slices land. `memory` ships now as an empty placeholder so the field exists
-//! ahead of the LanceDB slice that will populate it.
+//! ahead of the Step-10 retrieval slice that will populate it.
 
 use serde::Serialize;
 
@@ -62,7 +62,7 @@ pub struct ResearchPacket {
     /// is carried through untouched so a truncated phase stays visible.
     pub research: ResearchEvidence,
     /// Deferred placeholder for the Step-10 research-informed vector-memory pull. Always
-    /// empty until the LanceDB slice lands.
+    /// empty until the retrieval slice lands.
     pub memory: Vec<String>,
 }
 

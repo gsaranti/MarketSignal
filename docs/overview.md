@@ -3,8 +3,7 @@
 Market Signal is a local-first desktop application built with:
 - [Tauri](https://tauri.app/start/) ([Rust API docs](https://docs.rs/tauri/latest/tauri/))
 - [Vue](https://vuejs.org/guide/quick-start.html)
-- [SQLite](https://www.sqlite.org/docs.html)
-- [LanceDB](https://docs.lancedb.com/quickstart) ([Rust API docs](https://docs.rs/lancedb/latest/lancedb/index.html))
+- [SQLite](https://www.sqlite.org/docs.html) — also hosts the vector memory (embeddings stored in-table with exact cosine search in Rust; see [storage.md §Vector Memory](storage.md#vector-memory) — amended from the original LanceDB plan)
 
 The app runs scheduled weekly market-analysis jobs, produces evolving market reports, stores recent report history, and uses memory retrieval to improve future analysis.
 

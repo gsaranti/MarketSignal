@@ -4,6 +4,7 @@ pub mod bls;
 pub mod config;
 pub mod connection_test;
 pub mod data_sources;
+pub mod embedding;
 pub mod fmp;
 pub mod fmp_news;
 pub mod fred;
@@ -23,6 +24,7 @@ pub mod schedule;
 pub mod settings;
 pub mod storage;
 pub mod tavily;
+pub mod vector_memory;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +39,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use bls::BlsDataSource;
 use config::{AppConfig, ValidationReport};
+use embedding::OpenAiEmbedder;
 use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
 use data_sources::CompositeMarketDataSource;
 use fmp::FmpDataSource;
@@ -240,9 +243,21 @@ async fn generate_report_manual(
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
-        let research = ResearchStages::live(tavily_key, fmp_key, openai_key, anthropic_key, &ctx)
-            .map_err(|e| e.to_string())?;
-        run_job(&agent, &data, &research, &paths, &guard, &ctx).map_err(|e| e.to_string())
+        let research = ResearchStages::live(
+            tavily_key,
+            fmp_key,
+            openai_key.clone(),
+            anthropic_key,
+            &ctx,
+        )
+        .map_err(|e| e.to_string())?;
+        // The Step-17 memory write's embedder: the fixed internal OpenAI embedding
+        // stage (`text-embedding-3-large`), reusing the same key as the filter.
+        let embedder = OpenAiEmbedder::new(openai_key)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        run_job(&agent, &data, &research, &embedder, &paths, &guard, &ctx)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("report generation task failed: {e}"))??;
@@ -612,12 +627,18 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
         let research = ResearchStages::live(
             run_config.tavily_api_key,
             run_config.fmp_api_key,
-            run_config.openai_api_key,
+            run_config.openai_api_key.clone(),
             run_config.anthropic_api_key,
             &ctx,
         )
         .map_err(|e| e.to_string())?;
-        run_job(&agent, &data, &research, &paths, &guard, &ctx).map_err(|e| e.to_string())
+        // Identical to the manual command's embedder: the fixed internal OpenAI
+        // embedding stage for the Step-17 memory write.
+        let embedder = OpenAiEmbedder::new(run_config.openai_api_key)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        run_job(&agent, &data, &research, &embedder, &paths, &guard, &ctx)
+            .map_err(|e| e.to_string())
     })
     .await;
 

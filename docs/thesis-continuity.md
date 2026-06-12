@@ -91,7 +91,7 @@ The system should clearly explain:
 
 The vector memory system exists to help the main agent maintain analytical continuity over time.
 
-The application retrieves relevant memory from LanceDB, and the main agent uses those retrieved memory fragments to:
+The application retrieves relevant memory from the vector store, and the main agent uses those retrieved memory fragments to:
 - identify similar historical conditions
 - revisit previous conclusions
 - track recurring market patterns

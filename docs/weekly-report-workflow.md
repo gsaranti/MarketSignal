@@ -139,7 +139,7 @@ Because the baseline scan and change view are gathered here, ahead of the audit 
 
 ## Step 4: Retrieve Vector Memory (Pre-Research)
 
-Before the audit and research routing, the application queries LanceDB for semantic memory relevant to the current market picture and supplies the retrieved fragments to those stages. This is the first of two vector-memory retrievals in the workflow; the second, research-informed pull runs at [Step 10](#step-10-retrieve-vector-memory-post-research).
+Before the audit and research routing, the application queries the vector store for semantic memory relevant to the current market picture and supplies the retrieved fragments to those stages. This is the first of two vector-memory retrievals in the workflow; the second, research-informed pull runs at [Step 10](#step-10-retrieve-vector-memory-post-research).
 
 The retrieval query is built from the recent report context ([Step 2](#step-2-load-recent-report-context)) and the baseline scan and change view ([Step 3](#step-3-gather-baseline-market-data)) — so memory is recalled against where the market actually is this period, not from a cold query at job start. Its purpose is to **steer investigation**: the recalled material shapes what the audit scrutinises and which themes research routing prioritises.
 
@@ -155,7 +155,7 @@ Vector memory is used selectively. The system does not inject the full report hi
 
 This retrieval is additive and fail-soft: if memory cannot be retrieved — an empty store on an early run, or a retrieval error — the workflow proceeds without it rather than failing the job.
 
-For what is stored in vector memory and the retention rules around it, see [storage.md §LanceDB Vector Memory](storage.md#lancedb-vector-memory). For how memory shapes the main agent's reasoning across reports, see [thesis-continuity.md §Memory-Guided Evolution](thesis-continuity.md#memory-guided-evolution).
+For what is stored in vector memory and the retention rules around it, see [storage.md §Vector Memory](storage.md#vector-memory). For how memory shapes the main agent's reasoning across reports, see [thesis-continuity.md §Memory-Guided Evolution](thesis-continuity.md#memory-guided-evolution).
 
 ## Step 5: Audit Prior Reports
 
@@ -300,9 +300,9 @@ If geopolitical tensions escalate:
 
 ## Step 10: Retrieve Vector Memory (Post-Research)
 
-After research execution, the application runs a second vector-memory retrieval — this time querying LanceDB against the curated research evidence and the emerging picture it forms. Where the pre-research pull ([Step 4](#step-4-retrieve-vector-memory-pre-research)) steered what to investigate, this pull **deepens interpretation**: it surfaces historical analogs and prior analytical mistakes relevant to what the research actually found, and it is the memory that travels forward into the condensed research packet and the main agent's synthesis.
+After research execution, the application runs a second vector-memory retrieval — this time querying the vector store against the curated research evidence and the emerging picture it forms. Where the pre-research pull ([Step 4](#step-4-retrieve-vector-memory-pre-research)) steered what to investigate, this pull **deepens interpretation**: it surfaces historical analogs and prior analytical mistakes relevant to what the research actually found, and it is the memory that travels forward into the condensed research packet and the main agent's synthesis.
 
-Like the pre-research pull, this retrieval is selective and fail-soft, and it draws from the same store under the same retention rules (see [storage.md §LanceDB Vector Memory](storage.md#lancedb-vector-memory)). The condensed packet ([Step 11](#step-11-build-condensed-research-packet)) carries **only** this research-informed result set — it replaces, rather than merges with, the pre-research pull ([Step 4](#step-4-retrieve-vector-memory-pre-research)), which is an ephemeral input to the audit and routing and does not flow into the packet. Because both pulls query the same store, they may surface the same item; that is expected, and the packet simply carries the research-informed version retrieved here.
+Like the pre-research pull, this retrieval is selective and fail-soft, and it draws from the same store under the same retention rules (see [storage.md §Vector Memory](storage.md#vector-memory)). The condensed packet ([Step 11](#step-11-build-condensed-research-packet)) carries **only** this research-informed result set — it replaces, rather than merges with, the pre-research pull ([Step 4](#step-4-retrieve-vector-memory-pre-research)), which is an ephemeral input to the audit and routing and does not flow into the packet. Because both pulls query the same store, they may surface the same item; that is expected, and the packet simply carries the research-informed version retrieved here.
 
 ## Step 11: Build Condensed Research Packet
 
@@ -370,8 +370,8 @@ The main agent writes the final report in Markdown.
 The application saves:
 - the Markdown report to persistent local storage
 - report metadata to SQLite
-- report summary to LanceDB
-- durable learnings identified by the main agent to LanceDB, if applicable
+- report summary to vector memory
+- durable learnings identified by the main agent to vector memory, if applicable
 
 Durable learnings may include:
 - mistakes the system should avoid repeating

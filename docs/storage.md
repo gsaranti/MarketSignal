@@ -78,7 +78,7 @@ The most recent 14 snapshots are retained, pruned independently of the 30-report
 
 A missing or unreadable prior snapshot is non-fatal: the report is generated without a change view. Snapshots are additive context, never a precondition for a report.
 
-## LanceDB Vector Memory
+## Vector Memory
 
 Stores:
 - report summaries
@@ -89,7 +89,9 @@ Stores:
 - retrospective audit learnings
 - useful recurring patterns
 
-The vector DB acts as long-term semantic memory for the main agent.
+The vector store acts as long-term semantic memory for the main agent.
+
+The store is implemented inside the application's SQLite database (a `vector_memory` table holding each item's embedding as bytes) with exact cosine search in Rust — a deliberate engine choice over the originally specified LanceDB (amended 2026-06-11). At this corpus's scale — at most 30 retained report summaries plus durable learnings — an unindexed vector database performs the same exhaustive scan, with a materially heavier dependency footprint. Everything else in this section is engine-agnostic and unchanged; the store sits behind a single module so the engine could be swapped if the corpus ever outgrows exact search.
 
 Deleting older reports does not remove durable learnings already stored in vector memory.
 
@@ -103,4 +105,4 @@ Each item is embedded as a single atomic unit:
 - one embedding per report summary
 - one embedding per durable learning
 
-Report Markdown is not split into fixed-size or section-based chunks for vector memory; the report-summary metadata is the unit that enters LanceDB.
+Report Markdown is not split into fixed-size or section-based chunks for vector memory; the report-summary metadata is the unit that enters vector memory.
