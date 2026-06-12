@@ -751,3 +751,289 @@ fn learnings_written_on_one_run_are_recalled_on_the_next() {
         packet2.memory
     );
 }
+
+// ---------------------------------------------------------------------------
+// Retention cascade (docs/storage.md §SQLite): only the newest 30 reports are
+// kept; an evicted report loses its Markdown file, report row, vector summary
+// row, and baseline-snapshot rows together, while durable learnings survive.
+// ---------------------------------------------------------------------------
+
+/// Seed one pre-existing report directly: a real Markdown file in `file_dir`, a
+/// `reports` row pointing at it, and a vector-memory summary row. Returns the
+/// absolute markdown path. The 3-dim embedding never matches the stub
+/// embedder's query dimension; retrieval skips such rows, the cascade's SQL
+/// deletes don't care.
+fn seed_report(
+    conn: &rusqlite::Connection,
+    file_dir: &std::path::Path,
+    id: &str,
+    created_at: &str,
+) -> String {
+    use market_signal_temp_lib::agent::{MarketCycle, ReportSummary, RiskPosture, ThesisStance};
+
+    let path = file_dir.join(format!("{id}.md"));
+    std::fs::write(&path, format!("# seeded report {id}\n")).unwrap();
+    let path_str = path.to_string_lossy().into_owned();
+
+    let summary = ReportSummary {
+        report_id: id.to_string(),
+        report_type: "weekly_market".to_string(),
+        created_at: created_at.to_string(),
+        risk_posture: RiskPosture::Mixed,
+        market_cycle: MarketCycle::LateCycle,
+        thesis_stance: ThesisStance::Uncertain,
+        header_summary_bullets: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        key_risks: vec![],
+        unresolved_questions: vec![],
+        forward_outlook_themes: vec![],
+    };
+    let summary_json = serde_json::to_string(&summary).unwrap();
+    market_signal_temp_lib::storage::insert_report(
+        conn,
+        &market_signal_temp_lib::storage::ReportRecord {
+            summary: &summary,
+            markdown_path: &path_str,
+            summary_json: &summary_json,
+        },
+    )
+    .unwrap();
+    market_signal_temp_lib::vector_memory::insert_memory(
+        conn,
+        market_signal_temp_lib::vector_memory::MemoryKind::Summary,
+        Some(id),
+        &format!("summary for {id}"),
+        &[0.1, 0.2, 0.3],
+        created_at,
+    )
+    .unwrap();
+    path_str
+}
+
+#[test]
+fn retention_cascade_evicts_the_oldest_report_beyond_the_cap() {
+    use market_signal_temp_lib::storage;
+    use market_signal_temp_lib::vector_memory::MemoryKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+    std::fs::create_dir_all(&paths.reports_dir).unwrap();
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    storage::init_schema(&conn).unwrap();
+
+    // Exactly the cap's worth of pre-existing reports, past-dated so the stub
+    // agent's freshly-minted created_at sorts newest. The oldest also owns a
+    // durable learning and a baseline-snapshot row.
+    let mut seeded_paths = Vec::new();
+    for i in 0..30 {
+        let created_at = format!("2026-01-{:02}T00:00:00Z", i + 1);
+        seeded_paths.push(seed_report(
+            &conn,
+            &paths.reports_dir,
+            &format!("old-{i:02}"),
+            &created_at,
+        ));
+    }
+    market_signal_temp_lib::vector_memory::insert_memory(
+        &conn,
+        MemoryKind::Learning,
+        Some("old-00"),
+        "a durable lesson",
+        &[0.4, 0.5, 0.6],
+        "2026-01-01T00:00:00Z",
+    )
+    .unwrap();
+    storage::insert_baseline_snapshot(&conn, "old-00", "2026-01-01T00:00:00Z", 1, "{}").unwrap();
+    drop(conn);
+
+    // The 31st report pushes old-00 past the window.
+    let report = generate_report(
+        &StubMainAgent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM reports", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 30, "exactly the retention cap remains");
+    let oldest: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM reports WHERE report_id = 'old-00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(oldest, 0, "the oldest report row was evicted");
+    let newest: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM reports WHERE report_id = ?1",
+            [&report.report_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(newest, 1, "the new report is in the window");
+
+    // The evictee's file is gone; the next-oldest survivor's file is intact.
+    assert!(!std::path::Path::new(&seeded_paths[0]).exists());
+    assert!(std::path::Path::new(&seeded_paths[1]).exists());
+
+    // Its vector summary row went with it; the durable learning survives.
+    let summary_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM vector_memory WHERE kind = 'summary' AND report_id = 'old-00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(summary_rows, 0, "the evictee's summary row was deleted");
+    let learning_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM vector_memory WHERE kind = 'learning' AND report_id = 'old-00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(learning_rows, 1, "the durable learning survives eviction");
+
+    // Its baseline-snapshot row is gone too.
+    let snapshot_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM baseline_snapshots WHERE report_id = 'old-00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(snapshot_rows, 0, "the evictee's snapshot rows were deleted");
+}
+
+#[test]
+fn retention_cascade_tolerates_an_already_missing_markdown_file() {
+    use market_signal_temp_lib::storage;
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+    std::fs::create_dir_all(&paths.reports_dir).unwrap();
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    storage::init_schema(&conn).unwrap();
+    let mut seeded_paths = Vec::new();
+    for i in 0..30 {
+        let created_at = format!("2026-01-{:02}T00:00:00Z", i + 1);
+        seeded_paths.push(seed_report(
+            &conn,
+            &paths.reports_dir,
+            &format!("old-{i:02}"),
+            &created_at,
+        ));
+    }
+    drop(conn);
+
+    // The evictee's file disappeared out from under the app (user deleted it
+    // by hand): NotFound counts as removed, the DB legs still run.
+    std::fs::remove_file(&seeded_paths[0]).unwrap();
+
+    generate_report(
+        &StubMainAgent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let oldest: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM reports WHERE report_id = 'old-00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(oldest, 0, "a missing file does not block eviction");
+    let summary_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM vector_memory WHERE kind = 'summary' AND report_id = 'old-00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(summary_rows, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn retention_cascade_skips_db_deletes_when_the_file_cannot_be_removed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use market_signal_temp_lib::storage;
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+    std::fs::create_dir_all(&paths.reports_dir).unwrap();
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    storage::init_schema(&conn).unwrap();
+
+    // The oldest report's file lives in a directory the cascade cannot write
+    // to, so its removal fails with a real error (not NotFound). The other 29
+    // live in the normal reports dir.
+    let locked_dir = dir.path().join("locked");
+    std::fs::create_dir_all(&locked_dir).unwrap();
+    let locked_path = seed_report(&conn, &locked_dir, "old-00", "2026-01-01T00:00:00Z");
+    for i in 1..30 {
+        let created_at = format!("2026-01-{:02}T00:00:00Z", i + 1);
+        seed_report(&conn, &paths.reports_dir, &format!("old-{i:02}"), &created_at);
+    }
+    drop(conn);
+    std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let result = generate_report(
+        &StubMainAgent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    );
+
+    // Restore before asserting so the tempdir can clean up even on failure.
+    std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    result.unwrap();
+
+    // The evictee is left fully intact — file, row, and vector summary — so the
+    // next run's cascade re-selects it rather than orphaning the file.
+    assert!(std::path::Path::new(&locked_path).exists());
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let oldest: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM reports WHERE report_id = 'old-00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(oldest, 1, "a failed file removal skips the DB legs");
+    let summary_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM vector_memory WHERE kind = 'summary' AND report_id = 'old-00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(summary_rows, 1);
+}
