@@ -231,7 +231,16 @@ Produce the report body as GitHub-flavored Markdown with these sections, in orde
 Alongside the Markdown, classify the report on three axes — risk_posture (risk-on, risk-off, or \
 mixed), market_cycle (late-cycle, recessionary, or recovery), and thesis_stance (bullish, \
 bearish, mixed, or uncertain) — and provide header_summary_bullets (matching the Header Summary), \
-key_risks, unresolved_questions, and forward_outlook_themes. Any of the three arrays may be empty.";
+key_risks, unresolved_questions, and forward_outlook_themes. Any of the three arrays may be empty.
+
+Also provide durable_learnings: long-lived analytical lessons from this run worth carrying into \
+future reports' reasoning — a mistake the system should avoid repeating, an analytical strategy \
+that proved useful, an explicit thesis change, a market pattern worth remembering, or a \
+historical analog that became relevant. Hold a high bar: a durable learning is signal that will \
+still matter months from now, not a restatement of this week's news or data moves — most weeks \
+have none or one, never more than five, and an empty array is the normal case. Write each as a \
+single self-contained statement that stands alone without this report's context, because it is \
+recalled in isolation, possibly years later.";
 
 const USER_PROMPT: &str =
     "Write this week's Market Signal weekly market report, including its structured summary.";
@@ -325,6 +334,8 @@ struct ResponseEnvelope {
     unresolved_questions: Vec<String>,
     #[serde(default)]
     forward_outlook_themes: Vec<String>,
+    #[serde(default)]
+    durable_learnings: Vec<String>,
 }
 
 /// JSON Schema for the envelope. Shared by both arms: the Anthropic tool's
@@ -354,11 +365,17 @@ fn response_envelope_schema() -> Value {
             },
             "key_risks": { "type": "array", "items": { "type": "string" } },
             "unresolved_questions": { "type": "array", "items": { "type": "string" } },
-            "forward_outlook_themes": { "type": "array", "items": { "type": "string" } }
+            "forward_outlook_themes": { "type": "array", "items": { "type": "string" } },
+            "durable_learnings": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Rare, self-contained analytical lessons worth carrying into future reports (mistakes to avoid, strategies that proved useful, thesis changes, market patterns, historical analogs). Usually empty; at most five."
+            }
         },
         "required": [
             "markdown", "risk_posture", "market_cycle", "thesis_stance",
-            "header_summary_bullets", "key_risks", "unresolved_questions", "forward_outlook_themes"
+            "header_summary_bullets", "key_risks", "unresolved_questions",
+            "forward_outlook_themes", "durable_learnings"
         ]
     })
 }
@@ -466,6 +483,9 @@ fn envelope_to_output(
     Ok(MainAgentOutput {
         markdown: env.markdown,
         summary,
+        // Passed through unvalidated: the per-report cap is an application-layer
+        // bound (the pipeline's persist step), not a model-contract failure.
+        durable_learnings: env.durable_learnings,
     })
 }
 
@@ -817,7 +837,8 @@ mod tests {
             "header_summary_bullets": ["a", "b", "c"],
             "key_risks": ["a reacceleration in core inflation"],
             "unresolved_questions": [],
-            "forward_outlook_themes": ["liquidity and breadth"]
+            "forward_outlook_themes": ["liquidity and breadth"],
+            "durable_learnings": ["Breadth divergences preceded the spring pullback; weight them earlier."]
         })
     }
 
@@ -1075,6 +1096,12 @@ mod tests {
         assert_eq!(out.summary.created_at, "2026-06-02T00:00:00Z");
         assert_eq!(out.summary.header_summary_bullets.len(), 3);
         assert!(!out.markdown.is_empty());
+        // Durable learnings ride on the output as a sibling of the summary —
+        // never inside it (the summary metadata schema is closed).
+        assert_eq!(out.durable_learnings.len(), 1);
+        assert!(out.durable_learnings[0].starts_with("Breadth divergences"));
+        let summary_json = serde_json::to_value(&out.summary).unwrap();
+        assert!(summary_json.get("durable_learnings").is_none());
 
         let json = serde_json::to_value(&out.summary).unwrap();
         assert_eq!(json["risk_posture"], "mixed");
@@ -1097,6 +1124,38 @@ mod tests {
         assert_eq!(out.summary.report_id, "rid-456");
         assert_eq!(out.summary.thesis_stance, ThesisStance::Uncertain);
         assert_eq!(out.summary.forward_outlook_themes, vec!["liquidity and breadth"]);
+    }
+
+    #[test]
+    fn envelope_without_durable_learnings_still_parses() {
+        // Forward/backward-compat: the strict arms always emit the field, but an
+        // older fixture (or a provider quirk) without it must read as no learnings,
+        // not a parse failure.
+        let mut env = valid_envelope();
+        env.as_object_mut().unwrap().remove("durable_learnings");
+        let raw = json!({ "choices": [ { "message": { "content": env.to_string() } } ] });
+        let out = parse_response(Provider::OpenAi, &raw, "r".into(), "t".into()).unwrap();
+        assert!(out.durable_learnings.is_empty());
+    }
+
+    #[test]
+    fn envelope_schema_lists_every_property_as_required() {
+        // Both strict arms (the Anthropic forced tool and OpenAI strict json_schema)
+        // reject a schema whose `required` omits a declared property — a new envelope
+        // field that misses the list fails live, not in offline tests.
+        let schema = response_envelope_schema();
+        let props = schema["properties"].as_object().unwrap();
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(props.len(), required.len());
+        for key in props.keys() {
+            assert!(required.contains(&key.as_str()), "{key} missing from required");
+        }
+        assert!(required.contains(&"durable_learnings"));
     }
 
     #[test]

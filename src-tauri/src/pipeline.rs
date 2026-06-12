@@ -295,27 +295,90 @@ pub fn generate_report(
         // Same posture as the snapshot block above: a flaky embedding call or a store
         // failure costs this report's memory row, never the report itself, and leaves a
         // diagnostic trail on stderr (plus a `failed` tracker row from the embedder).
-        let memory_text = vector_memory::summary_memory_text(&summary);
-        match embedder.embed(&memory_text) {
-            Ok(embedding) => {
-                if let Err(e) = vector_memory::insert_memory(
-                    &conn,
-                    MemoryKind::Summary,
-                    Some(&summary.report_id),
-                    &memory_text,
-                    &embedding,
-                    &summary.created_at,
-                ) {
-                    eprintln!(
-                        "vector-memory persist failed for report {}: {e:#}",
-                        summary.report_id
-                    );
+        //
+        // Both memory legs (this one and the learnings below) poll cancellation
+        // before each paid embedding call — the contract is that a run stops within
+        // a request or two of a cancel (`docs/run-tracking.md §Cancellation`), so a
+        // cancel landing during persist cuts the memory spend short rather than
+        // riding out up to six more calls. The report persisted above and stays: a
+        // cancel this late is honored as a successful run (`jobs::run_job`); only
+        // the best-effort memory rows are skipped, an already-accepted state.
+        if !ctx.is_cancelled() {
+            let memory_text = vector_memory::summary_memory_text(&summary);
+            match embedder.embed(&memory_text) {
+                Ok(embedding) => {
+                    if let Err(e) = vector_memory::insert_memory(
+                        &conn,
+                        MemoryKind::Summary,
+                        Some(&summary.report_id),
+                        &memory_text,
+                        &embedding,
+                        &summary.created_at,
+                    ) {
+                        eprintln!(
+                            "vector-memory persist failed for report {}: {e:#}",
+                            summary.report_id
+                        );
+                    }
                 }
+                Err(e) => eprintln!(
+                    "vector-memory embedding failed for report {}: {e:#}",
+                    summary.report_id
+                ),
             }
-            Err(e) => eprintln!(
-                "vector-memory embedding failed for report {}: {e:#}",
-                summary.report_id
-            ),
+        }
+
+        // Best-effort: embed and store the run's durable learnings — Step 17's
+        // second memory leg ("durable learnings identified by the main agent",
+        // `docs/weekly-report-workflow.md §Step 17`). The bound lives here in the
+        // app layer, not the model contract: entries are trimmed, empties dropped,
+        // and the rest capped before any embedding call is spent. Each learning is
+        // its own atomic unit (one embedding per learning, `docs/storage.md
+        // §Embeddings`) and each write is independently best-effort — one failed
+        // embed or insert costs that learning, never its siblings or the report.
+        // `report_id` is provenance only: the `kind` column, not the id, is what
+        // makes learnings survive the future retention cascade.
+        let learnings: Vec<&str> = output
+            .durable_learnings
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if learnings.len() > LEARNINGS_PER_REPORT_CAP {
+            eprintln!(
+                "vector-memory: report {} emitted {} durable learnings; keeping the first {}",
+                summary.report_id,
+                learnings.len(),
+                LEARNINGS_PER_REPORT_CAP
+            );
+        }
+        for learning in learnings.into_iter().take(LEARNINGS_PER_REPORT_CAP) {
+            // Polled at each request boundary, like the executor: a cancel that
+            // lands during one embedding call must not spend the next.
+            if ctx.is_cancelled() {
+                break;
+            }
+            match embedder.embed(learning) {
+                Ok(embedding) => {
+                    if let Err(e) = vector_memory::insert_memory(
+                        &conn,
+                        MemoryKind::Learning,
+                        Some(&summary.report_id),
+                        learning,
+                        &embedding,
+                        &summary.created_at,
+                    ) {
+                        eprintln!(
+                            "vector-memory learning persist failed for report {}: {e:#}",
+                            summary.report_id
+                        );
+                    }
+                }
+                Err(e) => eprintln!(
+                    "vector-memory learning embedding failed for report {}: {e:#}",
+                    summary.report_id
+                ),
+            }
         }
 
         Ok(GeneratedReport {
@@ -523,6 +586,14 @@ fn load_recent_report_context(db_path: &std::path::Path) -> Vec<ReportSummary> {
 /// brancher's ("Vector memory is used selectively",
 /// `docs/weekly-report-workflow.md §Step 4`).
 const MEMORY_TOP_K: usize = 5;
+
+/// Per-report cap on durable-learning rows the Step-17 persist write accepts.
+/// An app-layer bound, like the executor's limits — the prompt asks the model to
+/// self-bound ("never more than five"), but the store's growth must not depend
+/// on the model honoring prose; learnings are never deleted, so overflow here is
+/// permanent. Not doc-pinned: tunable alongside `MEMORY_TOP_K` and the brancher
+/// thresholds. Overflow is truncated with a stderr note, never a failed report.
+const LEARNINGS_PER_REPORT_CAP: usize = 5;
 
 /// Hard byte cap on a retrieval query before the paid embedding call. The query
 /// builders bound line *counts*, not sizes — the stored summaries' optional
