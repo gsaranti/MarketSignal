@@ -138,8 +138,10 @@ impl OpenAiEmbedder {
 
 impl Embedder for OpenAiEmbedder {
     fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        // One tracker row per embedding call. Group "memory" buckets the row
-        // under the persist step in the tracker (`App.vue`'s requestStep).
+        // One tracker row per embedding call. Group "memory" rows follow the
+        // currently-running step in the tracker (`App.vue`'s requestStep) — the
+        // research step for the Step-4/10 retrieval pulls, the persist step for
+        // the Step-17 summary write.
         self.progress
             .request_started("OpenAI", "memory", "embedding", "Memory embedding");
         let result = (|| -> Result<Vec<f32>> {

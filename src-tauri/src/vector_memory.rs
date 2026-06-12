@@ -19,6 +19,9 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 use crate::agent::ReportSummary;
+use crate::baseline_delta::{BaselineDeltas, SeriesDelta, SeriesTransition};
+use crate::data_sources::BaselineMarketData;
+use crate::research_executor::ResearchEvidence;
 
 /// What a memory row is (`docs/storage.md §Vector Memory`): a report
 /// summary (one per report, cascades with it) or a durable learning (survives
@@ -58,6 +61,16 @@ pub struct MemoryHit {
     pub content: String,
     pub created_at: String,
     pub score: f64,
+}
+
+impl MemoryHit {
+    /// The prompt form shared by the router input and the condensed packet: the
+    /// kind and date tag the fragment's provenance so the model can weigh recall
+    /// age; the cosine score stays internal (noise to a model). The content keeps
+    /// its own newlines — fragments are blocks, not bullets.
+    pub fn prompt_fragment(&self) -> String {
+        format!("[{} · {}] {}", self.kind.as_str(), self.created_at, self.content)
+    }
 }
 
 /// Insert one memory row. The embedding is stored as little-endian `f32` bytes;
@@ -178,6 +191,13 @@ pub fn delete_report_summary(conn: &Connection, report_id: &str) -> Result<usize
     Ok(deleted)
 }
 
+/// Total rows in the store — the cheap guard the retrieval pulls use to skip a
+/// paid embedding call when there is nothing to search (an empty store on early
+/// runs).
+pub fn count_memory(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM vector_memory", [], |r| r.get(0))?)
+}
+
 /// The deterministic text rendering of a report summary that gets embedded —
 /// the atomic unit `docs/storage.md §Embeddings` names ("the report-summary
 /// metadata is the unit that enters vector memory", never the report Markdown).
@@ -209,6 +229,122 @@ fn push_section(out: &mut String, title: &str, items: &[String]) {
         out.push_str(item);
         out.push('\n');
     }
+}
+
+/// Cap on change-view lines in the pre-research query: the strongest moves carry
+/// the recall signal; a full diff would drown them.
+const QUERY_MAX_DELTA_LINES: usize = 12;
+
+/// Cap on `new` / `missing` transition names in the pre-research query.
+const QUERY_MAX_TRANSITIONS: usize = 6;
+
+/// Cap on source titles rendered per finding in the post-research query.
+const QUERY_MAX_SOURCE_TITLES: usize = 3;
+
+/// The deterministic text the Step-4 pre-research pull embeds
+/// (`docs/weekly-report-workflow.md §Step 4`): memory is recalled against where
+/// the market actually is this period — the recent report context, the salient
+/// baseline levels (indices + internals, never the full baseline JSON), and the
+/// strongest moves in the change view. Pure and bounded: each section is omitted
+/// when its input is empty, and all-empty inputs render an empty string, which
+/// the pull reads as nothing to recall against.
+pub fn pre_research_query(
+    recent: &[ReportSummary],
+    baseline: &BaselineMarketData,
+    deltas: Option<&BaselineDeltas>,
+) -> String {
+    let mut out = String::new();
+
+    for summary in recent {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&summary_memory_text(summary));
+    }
+
+    let levels: Vec<String> = baseline
+        .indices
+        .iter()
+        .chain(&baseline.internals)
+        .map(|q| format!("- {}: {} {} ({:+.2}%)", q.name, q.price, q.unit, q.change_pct))
+        .collect();
+    if !levels.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("Current market picture:\n");
+        out.push_str(&levels.join("\n"));
+        out.push('\n');
+    }
+
+    if let Some(d) = deltas {
+        // Strongest relative moves first; a series without an honest percentage
+        // (prior level zero/non-finite) ranks last rather than fabricating one.
+        let pct_key = |s: &SeriesDelta| s.pct_change.map_or(0.0, f64::abs);
+        let mut moves: Vec<&SeriesDelta> = d.changed.iter().collect();
+        moves.sort_by(|a, b| pct_key(b).total_cmp(&pct_key(a)));
+        let lines: Vec<String> = moves
+            .iter()
+            .take(QUERY_MAX_DELTA_LINES)
+            .map(|s| match s.pct_change {
+                Some(p) => format!("- {}: {} -> {} ({:+.2}%)", s.name, s.prior, s.current, p),
+                None => format!("- {}: {} -> {}", s.name, s.prior, s.current),
+            })
+            .collect();
+        if !lines.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&format!(
+                "Change since the previous report (~{:.1} days):\n",
+                d.elapsed_days
+            ));
+            out.push_str(&lines.join("\n"));
+            out.push('\n');
+        }
+        push_transition_line(&mut out, "Newly tracked series", &d.new);
+        push_transition_line(&mut out, "Series missing this run", &d.missing);
+    }
+
+    out
+}
+
+fn push_transition_line(out: &mut String, label: &str, transitions: &[SeriesTransition]) {
+    if transitions.is_empty() {
+        return;
+    }
+    let names: Vec<&str> = transitions
+        .iter()
+        .take(QUERY_MAX_TRANSITIONS)
+        .map(|t| t.name.as_str())
+        .collect();
+    out.push_str(&format!("{label}: {}\n", names.join(", ")));
+}
+
+/// The deterministic text the Step-10 post-research pull embeds
+/// (`docs/weekly-report-workflow.md §Step 10`): memory is recalled against what
+/// the research actually found — each routed topic with its rationale, its
+/// concrete queries, and a bounded slice of the source titles the executor
+/// surfaced. Pure; empty evidence renders an empty string.
+pub fn post_research_query(evidence: &ResearchEvidence) -> String {
+    let mut out = String::new();
+    for item in &evidence.items {
+        out.push_str(&format!("Research topic: {} — {}\n", item.topic, item.rationale));
+        for finding in &item.findings {
+            out.push_str(&format!("- {}", finding.query));
+            let titles: Vec<&str> = finding
+                .sources
+                .iter()
+                .take(QUERY_MAX_SOURCE_TITLES)
+                .map(|s| s.title.as_str())
+                .collect();
+            if !titles.is_empty() {
+                out.push_str(&format!(": {}", titles.join("; ")));
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Cosine similarity over equal-length vectors, computed in `f64` for stable
@@ -430,5 +566,152 @@ mod tests {
         assert!(!text.contains("Forward outlook themes"), "{text}");
         // Deterministic: the same summary always embeds the same text.
         assert_eq!(text, summary_memory_text(&sample_summary()));
+    }
+
+    #[test]
+    fn count_memory_reflects_inserts() {
+        let conn = mem();
+        assert_eq!(count_memory(&conn).unwrap(), 0);
+        insert_memory(&conn, MemoryKind::Learning, None, "l", &[1.0], "t").unwrap();
+        assert_eq!(count_memory(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn prompt_fragment_tags_kind_and_date_and_drops_the_score() {
+        let hit = MemoryHit {
+            kind: MemoryKind::Summary,
+            report_id: Some("rep-1".into()),
+            content: "Risk posture: mixed.".into(),
+            created_at: "2026-06-04T13:00:00Z".into(),
+            score: 0.87,
+        };
+        let frag = hit.prompt_fragment();
+        assert_eq!(frag, "[summary · 2026-06-04T13:00:00Z] Risk posture: mixed.");
+        assert!(!frag.contains("0.87"), "the cosine score stays internal");
+    }
+
+    // ---- retrieval query builders (Steps 4 / 10) ----
+
+    use crate::baseline_delta::Direction;
+    use crate::data_sources::Quote;
+    use crate::news::RawHeadline;
+    use crate::research_executor::{EvidenceItem, Finding};
+
+    fn quote(name: &str, price: f64, change_pct: f64) -> Quote {
+        Quote {
+            symbol: name.into(),
+            name: name.into(),
+            price,
+            change_pct,
+            unit: "index points".into(),
+        }
+    }
+
+    fn delta(name: &str, prior: f64, current: f64, pct: Option<f64>) -> SeriesDelta {
+        SeriesDelta {
+            group: crate::data_sources::GroupKind::Indices,
+            id: name.into(),
+            name: name.into(),
+            current,
+            prior,
+            abs_change: current - prior,
+            pct_change: pct,
+            direction: if current >= prior { Direction::Up } else { Direction::Down },
+        }
+    }
+
+    #[test]
+    fn pre_research_query_renders_each_section_and_is_deterministic() {
+        let baseline = BaselineMarketData {
+            indices: vec![quote("S&P 500", 5610.0, 0.4)],
+            internals: vec![quote("CBOE Volatility Index", 14.0, -2.1)],
+            ..Default::default()
+        };
+        let deltas = BaselineDeltas {
+            elapsed_days: 7.0,
+            changed: vec![delta("S&P 500", 5500.0, 5610.0, Some(2.0))],
+            new: vec![SeriesTransition {
+                group: crate::data_sources::GroupKind::Internals,
+                id: "DGS2".into(),
+                name: "2-Year Treasury Yield".into(),
+                reason: None,
+            }],
+            missing: Vec::new(),
+        };
+        let q = pre_research_query(&[sample_summary()], &baseline, Some(&deltas));
+
+        // Recent context, levels, change view, and transitions all render.
+        assert!(q.contains("Thesis stance: uncertain."), "{q}");
+        assert!(q.contains("Current market picture:\n- S&P 500: 5610 index points (+0.40%)"), "{q}");
+        assert!(q.contains("Change since the previous report (~7.0 days):"), "{q}");
+        assert!(q.contains("- S&P 500: 5500 -> 5610 (+2.00%)"), "{q}");
+        assert!(q.contains("Newly tracked series: 2-Year Treasury Yield"), "{q}");
+        assert!(!q.contains("Series missing this run"), "no missing series, no line");
+        // Deterministic: same inputs, same query text.
+        assert_eq!(q, pre_research_query(&[sample_summary()], &baseline, Some(&deltas)));
+    }
+
+    #[test]
+    fn pre_research_query_on_empty_inputs_is_empty() {
+        assert_eq!(
+            pre_research_query(&[], &BaselineMarketData::default(), None),
+            ""
+        );
+    }
+
+    #[test]
+    fn pre_research_query_keeps_the_strongest_moves_within_the_cap() {
+        // More changed series than the cap; the weakest relative moves drop out and
+        // a no-percentage series ranks last rather than fabricating a percentage.
+        let changed: Vec<SeriesDelta> = (0..QUERY_MAX_DELTA_LINES + 3)
+            .map(|i| delta(&format!("series-{i}"), 100.0, 100.0 + i as f64, Some(i as f64)))
+            .collect();
+        let deltas = BaselineDeltas {
+            elapsed_days: 7.0,
+            changed,
+            new: Vec::new(),
+            missing: Vec::new(),
+        };
+        let q = pre_research_query(&[], &BaselineMarketData::default(), Some(&deltas));
+        let lines = q.lines().filter(|l| l.starts_with("- series-")).count();
+        assert_eq!(lines, QUERY_MAX_DELTA_LINES, "capped at the strongest moves");
+        // The strongest move survived; the weakest did not.
+        assert!(q.contains(&format!("series-{}", QUERY_MAX_DELTA_LINES + 2)), "{q}");
+        assert!(!q.contains("- series-0:"), "{q}");
+    }
+
+    #[test]
+    fn post_research_query_renders_topics_queries_and_bounded_titles() {
+        let headline = |t: &str| RawHeadline {
+            title: t.into(),
+            url: "https://example.com".into(),
+            source: "example.com".into(),
+            published: None,
+            snippet: None,
+        };
+        let evidence = ResearchEvidence {
+            items: vec![EvidenceItem {
+                topic: "AI capex".into(),
+                rationale: "Semis led the move.".into(),
+                priority: 0.9,
+                findings: vec![Finding {
+                    query: "hyperscaler capex guidance".into(),
+                    depth: 1,
+                    sources: vec![
+                        headline("t1"),
+                        headline("t2"),
+                        headline("t3"),
+                        headline("t4"),
+                    ],
+                }],
+            }],
+            requests_made: 1,
+            stopped_reason: None,
+        };
+        let q = post_research_query(&evidence);
+        assert!(q.contains("Research topic: AI capex — Semis led the move."), "{q}");
+        assert!(q.contains("- hyperscaler capex guidance: t1; t2; t3"), "{q}");
+        assert!(!q.contains("t4"), "source titles capped per finding: {q}");
+        assert_eq!(post_research_query(&ResearchEvidence::default()), "");
     }
 }

@@ -14,10 +14,10 @@
 //! `adapters::models` module lives here.
 //!
 //! The agent's `MainAgentInput` carries the Step-3 baseline market-data scan
-//! (`data_sources`), its change view, and the Step-11 condensed research packet;
-//! this adapter serializes them into the user message so the report is grounded
-//! in this run's live data and research. Vector memory joins when the Step-10
-//! retrieval slice lands.
+//! (`data_sources`), its change view, and the Step-11 condensed research packet —
+//! including the packet's Step-10 vector-memory pull; this adapter serializes
+//! them into the user message so the report is grounded in this run's live data,
+//! research, and recalled memory.
 
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
@@ -208,7 +208,12 @@ findings and their sources, plus the request/stop accounting for the research ph
 to explain *why* the data moved and to source the Key Market Drivers, the thesis, and the \
 Sources section; ground every claim in the provided headlines and evidence rather than your own \
 prior knowledge, and treat an absent or empty research block as no qualifying news this run, not \
-a quiet market.
+a quiet market. The prompt may also carry `recalled long-term memory` — prior report summaries \
+and durable learnings retrieved from the system's vector memory against this week's research. \
+Use it for continuity: to strengthen, weaken, or revise the standing thesis, surface historical \
+analogs, and avoid repeating past analytical mistakes. Weigh it as recall, not fresh data — this \
+week's baseline and research evidence take precedence where they conflict, and an absent memory \
+block simply means nothing relevant was recalled.
 
 Produce the report body as GitHub-flavored Markdown with these sections, in order:
 - # Weekly Market Report (title), followed by a short date / report-type line
@@ -289,6 +294,15 @@ fn build_user_prompt(
                     "\n\nDeep-research evidence gathered for this week (topics highest-priority first):\n{json}"
                 ));
             }
+        }
+        // The Step-10 research-informed memory pull: fragments are blocks (each
+        // carries its own newlines), so they join on blank lines rather than posing
+        // as bullets.
+        if !packet.memory.is_empty() {
+            prompt.push_str(&format!(
+                "\n\nRecalled long-term memory, most relevant first (prior report summaries and durable learnings retrieved against this week's research):\n{}",
+                packet.memory.join("\n\n")
+            ));
         }
     }
 
@@ -1004,27 +1018,39 @@ mod tests {
                 requests_made: 1,
                 stopped_reason: None,
             },
+            memory: vec![
+                "[summary · 2026-05-28T13:00:00Z] Risk posture: risk-off.".into(),
+                "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".into(),
+            ],
             ..Default::default()
         };
         let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet));
-        // Both packet sections ride into the prompt, grounding the report in the week's news.
+        // All three packet sections ride into the prompt, grounding the report in the
+        // week's news, research, and recalled memory.
         assert!(prompt.contains("Filtered news clusters"), "{prompt}");
         assert!(prompt.contains("AI / semiconductors"), "{prompt}");
         assert!(prompt.contains("Deep-research evidence"), "{prompt}");
         assert!(prompt.contains("hyperscaler capex guidance"), "{prompt}");
+        assert!(prompt.contains("Recalled long-term memory"), "{prompt}");
+        assert!(
+            prompt.contains("Risk posture: risk-off.\n\n[learning"),
+            "memory fragments join on blank lines: {prompt}"
+        );
     }
 
     #[test]
     fn user_prompt_omits_research_sections_for_an_empty_packet() {
         use crate::research_packet::ResearchPacket;
-        // A fail-soft-degraded run still carries a packet, but with no news or evidence —
-        // neither section should appear, leaving the prompt as the baseline-only form.
+        // A fail-soft-degraded run still carries a packet, but with no news, evidence,
+        // or recalled memory — no section should appear, leaving the prompt as the
+        // baseline-only form.
         let empty = ResearchPacket::default();
         let with_packet = build_user_prompt(&one_index_baseline(), None, Some(&empty));
         let without = build_user_prompt(&one_index_baseline(), None, None);
         assert_eq!(with_packet, without, "an empty packet adds nothing to the prompt");
         assert!(!with_packet.contains("Filtered news clusters"), "{with_packet}");
         assert!(!with_packet.contains("Deep-research evidence"), "{with_packet}");
+        assert!(!with_packet.contains("Recalled long-term memory"), "{with_packet}");
     }
 
     #[test]

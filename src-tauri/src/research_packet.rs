@@ -16,12 +16,11 @@
 //!
 //! Scoped, like [`RouterInput`](crate::research_router::RouterInput), to the input types
 //! that exist today: the Step-3 baseline scan and its change view, the Step-7 clusters,
-//! and the Step-9 evidence. The remaining doc-listed contents — recent report context
-//! (a bounded form of which now feeds routing via `RouterInput.recent_reports`, but is
-//! not yet carried in this packet), research-inbox summaries, unresolved thesis
-//! questions, upcoming events, and the Step-10 vector-memory pull — join this struct as
-//! their slices land. `memory` ships now as an empty placeholder so the field exists
-//! ahead of the Step-10 retrieval slice that will populate it.
+//! the Step-9 evidence, and the Step-10 research-informed vector-memory pull (`memory`,
+//! populated by the retrieval slice). The remaining doc-listed contents — recent report
+//! context (a bounded form of which now feeds routing via `RouterInput.recent_reports`,
+//! but is not yet carried in this packet), research-inbox summaries, unresolved thesis
+//! questions, and upcoming events — join this struct as their slices land.
 
 use serde::Serialize;
 
@@ -61,8 +60,11 @@ pub struct ResearchPacket {
     /// source list capped at [`MAX_SOURCES_PER_FINDING`]. The request/stop accounting
     /// is carried through untouched so a truncated phase stays visible.
     pub research: ResearchEvidence,
-    /// Deferred placeholder for the Step-10 research-informed vector-memory pull. Always
-    /// empty until the retrieval slice lands.
+    /// The Step-10 research-informed vector-memory pull (`docs/weekly-report-workflow.md
+    /// §Step 10`): recalled fragments, most relevant first, each in the
+    /// `MemoryHit::prompt_fragment` form. Deliberately *not* the Step-4 pre-research
+    /// pull — the packet carries only the research-informed result set (replace, not
+    /// merge). Empty on an early run's bare store or when the fail-soft pull degraded.
     pub memory: Vec<String>,
 }
 
@@ -75,6 +77,7 @@ pub fn build_condensed_packet(
     deltas: Option<BaselineDeltas>,
     clusters: Vec<HeadlineCluster>,
     evidence: ResearchEvidence,
+    memory: Vec<String>,
 ) -> ResearchPacket {
     // News clusters: most market-significant first, then capped.
     let mut news_clusters = clusters;
@@ -97,7 +100,7 @@ pub fn build_condensed_packet(
         deltas,
         news_clusters,
         research,
-        memory: Vec::new(),
+        memory,
     }
 }
 
@@ -154,6 +157,7 @@ mod tests {
             None,
             clusters,
             ResearchEvidence::default(),
+            Vec::new(),
         );
 
         assert_eq!(packet.news_clusters.len(), MAX_PACKET_CLUSTERS, "capped");
@@ -185,6 +189,7 @@ mod tests {
             None,
             Vec::new(),
             evidence,
+            Vec::new(),
         );
 
         let topics: Vec<&str> = packet.research.items.iter().map(|i| i.topic.as_str()).collect();
@@ -210,6 +215,7 @@ mod tests {
             None,
             Vec::new(),
             evidence,
+            Vec::new(),
         );
 
         assert_eq!(packet.research.requests_made, 42);
@@ -243,6 +249,7 @@ mod tests {
             Some(deltas.clone()),
             Vec::new(),
             ResearchEvidence::default(),
+            Vec::new(),
         );
 
         assert_eq!(packet.baseline, baseline, "baseline carried through unchanged");
@@ -260,6 +267,7 @@ mod tests {
             None,
             Vec::new(),
             ResearchEvidence::default(),
+            Vec::new(),
         );
 
         assert!(packet.news_clusters.is_empty());
@@ -269,8 +277,14 @@ mod tests {
     }
 
     #[test]
-    fn memory_is_empty_even_with_rich_inputs() {
-        // The Step-10 pull is deferred: memory must stay empty regardless of inputs.
+    fn memory_pull_is_carried_through_untouched() {
+        // The Step-10 research-informed pull rides the packet exactly as handed in —
+        // already ranked most-relevant-first by the store's search, so the assembler
+        // neither reorders nor trims it.
+        let memory = vec![
+            "[summary · 2026-06-04T13:00:00Z] Risk posture: risk-off.".to_string(),
+            "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".to_string(),
+        ];
         let packet = build_condensed_packet(
             BaselineMarketData::default(),
             None,
@@ -280,7 +294,8 @@ mod tests {
                 requests_made: 1,
                 stopped_reason: None,
             },
+            memory.clone(),
         );
-        assert!(packet.memory.is_empty());
+        assert_eq!(packet.memory, memory);
     }
 }

@@ -129,11 +129,12 @@ pub struct GeneratedReport {
 /// offline smokes pass `ResearchStages::stub()`, keeping this the same offline-driven
 /// spine the agent and data halves already are.
 ///
-/// `embedder` is the Step-17 memory seam (`docs/weekly-report-workflow.md §Step 17` —
-/// "report summary to vector memory", SQLite-backed; see `vector_memory`): after the
-/// report record persists, the summary is embedded and stored in vector memory
-/// best-effort. The live command supplies `OpenAiEmbedder` (the fixed internal
-/// `text-embedding-3-large` stage); tests pass `embedding::StubEmbedder`.
+/// `embedder` is the vector-memory seam (`docs/weekly-report-workflow.md §§4, 10, 17`;
+/// see `vector_memory`): the research half runs the two fail-soft retrieval pulls
+/// against it (`assemble_research_packet`), and after the report record persists the
+/// summary is embedded and stored best-effort. The live command supplies
+/// `OpenAiEmbedder` (the fixed internal `text-embedding-3-large` stage); tests pass
+/// `embedding::StubEmbedder`.
 ///
 /// `ctx` is the run's progress/cancel context (`progress::RunContext`). Each stage
 /// below brackets its work in a `step_started` / `step_finished` pair so an open
@@ -203,8 +204,15 @@ pub fn generate_report(
     // per-request rows streaming inside it. Computed here, before `baseline` and `deltas`
     // move into the agent input below.
     ctx.step_started("research", "Gathering and condensing research");
-    let research_packet =
-        assemble_research_packet(research, &baseline, deltas.as_ref(), &recent_reports, ctx);
+    let research_packet = assemble_research_packet(
+        research,
+        &baseline,
+        deltas.as_ref(),
+        &recent_reports,
+        embedder,
+        &paths.db_path,
+        ctx,
+    );
     let research_status = if ctx.is_cancelled() { "cancelled" } else { "ok" };
     ctx.step_finished("research", research_status, None);
     bail_if_cancelled(ctx)?;
@@ -336,16 +344,26 @@ pub fn generate_report(
 /// The bounded executor is already fail-soft per query (`research_executor`) and
 /// `build_condensed_packet` is pure, so this always returns a packet — never an error.
 /// Per-call progress rows live inside the real adapters; cancellation is polled at each
-/// stage boundary here (before the filter call and before the router call) and at each
-/// request boundary inside the executor, so a cancel requested mid-research skips the
-/// remaining model calls rather than spending them before the run stops. The caller
-/// brackets this under one `research` step. `baseline`, `deltas`, and `recent_reports`
-/// are borrowed (the caller still owns them); the router input keeps its own clones.
+/// stage boundary here (before the filter call, the Step-4 pull, the router call, and
+/// the Step-10 pull) and at each request boundary inside the executor, so a cancel
+/// requested mid-research skips the remaining model calls rather than spending them
+/// before the run stops. The caller brackets this under one `research` step.
+/// `baseline`, `deltas`, and `recent_reports` are borrowed (the caller still owns
+/// them); the router input keeps its own clones.
+///
+/// Both vector-memory retrievals live here (`retrieve_memory`, fail-soft): the Step-4
+/// pre-research pull — queried from the recent report context, baseline, and change
+/// view — feeds only the router (ephemeral, per the doc's replace-not-merge rule);
+/// the Step-10 post-research pull — queried from the executor's evidence — is the one
+/// the condensed packet carries to the main agent. `embedder` is the same fixed
+/// embedding stage the Step-17 persist write uses; `db_path` locates the store.
 fn assemble_research_packet(
     research: &ResearchStages,
     baseline: &BaselineMarketData,
     deltas: Option<&BaselineDeltas>,
     recent_reports: &[ReportSummary],
+    embedder: &dyn Embedder,
+    db_path: &std::path::Path,
     ctx: &RunContext,
 ) -> ResearchPacket {
     // Step 7: gather raw headlines (Tavily + GDELT + FMP Articles) and run the
@@ -375,10 +393,27 @@ fn assemble_research_packet(
         }
     };
 
-    // Step 8: route the baseline, change view, clusters, and recent-report summaries
-    // into a bounded research plan. Cancel checkpoint before the Sonnet call, mirroring
-    // the filter guard: a cancel that lands between stages must not still spend the
-    // routing call.
+    // Step 4: the pre-research memory pull — recalled against where the market
+    // actually is this period (recent context + baseline + change view) to steer
+    // routing. Ephemeral routing input only: the packet below carries the Step-10
+    // pull instead (`docs/weekly-report-workflow.md §Step 10`, replace-not-merge).
+    // The cancel guard mirrors the filter's: a cancel must not spend the embedding
+    // call.
+    let pre_memory = if ctx.is_cancelled() {
+        Vec::new()
+    } else {
+        retrieve_memory(
+            db_path,
+            embedder,
+            &vector_memory::pre_research_query(recent_reports, baseline, deltas),
+            "pre-research",
+        )
+    };
+
+    // Step 8: route the baseline, change view, clusters, recent-report summaries, and
+    // recalled memory into a bounded research plan. Cancel checkpoint before the Sonnet
+    // call, mirroring the filter guard: a cancel that lands between stages must not
+    // still spend the routing call.
     let plan = if ctx.is_cancelled() {
         ResearchPlan::default()
     } else {
@@ -387,6 +422,7 @@ fn assemble_research_packet(
             deltas: deltas.cloned(),
             clusters: clusters.clone(),
             recent_reports: recent_reports.to_vec(),
+            memory: pre_memory,
         }) {
             Ok(plan) => plan,
             Err(e) => {
@@ -404,10 +440,22 @@ fn assemble_research_packet(
     let policy = select_branch_policy(deltas);
     let evidence = execute_research(&plan, research.search.as_ref(), policy.as_ref(), &clock, ctx);
 
-    // Step 11: condense everything into the token-bounded packet. `memory` stays empty
-    // until the Step-10 retrieval slice — the vector-memory store and embedding seam
-    // landed (`vector_memory`, `embedding`), but retrieval is not wired here yet.
-    build_condensed_packet(baseline.clone(), deltas.cloned(), clusters, evidence)
+    // Step 10: the post-research memory pull — recalled against what the research
+    // actually found, and the only memory the packet carries forward. Same cancel
+    // guard as the stages above.
+    let memory = if ctx.is_cancelled() {
+        Vec::new()
+    } else {
+        retrieve_memory(
+            db_path,
+            embedder,
+            &vector_memory::post_research_query(&evidence),
+            "post-research",
+        )
+    };
+
+    // Step 11: condense everything into the token-bounded packet.
+    build_condensed_packet(baseline.clone(), deltas.cloned(), clusters, evidence, memory)
 }
 
 /// Cancel checkpoint between pipeline stages. A cancel requested mid-run lands
@@ -465,6 +513,72 @@ fn load_recent_report_context(db_path: &std::path::Path) -> Vec<ReportSummary> {
     };
     read().unwrap_or_else(|e| {
         eprintln!("research: recent-report context degraded to empty: {e:#}");
+        Vec::new()
+    })
+}
+
+/// Bounded count of fragments each vector-memory pull recalls (Steps 4 and 10).
+/// Selectivity comes from top-k over a small corpus (≤30 summaries plus
+/// learnings) — no similarity floor; threshold tuning is deferred alongside the
+/// brancher's ("Vector memory is used selectively",
+/// `docs/weekly-report-workflow.md §Step 4`).
+const MEMORY_TOP_K: usize = 5;
+
+/// Hard byte cap on a retrieval query before the paid embedding call. The query
+/// builders bound line *counts*, not sizes — the stored summaries' optional
+/// arrays, topic rationales, and web source titles are all length-unbounded — so
+/// a pathological query would draw a 400 from the embedding API and cost the
+/// whole pull. Truncating costs only the recall tail instead. The cap is in
+/// *bytes* because that is what makes the guarantee provable without a tokenizer
+/// dependency: the embedding model's tokenizer is a byte-level BPE, where every
+/// token consumes at least one input byte, so `tokens ≤ bytes` always — 8,000
+/// bytes can never exceed the 8,192-token input limit. (A char cap cannot
+/// promise this: a multi-byte char can fall back to several byte tokens.)
+const MEMORY_QUERY_MAX_BYTES: usize = 8_000;
+
+/// `query` cut to at most `max_bytes` bytes, backed off to a char boundary so
+/// the slice can never split a multi-byte character.
+fn bounded_query(query: &str, max_bytes: usize) -> &str {
+    if query.len() <= max_bytes {
+        return query;
+    }
+    let mut end = max_bytes;
+    while !query.is_char_boundary(end) {
+        end -= 1;
+    }
+    &query[..end]
+}
+
+/// One best-effort vector-memory pull: embed the query text, search the store
+/// across both kinds, and return the hits in their shared prompt form, most
+/// relevant first. Additive context like the reads above, never a gate — any
+/// failure (an unopenable store, a flaky embedding call) degrades to empty with
+/// a stderr note (`label` names which pull). Two cheap guards keep early runs
+/// free: an empty query has nothing to recall against, and an empty store can't
+/// return hits — both skip the paid embedding call entirely. The query is capped
+/// at [`MEMORY_QUERY_MAX_BYTES`] before embedding, so an oversized one is
+/// truncated rather than rejected by the provider and lost.
+fn retrieve_memory(
+    db_path: &std::path::Path,
+    embedder: &dyn Embedder,
+    query: &str,
+    label: &str,
+) -> Vec<String> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    let pull = || -> Result<Vec<String>> {
+        let conn = storage::open(db_path)?;
+        storage::init_schema(&conn)?;
+        if vector_memory::count_memory(&conn)? == 0 {
+            return Ok(Vec::new());
+        }
+        let embedding = embedder.embed(bounded_query(query, MEMORY_QUERY_MAX_BYTES))?;
+        let hits = vector_memory::search_memory(&conn, &embedding, None, MEMORY_TOP_K)?;
+        Ok(hits.iter().map(vector_memory::MemoryHit::prompt_fragment).collect())
+    };
+    pull().unwrap_or_else(|e| {
+        eprintln!("research: {label} memory retrieval degraded to empty: {e:#}");
         Vec::new()
     })
 }
@@ -937,12 +1051,17 @@ mod tests {
         }
     }
 
+    use crate::embedding::StubEmbedder;
+
     fn assemble_with(stages: ResearchStages) -> ResearchPacket {
+        let dir = tempfile::tempdir().unwrap();
         assemble_research_packet(
             &stages,
             &BaselineMarketData::default(),
             None,
             &[],
+            &StubEmbedder,
+            &dir.path().join("market_signal.db"),
             &RunContext::noop(),
         )
     }
@@ -954,6 +1073,133 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing-subdir").join("market_signal.db");
         assert!(load_recent_report_context(&path).is_empty());
+    }
+
+    // ---- vector-memory retrieval pulls (`retrieve_memory`, Steps 4 / 10) ----
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    /// An embedder that counts its calls before delegating to the stub, so the
+    /// tests can assert the paid call was (not) spent.
+    struct CountingEmbedder(AtomicUsize);
+
+    impl CountingEmbedder {
+        fn new() -> Self {
+            Self(AtomicUsize::new(0))
+        }
+        fn calls(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Embedder for CountingEmbedder {
+        fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            StubEmbedder.embed(text)
+        }
+    }
+
+    /// An embedder that always errors, to drive the pull's fail-soft arm.
+    struct FailingEmbedder;
+    impl Embedder for FailingEmbedder {
+        fn embed(&self, _: &str) -> anyhow::Result<Vec<f32>> {
+            anyhow::bail!("embeddings down")
+        }
+    }
+
+    /// A temp store seeded with one learning row (stub-embedded), plus the dir
+    /// guard keeping it alive.
+    fn seeded_store() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("market_signal.db");
+        let conn = storage::open(&path).unwrap();
+        storage::init_schema(&conn).unwrap();
+        let embedding = StubEmbedder.embed("breadth divergence learning").unwrap();
+        vector_memory::insert_memory(
+            &conn,
+            vector_memory::MemoryKind::Learning,
+            None,
+            "Breadth divergences preceded the pullback.",
+            &embedding,
+            "2026-05-21T13:00:00Z",
+        )
+        .unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn retrieve_memory_returns_prompt_fragments_from_a_seeded_store() {
+        let (_dir, path) = seeded_store();
+        let hits = retrieve_memory(&path, &StubEmbedder, "breadth and positioning", "test");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0],
+            "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback."
+        );
+    }
+
+    #[test]
+    fn retrieve_memory_degrades_to_empty_on_an_unopenable_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing-subdir").join("market_signal.db");
+        assert!(retrieve_memory(&path, &StubEmbedder, "real query", "test").is_empty());
+    }
+
+    #[test]
+    fn retrieve_memory_degrades_to_empty_on_an_embedding_failure() {
+        let (_dir, path) = seeded_store();
+        assert!(retrieve_memory(&path, &FailingEmbedder, "real query", "test").is_empty());
+    }
+
+    /// An embedder that records the text it was handed before delegating to the
+    /// stub, so the cap test can assert what actually went over the wire.
+    struct RecordingEmbedder(Mutex<Option<String>>);
+
+    impl Embedder for RecordingEmbedder {
+        fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            *self.0.lock().unwrap() = Some(text.to_string());
+            StubEmbedder.embed(text)
+        }
+    }
+
+    #[test]
+    fn retrieve_memory_caps_an_oversized_query_instead_of_losing_the_pull() {
+        let (_dir, path) = seeded_store();
+        // The cap is in bytes (tokens ≤ bytes for a byte-level BPE, so the byte cap
+        // is what guarantees the provider's token limit). The leading ASCII char
+        // shifts every 2-byte `é` onto an odd offset, so the cap lands mid-char and
+        // the cut must back off to the previous boundary rather than split it.
+        let oversized = format!("a{}", "é".repeat(MEMORY_QUERY_MAX_BYTES));
+        let recording = RecordingEmbedder(Mutex::new(None));
+        let hits = retrieve_memory(&path, &recording, &oversized, "test");
+        assert_eq!(hits.len(), 1, "the capped query still pulls");
+        let seen = recording.0.lock().unwrap().clone().expect("embedder was called");
+        assert!(seen.len() <= MEMORY_QUERY_MAX_BYTES, "byte cap respected");
+        assert_eq!(
+            seen.len(),
+            MEMORY_QUERY_MAX_BYTES - 1,
+            "the mid-char cut backed off to the previous char boundary"
+        );
+
+        // A query inside the cap passes through untouched.
+        assert_eq!(bounded_query("short", MEMORY_QUERY_MAX_BYTES), "short");
+    }
+
+    #[test]
+    fn retrieve_memory_skips_the_paid_call_on_an_empty_store_or_empty_query() {
+        // Empty store: the count guard short-circuits before embedding.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("market_signal.db");
+        let counting = CountingEmbedder::new();
+        assert!(retrieve_memory(&path, &counting, "real query", "test").is_empty());
+        assert_eq!(counting.calls(), 0, "no embedding call against an empty store");
+
+        // Empty query: nothing to recall against, even with a populated store.
+        let (_dir2, seeded) = seeded_store();
+        let counting = CountingEmbedder::new();
+        assert!(retrieve_memory(&seeded, &counting, "  \n", "test").is_empty());
+        assert_eq!(counting.calls(), 0, "no embedding call for a blank query");
     }
 
     #[test]
@@ -1016,28 +1262,62 @@ mod tests {
         assert!(packet.research.items.is_empty(), "but there is no routed evidence");
     }
 
+    /// An embedder that panics if called — proves the memory pulls are skipped
+    /// under cancellation.
+    struct PanicEmbedder;
+    impl Embedder for PanicEmbedder {
+        fn embed(&self, _: &str) -> anyhow::Result<Vec<f32>> {
+            panic!("embedder must not be called after a cancel")
+        }
+    }
+
     #[test]
     fn assemble_packet_skips_model_stages_when_cancelled() {
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
 
+        use crate::agent::{MarketCycle, RiskPosture, ThesisStance};
         use crate::progress::{NoopReporter, RunContext};
 
-        // A cancel requested during the gather must skip the filter and router model calls —
-        // PanicFilter / PanicRouter would blow if reached — so a stop never still spends up to
-        // two ~120s model calls. StubNewsSource returns headlines regardless of the flag, so
-        // the filter guard is exercised on the cancellation, not on an empty gather.
+        // A cancel requested during the gather must skip the filter, the memory pulls,
+        // and the router model calls — PanicFilter / PanicEmbedder / PanicRouter would
+        // blow if reached — so a stop never still spends the model calls. StubNewsSource
+        // returns headlines regardless of the flag, so the filter guard is exercised on
+        // the cancellation, not on an empty gather; the seeded store plus a prior
+        // summary make the pre-research pull's query and store both non-empty, so only
+        // the cancel guard stands between the run and the panicking embedder.
         let stages = ResearchStages {
             news: Box::new(StubNewsSource),
             filter: Box::new(PanicFilter),
             router: Box::new(PanicRouter),
             search: Box::new(StubSearchBackend),
         };
+        let recent = vec![ReportSummary {
+            report_id: "rep-1".into(),
+            report_type: "weekly_market".into(),
+            created_at: "2026-06-04T13:00:00Z".into(),
+            risk_posture: RiskPosture::Mixed,
+            market_cycle: MarketCycle::LateCycle,
+            thesis_stance: ThesisStance::Uncertain,
+            header_summary_bullets: vec!["Breadth stayed thin.".into()],
+            key_risks: vec![],
+            unresolved_questions: vec![],
+            forward_outlook_themes: vec![],
+        }];
+        let (_dir, db_path) = seeded_store();
         let ctx = RunContext::new("t", Arc::new(NoopReporter), Arc::new(AtomicBool::new(true)));
-        let packet =
-            assemble_research_packet(&stages, &BaselineMarketData::default(), None, &[], &ctx);
+        let packet = assemble_research_packet(
+            &stages,
+            &BaselineMarketData::default(),
+            None,
+            &recent,
+            &PanicEmbedder,
+            &db_path,
+            &ctx,
+        );
         assert!(packet.news_clusters.is_empty());
         assert!(packet.research.items.is_empty());
+        assert!(packet.memory.is_empty());
     }
 
     // ---- live research-half smoke (news → filter → route → execute → packet) ----
@@ -1087,8 +1367,20 @@ mod tests {
         )
         .expect("building the live research stages");
 
-        let packet =
-            assemble_research_packet(&stages, &BaselineMarketData::default(), None, &[], &ctx);
+        // A stub embedder against a fresh temp store: the empty-store guard means the
+        // retrieval pulls spend no embedding call here, keeping the smoke's live spend
+        // unchanged — the retrieval path itself is covered offline. The live embedding
+        // wire contract has its own smoke (`embedding::embedding_live_smoke`).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let packet = assemble_research_packet(
+            &stages,
+            &BaselineMarketData::default(),
+            None,
+            &[],
+            &crate::embedding::StubEmbedder,
+            &dir.path().join("market_signal.db"),
+            &ctx,
+        );
 
         // Each stage produced real output (fail-soft would have let empty through).
         assert!(!packet.news_clusters.is_empty(), "gather+filter yielded clusters");
@@ -1104,8 +1396,11 @@ mod tests {
         assert!(total_sources >= 1, "at least one executor search returned sources");
 
         // Tracker attribution: every request row carries a research-half group, and each
-        // live stage emitted at least one row. The frontend buckets exactly these four
-        // groups under the research step (`App.vue`'s RESEARCH_REQUEST_GROUPS).
+        // live stage emitted at least one row. The frontend buckets the four research
+        // groups under the research step (`App.vue`'s RESEARCH_REQUEST_GROUPS); "memory"
+        // rows (the retrieval pulls, when a populated store makes them fire) follow the
+        // currently-running step instead. None fire here — the temp store is empty —
+        // but the set admits them so a populated-store run stays green.
         let msgs = rec.messages();
         let groups: Vec<&str> = msgs
             .iter()
@@ -1118,7 +1413,7 @@ mod tests {
         assert!(!groups.is_empty(), "the adapters emitted request rows");
         for g in &groups {
             assert!(
-                matches!(*g, "news" | "filter" | "routing" | "research"),
+                matches!(*g, "news" | "filter" | "routing" | "research" | "memory"),
                 "request row carries a non-research group {g:?}"
             );
         }
