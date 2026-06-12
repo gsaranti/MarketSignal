@@ -1,6 +1,7 @@
 //! The research-routing stage: a pure structured-in / structured-out boundary
-//! that turns this run's baseline, its change view, and the Step-7 news clusters
-//! into a bounded research plan (`docs/weekly-report-workflow.md §Step 8`).
+//! that turns this run's baseline, its change view, the Step-7 news clusters, and
+//! the recent prior-report summaries into a bounded research plan
+//! (`docs/weekly-report-workflow.md §Step 8`).
 //!
 //! This is Step 8. Step 7 narrows ~500 headlines to ~10 clusters
 //! (`headline_filter`); routing decides which at most ~5 of those topics — plus
@@ -25,6 +26,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::agent::ReportSummary;
 use crate::baseline_delta::BaselineDeltas;
 use crate::data_sources::BaselineMarketData;
 use crate::headline_filter::HeadlineCluster;
@@ -66,16 +68,27 @@ pub struct ResearchPlan {
 }
 
 /// What the router reasons over. Carries the Step-8 inputs that exist today: the
-/// Step-3 baseline scan, its deterministic change view (`baseline_delta`), and the
-/// Step-7 clusters. The remaining Step-8 inputs the doc lists — recent Markdown
-/// report context, vector memory, parsed inbox documents, upcoming known
-/// events — are not built yet and join this struct as those slices land (the same
-/// incremental path `MainAgentInput` took when `deltas` was added).
+/// Step-3 baseline scan, its deterministic change view (`baseline_delta`), the
+/// Step-7 clusters, and the recent prior-report summaries — the thesis-continuity
+/// context through which the main agent shapes research indirectly
+/// (`docs/agents.md` names prior-report context and unresolved thesis questions as
+/// routing's continuity inputs). Upcoming known events already ride in on
+/// `baseline.calendar` (the economic-release schedule), so they carry no separate
+/// field. The doc's "recent Markdown report context" ships here in bounded
+/// summary form — whether the full Markdown bodies ever feed routing (rather than
+/// only the Step-2 main-agent context, a later slice) is that slice's call. The
+/// remaining Step-8 inputs the doc lists — vector memory and parsed inbox
+/// documents — are not built yet and join this struct as those slices land
+/// (the same incremental path `MainAgentInput` took when `deltas` was added).
 #[derive(Debug, Clone, Default)]
 pub struct RouterInput {
     pub baseline: BaselineMarketData,
     pub deltas: Option<BaselineDeltas>,
     pub clusters: Vec<HeadlineCluster>,
+    /// Summaries of the most recent prior reports, newest first, bounded at the
+    /// read site (`pipeline::load_recent_report_context`). Empty on a first
+    /// report or when the best-effort read degraded.
+    pub recent_reports: Vec<ReportSummary>,
 }
 
 /// The research-routing stage. One method: turn the inputs into a bounded plan.
@@ -132,14 +145,17 @@ const TOOL_NAME: &str = "emit_research_plan";
 const MAX_TOKENS: u32 = 4096;
 
 const SYSTEM_PROMPT: &str = "You are the research router for Market Signal's weekly market report. \
-Given this week's baseline market data, the change since the previous report, and the filtered \
-news clusters, decide which topics deserve deeper investigation for this report. Favor topics \
-where the data moved materially, where second-order implications matter, or where a known upcoming \
-event could move markets. Return at most 5 topics — fewer if fewer matter. For each topic give: a \
+Given this week's baseline market data, the change since the previous report, the filtered \
+news clusters, and summaries of recent prior reports, decide which topics deserve deeper \
+investigation for this report. Favor topics where the data moved materially, where second-order \
+implications matter, or where a known upcoming event could move markets. When prior-report \
+summaries are provided, weigh thesis continuity: favor topics that answer a prior report's \
+unresolved questions or test its key risks and forward outlook themes against this week's data. \
+Return at most 5 topics — fewer if fewer matter. For each topic give: a \
 short topic label, a one-to-two-sentence rationale tying it to the provided evidence, a priority \
 from 0.0 to 1.0 for how much it matters this week, and at most 4 concrete research questions to \
-investigate. Ground every topic in the provided baseline, change view, or clusters; never invent \
-data.";
+investigate. Ground every topic in the provided baseline, change view, clusters, or prior-report \
+summaries; never invent data.";
 
 const USER_INSTRUCTION: &str = "Produce the bounded research plan for this week's report.";
 
@@ -300,6 +316,14 @@ fn build_user_prompt(input: &RouterInput) -> String {
         }
     }
 
+    if !input.recent_reports.is_empty() {
+        if let Ok(json) = serde_json::to_string_pretty(&input.recent_reports) {
+            prompt.push_str(&format!(
+                "\n\nSummaries of recent prior reports, most recent first (the evolving thesis):\n{json}"
+            ));
+        }
+    }
+
     if !input.clusters.is_empty() {
         prompt.push_str(&format!(
             "\n\nFiltered news clusters:\n{}",
@@ -391,12 +415,13 @@ impl ModelResearchRouter {
 
 impl ResearchRouter for ModelResearchRouter {
     fn route(&self, input: RouterInput) -> Result<ResearchPlan> {
-        // Nothing to route: no baseline data, no change view, and no clusters means
-        // the prompt would carry only the bare instruction. Short-circuit rather
-        // than spend a call on an empty packet.
+        // Nothing to route: no baseline data, no change view, no clusters, and no
+        // prior-report context means the prompt would carry only the bare
+        // instruction. Short-circuit rather than spend a call on an empty packet.
         if input.baseline == BaselineMarketData::default()
             && input.deltas.is_none()
             && input.clusters.is_empty()
+            && input.recent_reports.is_empty()
         {
             return Ok(ResearchPlan::default());
         }
@@ -436,12 +461,29 @@ impl ResearchRouter for ModelResearchRouter {
 mod tests {
     use super::*;
 
+    use crate::agent::{MarketCycle, RiskPosture, ThesisStance};
+
     fn cluster(topic: &str, relevance: f64) -> HeadlineCluster {
         HeadlineCluster {
             topic: topic.into(),
             summary: format!("{topic} summary"),
             relevance,
             headlines: Vec::new(),
+        }
+    }
+
+    fn prior_summary(report_id: &str) -> ReportSummary {
+        ReportSummary {
+            report_id: report_id.into(),
+            report_type: "weekly_market".into(),
+            created_at: "2026-06-04T13:00:00Z".into(),
+            risk_posture: RiskPosture::RiskOff,
+            market_cycle: MarketCycle::LateCycle,
+            thesis_stance: ThesisStance::Bearish,
+            header_summary_bullets: vec!["Credit spreads widened".into()],
+            key_risks: vec!["A refinancing wall into Q3".into()],
+            unresolved_questions: vec!["Will the labor market crack?".into()],
+            forward_outlook_themes: vec!["Defensive rotation".into()],
         }
     }
 
@@ -595,6 +637,30 @@ mod tests {
             user.contains("Nvidia raises capex outlook (reuters.com, 2026-06-05)"),
             "{user}"
         );
+    }
+
+    #[test]
+    fn build_request_carries_recent_report_context_and_omits_it_when_absent() {
+        // With prior summaries: the prompt carries the block, the continuity signal
+        // (unresolved questions / key risks), and the canonical kebab regime labels —
+        // the same serialized form the rest of the system speaks.
+        let input = RouterInput {
+            recent_reports: vec![prior_summary("prior-1")],
+            ..Default::default()
+        };
+        let body = build_request(&input);
+        let user = body["messages"][0]["content"].as_str().unwrap();
+        assert!(user.contains("Summaries of recent prior reports"), "{user}");
+        assert!(user.contains("Will the labor market crack?"), "{user}");
+        assert!(user.contains("A refinancing wall into Q3"), "{user}");
+        assert!(user.contains("risk-off"), "{user}");
+
+        // Without them: the block is omitted entirely, never rendered blank.
+        let bare = build_user_prompt(&RouterInput {
+            clusters: vec![cluster("t", 0.5)],
+            ..Default::default()
+        });
+        assert!(!bare.contains("Summaries of recent prior reports"), "{bare}");
     }
 
     #[test]

@@ -184,12 +184,18 @@ pub fn generate_report(
     let deltas = compute_prior_deltas(&paths.db_path, &baseline, as_of);
     let baseline_json = serde_json::to_string(&baseline).ok();
 
+    // The bounded recent-report context for research routing — Step 8's
+    // thesis-continuity input. Best-effort like the deltas read above: a first
+    // report or any DB failure degrades to empty and never gates the run.
+    let recent_reports = load_recent_report_context(&paths.db_path);
+
     // Steps 7–11: the research half — news → filter → route → execute → condensed packet,
     // fully fail-soft (`assemble_research_packet`), bracketed as one step with the adapters'
     // per-request rows streaming inside it. Computed here, before `baseline` and `deltas`
     // move into the agent input below.
     ctx.step_started("research", "Gathering and condensing research");
-    let research_packet = assemble_research_packet(research, &baseline, deltas.as_ref(), ctx);
+    let research_packet =
+        assemble_research_packet(research, &baseline, deltas.as_ref(), &recent_reports, ctx);
     let research_status = if ctx.is_cancelled() { "cancelled" } else { "ok" };
     ctx.step_finished("research", research_status, None);
     bail_if_cancelled(ctx)?;
@@ -296,12 +302,13 @@ pub fn generate_report(
 /// stage boundary here (before the filter call and before the router call) and at each
 /// request boundary inside the executor, so a cancel requested mid-research skips the
 /// remaining model calls rather than spending them before the run stops. The caller
-/// brackets this under one `research` step. `baseline` and `deltas` are borrowed (the
-/// caller still owns them for the agent input); the packet keeps its own clones.
+/// brackets this under one `research` step. `baseline`, `deltas`, and `recent_reports`
+/// are borrowed (the caller still owns them); the router input keeps its own clones.
 fn assemble_research_packet(
     research: &ResearchStages,
     baseline: &BaselineMarketData,
     deltas: Option<&BaselineDeltas>,
+    recent_reports: &[ReportSummary],
     ctx: &RunContext,
 ) -> ResearchPacket {
     // Step 7: gather raw headlines (Tavily + GDELT + FMP Articles) and run the
@@ -331,9 +338,10 @@ fn assemble_research_packet(
         }
     };
 
-    // Step 8: route the baseline, change view, and clusters into a bounded research plan.
-    // Cancel checkpoint before the Sonnet call, mirroring the filter guard: a cancel that
-    // lands between stages must not still spend the routing call.
+    // Step 8: route the baseline, change view, clusters, and recent-report summaries
+    // into a bounded research plan. Cancel checkpoint before the Sonnet call, mirroring
+    // the filter guard: a cancel that lands between stages must not still spend the
+    // routing call.
     let plan = if ctx.is_cancelled() {
         ResearchPlan::default()
     } else {
@@ -341,6 +349,7 @@ fn assemble_research_packet(
             baseline: baseline.clone(),
             deltas: deltas.cloned(),
             clusters: clusters.clone(),
+            recent_reports: recent_reports.to_vec(),
         }) {
             Ok(plan) => plan,
             Err(e) => {
@@ -395,6 +404,31 @@ fn compute_prior_deltas(
         .with_timezone(&chrono::Utc);
     let elapsed_days = (as_of - prior_at).num_seconds() as f64 / 86_400.0;
     Some(baseline_delta::compute_deltas(current, &prior, elapsed_days))
+}
+
+/// Bounded count of recent report summaries handed to research routing — the
+/// "recent Markdown report context" input of `docs/weekly-report-workflow.md
+/// §Step 8`; §Step 2 requires only "a bounded set". Three reports ≈ three weeks
+/// of thesis arc at negligible prompt cost.
+const ROUTER_RECENT_REPORTS: u32 = 3;
+
+/// Best-effort recent-report context for this run: the most recent prior report
+/// summaries, newest first (`storage::list_recent_reports`). The structured
+/// summary carries the continuity signal routing needs — stance, key risks,
+/// unresolved questions, forward themes — without the full Markdown bodies (those
+/// belong to the Step-2 main-agent context, a later slice). Additive context like
+/// the change view above, never a gate: a first report or any DB failure degrades
+/// to empty rather than propagating.
+fn load_recent_report_context(db_path: &std::path::Path) -> Vec<ReportSummary> {
+    let read = || -> Result<Vec<ReportSummary>> {
+        let conn = storage::open(db_path)?;
+        storage::init_schema(&conn)?;
+        storage::list_recent_reports(&conn, ROUTER_RECENT_REPORTS)
+    };
+    read().unwrap_or_else(|e| {
+        eprintln!("research: recent-report context degraded to empty: {e:#}");
+        Vec::new()
+    })
 }
 
 /// The minimum fraction of a Step-3 group's *expected* series that must resolve for the
@@ -870,8 +904,18 @@ mod tests {
             &stages,
             &BaselineMarketData::default(),
             None,
+            &[],
             &RunContext::noop(),
         )
+    }
+
+    #[test]
+    fn recent_report_context_degrades_to_empty_on_an_unopenable_db() {
+        // A db path whose parent directory doesn't exist can't be opened or created;
+        // the best-effort read must degrade to empty rather than erroring.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing-subdir").join("market_signal.db");
+        assert!(load_recent_report_context(&path).is_empty());
     }
 
     #[test]
@@ -953,7 +997,7 @@ mod tests {
         };
         let ctx = RunContext::new("t", Arc::new(NoopReporter), Arc::new(AtomicBool::new(true)));
         let packet =
-            assemble_research_packet(&stages, &BaselineMarketData::default(), None, &ctx);
+            assemble_research_packet(&stages, &BaselineMarketData::default(), None, &[], &ctx);
         assert!(packet.news_clusters.is_empty());
         assert!(packet.research.items.is_empty());
     }
@@ -1006,7 +1050,7 @@ mod tests {
         .expect("building the live research stages");
 
         let packet =
-            assemble_research_packet(&stages, &BaselineMarketData::default(), None, &ctx);
+            assemble_research_packet(&stages, &BaselineMarketData::default(), None, &[], &ctx);
 
         // Each stage produced real output (fail-soft would have let empty through).
         assert!(!packet.news_clusters.is_empty(), "gather+filter yielded clusters");
