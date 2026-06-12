@@ -104,7 +104,80 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
          ON vector_memory(report_id) WHERE kind = 'summary'",
         [],
     )?;
+    // The research-inbox parse failures from the most recent job pass
+    // (`docs/research-documents.md §Parse Failures`): one row per file that could
+    // not be parsed, identified by its listing identity (name + size + mtime) so
+    // the Research Documents panel can show the error state against the file on
+    // disk — and so an edited file stops matching its stale row. Replaced
+    // wholesale each run by `replace_parse_failures`.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS research_parse_failures (
+            name       TEXT PRIMARY KEY,
+            size_bytes INTEGER NOT NULL,
+            modified   TEXT,
+            reason     TEXT NOT NULL,
+            failed_at  TEXT NOT NULL
+        )",
+        [],
+    )?;
     Ok(())
+}
+
+/// One recorded research-inbox parse failure, as the panel join reads it. The
+/// identity triple (`name`, `size_bytes`, `modified`) mirrors
+/// `research::ResearchDocument`, so a listing row matches its failure only while
+/// the file on disk is byte-for-byte the one that failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseFailureRow {
+    pub name: String,
+    pub size_bytes: u64,
+    pub modified: Option<String>,
+    pub reason: String,
+    /// App-minted UTC RFC3339 stamp of the job pass that recorded the failure.
+    pub failed_at: String,
+}
+
+/// Replace the recorded parse failures with this run's set — the table holds
+/// "the failures of the most recent inbox pass", so a file that parsed (or was
+/// deleted) self-heals out of it. One transaction: the panel never reads a
+/// half-replaced state.
+pub fn replace_parse_failures(conn: &Connection, rows: &[ParseFailureRow]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM research_parse_failures", [])?;
+    for row in rows {
+        tx.execute(
+            "INSERT INTO research_parse_failures (name, size_bytes, modified, reason, failed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                row.name,
+                row.size_bytes as i64,
+                row.modified,
+                row.reason,
+                row.failed_at
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// All recorded parse failures, for the inbox listing's error-state join.
+pub fn list_parse_failures(conn: &Connection) -> Result<Vec<ParseFailureRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT name, size_bytes, modified, reason, failed_at FROM research_parse_failures",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ParseFailureRow {
+                name: row.get(0)?,
+                size_bytes: row.get::<_, i64>(1)? as u64,
+                modified: row.get(2)?,
+                reason: row.get(3)?,
+                failed_at: row.get(4)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 /// Read a value from `app_settings`, or `None` when the key has never been set.
@@ -525,5 +598,37 @@ mod tests {
             latest_baseline_snapshot(&conn).unwrap().unwrap().0,
             "2026-01-16T00:00:00Z"
         );
+    }
+
+    #[test]
+    fn parse_failures_are_replaced_wholesale_and_read_back() {
+        let conn = mem();
+        let row = |name: &str, reason: &str| ParseFailureRow {
+            name: name.into(),
+            size_bytes: 42,
+            modified: Some("2026-06-09T12:00:00+00:00".into()),
+            reason: reason.into(),
+            failed_at: "2026-06-11T09:00:00+00:00".into(),
+        };
+
+        replace_parse_failures(&conn, &[row("a.pdf", "broken"), row("b.json", "not json")])
+            .unwrap();
+        let mut listed = list_parse_failures(&conn).unwrap();
+        listed.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].name, "a.pdf");
+        assert_eq!(listed[0].size_bytes, 42);
+        assert_eq!(listed[0].reason, "broken");
+
+        // The next pass's set replaces the previous one — a healed file's row is gone.
+        replace_parse_failures(&conn, &[row("b.json", "still not json")]).unwrap();
+        let listed = list_parse_failures(&conn).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "b.json");
+        assert_eq!(listed[0].reason, "still not json");
+
+        // An empty pass clears the table.
+        replace_parse_failures(&conn, &[]).unwrap();
+        assert!(list_parse_failures(&conn).unwrap().is_empty());
     }
 }

@@ -33,10 +33,7 @@ impl MarketDataSource for FailingDataSource {
 }
 
 fn paths_in(dir: &std::path::Path) -> ReportPaths {
-    ReportPaths {
-        db_path: dir.join("market_signal.db"),
-        reports_dir: dir.join("reports"),
-    }
+    ReportPaths::under(dir)
 }
 
 fn count(db: &std::path::Path, sql: &str) -> i64 {

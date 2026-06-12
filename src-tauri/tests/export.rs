@@ -12,10 +12,7 @@ use market_signal_temp_lib::pipeline::{
 use market_signal_temp_lib::progress::RunContext;
 
 fn paths(dir: &std::path::Path) -> ReportPaths {
-    ReportPaths {
-        db_path: dir.join("market_signal.db"),
-        reports_dir: dir.join("reports"),
-    }
+    ReportPaths::under(dir)
 }
 
 #[test]

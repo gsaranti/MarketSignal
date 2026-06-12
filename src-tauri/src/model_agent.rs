@@ -213,7 +213,12 @@ and durable learnings retrieved from the system's vector memory against this wee
 Use it for continuity: to strengthen, weaken, or revise the standing thesis, surface historical \
 analogs, and avoid repeating past analytical mistakes. Weigh it as recall, not fresh data — this \
 week's baseline and research evidence take precedence where they conflict, and an absent memory \
-block simply means nothing relevant was recalled.
+block simply means nothing relevant was recalled. The prompt may also carry `user-supplied \
+research documents` — files the user placed in the research inbox, parsed and condensed by the \
+application layer. Treat them as deliberately curated, high-signal sources the user wants \
+weighed; cite them like any other source where they inform the analysis. A truncation marker on \
+a document means only the head of a longer document is shown — weigh it accordingly rather than \
+assuming it is complete.
 
 Produce the report body as GitHub-flavored Markdown with these sections, in order:
 - # Weekly Market Report (title), followed by a short date / report-type line
@@ -311,6 +316,15 @@ fn build_user_prompt(
             prompt.push_str(&format!(
                 "\n\nRecalled long-term memory, most relevant first (prior report summaries and durable learnings retrieved against this week's research):\n{}",
                 packet.memory.join("\n\n")
+            ));
+        }
+        // The Step-6 research-inbox documents: each entry is its own block (a
+        // provenance header, an optional truncation marker, and the condensed
+        // text), so they join on blank lines like the memory fragments.
+        if !packet.inbox_summaries.is_empty() {
+            prompt.push_str(&format!(
+                "\n\nUser-supplied research documents (from the research inbox, parsed and condensed by the application layer):\n{}",
+                packet.inbox_summaries.join("\n\n")
             ));
         }
     }
@@ -1043,11 +1057,14 @@ mod tests {
                 "[summary · 2026-05-28T13:00:00Z] Risk posture: risk-off.".into(),
                 "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".into(),
             ],
+            inbox_summaries: vec![
+                "### Research document: notes.md (MD)\n\nRates likely hold through summer.".into(),
+            ],
             ..Default::default()
         };
         let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet));
-        // All three packet sections ride into the prompt, grounding the report in the
-        // week's news, research, and recalled memory.
+        // All four packet sections ride into the prompt, grounding the report in the
+        // week's news, research, recalled memory, and the user's own documents.
         assert!(prompt.contains("Filtered news clusters"), "{prompt}");
         assert!(prompt.contains("AI / semiconductors"), "{prompt}");
         assert!(prompt.contains("Deep-research evidence"), "{prompt}");
@@ -1057,6 +1074,8 @@ mod tests {
             prompt.contains("Risk posture: risk-off.\n\n[learning"),
             "memory fragments join on blank lines: {prompt}"
         );
+        assert!(prompt.contains("User-supplied research documents"), "{prompt}");
+        assert!(prompt.contains("Rates likely hold through summer."), "{prompt}");
     }
 
     #[test]
@@ -1072,6 +1091,7 @@ mod tests {
         assert!(!with_packet.contains("Filtered news clusters"), "{with_packet}");
         assert!(!with_packet.contains("Deep-research evidence"), "{with_packet}");
         assert!(!with_packet.contains("Recalled long-term memory"), "{with_packet}");
+        assert!(!with_packet.contains("User-supplied research documents"), "{with_packet}");
     }
 
     #[test]

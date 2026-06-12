@@ -9,14 +9,18 @@
 //! dirs. The caller passes whichever folder it means.
 //!
 //! Job-start parsing and the move-to-archive step (`docs/weekly-report-workflow.md`
-//! §Step 6) are not implemented yet, so there is no parse-failure error state to
-//! surface here: this lists what is on disk and lets the user delete it
-//! (§User Permissions — delete yes from either folder, manual archive no).
+//! §Step 6) live in `document_parser` and the pipeline's inbox stage; this module
+//! stays the listing/deletion core (§User Permissions — delete yes from either
+//! folder, manual archive no). The parse-failure error state the panel shows is
+//! joined onto the listing by [`annotate_parse_failures`], from the
+//! `research_parse_failures` table the inbox stage writes.
 
 use std::path::{Component, Path};
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
+
+use crate::storage::ParseFailureRow;
 
 /// Formats accepted as professional research sources
 /// (`docs/research-documents.md` §Research Inbox), as lowercased extensions.
@@ -39,6 +43,11 @@ pub struct ResearchDocument {
     /// Last-modified time as an RFC3339 UTC string, or `None` if the platform
     /// could not report one.
     pub modified: Option<String>,
+    /// Why the last job pass could not parse this file, when it couldn't —
+    /// the panel renders the row in an error state so the user can fix or
+    /// delete it (`docs/research-documents.md §Parse Failures`). Populated only
+    /// for the inbox listing, by [`annotate_parse_failures`]; `None` here.
+    pub parse_error: Option<String>,
 }
 
 /// List the files directly in `dir`, most-recently-modified first. A missing
@@ -70,16 +79,13 @@ pub fn list_folder(dir: &Path) -> Result<Vec<ResearchDocument>> {
             .map(|ext| ext.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         let supported = SUPPORTED_EXTENSIONS.contains(&format.as_str());
-        let modified = meta
-            .modified()
-            .ok()
-            .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
         docs.push(ResearchDocument {
             name,
             format,
             supported,
             size_bytes: meta.len(),
-            modified,
+            modified: modified_rfc3339(&meta),
+            parse_error: None,
         });
     }
 
@@ -87,6 +93,32 @@ pub fn list_folder(dir: &Path) -> Result<Vec<ResearchDocument>> {
     // with a stable name tiebreak so equal-mtime files have a deterministic order.
     docs.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.name.cmp(&b.name)));
     Ok(docs)
+}
+
+/// A file's mtime as an RFC3339 UTC string, or `None` when the platform can't
+/// report one. The single derivation shared by the listing and the parse stage,
+/// so the failure-row identity match below compares like with like.
+pub fn modified_rfc3339(meta: &std::fs::Metadata) -> Option<String> {
+    meta.modified()
+        .ok()
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+}
+
+/// Join the recorded parse failures onto an inbox listing: a row gets its error
+/// state only while the file on disk is identity-identical (name + size +
+/// mtime) to the one that failed — an edited or replaced file reads as a fresh
+/// document until the next job pass re-attempts it.
+pub fn annotate_parse_failures(docs: &mut [ResearchDocument], failures: &[ParseFailureRow]) {
+    for doc in docs {
+        doc.parse_error = failures
+            .iter()
+            .find(|f| {
+                f.name == doc.name
+                    && f.size_bytes == doc.size_bytes
+                    && f.modified == doc.modified
+            })
+            .map(|f| f.reason.clone());
+    }
 }
 
 /// Delete one document from `dir` by file name (`docs/research-documents.md`
@@ -214,5 +246,40 @@ mod tests {
             tmp.path().join("secret.txt").exists(),
             "a rejected name still deleted a file outside the folder"
         );
+    }
+
+    #[test]
+    fn parse_failures_annotate_only_identity_matched_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "broken.json", b"{ not json");
+        touch(tmp.path(), "fine.md", b"# ok");
+        let mut docs = list_folder(tmp.path()).unwrap();
+
+        let failed = docs.iter().find(|d| d.name == "broken.json").unwrap();
+        let failures = vec![
+            ParseFailureRow {
+                name: "broken.json".into(),
+                size_bytes: failed.size_bytes,
+                modified: failed.modified.clone(),
+                reason: "the file is not valid JSON".into(),
+                failed_at: "2026-06-11T09:00:00+00:00".into(),
+            },
+            // A stale row whose size no longer matches anything on disk.
+            ParseFailureRow {
+                name: "fine.md".into(),
+                size_bytes: 999_999,
+                modified: None,
+                reason: "stale".into(),
+                failed_at: "2026-06-11T09:00:00+00:00".into(),
+            },
+        ];
+        annotate_parse_failures(&mut docs, &failures);
+
+        let by = |n: &str| docs.iter().find(|d| d.name == n).unwrap();
+        assert_eq!(
+            by("broken.json").parse_error.as_deref(),
+            Some("the file is not valid JSON")
+        );
+        assert_eq!(by("fine.md").parse_error, None, "a stale row never matches");
     }
 }

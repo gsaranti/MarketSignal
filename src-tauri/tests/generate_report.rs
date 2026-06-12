@@ -85,10 +85,7 @@ fn base_with_sp(sp_price: f64) -> BaselineMarketData {
 #[test]
 fn generate_report_writes_markdown_file_and_db_row() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     let report = generate_report(
         &StubMainAgent,
@@ -124,10 +121,7 @@ fn generate_report_writes_markdown_file_and_db_row() {
 #[test]
 fn step_6_baseline_scan_reaches_the_agent_input() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     let agent = RecordingAgent::new();
     generate_report(
@@ -154,10 +148,7 @@ fn research_packet_reaches_the_agent_input() {
     // returns synthetic evidence — so the assembled packet that reaches the agent carries both
     // news clusters and research evidence (the whole point of the wiring slice).
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     let agent = RecordingAgent::new();
     generate_report(
@@ -217,10 +208,7 @@ fn stages_with_recording_router(seen: Arc<Mutex<Option<RouterInput>>>) -> Resear
 #[test]
 fn second_report_routes_with_the_first_reports_summary() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     // Run 1: no prior reports exist, so the router's recent-report context is empty.
     let seen1 = Arc::new(Mutex::new(None));
@@ -265,10 +253,7 @@ fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
     // memory (Step 17); run 2's pre-research pull hands it to the router (Step 4) and
     // its post-research pull carries it into the packet the agent receives (Step 10).
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     // Run 1: the store is empty, so both pulls recall nothing.
     let seen1 = Arc::new(Mutex::new(None));
@@ -344,10 +329,7 @@ fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
 #[test]
 fn second_report_diffs_against_the_first_and_snapshots_persist() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     // Run 1: the first report has no prior snapshot, so the agent sees no change view.
     // The run still persists this run's baseline for the next report to diff against.
@@ -413,10 +395,7 @@ impl Embedder for FailingEmbedder {
 #[test]
 fn report_summary_lands_in_vector_memory() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     let report = generate_report(
         &StubMainAgent,
@@ -456,10 +435,7 @@ fn report_summary_lands_in_vector_memory() {
 #[test]
 fn embedding_failure_never_fails_the_report() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     // The memory write is best-effort: a dead embedding stage costs the memory row,
     // never the already-persisted report.
@@ -500,10 +476,7 @@ impl MainAgent for LearningAgent {
 #[test]
 fn durable_learnings_land_in_vector_memory() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     let agent = LearningAgent(vec![
         "Breadth divergences preceded the spring pullback; weight them earlier.".into(),
@@ -557,10 +530,7 @@ fn durable_learnings_land_in_vector_memory() {
 #[test]
 fn durable_learnings_are_trimmed_and_capped() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     // Seven entries: one whitespace-only (dropped before the cap counts it) and six
     // real ones — one past the per-report cap of five.
@@ -599,10 +569,7 @@ fn durable_learnings_are_trimmed_and_capped() {
 #[test]
 fn learning_embedding_failure_never_fails_the_report() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     // Same fail-soft posture as the summary write: a dead embedding stage costs the
     // learning rows, never the already-persisted report.
@@ -648,10 +615,7 @@ fn cancel_during_persist_skips_remaining_memory_writes() {
     }
 
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     let cancel = Arc::new(AtomicBool::new(false));
     let ctx = RunContext::new("test-run", Arc::new(NoopReporter), cancel.clone());
@@ -700,10 +664,7 @@ fn learnings_written_on_one_run_are_recalled_on_the_next() {
     // run 2's pre-research pull hands it to the router (Step 4) and its post-research
     // pull carries it into the packet the agent receives (Step 10).
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
 
     generate_report(
         &LearningAgent(vec![
@@ -750,6 +711,155 @@ fn learnings_written_on_one_run_are_recalled_on_the_next() {
         "the Step-10 pull carries the learning into the packet: {:?}",
         packet2.memory
     );
+}
+
+// ---------------------------------------------------------------------------
+// Step-6 research-inbox parsing (docs/weekly-report-workflow.md §Step 6,
+// docs/research-documents.md): parsed documents reach routing and the packet;
+// successes archive after the report persists; failures stay in the inbox with
+// a recorded reason; a failed run consumes nothing.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inbox_documents_flow_to_router_and_packet_and_archive_after_persist() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths::under(dir.path());
+    std::fs::create_dir_all(&paths.inbox_dir).unwrap();
+    std::fs::write(
+        paths.inbox_dir.join("notes.md"),
+        "# Fed outlook\n\nRates likely hold through summer.",
+    )
+    .unwrap();
+    std::fs::write(paths.inbox_dir.join("broken.json"), "{ not json").unwrap();
+    std::fs::write(paths.inbox_dir.join("chart.png"), b"\x89PNG").unwrap();
+
+    let seen = Arc::new(Mutex::new(None));
+    let agent = RecordingAgent::new();
+    generate_report(
+        &agent,
+        &StubMarketDataSource,
+        &stages_with_recording_router(seen.clone()),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    // The parsed document reached routing as a header + excerpt block.
+    let input = seen.lock().unwrap().clone().expect("router ran");
+    assert_eq!(input.inbox_documents.len(), 1, "one parsed document routed");
+    assert!(input.inbox_documents[0].contains("notes.md"), "{}", input.inbox_documents[0]);
+    assert!(
+        input.inbox_documents[0].contains("Rates likely hold through summer."),
+        "{}",
+        input.inbox_documents[0]
+    );
+
+    // And the condensed packet carried its prompt block to the agent.
+    let packet = agent
+        .seen_research
+        .lock()
+        .unwrap()
+        .clone()
+        .flatten()
+        .expect("the agent received a packet");
+    assert_eq!(packet.inbox_summaries.len(), 1);
+    assert!(packet.inbox_summaries[0].contains("# Fed outlook"), "{}", packet.inbox_summaries[0]);
+
+    // The report persisted, so the parsed file was archived; the unparseable one
+    // stays in the inbox with its reason recorded; the unsupported one is untouched.
+    assert!(!paths.inbox_dir.join("notes.md").exists(), "parsed file left the inbox");
+    assert!(paths.archive_dir.join("notes.md").exists(), "parsed file reached the archive");
+    assert!(paths.inbox_dir.join("broken.json").exists(), "failed file stays in the inbox");
+    assert!(!paths.archive_dir.join("broken.json").exists());
+    assert!(paths.inbox_dir.join("chart.png").exists(), "unsupported file is untouched");
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let failures: Vec<(String, String)> = conn
+        .prepare("SELECT name, reason FROM research_parse_failures")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(failures.len(), 1, "exactly the broken file is recorded: {failures:?}");
+    assert_eq!(failures[0].0, "broken.json");
+    assert!(failures[0].1.contains("not valid JSON"), "{}", failures[0].1);
+}
+
+#[test]
+fn a_failed_run_never_consumes_inbox_documents() {
+    /// An agent that always errors, failing the run after the inbox stage parsed.
+    struct FailingMainAgent;
+    impl MainAgent for FailingMainAgent {
+        fn generate(&self, _: MainAgentInput) -> anyhow::Result<MainAgentOutput> {
+            anyhow::bail!("agent down")
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths::under(dir.path());
+    std::fs::create_dir_all(&paths.inbox_dir).unwrap();
+    std::fs::write(paths.inbox_dir.join("notes.md"), "# kept\n\nStill here.").unwrap();
+
+    let result = generate_report(
+        &FailingMainAgent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    );
+    assert!(result.is_err(), "the agent failure fails the run");
+
+    // No report persisted, so the document was not consumed: it stays in the
+    // inbox and nothing reached the archive.
+    assert!(paths.inbox_dir.join("notes.md").exists());
+    assert!(!paths.archive_dir.join("notes.md").exists());
+}
+
+#[test]
+fn a_healed_inbox_clears_previously_recorded_failures() {
+    // Run 1 records the broken file; the user fixes it; run 2's pass replaces
+    // the failure set, so the panel's error state self-heals.
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths::under(dir.path());
+    std::fs::create_dir_all(&paths.inbox_dir).unwrap();
+    std::fs::write(paths.inbox_dir.join("data.json"), "{ not json").unwrap();
+
+    generate_report(
+        &StubMainAgent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM research_parse_failures", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "run 1 recorded the failure");
+    drop(conn);
+
+    std::fs::write(paths.inbox_dir.join("data.json"), r#"{"fixed": true}"#).unwrap();
+    generate_report(
+        &StubMainAgent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM research_parse_failures", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "the healed file's row is gone");
+    assert!(paths.archive_dir.join("data.json").exists(), "and the fixed file archived");
 }
 
 // ---------------------------------------------------------------------------
@@ -815,10 +925,7 @@ fn retention_cascade_evicts_the_oldest_report_beyond_the_cap() {
     use market_signal_temp_lib::vector_memory::MemoryKind;
 
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
     std::fs::create_dir_all(&paths.reports_dir).unwrap();
 
     let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
@@ -920,10 +1027,7 @@ fn retention_cascade_tolerates_an_already_missing_markdown_file() {
     use market_signal_temp_lib::storage;
 
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
     std::fs::create_dir_all(&paths.reports_dir).unwrap();
 
     let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
@@ -981,10 +1085,7 @@ fn retention_cascade_skips_db_deletes_when_the_file_cannot_be_removed() {
     use market_signal_temp_lib::storage;
 
     let dir = tempfile::tempdir().unwrap();
-    let paths = ReportPaths {
-        db_path: dir.path().join("market_signal.db"),
-        reports_dir: dir.path().join("reports"),
-    };
+    let paths = ReportPaths::under(dir.path());
     std::fs::create_dir_all(&paths.reports_dir).unwrap();
 
     let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
