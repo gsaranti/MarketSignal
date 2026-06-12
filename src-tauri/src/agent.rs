@@ -120,6 +120,13 @@ pub struct MainAgentInput {
 pub struct MainAgentOutput {
     pub markdown: String,
     pub summary: ReportSummary,
+    /// Durable learnings the agent identified this run (`docs/weekly-report-workflow.md
+    /// §Step 17`): rare, self-contained analytical lessons worth carrying across future
+    /// reports. Deliberately a sibling of `summary`, never inside it — the summary
+    /// metadata schema (`docs/storage.md`) is closed, and each learning is its own
+    /// atomic vector-memory unit, embedded and persisted separately from the summary.
+    /// Usually empty; the app layer owns the per-report cap.
+    pub durable_learnings: Vec<String>,
 }
 
 /// The agent stage. One method: structured input -> structured output.
@@ -167,6 +174,10 @@ impl MainAgent for StubMainAgent {
         Ok(MainAgentOutput {
             markdown: STUB_REPORT_MARKDOWN.to_string(),
             summary,
+            // The stub models a run where nothing clears the durable-learning bar —
+            // the normal case, and what keeps exact-row-count tests over the memory
+            // store meaningful.
+            durable_learnings: Vec::new(),
         })
     }
 }
@@ -254,6 +265,7 @@ mod tests {
         assert!(!s.created_at.is_empty());
         assert!((3..=6).contains(&s.header_summary_bullets.len()));
         assert!(!out.markdown.is_empty());
+        assert!(out.durable_learnings.is_empty(), "the stub emits no learnings");
 
         let json = serde_json::to_value(s).unwrap();
         assert_eq!(json["risk_posture"], "mixed");

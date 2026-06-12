@@ -484,3 +484,270 @@ fn embedding_failure_never_fails_the_report() {
         .unwrap();
     assert_eq!(memories, 0, "no memory row — and no error — on an embedding failure");
 }
+
+/// Wraps the stub agent and attaches a fixed set of durable learnings, driving
+/// the Step-17 learning-write leg (the stub itself deliberately emits none).
+struct LearningAgent(Vec<String>);
+
+impl MainAgent for LearningAgent {
+    fn generate(&self, input: MainAgentInput) -> anyhow::Result<MainAgentOutput> {
+        let mut out = StubMainAgent.generate(input)?;
+        out.durable_learnings = self.0.clone();
+        Ok(out)
+    }
+}
+
+#[test]
+fn durable_learnings_land_in_vector_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+
+    let agent = LearningAgent(vec![
+        "Breadth divergences preceded the spring pullback; weight them earlier.".into(),
+        "Single-event volatility spikes faded within two reports; avoid thesis pivots on them."
+            .into(),
+    ]);
+    let report = generate_report(
+        &agent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    // Three rows landed: the summary plus one row per learning, each tagged with the
+    // report's id (provenance) and the agent-minted created_at, with a decodable blob.
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT report_id, content, embedding, created_at FROM vector_memory
+             WHERE kind = 'learning' ORDER BY content",
+        )
+        .unwrap();
+    let learnings: Vec<(String, String, Vec<u8>, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(learnings.len(), 2);
+    for (report_id, content, blob, created_at) in &learnings {
+        assert_eq!(report_id, &report.report_id);
+        assert_eq!(created_at, &report.summary.created_at);
+        assert!(!content.is_empty());
+        assert!(!blob.is_empty());
+        assert_eq!(blob.len() % 4, 0, "embedding blob is whole f32s");
+    }
+    assert!(learnings[0].1.starts_with("Breadth divergences"), "{}", learnings[0].1);
+
+    let summaries: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM vector_memory WHERE kind = 'summary'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(summaries, 1, "the summary write is unaffected by the learning leg");
+}
+
+#[test]
+fn durable_learnings_are_trimmed_and_capped() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+
+    // Seven entries: one whitespace-only (dropped before the cap counts it) and six
+    // real ones — one past the per-report cap of five.
+    let mut entries: Vec<String> = (1..=6).map(|i| format!("Durable lesson number {i}.")).collect();
+    entries.insert(2, "   \n ".into());
+    let report = generate_report(
+        &LearningAgent(entries),
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let learnings: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM vector_memory WHERE kind = 'learning'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(learnings, 5, "empties are dropped, then the app-layer cap truncates");
+    let blanks: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM vector_memory WHERE TRIM(content) = ''",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(blanks, 0, "a whitespace-only learning never reaches the store");
+    assert!(std::path::Path::new(&report.markdown_path).exists());
+}
+
+#[test]
+fn learning_embedding_failure_never_fails_the_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+
+    // Same fail-soft posture as the summary write: a dead embedding stage costs the
+    // learning rows, never the already-persisted report.
+    let report = generate_report(
+        &LearningAgent(vec!["A learning that will fail to embed.".into()]),
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &FailingEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+    assert!(std::path::Path::new(&report.markdown_path).exists());
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let memories: i64 = conn
+        .query_row("SELECT COUNT(*) FROM vector_memory", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(memories, 0, "no learning row — and no error — on an embedding failure");
+}
+
+#[test]
+fn cancel_during_persist_skips_remaining_memory_writes() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use market_signal_temp_lib::progress::NoopReporter;
+
+    // An embedder that requests cancellation during its first call (the persist
+    // step's summary embed) and counts every call — modeling a user cancel that
+    // lands while that paid request is in flight. The in-flight call completes
+    // (cooperative cancellation never interrupts a request), but the learning
+    // embeds that would follow must be skipped, not spent.
+    struct CancellingEmbedder {
+        cancel: Arc<AtomicBool>,
+        calls: AtomicUsize,
+    }
+    impl Embedder for CancellingEmbedder {
+        fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.cancel.store(true, Ordering::Relaxed);
+            StubEmbedder.embed(text)
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let ctx = RunContext::new("test-run", Arc::new(NoopReporter), cancel.clone());
+    let embedder = CancellingEmbedder {
+        cancel,
+        calls: AtomicUsize::new(0),
+    };
+
+    // A cancel this late is honored as a completed run: the report is already
+    // persisted, so generate_report still returns it.
+    let report = generate_report(
+        &LearningAgent(vec![
+            "A learning the cancel must skip.".into(),
+            "Another learning the cancel must skip.".into(),
+        ]),
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &embedder,
+        &paths,
+        &ctx,
+    )
+    .unwrap();
+    assert!(std::path::Path::new(&report.markdown_path).exists());
+
+    // Exactly one embedding call was spent — the in-flight summary embed. The two
+    // learning embeds were skipped at the loop's cancel checkpoint.
+    assert_eq!(embedder.calls.load(Ordering::Relaxed), 1, "no paid call after the cancel");
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let (summaries, learnings): (i64, i64) = conn
+        .query_row(
+            "SELECT
+                 COUNT(*) FILTER (WHERE kind = 'summary'),
+                 COUNT(*) FILTER (WHERE kind = 'learning')
+             FROM vector_memory",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(summaries, 1, "the already-in-flight summary write still lands");
+    assert_eq!(learnings, 0, "no learning row after the cancel");
+}
+
+#[test]
+fn learnings_written_on_one_run_are_recalled_on_the_next() {
+    // The memory loop, closed end to end: run 1 writes a durable learning (Step 17);
+    // run 2's pre-research pull hands it to the router (Step 4) and its post-research
+    // pull carries it into the packet the agent receives (Step 10).
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+
+    generate_report(
+        &LearningAgent(vec![
+            "Breadth divergences preceded the spring pullback; weight them earlier.".into(),
+        ]),
+        &FixedMarketDataSource(base_with_sp(5_500.0)),
+        &ResearchStages::stub(),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    let seen2 = Arc::new(Mutex::new(None));
+    let agent2 = RecordingAgent::new();
+    generate_report(
+        &agent2,
+        &FixedMarketDataSource(base_with_sp(5_610.0)),
+        &stages_with_recording_router(seen2.clone()),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    let input2 = seen2.lock().unwrap().clone().expect("router ran on run 2");
+    assert!(
+        input2.memory.iter().any(|f| f.starts_with("[learning · ")),
+        "the Step-4 pull surfaces the learning to the router: {:?}",
+        input2.memory
+    );
+    let packet2 = agent2
+        .seen_research
+        .lock()
+        .unwrap()
+        .clone()
+        .flatten()
+        .expect("run 2 carried a packet");
+    assert!(
+        packet2
+            .memory
+            .iter()
+            .any(|f| f.starts_with("[learning · ") && f.contains("Breadth divergences")),
+        "the Step-10 pull carries the learning into the packet: {:?}",
+        packet2.memory
+    );
+}
