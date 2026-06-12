@@ -3,16 +3,24 @@
 //! the canonical Markdown file and the SQLite row — both land, and that the
 //! Step-6 baseline scan reaches the agent's input.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use market_signal_temp_lib::agent::{MainAgent, MainAgentInput, MainAgentOutput, StubMainAgent};
+use market_signal_temp_lib::agent::{
+    MainAgent, MainAgentInput, MainAgentOutput, ReportSummary, StubMainAgent,
+};
 use market_signal_temp_lib::baseline_delta::{BaselineDeltas, Direction};
 use market_signal_temp_lib::data_sources::{
     BaselineMarketData, MarketDataSource, Quote, StubMarketDataSource,
 };
+use market_signal_temp_lib::headline_filter::StubHeadlineFilter;
+use market_signal_temp_lib::news::StubNewsSource;
 use market_signal_temp_lib::pipeline::{generate_report, ReportPaths, ResearchStages};
 use market_signal_temp_lib::progress::RunContext;
+use market_signal_temp_lib::research_executor::StubSearchBackend;
 use market_signal_temp_lib::research_packet::ResearchPacket;
+use market_signal_temp_lib::research_router::{
+    ResearchPlan, ResearchRouter, RouterInput, StubResearchRouter,
+};
 
 /// Wraps the stub agent and records the baseline *and* the change view it was handed, so
 /// the tests can assert both the Step-6 gather and the prior-snapshot diff reached the
@@ -177,6 +185,66 @@ fn research_packet_reaches_the_agent_input() {
     );
     // The Step-10 memory pull is still deferred (no LanceDB), so the packet's memory is empty.
     assert!(packet.memory.is_empty(), "memory stays empty until the LanceDB slice");
+}
+
+/// A router that records the recent-report context it was handed and then delegates
+/// to the stub, so the test asserts what reached Step 8 without changing the run.
+/// The recorded value sits behind an `Arc` because the router itself is boxed into
+/// `ResearchStages` and moved into the run.
+struct RecordingRouter(Arc<Mutex<Option<Vec<ReportSummary>>>>);
+
+impl ResearchRouter for RecordingRouter {
+    fn route(&self, input: RouterInput) -> anyhow::Result<ResearchPlan> {
+        *self.0.lock().unwrap() = Some(input.recent_reports.clone());
+        StubResearchRouter.route(input)
+    }
+}
+
+fn stages_with_recording_router(
+    seen: Arc<Mutex<Option<Vec<ReportSummary>>>>,
+) -> ResearchStages {
+    ResearchStages {
+        news: Box::new(StubNewsSource),
+        filter: Box::new(StubHeadlineFilter),
+        router: Box::new(RecordingRouter(seen)),
+        search: Box::new(StubSearchBackend),
+    }
+}
+
+#[test]
+fn second_report_routes_with_the_first_reports_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+
+    // Run 1: no prior reports exist, so the router's recent-report context is empty.
+    let seen1 = Arc::new(Mutex::new(None));
+    let first = generate_report(
+        &StubMainAgent,
+        &FixedMarketDataSource(base_with_sp(5_500.0)),
+        &stages_with_recording_router(seen1.clone()),
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+    let recent1 = seen1.lock().unwrap().clone().expect("router ran on run 1");
+    assert!(recent1.is_empty(), "first report has no prior reports to route with");
+
+    // Run 2: the router is handed run 1's persisted summary as continuity context.
+    let seen2 = Arc::new(Mutex::new(None));
+    generate_report(
+        &StubMainAgent,
+        &FixedMarketDataSource(base_with_sp(5_610.0)),
+        &stages_with_recording_router(seen2.clone()),
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+    let recent2 = seen2.lock().unwrap().clone().expect("router ran on run 2");
+    assert_eq!(recent2.len(), 1, "exactly the one prior report rides into routing");
+    assert_eq!(recent2[0].report_id, first.report_id);
 }
 
 #[test]

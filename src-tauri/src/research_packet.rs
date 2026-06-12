@@ -16,11 +16,12 @@
 //!
 //! Scoped, like [`RouterInput`](crate::research_router::RouterInput), to the input types
 //! that exist today: the Step-3 baseline scan and its change view, the Step-7 clusters,
-//! and the Step-9 evidence. The remaining doc-listed contents — recent Markdown report
-//! context, research-inbox summaries, unresolved thesis questions, upcoming events, and
-//! the Step-10 vector-memory pull — are not built yet and join this struct as those
-//! slices land. `memory` ships now as an empty placeholder so the field exists ahead of
-//! the LanceDB slice that will populate it.
+//! and the Step-9 evidence. The remaining doc-listed contents — recent report context
+//! (a bounded form of which now feeds routing via `RouterInput.recent_reports`, but is
+//! not yet carried in this packet), research-inbox summaries, unresolved thesis
+//! questions, upcoming events, and the Step-10 vector-memory pull — join this struct as
+//! their slices land. `memory` ships now as an empty placeholder so the field exists
+//! ahead of the LanceDB slice that will populate it.
 
 use serde::Serialize;
 
