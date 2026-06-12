@@ -87,15 +87,16 @@ function ensureStep(trace: RunTrace, key: string, label: string): TrackerStep {
 
 // Route a request row to the step that issued it, keyed off the event's `group`. The
 // research half's request groups (Tavily news, the headline filter, the router, and the
-// executor's searches) belong under the "research" step; every other group is a baseline
+// executor's searches) belong under the "research" step; the persist step's vector-memory
+// embedding call (group "memory") belongs under "persist"; every other group is a baseline
 // scan series. Without this, every request row would pile under "baseline" and the
 // research step would render empty. The label is a fallback only — step-started always
 // precedes its request rows, so the owning step already exists with its backend label.
 const RESEARCH_REQUEST_GROUPS = new Set(["news", "filter", "routing", "research"]);
 function requestStep(trace: RunTrace, group: string): TrackerStep {
-  return RESEARCH_REQUEST_GROUPS.has(group)
-    ? ensureStep(trace, "research", "Research")
-    : ensureStep(trace, "baseline", "Baseline market data");
+  if (RESEARCH_REQUEST_GROUPS.has(group)) return ensureStep(trace, "research", "Research");
+  if (group === "memory") return ensureStep(trace, "persist", "Saving the report");
+  return ensureStep(trace, "baseline", "Baseline market data");
 }
 
 // Fold one streamed progress message into the trace. Events are filtered to the

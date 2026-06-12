@@ -15,6 +15,7 @@ use crate::baseline_delta::{self, BaselineDeltas};
 use crate::data_sources::{
     BaselineMarketData, GroupKind, MarketDataSource, BASELINE_SCHEMA_VERSION,
 };
+use crate::embedding::Embedder;
 use crate::headline_filter::HeadlineFilter;
 use crate::news::{self, NewsSource};
 use crate::progress::RunContext;
@@ -22,6 +23,7 @@ use crate::research_executor::{execute_research, select_branch_policy, SearchBac
 use crate::research_packet::{build_condensed_packet, ResearchPacket};
 use crate::research_router::{ResearchPlan, ResearchRouter, RouterInput};
 use crate::storage::{self, ReportRecord};
+use crate::vector_memory::{self, MemoryKind};
 
 /// Filesystem locations a run reads and writes. Injected so tests can point at
 /// temporary directories; the Tauri command resolves these from the app data
@@ -127,6 +129,12 @@ pub struct GeneratedReport {
 /// offline smokes pass `ResearchStages::stub()`, keeping this the same offline-driven
 /// spine the agent and data halves already are.
 ///
+/// `embedder` is the Step-17 memory seam (`docs/weekly-report-workflow.md §Step 17` —
+/// "report summary to vector memory", SQLite-backed; see `vector_memory`): after the
+/// report record persists, the summary is embedded and stored in vector memory
+/// best-effort. The live command supplies `OpenAiEmbedder` (the fixed internal
+/// `text-embedding-3-large` stage); tests pass `embedding::StubEmbedder`.
+///
 /// `ctx` is the run's progress/cancel context (`progress::RunContext`). Each stage
 /// below brackets its work in a `step_started` / `step_finished` pair so an open
 /// window can render the run live; the real data adapters, the research adapters, and
@@ -141,6 +149,7 @@ pub fn generate_report(
     agent: &dyn MainAgent,
     data: &dyn MarketDataSource,
     research: &ResearchStages,
+    embedder: &dyn Embedder,
     paths: &ReportPaths,
     ctx: &RunContext,
 ) -> Result<GeneratedReport> {
@@ -273,6 +282,34 @@ pub fn generate_report(
             }
         }
 
+        // Best-effort: embed the structured summary and store it in vector memory —
+        // Step 17's "report summary to vector memory" leg (SQLite-backed `vector_memory`).
+        // Same posture as the snapshot block above: a flaky embedding call or a store
+        // failure costs this report's memory row, never the report itself, and leaves a
+        // diagnostic trail on stderr (plus a `failed` tracker row from the embedder).
+        let memory_text = vector_memory::summary_memory_text(&summary);
+        match embedder.embed(&memory_text) {
+            Ok(embedding) => {
+                if let Err(e) = vector_memory::insert_memory(
+                    &conn,
+                    MemoryKind::Summary,
+                    Some(&summary.report_id),
+                    &memory_text,
+                    &embedding,
+                    &summary.created_at,
+                ) {
+                    eprintln!(
+                        "vector-memory persist failed for report {}: {e:#}",
+                        summary.report_id
+                    );
+                }
+            }
+            Err(e) => eprintln!(
+                "vector-memory embedding failed for report {}: {e:#}",
+                summary.report_id
+            ),
+        }
+
         Ok(GeneratedReport {
             report_id: summary.report_id.clone(),
             markdown: output.markdown,
@@ -367,8 +404,9 @@ fn assemble_research_packet(
     let policy = select_branch_policy(deltas);
     let evidence = execute_research(&plan, research.search.as_ref(), policy.as_ref(), &clock, ctx);
 
-    // Step 11: condense everything into the token-bounded packet. `memory` stays empty until
-    // the LanceDB slice lands.
+    // Step 11: condense everything into the token-bounded packet. `memory` stays empty
+    // until the Step-10 retrieval slice — the vector-memory store and embedding seam
+    // landed (`vector_memory`, `embedding`), but retrieval is not wired here yet.
     build_condensed_packet(baseline.clone(), deltas.cloned(), clusters, evidence)
 }
 

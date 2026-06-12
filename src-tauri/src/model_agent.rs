@@ -16,8 +16,8 @@
 //! The agent's `MainAgentInput` carries the Step-3 baseline market-data scan
 //! (`data_sources`), its change view, and the Step-11 condensed research packet;
 //! this adapter serializes them into the user message so the report is grounded
-//! in this run's live data and research. Vector memory joins when the LanceDB
-//! slice lands.
+//! in this run's live data and research. Vector memory joins when the Step-10
+//! retrieval slice lands.
 
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;

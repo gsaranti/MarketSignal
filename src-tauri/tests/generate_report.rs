@@ -12,6 +12,7 @@ use market_signal_temp_lib::baseline_delta::{BaselineDeltas, Direction};
 use market_signal_temp_lib::data_sources::{
     BaselineMarketData, MarketDataSource, Quote, StubMarketDataSource,
 };
+use market_signal_temp_lib::embedding::{Embedder, StubEmbedder};
 use market_signal_temp_lib::headline_filter::StubHeadlineFilter;
 use market_signal_temp_lib::news::StubNewsSource;
 use market_signal_temp_lib::pipeline::{generate_report, ReportPaths, ResearchStages};
@@ -95,6 +96,7 @@ fn generate_report_writes_markdown_file_and_db_row() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &StubEmbedder,
         &paths,
         &RunContext::noop(),
     )
@@ -134,6 +136,7 @@ fn step_6_baseline_scan_reaches_the_agent_input() {
         &agent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &StubEmbedder,
         &paths,
         &RunContext::noop(),
     )
@@ -163,6 +166,7 @@ fn research_packet_reaches_the_agent_input() {
         &agent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &StubEmbedder,
         &paths,
         &RunContext::noop(),
     )
@@ -183,8 +187,9 @@ fn research_packet_reaches_the_agent_input() {
         !packet.research.items.is_empty(),
         "the stub route → execute chain produced evidence that reached the agent"
     );
-    // The Step-10 memory pull is still deferred (no LanceDB), so the packet's memory is empty.
-    assert!(packet.memory.is_empty(), "memory stays empty until the LanceDB slice");
+    // The Step-10 memory pull is still deferred (store landed, retrieval not wired),
+    // so the packet's memory is empty.
+    assert!(packet.memory.is_empty(), "memory stays empty until the retrieval slice");
 }
 
 /// A router that records the recent-report context it was handed and then delegates
@@ -225,6 +230,7 @@ fn second_report_routes_with_the_first_reports_summary() {
         &StubMainAgent,
         &FixedMarketDataSource(base_with_sp(5_500.0)),
         &stages_with_recording_router(seen1.clone()),
+        &StubEmbedder,
         &paths,
         &RunContext::noop(),
     )
@@ -238,6 +244,7 @@ fn second_report_routes_with_the_first_reports_summary() {
         &StubMainAgent,
         &FixedMarketDataSource(base_with_sp(5_610.0)),
         &stages_with_recording_router(seen2.clone()),
+        &StubEmbedder,
         &paths,
         &RunContext::noop(),
     )
@@ -262,6 +269,7 @@ fn second_report_diffs_against_the_first_and_snapshots_persist() {
         &agent1,
         &FixedMarketDataSource(base_with_sp(5_500.0)),
         &ResearchStages::stub(),
+        &StubEmbedder,
         &paths,
         &RunContext::noop(),
     )
@@ -278,6 +286,7 @@ fn second_report_diffs_against_the_first_and_snapshots_persist() {
         &agent2,
         &FixedMarketDataSource(base_with_sp(5_610.0)),
         &ResearchStages::stub(),
+        &StubEmbedder,
         &paths,
         &RunContext::noop(),
     )
@@ -303,4 +312,88 @@ fn second_report_diffs_against_the_first_and_snapshots_persist() {
         .query_row("SELECT COUNT(*) FROM baseline_snapshots", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 2);
+}
+
+/// An embedder that always errors, to drive the Step-17 memory write's fail-soft arm.
+struct FailingEmbedder;
+
+impl Embedder for FailingEmbedder {
+    fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        anyhow::bail!("embeddings down")
+    }
+}
+
+#[test]
+fn report_summary_lands_in_vector_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+
+    let report = generate_report(
+        &StubMainAgent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    // Exactly one memory row landed: the report's summary, keyed by its report_id,
+    // with a decodable embedding blob.
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let (kind, report_id, content, blob): (String, String, String, Vec<u8>) = conn
+        .query_row(
+            "SELECT kind, report_id, content, embedding FROM vector_memory",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "summary");
+    assert_eq!(report_id, report.report_id);
+    assert!(content.contains("Risk posture:"), "{content}");
+    assert!(!blob.is_empty());
+    assert_eq!(blob.len() % 4, 0, "embedding blob is whole f32s");
+
+    // And the retrieval path finds it: a same-dimension query (the stub embedder)
+    // surfaces the stored summary through the store's own search.
+    let query = StubEmbedder.embed("anything").unwrap();
+    let hits =
+        market_signal_temp_lib::vector_memory::search_memory(&conn, &query, None, 5).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].report_id.as_deref(), Some(report.report_id.as_str()));
+}
+
+#[test]
+fn embedding_failure_never_fails_the_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths {
+        db_path: dir.path().join("market_signal.db"),
+        reports_dir: dir.path().join("reports"),
+    };
+
+    // The memory write is best-effort: a dead embedding stage costs the memory row,
+    // never the already-persisted report.
+    let report = generate_report(
+        &StubMainAgent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &FailingEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+    assert!(std::path::Path::new(&report.markdown_path).exists());
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let reports: i64 = conn
+        .query_row("SELECT COUNT(*) FROM reports", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(reports, 1, "the report row persisted");
+    let memories: i64 = conn
+        .query_row("SELECT COUNT(*) FROM vector_memory", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(memories, 0, "no memory row — and no error — on an embedding failure");
 }

@@ -14,5 +14,5 @@
 - [analyst-skills.md](analyst-skills.md) — The 16 reusable analytical skills (Market Regime Analysis, Narrative vs Reality, etc.).
 - [thesis-continuity.md](thesis-continuity.md) — How market theses evolve across reports: continuity, stability, pivot conditions, and memory-guided evolution.
 - [report-structure.md](report-structure.md) — Canonical Markdown authoring format, the HTML-for-presentation rule, and the standard report sections.
-- [storage.md](storage.md) — SQLite and LanceDB responsibilities, retention rules, and deletion behavior.
+- [storage.md](storage.md) — SQLite and vector-memory responsibilities, retention rules, and deletion behavior.
 - [export.md](export.md) — Markdown and PDF export options, naming conventions, and behavior.

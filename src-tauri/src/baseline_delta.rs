@@ -1,6 +1,6 @@
 //! Deterministic change view between two baseline scans.
 //!
-//! Continuity across reports is otherwise narrative-only (the LanceDB report
+//! Continuity across reports is otherwise narrative-only (the vector-memory report
 //! summaries): the main agent sees this run's numbers and the prior report's prose,
 //! but never the prior report's *numbers*. This module closes that gap. The
 //! application layer persists each run's baseline (`storage::baseline_snapshots`) and,

@@ -4,7 +4,7 @@
 
 ## Product & platform
 - Product positioning (what it is / isn't) — overview.md; README.md
-- Tech stack (Tauri, Vue, SQLite, LanceDB) — overview.md
+- Tech stack (Tauri, Vue, SQLite — incl. vector memory) — overview.md
 - Local-first / runs on user machine except external API calls — overview.md
 - Docs corpus map — README.md
 
@@ -98,8 +98,8 @@
 - Retention (30 reports, cascade delete) — storage.md §SQLite
 - Per-report baseline snapshots + change view (deltas vs previous report) — storage.md §Baseline Snapshots; weekly-report-workflow.md §Step 3
 - Baseline-snapshot retention (14, independent of report retention) — storage.md §Baseline Snapshots
-- LanceDB vector memory (summaries, durable learnings) — storage.md §LanceDB Vector Memory; weekly-report-workflow.md §Steps 4, 10, 17
-- Durable learnings survive report deletion — storage.md §LanceDB Vector Memory
+- Vector memory (summaries, durable learnings; SQLite-backed, amended from LanceDB) — storage.md §Vector Memory; weekly-report-workflow.md §Steps 4, 10, 17
+- Durable learnings survive report deletion — storage.md §Vector Memory
 
 ## Interface
 - Main layout tree — interface.md §Main Layout
