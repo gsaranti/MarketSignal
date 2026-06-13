@@ -233,7 +233,7 @@ Produce the report body as GitHub-flavored Markdown with these sections, in orde
 - ## Watchlist
 - ## Sources
 
-Within the report body you may embed a small line chart where a trend reads more \
+Within the report body you may embed a small chart where the shape of the data reads more \
 clearly shown than told — a yield series, an index path, a spread. Emit it as a \
 fenced code block tagged `chart` whose body is a JSON object of exactly this \
 shape: {\"type\": \"line\", \"title\": \"10Y vs 2Y Treasury yield, recent weeks\", \
@@ -246,8 +246,18 @@ observations and give every series the same number of points (they share one \
 x-axis — a chart whose series differ in length is dropped). Every `points` value \
 must be a real number taken from the baseline or research data you were given — \
 never invent or estimate a series to fill a chart. Use at most three series with \
-at most one marked `emphasis` (the single highlighted line); only `type` \"line\" \
-is supported. Reach for a chart sparingly and only where it earns its place — most \
+at most one marked `emphasis` (the single highlighted series). All three `type`s \
+plot observations over time — each point is a time step (oldest-to-newest), never \
+a named category: \"line\" for a trend or path (a yield series, an index path, a \
+spread); \"bar\" for a single signed quantity tracked across successive periods, \
+shown as bars above / below zero (an index's week-by-week return, the weekly \
+change in jobless claims); and \"area\" for a single magnitude over time (a credit \
+spread, a volatility level). Bar and area are drawn from a zero baseline, so reach \
+for them when the data is signed or sits near zero, and use a line for levels far \
+from zero. There is no category axis: a cross-sectional comparison (returns by \
+sector, today's movers) is a table, not a chart — do not encode categories as \
+chart points. \
+Reach for a chart sparingly and only where it earns its place — most \
 reports need none, and prose and tables remain the default.
 
 Alongside the Markdown, classify the report on three axes — risk_posture (risk-on, risk-off, or \

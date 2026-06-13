@@ -13,7 +13,10 @@ Before committing or marking a slice done, run the full set — not a subset
 
 - **Backend:** `cd src-tauri && cargo test`, and `cargo clippy --all-targets
   --all-features`. Both the build and clippy are kept warning-free.
-- **Frontend:** `npm run build` (runs `vue-tsc --noEmit` type-check + Vite build).
+- **Frontend:** `npm run build` (runs `vue-tsc --noEmit` type-check + Vite build),
+  and `npm test` (Node's built-in test runner over `tests/**/*.test.ts`, imported
+  via type-stripping — no build step) when a change touches a unit-tested module
+  (currently the pure `src/renderChart.ts`).
 
 When a Metis plan's verification command touches Rust, name clippy alongside
 `cargo test` so the review step runs it too.

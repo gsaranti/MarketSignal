@@ -316,12 +316,17 @@ html, body {
 }
 .prose-table-wrap > table { margin: 0; }
 
-/* ---- Charts — restrained inline-SVG line figures embedded via ```chart fences.
+/* ---- Charts — restrained inline-SVG figures embedded via ```chart fences.
    A design-package EXTENSION: the package ships only the YieldChart reference in
    ui_kits/market_signal_desktop/LatestReport.jsx (a static, light-theme-only
    mock); this generalizes its register — monochrome ink series, one accent-
-   emphasized line, a hairline grid, no fills / markers / shadows. Token-only so
-   it resolves in both themes; non-scaling strokes keep the hairlines crisp as the
+   emphasized series, a hairline grid, no markers / shadows. The renderer supports
+   three chart types (line, bar, area). Bar and area BROADEN the line register's
+   no-fills rule to flat fills only — squared bars (no rounded corners) and a
+   faint single-tint area wash (no gradient), both grown from a hairline zero
+   baseline. That broadening is the deliberate extension; the rejected gestalt
+   (saturated celebratory fills, soft-shadow cards) is still out. Token-only so it
+   resolves in both themes; non-scaling strokes keep the hairlines crisp as the
    SVG scales to the reading column. Geometry + class hooks are emitted by
    src/renderChart.ts. ---- */
 .prose .chart-figure { margin: 24px 0; }
@@ -342,6 +347,27 @@ html, body {
   vector-effect: non-scaling-stroke;
 }
 .prose .chart-line--accent { stroke: var(--accent); }
+/* Zero baseline for bar/area — the axis they grow from. Stronger than the soft
+   grid so it reads as the origin, still a hairline. */
+.prose .chart-baseline {
+  stroke: var(--hairline);
+  stroke-width: 0.75px;
+  vector-effect: non-scaling-stroke;
+}
+/* Bars — squared flat fills, ink for the base series, accent for the emphasized
+   one (a fill, so --accent is correct here, not --accent-text). */
+.prose .chart-bar { fill: var(--ink-2); }
+.prose .chart-bar--accent { fill: var(--accent); }
+/* Area — a faint single-tint wash under the (separately stroked) top line. Kept
+   low-opacity so it reads as emphasis, never a saturated block. */
+.prose .chart-area {
+  fill: var(--ink-2);
+  fill-opacity: 0.1;
+}
+.prose .chart-area--accent {
+  fill: var(--accent);
+  fill-opacity: 0.14;
+}
 .prose .chart-tick {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums lining-nums;

@@ -13,7 +13,7 @@ Market Signal is not a trading bot. It is a market-analysis and thesis-generatio
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) (with `npm`)
+- [Node.js](https://nodejs.org/) (with `npm`) — any recent version builds and runs the app; **Node 22.18+ or 23.6+** is required for `npm test`, which runs the TypeScript test suite directly via type-stripping
 - A [Rust toolchain](https://www.rust-lang.org/tools/install) (stable)
 - The platform-specific [Tauri system dependencies](https://tauri.app/start/prerequisites/)
 
@@ -43,6 +43,7 @@ Run the checks before committing a change:
 
 ```bash
 npm run build                                 # frontend: vue-tsc type-check + Vite build
+npm test                                       # frontend unit tests (Node 22.18+/23.6+)
 cd src-tauri && cargo test                    # backend tests
 cargo clippy --all-targets --all-features     # backend lint — kept warning-free
 ```
