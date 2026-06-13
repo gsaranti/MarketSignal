@@ -1,6 +1,6 @@
 # Report Structure
 
-Reports are written, authored, and stored internally in Markdown by the main agent. An HTML version is generated for application display.
+Reports are written, authored, and stored internally in Markdown by the main agent. An HTML version is rendered on demand for application display.
 
 ## Canonical Format: Markdown
 
@@ -20,6 +20,8 @@ HTML reports are generated from Markdown and are presentation-only artifacts use
 - PDF generation
 
 The Markdown→HTML conversion uses **markdown-it** as the renderer. Styling, chart rendering, and other presentation-layer choices are MVP-internal implementation details and not specified here.
+
+HTML is rendered on demand in the application webview and is never persisted — Markdown is the only stored report format (amended 2026-06-12; see [storage.md §SQLite](storage.md#sqlite)).
 
 Agents never ingest or reason over HTML reports.
 

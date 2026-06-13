@@ -15,10 +15,11 @@ See [export.md §Export Naming](export.md#export-naming) for the canonical filen
 Stores:
 - report records
 - report metadata
-- HTML output
 - job history
 - warning states
 - per-report baseline snapshots (for cross-report change detection)
+
+HTML is deliberately not among the stores (amended 2026-06-12 from the original spec, which kept a stored HTML copy alongside each report): the HTML view is a presentation artifact rendered on demand in the webview from the canonical Markdown, and PDF export prints that same rendered view, so a stored copy would have no reader. See [report-structure.md §Presentation Format](report-structure.md#presentation-format-html).
 
 Each report stores:
 - creation timestamp
@@ -65,10 +66,9 @@ Older reports are deleted automatically.
 
 When a report is removed:
 - its Markdown
-- generated HTML
 - metadata
 - associated vector-memory summary references
-are deleted together.
+are deleted together. (There is no HTML to remove — HTML is rendered on demand, never stored; see [§SQLite](#sqlite).)
 
 ### Baseline Snapshots
 

@@ -448,9 +448,9 @@ pub fn generate_report(
 /// artifacts — the canonical Markdown file, its vector-memory summary row, its
 /// baseline-snapshot rows, and finally the report row itself. Durable learnings
 /// survive by `kind`, never touched whatever their `report_id`
-/// (`vector_memory::delete_report_summary`). Generated HTML is not a persisted
-/// artifact today (`storage::init_schema` defers HTML tables); if an HTML slice
-/// ever lands, it must add its leg here.
+/// (`vector_memory::delete_report_summary`). There is no HTML leg — HTML is
+/// rendered on demand for display/PDF and never persisted (settled 2026-06-12),
+/// so the cascade has nothing to remove.
 ///
 /// Per-evictee best-effort, never failing the run. The file leg goes first: a
 /// file that is already gone counts as removed, but any other removal failure

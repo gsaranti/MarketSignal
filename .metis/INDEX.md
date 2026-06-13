@@ -16,7 +16,7 @@
 - Bull / Bear / Balanced postures — agents.md §Bull Analyst, §Bear Analyst, §Balanced Analyst
 - Fixed internal models (non-configurable) — agents.md §Fixed Internal Models
   - Headline Filtering = OpenAI GPT-5 mini — agents.md §Headline Filtering; weekly-report-workflow.md §Step 7
-  - Data Extraction = OpenAI GPT-5 mini — agents.md §Data Extraction
+  - Data Extraction — reserved, no model stage runs (inbox parsing is deterministic; GPT-5 mini is the named conditional follow-on) — agents.md §Data Extraction
   - Research Routing = Anthropic Claude Sonnet — agents.md §Research Routing; weekly-report-workflow.md §Step 8
   - Embeddings = OpenAI text-embedding-3-large — storage.md §Embeddings
 - User-configurable agent models — configuration.md §Agent Model Configuration
@@ -92,8 +92,8 @@
 
 ## Storage & retention
 - Markdown file storage + naming — storage.md §Markdown File Storage; export.md §Export Naming
-- SQLite (records, metadata, HTML, job history, warnings, baseline snapshots) — storage.md §SQLite
-- market_regime fixed vocabulary (6 labels) — storage.md §SQLite
+- SQLite (records, metadata, job history, warnings, baseline snapshots; HTML deliberately not stored) — storage.md §SQLite
+- risk_posture / market_cycle fixed vocabularies (two orthogonal axes, 3 labels each) — storage.md §SQLite
 - Report summary metadata schema (JSON, required/optional fields) — storage.md §Report Summary Metadata Schema
 - Retention (30 reports, cascade delete) — storage.md §SQLite
 - Per-report baseline snapshots + change view (deltas vs previous report) — storage.md §Baseline Snapshots; weekly-report-workflow.md §Step 3

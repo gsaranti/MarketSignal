@@ -179,18 +179,14 @@ Rationale:
 
 ### Data Extraction
 
-Uses:
+Amended 2026-06-12: no model-driven extraction stage runs in the pipeline. Research-inbox documents are parsed per format and condensed deterministically — bounded excerpts cut at the nearest paragraph or line seam (falling back to a hard character cut), with any truncation disclosed in the excerpt itself — rather than summarized or extracted by a model (see [research-documents.md §Processing at Job Start](research-documents.md#processing-at-job-start)). News rides through the pipeline as headlines and snippets and is filtered, not extracted (see [Headline Filtering](#headline-filtering)).
+
+A GPT-5 mini extraction stage remains reserved as the named follow-on if oversized research documents prove common in practice. It would replace only the head-truncation of documents that overflow the per-document excerpt budget — recovering the content a deterministic excerpt would otherwise cut — with nothing else in the workflow changing.
+
+Reserved model:
 - OpenAI GPT-5 mini
 
-Purpose:
-- extracting structured information from:
-  - news articles
-  - PDFs
-  - research documents
-  - earnings summaries
-  - macro reports
-
-Rationale:
+Rationale (for the reserved stage):
 - reliable structured output
 - inexpensive
 - good tool/function calling performance

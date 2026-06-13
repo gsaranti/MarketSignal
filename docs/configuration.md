@@ -45,7 +45,7 @@ Scheduled jobs are enabled by default, but jobs cannot execute until all require
 
 A newly installed application therefore begins in an incomplete configuration state until the user finishes model and API setup.
 
-For the non-configurable models used by fixed internal pipeline stages (headline filtering, data extraction, research routing), see [agents.md §Fixed Internal Models](agents.md#fixed-internal-models).
+For the non-configurable models used by fixed internal pipeline stages (headline filtering, research routing), see [agents.md §Fixed Internal Models](agents.md#fixed-internal-models).
 
 ## API Tokens
 
@@ -53,7 +53,7 @@ Both API tokens are always required, regardless of which models the user selects
 - OpenAI API token
 - Anthropic API token
 
-Both are mandatory because the fixed internal pipeline stages always use both providers — OpenAI for headline filtering and data extraction (GPT-5 mini) and for vector-memory embeddings (`text-embedding-3-large`), and Anthropic for research routing (Claude Sonnet). See [agents.md §Fixed Internal Models](agents.md#fixed-internal-models) and [storage.md §Embeddings](storage.md#embeddings). Because the only model providers are OpenAI and Anthropic, the user's agent model selection adds no token requirement beyond these two.
+Both are mandatory because the fixed internal pipeline stages always use both providers — OpenAI for headline filtering (GPT-5 mini) and for vector-memory embeddings (`text-embedding-3-large`), and Anthropic for research routing (Claude Sonnet). See [agents.md §Fixed Internal Models](agents.md#fixed-internal-models) and [storage.md §Embeddings](storage.md#embeddings). Because the only model providers are OpenAI and Anthropic, the user's agent model selection adds no token requirement beyond these two.
 
 If either token is missing:
 - saving the configuration is disabled

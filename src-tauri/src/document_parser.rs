@@ -5,13 +5,11 @@
 //!
 //! The whole stage is deterministic — full text is extracted per format, then
 //! condensed by pure char-cap rules rather than a model. `docs/agents.md §Data
-//! Extraction` assigns structured extraction from research documents to a fixed
-//! GPT-5-mini stage; this slice ships the deterministic foundation that stage
-//! would need anyway (parsing, normalization, bounding, the fail-soft archive
-//! flow), with head-truncation standing in for model summarization. The
-//! extraction stage is the named follow-on if oversized documents prove common —
-//! it would replace [`truncate_at_seam`]'s "take the head" for docs that
-//! overflow [`PER_DOC_CHAR_CAP`], with nothing else changing.
+//! Extraction` records this decision (amended 2026-06-12): no model extraction
+//! stage runs; a GPT-5-mini stage stays reserved as the named follow-on if
+//! oversized documents prove common — it would replace [`truncate_at_seam`]'s
+//! "take the head" for docs that overflow [`PER_DOC_CHAR_CAP`], with nothing
+//! else changing.
 //!
 //! Failure semantics (`docs/research-documents.md §Parse Failures`): a document
 //! that cannot be parsed never fails the job — it is skipped with a recorded

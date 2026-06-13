@@ -26,7 +26,7 @@ Supported formats:
 At the start of each scheduled job:
 1. The application checks the inbox folder.
 2. If the folder is empty, the job continues normally.
-3. If documents exist, the application parses them and prepares them as professional research sources.
+3. If documents exist, the application parses them per format and condenses each into a bounded excerpt deterministically — no model stage runs, and any truncation is disclosed in the excerpt itself (amended 2026-06-12; see [agents.md §Data Extraction](agents.md#data-extraction)).
 4. Parsed document content is supplied to the report workflow and may be included in the research packet.
 5. After successful processing, the application automatically moves the documents into:
 ```text

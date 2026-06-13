@@ -318,7 +318,7 @@ It may include:
 - source links
 - recent Markdown report context
 - relevant vector memory (the research-informed pull from [Step 10](#step-10-retrieve-vector-memory-post-research))
-- research inbox summaries
+- condensed research-inbox document excerpts (deterministically condensed; see [research-documents.md](research-documents.md))
 - unresolved thesis questions
 - upcoming events that may affect the market thesis
 
@@ -384,7 +384,7 @@ For what is stored in each store, retention rules, and deletion behavior, see [s
 
 ## Step 18: Generate HTML and Update UI
 
-After the Markdown report is saved, the application generates the HTML version from Markdown.
+After the Markdown report is saved, the application updates the Latest Report View and Recent Reports Sidebar. The presentation layer renders the HTML version from Markdown on demand whenever a report is displayed or exported; HTML is never persisted (amended 2026-06-12; see [storage.md §SQLite](storage.md#sqlite)).
 
 The HTML version is used for:
 - in-app rendering
@@ -393,5 +393,3 @@ The HTML version is used for:
 - PDF generation
 
 Agents never ingest or reason over HTML reports. See [report-structure.md](report-structure.md) for the canonical Markdown-vs-HTML rule.
-
-After HTML generation succeeds, the application updates the Latest Report View and Recent Reports Sidebar.
