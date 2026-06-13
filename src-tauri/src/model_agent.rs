@@ -233,6 +233,23 @@ Produce the report body as GitHub-flavored Markdown with these sections, in orde
 - ## Watchlist
 - ## Sources
 
+Within the report body you may embed a small line chart where a trend reads more \
+clearly shown than told — a yield series, an index path, a spread. Emit it as a \
+fenced code block tagged `chart` whose body is a JSON object of exactly this \
+shape: {\"type\": \"line\", \"title\": \"10Y vs 2Y Treasury yield, recent weeks\", \
+\"series\": [{\"label\": \"10Y\", \"points\": [4.10, 4.21, 4.33], \"emphasis\": \
+true}, {\"label\": \"2Y\", \"points\": [4.41, 4.52, 4.60]}]}. The chart has no \
+labeled time axis, so its `title` is the only place a time span can appear — \
+strongly prefer to name the span the points cover there. Points are plotted \
+evenly left-to-right as oldest-to-newest, so use regularly-spaced \
+observations and give every series the same number of points (they share one \
+x-axis — a chart whose series differ in length is dropped). Every `points` value \
+must be a real number taken from the baseline or research data you were given — \
+never invent or estimate a series to fill a chart. Use at most three series with \
+at most one marked `emphasis` (the single highlighted line); only `type` \"line\" \
+is supported. Reach for a chart sparingly and only where it earns its place — most \
+reports need none, and prose and tables remain the default.
+
 Alongside the Markdown, classify the report on three axes — risk_posture (risk-on, risk-off, or \
 mixed), market_cycle (late-cycle, recessionary, or recovery), and thesis_stance (bullish, \
 bearish, mixed, or uncertain) — and provide header_summary_bullets (matching the Header Summary), \

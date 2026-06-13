@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import MarkdownIt from "markdown-it";
 import Icon from "./Icon.vue";
+import { renderChart } from "../renderChart";
 import { localDate } from "../format";
 import type { GeneratedReport } from "../types";
 
@@ -40,6 +41,22 @@ md.renderer.rules.table_open = (tokens, idx, options, _env, self) =>
   `<div class="prose-table-wrap">${self.renderToken(tokens, idx, options)}`;
 md.renderer.rules.table_close = (tokens, idx, options, _env, self) =>
   `${self.renderToken(tokens, idx, options)}</div>`;
+
+// Intercept ```chart fences and render their JSON body as a restrained inline-SVG
+// line figure (see ../renderChart). On any parse/validation failure renderChart
+// returns null and we fall back to the default code-block rendering, so a
+// malformed chart degrades to its raw source rather than blanking the report.
+const defaultFence =
+  md.renderer.rules.fence ??
+  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const token = tokens[idx];
+  if (token.info.trim() === "chart") {
+    const svg = renderChart(token.content);
+    if (svg !== null) return svg;
+  }
+  return defaultFence(tokens, idx, options, env, self);
+};
 
 const renderedHtml = computed(() =>
   props.report ? md.render(props.report.markdown) : ""

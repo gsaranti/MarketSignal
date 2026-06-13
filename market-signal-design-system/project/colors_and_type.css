@@ -316,6 +316,55 @@ html, body {
 }
 .prose-table-wrap > table { margin: 0; }
 
+/* ---- Charts — restrained inline-SVG line figures embedded via ```chart fences.
+   A design-package EXTENSION: the package ships only the YieldChart reference in
+   ui_kits/market_signal_desktop/LatestReport.jsx (a static, light-theme-only
+   mock); this generalizes its register — monochrome ink series, one accent-
+   emphasized line, a hairline grid, no fills / markers / shadows. Token-only so
+   it resolves in both themes; non-scaling strokes keep the hairlines crisp as the
+   SVG scales to the reading column. Geometry + class hooks are emitted by
+   src/renderChart.ts. ---- */
+.prose .chart-figure { margin: 24px 0; }
+.prose .chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.prose .chart-grid {
+  stroke: var(--hairline-soft);
+  stroke-width: 0.5px;
+  vector-effect: non-scaling-stroke;
+}
+.prose .chart-line {
+  fill: none;
+  stroke: var(--ink-2);
+  stroke-width: 1.25px;
+  vector-effect: non-scaling-stroke;
+}
+.prose .chart-line--accent { stroke: var(--accent); }
+.prose .chart-tick {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-size: 9px;
+  fill: var(--ink-3);
+}
+.prose .chart-endlabel {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  fill: var(--ink);
+}
+/* Accent label as TEXT uses --accent-text (clears AA in dark); the line keeps
+   --accent (fills/rings token). */
+.prose .chart-endlabel--accent { fill: var(--accent-text); }
+.prose .chart-caption {
+  margin-top: 8px;
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
 /* ---- Display moments — report title + date line ---- */
 .report-title {
   font-family: var(--font-serif);
