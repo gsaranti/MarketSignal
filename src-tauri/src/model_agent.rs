@@ -246,17 +246,27 @@ observations and give every series the same number of points (they share one \
 x-axis — a chart whose series differ in length is dropped). Every `points` value \
 must be a real number taken from the baseline or research data you were given — \
 never invent or estimate a series to fill a chart. Use at most three series with \
-at most one marked `emphasis` (the single highlighted series). All three `type`s \
-plot observations over time — each point is a time step (oldest-to-newest), never \
-a named category: \"line\" for a trend or path (a yield series, an index path, a \
-spread); \"bar\" for a single signed quantity tracked across successive periods, \
-shown as bars above / below zero (an index's week-by-week return, the weekly \
-change in jobless claims); and \"area\" for a single magnitude over time (a credit \
-spread, a volatility level). Bar and area are drawn from a zero baseline, so reach \
-for them when the data is signed or sits near zero, and use a line for levels far \
-from zero. There is no category axis: a cross-sectional comparison (returns by \
-sector, today's movers) is a table, not a chart — do not encode categories as \
-chart points. \
+at most one marked `emphasis` (the single highlighted series). By default each \
+point is a time step (oldest-to-newest): \"line\" for a trend or path (a yield \
+series, an index path, a spread); \"bar\" for a single signed quantity tracked \
+across successive periods, shown as bars above / below zero (an index's week-by- \
+week return, the weekly change in jobless claims); and \"area\" for a single \
+magnitude over time (a credit spread, a volatility level). Bar and area are drawn \
+from a zero baseline, so reach for them when the data is signed or sits near zero, \
+and use a line for levels far from zero. \
+A \"bar\" chart may instead carry an optional `categories` array — one label per \
+point — to compare a quantity across named groups rather than over time (returns \
+by sector, the week's biggest movers): {\"type\": \"bar\", \"title\": \"Sector \
+returns, week to date (%)\", \"categories\": [\"Tech\", \"Energy\", \
+\"Financials\", \"Utilities\"], \"series\": [{\"points\": [2.1, -1.4, 0.6, \
+-0.3]}]}. Give exactly one category per point (at most 16). Keep each category \
+label short and mutually distinct — the axis truncates a long label to a few \
+characters, so two that share a prefix collide (use \"Cons. Disc.\" / \"Staples\", \
+not \"Consumer Discretionary\" / \"Consumer Staples\", which both clip to the same \
+stub). `categories` applies only to \"bar\" — a line or area connecting unrelated \
+groups would imply a trend that isn't there. Without `categories` there is no \
+category axis: a cross-sectional comparison is a categorical bar or a table, never \
+time-step points labeled as if they were categories. \
 Reach for a chart sparingly and only where it earns its place — most \
 reports need none, and prose and tables remain the default.
 

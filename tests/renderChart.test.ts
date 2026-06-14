@@ -38,6 +38,19 @@ function tickValues(svg: string): number[] {
 
 const near = (a: number, b: number, eps = 0.6): boolean => Math.abs(a - b) <= eps;
 
+// Each chart-xlabel's x, text-anchor, and text content, in document order.
+function xLabels(svg: string): Array<{ x: number; anchor: string; text: string }> {
+  const out: Array<{ x: number; anchor: string; text: string }> = [];
+  const re =
+    /<text class="chart-xlabel"[^>]*\bx="([-\d.]+)"[^>]*text-anchor="(\w+)"[^>]*>([^<]*)<\/text>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(svg)) !== null) out.push({ x: +m[1], anchor: m[2], text: m[3] });
+  return out;
+}
+
+const viewBoxH = (svg: string): number =>
+  +(svg.match(/viewBox="0 0 \d+ (\d+)"/)?.[1] ?? "0");
+
 // --- line --------------------------------------------------------------------
 
 test("line: renders a stroked path, no fill / bar / baseline", () => {
@@ -170,6 +183,122 @@ test("area: end labels ride the right edge (anchor end)", () => {
   assert.match(out, /<text class="chart-endlabel"[^>]*text-anchor="end"/);
 });
 
+// --- categorical bar (optional x-axis category labels) -----------------------
+
+test("categorical bar: one centered x-axis label per category, left-to-right", () => {
+  const out = renderChart(
+    spec({
+      type: "bar",
+      title: "Sector returns",
+      categories: ["Tech", "Energy", "Financials"],
+      series: [{ points: [2.1, -1.4, 0.6] }],
+    }),
+  );
+  assert.ok(out !== null);
+  const labels = xLabels(out);
+  assert.deepEqual(
+    labels.map((l) => l.text),
+    ["Tech", "Energy", "Financials"],
+  );
+  assert.ok(labels.every((l) => l.anchor === "middle"));
+  // Centered under evenly-divided slots: strictly increasing, all inside canvas.
+  assert.ok(labels[0].x < labels[1].x && labels[1].x < labels[2].x);
+  assert.ok(labels[0].x > 0 && labels[2].x < 720);
+});
+
+test("categorical bar: enumerated aria (category/value pairs, no direction)", () => {
+  const out = renderChart(
+    spec({
+      type: "bar",
+      title: "Sector returns",
+      categories: ["Tech", "Energy"],
+      series: [{ points: [2.1, -1.4] }],
+    }),
+  );
+  assert.ok(out !== null);
+  const aria = ariaLabel(out);
+  assert.match(aria, /^Bar chart: Sector returns\. /);
+  assert.ok(aria.includes("Tech 2.10") && aria.includes("Energy -1.40"));
+  // A left-to-right "direction" is meaningless across categories.
+  assert.doesNotMatch(aria, /rising|falling|flat/);
+});
+
+test("categorical bar: taller viewBox for the label band; non-categorical keeps H", () => {
+  const cat = renderChart(
+    spec({ type: "bar", categories: ["A", "B"], series: [{ points: [1, 2] }] }),
+  );
+  const plain = renderChart(spec({ type: "bar", series: [{ points: [1, 2] }] }));
+  assert.ok(cat !== null && plain !== null);
+  assert.equal(viewBoxH(plain), 130, "non-categorical bar keeps the plain height");
+  assert.ok(viewBoxH(cat) > viewBoxH(plain), "categorical figure reserves an x-axis band");
+});
+
+test("categorical bar: still a zero-anchored bar (categories only relabel slots)", () => {
+  const out = renderChart(
+    spec({ type: "bar", categories: ["A", "B"], series: [{ points: [3, -2] }] }),
+  );
+  assert.ok(out !== null);
+  assert.ok(baselineY(out) !== null, "baseline present");
+  assert.equal(rects(out).length, 2);
+});
+
+test("categorical bar: dense wide labels truncate but stay within the canvas", () => {
+  const categories = Array.from({ length: 16 }, () => "W".repeat(40));
+  const points = categories.map(() => 1);
+  const out = renderChart(spec({ type: "bar", categories, series: [{ points }] }));
+  assert.ok(out !== null);
+  const labels = xLabels(out);
+  assert.equal(labels.length, 16);
+  for (const l of labels) {
+    assert.ok(l.text.endsWith("…"), "wide label is ellipsized");
+    const halfW = (l.text.length * 10) / 2; // 10 = LABEL_CHAR_W upper bound
+    assert.ok(
+      l.x - halfW >= 0 && l.x + halfW <= 720,
+      `label at x=${l.x} stays within the viewBox`,
+    );
+  }
+});
+
+test("categorical bar: multi-series enumerates each series in aria, one label per slot", () => {
+  const out = renderChart(
+    spec({
+      type: "bar",
+      categories: ["A", "B"],
+      series: [
+        { label: "This week", points: [1, 2] },
+        { label: "Last week", points: [0, 3], emphasis: true },
+      ],
+    }),
+  );
+  assert.ok(out !== null);
+  const aria = ariaLabel(out);
+  assert.ok(aria.includes("This week: A 1.00, B 2.00"));
+  assert.ok(aria.includes("Last week: A 0.00, B 3.00"));
+  assert.equal(xLabels(out).length, 2, "one x-label per slot, not per bar");
+  assert.equal(rects(out).length, 4, "two series x two slots");
+});
+
+test("categorical bar: trims surrounding whitespace so it can't eat the label budget", () => {
+  const out = renderChart(
+    spec({ type: "bar", categories: ["  Tech", "Energy  "], series: [{ points: [1, 2] }] }),
+  );
+  assert.ok(out !== null);
+  assert.deepEqual(
+    xLabels(out).map((l) => l.text),
+    ["Tech", "Energy"],
+  );
+  assert.ok(ariaLabel(out).includes("Tech 1.00") && ariaLabel(out).includes("Energy 2.00"));
+});
+
+test("categorical bar: escapes category labels in svg text and aria (v-html safety)", () => {
+  const out = renderChart(
+    spec({ type: "bar", categories: ['<b>x', '"y'], series: [{ points: [1, 2] }] }),
+  );
+  assert.ok(out !== null);
+  assert.doesNotMatch(out, /<b>x/);
+  assert.doesNotMatch(ariaLabel(out), /[<>"]/);
+});
+
 // --- validation / fail-soft (every bad spec -> null -> code-block fallback) ---
 
 test("rejects malformed / out-of-contract specs", () => {
@@ -187,6 +316,28 @@ test("rejects malformed / out-of-contract specs", () => {
     ["unequal lengths", spec({ type: "bar", series: [{ points: [1, 2] }, { points: [1, 2, 3] }] })],
     ["two emphasis", spec({ type: "area", series: [{ points: [1, 2], emphasis: true }, { points: [3, 4], emphasis: true }] })],
     ["non-string label", spec({ type: "line", series: [{ label: 5, points: [1, 2] }] })],
+  ];
+  for (const [name, body] of bad) assert.equal(renderChart(body), null, name);
+});
+
+test("rejects invalid categories specs", () => {
+  const bad: Array<[string, string]> = [
+    ["categories on line", spec({ type: "line", categories: ["A", "B"], series: [{ points: [1, 2] }] })],
+    ["categories on area", spec({ type: "area", categories: ["A", "B"], series: [{ points: [1, 2] }] })],
+    ["empty categories", spec({ type: "bar", categories: [], series: [{ points: [1, 2] }] })],
+    ["categories not array", spec({ type: "bar", categories: "A,B", series: [{ points: [1, 2] }] })],
+    ["length mismatch", spec({ type: "bar", categories: ["A", "B", "C"], series: [{ points: [1, 2] }] })],
+    ["non-string category", spec({ type: "bar", categories: ["A", 2], series: [{ points: [1, 2] }] })],
+    ["empty-string category", spec({ type: "bar", categories: ["A", ""], series: [{ points: [1, 2] }] })],
+    ["whitespace-only category", spec({ type: "bar", categories: ["A", "  "], series: [{ points: [1, 2] }] })],
+    [
+      "too many categories",
+      spec({
+        type: "bar",
+        categories: Array.from({ length: 17 }, (_, i) => `c${i}`),
+        series: [{ points: Array.from({ length: 17 }, (_, i) => i) }],
+      }),
+    ],
   ];
   for (const [name, body] of bad) assert.equal(renderChart(body), null, name);
 });

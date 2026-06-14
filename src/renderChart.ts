@@ -29,6 +29,12 @@ interface ChartSpec {
   type: ChartType;
   title?: string;
   series: ChartSeries[];
+  // Optional per-chart x-axis category labels (one per slot, shared across
+  // series). Bar-only: a category axis makes each slot a named cross-sectional
+  // comparison ("returns by sector") rather than a time step — so it carries
+  // labeled x-ticks and enumerated aria, and it stays a discrete bar (a line or
+  // area connecting unrelated categories would imply a trend that isn't real).
+  categories?: string[];
 }
 
 // Robustness caps — the journal-figure register is a handful of series over a
@@ -36,6 +42,12 @@ interface ChartSpec {
 const MAX_SERIES = 3;
 const MAX_POINTS = 120;
 const MIN_POINTS = 2;
+// Categorical bars carry a labeled x-axis, so the legibility ceiling is far
+// lower than a time series' MAX_POINTS — past this the per-slot labels truncate
+// to nothing. 16 clears the 11 GICS sectors with headroom. Because a category
+// list must match the series' point count, this also caps a categorical bar's
+// point count (a 120-bar categorical chart is rejected, falling back to a table).
+const MAX_CATEGORIES = 16;
 
 // SVG geometry in viewBox units — mirrors the reference (720×130, 8px padding).
 // The SVG scales uniformly to the reading column (width:100%, height:auto in
@@ -43,6 +55,14 @@ const MIN_POINTS = 2;
 const W = 720;
 const H = 130;
 const PAD = 8;
+// Extra height appended below the plot for the x-axis category labels (only when
+// `categories` is present). Reserved as a taller viewBox rather than by shrinking
+// the plot, so the line/bar/area domain, grid, ticks, and end-label geometry are
+// untouched — the band simply hangs below the existing H.
+const X_AXIS_BAND = 16;
+// Baseline of the x-axis category text within that band (from the top of the
+// plot, i.e. H + this), leaving descender room below the 9px label.
+const X_LABEL_BASELINE = 11;
 
 // Bar layout in viewBox units — the grouped bars fill ~2/3 of each categorical
 // slot (leaving inter-slot gaps), with a ~1u gutter between bars within a group
@@ -128,7 +148,24 @@ function parseSpec(content: string): ChartSpec | null {
   // an empty caption or a dangling "Line chart: ." in the aria description.
   const rawTitle = typeof obj.title === "string" ? obj.title.trim() : "";
   const title = rawTitle.length > 0 ? rawTitle : undefined;
-  return { type, title, series };
+
+  // Optional category x-axis. Bar-only (line/area imply a continuous axis), one
+  // non-empty string per slot — so its length must match the shared point count,
+  // and it's capped at MAX_CATEGORIES. Any violation rejects the whole spec.
+  // Labels are trimmed (like the title) so surrounding whitespace can't eat the
+  // per-slot truncation budget and render a label as "   …".
+  let categories: string[] | undefined;
+  if (obj.categories !== undefined) {
+    if (type !== "bar") return null;
+    if (!Array.isArray(obj.categories) || obj.categories.length === 0) return null;
+    if (obj.categories.length > MAX_CATEGORIES) return null;
+    if (!obj.categories.every((c) => typeof c === "string" && c.trim().length > 0))
+      return null;
+    if (obj.categories.length !== series[0].points.length) return null;
+    categories = (obj.categories as string[]).map((c) => c.trim());
+  }
+
+  return { type, title, series, categories };
 }
 
 // Compact coordinate — 2 decimals, no trailing-zero noise in the path string.
@@ -355,21 +392,64 @@ function buildSvg(spec: ChartSpec): string {
     )
     .join("");
 
+  // X-axis category labels (categorical bars only) — one centered under each
+  // slot. Each is truncated to the slot's char budget (the conservative
+  // LABEL_CHAR_W upper bound) so a centered label is provably contained within
+  // its slot, hence within the canvas, no matter how many categories there are;
+  // the full name still reaches assistive tech via the aria description below.
+  //
+  // KNOWN LIMITATION (accepted): truncation is by prefix, so two long labels that
+  // share a prefix collide to the same stub for sighted readers (e.g. "Consumer
+  // Discretionary" / "Consumer Staples" → "Consu…"); the full names survive only
+  // in aria. The model prompt steers toward short, distinct tags, but compliance
+  // isn't guaranteed. We deliberately don't auto-fall-back on a detected collision
+  // — the truncation budget is a conservative width *estimate*, so it would over-
+  // trigger on labels that actually render distinctly, and the code-block fallback
+  // (unzipped categories/points arrays) reads worse than a truncated chart. The
+  // genuine fix is angled/rotated ticks (deferred); legibility of the rendered
+  // glyphs is a GUI both-theme-pass concern, not unit-testable here.
+  const xLabels =
+    spec.categories !== undefined
+      ? spec.categories
+          .map((cat, i) => {
+            const slot = (W - 2 * PAD) / spec.categories!.length;
+            const cx = PAD + (i + 0.5) * slot;
+            const maxChars = Math.max(1, Math.floor(slot / LABEL_CHAR_W));
+            const display =
+              cat.length > maxChars ? `${cat.slice(0, maxChars - 1)}…` : cat;
+            return `<text class="chart-xlabel" x="${coord(cx)}" y="${coord(H + X_LABEL_BASELINE)}" text-anchor="middle">${escapeXml(display)}</text>`;
+          })
+          .join("")
+      : "";
+
   // A screen-reader description — the SVG is injected via v-html and is otherwise
-  // invisible to assistive tech, so summarize each series' span and direction;
-  // an unlabeled chart then still announces its data, not just "Line chart".
+  // invisible to assistive tech, so summarize each series. A time series gets its
+  // span and direction; a categorical bar instead enumerates each category and
+  // its value (a left-to-right "direction" is meaningless across categories).
   // Escape each agent-controlled field on its own (not the composed string) so a
-  // later edit can't silently skip escaping; numeric spans carry no metacharacters.
+  // later edit can't silently skip escaping; numeric values carry no metacharacters.
   const safeTitle = spec.title !== undefined ? escapeXml(spec.title) : "";
-  const seriesDesc = spec.series
-    .map((s, i) => {
-      const name = escapeXml(s.label ?? `series ${i + 1}`);
-      const start = s.points[0];
-      const end = s.points[s.points.length - 1];
-      const direction = end > start ? "rising" : end < start ? "falling" : "flat";
-      return `${name} from ${formatTick(start)} to ${formatTick(end)}, ${direction}`;
-    })
-    .join("; ");
+  const seriesDesc =
+    spec.categories !== undefined
+      ? spec.series
+          .map((s, i) => {
+            const name = escapeXml(s.label ?? `series ${i + 1}`);
+            const pairs = spec.categories!
+              .map((cat, k) => `${escapeXml(cat)} ${formatTick(s.points[k])}`)
+              .join(", ");
+            return `${name}: ${pairs}`;
+          })
+          .join("; ")
+      : spec.series
+          .map((s, i) => {
+            const name = escapeXml(s.label ?? `series ${i + 1}`);
+            const start = s.points[0];
+            const end = s.points[s.points.length - 1];
+            const direction =
+              end > start ? "rising" : end < start ? "falling" : "flat";
+            return `${name} from ${formatTick(start)} to ${formatTick(end)}, ${direction}`;
+          })
+          .join("; ");
   const typeName =
     spec.type === "bar"
       ? "Bar chart"
@@ -383,14 +463,18 @@ function buildSvg(spec: ChartSpec): string {
       ? `<figcaption class="chart-caption">${escapeXml(spec.title)}</figcaption>`
       : "";
 
+  // A category x-axis needs room below the plot; line/time charts keep H exactly.
+  const vbH = spec.categories !== undefined ? H + X_AXIS_BAND : H;
+
   return (
     `<figure class="chart-figure">` +
-    `<svg class="chart-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${aria}">` +
+    `<svg class="chart-svg" viewBox="0 0 ${W} ${vbH}" role="img" aria-label="${aria}">` +
     grid +
     geometry +
     baseline +
     ticks +
     endLabels +
+    xLabels +
     `</svg>` +
     caption +
     `</figure>`

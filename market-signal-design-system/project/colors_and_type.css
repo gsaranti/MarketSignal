@@ -374,6 +374,15 @@ html, body {
   font-size: 9px;
   fill: var(--ink-3);
 }
+/* X-axis category labels (categorical bars only). Names, not numbers, so sans —
+   the quiet companion to the mono y-ticks. A category x-axis broadens the chart
+   block's no-x-axis register, the same kind of noted design-package extension as
+   the bar/area flat fills; kept token-only so it resolves in both themes. */
+.prose .chart-xlabel {
+  font-family: var(--font-sans);
+  font-size: 9px;
+  fill: var(--ink-3);
+}
 .prose .chart-endlabel {
   font-family: var(--font-sans);
   font-size: 10px;
