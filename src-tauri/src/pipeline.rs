@@ -704,23 +704,28 @@ fn bail_if_cancelled(ctx: &RunContext) -> Result<()> {
 /// Best-effort change view for this run: read the previous report's baseline snapshot and
 /// diff this run's scan against it (`baseline_delta::compute_deltas`), anchored on the
 /// elapsed interval `as_of − captured_at`. Returns `None` — and the run proceeds without
-/// deltas — for the first report, any DB error, or a prior blob that won't decode. The
-/// deltas are additive context, never a gate, so every failure degrades to `None` rather
-/// than propagating.
+/// deltas — for the first report (no prior snapshot), any DB error, or a prior blob that
+/// won't decode. The deltas are additive context, never a gate, so every failure degrades
+/// to `None`. Routed through the shared [`read_db_fail_soft`] shell (`Option::default()`
+/// is `None`), so a DB-level failure now leaves the same labeled stderr trace as the
+/// other fail-soft reads — only an absent prior snapshot is the silent, expected `None`.
 fn compute_prior_deltas(
     db_path: &std::path::Path,
     current: &BaselineMarketData,
     as_of: chrono::DateTime<chrono::Utc>,
 ) -> Option<BaselineDeltas> {
-    let conn = storage::open(db_path).ok()?;
-    storage::init_schema(&conn).ok()?;
-    let (captured_at, baseline_json) = storage::latest_baseline_snapshot(&conn).ok()??;
-    let prior: BaselineMarketData = serde_json::from_str(&baseline_json).ok()?;
-    let prior_at = chrono::DateTime::parse_from_rfc3339(&captured_at)
-        .ok()?
-        .with_timezone(&chrono::Utc);
-    let elapsed_days = (as_of - prior_at).num_seconds() as f64 / 86_400.0;
-    Some(baseline_delta::compute_deltas(current, &prior, elapsed_days))
+    read_db_fail_soft(db_path, "prior-delta read", |conn| {
+        let Some((captured_at, baseline_json)) = storage::latest_baseline_snapshot(conn)? else {
+            return Ok(None);
+        };
+        let prior: BaselineMarketData =
+            serde_json::from_str(&baseline_json).context("decoding prior baseline snapshot")?;
+        let prior_at = chrono::DateTime::parse_from_rfc3339(&captured_at)
+            .context("parsing prior snapshot captured_at")?
+            .with_timezone(&chrono::Utc);
+        let elapsed_days = (as_of - prior_at).num_seconds() as f64 / 86_400.0;
+        Ok(Some(baseline_delta::compute_deltas(current, &prior, elapsed_days)))
+    })
 }
 
 /// Bounded count of recent report summaries handed to research routing — the
@@ -737,28 +742,30 @@ const ROUTER_RECENT_REPORTS: u32 = 3;
 /// the change view above, never a gate: a first report or any DB failure degrades
 /// to empty rather than propagating.
 fn load_recent_report_context(db_path: &std::path::Path) -> Vec<ReportSummary> {
-    read_recent_fail_soft(db_path, "research", |conn| {
+    read_db_fail_soft(db_path, "research recent-report context", |conn| {
         storage::list_recent_reports(conn, ROUTER_RECENT_REPORTS)
     })
 }
 
-/// Run a best-effort recent-report DB read, degrading to the empty collection with a
-/// `label`-prefixed stderr log on any failure. Owns the shared shape behind the two
-/// recent-report context loaders — open + init_schema + the caller's `list` — so each
-/// loader carries only its own cap, query, and (for the audit's) post-read body work.
-/// Best-effort like the deltas read: never gates the run.
-fn read_recent_fail_soft<T: Default>(
+/// Run a best-effort `open + init_schema + read` against the report DB, degrading to
+/// `T::default()` with a `context`-prefixed stderr log on any failure. Owns the shared
+/// shape behind every fail-soft DB read in the pipeline — the recent-report context
+/// loaders, the vector-memory pulls, and the prior-delta change view — so each caller
+/// carries only its own query and post-read work, never the open/init/degrade shell.
+/// Never gates the run: `T::default()` is the empty `Vec`/`None`/zero the caller falls
+/// back to, and the labeled stderr line is the only trace a degraded read leaves.
+fn read_db_fail_soft<T: Default>(
     db_path: &std::path::Path,
-    label: &str,
-    list: impl FnOnce(&rusqlite::Connection) -> Result<T>,
+    context: &str,
+    read: impl FnOnce(&rusqlite::Connection) -> Result<T>,
 ) -> T {
-    let read = || -> Result<T> {
+    let run = || -> Result<T> {
         let conn = storage::open(db_path)?;
         storage::init_schema(&conn)?;
-        list(&conn)
+        read(&conn)
     };
-    read().unwrap_or_else(|e| {
-        eprintln!("{label}: recent-report context degraded to empty: {e:#}");
+    run().unwrap_or_else(|e| {
+        eprintln!("{context}: degraded to empty: {e:#}");
         T::default()
     })
 }
@@ -786,7 +793,7 @@ const RECENT_REPORT_BODY_CAP: usize = 12_000;
 /// to empty, an unreadable Markdown file drops that one report's body to empty (the
 /// summary still carries) — never gates the run.
 fn load_recent_reports_for_audit(db_path: &std::path::Path) -> Vec<RecentReport> {
-    let rows = read_recent_fail_soft(db_path, "main-agent", |conn| {
+    let rows = read_db_fail_soft(db_path, "main-agent recent-report context", |conn| {
         storage::list_recent_reports_with_paths(conn, MAIN_AGENT_RECENT_REPORTS)
     });
     rows.into_iter()
@@ -872,11 +879,13 @@ fn bounded_query(query: &str, max_bytes: usize) -> &str {
 /// across both kinds, and return the hits in their shared prompt form, most
 /// relevant first. Additive context like the reads above, never a gate — any
 /// failure (an unopenable store, a flaky embedding call) degrades to empty with
-/// a stderr note (`label` names which pull). Two cheap guards keep early runs
-/// free: an empty query has nothing to recall against, and an empty store can't
-/// return hits — both skip the paid embedding call entirely. The query is capped
-/// at [`MEMORY_QUERY_MAX_BYTES`] before embedding, so an oversized one is
-/// truncated rather than rejected by the provider and lost.
+/// a stderr note (`label` names which pull), via the shared
+/// [`read_db_fail_soft`] shell. Two cheap guards keep early runs free: an empty
+/// query has nothing to recall against (checked here, before the DB is even
+/// opened), and an empty store can't return hits — both skip the paid embedding
+/// call entirely. The query is capped at [`MEMORY_QUERY_MAX_BYTES`] before
+/// embedding, so an oversized one is truncated rather than rejected by the
+/// provider and lost.
 fn retrieve_memory(
     db_path: &std::path::Path,
     embedder: &dyn Embedder,
@@ -886,19 +895,13 @@ fn retrieve_memory(
     if query.trim().is_empty() {
         return Vec::new();
     }
-    let pull = || -> Result<Vec<String>> {
-        let conn = storage::open(db_path)?;
-        storage::init_schema(&conn)?;
-        if vector_memory::count_memory(&conn)? == 0 {
+    read_db_fail_soft(db_path, &format!("research {label} memory retrieval"), |conn| {
+        if vector_memory::count_memory(conn)? == 0 {
             return Ok(Vec::new());
         }
         let embedding = embedder.embed(bounded_query(query, MEMORY_QUERY_MAX_BYTES))?;
-        let hits = vector_memory::search_memory(&conn, &embedding, None, MEMORY_TOP_K)?;
+        let hits = vector_memory::search_memory(conn, &embedding, None, MEMORY_TOP_K)?;
         Ok(hits.iter().map(vector_memory::MemoryHit::prompt_fragment).collect())
-    };
-    pull().unwrap_or_else(|e| {
-        eprintln!("research: {label} memory retrieval degraded to empty: {e:#}");
-        Vec::new()
     })
 }
 
@@ -1470,6 +1473,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing-subdir").join("market_signal.db");
         assert!(load_recent_report_context(&path).is_empty());
+    }
+
+    #[test]
+    fn compute_prior_deltas_degrades_to_none_on_an_unopenable_db() {
+        // Same fail-soft arm as the recent-report read, now that the change view shares
+        // the `read_db_fail_soft` shell: an unopenable db degrades to `None` (no deltas)
+        // rather than erroring — the deltas are additive context, never a gate.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing-subdir").join("market_signal.db");
+        let as_of = chrono::DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(compute_prior_deltas(&path, &BaselineMarketData::default(), as_of).is_none());
     }
 
     // ---- Step-2 recent prior-report context (`load_recent_reports_for_audit`) ----
