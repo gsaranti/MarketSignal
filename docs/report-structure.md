@@ -19,13 +19,27 @@ HTML reports are generated from Markdown and are presentation-only artifacts use
 - chart display
 - PDF generation
 
-The Markdown→HTML conversion uses **markdown-it** as the renderer. Styling, chart rendering, and other presentation-layer choices are MVP-internal implementation details and not specified here.
+The Markdown→HTML conversion uses **markdown-it** as the renderer. The *visual* presentation-layer choices — chart styling, colour, geometry, and motion — are MVP-internal details owned by the design system and the renderer and are not specified here. The Markdown **authoring conventions** the report format relies on — notably the embedded-`chart` block below — are part of the format and are recorded here.
 
 HTML is rendered on demand in the application webview and is never persisted — Markdown is the only stored report format (amended 2026-06-12; see [storage.md §SQLite](storage.md#sqlite)).
 
 Agents never ingest or reason over HTML reports.
 
+### Embedded charts
+
+A report's Markdown may embed a small chart — a fenced code block tagged `chart` whose body is a JSON object, which the presentation layer renders to a restrained inline SVG — where the shape of the data reads more clearly than prose (a yield series, an index path, a sector-return comparison). Three forms render:
+
+- **`line`** — a trend or path over time (a yield series, an index path, a spread).
+- **`bar`** — a signed quantity tracked across successive periods (a week-by-week return), grown from a zero baseline; or, with an optional `categories` array, a cross-sectional comparison across named groups (returns by sector).
+- **`area`** — a single magnitude over time (a credit spread, a volatility level), grown from a zero baseline.
+
+Rendering is **fail-soft**: a malformed or unrenderable block falls back to its raw code block and never breaks the surrounding report. The `chart` block is the only way a chart enters a report — the agent emits it as part of its Markdown; the application layer never injects one.
+
+The agent-facing JSON shape and the authoring rules the agent is given (series count, one `emphasis`, `categories`) live in the main-agent prompt (`src-tauri/src/model_agent.rs`); the renderer `src/renderChart.ts` is the authoritative validator and the source of truth for what renders versus falls back — it enforces some bounds the prompt does not state (e.g. the per-series point-count limits). Chart styling extends the design system's chart register (`market-signal-design-system/project/colors_and_type.css`, `.prose .chart-*`). These remain the sources of truth — this note records the convention, not its schema.
+
 ## Standard Report Structure
+
+Within these sections the agent may embed charts via the [`chart` fenced-block convention](#embedded-charts) above.
 
 ```text
 # Weekly Market Report
