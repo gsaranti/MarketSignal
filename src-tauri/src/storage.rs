@@ -122,6 +122,27 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+    // Truncation telemetry: one row per inbox document the Step-6 parser had to
+    // head-truncate, persisted per report so overflow frequency can be judged
+    // before ever building the reserved GPT-5-mini extraction stage
+    // (`docs/agents.md §Data Extraction`). On the `baseline_snapshots` model
+    // (per-report, joined by `report_id`), but deliberately *accumulating* —
+    // `record_document_truncations` appends, it never clears the table the way
+    // `replace_parse_failures` does, so prior runs' evidence survives. Bounded
+    // by the report-retention cascade (`delete_report_truncations`), not a
+    // self-cap, so history rides along with the reports it describes.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS document_truncations (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id      TEXT NOT NULL,
+            captured_at    TEXT NOT NULL,
+            name           TEXT NOT NULL,
+            format         TEXT NOT NULL,
+            original_chars INTEGER NOT NULL,
+            kept_chars     INTEGER NOT NULL
+        )",
+        [],
+    )?;
     Ok(())
 }
 
@@ -180,6 +201,45 @@ pub fn list_parse_failures(conn: &Connection) -> Result<Vec<ParseFailureRow>> {
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// One head-truncation event: the report it was captured under, the app-minted
+/// scan time, and the document's identity (`name`/`format`) with its full vs.
+/// kept char counts. Append-only telemetry (`document_truncations`) — distinct
+/// from the replace-wholesale [`ParseFailureRow`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentTruncationRow {
+    pub report_id: String,
+    pub captured_at: String,
+    pub name: String,
+    pub format: String,
+    pub original_chars: u64,
+    pub kept_chars: u64,
+}
+
+/// Append this run's truncation rows to `document_truncations`. Unlike
+/// [`replace_parse_failures`], there is no leading `DELETE` — the table
+/// accumulates across runs so overflow frequency can be judged over time. One
+/// transaction so a reader never sees a half-written run.
+pub fn record_document_truncations(conn: &Connection, rows: &[DocumentTruncationRow]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for row in rows {
+        tx.execute(
+            "INSERT INTO document_truncations
+                (report_id, captured_at, name, format, original_chars, kept_chars)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                row.report_id,
+                row.captured_at,
+                row.name,
+                row.format,
+                row.original_chars as i64,
+                row.kept_chars as i64
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Read a value from `app_settings`, or `None` when the key has never been set.
@@ -356,6 +416,19 @@ pub fn delete_report_row(conn: &Connection, report_id: &str) -> Result<()> {
 pub fn delete_report_baseline_snapshots(conn: &Connection, report_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM baseline_snapshots WHERE report_id = ?1",
+        [report_id],
+    )?;
+    Ok(())
+}
+
+/// Delete one report's truncation-telemetry rows — the cascade leg that bounds
+/// the accumulating `document_truncations` table. Unlike the baseline-snapshot
+/// table there is no independent self-cap, so this report-id join is the *only*
+/// thing that reaps these rows: a row lives exactly as long as the report it
+/// describes.
+pub fn delete_report_truncations(conn: &Connection, report_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM document_truncations WHERE report_id = ?1",
         [report_id],
     )?;
     Ok(())
@@ -671,5 +744,46 @@ mod tests {
         // An empty pass clears the table.
         replace_parse_failures(&conn, &[]).unwrap();
         assert!(list_parse_failures(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn document_truncations_accumulate_across_runs_and_cascade_by_report() {
+        let conn = mem();
+        let row = |report_id: &str, name: &str| DocumentTruncationRow {
+            report_id: report_id.into(),
+            captured_at: "2026-06-15T09:00:00+00:00".into(),
+            name: name.into(),
+            format: "pdf".into(),
+            original_chars: 30_000,
+            kept_chars: 12_000,
+        };
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+
+        // Two runs, each appending one row — the second must NOT clear the first
+        // (the divergence from the replace-wholesale parse-failures table).
+        record_document_truncations(&conn, &[row("rep-1", "big.pdf")]).unwrap();
+        record_document_truncations(&conn, &[row("rep-2", "huge.pdf")]).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM document_truncations"), 2);
+
+        // Field round-trip on the first row.
+        let (name, original, kept): (String, i64, i64) = conn
+            .query_row(
+                "SELECT name, original_chars, kept_chars FROM document_truncations
+                 WHERE report_id = 'rep-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "big.pdf");
+        assert_eq!(original, 30_000);
+        assert_eq!(kept, 12_000);
+
+        // The cascade leg reaps only the named report's rows.
+        delete_report_truncations(&conn, "rep-1").unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM document_truncations"), 1);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM document_truncations WHERE report_id = 'rep-2'"),
+            1
+        );
     }
 }

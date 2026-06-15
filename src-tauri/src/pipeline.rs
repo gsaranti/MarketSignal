@@ -336,6 +336,27 @@ pub fn generate_report(
             }
         }
 
+        // Best-effort: append truncation telemetry for any inbox document the
+        // Step-6 parser had to head-truncate — the accumulating evidence base
+        // that gates the reserved GPT-5-mini extraction stage. Same pure-local,
+        // no-paid-call posture as the snapshot block above (so no cancellation
+        // poll), and the same swallow-and-log discipline: a write failure must
+        // never lose a report that already persisted. No row when nothing
+        // overflowed, so the common case touches no DB.
+        let truncations = collect_document_truncations(
+            &inbox_docs,
+            &summary.report_id,
+            &as_of.to_rfc3339(),
+        );
+        if !truncations.is_empty() {
+            if let Err(e) = storage::record_document_truncations(&conn, &truncations) {
+                eprintln!(
+                    "truncation-telemetry persist failed for report {}: {e:#}",
+                    summary.report_id
+                );
+            }
+        }
+
         // Best-effort: embed the structured summary and store it in vector memory —
         // Step 17's "report summary to vector memory" leg (SQLite-backed `vector_memory`).
         // Same posture as the snapshot block above: a flaky embedding call or a store
@@ -418,8 +439,9 @@ pub fn generate_report(
 /// The 30-report retention cascade (`docs/storage.md §SQLite`): every report
 /// beyond the newest [`storage::REPORT_RETENTION`] is deleted together with its
 /// artifacts — the canonical Markdown file, its vector-memory summary row, its
-/// baseline-snapshot rows, and finally the report row itself. Durable learnings
-/// survive by `kind`, never touched whatever their `report_id`
+/// baseline-snapshot rows, its truncation-telemetry rows, and finally the report
+/// row itself. Durable learnings survive by `kind`, never touched whatever their
+/// `report_id`
 /// (`vector_memory::delete_report_summary`). There is no HTML leg — HTML is
 /// rendered on demand for display/PDF and never persisted (settled 2026-06-12),
 /// so the cascade has nothing to remove.
@@ -428,11 +450,12 @@ pub fn generate_report(
 /// file that is already gone counts as removed, but any other removal failure
 /// skips that evictee's DB legs — the row keeps pointing at the still-existing
 /// file and the evictee is simply re-selected on the next run's cascade —
-/// rather than deleting the row and orphaning an untracked file. The three DB
+/// rather than deleting the row and orphaning an untracked file. The four DB
 /// legs then commit or roll back as one transaction: re-selection reads the
 /// `reports` table, so deleting the row while an earlier leg failed would
-/// strand that leg's rows with no retry path — and the vector summary row has
-/// no other reaper, leaving stale memory retrievable forever. A rolled-back
+/// strand that leg's rows with no retry path — and neither the vector summary
+/// row nor the truncation-telemetry rows have any other reaper, leaving stale
+/// memory retrievable forever and truncation rows unbounded. A rolled-back
 /// evictee is re-selected next run, where its already-removed file reads as
 /// NotFound and the DB legs run again.
 fn prune_old_reports(conn: &rusqlite::Connection) {
@@ -467,13 +490,17 @@ fn prune_old_reports(conn: &rusqlite::Connection) {
     }
 }
 
-/// One evictee's three SQLite legs — vector summary, baseline snapshots, report
-/// row — committed together or not at all (`unchecked_transaction`: the helpers
-/// take `&Connection`, and `Transaction` derefs to it).
+/// One evictee's four SQLite legs — vector summary, baseline snapshots,
+/// truncation telemetry, report row — committed together or not at all
+/// (`unchecked_transaction`: the helpers take `&Connection`, and `Transaction`
+/// derefs to it). The truncation leg is load-bearing, not belt-and-braces like
+/// the snapshot leg: `document_truncations` has no self-cap, so this report-id
+/// join is the only thing that bounds it.
 fn delete_report_db_rows(conn: &rusqlite::Connection, report_id: &str) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     vector_memory::delete_report_summary(&tx, report_id)?;
     storage::delete_report_baseline_snapshots(&tx, report_id)?;
+    storage::delete_report_truncations(&tx, report_id)?;
     storage::delete_report_row(&tx, report_id)?;
     tx.commit()?;
     Ok(())
@@ -687,6 +714,31 @@ fn record_parse_failures(
         })
         .collect();
     storage::replace_parse_failures(&conn, &rows)
+}
+
+/// Build the truncation-telemetry rows for this run: one per inbox document the
+/// parser had to head-truncate (`ParsedResearchDoc::truncated`), stamped with
+/// the report it persisted under and the run's `captured_at` scan time. The pure
+/// derivation is split out as the unit-test seam (the persist-step call that
+/// writes these is best-effort and untestable in isolation). Whole documents
+/// produce no row, so an inbox that never overflows leaves the table untouched.
+fn collect_document_truncations(
+    inbox_docs: &[ParsedResearchDoc],
+    report_id: &str,
+    captured_at: &str,
+) -> Vec<storage::DocumentTruncationRow> {
+    inbox_docs
+        .iter()
+        .filter(|doc| doc.truncated())
+        .map(|doc| storage::DocumentTruncationRow {
+            report_id: report_id.to_string(),
+            captured_at: captured_at.to_string(),
+            name: doc.name.clone(),
+            format: doc.format.clone(),
+            original_chars: doc.original_chars as u64,
+            kept_chars: doc.text.chars().count() as u64,
+        })
+        .collect()
 }
 
 /// Cancel checkpoint between pipeline stages. A cancel requested mid-run lands
@@ -1971,6 +2023,18 @@ mod tests {
         .unwrap();
         storage::insert_baseline_snapshot(&conn, "old-00", "2026-01-01T00:00:00Z", 1, "{}")
             .unwrap();
+        storage::record_document_truncations(
+            &conn,
+            &[storage::DocumentTruncationRow {
+                report_id: "old-00".into(),
+                captured_at: "2026-01-01T00:00:00Z".into(),
+                name: "big.pdf".into(),
+                format: "pdf".into(),
+                original_chars: 30_000,
+                kept_chars: 12_000,
+            }],
+        )
+        .unwrap();
 
         // Sabotage the *last* DB leg: the summary and snapshot deletes succeed
         // inside the transaction, then the row delete aborts — proving the
@@ -2002,6 +2066,11 @@ mod tests {
             1,
             "the snapshot delete rolled back with the failed row delete"
         );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM document_truncations WHERE report_id = 'old-00'"),
+            1,
+            "the truncation delete rolled back with the failed row delete"
+        );
 
         // Next run, sabotage gone: the same evictee is re-selected and fully
         // evicted — the retry path the rollback preserves.
@@ -2019,6 +2088,39 @@ mod tests {
             count("SELECT COUNT(*) FROM baseline_snapshots WHERE report_id = 'old-00'"),
             0
         );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM document_truncations WHERE report_id = 'old-00'"),
+            0
+        );
+    }
+
+    #[test]
+    fn collect_document_truncations_keeps_only_head_cut_docs() {
+        let doc = |name: &str, text: &str, original: usize| ParsedResearchDoc {
+            name: name.into(),
+            format: "pdf".into(),
+            size_bytes: 0,
+            modified: None,
+            text: text.into(),
+            original_chars: original,
+        };
+        // One head-cut doc (text shorter than the original) and one whole doc
+        // (text length == original) — only the first is telemetry.
+        let docs = vec![
+            doc("big.pdf", "kept head", 12_000),
+            doc("note.md", "all of it", "all of it".chars().count()),
+        ];
+
+        let rows = collect_document_truncations(&docs, "rep-42", "2026-06-15T09:00:00+00:00");
+
+        assert_eq!(rows.len(), 1, "the whole doc produces no row");
+        let row = &rows[0];
+        assert_eq!(row.report_id, "rep-42");
+        assert_eq!(row.captured_at, "2026-06-15T09:00:00+00:00");
+        assert_eq!(row.name, "big.pdf");
+        assert_eq!(row.format, "pdf");
+        assert_eq!(row.original_chars, 12_000);
+        assert_eq!(row.kept_chars, "kept head".chars().count() as u64);
     }
 
     /// An embedder that panics if called — proves the memory pulls are skipped
