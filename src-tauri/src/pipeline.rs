@@ -737,14 +737,29 @@ const ROUTER_RECENT_REPORTS: u32 = 3;
 /// the change view above, never a gate: a first report or any DB failure degrades
 /// to empty rather than propagating.
 fn load_recent_report_context(db_path: &std::path::Path) -> Vec<ReportSummary> {
-    let read = || -> Result<Vec<ReportSummary>> {
+    read_recent_fail_soft(db_path, "research", |conn| {
+        storage::list_recent_reports(conn, ROUTER_RECENT_REPORTS)
+    })
+}
+
+/// Run a best-effort recent-report DB read, degrading to the empty collection with a
+/// `label`-prefixed stderr log on any failure. Owns the shared shape behind the two
+/// recent-report context loaders — open + init_schema + the caller's `list` — so each
+/// loader carries only its own cap, query, and (for the audit's) post-read body work.
+/// Best-effort like the deltas read: never gates the run.
+fn read_recent_fail_soft<T: Default>(
+    db_path: &std::path::Path,
+    label: &str,
+    list: impl FnOnce(&rusqlite::Connection) -> Result<T>,
+) -> T {
+    let read = || -> Result<T> {
         let conn = storage::open(db_path)?;
         storage::init_schema(&conn)?;
-        storage::list_recent_reports(&conn, ROUTER_RECENT_REPORTS)
+        list(&conn)
     };
     read().unwrap_or_else(|e| {
-        eprintln!("research: recent-report context degraded to empty: {e:#}");
-        Vec::new()
+        eprintln!("{label}: recent-report context degraded to empty: {e:#}");
+        T::default()
     })
 }
 
@@ -771,14 +786,8 @@ const RECENT_REPORT_BODY_CAP: usize = 12_000;
 /// to empty, an unreadable Markdown file drops that one report's body to empty (the
 /// summary still carries) — never gates the run.
 fn load_recent_reports_for_audit(db_path: &std::path::Path) -> Vec<RecentReport> {
-    let read = || -> Result<Vec<(ReportSummary, String)>> {
-        let conn = storage::open(db_path)?;
-        storage::init_schema(&conn)?;
-        storage::list_recent_reports_with_paths(&conn, MAIN_AGENT_RECENT_REPORTS)
-    };
-    let rows = read().unwrap_or_else(|e| {
-        eprintln!("main-agent: Step-2 recent-report context degraded to empty: {e:#}");
-        Vec::new()
+    let rows = read_recent_fail_soft(db_path, "main-agent", |conn| {
+        storage::list_recent_reports_with_paths(conn, MAIN_AGENT_RECENT_REPORTS)
     });
     rows.into_iter()
         .map(|(summary, path)| {

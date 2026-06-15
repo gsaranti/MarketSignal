@@ -213,26 +213,24 @@ pub const RECENT_REPORTS_LIMIT: u32 = 30;
 /// List the most recent reports, newest first, capped at `limit`. The stored
 /// `summary_json` blob is the whole `ReportSummary`, so it round-trips back into
 /// the struct; the `rowid` tiebreak keeps same-timestamp ordering stable
-/// (insertion order) rather than arbitrary.
+/// (insertion order) rather than arbitrary. A thin projection over
+/// [`list_recent_reports_with_paths`] (it owns the query) — the Markdown path is
+/// dropped for callers that only need the summary.
 pub fn list_recent_reports(conn: &Connection, limit: u32) -> Result<Vec<ReportSummary>> {
-    let mut stmt = conn.prepare(
-        "SELECT summary_json FROM reports
-         ORDER BY created_at DESC, rowid DESC
-         LIMIT ?1",
-    )?;
-    let rows = stmt.query_map([limit], |row| row.get::<_, String>(0))?;
-    let mut summaries = Vec::new();
-    for json in rows {
-        summaries.push(serde_json::from_str(&json?)?);
-    }
-    Ok(summaries)
+    Ok(list_recent_reports_with_paths(conn, limit)?
+        .into_iter()
+        .map(|(summary, _path)| summary)
+        .collect())
 }
 
 /// List the most recent reports as `(summary, markdown_path)`, newest first,
-/// capped at `limit`. Same ordering and `summary_json` round-trip as
-/// [`list_recent_reports`], but also returns the canonical Markdown path so the
-/// application layer (`pipeline::load_recent_reports_for_audit`) can read each
-/// report's body for the main agent's Step-2 prior-report context.
+/// capped at `limit`. The stored `summary_json` blob is the whole `ReportSummary`,
+/// so it round-trips back into the struct; the `rowid` tiebreak keeps
+/// same-timestamp ordering stable (insertion order) rather than arbitrary. Returns
+/// the canonical Markdown path alongside so the application layer
+/// (`pipeline::load_recent_reports_for_audit`) can read each report's body for the
+/// main agent's Step-2 prior-report context; [`list_recent_reports`] is the
+/// summary-only projection over this query.
 pub fn list_recent_reports_with_paths(
     conn: &Connection,
     limit: u32,
