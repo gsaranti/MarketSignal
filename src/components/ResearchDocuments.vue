@@ -124,14 +124,20 @@ function formatDate(iso: string | null): string {
 
       <ul v-else class="docs-list">
         <li
-          v-for="doc in documents"
+          v-for="(doc, index) in documents"
           :key="doc.name"
           class="docs-row"
           :class="{ 'is-confirming': confirmingName === doc.name }"
         >
           <Icon name="file" :size="14" color="var(--ink-2)" />
           <div class="docs-row-main">
-            <div class="docs-row-name">{{ doc.name }}</div>
+            <!-- Full name on hover: the name clips with ellipsis (nowrap), so a
+                 long file name is otherwise unreadable on the failed row the user
+                 must act on. Same affordance as the chart labels' truncation
+                 <title>, but applied unconditionally — measuring per-row truncation
+                 would need a ResizeObserver; a redundant tooltip on a name that
+                 happens to fit is the accepted tradeoff. -->
+            <div class="docs-row-name" :title="doc.name">{{ doc.name }}</div>
             <div class="docs-row-meta">
               {{ formatFormat(doc.format) }} · {{ formatSize(doc.size_bytes) }}
               <span v-if="!doc.supported" class="docs-tag">unsupported</span>
@@ -140,7 +146,15 @@ function formatDate(iso: string | null): string {
             <!-- The last job pass's failure reason (docs/research-documents.md
                  §Parse Failures): the file stays in the inbox and is retried next
                  run unless fixed or deleted. -->
-            <p v-if="doc.parse_error" class="docs-row-error">{{ doc.parse_error }}</p>
+            <!-- id keys off the row index, not doc.name (the list :key), since a
+                 file name isn't a safe/unique id token. The describedby on Delete
+                 below is computed from the same index in this row scope, so the
+                 id/reference pair never drifts even though list identity is by name. -->
+            <p
+              v-if="doc.parse_error"
+              :id="`parse-error-${index}`"
+              class="docs-row-error"
+            >{{ doc.parse_error }}</p>
           </div>
           <div class="docs-row-date">{{ formatDate(doc.modified) }}</div>
           <div class="docs-row-actions">
@@ -160,11 +174,15 @@ function formatDate(iso: string | null): string {
                 Delete
               </button>
             </template>
+            <!-- On a failed row, tie the reason to the control that acts on it,
+                 so reaching Delete by keyboard/SR also surfaces why the file is
+                 flagged (the reason text is otherwise only in row reading order). -->
             <button
               v-else
               type="button"
               class="row-action"
               :aria-label="`Delete ${doc.name}`"
+              :aria-describedby="doc.parse_error ? `parse-error-${index}` : undefined"
               @click="confirmingName = doc.name"
             >
               Delete
