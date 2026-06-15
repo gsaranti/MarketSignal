@@ -12,7 +12,6 @@ On **`main` @ `59e20b1`**, synced with `origin/main`, **nothing in flight**. Fro
 
 ## Open questions
 
-- **BUILD.md correction owed** — the Testing-approach / tuning-bundle notes imply `Settings` calls `invoke`; only `App.vue` does. Worth a one-line fix so the next planner doesn't re-plan against the false premise.
 - **Review nit (deferred, non-blocking):** `Settings.spec.ts`/`App.spec.ts` share module-level fixtures (`settingsView`/`baseProps`) spread *shallowly* — nested objects shared by ref; fine until a future test mutates `wrapper.props().settings.*` in place.
 - *(carried)* tuning bundle (`MEMORY_TOP_K=5`, `LEARNINGS_PER_REPORT_CAP=5`, `LEARNING_DEDUP_THRESHOLD=0.93`, `MAIN_AGENT_RECENT_REPORTS=3`, `RECENT_REPORT_BODY_CAP=12_000`, inbox caps, `COVERAGE_FLOOR=0.6`) unvalidated vs real `text-embedding-3-large` geometry; `StubEmbedder` unfit for cosine-threshold tests (promote a shared `BasisEmbedder`/`DistinctEmbedder`).
 - *(carried)* two recent-report loaders (router summaries / main-agent bodies) share shape but no code — consolidate when a third consumer appears; `fmp_baseline_smoke` unrun since quota reset; tracker live-SSE smoke; esbuild/vite advisory (3 high-sev, vite-8 breaking) parked; wiremock / in-loop offline gap; conditional GPT-5-mini extraction stage; optional ` ```chart ` doc note.
@@ -20,4 +19,4 @@ On **`main` @ `59e20b1`**, synced with `origin/main`, **nothing in flight**. Fro
 
 ## Where to start
 
-Nothing owed. The Tauri mock now makes `invoke`-calling SFCs coverable, so the most concrete next build item is **deeper `App.vue` behavioral specs** reusing the helper (run-tracker event handling via the mocked `listen`; report selection/`load_report`; the cancel path). Lower-effort alternatives: the **loader consolidation**, the ` ```chart ` doc note, or the **BUILD.md `Settings`-doesn't-call-`invoke` correction**. Heavier: **tuning-bundle validation** (needs the separating test embedder first).
+Nothing owed. The Tauri mock now makes `invoke`-calling SFCs coverable, so the most concrete next build item is **deeper `App.vue` behavioral specs** reusing the helper (run-tracker event handling via the mocked `listen`; report selection/`load_report`; the cancel path). Lower-effort alternatives: the **loader consolidation** or the ` ```chart ` doc note. Heavier: **tuning-bundle validation** (needs the separating test embedder first).
