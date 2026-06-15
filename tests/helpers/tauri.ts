@@ -85,3 +85,22 @@ export function makeInvokeRouter(
 
 // A no-op `UnlistenFn` — the resolved value of both `listen` and `onFocusChanged`.
 export const unlisten = (): void => {};
+
+// Capture the callback a spec's mocked `listen` registered for an event, so the
+// spec can drive App's run tracker by feeding it `ProgressMessage`s the way the
+// backend would over the "job-progress" channel. App registers its listeners in
+// `onMounted`, so call this only after the mount's promises have flushed. Stays
+// `vi`-free (reads the mock's `.calls` structurally) so the helper keeps its
+// import-order-agnostic posture.
+type ListenLike = { mock: { calls: unknown[][] } };
+export function emitterFor(
+  listenMock: ListenLike,
+  event: string
+): (payload: unknown) => void {
+  const call = listenMock.mock.calls.find((c) => c[0] === event);
+  if (!call) {
+    throw new Error(`tauri test mock: no listener registered for "${event}"`);
+  }
+  const cb = call[1] as (e: { payload: unknown }) => void;
+  return (payload: unknown) => cb({ payload });
+}
