@@ -259,11 +259,14 @@ point — to compare a quantity across named groups rather than over time (retur
 by sector, the week's biggest movers): {\"type\": \"bar\", \"title\": \"Sector \
 returns, week to date (%)\", \"categories\": [\"Tech\", \"Energy\", \
 \"Financials\", \"Utilities\"], \"series\": [{\"points\": [2.1, -1.4, 0.6, \
--0.3]}]}. Give exactly one category per point (at most 16). Keep each category \
-label short and mutually distinct — the axis truncates a long label to a few \
-characters, so two that share a prefix collide (use \"Cons. Disc.\" / \"Staples\", \
-not \"Consumer Discretionary\" / \"Consumer Staples\", which both clip to the same \
-stub). `categories` applies only to \"bar\" — a line or area connecting unrelated \
+-0.3]}]}. A categorical bar shows at most two series — for a two-series comparison \
+(e.g. this week vs. last) give each series a short, distinct `label` and mark one \
+`emphasis`, so the legend names which colour is which; for three or more series, \
+use a table. Give exactly one category per point (at most 16). Prefer short, distinct category \
+labels — a long name is shortened on the axis (its full text stays available on \
+hover and to assistive tech), and short labels read most cleanly, so \"Cons. \
+Disc.\" / \"Staples\" is better than \"Consumer Discretionary\" / \"Consumer \
+Staples\" where you can. `categories` applies only to \"bar\" — a line or area connecting unrelated \
 groups would imply a trend that isn't there. Without `categories` there is no \
 category axis: a cross-sectional comparison is a categorical bar or a table, never \
 time-step points labeled as if they were categories. \

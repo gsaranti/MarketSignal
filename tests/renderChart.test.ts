@@ -42,7 +42,7 @@ const near = (a: number, b: number, eps = 0.6): boolean => Math.abs(a - b) <= ep
 function xLabels(svg: string): Array<{ x: number; anchor: string; text: string }> {
   const out: Array<{ x: number; anchor: string; text: string }> = [];
   const re =
-    /<text class="chart-xlabel"[^>]*\bx="([-\d.]+)"[^>]*text-anchor="(\w+)"[^>]*>([^<]*)<\/text>/g;
+    /<text class="chart-xlabel"[^>]*\bx="([-\d.]+)"[^>]*text-anchor="(\w+)"[^>]*>(?:<title>[^<]*<\/title>)?([^<]*)<\/text>/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(svg)) !== null) out.push({ x: +m[1], anchor: m[2], text: m[3] });
   return out;
@@ -50,6 +50,17 @@ function xLabels(svg: string): Array<{ x: number; anchor: string; text: string }
 
 const viewBoxH = (svg: string): number =>
   +(svg.match(/viewBox="0 0 \d+ (\d+)"/)?.[1] ?? "0");
+
+// The left edge of the y-tick label column. Ticks are anchored end at x=W-4=716
+// in 9px mono (~TICK_CHAR_W=6 viewBox units/char); plotted data must stay left of
+// this to clear the tick values. Mirrors the renderer's gutter sizing.
+function tickLeftEdge(svg: string): number {
+  const TICK_CHAR_W = 6;
+  const lens = [...svg.matchAll(/<text class="chart-tick"[^>]*>([^<]+)<\/text>/g)].map(
+    (m) => m[1].length,
+  );
+  return 716 - Math.max(...lens) * TICK_CHAR_W;
+}
 
 // --- line --------------------------------------------------------------------
 
@@ -299,6 +310,198 @@ test("categorical bar: escapes category labels in svg text and aria (v-html safe
   assert.doesNotMatch(ariaLabel(out), /[<>"]/);
 });
 
+test("categorical bar: labels stagger across two rows (even upper, odd lower)", () => {
+  const categories = ["A", "B", "C", "D", "E"];
+  const out = renderChart(
+    spec({ type: "bar", categories, series: [{ points: [1, 2, 3, 4, 5] }] }),
+  );
+  assert.ok(out !== null);
+  // Each x-label's y in document (category) order.
+  const ys = [...out.matchAll(/<text class="chart-xlabel"[^>]*\by="([-\d.]+)"/g)].map(
+    (m) => +m[1],
+  );
+  assert.equal(ys.length, 5);
+  const upper = ys[0];
+  const lower = ys[1];
+  assert.ok(lower > upper, "the odd-index row sits below the even-index row");
+  // Even indices all share the upper baseline; odd indices the single lower one.
+  assert.equal(ys[2], upper);
+  assert.equal(ys[4], upper);
+  assert.equal(ys[3], lower);
+});
+
+test("categorical bar: common-prefix names stay distinct at high cardinality (P2 fix)", () => {
+  // The 11 GICS sectors — the canonical cross-section. The two Consumer sectors
+  // used to collide on a single "Consu…" stub; the two-row budget must keep them
+  // distinct for sighted readers (the whole point of the stagger).
+  const categories = [
+    "Information Technology", "Health Care", "Financials",
+    "Consumer Discretionary", "Communication Services", "Industrials",
+    "Consumer Staples", "Energy", "Utilities", "Real Estate", "Materials",
+  ];
+  const out = renderChart(
+    spec({ type: "bar", categories, series: [{ points: categories.map((_, i) => i - 5) }] }),
+  );
+  assert.ok(out !== null);
+  const texts = xLabels(out).map((l) => l.text);
+  const disc = texts[3]; // Consumer Discretionary
+  const stap = texts[6]; // Consumer Staples
+  assert.ok(disc.startsWith("Consumer ") && stap.startsWith("Consumer "));
+  assert.notEqual(disc, stap, "the two Consumer sectors must not collide on one stub");
+  // The full names still reach assistive tech.
+  assert.ok(ariaLabel(out).includes("Consumer Discretionary") && ariaLabel(out).includes("Consumer Staples"));
+});
+
+test("categorical bar: truncation leaves no trailing space before the ellipsis", () => {
+  // A mid-word cut right after a space used to render "Real …" (a gap before …).
+  const categories = ["Real Estate", ...Array.from({ length: 13 }, (_, i) => `S${i}`)];
+  const out = renderChart(
+    spec({ type: "bar", categories, series: [{ points: categories.map(() => 1) }] }),
+  );
+  assert.ok(out !== null);
+  const first = xLabels(out)[0].text;
+  assert.ok(first.endsWith("…"), "the dense edge label is truncated");
+  assert.doesNotMatch(first, / …$/, "no space before the ellipsis");
+  assert.equal(first, "Real…");
+});
+
+test("categorical bar: no on-canvas series end-label (the aria carries the series)", () => {
+  const out = renderChart(
+    spec({
+      type: "bar",
+      title: "Sector returns",
+      categories: ["Tech", "Energy"],
+      series: [{ label: "1-week", points: [2, -1] }],
+    }),
+  );
+  assert.ok(out !== null);
+  // The end label would ride over the last bar (low contrast) — categorical bars
+  // suppress it; a plain bar still carries it (see the bar end-label tests above).
+  assert.doesNotMatch(out, /chart-endlabel/);
+  assert.ok(ariaLabel(out).includes("1-week: Tech 2.00, Energy -1.00"));
+});
+
+// --- right-edge y-axis gutter + hover tooltip ---------------------------------
+
+test("bar: bars clear the y-axis tick value column, even for wide tick values", () => {
+  // Regression: the rightmost bar used to grow under the right-edge tick numbers.
+  // Large values widen the tick labels, so the gutter must widen to match them
+  // (the fixed-width gutter could not guarantee this).
+  const out = renderChart(
+    spec({ type: "bar", categories: ["A", "B", "C"], series: [{ points: [120000, 235000, 90000] }] }),
+  );
+  assert.ok(out !== null);
+  const re = /<rect\b[^>]*\bx="([-\d.]+)"[^>]*\bwidth="([-\d.]+)"/g;
+  let m: RegExpExecArray | null;
+  let maxRight = 0;
+  while ((m = re.exec(out)) !== null) maxRight = Math.max(maxRight, +m[1] + +m[2]);
+  assert.ok(
+    maxRight <= tickLeftEdge(out),
+    `rightmost bar edge ${maxRight} must clear the tick column (left edge ${tickLeftEdge(out)})`,
+  );
+});
+
+test("line: the end label clears the y-axis tick value column", () => {
+  // Regression: the "10Y" end label used to overlap the top tick value.
+  const out = renderChart(
+    spec({ type: "line", series: [{ label: "10Y", points: [4.1, 4.5, 4.69] }] }),
+  );
+  assert.ok(out !== null);
+  const m = out.match(/<text class="chart-endlabel"[^>]*\bx="([-\d.]+)"/);
+  assert.ok(m, "end label present");
+  assert.ok(
+    +m[1] <= tickLeftEdge(out),
+    `end label x ${m[1]} must clear the tick column (left edge ${tickLeftEdge(out)})`,
+  );
+});
+
+// --- legend (multi-series categorical bars) ----------------------------------
+
+test("categorical bar: multi-series renders a legend with a swatch + label per series", () => {
+  const out = renderChart(
+    spec({
+      type: "bar",
+      categories: ["A", "B"],
+      series: [
+        { label: "This week", points: [1, 2] },
+        { label: "Last week", points: [0, 3], emphasis: true },
+      ],
+    }),
+  );
+  assert.ok(out !== null);
+  assert.match(out, /class="chart-legend"/);
+  const labels = [
+    ...out.matchAll(/<span class="chart-legend-item"><span class="[^"]*"><\/span>([^<]*)<\/span>/g),
+  ].map((m) => m[1]);
+  assert.deepEqual(labels, ["This week", "Last week"]);
+  // The emphasized series gets the accent swatch; the base series the ink swatch.
+  assert.match(out, /<span class="chart-legend-swatch chart-legend-swatch--accent"><\/span>Last week/);
+  assert.match(out, /<span class="chart-legend-swatch"><\/span>This week/);
+});
+
+test("categorical bar: single-series renders no legend (the title carries it)", () => {
+  const out = renderChart(
+    spec({ type: "bar", title: "Returns", categories: ["A", "B"], series: [{ label: "Return", points: [1, 2] }] }),
+  );
+  assert.ok(out !== null);
+  assert.doesNotMatch(out, /chart-legend/);
+});
+
+test("time-series multi-series bar renders no legend (keeps its end labels)", () => {
+  const out = renderChart(
+    spec({ type: "bar", series: [{ label: "A", points: [1, 2] }, { label: "B", points: [2, 1], emphasis: true }] }),
+  );
+  assert.ok(out !== null);
+  assert.doesNotMatch(out, /chart-legend/);
+  assert.match(out, /chart-endlabel/);
+});
+
+test("categorical bar: the legend escapes series labels (v-html safety)", () => {
+  const out = renderChart(
+    spec({
+      type: "bar",
+      categories: ["A", "B"],
+      series: [
+        { label: "<img src=x onerror=alert(1)>", points: [1, 2] },
+        { label: "ok", points: [2, 1], emphasis: true },
+      ],
+    }),
+  );
+  assert.ok(out !== null);
+  assert.match(out, /class="chart-legend"/);
+  assert.doesNotMatch(out, /<img/);
+});
+
+test("categorical bar: a truncated label carries a full-name <title> tooltip; short ones don't", () => {
+  const categories = [
+    "Information Technology", "Health Care", "Financials", "Consumer Discretionary",
+    "Communication Services", "Industrials", "Consumer Staples", "Energy",
+    "Utilities", "Real Estate", "Materials",
+  ];
+  const out = renderChart(
+    spec({ type: "bar", categories, series: [{ points: categories.map(() => 1) }] }),
+  );
+  assert.ok(out !== null);
+  // A truncated label nests a <title> with the full, escaped name (a hover tooltip).
+  assert.match(out, /<title>Consumer Discretionary<\/title>/);
+  assert.match(out, /<title>Information Technology<\/title>/);
+  // A short, untruncated label (Energy) renders no redundant tooltip.
+  assert.doesNotMatch(out, /<title>Energy<\/title>/);
+  // The xLabels helper still reads the display text past the optional <title>.
+  assert.equal(xLabels(out).length, 11);
+});
+
+test("categorical bar: the <title> tooltip escapes the full name (v-html safety)", () => {
+  // A long, metacharacter-bearing name truncates -> its <title> must be escaped.
+  const evil = "<img src=x onerror=alert(1)> a deliberately long sector label";
+  const out = renderChart(
+    spec({ type: "bar", categories: [evil, "B"], series: [{ points: [1, 2] }] }),
+  );
+  assert.ok(out !== null);
+  assert.match(out, /<title>/, "the long label truncated, emitting a tooltip");
+  assert.doesNotMatch(out, /<img/);
+});
+
 // --- validation / fail-soft (every bad spec -> null -> code-block fallback) ---
 
 test("rejects malformed / out-of-contract specs", () => {
@@ -338,8 +541,27 @@ test("rejects invalid categories specs", () => {
         series: [{ points: Array.from({ length: 17 }, (_, i) => i) }],
       }),
     ],
+    ["three series on a categorical bar", spec({ type: "bar", categories: ["A", "B"], series: [{ points: [1, 2] }, { points: [3, 4] }, { points: [5, 6] }] })],
+    ["two categorical series with no emphasis (both ink, indistinguishable)", spec({ type: "bar", categories: ["A", "B"], series: [{ points: [1, 2] }, { points: [3, 4] }] })],
+    ["two categorical series, one label missing (no legend key)", spec({ type: "bar", categories: ["A", "B"], series: [{ points: [1, 2] }, { label: "Last", points: [3, 4], emphasis: true }] })],
+    ["two categorical series, one label blank (no legend key)", spec({ type: "bar", categories: ["A", "B"], series: [{ label: "  ", points: [1, 2] }, { label: "Last", points: [3, 4], emphasis: true }] })],
+    ["two categorical series with duplicate labels", spec({ type: "bar", categories: ["A", "B"], series: [{ label: "Return", points: [1, 2] }, { label: "Return", points: [3, 4], emphasis: true }] })],
+    ["two categorical series, labels differ only by whitespace", spec({ type: "bar", categories: ["A", "B"], series: [{ label: " Return ", points: [1, 2] }, { label: "Return", points: [3, 4], emphasis: true }] })],
   ];
   for (const [name, body] of bad) assert.equal(renderChart(body), null, name);
+});
+
+test("categorical bar: two series with one emphasized renders; the limit is categorical-only", () => {
+  const cat = renderChart(
+    spec({ type: "bar", categories: ["A", "B"], series: [{ label: "This", points: [1, 2] }, { label: "Last", points: [3, 4], emphasis: true }] }),
+  );
+  assert.ok(cat !== null, "2-series categorical with one emphasis and labels renders");
+  // The two-distinguishable-fills rule is categorical-only — a 3-series TIME-SERIES
+  // bar is unaffected (its per-series end labels disambiguate it).
+  const ts = renderChart(
+    spec({ type: "bar", series: [{ points: [1, 2] }, { points: [3, 4] }, { points: [5, 6], emphasis: true }] }),
+  );
+  assert.ok(ts !== null, "3-series time-series bar still renders");
 });
 
 test("accepts up to MAX_POINTS, rejects beyond", () => {

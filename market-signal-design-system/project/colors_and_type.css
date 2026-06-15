@@ -377,7 +377,11 @@ html, body {
 /* X-axis category labels (categorical bars only). Names, not numbers, so sans —
    the quiet companion to the mono y-ticks. A category x-axis broadens the chart
    block's no-x-axis register, the same kind of noted design-package extension as
-   the bar/area flat fills; kept token-only so it resolves in both themes. */
+   the bar/area flat fills; kept token-only so it resolves in both themes. On a
+   dense cross-section the labels stagger across two rows (geometry in
+   renderChart.ts) so long names keep a legible, horizontal, in-register budget
+   instead of collapsing to ambiguous stubs — no rotation (which would drift
+   toward a dashboard look). */
 .prose .chart-xlabel {
   font-family: var(--font-sans);
   font-size: 9px;
@@ -399,6 +403,32 @@ html, body {
   text-transform: uppercase;
   color: var(--ink-3);
 }
+/* Legend for multi-series categorical bars (which have no per-series end label).
+   A row of small flat fill swatches matching the bars — ink for the base series,
+   accent for the one emphasized series. A noted design-package extension (the
+   chart register otherwise labels series at the line end); squared swatches echo
+   the squared bars, token-only so it resolves in both themes. */
+.prose .chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-bottom: 10px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.prose .chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.prose .chart-legend-swatch {
+  width: 9px;
+  height: 9px;
+  flex-shrink: 0;
+  background: var(--ink-2);
+}
+.prose .chart-legend-swatch--accent { background: var(--accent); }
 
 /* ---- Display moments — report title + date line ---- */
 .report-title {
