@@ -24,11 +24,13 @@ use market_signal_temp_lib::research_router::{
 /// Wraps the stub agent and records the baseline *and* the change view it was handed, so
 /// the tests can assert both the Step-6 gather and the prior-snapshot diff reached the
 /// agent stage. `seen_deltas` is `Some(None)` once the agent ran with no change view,
-/// `Some(Some(_))` once it ran with one.
+/// `Some(Some(_))` once it ran with one. `seen_audit_memory` captures the Step-4
+/// pre-research pull that steers the retrospective audit.
 struct RecordingAgent {
     seen: Mutex<Option<BaselineMarketData>>,
     seen_deltas: Mutex<Option<Option<BaselineDeltas>>>,
     seen_research: Mutex<Option<Option<ResearchPacket>>>,
+    seen_audit_memory: Mutex<Option<Vec<String>>>,
 }
 
 impl RecordingAgent {
@@ -37,6 +39,7 @@ impl RecordingAgent {
             seen: Mutex::new(None),
             seen_deltas: Mutex::new(None),
             seen_research: Mutex::new(None),
+            seen_audit_memory: Mutex::new(None),
         }
     }
 }
@@ -46,6 +49,7 @@ impl MainAgent for RecordingAgent {
         *self.seen.lock().unwrap() = Some(input.baseline.clone());
         *self.seen_deltas.lock().unwrap() = Some(input.deltas.clone());
         *self.seen_research.lock().unwrap() = Some(input.research.clone());
+        *self.seen_audit_memory.lock().unwrap() = Some(input.audit_memory.clone());
         StubMainAgent.generate(input)
     }
 }
@@ -250,8 +254,9 @@ fn second_report_routes_with_the_first_reports_summary() {
 #[test]
 fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
     // The Step-4/10 retrieval slice end to end: run 1 persists its summary to vector
-    // memory (Step 17); run 2's pre-research pull hands it to the router (Step 4) and
-    // its post-research pull carries it into the packet the agent receives (Step 10).
+    // memory (Step 17); run 2's pre-research pull hands it to the router (Step 4) *and*
+    // to the main agent's audit channel (Step 5), and its post-research pull carries it
+    // into the packet the agent receives (Step 10).
     let dir = tempfile::tempdir().unwrap();
     let paths = ReportPaths::under(dir.path());
 
@@ -277,6 +282,13 @@ fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
         .flatten()
         .expect("run 1 carried a packet");
     assert!(packet1.memory.is_empty(), "an empty store recalls nothing for the packet");
+    let audit1 = agent1
+        .seen_audit_memory
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("run 1 reached the agent");
+    assert!(audit1.is_empty(), "an empty store recalls nothing for the audit");
 
     // Run 2: run 1's summary is in the store; both pulls surface it.
     let seen2 = Arc::new(Mutex::new(None));
@@ -316,6 +328,21 @@ fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
         packet2.memory[0].contains("Risk posture:"),
         "the packet fragment is run 1's summary text: {}",
         packet2.memory[0]
+    );
+
+    // The Step-4 pull also reaches the main agent on its own channel — the audit consumer
+    // (distinct from the packet's Step-10 memory above), recalled against run 1's summary.
+    let audit2 = agent2
+        .seen_audit_memory
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("run 2 reached the agent");
+    assert_eq!(audit2.len(), 1, "the Step-4 pull reached the agent's audit channel");
+    assert!(
+        audit2[0].starts_with("[summary · ") && audit2[0].contains("Risk posture:"),
+        "the audit fragment is run 1's summary text: {}",
+        audit2[0]
     );
 
     // And the store still holds exactly the two runs' summaries — retrieval wrote nothing.

@@ -112,6 +112,17 @@ pub struct MainAgentInput {
     /// when a stage degraded to empty. `baseline` and `deltas` ride at the top level here
     /// rather than being read from the packet's own (inert) copies of them.
     pub research: Option<ResearchPacket>,
+    /// The Step-4 pre-research vector-memory pull (`docs/weekly-report-workflow.md
+    /// §Step 4`): memory recalled against the recent report context and current
+    /// measured market state, to steer the **retrospective audit** (`§Step 5`). It is
+    /// the audit's consumer of the same ephemeral pull that also feeds research
+    /// routing — a top-level sibling of `baseline`/`deltas`, deliberately *not* inside
+    /// `research`: the doc's replace-not-merge rule keeps the packet carrying only the
+    /// Step-10 research-informed pull (`§Step 10`), so the two memory pulls reach the
+    /// main agent on separate channels for separate purposes. Empty when nothing was
+    /// recalled (an early run or a retrieval failure), in which case the audit section
+    /// has no prior-report context to work from and is omitted.
+    pub audit_memory: Vec<String>,
 }
 
 /// What the main agent returns: the canonical Markdown body plus the structured

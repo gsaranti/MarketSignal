@@ -213,7 +213,17 @@ and durable learnings retrieved from the system's vector memory against this wee
 Use it for continuity: to strengthen, weaken, or revise the standing thesis, surface historical \
 analogs, and avoid repeating past analytical mistakes. Weigh it as recall, not fresh data — this \
 week's baseline and research evidence take precedence where they conflict, and an absent memory \
-block simply means nothing relevant was recalled. The prompt may also carry `user-supplied \
+block simply means nothing relevant was recalled. A second memory block may appear — `recalled \
+memory for the retrospective audit` — recalled against the recent reports and current market \
+state rather than this week's research. Its `[summary · …]` fragments are prior reports whose \
+stance and risks you can evaluate directionally against what the market actually did — these are \
+what the Retrospective Audit section audits. Its `[learning · …]` fragments are standing lessons: \
+let them shape what the audit scrutinises, and weigh them in the thesis and strategy, but a \
+learning is not itself a prior report to audit. Write the Retrospective Audit section only when \
+this block carries at least one prior summary to check; when it carries only learnings, or is \
+absent, omit the section rather than inventing one — apply those learnings in the thesis and \
+strategy instead. The two memory blocks may overlap; weigh both as recall. The prompt may also \
+carry `user-supplied \
 research documents` — files the user placed in the research inbox, parsed and condensed by the \
 application layer. Treat them as deliberately curated, high-signal sources the user wants \
 weighed; cite them like any other source where they inform the analysis. A truncation marker on \
@@ -295,10 +305,16 @@ const USER_PROMPT: &str =
 /// report in this run's live data rather than its own prior knowledge. An empty
 /// baseline (no data gathered — e.g. an offline smoke) falls back to the bare
 /// instruction so the prompt never carries an empty data block.
+///
+/// `audit_memory` is the Step-4 pre-research vector pull, appended as its own block
+/// to steer the Retrospective Audit — deliberately distinct from the packet's Step-10
+/// research-informed memory block (`docs/weekly-report-workflow.md §Step 10`,
+/// replace-not-merge); the two reach the model on separate channels.
 fn build_user_prompt(
     baseline: &BaselineMarketData,
     deltas: Option<&BaselineDeltas>,
     research: Option<&ResearchPacket>,
+    audit_memory: &[String],
 ) -> String {
     let mut prompt = if baseline == &BaselineMarketData::default() {
         USER_PROMPT.to_string()
@@ -367,6 +383,19 @@ fn build_user_prompt(
                 packet.inbox_summaries.join("\n\n")
             ));
         }
+    }
+
+    // The Step-4 pre-research memory pull, on its own channel (not the packet): the
+    // recall the retrospective audit reasons over. Heading is deliberately distinct
+    // from the Step-10 "retrieved against this week's research" block above so the two
+    // don't read as one. Fragments are blocks (own newlines), so they join on blank
+    // lines. Omitted when empty — an early run or a failed pull leaves the audit with
+    // no prior-report context, which the section instruction reads as "omit the audit".
+    if !audit_memory.is_empty() {
+        prompt.push_str(&format!(
+            "\n\nRecalled memory for the retrospective audit, most relevant first (prior report summaries and durable learnings recalled against the recent reports and current market state):\n{}",
+            audit_memory.join("\n\n")
+        ));
     }
 
     prompt
@@ -864,6 +893,7 @@ impl MainAgent for ModelMainAgent {
             &input.baseline,
             input.deltas.as_ref(),
             input.research.as_ref(),
+            &input.audit_memory,
         );
         let body = match provider {
             Provider::Anthropic => build_anthropic_request(model_id, SYSTEM_PROMPT, &user, &schema),
@@ -982,7 +1012,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let prompt = build_user_prompt(&baseline, None, None);
+        let prompt = build_user_prompt(&baseline, None, None, &[]);
         assert!(prompt.starts_with(USER_PROMPT), "{prompt}");
         assert!(prompt.contains("^GSPC"), "{prompt}");
         assert!(prompt.contains("Baseline market data"), "{prompt}");
@@ -1001,7 +1031,7 @@ mod tests {
     #[test]
     fn user_prompt_is_bare_when_baseline_empty() {
         assert_eq!(
-            build_user_prompt(&BaselineMarketData::default(), None, None),
+            build_user_prompt(&BaselineMarketData::default(), None, None, &[]),
             USER_PROMPT
         );
     }
@@ -1039,7 +1069,7 @@ mod tests {
             new: vec![],
             missing: vec![],
         };
-        let prompt = build_user_prompt(&one_index_baseline(), Some(&deltas), None);
+        let prompt = build_user_prompt(&one_index_baseline(), Some(&deltas), None, &[]);
         assert!(
             prompt.contains("Change since the previous report"),
             "{prompt}"
@@ -1052,7 +1082,7 @@ mod tests {
 
     #[test]
     fn user_prompt_omits_change_block_when_no_deltas() {
-        let prompt = build_user_prompt(&one_index_baseline(), None, None);
+        let prompt = build_user_prompt(&one_index_baseline(), None, None, &[]);
         assert!(
             !prompt.contains("Change since the previous report"),
             "{prompt}"
@@ -1102,7 +1132,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet));
+        let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet), &[]);
         // All four packet sections ride into the prompt, grounding the report in the
         // week's news, research, recalled memory, and the user's own documents.
         assert!(prompt.contains("Filtered news clusters"), "{prompt}");
@@ -1125,13 +1155,62 @@ mod tests {
         // or recalled memory — no section should appear, leaving the prompt as the
         // baseline-only form.
         let empty = ResearchPacket::default();
-        let with_packet = build_user_prompt(&one_index_baseline(), None, Some(&empty));
-        let without = build_user_prompt(&one_index_baseline(), None, None);
+        let with_packet = build_user_prompt(&one_index_baseline(), None, Some(&empty), &[]);
+        let without = build_user_prompt(&one_index_baseline(), None, None, &[]);
         assert_eq!(with_packet, without, "an empty packet adds nothing to the prompt");
         assert!(!with_packet.contains("Filtered news clusters"), "{with_packet}");
         assert!(!with_packet.contains("Deep-research evidence"), "{with_packet}");
         assert!(!with_packet.contains("Recalled long-term memory"), "{with_packet}");
         assert!(!with_packet.contains("User-supplied research documents"), "{with_packet}");
+    }
+
+    #[test]
+    fn user_prompt_appends_audit_memory_block_when_present() {
+        // The Step-4 pull rides in on its own channel (no packet needed) under a heading
+        // that names the retrospective audit; an empty pull adds nothing.
+        let audit =
+            ["[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".to_string()];
+        let with = build_user_prompt(&one_index_baseline(), None, None, &audit);
+        assert!(
+            with.contains("Recalled memory for the retrospective audit"),
+            "{with}"
+        );
+        assert!(with.contains("Breadth divergences preceded the pullback."), "{with}");
+
+        let without = build_user_prompt(&one_index_baseline(), None, None, &[]);
+        assert!(
+            !without.contains("Recalled memory for the retrospective audit"),
+            "{without}"
+        );
+    }
+
+    #[test]
+    fn user_prompt_keeps_audit_and_research_memory_blocks_distinct() {
+        use crate::research_packet::ResearchPacket;
+        // The Step-10 research-informed memory (in the packet) and the Step-4 audit memory
+        // (its own channel) must read as two separate blocks, not one merged recall —
+        // the doc's replace-not-merge rule made visible in the prompt.
+        let packet = ResearchPacket {
+            memory: vec!["[summary · 2026-05-28T13:00:00Z] Risk posture: risk-off.".into()],
+            ..Default::default()
+        };
+        let audit =
+            ["[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".to_string()];
+        let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet), &audit);
+        assert!(
+            prompt.contains("Recalled long-term memory"),
+            "Step-10 block present: {prompt}"
+        );
+        assert!(
+            prompt.contains("Recalled memory for the retrospective audit"),
+            "Step-4 block present: {prompt}"
+        );
+        // Distinct headings, so neither is a substring of the other's framing.
+        assert_ne!(
+            prompt.find("Recalled long-term memory"),
+            prompt.find("Recalled memory for the retrospective audit"),
+            "the two memory blocks occupy different positions"
+        );
     }
 
     #[test]

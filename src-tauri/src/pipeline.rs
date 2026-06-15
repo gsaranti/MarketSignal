@@ -238,7 +238,7 @@ pub fn generate_report(
     // per-request rows streaming inside it. Computed here, before `baseline` and `deltas`
     // move into the agent input below.
     ctx.step_started("research", "Gathering and condensing research");
-    let research_packet = assemble_research_packet(
+    let AssembledResearch { packet: research_packet, audit_memory } = assemble_research_packet(
         research,
         &baseline,
         deltas.as_ref(),
@@ -257,6 +257,8 @@ pub fn generate_report(
         baseline,
         deltas,
         research: Some(research_packet),
+        // Step 4 → Step 5: the pre-research pull steers the main agent's audit.
+        audit_memory,
     }) {
         Ok(output) => output,
         Err(e) => {
@@ -468,6 +470,18 @@ fn delete_report_db_rows(conn: &rusqlite::Connection, report_id: &str) -> Result
     Ok(())
 }
 
+/// What [`assemble_research_packet`] hands back: the Step-11 condensed packet plus the
+/// Step-4 pre-research memory pull, surfaced separately so the main agent's retrospective
+/// audit can consume it. The two memory pulls stay on distinct channels — `packet.memory`
+/// is the Step-10 research-informed pull, `audit_memory` is the Step-4 pull — per the doc's
+/// replace-not-merge rule (`docs/weekly-report-workflow.md §Step 10`).
+struct AssembledResearch {
+    packet: ResearchPacket,
+    /// The Step-4 pre-research pull's prompt fragments (most relevant first); empty when
+    /// nothing was recalled or the pull was skipped (early run, retrieval failure, cancel).
+    audit_memory: Vec<String>,
+}
+
 /// Run the research half (Steps 7–11) and condense it into the packet the main agent
 /// reasons over (`docs/weekly-report-workflow.md §§7–11`). **Fully fail-soft** — the
 /// locked posture for this slice: a failure in any stage degrades that stage to empty and
@@ -489,10 +503,13 @@ fn delete_report_db_rows(conn: &rusqlite::Connection, report_id: &str) -> Result
 ///
 /// Both vector-memory retrievals live here (`retrieve_memory`, fail-soft): the Step-4
 /// pre-research pull — queried from the recent report context, baseline, and change
-/// view — feeds only the router (ephemeral, per the doc's replace-not-merge rule);
-/// the Step-10 post-research pull — queried from the executor's evidence — is the one
-/// the condensed packet carries to the main agent. `embedder` is the same fixed
-/// embedding stage the Step-17 persist write uses; `db_path` locates the store.
+/// view — is the ephemeral pull that steers investigation; it feeds the router here and
+/// is also returned as [`AssembledResearch::audit_memory`] so the main agent's
+/// retrospective audit (`§Step 5`) consumes the same pull on its own channel (the doc's
+/// replace-not-merge rule keeps it *out* of the packet). The Step-10 post-research pull —
+/// queried from the executor's evidence — is the one the condensed packet carries to the
+/// main agent. `embedder` is the same fixed embedding stage the Step-17 persist write
+/// uses; `db_path` locates the store.
 #[allow(clippy::too_many_arguments)] // one parameter per Step-6/7/8/10 input, each documented above
 fn assemble_research_packet(
     research: &ResearchStages,
@@ -503,7 +520,7 @@ fn assemble_research_packet(
     embedder: &dyn Embedder,
     db_path: &std::path::Path,
     ctx: &RunContext,
-) -> ResearchPacket {
+) -> AssembledResearch {
     // Step 7: gather raw headlines (Tavily + GDELT + FMP Articles) and run the
     // deterministic dedup pre-pass.
     let headlines = match research.news.gather() {
@@ -533,8 +550,9 @@ fn assemble_research_packet(
 
     // Step 4: the pre-research memory pull — recalled against where the market
     // actually is this period (recent context + baseline + change view) to steer
-    // routing. Ephemeral routing input only: the packet below carries the Step-10
-    // pull instead (`docs/weekly-report-workflow.md §Step 10`, replace-not-merge).
+    // investigation. Ephemeral: it feeds routing here and is returned as
+    // `audit_memory` for the main agent's retrospective audit (`§Step 5`), but the
+    // packet below carries the Step-10 pull instead (`§Step 10`, replace-not-merge).
     // The cancel guard mirrors the filter's: a cancel must not spend the embedding
     // call.
     let pre_memory = if ctx.is_cancelled() {
@@ -560,7 +578,9 @@ fn assemble_research_packet(
             deltas: deltas.cloned(),
             clusters: clusters.clone(),
             recent_reports: recent_reports.to_vec(),
-            memory: pre_memory,
+            // Clone: routing consumes the Step-4 pull here, and it is also returned
+            // below as `audit_memory` for the main agent's audit. A ~5-fragment Vec.
+            memory: pre_memory.clone(),
             // Routing picks topics, so it gets each document's head, not the
             // full condensed text the packet carries below.
             inbox_documents: inbox_docs.iter().map(ParsedResearchDoc::router_excerpt).collect(),
@@ -597,14 +617,18 @@ fn assemble_research_packet(
 
     // Step 11: condense everything into the token-bounded packet. The inbox
     // blocks are already bounded by `document_parser`'s char budgets.
-    build_condensed_packet(
+    let packet = build_condensed_packet(
         baseline.clone(),
         deltas.cloned(),
         clusters,
         evidence,
         memory,
         inbox_docs.iter().map(ParsedResearchDoc::prompt_block).collect(),
-    )
+    );
+
+    // The Step-4 pull rides back out alongside the packet so the main agent's audit
+    // gets it on its own channel, distinct from `packet.memory` (the Step-10 pull).
+    AssembledResearch { packet, audit_memory: pre_memory }
 }
 
 /// The Step-6 inbox stage: parse every supported document in the inbox
@@ -1359,6 +1383,7 @@ mod tests {
             &dir.path().join("market_signal.db"),
             &RunContext::noop(),
         )
+        .packet
     }
 
     #[test]
@@ -1598,6 +1623,71 @@ mod tests {
         assert!(!packet.research.items.is_empty(), "stub chain yields evidence");
     }
 
+    /// One recent summary so `pre_research_query` renders a non-blank query (a default
+    /// baseline + no recent reports would short-circuit the pull). The text is irrelevant
+    /// to the assertion — only that the Step-4 query is non-empty so the pull can fire.
+    fn one_recent_summary() -> ReportSummary {
+        use crate::agent::{MarketCycle, RiskPosture, ThesisStance};
+        ReportSummary {
+            report_id: "prior".into(),
+            report_type: "weekly_market".into(),
+            created_at: "2026-05-20T13:00:00Z".into(),
+            risk_posture: RiskPosture::Mixed,
+            market_cycle: MarketCycle::LateCycle,
+            thesis_stance: ThesisStance::Uncertain,
+            header_summary_bullets: vec!["Breadth stayed thin.".into()],
+            key_risks: vec![],
+            unresolved_questions: vec![],
+            forward_outlook_themes: vec![],
+        }
+    }
+
+    #[test]
+    fn assemble_surfaces_the_step4_pull_as_audit_memory() {
+        // A seeded store plus a real (non-blank) Step-4 query: the pre-research pull
+        // fires and rides back out as `audit_memory` for the main agent's audit —
+        // separate from `packet.memory` (the Step-10 pull). This is the audit consumer
+        // the routing-only wiring previously dropped.
+        let (_dir, db_path) = seeded_store();
+        let recent = [one_recent_summary()];
+        let assembled = assemble_research_packet(
+            &ResearchStages::stub(),
+            &BaselineMarketData::default(),
+            None,
+            &recent,
+            &[],
+            &StubEmbedder,
+            &db_path,
+            &RunContext::noop(),
+        );
+        assert_eq!(assembled.audit_memory.len(), 1, "the Step-4 pull reached audit_memory");
+        assert!(
+            assembled.audit_memory[0].starts_with("[learning · "),
+            "audit memory carries the store's prompt fragment, got {:?}",
+            assembled.audit_memory[0]
+        );
+    }
+
+    #[test]
+    fn assemble_audit_memory_is_empty_on_an_empty_store() {
+        // No seeded rows: the empty-store guard skips the pull, so the audit gets nothing
+        // even with a non-blank query. (The cancel arm is covered by the cancellation test.)
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("market_signal.db");
+        let recent = [one_recent_summary()];
+        let assembled = assemble_research_packet(
+            &ResearchStages::stub(),
+            &BaselineMarketData::default(),
+            None,
+            &recent,
+            &[],
+            &StubEmbedder,
+            &db_path,
+            &RunContext::noop(),
+        );
+        assert!(assembled.audit_memory.is_empty(), "an empty store recalls no audit memory");
+    }
+
     #[test]
     fn assemble_packet_degrades_to_empty_on_news_failure() {
         // A failed gather degrades the whole news half to empty without erroring; the run
@@ -1829,7 +1919,7 @@ mod tests {
         }];
         let (_dir, db_path) = seeded_store();
         let ctx = RunContext::new("t", Arc::new(NoopReporter), Arc::new(AtomicBool::new(true)));
-        let packet = assemble_research_packet(
+        let AssembledResearch { packet, audit_memory } = assemble_research_packet(
             &stages,
             &BaselineMarketData::default(),
             None,
@@ -1842,6 +1932,10 @@ mod tests {
         assert!(packet.news_clusters.is_empty());
         assert!(packet.research.items.is_empty());
         assert!(packet.memory.is_empty());
+        // The Step-4 audit pull obeys the same cancel guard: a pre-cancelled run skips
+        // it (the `PanicEmbedder` proves the embedding call never fires) and the audit
+        // gets nothing.
+        assert!(audit_memory.is_empty(), "a cancelled run recalls no audit memory");
     }
 
     // ---- live research-half smoke (news → filter → route → execute → packet) ----
@@ -1905,7 +1999,8 @@ mod tests {
             &crate::embedding::StubEmbedder,
             &dir.path().join("market_signal.db"),
             &ctx,
-        );
+        )
+        .packet;
 
         // Each stage produced real output (fail-soft would have let empty through).
         assert!(!packet.news_clusters.is_empty(), "gather+filter yielded clusters");
