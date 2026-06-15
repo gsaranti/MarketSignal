@@ -17,6 +17,7 @@
 import { describe, test, expect, beforeEach, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { makeInvokeRouter, unlisten, emitterFor, focusEmitter } from "../helpers/tauri";
+import { deepFreeze } from "../helpers/freeze";
 import type { GeneratedReport, ReportSummary } from "../../src/types";
 
 // A controllable promise for the interleaving tests below — kept local to this
@@ -114,9 +115,7 @@ const sampleReport: GeneratedReport = {
   summary: sampleSummary,
 };
 
-// A distinct second report for the no-yank and latest-load-wins tests. Read-only,
-// like the fixtures above (the shallow module-level spread is fine while specs
-// only read props).
+// A distinct second report for the no-yank and latest-load-wins tests.
 const sampleSummary2: ReportSummary = {
   ...sampleSummary,
   report_id: "rep-2",
@@ -128,6 +127,15 @@ const sampleReport2: GeneratedReport = {
   markdown_path: "/reports/2026-06-21-market-signal-weekly-report.md",
   summary: sampleSummary2,
 };
+
+// These fixtures are shared at module scope and spread shallowly (sampleSummary2
+// reuses sampleSummary's arrays; both reports nest a summary; all are handed to
+// child props / returned from the mocked invoke), so a single in-place mutation
+// would leak across tests. They're read-only by design — deep-freezing makes that
+// a guarantee, turning any future in-place write into a loud throw at the mutation
+// site. Freezing each report transitively freezes its nested summary and arrays.
+deepFreeze(sampleReport);
+deepFreeze(sampleReport2);
 
 describe("App.vue Tauri boundary", () => {
   test("mounts against the mock and fires the onMounted bootstrap cascade", async () => {

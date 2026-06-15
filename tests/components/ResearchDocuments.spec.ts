@@ -10,6 +10,7 @@
 import { test, expect } from "vitest";
 import { mount, type DOMWrapper } from "@vue/test-utils";
 import ResearchDocuments from "../../src/components/ResearchDocuments.vue";
+import { deepFreeze } from "../helpers/freeze";
 import type { ResearchDocument } from "../../src/types";
 
 // A failing row (index 0, so its reason id is `parse-error-0`) followed by a
@@ -31,6 +32,12 @@ const healthy: ResearchDocument = {
   modified: "2026-06-11T09:00:00Z",
   parse_error: null,
 };
+
+// Shared at module scope and reused across tests via fresh wrapper arrays. They're
+// read-only by design; deep-freezing makes that a guarantee — a future in-place
+// mutation throws at the write rather than leaking into a later test.
+deepFreeze(failing);
+deepFreeze(healthy);
 
 function makeWrapper(documents: ResearchDocument[]) {
   return mount(ResearchDocuments, {

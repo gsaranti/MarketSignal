@@ -11,6 +11,7 @@
 import { test, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 import Settings from "../../src/components/Settings.vue";
+import { deepFreeze } from "../helpers/freeze";
 import type { SettingsView } from "../../src/types";
 
 const settingsView: SettingsView = {
@@ -38,6 +39,14 @@ const baseProps = {
   testing: { openai: false, anthropic: false, fmp: false, fred: false, tavily: false },
   testResults: { openai: null, anthropic: null, fmp: null, fred: null, tavily: null },
 };
+
+// makeWrapper spreads baseProps *shallowly*, so its nested objects (settingsView,
+// testing, testResults) are shared by reference across every wrapper. The fixture
+// is read-only by design — deep-freezing makes that a guarantee: a test that
+// mutates a nested prop in place would throw at the write rather than silently
+// leak into the next test. (Settings.vue copies props into local form state, so a
+// frozen `settings` mounts unchanged.)
+deepFreeze(baseProps);
 
 function makeWrapper(overrides: Partial<typeof baseProps> = {}) {
   return mount(Settings, { props: { ...baseProps, ...overrides } });
