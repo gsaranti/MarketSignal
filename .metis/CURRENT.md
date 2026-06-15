@@ -17,4 +17,4 @@
 
 ## Where to start
 
-Nothing owed — `main` is clean and pushed. Pick a next slice: **per-adapter offline round-trips** (needs the base-URL injection seam) is the most substantive carried thread; or a carried low-priority item (FMP `industries`-P/E clamp; FRED freshness). One bookkeeping flag worth clearing first: **`BUILD.md`'s adapters line still describes the truncation table as planned/gated** — it now ships, so consider revising it (see pending decisions).
+Nothing owed — `main` is clean and pushed, and `BUILD.md`'s adapters line is updated to mark the truncation table **shipped** (cascade-only / no-self-cap decision captured). Pick a next slice: **per-adapter offline round-trips** (needs the base-URL injection seam) is the most substantive carried thread; or a carried low-priority item (FMP `industries`-P/E clamp; FRED freshness).
