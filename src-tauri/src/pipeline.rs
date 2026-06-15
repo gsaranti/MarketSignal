@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::agent::{MainAgent, MainAgentInput, ReportSummary};
+use crate::agent::{MainAgent, MainAgentInput, RecentReport, ReportSummary};
 use crate::baseline_delta::{self, BaselineDeltas};
 use crate::data_sources::{
     BaselineMarketData, GroupKind, MarketDataSource, BASELINE_SCHEMA_VERSION,
@@ -252,6 +252,13 @@ pub fn generate_report(
     ctx.step_finished("research", research_status, None);
     bail_if_cancelled(ctx)?;
 
+    // Step 2: the bounded recent prior-report context — structured summaries plus
+    // (truncated) Markdown bodies — the main agent reasons over for thesis continuity and
+    // that the Retrospective Audit (`§Step 5`) evaluates. Best-effort like the router's
+    // recent-report load above; never gates the run. Read here (not at the top with the
+    // router's) so the freshest persisted reports are picked up after any upstream work.
+    let recent_reports_for_audit = load_recent_reports_for_audit(&paths.db_path);
+
     ctx.step_started("agent", "Main agent writing the report");
     let output = match agent.generate(MainAgentInput {
         baseline,
@@ -259,6 +266,8 @@ pub fn generate_report(
         research: Some(research_packet),
         // Step 4 → Step 5: the pre-research pull steers the main agent's audit.
         audit_memory,
+        // Step 2 → Step 5: the recent reports are the audit's auditable object and its gate.
+        recent_reports: recent_reports_for_audit,
     }) {
         Ok(output) => output,
         Err(e) => {
@@ -737,6 +746,65 @@ fn load_recent_report_context(db_path: &std::path::Path) -> Vec<ReportSummary> {
         eprintln!("research: recent-report context degraded to empty: {e:#}");
         Vec::new()
     })
+}
+
+/// Bounded count of recent prior reports handed to the main agent as Step-2
+/// context (`docs/weekly-report-workflow.md §Step 2`). Matches `ROUTER_RECENT_REPORTS`
+/// today and sits inside the audit's "usually 2–6 reports" window (`§Step 5`); a
+/// separate constant so the audit window can widen without moving routing's. Tunable
+/// alongside the other prompt-budget caps.
+const MAIN_AGENT_RECENT_REPORTS: u32 = 3;
+
+/// Per-report ceiling on the Markdown body carried in the Step-2 context, in chars
+/// (~3k tokens — the inbox `PER_DOC_CHAR_CAP` magnitude). A typical weekly report rides
+/// whole; only a pathological one is head-truncated, visibly (a marker matching the
+/// inbox-doc convention the system prompt already explains). Tunable alongside the
+/// packet caps.
+const RECENT_REPORT_BODY_CAP: usize = 12_000;
+
+/// Best-effort Step-2 recent prior-report context for the main agent: the most recent
+/// reports' structured summaries paired with their (head-truncated) Markdown bodies,
+/// newest first (`storage::list_recent_reports_with_paths` plus one file read per
+/// report). The body is the auditable object the Retrospective Audit reasons over
+/// (`§Step 5`); the summary carries the thesis-continuity metadata. Additive and
+/// fail-soft like [`load_recent_report_context`]: a DB failure degrades the whole list
+/// to empty, an unreadable Markdown file drops that one report's body to empty (the
+/// summary still carries) — never gates the run.
+fn load_recent_reports_for_audit(db_path: &std::path::Path) -> Vec<RecentReport> {
+    let read = || -> Result<Vec<(ReportSummary, String)>> {
+        let conn = storage::open(db_path)?;
+        storage::init_schema(&conn)?;
+        storage::list_recent_reports_with_paths(&conn, MAIN_AGENT_RECENT_REPORTS)
+    };
+    let rows = read().unwrap_or_else(|e| {
+        eprintln!("main-agent: Step-2 recent-report context degraded to empty: {e:#}");
+        Vec::new()
+    });
+    rows.into_iter()
+        .map(|(summary, path)| {
+            let markdown = std::fs::read_to_string(&path)
+                .map(|body| truncate_report_body(&body, RECENT_REPORT_BODY_CAP))
+                .unwrap_or_else(|e| {
+                    eprintln!(
+                        "main-agent: recent-report body unreadable ({path}), summary only: {e:#}"
+                    );
+                    String::new()
+                });
+            RecentReport { summary, markdown }
+        })
+        .collect()
+}
+
+/// Head-truncate a report body to `cap` chars, appending a visible marker (matching the
+/// inbox-doc convention) when it is cut. Char-boundary safe — counts and slices by chars,
+/// never bytes.
+fn truncate_report_body(body: &str, cap: usize) -> String {
+    let total = body.chars().count();
+    if total <= cap {
+        return body.to_string();
+    }
+    let head: String = body.chars().take(cap).collect();
+    format!("{head}\n[truncated — showing the first {cap} of {total} characters]")
 }
 
 /// Bounded count of fragments each vector-memory pull recalls (Steps 4 and 10).
@@ -1393,6 +1461,89 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing-subdir").join("market_signal.db");
         assert!(load_recent_report_context(&path).is_empty());
+    }
+
+    // ---- Step-2 recent prior-report context (`load_recent_reports_for_audit`) ----
+
+    fn audit_summary(id: &str, created_at: &str) -> ReportSummary {
+        use crate::agent::{MarketCycle, RiskPosture, ThesisStance};
+        ReportSummary {
+            report_id: id.into(),
+            report_type: "weekly_market".into(),
+            created_at: created_at.into(),
+            risk_posture: RiskPosture::Mixed,
+            market_cycle: MarketCycle::LateCycle,
+            thesis_stance: ThesisStance::Uncertain,
+            header_summary_bullets: vec!["a".into(), "b".into(), "c".into()],
+            key_risks: vec![],
+            unresolved_questions: vec![],
+            forward_outlook_themes: vec![],
+        }
+    }
+
+    #[test]
+    fn truncate_report_body_marks_only_when_cut() {
+        let short = "a short report body";
+        assert_eq!(truncate_report_body(short, 100), short, "under the cap rides whole");
+        let long = "x".repeat(50);
+        let cut = truncate_report_body(&long, 10);
+        assert!(cut.starts_with(&"x".repeat(10)), "head kept: {cut}");
+        assert!(
+            cut.contains("[truncated — showing the first 10 of 50 characters]"),
+            "marker carries both counts: {cut}"
+        );
+    }
+
+    #[test]
+    fn load_recent_reports_for_audit_carries_bodies_truncates_and_is_fail_soft() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("market_signal.db");
+        let conn = storage::open(&db).unwrap();
+        storage::init_schema(&conn).unwrap();
+        let reports_dir = dir.path().join("reports");
+        std::fs::create_dir_all(&reports_dir).unwrap();
+
+        let insert = |id: &str, created_at: &str, body: Option<&str>| {
+            let summary = audit_summary(id, created_at);
+            let path = reports_dir.join(format!("{id}.md"));
+            // `body == None` models a report whose Markdown file is missing on disk.
+            if let Some(b) = body {
+                std::fs::write(&path, b).unwrap();
+            }
+            let summary_json = serde_json::to_string(&summary).unwrap();
+            storage::insert_report(
+                &conn,
+                &ReportRecord {
+                    summary: &summary,
+                    markdown_path: &path.to_string_lossy(),
+                    summary_json: &summary_json,
+                },
+            )
+            .unwrap();
+        };
+        insert("old", "2026-01-01T00:00:00Z", Some("the older report body"));
+        let big = "y".repeat(RECENT_REPORT_BODY_CAP + 500);
+        insert("new", "2026-02-01T00:00:00Z", Some(&big));
+        insert("ghost", "2026-03-01T00:00:00Z", None);
+
+        let recent = load_recent_reports_for_audit(&db);
+        assert_eq!(recent.len(), 3, "all three within the cap, newest first");
+        assert_eq!(recent[0].summary.report_id, "ghost");
+        assert!(
+            recent[0].markdown.is_empty(),
+            "a missing Markdown file drops the body, summary still carries"
+        );
+        assert_eq!(recent[1].summary.report_id, "new");
+        assert!(recent[1].markdown.contains("[truncated"), "an over-cap body is marked");
+        assert_eq!(recent[2].summary.report_id, "old");
+        assert_eq!(recent[2].markdown, "the older report body", "an in-cap body rides whole");
+    }
+
+    #[test]
+    fn recent_reports_for_audit_degrades_to_empty_on_an_unopenable_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing-subdir").join("market_signal.db");
+        assert!(load_recent_reports_for_audit(&path).is_empty());
     }
 
     // ---- vector-memory retrieval pulls (`retrieve_memory`, Steps 4 / 10) ----

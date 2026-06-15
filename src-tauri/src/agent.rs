@@ -93,6 +93,19 @@ pub struct ReportSummary {
     pub forward_outlook_themes: Vec<String>,
 }
 
+/// One recent prior report handed to the main agent as Step-2 context
+/// (`docs/weekly-report-workflow.md §Step 2`): the structured summary metadata
+/// paired with the report's canonical Markdown body. The body may be head-truncated
+/// by the application layer to bound prompt tokens (a truncation marker is appended
+/// when it is); it is empty when the Markdown file could not be read, in which case
+/// the summary still carries. HTML never appears here — agents reason over Markdown
+/// only (`docs/report-structure.md`).
+#[derive(Debug, Clone)]
+pub struct RecentReport {
+    pub summary: ReportSummary,
+    pub markdown: String,
+}
+
 /// Input handed to the main agent. Carries the Step-3 baseline market-data scan
 /// (`docs/weekly-report-workflow.md §Step 3`) gathered by the application layer
 /// before agent reasoning, its change view, and the Step-11 condensed research
@@ -120,9 +133,17 @@ pub struct MainAgentInput {
     /// `research`: the doc's replace-not-merge rule keeps the packet carrying only the
     /// Step-10 research-informed pull (`§Step 10`), so the two memory pulls reach the
     /// main agent on separate channels for separate purposes. Empty when nothing was
-    /// recalled (an early run or a retrieval failure), in which case the audit section
-    /// has no prior-report context to work from and is omitted.
+    /// recalled (an early run or a retrieval failure). It *steers* the audit — what to
+    /// scrutinise — but no longer gates it; `recent_reports` is the auditable object.
     pub audit_memory: Vec<String>,
+    /// The Step-2 recent prior-report context (`docs/weekly-report-workflow.md §Step 2`):
+    /// the bounded set of most-recent reports — structured metadata plus (possibly
+    /// truncated) Markdown body — that the main agent reasons over for thesis continuity
+    /// and that the **Retrospective Audit** section (`§Step 5`) evaluates. This is the
+    /// audit's auditable object and its structural gate: a non-empty list licenses the
+    /// section, an empty one (a first run or a DB/file failure) omits it. Best-effort and
+    /// additive — never gates the run. Newest first.
+    pub recent_reports: Vec<RecentReport>,
 }
 
 /// What the main agent returns: the canonical Markdown body plus the structured

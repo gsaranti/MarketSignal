@@ -29,8 +29,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::agent::{
-    MainAgent, MainAgentInput, MainAgentOutput, MarketCycle, ReportSummary, RiskPosture,
-    ThesisStance,
+    MainAgent, MainAgentInput, MainAgentOutput, MarketCycle, RecentReport, ReportSummary,
+    RiskPosture, ThesisStance,
 };
 use crate::baseline_delta::BaselineDeltas;
 use crate::data_sources::BaselineMarketData;
@@ -213,16 +213,20 @@ and durable learnings retrieved from the system's vector memory against this wee
 Use it for continuity: to strengthen, weaken, or revise the standing thesis, surface historical \
 analogs, and avoid repeating past analytical mistakes. Weigh it as recall, not fresh data — this \
 week's baseline and research evidence take precedence where they conflict, and an absent memory \
-block simply means nothing relevant was recalled. A second memory block may appear — `recalled \
-memory for the retrospective audit` — recalled against the recent reports and current market \
-state rather than this week's research. Its `[summary · …]` fragments are prior reports whose \
-stance and risks you can evaluate directionally against what the market actually did — these are \
-what the Retrospective Audit section audits. Its `[learning · …]` fragments are standing lessons: \
-let them shape what the audit scrutinises, and weigh them in the thesis and strategy, but a \
-learning is not itself a prior report to audit. Write the Retrospective Audit section only when \
-this block carries at least one prior summary to check; when it carries only learnings, or is \
-absent, omit the section rather than inventing one — apply those learnings in the thesis and \
-strategy instead. The two memory blocks may overlap; weigh both as recall. The prompt may also \
+block simply means nothing relevant was recalled. The prompt may also carry `recent prior reports` — the most recent weekly reports this one \
+continues, each with its structured summary metadata and its Markdown body (a body may be \
+head-truncated, marked inline). These are the prior reports the Retrospective Audit evaluates: \
+read their theses, stances, and flagged risks, and judge directionally how they held up against \
+what the market actually did this period. A second memory block may also appear — `recalled \
+memory for the retrospective audit` — semantic recall against the recent reports and current \
+market state rather than this week's research. Let it *steer* the audit: its `[learning · …]` \
+fragments are standing lessons that point at what to scrutinise and that you weigh in the thesis \
+and strategy, and its `[summary · …]` fragments are supplementary recall (often older reports \
+beyond the recent window). It does not by itself license the section — a learning, or a recalled \
+summary, is not a prior report to audit. Write the Retrospective Audit section only when the \
+`recent prior reports` block is present; when it is absent (a first report), omit the section \
+rather than inventing one, and apply any recalled learnings in the thesis and strategy instead. \
+These blocks may overlap; weigh the memory as recall and the recent reports as the reports themselves. The prompt may also \
 carry `user-supplied \
 research documents` — files the user placed in the research inbox, parsed and condensed by the \
 application layer. Treat them as deliberately curated, high-signal sources the user wants \
@@ -310,11 +314,17 @@ const USER_PROMPT: &str =
 /// to steer the Retrospective Audit — deliberately distinct from the packet's Step-10
 /// research-informed memory block (`docs/weekly-report-workflow.md §Step 10`,
 /// replace-not-merge); the two reach the model on separate channels.
+///
+/// `recent_reports` is the Step-2 recent prior-report context — the bounded set of
+/// most-recent reports (structured metadata + Markdown body) rendered as its own block.
+/// It is the Retrospective Audit's *auditable object* and its gate: a non-empty block
+/// licenses the section, an empty one (a first run) omits it (see [`SYSTEM_PROMPT`]).
 fn build_user_prompt(
     baseline: &BaselineMarketData,
     deltas: Option<&BaselineDeltas>,
     research: Option<&ResearchPacket>,
     audit_memory: &[String],
+    recent_reports: &[RecentReport],
 ) -> String {
     let mut prompt = if baseline == &BaselineMarketData::default() {
         USER_PROMPT.to_string()
@@ -385,12 +395,34 @@ fn build_user_prompt(
         }
     }
 
+    // The Step-2 recent prior-report context: the bounded set of most-recent reports —
+    // structured summary metadata plus the (possibly truncated) Markdown body — that the
+    // main agent reasons over for continuity and that the Retrospective Audit evaluates.
+    // This block is the audit's auditable object and its structural gate (its presence
+    // licenses the section; see the system prompt). Each report is its own sub-block;
+    // omitted entirely on a first run or a degraded read.
+    if !recent_reports.is_empty() {
+        prompt.push_str(
+            "\n\nRecent prior reports, most recent first — the weekly reports this one continues, \
+             and the prior reports the Retrospective Audit evaluates. Each carries its structured \
+             summary metadata and its Markdown body (a body may be head-truncated, marked inline):",
+        );
+        for report in recent_reports {
+            let meta =
+                serde_json::to_string_pretty(&report.summary).unwrap_or_else(|_| "{}".to_string());
+            prompt.push_str(&format!("\n\n--- Prior report ---\nSummary metadata:\n{meta}"));
+            if !report.markdown.is_empty() {
+                prompt.push_str(&format!("\n\nReport body:\n{}", report.markdown));
+            }
+        }
+    }
+
     // The Step-4 pre-research memory pull, on its own channel (not the packet): the
     // recall the retrospective audit reasons over. Heading is deliberately distinct
     // from the Step-10 "retrieved against this week's research" block above so the two
     // don't read as one. Fragments are blocks (own newlines), so they join on blank
-    // lines. Omitted when empty — an early run or a failed pull leaves the audit with
-    // no prior-report context, which the section instruction reads as "omit the audit".
+    // lines. It now *steers* the audit (what to scrutinise); the recent-reports block
+    // above is what gates and grounds it.
     if !audit_memory.is_empty() {
         prompt.push_str(&format!(
             "\n\nRecalled memory for the retrospective audit, most relevant first (prior report summaries and durable learnings recalled against the recent reports and current market state):\n{}",
@@ -894,6 +926,7 @@ impl MainAgent for ModelMainAgent {
             input.deltas.as_ref(),
             input.research.as_ref(),
             &input.audit_memory,
+            &input.recent_reports,
         );
         let body = match provider {
             Provider::Anthropic => build_anthropic_request(model_id, SYSTEM_PROMPT, &user, &schema),
@@ -1012,7 +1045,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let prompt = build_user_prompt(&baseline, None, None, &[]);
+        let prompt = build_user_prompt(&baseline, None, None, &[], &[]);
         assert!(prompt.starts_with(USER_PROMPT), "{prompt}");
         assert!(prompt.contains("^GSPC"), "{prompt}");
         assert!(prompt.contains("Baseline market data"), "{prompt}");
@@ -1031,7 +1064,7 @@ mod tests {
     #[test]
     fn user_prompt_is_bare_when_baseline_empty() {
         assert_eq!(
-            build_user_prompt(&BaselineMarketData::default(), None, None, &[]),
+            build_user_prompt(&BaselineMarketData::default(), None, None, &[], &[]),
             USER_PROMPT
         );
     }
@@ -1069,7 +1102,7 @@ mod tests {
             new: vec![],
             missing: vec![],
         };
-        let prompt = build_user_prompt(&one_index_baseline(), Some(&deltas), None, &[]);
+        let prompt = build_user_prompt(&one_index_baseline(), Some(&deltas), None, &[], &[]);
         assert!(
             prompt.contains("Change since the previous report"),
             "{prompt}"
@@ -1082,7 +1115,7 @@ mod tests {
 
     #[test]
     fn user_prompt_omits_change_block_when_no_deltas() {
-        let prompt = build_user_prompt(&one_index_baseline(), None, None, &[]);
+        let prompt = build_user_prompt(&one_index_baseline(), None, None, &[], &[]);
         assert!(
             !prompt.contains("Change since the previous report"),
             "{prompt}"
@@ -1132,7 +1165,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet), &[]);
+        let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet), &[], &[]);
         // All four packet sections ride into the prompt, grounding the report in the
         // week's news, research, recalled memory, and the user's own documents.
         assert!(prompt.contains("Filtered news clusters"), "{prompt}");
@@ -1155,8 +1188,8 @@ mod tests {
         // or recalled memory — no section should appear, leaving the prompt as the
         // baseline-only form.
         let empty = ResearchPacket::default();
-        let with_packet = build_user_prompt(&one_index_baseline(), None, Some(&empty), &[]);
-        let without = build_user_prompt(&one_index_baseline(), None, None, &[]);
+        let with_packet = build_user_prompt(&one_index_baseline(), None, Some(&empty), &[], &[]);
+        let without = build_user_prompt(&one_index_baseline(), None, None, &[], &[]);
         assert_eq!(with_packet, without, "an empty packet adds nothing to the prompt");
         assert!(!with_packet.contains("Filtered news clusters"), "{with_packet}");
         assert!(!with_packet.contains("Deep-research evidence"), "{with_packet}");
@@ -1170,14 +1203,14 @@ mod tests {
         // that names the retrospective audit; an empty pull adds nothing.
         let audit =
             ["[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".to_string()];
-        let with = build_user_prompt(&one_index_baseline(), None, None, &audit);
+        let with = build_user_prompt(&one_index_baseline(), None, None, &audit, &[]);
         assert!(
             with.contains("Recalled memory for the retrospective audit"),
             "{with}"
         );
         assert!(with.contains("Breadth divergences preceded the pullback."), "{with}");
 
-        let without = build_user_prompt(&one_index_baseline(), None, None, &[]);
+        let without = build_user_prompt(&one_index_baseline(), None, None, &[], &[]);
         assert!(
             !without.contains("Recalled memory for the retrospective audit"),
             "{without}"
@@ -1196,7 +1229,7 @@ mod tests {
         };
         let audit =
             ["[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".to_string()];
-        let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet), &audit);
+        let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet), &audit, &[]);
         assert!(
             prompt.contains("Recalled long-term memory"),
             "Step-10 block present: {prompt}"
@@ -1211,6 +1244,37 @@ mod tests {
             prompt.find("Recalled memory for the retrospective audit"),
             "the two memory blocks occupy different positions"
         );
+    }
+
+    #[test]
+    fn user_prompt_appends_recent_reports_block_when_present() {
+        // The Step-2 recent prior-report context rides in on its own channel: both the
+        // structured summary metadata and the Markdown body reach the model, under a
+        // heading distinct from the two memory blocks. An empty list adds nothing.
+        let recent = [RecentReport {
+            summary: ReportSummary {
+                report_id: "prior-1".into(),
+                report_type: "weekly_market".into(),
+                created_at: "2026-06-07T13:00:00Z".into(),
+                risk_posture: RiskPosture::RiskOff,
+                market_cycle: MarketCycle::LateCycle,
+                thesis_stance: ThesisStance::Bearish,
+                header_summary_bullets: vec!["Breadth stayed thin.".into()],
+                key_risks: vec![],
+                unresolved_questions: vec![],
+                forward_outlook_themes: vec![],
+            },
+            markdown: "## Market Signal Thesis\nDefensive into the print.".into(),
+        }];
+        let with = build_user_prompt(&one_index_baseline(), None, None, &[], &recent);
+        assert!(with.contains("Recent prior reports"), "heading present: {with}");
+        // Both the structured metadata and the Markdown body reach the model.
+        assert!(with.contains("thesis_stance"), "metadata present: {with}");
+        assert!(with.contains("bearish"), "metadata value present: {with}");
+        assert!(with.contains("Defensive into the print."), "body present: {with}");
+
+        let without = build_user_prompt(&one_index_baseline(), None, None, &[], &[]);
+        assert!(!without.contains("Recent prior reports"), "absent on an empty list: {without}");
     }
 
     #[test]

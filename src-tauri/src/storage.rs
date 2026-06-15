@@ -228,6 +228,31 @@ pub fn list_recent_reports(conn: &Connection, limit: u32) -> Result<Vec<ReportSu
     Ok(summaries)
 }
 
+/// List the most recent reports as `(summary, markdown_path)`, newest first,
+/// capped at `limit`. Same ordering and `summary_json` round-trip as
+/// [`list_recent_reports`], but also returns the canonical Markdown path so the
+/// application layer (`pipeline::load_recent_reports_for_audit`) can read each
+/// report's body for the main agent's Step-2 prior-report context.
+pub fn list_recent_reports_with_paths(
+    conn: &Connection,
+    limit: u32,
+) -> Result<Vec<(ReportSummary, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT summary_json, markdown_path FROM reports
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (json, path) = row?;
+        out.push((serde_json::from_str(&json)?, path));
+    }
+    Ok(out)
+}
+
 /// Look up one report's canonical Markdown path and summary by id, or `None`
 /// when no such report exists. The application layer (`pipeline::load_report`)
 /// reads the Markdown file the path points at.
@@ -449,6 +474,22 @@ mod tests {
         // Newest (id-31) first; the two oldest (id-00, id-01) fall off the window.
         assert_eq!(recent[0].report_id, "id-31");
         assert_eq!(recent[29].report_id, "id-02");
+    }
+
+    #[test]
+    fn list_recent_reports_with_paths_caps_orders_and_carries_the_path() {
+        let conn = mem();
+        for i in 0..5 {
+            let created_at = format!("2026-02-{:02}T00:00:00Z", i + 1);
+            insert_sample(&conn, &format!("id-{i:02}"), &created_at);
+        }
+        let recent = list_recent_reports_with_paths(&conn, 3).unwrap();
+        assert_eq!(recent.len(), 3, "capped at the limit");
+        // Newest first, each paired with its canonical Markdown path.
+        assert_eq!(recent[0].0.report_id, "id-04");
+        assert_eq!(recent[0].1, "/tmp/id-04.md");
+        assert_eq!(recent[2].0.report_id, "id-02");
+        assert_eq!(recent[2].1, "/tmp/id-02.md");
     }
 
     #[test]
