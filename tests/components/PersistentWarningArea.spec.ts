@@ -100,3 +100,21 @@ test("re-expands when a NEW warning kind appears after the user collapsed the ba
   await nextTick();
   expect(wrapper.find(".warning-toggle").attributes("aria-expanded")).toBe("true");
 });
+
+test("stays collapsed when the signature changes but introduces no NEW warning kind", async () => {
+  // The negative arm of the watcher: the signature must actually CHANGE for the
+  // watcher to fire (an items-only change wouldn't move it), so we DROP a kind
+  // ('providers') rather than mutate items. 'tokens,providers' -> 'tokens' fires
+  // the watcher, but every remaining kind was already present, so `appeared` is
+  // false and the user's collapse must survive. Mirror of the re-expand test above.
+  const wrapper = mount(PersistentWarningArea, {
+    props: { report: twoCategoryReport, error: null },
+  });
+  await wrapper.find(".warning-toggle").trigger("click"); // collapse
+  expect(wrapper.find(".warning-toggle").attributes("aria-expanded")).toBe("false");
+
+  // Removing the 'providers' kind changes the signature without adding one.
+  await wrapper.setProps({ report: oneCategoryReport });
+  await nextTick();
+  expect(wrapper.find(".warning-toggle").attributes("aria-expanded")).toBe("false");
+});
