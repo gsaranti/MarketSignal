@@ -843,12 +843,16 @@ const LEARNINGS_PER_REPORT_CAP: usize = 5;
 /// dropped before it spends a row. An app-layer policy like the cap above, not a
 /// model contract: the prompt can't be trusted to avoid paraphrasing a prior
 /// run's lesson, and learnings are never deleted, so unbounded restatement is
-/// permanent growth that dilutes retrieval. Conservative by default — 0.93 drops
-/// near-verbatim restatements while letting a genuinely new lesson through; not
+/// permanent growth that dilutes retrieval. Calibrated to real
+/// `text-embedding-3-large` geometry by `tuning_dedup_threshold_calibration`:
+/// genuine restatements embed at ~0.72–0.81 cosine while distinct lessons cap at
+/// ~0.53, so 0.65 sits in that measured gap — catching real paraphrases without
+/// ever merging two distinct lessons. (The original 0.93 was a conservative guess
+/// that proved vacuously high: nothing real reached it, so dedup never fired.) Not
 /// doc-pinned, tunable alongside `MEMORY_TOP_K` and `LEARNINGS_PER_REPORT_CAP`. A
 /// dedup-scan failure fails *open* (the learning is kept), so the check can only
 /// ever drop a redundant row, never lose a real one.
-const LEARNING_DEDUP_THRESHOLD: f64 = 0.93;
+const LEARNING_DEDUP_THRESHOLD: f64 = 0.65;
 
 /// Hard byte cap on a retrieval query before the paid embedding call. The query
 /// builders bound line *counts*, not sizes — the stored summaries' optional
@@ -2234,6 +2238,198 @@ mod tests {
             groups.iter().filter(|g| **g == "filter").count(),
             groups.iter().filter(|g| **g == "routing").count(),
             groups.iter().filter(|g| **g == "research").count(),
+        );
+    }
+
+    // ---- live tuning-constant calibration against real text-embedding-3-large ----
+    //
+    // The synthetic separating embedders (`BasisEmbedder` here, `DistinctEmbedder` in
+    // tests/generate_report.rs) only ever emit cosine 1.0 or 0.0, so they validate the
+    // dedup/retrieval *mechanism* but say nothing about whether the *values*
+    // `LEARNING_DEDUP_THRESHOLD` (0.65) and `MEMORY_TOP_K` (5) are well-placed against
+    // the intermediate cosines real prose lands at. These two `#[ignore]`d probes
+    // close that gap by embedding a hand-authored corpus through the live model and
+    // checking where the constants fall. Spend is small (~27 cheap embedding calls,
+    // no daily cap), so unlike the FMP smokes they are freely re-runnable.
+
+    /// Restatements of one lesson under two wordings — each pair should embed *close*
+    /// (a near-duplicate the Step-17 dedup pass is meant to catch).
+    const PARAPHRASE_PAIRS: [(&str, &str); 4] = [
+        (
+            "Breadth divergences preceded the spring pullback; weight them earlier in the thesis.",
+            "Deteriorating market breadth led the spring drawdown — give breadth signals more weight, sooner.",
+        ),
+        (
+            "Single-event volatility spikes faded within two reports; avoid pivoting the thesis on them.",
+            "One-off volatility shocks reverted within a couple of weeks — don't swing the thesis on a single spike.",
+        ),
+        (
+            "Credit spreads widened ahead of the equity correction; treat widening as an early risk-off tell.",
+            "High-yield spread widening front-ran the stock-market selloff — read spread widening as an early risk-off signal.",
+        ),
+        (
+            "The yield curve's re-steepening coincided with the cycle turn; track the 10y-2y as a regime marker.",
+            "Curve re-steepening lined up with the turn in the cycle — watch the 10s-2s spread as a regime indicator.",
+        ),
+    ];
+
+    /// Genuinely distinct lessons, one per topic family — every cross-pair should embed
+    /// *apart* (the dedup pass must never merge two of these). The first four reuse the
+    /// canonical (`.0`) member of each `PARAPHRASE_PAIRS` entry; the last two add topics.
+    const DISTINCT_LESSONS: [&str; 6] = [
+        "Breadth divergences preceded the spring pullback; weight them earlier in the thesis.",
+        "Single-event volatility spikes faded within two reports; avoid pivoting the thesis on them.",
+        "Credit spreads widened ahead of the equity correction; treat widening as an early risk-off tell.",
+        "The yield curve's re-steepening coincided with the cycle turn; track the 10y-2y as a regime marker.",
+        "Late-cycle leadership narrowed into mega-cap tech; rotation breadth matters more than the index level.",
+        "Inflation surprises moved the front end more than the long end; lean on breakevens for the regime read.",
+    ];
+
+    /// Calibrates `LEARNING_DEDUP_THRESHOLD` against real geometry — the empirical basis
+    /// for the retune from a vacuously-high 0.93 (which no real restatement reached, so
+    /// dedup never fired) to 0.65. Asserts the threshold brackets the measured gap:
+    /// `distinct_ceiling < LEARNING_DEDUP_THRESHOLD <= paraphrase_floor` — it catches
+    /// *every* authored restatement (full recall over this corpus) while never reaching
+    /// a distinct-lesson pair (no false merge). The ordering invariant (restatements
+    /// out-cosine distinct lessons) guards the embedder/corpus premise independent of the
+    /// threshold value. A red means the threshold drifted out of the gap, or the corpus
+    /// no longer separates — retuning the constant is a separate decision, not this
+    /// probe's job.
+    #[test]
+    #[ignore = "hits the live OpenAI embeddings API; set OPENAI_API_KEY (~14 calls)"]
+    fn tuning_dedup_threshold_calibration() {
+        let embedder = crate::embedding::OpenAiEmbedder::from_env().expect("OPENAI_API_KEY set");
+        let cos = |a: &str, b: &str| {
+            let va = embedder.embed(a).expect("live embedding call");
+            let vb = embedder.embed(b).expect("live embedding call");
+            crate::vector_memory::cosine_similarity(&va, &vb)
+        };
+
+        // Within-pair cosine for each restatement.
+        let pair_cosines: Vec<f64> = PARAPHRASE_PAIRS
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b))| {
+                let c = cos(a, b);
+                eprintln!("paraphrase pair {i}: cos {c:.4}");
+                c
+            })
+            .collect();
+        let paraphrase_floor = pair_cosines.iter().copied().fold(f64::INFINITY, f64::min);
+        let paraphrase_ceiling = pair_cosines.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+        // Max cosine across every pair of genuinely distinct lessons.
+        let distinct_vecs: Vec<Vec<f32>> = DISTINCT_LESSONS
+            .iter()
+            .map(|t| embedder.embed(t).expect("live embedding call"))
+            .collect();
+        let mut distinct_ceiling = f64::NEG_INFINITY;
+        for (i, va) in distinct_vecs.iter().enumerate() {
+            for vb in &distinct_vecs[i + 1..] {
+                distinct_ceiling = distinct_ceiling.max(crate::vector_memory::cosine_similarity(va, vb));
+            }
+        }
+
+        let cleared = pair_cosines
+            .iter()
+            .filter(|c| **c >= LEARNING_DEDUP_THRESHOLD)
+            .count();
+        eprintln!(
+            "dedup calibration: threshold={LEARNING_DEDUP_THRESHOLD} | distinct_ceiling={distinct_ceiling:.4} \
+             paraphrase_floor={paraphrase_floor:.4} paraphrase_ceiling={paraphrase_ceiling:.4} | \
+             {cleared}/{} restatements clear the threshold (recall)",
+            PARAPHRASE_PAIRS.len()
+        );
+
+        // Ordering invariant (embedder/corpus premise, threshold-independent): a
+        // restatement out-cosines any pair of distinct lessons.
+        assert!(
+            paraphrase_floor > distinct_ceiling,
+            "restatements ({paraphrase_floor:.4}) did not separate from distinct lessons ({distinct_ceiling:.4})"
+        );
+        // Safety: the threshold must sit above every distinct-lesson pair, or dedup would wrongly merge two real lessons.
+        assert!(
+            distinct_ceiling < LEARNING_DEDUP_THRESHOLD,
+            "a distinct-lesson pair ({distinct_ceiling:.4}) reaches the dedup threshold {LEARNING_DEDUP_THRESHOLD} — it would be wrongly merged"
+        );
+        // Recall: the threshold must sit at or below *every* restatement (full recall over
+        // this corpus), or a real paraphrase would wrongly survive.
+        assert!(
+            paraphrase_floor >= LEARNING_DEDUP_THRESHOLD,
+            "a restatement ({paraphrase_floor:.4}) sits below the dedup threshold {LEARNING_DEDUP_THRESHOLD} — it would wrongly survive"
+        );
+    }
+
+    /// A recall query plus a mixed corpus: four fragments genuinely on-topic, eight
+    /// off-topic.
+    const TOPK_QUERY: &str =
+        "How have market breadth and credit risk evolved heading into a possible cycle turn?";
+    const TOPK_RELEVANT: [&str; 4] = [
+        "Market breadth narrowed sharply as fewer stocks carried the index higher.",
+        "High-yield credit spreads widened, signaling rising risk aversion.",
+        "The yield curve re-steepened from deep inversion, a classic late-cycle signal.",
+        "Defensive sectors began outperforming cyclicals as the cycle matured.",
+    ];
+    const TOPK_IRRELEVANT: [&str; 8] = [
+        "Quarterly earnings season featured several large-cap technology beats.",
+        "Mortgage rates drifted lower, lifting refinancing activity.",
+        "Consumer sentiment ticked up on falling gasoline prices.",
+        "Retail sales rose modestly, led by online spending.",
+        "A major chipmaker announced a new data-center accelerator.",
+        "Crude inventories built more than expected on weak refinery demand.",
+        "The trade deficit narrowed as exports of capital goods rose.",
+        "Home construction starts edged higher in the Sun Belt.",
+    ];
+
+    /// Calibrates `MEMORY_TOP_K` against real geometry. Top-k's value judgment is
+    /// inherently observational — "is 5 right?" depends on the real corpus — so the hard
+    /// assertion is the robust invariant (every relevant fragment out-ranks every
+    /// off-topic one), and the printed ranking with the rank-5 cut marked lets a human
+    /// see whether 5 captures the relevant set without dragging in noise.
+    #[test]
+    #[ignore = "hits the live OpenAI embeddings API; set OPENAI_API_KEY (~13 calls)"]
+    fn tuning_topk_selectivity_probe() {
+        let embedder = crate::embedding::OpenAiEmbedder::from_env().expect("OPENAI_API_KEY set");
+        let qv = embedder.embed(TOPK_QUERY).expect("live embedding call");
+
+        let mut ranked: Vec<(bool, f64, &str)> = TOPK_RELEVANT
+            .iter()
+            .map(|t| (true, *t))
+            .chain(TOPK_IRRELEVANT.iter().map(|t| (false, *t)))
+            .map(|(rel, t)| {
+                let v = embedder.embed(t).expect("live embedding call");
+                (rel, crate::vector_memory::cosine_similarity(&qv, &v), t)
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        for (i, (rel, c, t)) in ranked.iter().enumerate() {
+            let tag = if *rel { "REL" } else { "   " };
+            let cut = if i + 1 == MEMORY_TOP_K { "  <-- top-k cut" } else { "" };
+            eprintln!("{:>2}. {c:.4} [{tag}] {t}{cut}", i + 1);
+        }
+
+        let worst_relevant = ranked
+            .iter()
+            .filter(|r| r.0)
+            .map(|r| r.1)
+            .fold(f64::INFINITY, f64::min);
+        let best_irrelevant = ranked
+            .iter()
+            .filter(|r| !r.0)
+            .map(|r| r.1)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let rel_in_topk = ranked.iter().take(MEMORY_TOP_K).filter(|r| r.0).count();
+        eprintln!(
+            "topk probe: {rel_in_topk}/{} relevant within top-{MEMORY_TOP_K} | \
+             worst_relevant={worst_relevant:.4} best_irrelevant={best_irrelevant:.4}",
+            TOPK_RELEVANT.len()
+        );
+
+        // Clean separation: real geometry ranks every on-topic fragment above every off-topic one.
+        assert!(
+            worst_relevant > best_irrelevant,
+            "relevant fragments ({worst_relevant:.4}) did not cleanly out-rank off-topic ones ({best_irrelevant:.4})"
         );
     }
 }
