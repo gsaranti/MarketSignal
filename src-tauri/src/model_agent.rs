@@ -897,10 +897,40 @@ fn decode_json_string_chunk(s: &str) -> (String, usize, bool) {
                                 None => return (out, idx, false), // partial \uXXXX
                             }
                         }
-                        if let Some(ch) =
-                            u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
-                        {
-                            out.push(ch);
+                        match u32::from_str_radix(&hex, 16) {
+                            // A high surrogate is only half a scalar: JSON encodes a
+                            // non-BMP char (e.g. an emoji) as a `😀` pair, and
+                            // serde_json — the source of `out.markdown` — recombines it, so
+                            // this side channel must too or the two would diverge.
+                            Ok(high) if (0xD800..=0xDBFF).contains(&high) => {
+                                match peek_unicode_escape(chars.clone()) {
+                                    // Low half not fully streamed in yet: park at this
+                                    // escape's `\` so the pair re-reads whole next call.
+                                    LowHalf::Incomplete => return (out, idx, false),
+                                    LowHalf::Escape(low, end)
+                                        if (0xDC00..=0xDFFF).contains(&low) =>
+                                    {
+                                        let scalar =
+                                            0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00);
+                                        if let Some(ch) = char::from_u32(scalar) {
+                                            out.push(ch);
+                                        }
+                                        for _ in 0..6 {
+                                            chars.next(); // consume the peeked `\uXXXX` low half
+                                        }
+                                        next_consumed = end;
+                                    }
+                                    // Lone/invalid high surrogate — malformed JSON a real
+                                    // provider won't emit; drop it (the report is unaffected).
+                                    _ => {}
+                                }
+                            }
+                            Ok(code) => {
+                                if let Some(ch) = char::from_u32(code) {
+                                    out.push(ch);
+                                }
+                            }
+                            Err(_) => {} // non-hex \u escape — drop, as before
                         }
                     }
                     other => out.push(other),
@@ -914,6 +944,49 @@ fn decode_json_string_chunk(s: &str) -> (String, usize, bool) {
         }
     }
     (out, consumed, false)
+}
+
+/// Outcome of peeking the `\uXXXX` escape that should be a UTF-16 low surrogate, used to
+/// resolve a surrogate pair whose halves may be split across stream chunks. The caller
+/// passes a *clone* of its iterator, so nothing is consumed unless it acts on the result.
+enum LowHalf {
+    /// A prefix of `\uXXXX` that has not fully arrived — the caller parks and resumes.
+    Incomplete,
+    /// A complete `\uXXXX` escape: its code unit and the byte index just past it.
+    Escape(u32, usize),
+    /// The next bytes are not a `\uXXXX` escape at all — there is no low half here.
+    NotEscape,
+}
+
+/// Peek a `\uXXXX` escape from `it` (moved in by value — pass a clone so the caller's
+/// iterator is untouched). Separates a not-yet-complete escape (resume once more streams
+/// in) from a definitely-absent one (a malformed high-surrogate pairing).
+fn peek_unicode_escape(mut it: std::str::CharIndices<'_>) -> LowHalf {
+    match it.next() {
+        None => return LowHalf::Incomplete,
+        Some((_, '\\')) => {}
+        Some(_) => return LowHalf::NotEscape,
+    }
+    match it.next() {
+        None => return LowHalf::Incomplete,
+        Some((_, 'u')) => {}
+        Some(_) => return LowHalf::NotEscape,
+    }
+    let mut hex = String::with_capacity(4);
+    let mut end = 0;
+    for _ in 0..4 {
+        match it.next() {
+            Some((j, h)) => {
+                hex.push(h);
+                end = j + h.len_utf8();
+            }
+            None => return LowHalf::Incomplete,
+        }
+    }
+    match u32::from_str_radix(&hex, 16) {
+        Ok(code) => LowHalf::Escape(code, end),
+        Err(_) => LowHalf::NotEscape,
+    }
 }
 
 impl MainAgent for ModelMainAgent {
@@ -1467,6 +1540,38 @@ mod tests {
     }
 
     #[test]
+    fn markdown_extractor_recombines_a_surrogate_pair_split_across_chunks() {
+        // U+1F600 (the 😀 emoji) is a non-BMP scalar that JSON encodes as a UTF-16
+        // surrogate pair of two `\uXXXX` escapes. The escape *form* is built from raw
+        // bytes (0x5C is the backslash, 0x22 the quote) so the source carries the escapes
+        // literally and drives the decoder's `\u` path — a pasted emoji would instead hit
+        // the plain-char path and prove nothing. Fed one char at a time (the high half
+        // lands a full call before the low half), the decoder must hold the high half back
+        // and recombine the two into one scalar, never emit a lone surrogate. The
+        // reference is serde_json's own decode of the same envelope — that equality is the
+        // invariant the live smoke's `streamed == out.markdown` leans on for non-BMP text.
+        let bs = char::from(0x5C_u8); // backslash
+        let q = char::from(0x22_u8); // double quote
+        let body = format!("a{bs}uD83D{bs}uDE00b"); // a😀b
+        let envelope = format!("{{{q}markdown{q}:{q}{body}{q}}}");
+        let reference = serde_json::from_str::<Value>(&envelope).unwrap()["markdown"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let mut extractor = MarkdownStreamExtractor::default();
+        let mut grown = String::new();
+        let mut streamed = String::new();
+        for ch in envelope.chars() {
+            grown.push(ch);
+            streamed.push_str(&extractor.update(&grown));
+        }
+        let expected = format!("a{}b", char::from_u32(0x1_F600).unwrap());
+        assert_eq!(streamed, expected);
+        assert_eq!(streamed, reference);
+    }
+
+    #[test]
     fn reconstruct_response_feeds_the_unchanged_parse_path() {
         // The streamed envelope text, reconstructed, must parse through `parse_response`
         // exactly as a non-streaming body would — both provider arms.
@@ -1489,14 +1594,112 @@ mod tests {
         assert!(reconstruct_response(Provider::Anthropic, "{\"markdown\":\"unterminated").is_err());
     }
 
+    /// A non-empty input so a live model has real material to summarise. The empty
+    /// `MainAgentInput::default()` led weaker models (notably the Anthropic arm) to emit a
+    /// stub with too few header bullets to clear `generate`'s 3–6 validation, which errored
+    /// before the streaming assertions below could run. A handful of index/internals/macro
+    /// levels plus a change view gives the model enough to write a conforming header.
+    fn populated_input() -> MainAgentInput {
+        use crate::baseline_delta::{BaselineDeltas, Direction, SeriesDelta};
+        use crate::data_sources::{GroupKind, Quote};
+
+        let q = |symbol: &str, name: &str, price: f64, change_pct: f64| Quote {
+            symbol: symbol.into(),
+            name: name.into(),
+            price,
+            change_pct,
+            unit: "index points".into(),
+        };
+        let baseline = BaselineMarketData {
+            indices: vec![
+                q("^DJI", "Dow Jones Industrial Average", 41_200.0, 0.8),
+                q("^GSPC", "S&P 500", 5_610.0, 1.2),
+                q("^IXIC", "Nasdaq Composite", 18_400.0, 1.9),
+            ],
+            internals: vec![q("^VIX", "CBOE Volatility Index", 14.2, -6.5)],
+            macro_levels: vec![
+                Quote {
+                    symbol: "DGS10".into(),
+                    name: "10-Year Treasury Yield".into(),
+                    price: 4.18,
+                    change_pct: -3.0,
+                    unit: "percent".into(),
+                },
+                Quote {
+                    symbol: "FEDFUNDS".into(),
+                    name: "Federal Funds Target (upper)".into(),
+                    price: 4.50,
+                    change_pct: 0.0,
+                    unit: "percent".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let deltas = BaselineDeltas {
+            elapsed_days: 7.0,
+            changed: vec![SeriesDelta {
+                group: GroupKind::Indices,
+                id: "^GSPC".into(),
+                name: "S&P 500".into(),
+                current: 5_610.0,
+                prior: 5_500.0,
+                abs_change: 110.0,
+                pct_change: Some(2.0),
+                direction: Direction::Up,
+            }],
+            new: vec![],
+            missing: vec![],
+        };
+        MainAgentInput {
+            baseline,
+            deltas: Some(deltas),
+            ..Default::default()
+        }
+    }
+
     #[test]
     #[ignore = "hits the live provider API; set MARKET_SIGNAL_MAIN_AGENT_MODEL + the provider key"]
-    fn live_generate_smoke() {
-        let agent = ModelMainAgent::from_env().expect("env configured for a live run");
+    fn live_generate_and_stream_smoke() {
+        use crate::progress::{ProgressEvent, RecordingReporter};
+        use std::sync::atomic::AtomicBool;
+
+        // A recording context instead of `noop`, so the streamed-token side-channel is
+        // captured against the real SSE wire (real chunk boundaries, keep-alives, escape
+        // splits) — the bare `generate`'s no-op context drops every `agent_token`, which
+        // is why the decoder was previously only fixture-tested.
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("stream-smoke", rec.clone(), Arc::new(AtomicBool::new(false)));
+        let agent = ModelMainAgent::from_env()
+            .expect("env configured for a live run")
+            .with_context(ctx);
+
         let out = agent
-            .generate(MainAgentInput::default())
+            .generate(populated_input())
             .expect("live generate");
+
+        // Envelope accumulation + `reconstruct_response` are proven by a clean parse.
         assert!(!out.markdown.is_empty());
         assert!((3..=6).contains(&out.summary.header_summary_bullets.len()));
+
+        // The streamed-token side-channel: concatenating the coalesced AgentToken deltas
+        // must rebuild the report markdown exactly — proving the resumable decoder handled
+        // the live wire. A clean parse with zero tokens would mean the decoder silently
+        // emitted nothing; the non-empty assert localizes that regression.
+        let streamed: String = rec
+            .messages()
+            .iter()
+            .filter_map(|m| match &m.event {
+                ProgressEvent::AgentToken { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !streamed.is_empty(),
+            "no AgentToken events were emitted by the live stream"
+        );
+        assert_eq!(
+            streamed, out.markdown,
+            "streamed tokens did not reconstruct the report markdown"
+        );
     }
 }
