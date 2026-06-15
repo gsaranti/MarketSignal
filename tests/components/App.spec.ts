@@ -16,8 +16,26 @@
 
 import { describe, test, expect, beforeEach, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-import { makeInvokeRouter, unlisten, emitterFor } from "../helpers/tauri";
+import { makeInvokeRouter, unlisten, emitterFor, focusEmitter } from "../helpers/tauri";
 import type { GeneratedReport, ReportSummary } from "../../src/types";
+
+// A controllable promise for the interleaving tests below — kept local to this
+// spec (test-mechanics, not a Tauri double, so it stays out of helpers/tauri.ts).
+// Lets a test hold an invoke pending while it drives other events, then settle it
+// to pin a guard that only a deterministic ordering can exercise without flake.
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 // Hoisted above the imports below so the `vi.mock` factories can close over these
 // mock fns. (`vi.hoisted` runs before module imports; `vi` is available in it.)
@@ -94,6 +112,21 @@ const sampleReport: GeneratedReport = {
   markdown: "# Weekly Market Signal\n\nBody.",
   markdown_path: "/reports/2026-06-14-market-signal-weekly-report.md",
   summary: sampleSummary,
+};
+
+// A distinct second report for the no-yank and latest-load-wins tests. Read-only,
+// like the fixtures above (the shallow module-level spread is fine while specs
+// only read props).
+const sampleSummary2: ReportSummary = {
+  ...sampleSummary,
+  report_id: "rep-2",
+  created_at: "2026-06-21T09:00:00Z",
+};
+const sampleReport2: GeneratedReport = {
+  report_id: "rep-2",
+  markdown: "# Weekly Market Signal\n\nSecond body.",
+  markdown_path: "/reports/2026-06-21-market-signal-weekly-report.md",
+  summary: sampleSummary2,
 };
 
 describe("App.vue Tauri boundary", () => {
@@ -412,6 +445,256 @@ describe("App.vue cancel + tracker toggle", () => {
 
     expect(wrapper.findComponent(JobTrackerView).exists()).toBe(false);
     expect(wrapper.findComponent(LatestReportView).exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+});
+
+// generate(): the manual-run kickoff wired from JobStatusPanel @generate. Covers
+// the blocked-gate short-circuit, the happy path (fresh report into the pane), and
+// the pre-tracker failure surfacing on the report pane's error channel. The
+// interleaved cancel-suppression branch lives in the deferred-harness block below.
+describe("App.vue generate", () => {
+  test("a Generate emit invokes generate_report_manual and lands the fresh report", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({ generate_report_manual: () => sampleReport })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    wrapper.findComponent(JobStatusPanel).vm.$emit("generate");
+    await flushPromises();
+
+    expect(tauri.invoke).toHaveBeenCalledWith("generate_report_manual");
+    // reportPaneMode was "tracker" at kickoff, so success swaps in the report and
+    // settles the pane back to the report view.
+    expect(wrapper.findComponent(LatestReportView).props("report")).toEqual(sampleReport);
+
+    wrapper.unmount();
+  });
+
+  test("a blocked config short-circuits Generate before any invoke", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        check_configuration: () => ({ categories: [], is_blocked: true }),
+        generate_report_manual: () => sampleReport,
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    wrapper.findComponent(JobStatusPanel).vm.$emit("generate");
+    await flushPromises();
+
+    // The `if (blocked.value) return` guard fires before the command.
+    expect(invokedCommands()).not.toContain("generate_report_manual");
+
+    wrapper.unmount();
+  });
+
+  test("a failure before run-started surfaces on the report pane's error", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        generate_report_manual: () => {
+          throw new Error("gate slammed");
+        },
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    wrapper.findComponent(JobStatusPanel).vm.$emit("generate");
+    await flushPromises();
+
+    // No run-started arrived, so runTrace stayed null and the catch routes the
+    // reason to the report pane (the skip / pre-tracker-error branch).
+    const latest = wrapper.findComponent(LatestReportView);
+    expect(latest.exists()).toBe(true);
+    expect(latest.props("error")).toContain("gate slammed");
+
+    wrapper.unmount();
+  });
+});
+
+// The job-finished listener: the scheduler emits a GeneratedReport (success) or
+// null (failure / skip / missed) when a run ends, so an open window updates
+// without a manual refresh. Driven through the captured "job-finished" emitter.
+describe("App.vue job-finished listener", () => {
+  test("a payload while watching the tracker lands the report", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+    const finished = emitterFor(tauri.listen, "job-finished");
+
+    // Put the user on the tracker pane (footer handle), then deliver the report.
+    wrapper.findComponent(JobStatusPanel).vm.$emit("view-tracker");
+    await flushPromises();
+    finished(sampleReport);
+    await flushPromises();
+
+    const latest = wrapper.findComponent(LatestReportView);
+    expect(latest.exists()).toBe(true);
+    expect(latest.props("report")).toEqual(sampleReport);
+
+    wrapper.unmount();
+  });
+
+  test("a payload while reading another report does not yank the pane", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        load_report: () => sampleReport,
+        // Keep rep-1 "still selected" so the post-finish list refresh doesn't
+        // blank-pane auto-select onto the new report and confound the assertion.
+        list_reports: () => [sampleSummary2, sampleSummary],
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    const finished = emitterFor(tauri.listen, "job-finished");
+
+    // Reading report rep-1 (reportPaneMode stays "report").
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("select", "rep-1");
+    await flushPromises();
+    expect(wrapper.findComponent(LatestReportView).props("report")).toEqual(sampleReport);
+
+    // A scheduled rep-2 finishes; the reader must not be moved off rep-1.
+    finished(sampleReport2);
+    await flushPromises();
+    expect(wrapper.findComponent(LatestReportView).props("report")).toEqual(sampleReport);
+
+    wrapper.unmount();
+  });
+
+  test("a null payload refreshes status but loads no report", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+    const finished = emitterFor(tauri.listen, "job-finished");
+
+    tauri.invoke.mockClear();
+    finished(null);
+    await flushPromises();
+
+    // The null path refreshes validation / status / inbox / archive, but not the
+    // report list — refreshReports lives inside the `if (event.payload)` arm.
+    const cmds = invokedCommands();
+    expect(cmds).toEqual(
+      expect.arrayContaining([
+        "check_configuration",
+        "job_status",
+        "list_research_inbox",
+        "list_research_archive",
+      ])
+    );
+    expect(cmds).not.toContain("list_reports");
+    expect(wrapper.findComponent(LatestReportView).props("report")).toBeNull();
+
+    wrapper.unmount();
+  });
+});
+
+// The window focus-refresh path: regaining focus re-checks config / status and
+// re-lists reports + both research folders, so a missed window or a background
+// scheduled run surfaces on return. Driven through the captured onFocusChanged
+// callback (focusEmitter).
+describe("App.vue focus refresh", () => {
+  test("regaining focus refreshes config, status, reports, and both folders", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+    const focus = focusEmitter(tauri.onFocusChanged);
+
+    tauri.invoke.mockClear();
+    focus(true);
+    await flushPromises();
+
+    // Exactly the five refresh commands the focus handler issues — sorted-equality
+    // so it's a true set check with no extras.
+    expect([...invokedCommands()].sort()).toEqual([
+      "check_configuration",
+      "job_status",
+      "list_reports",
+      "list_research_archive",
+      "list_research_inbox",
+    ]);
+
+    wrapper.unmount();
+  });
+
+  test("losing focus refreshes nothing", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+    const focus = focusEmitter(tauri.onFocusChanged);
+
+    tauri.invoke.mockClear();
+    focus(false);
+    await flushPromises();
+
+    // The `if (focused)` guard short-circuits a blur.
+    expect(invokedCommands()).toHaveLength(0);
+
+    wrapper.unmount();
+  });
+});
+
+// Interleaving guards that only a controllable promise can pin deterministically:
+// generate()'s cancel-suppression and selectReport()'s latest-load-wins race.
+describe("App.vue interleaved guards", () => {
+  test("a cancelled generate suppresses the error surface", async () => {
+    const pending = deferred<GeneratedReport>();
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        generate_report_manual: () => pending.promise,
+        cancel_run: () => null,
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    const emit = emitterFor(tauri.listen, "job-progress");
+
+    // Kick off the run; it parks on the pending invoke. run-started then builds the
+    // trace so JobTrackerView renders and its @cancel becomes reachable.
+    wrapper.findComponent(JobStatusPanel).vm.$emit("generate");
+    await flushPromises();
+    emit({ run_id: "R1", seq: 1, kind: "run-started", label: "Weekly run" });
+    await flushPromises();
+
+    // User cancels (sets cancelRequested), then the run rejects — the cancel branch
+    // must swallow the error rather than surface it.
+    wrapper.findComponent(JobTrackerView).vm.$emit("cancel");
+    await flushPromises();
+    pending.reject(new Error("aborted by cancel"));
+    await flushPromises();
+
+    expect(cancelRunCalls()).toHaveLength(1);
+    // Leave the tracker to reveal the report pane: its error channel stayed clean
+    // (contrast the pre-tracker-error test, where the same throw surfaces).
+    wrapper.findComponent(JobTrackerView).vm.$emit("close");
+    await flushPromises();
+    expect(wrapper.findComponent(LatestReportView).props("error")).toBeNull();
+
+    wrapper.unmount();
+  });
+
+  test("a slow earlier load loses to a newer selection", async () => {
+    const slow = deferred<GeneratedReport>();
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        load_report: (args) =>
+          args?.reportId === "rep-1" ? slow.promise : sampleReport2,
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const sidebar = wrapper.findComponent(RecentReportsSidebar);
+    sidebar.vm.$emit("select", "rep-1"); // parks on the slow load
+    sidebar.vm.$emit("select", "rep-2"); // newer selection resolves first
+    await flushPromises();
+    expect(wrapper.findComponent(LatestReportView).props("report")).toEqual(sampleReport2);
+
+    // The stale rep-1 load resolves late; the selectedReportId guard drops it so it
+    // can't clobber the newer report.
+    slow.resolve(sampleReport);
+    await flushPromises();
+    expect(wrapper.findComponent(LatestReportView).props("report")).toEqual(sampleReport2);
 
     wrapper.unmount();
   });

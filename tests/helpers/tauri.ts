@@ -104,3 +104,19 @@ export function emitterFor(
   const cb = call[1] as (e: { payload: unknown }) => void;
   return (payload: unknown) => cb({ payload });
 }
+
+// The window's `onFocusChanged` sibling of `emitterFor`. App subscribes via
+// `getCurrentWindow().onFocusChanged(cb)` in `onMounted`, so the callback is the
+// first (only) arg of the single registration; capture it to drive App's
+// focus-refresh path by feeding it focus transitions the way wry's window would.
+// Same `vi`-free, post-mount-flush contract as `emitterFor`.
+export function focusEmitter(
+  onFocusChangedMock: ListenLike
+): (focused: boolean) => void {
+  const call = onFocusChangedMock.mock.calls[0];
+  if (!call) {
+    throw new Error("tauri test mock: onFocusChanged was never registered");
+  }
+  const cb = call[0] as (e: { payload: boolean }) => void;
+  return (focused: boolean) => cb({ payload: focused });
+}
