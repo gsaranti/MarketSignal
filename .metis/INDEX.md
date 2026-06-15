@@ -85,6 +85,7 @@
 ## Report format & structure
 - Markdown canonical vs HTML presentation rule — report-structure.md; weekly-report-workflow.md §Steps 2, 18
 - markdown-it renderer — report-structure.md §Presentation Format
+- Embedded chart blocks (fenced `chart` JSON → inline SVG; line/bar/area; fail-soft authoring convention) — report-structure.md §Embedded charts
 - Standard report sections — report-structure.md §Standard Report Structure
 - Market Signal Thesis (unified voice) — report-structure.md §Market Signal Thesis; agents.md §Synthesis Behavior
 - Index Picture (Dow/S&P/Nasdaq) — report-structure.md §Standard Report Structure
