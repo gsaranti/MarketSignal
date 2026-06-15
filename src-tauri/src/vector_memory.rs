@@ -198,6 +198,23 @@ pub fn count_memory(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("SELECT COUNT(*) FROM vector_memory", [], |r| r.get(0))?)
 }
 
+/// The cosine similarity of the closest existing `learning` row to a candidate
+/// embedding, or `None` when no learning row can participate — an empty learning
+/// corpus, or only rows the search must skip (undecodable blob, dimension
+/// mismatch with the candidate). The Step-17 persist write uses this to drop a
+/// near-restatement of a learning the store already holds before spending a row
+/// on it: learnings are never deleted, so unbounded restatement is permanent
+/// growth that dilutes retrieval. Thin by design — it reuses the same
+/// brute-force cosine scan as retrieval, restricted to `learning` rows and the
+/// single nearest, so the threshold that decides "duplicate" stays an app-layer
+/// policy at the call site rather than being baked in here. The `summary` kind
+/// is excluded: dedup is within the learning corpus, never against a report's
+/// summary.
+pub fn nearest_learning_similarity(conn: &Connection, embedding: &[f32]) -> Result<Option<f64>> {
+    let hits = search_memory(conn, embedding, Some(MemoryKind::Learning), 1)?;
+    Ok(hits.first().map(|h| h.score))
+}
+
 /// The deterministic text rendering of a report summary that gets embedded —
 /// the atomic unit `docs/storage.md §Embeddings` names ("the report-summary
 /// metadata is the unit that enters vector memory", never the report Markdown).
@@ -574,6 +591,39 @@ mod tests {
         assert_eq!(count_memory(&conn).unwrap(), 0);
         insert_memory(&conn, MemoryKind::Learning, None, "l", &[1.0], "t").unwrap();
         assert_eq!(count_memory(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn nearest_learning_similarity_scores_the_closest_learning() {
+        let conn = mem();
+        // Nothing to be near yet: an empty learning corpus returns None, never 0.0
+        // (the call site must be able to tell "no neighbor" from "an orthogonal one").
+        assert!(nearest_learning_similarity(&conn, &[1.0, 0.0]).unwrap().is_none());
+
+        insert_memory(&conn, MemoryKind::Learning, None, "l", &[1.0, 0.0], "t").unwrap();
+        // An identical direction scores ~1.0 (a duplicate); an orthogonal one ~0.0.
+        let same = nearest_learning_similarity(&conn, &[1.0, 0.0]).unwrap().unwrap();
+        assert!((same - 1.0).abs() < 1e-9, "identical embedding scores ~1.0: {same}");
+        let orthogonal = nearest_learning_similarity(&conn, &[0.0, 1.0]).unwrap().unwrap();
+        assert!(orthogonal.abs() < 1e-9, "orthogonal embedding scores ~0.0: {orthogonal}");
+
+        // The *closest* learning wins: a second row aligned with a new query
+        // direction is returned over the now-orthogonal first row (top-1, not first).
+        insert_memory(&conn, MemoryKind::Learning, None, "l2", &[0.0, 1.0], "t").unwrap();
+        let best = nearest_learning_similarity(&conn, &[0.0, 1.0]).unwrap().unwrap();
+        assert!((best - 1.0).abs() < 1e-9, "the closer of the two learnings wins: {best}");
+    }
+
+    #[test]
+    fn nearest_learning_similarity_ignores_summary_rows() {
+        let conn = mem();
+        // A summary identical to the query must not register as a near-duplicate
+        // learning — dedup is within the learning corpus only.
+        insert_memory(&conn, MemoryKind::Summary, Some("r"), "s", &[1.0, 0.0], "t").unwrap();
+        assert!(
+            nearest_learning_similarity(&conn, &[1.0, 0.0]).unwrap().is_none(),
+            "a summary is not a learning"
+        );
     }
 
     #[test]

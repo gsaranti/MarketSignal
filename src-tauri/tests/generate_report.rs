@@ -473,6 +473,34 @@ impl MainAgent for LearningAgent {
     }
 }
 
+/// A test embedder that places each distinct text on its own basis direction:
+/// different texts (almost surely) embed orthogonally (cosine 0) while identical
+/// text embeds identically (cosine 1.0). The production `text-embedding-3-large`
+/// separates distinct content this way; the crude `StubEmbedder` instead collapses
+/// all real prose to ~1.0 cosine (a constant common-mode component plus small
+/// positive byte increments), which the Step-17 dedup pass would then over-merge.
+/// The learning-write tests below assert that *distinct* lessons all persist, so
+/// they need an embedder that models real separation; the identical-text path
+/// still exercises dedup (see `durable_learnings_dedup_drops_a_restatement`).
+struct DistinctEmbedder;
+
+impl Embedder for DistinctEmbedder {
+    fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        // FNV-1a over the trimmed text → one hot dimension in a wide vector:
+        // different texts (almost surely) hash to different dimensions → orthogonal;
+        // identical text → the same dimension → cosine 1.0.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in text.trim().bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        let mut v = vec![0.0f32; 1024];
+        let dim = v.len();
+        v[(hash as usize) % dim] = 1.0;
+        Ok(v)
+    }
+}
+
 #[test]
 fn durable_learnings_land_in_vector_memory() {
     let dir = tempfile::tempdir().unwrap();
@@ -487,7 +515,9 @@ fn durable_learnings_land_in_vector_memory() {
         &agent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
-        &StubEmbedder,
+        // Distinct learnings must stay distinct under the embedder; StubEmbedder
+        // collapses real prose to ~1.0 cosine, which dedup would then over-merge.
+        &DistinctEmbedder,
         &paths,
         &RunContext::noop(),
     )
@@ -540,7 +570,8 @@ fn durable_learnings_are_trimmed_and_capped() {
         &LearningAgent(entries),
         &StubMarketDataSource,
         &ResearchStages::stub(),
-        &StubEmbedder,
+        // Six distinct lessons must all survive to the cap; see DistinctEmbedder.
+        &DistinctEmbedder,
         &paths,
         &RunContext::noop(),
     )
@@ -564,6 +595,37 @@ fn durable_learnings_are_trimmed_and_capped() {
         .unwrap();
     assert_eq!(blanks, 0, "a whitespace-only learning never reaches the store");
     assert!(std::path::Path::new(&report.markdown_path).exists());
+}
+
+#[test]
+fn durable_learnings_dedup_drops_a_restatement() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths::under(dir.path());
+
+    // The agent emits the same lesson twice (a restatement an LLM might paraphrase).
+    // The Step-17 dedup pass embeds each and drops the second as a near-duplicate of
+    // the first, so a single learning row lands — proving dedup is wired through
+    // generate_report, not just the helper unit-tested in pipeline.rs.
+    let learning = "Breadth divergences preceded the pullback; weight them earlier.";
+    generate_report(
+        &LearningAgent(vec![learning.into(), learning.into()]),
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &DistinctEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let learnings: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM vector_memory WHERE kind = 'learning'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(learnings, 1, "the restated learning is deduped to a single row");
 }
 
 #[test]

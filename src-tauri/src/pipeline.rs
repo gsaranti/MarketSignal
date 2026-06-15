@@ -365,56 +365,17 @@ pub fn generate_report(
 
         // Best-effort: embed and store the run's durable learnings — Step 17's
         // second memory leg ("durable learnings identified by the main agent",
-        // `docs/weekly-report-workflow.md §Step 17`). The bound lives here in the
-        // app layer, not the model contract: entries are trimmed, empties dropped,
-        // and the rest capped before any embedding call is spent. Each learning is
-        // its own atomic unit (one embedding per learning, `docs/storage.md
-        // §Embeddings`) and each write is independently best-effort — one failed
-        // embed or insert costs that learning, never its siblings or the report.
-        // `report_id` is provenance only: the `kind` column, not the id, is what
-        // makes learnings survive the future retention cascade.
-        let learnings: Vec<&str> = output
-            .durable_learnings
-            .iter()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect();
-        if learnings.len() > LEARNINGS_PER_REPORT_CAP {
-            eprintln!(
-                "vector-memory: report {} emitted {} durable learnings; keeping the first {}",
-                summary.report_id,
-                learnings.len(),
-                LEARNINGS_PER_REPORT_CAP
-            );
-        }
-        for learning in learnings.into_iter().take(LEARNINGS_PER_REPORT_CAP) {
-            // Polled at each request boundary, like the executor: a cancel that
-            // lands during one embedding call must not spend the next.
-            if ctx.is_cancelled() {
-                break;
-            }
-            match embedder.embed(learning) {
-                Ok(embedding) => {
-                    if let Err(e) = vector_memory::insert_memory(
-                        &conn,
-                        MemoryKind::Learning,
-                        Some(&summary.report_id),
-                        learning,
-                        &embedding,
-                        &summary.created_at,
-                    ) {
-                        eprintln!(
-                            "vector-memory learning persist failed for report {}: {e:#}",
-                            summary.report_id
-                        );
-                    }
-                }
-                Err(e) => eprintln!(
-                    "vector-memory learning embedding failed for report {}: {e:#}",
-                    summary.report_id
-                ),
-            }
-        }
+        // `docs/weekly-report-workflow.md §Step 17`). Trim / cap / near-duplicate
+        // drop and the per-learning best-effort writes all live in
+        // `persist_durable_learnings`.
+        persist_durable_learnings(
+            &conn,
+            embedder,
+            &output.durable_learnings,
+            &summary.report_id,
+            &summary.created_at,
+            ctx,
+        );
 
         // Best-effort: the 30-report retention cascade, run after this run's
         // insert so the new report counts toward the window. No paid calls, so
@@ -769,6 +730,18 @@ const MEMORY_TOP_K: usize = 5;
 /// thresholds. Overflow is truncated with a stderr note, never a failed report.
 const LEARNINGS_PER_REPORT_CAP: usize = 5;
 
+/// Cosine-similarity threshold at or above which a freshly embedded durable
+/// learning is treated as a near-restatement of one the store already holds and
+/// dropped before it spends a row. An app-layer policy like the cap above, not a
+/// model contract: the prompt can't be trusted to avoid paraphrasing a prior
+/// run's lesson, and learnings are never deleted, so unbounded restatement is
+/// permanent growth that dilutes retrieval. Conservative by default — 0.93 drops
+/// near-verbatim restatements while letting a genuinely new lesson through; not
+/// doc-pinned, tunable alongside `MEMORY_TOP_K` and `LEARNINGS_PER_REPORT_CAP`. A
+/// dedup-scan failure fails *open* (the learning is kept), so the check can only
+/// ever drop a redundant row, never lose a real one.
+const LEARNING_DEDUP_THRESHOLD: f64 = 0.93;
+
 /// Hard byte cap on a retrieval query before the paid embedding call. The query
 /// builders bound line *counts*, not sizes — the stored summaries' optional
 /// arrays, topic rationales, and web source titles are all length-unbounded — so
@@ -826,6 +799,82 @@ fn retrieve_memory(
         eprintln!("research: {label} memory retrieval degraded to empty: {e:#}");
         Vec::new()
     })
+}
+
+/// Embed and store a run's durable learnings — Step 17's second memory leg
+/// (`docs/weekly-report-workflow.md §Step 17`). The app-layer bounds live here,
+/// not the model contract: entries are trimmed, empties dropped, the rest capped
+/// at [`LEARNINGS_PER_REPORT_CAP`], and each survivor checked against the store
+/// for a near-restatement before a row is spent. Each learning is its own atomic
+/// unit (one embedding per learning, `docs/storage.md §Embeddings`) and every
+/// write is independently best-effort — one failed embed, dedup scan, or insert
+/// costs that learning, never its siblings or the report. Dedup reuses the
+/// embedding just computed (no extra paid call) and scans the store *including*
+/// this run's own prior inserts, so two near-identical learnings in one run
+/// collapse to one; a scan error fails open and keeps the learning. Cancellation
+/// is polled before each embedding call, like the executor, so a cancel landing
+/// mid-persist stops spending rather than riding out the remaining learnings.
+/// `report_id` is provenance only: the `kind` column, not the id, is what makes
+/// learnings survive the retention cascade.
+fn persist_durable_learnings(
+    conn: &rusqlite::Connection,
+    embedder: &dyn Embedder,
+    learnings: &[String],
+    report_id: &str,
+    created_at: &str,
+    ctx: &RunContext,
+) {
+    let trimmed: Vec<&str> = learnings
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if trimmed.len() > LEARNINGS_PER_REPORT_CAP {
+        eprintln!(
+            "vector-memory: report {report_id} emitted {} durable learnings; keeping the first {}",
+            trimmed.len(),
+            LEARNINGS_PER_REPORT_CAP
+        );
+    }
+    for learning in trimmed.into_iter().take(LEARNINGS_PER_REPORT_CAP) {
+        // Polled at each request boundary, like the executor: a cancel that lands
+        // during one embedding call must not spend the next.
+        if ctx.is_cancelled() {
+            break;
+        }
+        let embedding = match embedder.embed(learning) {
+            Ok(embedding) => embedding,
+            Err(e) => {
+                eprintln!("vector-memory learning embedding failed for report {report_id}: {e:#}");
+                continue;
+            }
+        };
+        // Drop a near-restatement of a learning the store already holds. Fails
+        // open: a scan error treats the learning as novel and keeps it, so dedup
+        // can only ever drop a redundant row, never lose a real one.
+        match vector_memory::nearest_learning_similarity(conn, &embedding) {
+            Ok(Some(sim)) if sim >= LEARNING_DEDUP_THRESHOLD => {
+                eprintln!(
+                    "vector-memory: report {report_id} dropping near-duplicate learning (sim {sim:.3})"
+                );
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!(
+                "vector-memory learning dedup scan failed for report {report_id} (keeping the learning): {e:#}"
+            ),
+        }
+        if let Err(e) = vector_memory::insert_memory(
+            conn,
+            MemoryKind::Learning,
+            Some(report_id),
+            learning,
+            &embedding,
+            created_at,
+        ) {
+            eprintln!("vector-memory learning persist failed for report {report_id}: {e:#}");
+        }
+    }
 }
 
 /// The minimum fraction of a Step-3 group's *expected* series that must resolve for the
@@ -1446,6 +1495,100 @@ mod tests {
         let counting = CountingEmbedder::new();
         assert!(retrieve_memory(&seeded, &counting, "  \n", "test").is_empty());
         assert_eq!(counting.calls(), 0, "no embedding call for a blank query");
+    }
+
+    /// Embeds text to a basis vector chosen by a leading `k<N>` tag, so a test can
+    /// set exact cosine relationships without depending on the stub's hash
+    /// geometry: same tag → identical embedding (cosine 1.0, a duplicate);
+    /// different tags → orthogonal (cosine 0, genuinely distinct).
+    struct BasisEmbedder;
+
+    impl Embedder for BasisEmbedder {
+        fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            let idx: usize = text
+                .trim()
+                .strip_prefix('k')
+                .and_then(|r| r.split_whitespace().next())
+                .and_then(|n| n.parse().ok())
+                .expect("BasisEmbedder text must start with `k<N> `");
+            let mut v = vec![0.0f32; 8];
+            v[idx % 8] = 1.0;
+            Ok(v)
+        }
+    }
+
+    fn learning_count(conn: &rusqlite::Connection) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM vector_memory WHERE kind = 'learning'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn persist_durable_learnings_drops_near_duplicates_within_and_across_runs() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        let ctx = RunContext::noop();
+
+        // One run restates the same lesson twice under different wording (same tag →
+        // same embedding). The second collapses into the first: one row, not two —
+        // dedup scans this run's own prior insert.
+        persist_durable_learnings(
+            &conn,
+            &BasisEmbedder,
+            &["k0 breadth thinned".into(), "k0 breadth kept thinning".into()],
+            "rep-1",
+            "2026-06-01T00:00:00Z",
+            &ctx,
+        );
+        assert_eq!(learning_count(&conn), 1, "within-run duplicate dropped");
+
+        // A later run restates the same lesson again: still deduped against the
+        // stored row, not just same-run siblings.
+        persist_durable_learnings(
+            &conn,
+            &BasisEmbedder,
+            &["k0 breadth remained narrow".into()],
+            "rep-2",
+            "2026-06-08T00:00:00Z",
+            &ctx,
+        );
+        assert_eq!(learning_count(&conn), 1, "cross-run duplicate dropped");
+
+        // A genuinely different lesson (orthogonal embedding) is kept — dedup must
+        // not collapse distinct learnings.
+        persist_durable_learnings(
+            &conn,
+            &BasisEmbedder,
+            &["k1 credit spreads widened".into()],
+            "rep-2",
+            "2026-06-08T00:00:00Z",
+            &ctx,
+        );
+        assert_eq!(learning_count(&conn), 2, "a distinct learning persists");
+    }
+
+    #[test]
+    fn persist_durable_learnings_trims_blanks_and_caps_the_rest() {
+        // Regression guard for the trim + cap the extraction moved: blank entries are
+        // dropped before counting, and at most LEARNINGS_PER_REPORT_CAP rows land.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        let ctx = RunContext::noop();
+
+        let mut learnings: Vec<String> = vec!["   ".into(), "".into()];
+        // Distinct tags (idx < 8) so none dedup against each other; more than the cap.
+        for i in 0..(LEARNINGS_PER_REPORT_CAP + 3) {
+            learnings.push(format!("k{i} distinct lesson {i}"));
+        }
+        persist_durable_learnings(&conn, &BasisEmbedder, &learnings, "rep-1", "t", &ctx);
+        assert_eq!(
+            learning_count(&conn),
+            LEARNINGS_PER_REPORT_CAP as i64,
+            "blanks dropped, the rest capped"
+        );
     }
 
     #[test]
