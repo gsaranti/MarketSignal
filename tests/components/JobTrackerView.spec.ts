@@ -61,6 +61,22 @@ test("the headline tracks the running step while active", () => {
   expect(wrapper.find(".toolbar-tag").exists()).toBe(false);
 });
 
+test("an active run with no running step yet falls back to 'Generating report'", () => {
+  // The run owns the slot (active) but no step is `running` — before/between steps.
+  // The headline's third arm; the report tag stays absent (terminal is null).
+  const pending: RunTrace = deepFreeze({
+    runId: "run-1",
+    label: "Weekly Market Report",
+    terminal: null,
+    steps: [{ key: "baseline", label: "Baseline scan", status: "pending", detail: null, agentText: "", requests: [] }],
+  });
+  const wrapper = mount(JobTrackerView, {
+    props: { trace: pending, active: true, cancelRequested: false },
+  });
+  expect(wrapper.find(".toolbar-label").text()).toBe("Generating report");
+  expect(wrapper.find(".toolbar-tag").exists()).toBe(false);
+});
+
 test("once terminal the headline reads 'Run log' and the tag maps + tones the outcome", () => {
   const completed = mount(JobTrackerView, {
     props: { trace: terminalTrace("successful"), active: false, cancelRequested: false },

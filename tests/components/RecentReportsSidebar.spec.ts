@@ -97,6 +97,20 @@ test("the empty state shows a single 'No reports yet' row that navigates to the 
   expect(wrapper.emitted("navigate")).toEqual([["report"]]);
 });
 
+test("the empty-state row marks itself current (class + aria-current) only on the report view", () => {
+  // On the report view the (empty) library row is the current surface...
+  const onReport = makeWrapper({ reports: [], view: "report" });
+  const reportRow = onReport.find(".sidebar-list .report-row");
+  expect(reportRow.classes()).toContain("is-current");
+  expect(reportRow.attributes("aria-current")).toBe("true");
+
+  // ...but viewing another surface leaves it unmarked.
+  const elsewhere = makeWrapper({ reports: [], view: "inbox" });
+  const elsewhereRow = elsewhere.find(".sidebar-list .report-row");
+  expect(elsewhereRow.classes()).not.toContain("is-current");
+  expect(elsewhereRow.attributes("aria-current")).toBeUndefined();
+});
+
 test("a listing failure (no list to fall back on) reads as an error, not an empty library", () => {
   const wrapper = makeWrapper({ reports: [], reportsError: "permission denied" });
   const row = wrapper.find(".sidebar-list .report-row");
