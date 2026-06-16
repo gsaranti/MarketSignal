@@ -513,6 +513,21 @@ fn reveal_research_archive(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| format!("opening research archive: {e}"))
 }
 
+/// Aggregate truncation telemetry for the Settings diagnostics section
+/// (`docs/agents.md §Data Extraction`): how often the deterministic Step-6 parser
+/// had to head-truncate an oversized inbox document, accumulated across reports.
+/// Fail-soft like the rest of the diagnostics surface — an unopenable DB degrades
+/// to an empty `TruncationStats` (which reads as "no truncations recorded") rather
+/// than failing the Settings load. The empty aggregate is itself the signal that
+/// overflow is not yet common, so it must never be a hard error here.
+#[tauri::command]
+fn truncation_stats(app: tauri::AppHandle) -> storage::TruncationStats {
+    let Ok(conn) = open_app_db(&app) else {
+        return storage::TruncationStats::default();
+    };
+    storage::truncation_stats(&conn).unwrap_or_default()
+}
+
 /// Debug-only schedule override: when `MARKET_SIGNAL_SCHEDULE_OVERRIDE` is set to
 /// a number of seconds, the scheduler fires on that fixed interval instead of the
 /// weekly window, so a `tauri dev` smoke can exercise a scheduled run in seconds.
@@ -714,7 +729,8 @@ pub fn run() {
             reveal_research_inbox,
             list_research_archive,
             delete_research_archive_document,
-            reveal_research_archive
+            reveal_research_archive,
+            truncation_stats
         ])
         .setup(|app| {
             // Tray runtime: the app stays resident so scheduled jobs keep running

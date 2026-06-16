@@ -118,6 +118,27 @@ export interface SettingsView {
   available_models: ModelOption[];
 }
 
+// Mirrors the Rust `storage::TruncationStats` returned by the `truncation_stats`
+// command — aggregate telemetry for how often the Step-6 inbox parser had to
+// head-truncate an oversized document, accumulated across reports
+// (docs/agents.md §Data Extraction). Absolute counts only: the underlying table
+// records only truncated docs, so a true share-of-all-documents rate is not
+// derivable. An all-zero aggregate (empty table) is the "overflow is rare"
+// signal the Settings diagnostics section renders as its empty state.
+export interface TruncationStats {
+  total_truncations: number;
+  reports_affected: number;
+  total_chars_dropped: number;
+  by_format: FormatCount[];
+  latest_captured_at: string | null;
+}
+
+// One row of the per-format breakdown in TruncationStats.
+export interface FormatCount {
+  format: string;
+  count: number;
+}
+
 // The credential half of a `save_settings` submission. A field is set only when
 // the user entered a new value; null/"" leaves the stored secret unchanged.
 export interface CredentialUpdate {

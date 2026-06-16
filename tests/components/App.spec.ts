@@ -18,7 +18,11 @@ import { describe, test, expect, beforeEach, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { makeInvokeRouter, unlisten, emitterFor, focusEmitter } from "../helpers/tauri";
 import { deepFreeze } from "../helpers/freeze";
-import type { GeneratedReport, ReportSummary } from "../../src/types";
+import type {
+  GeneratedReport,
+  ReportSummary,
+  TruncationStats,
+} from "../../src/types";
 
 // A controllable promise for the interleaving tests below — kept local to this
 // spec (test-mechanics, not a Tauri double, so it stays out of helpers/tauri.ts).
@@ -153,10 +157,12 @@ describe("App.vue Tauri boundary", () => {
     const events = tauri.listen.mock.calls.map((c) => c[0]).sort();
     expect(events).toEqual(["job-finished", "job-progress"]);
 
-    // Exactly the six refresh commands onMounted issues — sorted-equality enforces
-    // the set with no extras or duplicates (not a subset), while tolerating any
-    // reordering of the onMounted calls. Proves the four-module mock is complete
-    // enough to mount the real App without a throw.
+    // Exactly the seven refresh commands onMounted issues — sorted-equality
+    // enforces the set with no extras or duplicates (not a subset), while
+    // tolerating any reordering of the onMounted calls. Proves the four-module
+    // mock is complete enough to mount the real App without a throw.
+    // `truncation_stats` rides in via refreshSettings (loaded up front for the
+    // gate's config state), alongside get_settings.
     expect([...invokedCommands()].sort()).toEqual([
       "check_configuration",
       "get_settings",
@@ -164,6 +170,7 @@ describe("App.vue Tauri boundary", () => {
       "list_reports",
       "list_research_archive",
       "list_research_inbox",
+      "truncation_stats",
     ]);
 
     wrapper.unmount();
@@ -218,6 +225,31 @@ describe("App.vue Tauri boundary", () => {
     expect(tauri.invoke).toHaveBeenCalledWith("set_job_enabled", {
       enabled: false,
     });
+
+    wrapper.unmount();
+  });
+
+  test("the loaded truncation_stats reaches the Settings prop", async () => {
+    const stats: TruncationStats = {
+      total_truncations: 7,
+      reports_affected: 4,
+      total_chars_dropped: 54321,
+      by_format: [{ format: "pdf", count: 7 }],
+      latest_captured_at: "2026-06-08T09:00:00+00:00",
+    };
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({ truncation_stats: () => stats })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
+    await flushPromises();
+
+    // App.vue is <script setup> with no defineExpose — assert through the child
+    // prop, the spec's load-bearing read idiom.
+    const settings = wrapper.findComponent(Settings);
+    expect(settings.props("truncationStats")).toEqual(stats);
 
     wrapper.unmount();
   });

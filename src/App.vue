@@ -26,6 +26,7 @@ import type {
   SettingsView,
   StepStatus,
   TrackerStep,
+  TruncationStats,
   ValidationReport,
 } from "./types";
 import { readDark, writeDark } from "./theme";
@@ -278,6 +279,13 @@ const settings = ref<SettingsView | null>(null);
 const settingsLoading = ref(false);
 const settingsSaving = ref(false);
 const settingsError = ref<string | null>(null);
+
+// Aggregate truncation telemetry for the Settings diagnostics section, loaded
+// alongside settings. `null` = not yet loaded / unavailable (the section shows
+// nothing); a populated all-zero aggregate is the "no truncations recorded"
+// empty state. Kept off `settingsError` so a diagnostics hiccup never blanks the
+// settings form.
+const truncationStats = ref<TruncationStats | null>(null);
 
 // Per-credential "Test connection" state, kept on its own channels (apart from
 // settingsError, which is load/save only): which credential is being tested, and
@@ -606,6 +614,15 @@ async function refreshSettings() {
   } finally {
     settingsLoading.value = false;
   }
+  // Diagnostics telemetry loads on its own channel — the backend command is
+  // fail-soft (an empty aggregate on a DB error), so a throw here is only an
+  // IPC-layer fault; swallow it to a null the section simply omits, never
+  // letting it disturb the settings form above.
+  try {
+    truncationStats.value = await invoke<TruncationStats>("truncation_stats");
+  } catch {
+    truncationStats.value = null;
+  }
 }
 
 // Test one saved credential against its provider. Result lands on that
@@ -842,6 +859,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :dark="dark"
           :testing="connectionTesting"
           :test-results="connectionTests"
+          :truncation-stats="truncationStats"
           @save="saveSettings"
           @set-enabled="setJobEnabled"
           @set-dark="setDark"

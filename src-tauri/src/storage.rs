@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
+use serde::Serialize;
 
 use crate::agent::ReportSummary;
 
@@ -240,6 +241,79 @@ pub fn record_document_truncations(conn: &Connection, rows: &[DocumentTruncation
     }
     tx.commit()?;
     Ok(())
+}
+
+/// Aggregate view over `document_truncations` for the Settings diagnostics
+/// section (`docs/agents.md §Data Extraction` — the accumulating evidence that
+/// gates the reserved GPT-5-mini extraction stage). Absolute counts only: the
+/// table holds only *truncated* docs, never the full set of docs processed, so a
+/// true share-of-all-documents rate is not derivable from it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct TruncationStats {
+    /// Total truncation events recorded (rows in the table).
+    pub total_truncations: u64,
+    /// Distinct reports that recorded at least one truncation.
+    pub reports_affected: u64,
+    /// Total characters cut across all events (Σ of `original − kept`).
+    pub total_chars_dropped: u64,
+    /// Per-format event counts, ordered by descending count then format name.
+    pub by_format: Vec<FormatCount>,
+    /// Most recent capture timestamp, or `None` when the table is empty.
+    pub latest_captured_at: Option<String>,
+}
+
+/// One row of the per-format truncation breakdown in [`TruncationStats`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct FormatCount {
+    pub format: String,
+    pub count: u64,
+}
+
+/// Aggregate `document_truncations` for the Settings diagnostics read: the
+/// scalar headline numbers in one pass plus the per-format breakdown in a
+/// grouped pass. An empty table yields the `Default` (all-zero counts, empty
+/// breakdown, `None` timestamp) — itself the signal that overflow is not common.
+pub fn truncation_stats(conn: &Connection) -> Result<TruncationStats> {
+    let (total_truncations, reports_affected, total_chars_dropped, latest_captured_at) = conn
+        .query_row(
+            "SELECT
+                COUNT(*),
+                COUNT(DISTINCT report_id),
+                COALESCE(SUM(original_chars - kept_chars), 0),
+                MAX(captured_at)
+             FROM document_truncations",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as u64,
+                    row.get::<_, i64>(1)? as u64,
+                    row.get::<_, i64>(2)? as u64,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT format, COUNT(*) FROM document_truncations
+         GROUP BY format
+         ORDER BY COUNT(*) DESC, format ASC",
+    )?;
+    let by_format = stmt
+        .query_map([], |row| {
+            Ok(FormatCount {
+                format: row.get(0)?,
+                count: row.get::<_, i64>(1)? as u64,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(TruncationStats {
+        total_truncations,
+        reports_affected,
+        total_chars_dropped,
+        by_format,
+        latest_captured_at,
+    })
 }
 
 /// Read a value from `app_settings`, or `None` when the key has never been set.
@@ -784,6 +858,75 @@ mod tests {
         assert_eq!(
             count("SELECT COUNT(*) FROM document_truncations WHERE report_id = 'rep-2'"),
             1
+        );
+    }
+
+    #[test]
+    fn truncation_stats_aggregates_counts_formats_and_chars() {
+        let conn = mem();
+
+        // Empty table → all-zero default, no timestamp (the "overflow is rare"
+        // signal the Settings section renders as its empty state).
+        let empty = truncation_stats(&conn).unwrap();
+        assert_eq!(empty, TruncationStats::default());
+        assert_eq!(empty.latest_captured_at, None);
+
+        let row = |report_id: &str, name: &str, format: &str, at: &str, original: u64, kept: u64| {
+            DocumentTruncationRow {
+                report_id: report_id.into(),
+                captured_at: at.into(),
+                name: name.into(),
+                format: format.into(),
+                original_chars: original,
+                kept_chars: kept,
+            }
+        };
+
+        // Two reports, three events across two formats.
+        record_document_truncations(
+            &conn,
+            &[
+                row("rep-1", "a.pdf", "pdf", "2026-06-01T09:00:00+00:00", 30_000, 12_000),
+                row("rep-1", "b.pdf", "pdf", "2026-06-01T09:00:00+00:00", 20_000, 12_000),
+            ],
+        )
+        .unwrap();
+        record_document_truncations(
+            &conn,
+            &[row(
+                "rep-2",
+                "c.html",
+                "html",
+                "2026-06-08T09:00:00+00:00",
+                15_000,
+                12_000,
+            )],
+        )
+        .unwrap();
+
+        let stats = truncation_stats(&conn).unwrap();
+        assert_eq!(stats.total_truncations, 3);
+        assert_eq!(stats.reports_affected, 2);
+        // (30k−12k) + (20k−12k) + (15k−12k) = 18k + 8k + 3k.
+        assert_eq!(stats.total_chars_dropped, 29_000);
+        // pdf (2 events) ordered before html (1) by descending count.
+        assert_eq!(
+            stats.by_format,
+            vec![
+                FormatCount {
+                    format: "pdf".into(),
+                    count: 2,
+                },
+                FormatCount {
+                    format: "html".into(),
+                    count: 1,
+                },
+            ]
+        );
+        // Newest capture across both runs.
+        assert_eq!(
+            stats.latest_captured_at.as_deref(),
+            Some("2026-06-08T09:00:00+00:00")
         );
     }
 }

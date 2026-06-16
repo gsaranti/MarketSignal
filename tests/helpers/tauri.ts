@@ -15,6 +15,7 @@ import type {
   ReportSummary,
   ResearchDocument,
   SettingsView,
+  TruncationStats,
 } from "../../src/types";
 
 // Minimal valid shapes for the commands App's `onMounted` cascade calls, so a
@@ -47,6 +48,16 @@ export const defaultSettings: SettingsView = {
   available_models: [],
 };
 
+// Loaded alongside settings when the Settings view opens; a clean install has
+// recorded no truncations.
+export const defaultTruncationStats: TruncationStats = {
+  total_truncations: 0,
+  reports_affected: 0,
+  total_chars_dropped: 0,
+  by_format: [],
+  latest_captured_at: null,
+};
+
 export type InvokeHandler = (args?: Record<string, unknown>) => unknown;
 
 // The command → response map. Any command absent here throws when invoked, so a
@@ -61,6 +72,8 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     list_research_inbox: () => [] as ResearchDocument[],
     list_research_archive: () => [] as ResearchDocument[],
     get_settings: () => defaultSettings,
+    // Read on Settings-view entry, alongside get_settings.
+    truncation_stats: () => defaultTruncationStats,
     // Action commands a spec may drive through a user interaction.
     save_settings: () => null,
     set_job_enabled: () => null,

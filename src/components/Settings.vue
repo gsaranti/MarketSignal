@@ -2,12 +2,14 @@
 import { ref, computed, watch } from "vue";
 import Icon from "./Icon.vue";
 import ConnectionTestRow from "./ConnectionTestRow.vue";
+import { localDate } from "../format";
 import type {
   SettingsView,
   AgentModels,
   ConnectionTestResult,
   CredentialUpdate,
   ModelOption,
+  TruncationStats,
 } from "../types";
 
 // Configuration surface — agent models, API tokens, provider credentials
@@ -34,6 +36,10 @@ const props = defineProps<{
   // home): which credential is mid-test, and the last result for each.
   testing: Record<CredKey, boolean>;
   testResults: Record<CredKey, ConnectionTestResult | null>;
+  // Read-only truncation telemetry for the diagnostics section. `null` =
+  // unavailable / not yet loaded (the section is omitted); a populated all-zero
+  // aggregate renders the "none recorded" empty state.
+  truncationStats: TruncationStats | null;
 }>();
 
 const emit = defineEmits<{
@@ -189,6 +195,19 @@ function onSave() {
 // row's gating (it validates the saved credential, not what's typed).
 function credDirty(key: CredKey): boolean {
   return creds.value[key].trim() !== "";
+}
+
+// Whether any truncation has ever been recorded — a populated aggregate with a
+// zero count renders the "none recorded" empty state instead of the readout.
+const hasTruncations = computed(
+  () => (props.truncationStats?.total_truncations ?? 0) > 0
+);
+
+// Group an integer with thousands separators, locale-independent so the readout
+// is deterministic across environments (and tabular-figure aligned per the
+// design system's numeric idiom).
+function fmtNum(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 </script>
 
@@ -392,6 +411,63 @@ function credDirty(key: CredKey): boolean {
             </span>
           </div>
         </form>
+
+        <!-- Diagnostics: read-only truncation telemetry (docs/agents.md §Data
+             Extraction). Renders independent of the config form's load state and
+             on its own data channel, so it appears even when settings fail to
+             load. Omitted entirely while the aggregate is unavailable; a populated
+             all-zero aggregate is the "overflow is rare" empty state. -->
+        <section
+          v-if="truncationStats"
+          class="settings-section"
+          aria-labelledby="sec-diagnostics"
+        >
+          <h3 id="sec-diagnostics" class="section-eyebrow">Document truncations</h3>
+          <p class="section-note">
+            How often an oversized research document had to be head-truncated
+            during parsing. Accumulates across reports.
+          </p>
+
+          <template v-if="hasTruncations">
+            <dl class="trunc-stats">
+              <div class="trunc-row">
+                <dt>Total truncations</dt>
+                <dd>{{ fmtNum(truncationStats.total_truncations) }}</dd>
+              </div>
+              <div class="trunc-row">
+                <dt>Reports affected</dt>
+                <dd>{{ fmtNum(truncationStats.reports_affected) }}</dd>
+              </div>
+              <div class="trunc-row">
+                <dt>Characters dropped</dt>
+                <dd>{{ fmtNum(truncationStats.total_chars_dropped) }}</dd>
+              </div>
+              <div v-if="truncationStats.latest_captured_at" class="trunc-row">
+                <dt>Most recent</dt>
+                <dd>{{ localDate(truncationStats.latest_captured_at) }}</dd>
+              </div>
+            </dl>
+
+            <div v-if="truncationStats.by_format.length" class="trunc-formats">
+              <span class="trunc-formats-label">By format</span>
+              <ul class="trunc-format-list">
+                <li
+                  v-for="f in truncationStats.by_format"
+                  :key="f.format"
+                  class="trunc-format-item"
+                >
+                  <span class="trunc-format-name">{{ f.format }}</span>
+                  <span class="trunc-format-count">{{ fmtNum(f.count) }}</span>
+                </li>
+              </ul>
+            </div>
+          </template>
+
+          <p v-else class="trunc-empty">
+            No truncations recorded yet — research documents have fit within the
+            parser's limits.
+          </p>
+        </section>
       </div>
     </div>
   </main>
@@ -660,6 +736,91 @@ function credDirty(key: CredKey): boolean {
 
 .switch:disabled .switch-knob {
   background: var(--hairline);
+}
+
+/* Diagnostics readout: a label/value list in mono tabular figures (the system's
+   numeric idiom), flat and hairline-free — it's a quiet telemetry block, not a
+   card. */
+.trunc-stats {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.trunc-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-5);
+}
+
+.trunc-row dt {
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  color: var(--ink-2);
+}
+
+.trunc-row dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-size: var(--t-ui-sm);
+  color: var(--ink);
+}
+
+.trunc-formats {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-4);
+  margin-top: var(--s-5);
+}
+
+.trunc-formats-label {
+  flex-shrink: 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.trunc-format-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-5);
+}
+
+.trunc-format-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-size: var(--t-ui-sm);
+}
+
+.trunc-format-name {
+  color: var(--ink-2);
+}
+
+.trunc-format-count {
+  color: var(--ink);
+}
+
+/* Empty state mirrors the section note's serif-italic voice (ink-2 for AA at
+   13px). */
+.trunc-empty {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: var(--t-ui-sm);
+  line-height: var(--lh-prose);
+  color: var(--ink-2);
 }
 
 @media (prefers-reduced-motion: reduce) {

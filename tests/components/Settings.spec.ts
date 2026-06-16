@@ -12,7 +12,7 @@ import { test, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 import Settings from "../../src/components/Settings.vue";
 import { deepFreeze } from "../helpers/freeze";
-import type { SettingsView } from "../../src/types";
+import type { SettingsView, TruncationStats } from "../../src/types";
 
 const settingsView: SettingsView = {
   models: { main: "gpt-main", bull: "gpt-bull", bear: "gpt-bear", balanced: "gpt-bal" },
@@ -38,6 +38,7 @@ const baseProps = {
   dark: false,
   testing: { openai: false, anthropic: false, fmp: false, fred: false, tavily: false },
   testResults: { openai: null, anthropic: null, fmp: null, fred: null, tavily: null },
+  truncationStats: null as TruncationStats | null,
 };
 
 // makeWrapper spreads baseProps *shallowly*, so its nested objects (settingsView,
@@ -82,4 +83,65 @@ test("the schedule toggle emits set-enabled with the flipped value", async () =>
   const wrapper = makeWrapper({ jobEnabled: true });
   await wrapper.find('section[aria-labelledby="sec-schedule"] button').trigger("click");
   expect(wrapper.emitted("set-enabled")).toEqual([[false]]);
+});
+
+// --- Truncation diagnostics section ----------------------------------------
+// The read-only telemetry block: omitted when unavailable, an empty state when
+// nothing's been recorded, and a label/value readout (+ per-format breakdown)
+// once truncations exist.
+
+function diagnostics(wrapper: ReturnType<typeof makeWrapper>) {
+  return wrapper.find('section[aria-labelledby="sec-diagnostics"]');
+}
+
+test("the diagnostics section is omitted when stats are unavailable (null)", () => {
+  const wrapper = makeWrapper({ truncationStats: null });
+  expect(diagnostics(wrapper).exists()).toBe(false);
+});
+
+test("a zero aggregate renders the empty state, not the readout", () => {
+  const stats: TruncationStats = {
+    total_truncations: 0,
+    reports_affected: 0,
+    total_chars_dropped: 0,
+    by_format: [],
+    latest_captured_at: null,
+  };
+  const wrapper = makeWrapper({ truncationStats: stats });
+  const section = diagnostics(wrapper);
+  expect(section.exists()).toBe(true);
+  expect(section.find(".trunc-empty").exists()).toBe(true);
+  expect(section.find(".trunc-stats").exists()).toBe(false);
+});
+
+test("a populated aggregate renders the counts, formatted chars, and per-format breakdown", () => {
+  const stats: TruncationStats = {
+    total_truncations: 3,
+    reports_affected: 2,
+    total_chars_dropped: 29000,
+    by_format: [
+      { format: "pdf", count: 2 },
+      { format: "html", count: 1 },
+    ],
+    latest_captured_at: "2026-06-08T09:00:00+00:00",
+  };
+  const wrapper = makeWrapper({ truncationStats: stats });
+  const section = diagnostics(wrapper);
+  expect(section.find(".trunc-empty").exists()).toBe(false);
+
+  // Scalar readout, with thousands-grouped chars.
+  const values = section.findAll(".trunc-row dd").map((d) => d.text());
+  expect(values).toContain("3");
+  expect(values).toContain("2");
+  expect(values).toContain("29,000");
+
+  // Per-format breakdown, in the backend's descending-count order.
+  const formats = section.findAll(".trunc-format-item").map((li) => ({
+    name: li.find(".trunc-format-name").text(),
+    count: li.find(".trunc-format-count").text(),
+  }));
+  expect(formats).toEqual([
+    { name: "pdf", count: "2" },
+    { name: "html", count: "1" },
+  ]);
 });
