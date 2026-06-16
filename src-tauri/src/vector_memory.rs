@@ -283,7 +283,18 @@ pub fn pre_research_query(
         .indices
         .iter()
         .chain(&baseline.internals)
-        .map(|q| format!("- {}: {} {} ({:+.2}%)", q.name, q.price, q.unit, q.change_pct))
+        .map(|q| {
+            // `change_pct` is a percent for most quotes, but a *point delta* for rate-valued
+            // FRED series (whose name already carries a `(Δ pp)` tag) — suffixing those with
+            // `%` would contradict the unit and re-introduce the mislabeling this convention
+            // fixes. Key off the series id (the quote `symbol`), the same source of truth the
+            // FRED adapter uses; a non-rate / non-FRED quote keeps its percent.
+            if crate::fred::is_rate_delta(&q.symbol) {
+                format!("- {}: {} {} ({:+.2})", q.name, q.price, q.unit, q.change_pct)
+            } else {
+                format!("- {}: {} {} ({:+.2}%)", q.name, q.price, q.unit, q.change_pct)
+            }
+        })
         .collect();
     if !levels.is_empty() {
         if !out.is_empty() {
@@ -699,6 +710,47 @@ mod tests {
         assert!(!q.contains("Series missing this run"), "no missing series, no line");
         // Deterministic: same inputs, same query text.
         assert_eq!(q, pre_research_query(&[sample_summary()], &baseline, Some(&deltas)));
+    }
+
+    #[test]
+    fn pre_research_query_omits_percent_suffix_for_a_point_delta_quote() {
+        // A rate-valued FRED internal (DGS10) carries a point delta in `change_pct` (not a
+        // percent), with its name tagged `(Δ pp)`. The current-market-picture line must NOT
+        // suffix that figure with `%` — a `(+0.10%)` would contradict the name and the unit
+        // convention this slice establishes. A genuine-percent quote still keeps its `%`.
+        let baseline = BaselineMarketData {
+            indices: vec![Quote {
+                symbol: "^GSPC".into(),
+                name: "S&P 500".into(),
+                price: 5610.0,
+                change_pct: 0.4,
+                unit: "index points".into(),
+            }],
+            internals: vec![Quote {
+                symbol: "DGS10".into(),
+                name: "10-Year Treasury Yield (Δ pp)".into(),
+                price: 4.3,
+                change_pct: 0.10,
+                unit: "percent".into(),
+            }],
+            ..Default::default()
+        };
+        let q = pre_research_query(&[], &baseline, None);
+
+        // The point-delta rate renders its move with no `%`.
+        assert!(
+            q.contains("- 10-Year Treasury Yield (Δ pp): 4.3 percent (+0.10)"),
+            "point-delta quote should render the move without a unit suffix: {q}"
+        );
+        assert!(
+            !q.contains("(+0.10%)"),
+            "a point delta must not be suffixed with a misleading %: {q}"
+        );
+        // A genuine-percent quote keeps its `%`.
+        assert!(
+            q.contains("- S&P 500: 5610 index points (+0.40%)"),
+            "a percent quote should keep its %: {q}"
+        );
     }
 
     #[test]

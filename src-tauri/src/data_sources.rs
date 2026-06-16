@@ -26,15 +26,17 @@ use serde::{Deserialize, Serialize};
 use crate::progress::RunContext;
 
 /// One quoted instrument in the baseline scan: a market index or a market
-/// internal (VIX, the dollar index, a commodity). `change_pct` is the percent
-/// change the provider reports for the quote.
+/// internal (VIX, the dollar index, a commodity). `change_pct` is the change the
+/// provider reports for the quote — a percent change for most series, but a **point
+/// change** (level delta) for rate-valued series, whose display name the FRED adapter
+/// tags accordingly (see `fred::RATE_DELTA_SERIES`).
 ///
 /// `unit` annotates **`price`** — the unit the level is quoted in ("index points",
 /// "percent", "USD per barrel", "thousands of persons", …), supplied per series from
 /// each adapter's own table rather than the wire, so the model reading the serialized
 /// baseline can't misread an unlabeled level (a payroll count of thousands as ones, a
-/// yield level as a dollar figure). It does **not** describe `change_pct`, which is a
-/// percent for every series regardless of the level's unit.
+/// yield level as a dollar figure). It does **not** describe `change_pct`, whose unit is
+/// a percent for most series and the level's own unit for a point-delta series.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Quote {
     pub symbol: String,

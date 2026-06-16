@@ -139,12 +139,13 @@ const INDUSTRY_TOP_N: usize = 10;
 /// symmetric upper bound to the non-positive drop in [`industry_pe_map_from_value`] — both
 /// withhold a meaningless figure (→ `None`) rather than fabricate or pass one. Calibrated
 /// against the live distribution (`tuning_industry_pe_distribution_probe`, 2026-06-16): the
-/// plausible band runs up to ~94 (NYSE REIT-Healthcare; NASDAQ tops at ~88, Construction),
-/// the clear denominator-near-zero artifact cluster begins ≥128 (up to ~465), and 100 sits in
-/// the gap between them — conservatively dropping a handful of borderline 100–106 aggregates
-/// (energy E&P, casinos at an earnings trough) whose valuation is uninformative anyway. Re-run
-/// the probe to re-tune.
-const INDUSTRY_PE_MAX: f64 = 100.0;
+/// plausible band runs up to ~94 (NYSE REIT-Healthcare; NASDAQ tops at ~88, Construction)
+/// and the clear denominator-near-zero artifact cluster begins ≥128 (up to ~465), leaving a
+/// clean ~106→128 gap. The ceiling sits at 120 — inside that gap, ~8pt below the artifact
+/// floor — so the borderline 100–106 aggregates (energy E&P, casinos at an earnings trough)
+/// are **kept** as the genuine, if low-signal, cyclical-trough valuations they are, while the
+/// ≥128 denominator artifacts stay dropped. Re-run the probe to re-tune.
+const INDUSTRY_PE_MAX: f64 = 120.0;
 
 /// The exact `country` label to keep from the market-risk-premium dataset. Exact-match, not
 /// a substring — "United Kingdom" and "United Arab Emirates" also start with "United".

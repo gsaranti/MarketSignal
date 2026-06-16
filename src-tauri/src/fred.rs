@@ -89,10 +89,10 @@ const OBSERVATION_LIMIT: &str = "10";
 ///
 /// The credit spreads (high-yield and investment-grade OAS) and the 10y−3m / 10y−2y
 /// Treasury curve spreads join here too: daily, market-priced risk gauges feeding the
-/// report's risk-posture and market-cycle reads. For these the **level** is the signal
-/// — `change_pct` keeps the same percent-of-prior convention as every other series,
-/// which is low-signal for a spread that can sit near zero or invert, so downstream
-/// reasoning should lean on the level, not its percent move.
+/// report's risk-posture and market-cycle reads. For these the **level** is the signal,
+/// and `change_pct` reports the **point change** (`latest − prior`) rather than a
+/// percent-of-prior — see [`RATE_DELTA_SERIES`] — since a percent move is unstable for a
+/// spread that can sit near zero or invert.
 const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
     ("DGS2", "2-Year Treasury Yield", "percent"),
     ("DGS10", "10-Year Treasury Yield", "percent"),
@@ -159,8 +159,10 @@ const MACRO_SERIES: &[(&str, &str, &str)] = &[
     // Forward-looking expectation gauges — what the market / models *expect* for the
     // headline aggregates, a complement to the actual readings above. GDPNow's value is
     // already an annualized growth rate (SAAR), so it is deliberately **not** in
-    // ANNUALIZED_SERIES; EXPINF1YR is a model-based inflation expectation alongside the
-    // market-implied breakevens (T5YIE / T10YIE).
+    // ANNUALIZED_SERIES; both it and EXPINF1YR are rate-valued, so their `change_pct` is a
+    // point delta (see RATE_DELTA_SERIES) — a percent-of-prior on GDPNow's nowcast reads as
+    // a spurious ~128% "move". EXPINF1YR is a model-based inflation expectation alongside
+    // the market-implied breakevens (T5YIE / T10YIE).
     ("GDPNOW", "Atlanta Fed GDPNow — Real GDP Growth Nowcast (annualized rate)", "percent"),
     ("EXPINF1YR", "Cleveland Fed 1-Year Expected Inflation", "percent"),
     // Weekly/daily risk + cycle gauges (financial conditions, claims, liquidity, housing).
@@ -299,6 +301,102 @@ fn is_annualized(series_id: &str) -> bool {
     ANNUALIZED_SERIES.contains(&series_id)
 }
 
+/// Series whose `change_pct` should report the **point change** (`latest − prior`) rather
+/// than the percent change off the prior observation. These are series whose *level is
+/// already a rate, or a zero-centered index*, where a percent-of-prior is the wrong figure:
+/// for a yield / spread / policy rate / breakeven the market convention is the percentage-
+/// point (or basis-point) move, and for a spread or a financial-conditions index that can sit
+/// near zero or cross it, a percent-of-prior is mathematically unstable (it blows up near a
+/// zero denominator and flips sign across zero). Keyed as data, parallel to
+/// [`ANNUALIZED_SERIES`] — a series belongs to at most one change treatment (the
+/// `rate_delta_and_annualized_sets_are_disjoint` test pins the exclusivity). The `price`
+/// level is untouched; only the change figure changes, and the display name carries a unit
+/// marker (`(Δ pp)` for a percent-quoted rate, `(Δ level)` for a centered index) so the model
+/// reads the number in the right unit.
+///
+/// GDPNow (`GDPNOW`) is the motivating case: its value is a SAAR rate, so a percent change
+/// off the prior nowcast vintage reads as a spurious ~128% "move" where the honest figure is
+/// the percentage-point revision to the nowcast.
+const RATE_DELTA_SERIES: &[&str] = &[
+    // Percent-quoted rates → (Δ pp): yields, the credit/curve spreads, the policy-rate
+    // bounds, the breakevens, expected inflation, the mortgage rate, and the GDPNow SAAR
+    // nowcast.
+    "DGS2",
+    "DGS10",
+    "BAMLH0A0HYM2",
+    "BAMLC0A0CM",
+    "T10Y3M",
+    "T10Y2Y",
+    "BAMLC0A4CBBB",
+    "BAMLH0A2HYB",
+    "DFEDTARU",
+    "DFEDTARL",
+    "T5YIE",
+    "T10YIE",
+    "EXPINF1YR",
+    "MORTGAGE30US",
+    "GDPNOW",
+    // Zero-centered financial-conditions indices → (Δ level): a percent-of-prior is unstable
+    // across zero.
+    "NFCI",
+    "ANFCI",
+    "STLFSI4",
+];
+
+/// Whether a series' `change_pct` should be a point delta — see [`RATE_DELTA_SERIES`].
+/// `pub(crate)` so text formatters outside this module that render `change_pct` (e.g. the
+/// Step-4 memory-retrieval query) can avoid suffixing a point delta with a misleading `%`.
+/// Keyed by FRED series id, which doubles as the quote `symbol`; a non-FRED symbol (an FMP
+/// index/VIX ticker) is not in the set, so it correctly reads as a percent quote.
+pub(crate) fn is_rate_delta(series_id: &str) -> bool {
+    RATE_DELTA_SERIES.contains(&series_id)
+}
+
+/// Display-name markers appended to a point-delta series' name so a reader of the bare
+/// `change_pct` figure knows the change's unit ([`observations_to_quote`]): percentage
+/// points for a percent-quoted rate, or the index's own level units for a centered index.
+/// Defined here (where the marker is applied) so a layer that renders the change in a
+/// different frame can strip it via [`strip_point_delta_marker`] rather than duplicate the
+/// literal.
+const POINT_DELTA_PP_MARKER: &str = " (Δ pp)";
+const POINT_DELTA_LEVEL_MARKER: &str = " (Δ level)";
+
+/// Strip a point-delta name marker, returning the base series name (a name without one is
+/// returned unchanged). The marker is meaningful only where the bare `change_pct` is shown
+/// (a baseline series quote); a layer that renders the change in a different frame — the
+/// per-report delta view, which is self-describing via its own `abs_change` / `pct_change` —
+/// strips it so the tag can't contradict a figure it doesn't describe.
+pub(crate) fn strip_point_delta_marker(name: &str) -> &str {
+    name.strip_suffix(POINT_DELTA_PP_MARKER)
+        .or_else(|| name.strip_suffix(POINT_DELTA_LEVEL_MARKER))
+        .unwrap_or(name)
+}
+
+/// How a series' `change_pct` is computed from its latest two observations. Each series maps
+/// to exactly one mode via [`change_mode_for`]; the modes are mutually exclusive by
+/// construction ([`ANNUALIZED_SERIES`] and [`RATE_DELTA_SERIES`] are disjoint).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChangeMode {
+    /// Percent change off the prior observation — the default for level / price / index series.
+    Percent,
+    /// The per-period change compounded to an annual rate ([`ANNUALIZED_SERIES`], GDP).
+    Annualized,
+    /// The point change `latest − prior` ([`RATE_DELTA_SERIES`], rates + centered indices).
+    PointDelta,
+}
+
+/// The [`ChangeMode`] for a series — annualized series first, then point-delta rates, else
+/// the percent default. The two keyed sets are disjoint, so the order only sets the default.
+fn change_mode_for(series_id: &str) -> ChangeMode {
+    if is_annualized(series_id) {
+        ChangeMode::Annualized
+    } else if is_rate_delta(series_id) {
+        ChangeMode::PointDelta
+    } else {
+        ChangeMode::Percent
+    }
+}
+
 /// FRED's release-dates endpoint — the economic-release *schedule* the Step-3 calendar
 /// reads, distinct from the series observations above. `include_release_dates_with_no_data`
 /// surfaces upcoming (not-yet-released) dates; the realtime window bounds the dates to
@@ -407,10 +505,13 @@ fn interpret_response(status: u16, body: &str) -> Disposition {
 }
 
 /// Shape a successful observations response into one quote: the most recent numeric
-/// observation is `price`, and `change_pct` is its percent change from the prior
-/// numeric observation (day-over-day, consistent with FMP's quote change) — or, when
-/// `annualize` is set ([`ANNUALIZED_SERIES`], GDP today), that single-period change
-/// compounded to an annual rate so the change reads as the headline figure. Returns
+/// observation is `price`, and `change_pct` is its change from the prior numeric
+/// observation, computed per the series' [`ChangeMode`]: a percent change off the prior
+/// (the default, day-over-day, consistent with FMP's quote change); that single-period
+/// change compounded to an annual rate ([`ANNUALIZED_SERIES`], GDP today); or a point
+/// delta `latest − prior` ([`RATE_DELTA_SERIES`], rates + centered indices, where a
+/// percent-of-prior misleads). A point-delta series' display name is tagged with the
+/// change's unit so the model reads the figure correctly. Returns
 /// `Ok(None)` when the series has no usable current datum — either no numeric
 /// observation in the window (all gaps), or a **stale** latest observation (older
 /// than `cadence`'s bound relative to `today`): a per-series absence, not an error.
@@ -439,7 +540,7 @@ fn observations_to_quote(
     unit: &str,
     cadence: Cadence,
     today: NaiveDate,
-    annualize: bool,
+    change_mode: ChangeMode,
 ) -> Result<Option<Quote>> {
     let raw: FredObservations = serde_json::from_value(value)
         .context("FRED observations response did not match the expected shape")?;
@@ -487,22 +588,40 @@ fn observations_to_quote(
             return Ok(None);
         }
     }
-    // Percent change off the prior numeric observation; a zero (or absent) prior
-    // yields no change rather than a division by zero / spurious move. For an
-    // annualized series (GDP) the single-period change is compounded to an annual
-    // rate — `(latest/prev)^periods − 1` — which needs a strictly positive prior as
-    // the ratio base (GDP levels always are; a non-positive prior falls back to no
-    // change just like the simple path).
-    let change_pct = match (annualize, numeric.get(1)) {
-        (true, Some(&prev)) if prev > 0.0 => {
+    // The change off the prior numeric observation, per the series' `ChangeMode`. A zero
+    // (or absent) prior yields no change rather than a division by zero / spurious move.
+    // For an annualized series (GDP) the single-period change is compounded to an annual
+    // rate — `(latest/prev)^periods − 1` — which needs a strictly positive prior as the
+    // ratio base (GDP levels always are; a non-positive prior falls back to no change like
+    // the percent path). The point-delta path is division-free, so it stays correct for a
+    // rate / spread / index that sits near zero or crosses it (where the percent path is
+    // unstable).
+    let change_pct = match (change_mode, numeric.get(1)) {
+        (ChangeMode::Annualized, Some(&prev)) if prev > 0.0 => {
             ((latest / prev).powi(cadence.periods_per_year()) - 1.0) * 100.0
         }
-        (false, Some(&prev)) if prev != 0.0 => (latest - prev) / prev * 100.0,
+        (ChangeMode::PointDelta, Some(&prev)) => latest - prev,
+        (ChangeMode::Percent, Some(&prev)) if prev != 0.0 => (latest - prev) / prev * 100.0,
         _ => 0.0,
+    };
+    // A point-delta series' change is a level move, not a percent, so the bare field name
+    // `change_pct` would mislead — tag the display name with the change's unit (mirroring
+    // GDP's "(growth annualized)" tag): `(Δ pp)` for a percent-quoted rate, `(Δ level)`
+    // for a centered index.
+    let display_name = match change_mode {
+        ChangeMode::PointDelta => {
+            let marker = if unit == "percent" {
+                POINT_DELTA_PP_MARKER
+            } else {
+                POINT_DELTA_LEVEL_MARKER
+            };
+            format!("{name}{marker}")
+        }
+        _ => name.to_string(),
     };
     Ok(Some(Quote {
         symbol: symbol.to_string(),
-        name: name.to_string(),
+        name: display_name,
         price: latest,
         change_pct,
         unit: unit.to_string(),
@@ -655,7 +774,7 @@ impl FredDataSource {
                     unit,
                     cadence_for(series_id),
                     today,
-                    is_annualized(series_id),
+                    change_mode_for(series_id),
                 ) {
                     Ok(Some(quote)) => out.push(quote),
                     // No usable current value — every observation was a "." gap, or the
@@ -1082,7 +1201,7 @@ mod tests {
             "percent",
             Cadence::Daily,
             fresh_today(),
-            false,
+            ChangeMode::Percent,
         )
         .unwrap()
         .expect("a quote");
@@ -1113,7 +1232,7 @@ mod tests {
             "billions of chained 2017 USD",
             Cadence::Quarterly,
             fresh_today(),
-            true,
+            ChangeMode::Annualized,
         )
         .unwrap()
         .expect("a quote");
@@ -1149,7 +1268,7 @@ mod tests {
             "index",
             Cadence::Quarterly,
             fresh_today(),
-            false,
+            ChangeMode::Percent,
         )
         .unwrap()
         .expect("a quote");
@@ -1160,6 +1279,139 @@ mod tests {
         assert!(is_annualized("GDPC1"));
         assert!(!is_annualized("PCEPI"));
         assert_eq!(Cadence::Quarterly.periods_per_year(), 4);
+    }
+
+    #[test]
+    fn change_mode_for_maps_each_series_to_its_treatment() {
+        // GDP level → annualized; rates + the GDPNow SAAR nowcast + a centered conditions
+        // index → point delta; a plain index/level series → the percent default.
+        assert_eq!(change_mode_for("GDPC1"), ChangeMode::Annualized);
+        assert_eq!(change_mode_for("GDPNOW"), ChangeMode::PointDelta);
+        assert_eq!(change_mode_for("DGS10"), ChangeMode::PointDelta);
+        assert_eq!(change_mode_for("NFCI"), ChangeMode::PointDelta);
+        assert_eq!(change_mode_for("PCEPI"), ChangeMode::Percent);
+        assert_eq!(change_mode_for("UMCSENT"), ChangeMode::Percent);
+    }
+
+    #[test]
+    fn rate_delta_and_annualized_sets_are_disjoint() {
+        // The two change treatments are mutually exclusive — a series is annualized XOR a
+        // point delta XOR the percent default, never two at once. `change_mode_for`'s
+        // if/else-if would hide an overlap silently, so pin disjointness here.
+        for id in ANNUALIZED_SERIES {
+            assert!(
+                !RATE_DELTA_SERIES.contains(id),
+                "{id} is in both ANNUALIZED_SERIES and RATE_DELTA_SERIES"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_delta_series_are_rate_or_centered_index_units() {
+        // Guard against a level/price/count series sneaking into the point-delta set: every
+        // member must be quoted either in percent (a rate) or as a zero-centered index
+        // (where a percent-of-prior is unstable). Units come from the production series
+        // tables, so a mislabeled addition fails offline.
+        for id in RATE_DELTA_SERIES {
+            let unit = INTERNALS_SERIES
+                .iter()
+                .chain(MACRO_SERIES)
+                .find(|(sid, _, _)| sid == id)
+                .map(|(_, _, unit)| *unit)
+                .unwrap_or_else(|| {
+                    panic!("{id} is in RATE_DELTA_SERIES but not in any series table")
+                });
+            assert!(
+                unit == "percent" || unit.contains("0 ="),
+                "{id} has unit {unit:?} — a point-delta series must be a percent rate or a centered index"
+            );
+        }
+    }
+
+    #[test]
+    fn observations_to_quote_reports_a_point_delta_for_a_rate_series() {
+        // A rate series (yield): the change is the percentage-point move `latest − prior`,
+        // NOT a percent-of-prior. 4.30 from 4.20 → +0.10 pp, and the name is tagged so the
+        // model reads the figure as points, not percent.
+        let v: Value = serde_json::from_str(
+            r#"{"observations":[
+                {"date":"2026-06-04","value":"4.30"},
+                {"date":"2026-06-03","value":"4.20"}
+            ]}"#,
+        )
+        .unwrap();
+        let q = observations_to_quote(
+            v,
+            "DGS10",
+            "10-Year Treasury Yield",
+            "percent",
+            Cadence::Daily,
+            fresh_today(),
+            ChangeMode::PointDelta,
+        )
+        .unwrap()
+        .expect("a quote");
+        assert!(
+            (q.change_pct - 0.10).abs() < 1e-9,
+            "point delta, not {}",
+            q.change_pct
+        );
+        assert!(
+            q.name.ends_with(" (Δ pp)"),
+            "a percent-quoted rate's name should carry the pp tag: {}",
+            q.name
+        );
+    }
+
+    #[test]
+    fn observations_to_quote_point_delta_is_signed_and_stable_across_zero() {
+        // The division-free path is the whole point: a centered index crossing zero
+        // (−0.05 → +0.10) reports +0.15, where a percent-of-prior would blow up / flip sign.
+        // A non-percent (centered-index) unit gets the "(Δ level)" tag, not "(Δ pp)".
+        let v: Value = serde_json::from_str(
+            r#"{"observations":[
+                {"date":"2026-06-04","value":"0.10"},
+                {"date":"2026-06-03","value":"-0.05"}
+            ]}"#,
+        )
+        .unwrap();
+        let q = observations_to_quote(
+            v,
+            "NFCI",
+            "Chicago Fed National Financial Conditions Index",
+            "index (0 = average)",
+            Cadence::Weekly,
+            fresh_today(),
+            ChangeMode::PointDelta,
+        )
+        .unwrap()
+        .expect("a quote");
+        assert!(
+            (q.change_pct - 0.15).abs() < 1e-9,
+            "signed level delta, not {}",
+            q.change_pct
+        );
+        assert!(
+            q.name.ends_with(" (Δ level)"),
+            "a centered-index name should carry the level tag: {}",
+            q.name
+        );
+    }
+
+    #[test]
+    fn strip_point_delta_marker_removes_the_change_unit_tag() {
+        // The marker a PointDelta quote receives is strippable back to the base name, and an
+        // unmarked name is returned unchanged. Pins append (`observations_to_quote`) and strip
+        // (the delta view) to the same literals, guarding against marker-text drift.
+        assert_eq!(
+            strip_point_delta_marker(&format!("10-Year Treasury Yield{POINT_DELTA_PP_MARKER}")),
+            "10-Year Treasury Yield"
+        );
+        assert_eq!(
+            strip_point_delta_marker(&format!("Chicago Fed NFCI{POINT_DELTA_LEVEL_MARKER}")),
+            "Chicago Fed NFCI"
+        );
+        assert_eq!(strip_point_delta_marker("S&P 500"), "S&P 500");
     }
 
     #[test]
@@ -1182,7 +1434,7 @@ mod tests {
             "USD per barrel",
             Cadence::Daily,
             fresh_today(),
-            false,
+            ChangeMode::Percent,
         )
         .unwrap()
         .expect("a quote past the gaps");
@@ -1197,7 +1449,7 @@ mod tests {
         let v: Value =
             serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#).unwrap();
         assert!(
-            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), false)
+            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), ChangeMode::Percent)
                 .unwrap()
                 .is_none()
         );
@@ -1216,7 +1468,7 @@ mod tests {
             "percent",
             Cadence::Daily,
             fresh_today(),
-            false,
+            ChangeMode::Percent,
         )
         .unwrap()
         .expect("a quote");
@@ -1229,7 +1481,7 @@ mod tests {
         // A 2xx body without the `observations` array is a contract violation.
         let v: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
         assert!(
-            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), false).is_err()
+            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), ChangeMode::Percent).is_err()
         );
     }
 
@@ -1245,7 +1497,7 @@ mod tests {
             ))
             .unwrap();
             assert!(
-                observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), false)
+                observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), ChangeMode::Percent)
                     .is_err(),
                 "value {bad:?} must fail closed, not skip"
             );
@@ -1272,7 +1524,7 @@ mod tests {
             "percent",
             Cadence::Daily,
             fresh_today(),
-            false,
+            ChangeMode::Percent,
         )
         .unwrap();
         assert!(q.is_none(), "a stale daily series must drop, not resolve");
@@ -1295,7 +1547,7 @@ mod tests {
         ))
         .unwrap();
         assert!(
-            observations_to_quote(exactly, "DGS10", "x", "percent", Cadence::Daily, today, false)
+            observations_to_quote(exactly, "DGS10", "x", "percent", Cadence::Daily, today, ChangeMode::Percent)
                 .unwrap()
                 .is_some(),
             "an observation exactly at the staleness bound is kept"
@@ -1306,7 +1558,7 @@ mod tests {
         ))
         .unwrap();
         assert!(
-            observations_to_quote(over, "DGS10", "x", "percent", Cadence::Daily, today, false)
+            observations_to_quote(over, "DGS10", "x", "percent", Cadence::Daily, today, ChangeMode::Percent)
                 .unwrap()
                 .is_none(),
             "an observation one day past the bound is dropped"
@@ -1324,14 +1576,14 @@ mod tests {
 
         let monthly = serde_json::from_str::<Value>(&body).unwrap();
         assert!(
-            observations_to_quote(monthly, "UMCSENT", "x", "index", Cadence::Monthly, today, false)
+            observations_to_quote(monthly, "UMCSENT", "x", "index", Cadence::Monthly, today, ChangeMode::Percent)
                 .unwrap()
                 .is_some(),
             "a 100-day-old monthly observation is within the monthly bound"
         );
         let daily = serde_json::from_str::<Value>(&body).unwrap();
         assert!(
-            observations_to_quote(daily, "DGS10", "x", "percent", Cadence::Daily, today, false)
+            observations_to_quote(daily, "DGS10", "x", "percent", Cadence::Daily, today, ChangeMode::Percent)
                 .unwrap()
                 .is_none(),
             "the same 100-day-old observation is stale for a daily series"
@@ -1347,7 +1599,7 @@ mod tests {
             serde_json::from_str(r#"{"observations":[{"date":"June 4th","value":"4.30"}]}"#)
                 .unwrap();
         assert!(
-            observations_to_quote(v, "DGS10", "x", "percent", Cadence::Daily, fresh_today(), false)
+            observations_to_quote(v, "DGS10", "x", "percent", Cadence::Daily, fresh_today(), ChangeMode::Percent)
                 .is_err(),
             "an unparseable latest-observation date must fail closed"
         );
