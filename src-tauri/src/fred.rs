@@ -124,10 +124,14 @@ const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
 /// and the headline activity reports — PPI, retail sales, job openings (JOLTS), and real
 /// GDP — that supply the **actual readings** for the economic-release `calendar`'s
 /// prior-week entries (so the report sees what each release printed, not just that it
-/// landed). Mixed daily (target range, breakevens), monthly (sentiment, PCE, PPI, retail,
-/// JOLTS) and quarterly (GDP) series; `change_pct` reads the change off the prior
-/// observation accordingly — except GDP, whose change is **annualized** (the BEA/headline
-/// convention; see [`ANNUALIZED_SERIES`]). Same `(series_id, display name, unit)` shape as the internals
+/// landed). Two **forward-looking expectation gauges** join alongside the actual readings:
+/// the Atlanta Fed GDPNow current-quarter real-GDP nowcast and the Cleveland Fed 1-year
+/// expected-inflation series — a forward complement to the actual GDP print and the
+/// breakevens. Mixed daily (target range, breakevens), monthly (sentiment, PCE, PPI,
+/// retail, JOLTS, expected inflation) and quarterly (GDP, GDPNow) series; `change_pct`
+/// reads the change off the prior observation accordingly — except GDP, whose change is
+/// **annualized** (the BEA/headline convention; see [`ANNUALIZED_SERIES`]). GDPNow's value
+/// is already an annual rate (SAAR), so unlike GDP it is **not** annualized again. Same `(series_id, display name, unit)` shape as the internals
 /// — the `series_id` doubles as the quote `symbol`, and the unit labels what each `price`
 /// level is quoted in (percent, an index level with its base period, a dollar figure, or
 /// a count).
@@ -152,6 +156,13 @@ const MACRO_SERIES: &[(&str, &str, &str)] = &[
     ),
     ("JTSJOL", "Job Openings: Total Nonfarm (JOLTS)", "thousands of openings"),
     ("GDPC1", "Real Gross Domestic Product (growth annualized)", "billions of chained 2017 USD"),
+    // Forward-looking expectation gauges — what the market / models *expect* for the
+    // headline aggregates, a complement to the actual readings above. GDPNow's value is
+    // already an annualized growth rate (SAAR), so it is deliberately **not** in
+    // ANNUALIZED_SERIES; EXPINF1YR is a model-based inflation expectation alongside the
+    // market-implied breakevens (T5YIE / T10YIE).
+    ("GDPNOW", "Atlanta Fed GDPNow — Real GDP Growth Nowcast (annualized rate)", "percent"),
+    ("EXPINF1YR", "Cleveland Fed 1-Year Expected Inflation", "percent"),
     // Weekly/daily risk + cycle gauges (financial conditions, claims, liquidity, housing).
     ("NFCI", "Chicago Fed National Financial Conditions Index", "index (0 = average)"),
     ("ANFCI", "Chicago Fed Adjusted NFCI", "index (0 = average)"),
@@ -247,6 +258,8 @@ const FRESHNESS: &[(&str, Cadence)] = &[
     ("RSAFS", Cadence::Monthly),
     ("JTSJOL", Cadence::Monthly),
     ("GDPC1", Cadence::Quarterly),
+    ("GDPNOW", Cadence::Quarterly),
+    ("EXPINF1YR", Cadence::Monthly),
     ("NFCI", Cadence::Weekly),
     ("ANFCI", Cadence::Weekly),
     ("STLFSI4", Cadence::Weekly),
@@ -854,6 +867,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn forward_expectation_gauges_are_present_and_gdpnow_is_not_annualized() {
+        // The two forward-looking gauges are in the macro group with the right cadence...
+        let macro_ids: Vec<&str> = MACRO_SERIES.iter().map(|(id, _, _)| *id).collect();
+        assert!(macro_ids.contains(&"GDPNOW"), "GDPNow missing from MACRO_SERIES");
+        assert!(macro_ids.contains(&"EXPINF1YR"), "expected-inflation missing from MACRO_SERIES");
+        assert_eq!(cadence_for("GDPNOW"), Cadence::Quarterly);
+        assert_eq!(cadence_for("EXPINF1YR"), Cadence::Monthly);
+        // ...and GDPNow stays out of ANNUALIZED_SERIES — its value is already an annual
+        // rate (SAAR), so annualizing its change would double-count. This pins that
+        // deliberate exclusion against a future "annualize every quarterly series" refactor.
+        assert!(!is_annualized("GDPNOW"), "GDPNow is already SAAR — must not be annualized");
+        assert!(!is_annualized("EXPINF1YR"));
+    }
+
     /// The newest *numeric* observation's date in a FRED observations response, selecting
     /// the value **exactly as [`observations_to_quote`] does**: skip FRED's `"."` gap
     /// markers (newest-first, so the first non-`"."` row wins), and require that winning
@@ -1369,7 +1397,7 @@ mod tests {
         assert_eq!(cal[0].date, "2026-06-05");
         assert_eq!(cal[0].status, "released");
         assert_eq!(cal[0].release, "Consumer Price Index");
-        assert!(cal[0].expected.is_none(), "no free consensus on the FRED path");
+        assert!(cal[0].expected.is_none(), "the FRED release-dates path carries dates only, not consensus");
         // Today counts as upcoming — not yet confirmed released at an arbitrary run time.
         assert_eq!(cal[1].date, "2026-06-06");
         assert_eq!(cal[1].status, "upcoming");

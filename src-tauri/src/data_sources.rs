@@ -58,9 +58,10 @@ pub struct SectorPerformance {
 /// it carries the release **name** and **date** but not the report's figures — those
 /// reach the model through the `macro_levels` / `labor_levels` series quotes. `status`
 /// is `"released"` for a date in the prior-week window or `"upcoming"` for a scheduled
-/// future date. `expected` is the analyst-consensus slot reserved for a future paid
-/// source — no free provider supplies US consensus, so it is always `None` on the FRED
-/// path.
+/// future date. `expected` is an optional analyst-consensus slot: the FRED release-dates
+/// feed carries names + dates only, not consensus, so it is `None` on this path.
+/// Consensus, where it bears on the thesis, reaches the report through the research phase
+/// rather than a market-data feed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EconomicRelease {
     pub release: String,
