@@ -102,6 +102,8 @@ test("the diagnostics section is omitted when stats are unavailable (null)", () 
 test("a zero aggregate renders the empty state, not the readout", () => {
   const stats: TruncationStats = {
     total_truncations: 0,
+    total_docs_parsed: 12,
+    unaligned_truncations: 0,
     reports_affected: 0,
     total_chars_dropped: 0,
     by_format: [],
@@ -114,9 +116,11 @@ test("a zero aggregate renders the empty state, not the readout", () => {
   expect(section.find(".trunc-stats").exists()).toBe(false);
 });
 
-test("a populated aggregate renders the counts, formatted chars, and per-format breakdown", () => {
+test("a populated aggregate renders the rate, counts, formatted chars, and per-format breakdown", () => {
   const stats: TruncationStats = {
     total_truncations: 3,
+    total_docs_parsed: 11,
+    unaligned_truncations: 0,
     reports_affected: 2,
     total_chars_dropped: 29000,
     by_format: [
@@ -129,9 +133,10 @@ test("a populated aggregate renders the counts, formatted chars, and per-format 
   const section = diagnostics(wrapper);
   expect(section.find(".trunc-empty").exists()).toBe(false);
 
-  // Scalar readout, with thousands-grouped chars.
+  // Scalar readout: the truncated-of-parsed rate (3/11 = 27.3%), reports
+  // affected, and thousands-grouped chars dropped.
   const values = section.findAll(".trunc-row dd").map((d) => d.text());
-  expect(values).toContain("3");
+  expect(values).toContain("3 of 11 (27.3%)");
   expect(values).toContain("2");
   expect(values).toContain("29,000");
 
@@ -144,4 +149,64 @@ test("a populated aggregate renders the counts, formatted chars, and per-format 
     { name: "pdf", count: "2" },
     { name: "html", count: "1" },
   ]);
+});
+
+test("a missing denominator falls back to the bare truncation count, not 'of 0'", () => {
+  const stats: TruncationStats = {
+    total_truncations: 3,
+    total_docs_parsed: 0,
+    unaligned_truncations: 0,
+    reports_affected: 2,
+    total_chars_dropped: 29000,
+    by_format: [{ format: "pdf", count: 3 }],
+    latest_captured_at: "2026-06-08T09:00:00+00:00",
+  };
+  const wrapper = makeWrapper({ truncationStats: stats });
+  const values = diagnostics(wrapper)
+    .findAll(".trunc-row dd")
+    .map((d) => d.text());
+  expect(values).toContain("3");
+  expect(values.some((v) => v.includes("of 0"))).toBe(false);
+});
+
+test("a numerator above the denominator falls back to the bare count, not >100%", () => {
+  // The two telemetry writes are independent best-effort, so a truncation count
+  // ahead of its parse-run count is possible; it must not render an over-100% rate.
+  const stats: TruncationStats = {
+    total_truncations: 5,
+    total_docs_parsed: 3,
+    unaligned_truncations: 0,
+    reports_affected: 2,
+    total_chars_dropped: 29000,
+    by_format: [{ format: "pdf", count: 5 }],
+    latest_captured_at: "2026-06-08T09:00:00+00:00",
+  };
+  const wrapper = makeWrapper({ truncationStats: stats });
+  const values = diagnostics(wrapper)
+    .findAll(".trunc-row dd")
+    .map((d) => d.text());
+  expect(values).toContain("5");
+  expect(values.some((v) => v.includes("%"))).toBe(false);
+});
+
+test("an unaligned cohort suppresses the rate even when it would otherwise compute", () => {
+  // 3 of 100 would render "3.0%", but a truncation without a parse-run
+  // denominator means the cohorts are mismatched, so the rate is withheld until
+  // the legacy rows age out — the bare count shows in the meantime.
+  const stats: TruncationStats = {
+    total_truncations: 3,
+    total_docs_parsed: 100,
+    unaligned_truncations: 1,
+    reports_affected: 2,
+    total_chars_dropped: 29000,
+    by_format: [{ format: "pdf", count: 3 }],
+    latest_captured_at: "2026-06-08T09:00:00+00:00",
+  };
+  const wrapper = makeWrapper({ truncationStats: stats });
+  const values = diagnostics(wrapper)
+    .findAll(".trunc-row dd")
+    .map((d) => d.text());
+  expect(values).toContain("3");
+  expect(values).not.toContain("3 of 100 (3.0%)");
+  expect(values.some((v) => v.includes("%"))).toBe(false);
 });

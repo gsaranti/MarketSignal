@@ -209,6 +209,31 @@ const hasTruncations = computed(
 function fmtNum(n: number): string {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
+
+// The truncation rate as a "X of Y (Z%)" readout — the numerator over its
+// parsed-documents denominator. Falls back to the bare count whenever the
+// denominator can't support an honest rate:
+//   - missing (0) — would render a nonsensical "of 0";
+//   - smaller than the numerator — would render an over-100% rate (the two are
+//     written on independent best-effort channels, so a truncation can briefly
+//     lead its parse-run);
+//   - incomplete — some truncations predate the denominator (`unaligned_truncations`),
+//     so a rate over them would mix cohorts. Self-heals as those rows age out.
+// Only consulted inside the `hasTruncations` block, so the numerator is > 0 here.
+const truncatedDocsValue = computed(() => {
+  const s = props.truncationStats;
+  if (!s) return "";
+  const truncated = fmtNum(s.total_truncations);
+  if (
+    s.total_docs_parsed <= 0 ||
+    s.total_truncations > s.total_docs_parsed ||
+    s.unaligned_truncations > 0
+  ) {
+    return truncated;
+  }
+  const pct = (s.total_truncations / s.total_docs_parsed) * 100;
+  return `${truncated} of ${fmtNum(s.total_docs_parsed)} (${pct.toFixed(1)}%)`;
+});
 </script>
 
 <template>
@@ -424,15 +449,15 @@ function fmtNum(n: number): string {
         >
           <h3 id="sec-diagnostics" class="section-eyebrow">Document truncations</h3>
           <p class="section-note">
-            How often an oversized research document had to be head-truncated
-            during parsing. Accumulates across reports.
+            What share of parsed research documents were oversized enough to be
+            head-truncated during parsing. Accumulates across reports.
           </p>
 
           <template v-if="hasTruncations">
             <dl class="trunc-stats">
               <div class="trunc-row">
-                <dt>Total truncations</dt>
-                <dd>{{ fmtNum(truncationStats.total_truncations) }}</dd>
+                <dt>Documents truncated</dt>
+                <dd>{{ truncatedDocsValue }}</dd>
               </div>
               <div class="trunc-row">
                 <dt>Reports affected</dt>

@@ -144,6 +144,23 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+    // The denominator for the truncation *rate*: one row per report whose Step-6
+    // inbox pass parsed at least one document, recording how many docs it parsed
+    // (truncated or not). `document_truncations` is the numerator (truncated docs
+    // only); on its own it answers "how many truncations" but not "what share of
+    // documents truncated". Same per-report, accumulating, cascade-bounded model
+    // as `document_truncations` (`delete_report_parse_runs`), so numerator and
+    // denominator always span the same retained-report window and the rate stays
+    // honest.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS document_parse_runs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id   TEXT NOT NULL,
+            captured_at TEXT NOT NULL,
+            docs_parsed INTEGER NOT NULL
+        )",
+        [],
+    )?;
     Ok(())
 }
 
@@ -243,15 +260,50 @@ pub fn record_document_truncations(conn: &Connection, rows: &[DocumentTruncation
     Ok(())
 }
 
+/// Append this run's parsed-document count to `document_parse_runs` — the
+/// denominator that turns the truncation numerator into a rate. One row per
+/// report whose inbox pass parsed at least one document; like
+/// [`record_document_truncations`] it appends rather than replaces, so the
+/// per-report history accumulates.
+pub fn record_document_parse_run(
+    conn: &Connection,
+    report_id: &str,
+    captured_at: &str,
+    docs_parsed: u64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO document_parse_runs (report_id, captured_at, docs_parsed)
+         VALUES (?1, ?2, ?3)",
+        rusqlite::params![report_id, captured_at, docs_parsed as i64],
+    )?;
+    Ok(())
+}
+
 /// Aggregate view over `document_truncations` for the Settings diagnostics
 /// section (`docs/agents.md §Data Extraction` — the accumulating evidence that
-/// gates the reserved GPT-5-mini extraction stage). Absolute counts only: the
-/// table holds only *truncated* docs, never the full set of docs processed, so a
-/// true share-of-all-documents rate is not derivable from it.
+/// gates the reserved GPT-5-mini extraction stage). `total_truncations` is the
+/// numerator and `total_docs_parsed` (from the companion `document_parse_runs`
+/// table) the denominator, so a true share-of-documents truncation rate is
+/// derivable. Both span the same retained-report window (both cascade by
+/// `report_id`), so for any report whose run recorded both, the rate stays
+/// honest. The one cohort gap is historical: truncation rows recorded before
+/// `document_parse_runs` existed have no denominator counterpart, which
+/// `unaligned_truncations` flags so the consumer can suppress a mixed-cohort
+/// rate until those rows age out of the retention window.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct TruncationStats {
     /// Total truncation events recorded (rows in the table).
     pub total_truncations: u64,
+    /// Total documents parsed across all recorded runs (Σ of `docs_parsed` in
+    /// `document_parse_runs`) — the rate denominator. `0` when no run with a
+    /// parsed document has been recorded yet.
+    pub total_docs_parsed: u64,
+    /// Truncation events whose report has no `document_parse_runs` row — i.e. a
+    /// numerator cohort the denominator does not cover (typically rows recorded
+    /// before the denominator table existed). Non-zero means the rate would mix
+    /// cohorts; the Settings consumer withholds the rate while it is. `0` once
+    /// every truncation report also has a parse-run row.
+    pub unaligned_truncations: u64,
     /// Distinct reports that recorded at least one truncation.
     pub reports_affected: u64,
     /// Total characters cut across all events (Σ of `original − kept`).
@@ -307,8 +359,27 @@ pub fn truncation_stats(conn: &Connection) -> Result<TruncationStats> {
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
+    let total_docs_parsed = conn.query_row(
+        "SELECT COALESCE(SUM(docs_parsed), 0) FROM document_parse_runs",
+        [],
+        |row| Ok(row.get::<_, i64>(0)? as u64),
+    )?;
+
+    // Truncations whose report never recorded a parse-run denominator — the
+    // historical cohort gap. With an empty `document_parse_runs`, `NOT IN ()`
+    // holds for every row, so a legacy-only table reports all its truncations as
+    // unaligned (and the rate stays suppressed), which is the intended signal.
+    let unaligned_truncations = conn.query_row(
+        "SELECT COUNT(*) FROM document_truncations
+         WHERE report_id NOT IN (SELECT report_id FROM document_parse_runs)",
+        [],
+        |row| Ok(row.get::<_, i64>(0)? as u64),
+    )?;
+
     Ok(TruncationStats {
         total_truncations,
+        total_docs_parsed,
+        unaligned_truncations,
         reports_affected,
         total_chars_dropped,
         by_format,
@@ -503,6 +574,19 @@ pub fn delete_report_baseline_snapshots(conn: &Connection, report_id: &str) -> R
 pub fn delete_report_truncations(conn: &Connection, report_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM document_truncations WHERE report_id = ?1",
+        [report_id],
+    )?;
+    Ok(())
+}
+
+/// Delete one report's parsed-document-count row — the cascade leg that bounds
+/// the accumulating `document_parse_runs` denominator table. Mirrors
+/// [`delete_report_truncations`]: like the truncation numerator it has no
+/// independent self-cap, so this report-id join is the only thing that reaps
+/// these rows, and the two delete together so the rate's window stays aligned.
+pub fn delete_report_parse_runs(conn: &Connection, report_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM document_parse_runs WHERE report_id = ?1",
         [report_id],
     )?;
     Ok(())
@@ -904,8 +988,16 @@ mod tests {
         )
         .unwrap();
 
+        // Denominator: rep-1 parsed 7 docs (3 truncated), rep-2 parsed 4 (1
+        // truncated) → 11 docs parsed against 3 truncations, the rate's two halves.
+        record_document_parse_run(&conn, "rep-1", "2026-06-01T09:00:00+00:00", 7).unwrap();
+        record_document_parse_run(&conn, "rep-2", "2026-06-08T09:00:00+00:00", 4).unwrap();
+
         let stats = truncation_stats(&conn).unwrap();
         assert_eq!(stats.total_truncations, 3);
+        assert_eq!(stats.total_docs_parsed, 11);
+        // Both truncation reports recorded a parse-run, so the cohorts align.
+        assert_eq!(stats.unaligned_truncations, 0);
         assert_eq!(stats.reports_affected, 2);
         // (30k−12k) + (20k−12k) + (15k−12k) = 18k + 8k + 3k.
         assert_eq!(stats.total_chars_dropped, 29_000);
@@ -928,5 +1020,55 @@ mod tests {
             stats.latest_captured_at.as_deref(),
             Some("2026-06-08T09:00:00+00:00")
         );
+    }
+
+    #[test]
+    fn document_parse_runs_accumulate_and_cascade_by_report() {
+        let conn = mem();
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+
+        // Two runs append rather than replace (the denominator accumulates the
+        // way the numerator does), including a zero-truncation run that still
+        // contributes its parsed-doc count.
+        record_document_parse_run(&conn, "rep-1", "2026-06-01T09:00:00+00:00", 5).unwrap();
+        record_document_parse_run(&conn, "rep-2", "2026-06-08T09:00:00+00:00", 3).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM document_parse_runs"), 2);
+        assert_eq!(truncation_stats(&conn).unwrap().total_docs_parsed, 8);
+
+        // The cascade leg reaps only the named report's row, keeping the
+        // denominator aligned with the truncation numerator's window.
+        delete_report_parse_runs(&conn, "rep-1").unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM document_parse_runs"), 1);
+        assert_eq!(truncation_stats(&conn).unwrap().total_docs_parsed, 3);
+    }
+
+    #[test]
+    fn truncation_stats_flags_truncations_without_a_parse_run_denominator() {
+        let conn = mem();
+        let trow = |report_id: &str, name: &str| DocumentTruncationRow {
+            report_id: report_id.into(),
+            captured_at: "2026-06-15T09:00:00+00:00".into(),
+            name: name.into(),
+            format: "pdf".into(),
+            original_chars: 30_000,
+            kept_chars: 12_000,
+        };
+
+        // rep-1's run recorded both legs (aligned); rep-2 is a legacy truncation
+        // with no parse-run row — the cohort gap a pre-`document_parse_runs` build
+        // would leave behind.
+        record_document_truncations(&conn, &[trow("rep-1", "a.pdf"), trow("rep-2", "b.pdf")])
+            .unwrap();
+        record_document_parse_run(&conn, "rep-1", "2026-06-15T09:00:00+00:00", 5).unwrap();
+
+        let stats = truncation_stats(&conn).unwrap();
+        assert_eq!(stats.total_truncations, 2);
+        assert_eq!(stats.total_docs_parsed, 5);
+        // Exactly rep-2's truncation lacks a denominator, so the rate is unsafe.
+        assert_eq!(stats.unaligned_truncations, 1);
+
+        // Once rep-2 records its own parse-run, the cohorts realign.
+        record_document_parse_run(&conn, "rep-2", "2026-06-15T09:00:00+00:00", 4).unwrap();
+        assert_eq!(truncation_stats(&conn).unwrap().unaligned_truncations, 0);
     }
 }

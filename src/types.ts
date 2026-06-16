@@ -121,12 +121,19 @@ export interface SettingsView {
 // Mirrors the Rust `storage::TruncationStats` returned by the `truncation_stats`
 // command — aggregate telemetry for how often the Step-6 inbox parser had to
 // head-truncate an oversized document, accumulated across reports
-// (docs/agents.md §Data Extraction). Absolute counts only: the underlying table
-// records only truncated docs, so a true share-of-all-documents rate is not
+// (docs/agents.md §Data Extraction). `total_truncations` is the numerator and
+// `total_docs_parsed` the denominator, so a true share-of-documents rate is
 // derivable. An all-zero aggregate (empty table) is the "overflow is rare"
 // signal the Settings diagnostics section renders as its empty state.
 export interface TruncationStats {
   total_truncations: number;
+  // Documents parsed across all recorded runs — the rate denominator. 0 before
+  // any run with a parsed document has been recorded.
+  total_docs_parsed: number;
+  // Truncations whose report has no parse-run denominator (typically recorded
+  // before the denominator existed). > 0 means the rate would mix cohorts, so
+  // the readout withholds it; 0 once every truncation report has a denominator.
+  unaligned_truncations: number;
   reports_affected: number;
   total_chars_dropped: number;
   by_format: FormatCount[];

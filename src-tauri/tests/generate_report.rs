@@ -874,6 +874,23 @@ fn inbox_documents_flow_to_router_and_packet_and_archive_after_persist() {
     assert_eq!(failures.len(), 1, "exactly the broken file is recorded: {failures:?}");
     assert_eq!(failures[0].0, "broken.json");
     assert!(failures[0].1.contains("not valid JSON"), "{}", failures[0].1);
+
+    // Nothing truncated (notes.md fits the parser's caps), yet the denominator
+    // row was still recorded: one document parsed (broken.json and chart.png
+    // never parsed), so the truncation rate is derivable as 0 / 1.
+    let (parse_run_count, docs_parsed): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(docs_parsed), 0) FROM document_parse_runs",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(parse_run_count, 1, "one parse-run row recorded for the report");
+    assert_eq!(docs_parsed, 1, "one parsed document recorded as the rate denominator");
+    let truncations: i64 = conn
+        .query_row("SELECT COUNT(*) FROM document_truncations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(truncations, 0, "the small note never truncated");
 }
 
 #[test]

@@ -232,6 +232,8 @@ describe("App.vue Tauri boundary", () => {
   test("the loaded truncation_stats reaches the Settings prop", async () => {
     const stats: TruncationStats = {
       total_truncations: 7,
+      total_docs_parsed: 40,
+      unaligned_truncations: 0,
       reports_affected: 4,
       total_chars_dropped: 54321,
       by_format: [{ format: "pdf", count: 7 }],

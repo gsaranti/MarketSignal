@@ -357,6 +357,26 @@ pub fn generate_report(
             }
         }
 
+        // Best-effort: record the parsed-document count — the denominator that
+        // turns the truncation count into a share-of-documents rate. Written
+        // whenever the inbox pass parsed at least one document, independent of
+        // whether any truncated, so a zero-truncation run still contributes to
+        // the denominator. No row when nothing parsed, so an empty inbox (the
+        // common case) touches no DB. Same swallow-and-log posture as above.
+        if !inbox_docs.is_empty() {
+            if let Err(e) = storage::record_document_parse_run(
+                &conn,
+                &summary.report_id,
+                &as_of.to_rfc3339(),
+                inbox_docs.len() as u64,
+            ) {
+                eprintln!(
+                    "parse-run telemetry persist failed for report {}: {e:#}",
+                    summary.report_id
+                );
+            }
+        }
+
         // Best-effort: embed the structured summary and store it in vector memory —
         // Step 17's "report summary to vector memory" leg (SQLite-backed `vector_memory`).
         // Same posture as the snapshot block above: a flaky embedding call or a store
@@ -439,9 +459,9 @@ pub fn generate_report(
 /// The 30-report retention cascade (`docs/storage.md §SQLite`): every report
 /// beyond the newest [`storage::REPORT_RETENTION`] is deleted together with its
 /// artifacts — the canonical Markdown file, its vector-memory summary row, its
-/// baseline-snapshot rows, its truncation-telemetry rows, and finally the report
-/// row itself. Durable learnings survive by `kind`, never touched whatever their
-/// `report_id`
+/// baseline-snapshot rows, its truncation-telemetry and parse-run rows, and
+/// finally the report row itself. Durable learnings survive by `kind`, never
+/// touched whatever their `report_id`
 /// (`vector_memory::delete_report_summary`). There is no HTML leg — HTML is
 /// rendered on demand for display/PDF and never persisted (settled 2026-06-12),
 /// so the cascade has nothing to remove.
@@ -454,8 +474,8 @@ pub fn generate_report(
 /// legs then commit or roll back as one transaction: re-selection reads the
 /// `reports` table, so deleting the row while an earlier leg failed would
 /// strand that leg's rows with no retry path — and neither the vector summary
-/// row nor the truncation-telemetry rows have any other reaper, leaving stale
-/// memory retrievable forever and truncation rows unbounded. A rolled-back
+/// row nor the document-diagnostics rows have any other reaper, leaving stale
+/// memory retrievable forever and truncation/parse-run rows unbounded. A rolled-back
 /// evictee is re-selected next run, where its already-removed file reads as
 /// NotFound and the DB legs run again.
 fn prune_old_reports(conn: &rusqlite::Connection) {
@@ -490,17 +510,20 @@ fn prune_old_reports(conn: &rusqlite::Connection) {
     }
 }
 
-/// One evictee's four SQLite legs — vector summary, baseline snapshots,
-/// truncation telemetry, report row — committed together or not at all
-/// (`unchecked_transaction`: the helpers take `&Connection`, and `Transaction`
-/// derefs to it). The truncation leg is load-bearing, not belt-and-braces like
-/// the snapshot leg: `document_truncations` has no self-cap, so this report-id
-/// join is the only thing that bounds it.
+/// One evictee's five SQLite legs — vector summary, baseline snapshots,
+/// truncation telemetry, parse-run counts, report row — committed together or
+/// not at all (`unchecked_transaction`: the helpers take `&Connection`, and
+/// `Transaction` derefs to it). The two document-diagnostics legs are
+/// load-bearing, not belt-and-braces like the snapshot leg: neither
+/// `document_truncations` (numerator) nor `document_parse_runs` (denominator)
+/// has a self-cap, so this report-id join is the only thing that bounds them —
+/// and they delete together so the truncation rate's window stays aligned.
 fn delete_report_db_rows(conn: &rusqlite::Connection, report_id: &str) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     vector_memory::delete_report_summary(&tx, report_id)?;
     storage::delete_report_baseline_snapshots(&tx, report_id)?;
     storage::delete_report_truncations(&tx, report_id)?;
+    storage::delete_report_parse_runs(&tx, report_id)?;
     storage::delete_report_row(&tx, report_id)?;
     tx.commit()?;
     Ok(())
@@ -2035,6 +2058,7 @@ mod tests {
             }],
         )
         .unwrap();
+        storage::record_document_parse_run(&conn, "old-00", "2026-01-01T00:00:00Z", 4).unwrap();
 
         // Sabotage the *last* DB leg: the summary and snapshot deletes succeed
         // inside the transaction, then the row delete aborts — proving the
@@ -2071,6 +2095,11 @@ mod tests {
             1,
             "the truncation delete rolled back with the failed row delete"
         );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM document_parse_runs WHERE report_id = 'old-00'"),
+            1,
+            "the parse-run delete rolled back with the failed row delete"
+        );
 
         // Next run, sabotage gone: the same evictee is re-selected and fully
         // evicted — the retry path the rollback preserves.
@@ -2090,6 +2119,10 @@ mod tests {
         );
         assert_eq!(
             count("SELECT COUNT(*) FROM document_truncations WHERE report_id = 'old-00'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM document_parse_runs WHERE report_id = 'old-00'"),
             0
         );
     }

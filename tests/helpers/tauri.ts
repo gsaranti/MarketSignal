@@ -52,6 +52,8 @@ export const defaultSettings: SettingsView = {
 // recorded no truncations.
 export const defaultTruncationStats: TruncationStats = {
   total_truncations: 0,
+  total_docs_parsed: 0,
+  unaligned_truncations: 0,
   reports_affected: 0,
   total_chars_dropped: 0,
   by_format: [],
