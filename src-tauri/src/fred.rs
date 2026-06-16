@@ -197,17 +197,18 @@ impl Cadence {
     ///
     /// FRED dates each observation at its period **start**, so staleness peaks just
     /// before the *next* period's value is published — that peak, not the cadence
-    /// interval, sets the bound. The monthly/quarterly bounds are sized to the laggiest
-    /// member of each bucket (JOLTS lags ~6 weeks; GDP's Qn advance estimate lands ~1
-    /// month after Qn ends, ~7 months after Qn started), so the guard is coarse for slow
-    /// series by design — it reliably catches a multi-month freeze, not a one-cycle
-    /// delay. The daily/weekly bounds stay tight, where the guard has the most value.
-    /// The `#[ignore]`d `tuning_freshness_headroom_probe` reports the live headroom
+    /// interval, sets each bound. Every bound is sized to the laggiest member of its
+    /// bucket: weekly to continued claims (CCSA lags initial claims by a week → ~17–19d
+    /// live peak); monthly to JOLTS (~6-week lag, ~95d peak); quarterly to GDP (~210d
+    /// peak, the Qn advance estimate landing ~7 months after Qn started). The guard is
+    /// coarse for slow series by design — it reliably catches a multi-month freeze, not a
+    /// one-cycle delay; the daily bound stays tightest, where the guard has the most
+    /// value. The `#[ignore]`d `tuning_freshness_headroom_probe` reports live headroom
     /// against these bounds so they can be re-tuned from real lag rather than guessed.
     const fn max_staleness_days(self) -> i64 {
         match self {
-            Cadence::Daily => 16, // business-day series + weekends/holidays/lag (DTWEXBGS lags ~1wk)
-            Cadence::Weekly => 21, // one-week cadence + publication lag + a holiday week
+            Cadence::Daily => 16, // laggiest daily is EIA oil/gas (~8d live); margin for weekends/holidays
+            Cadence::Weekly => 28, // continued claims (CCSA) lag initial by a week → ~17–19d live peak; 4wk bound keeps margin
             Cadence::Monthly => 110, // JOLTS: ~6wk lag peaks ~95d before the next print
             Cadence::Quarterly => 230, // GDP: dated quarter-start, peaks ~209d before the next advance estimate
         }

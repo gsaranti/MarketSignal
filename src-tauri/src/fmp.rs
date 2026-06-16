@@ -137,9 +137,13 @@ const INDUSTRY_TOP_N: usize = 10;
 /// report an absurd multiple (a live run surfaced `pe ≈ 461`) that reads to the model as a
 /// real "expensive" level when it is noise from a denominator approaching zero. This is the
 /// symmetric upper bound to the non-positive drop in [`industry_pe_map_from_value`] — both
-/// withhold a meaningless figure (→ `None`) rather than fabricate or pass one. Tunable after
-/// a live run; an aggregate genuinely in the 50–80s (cyclical troughs in semis, homebuilders)
-/// stays under it.
+/// withhold a meaningless figure (→ `None`) rather than fabricate or pass one. Calibrated
+/// against the live distribution (`tuning_industry_pe_distribution_probe`, 2026-06-16): the
+/// plausible band runs up to ~94 (NYSE REIT-Healthcare; NASDAQ tops at ~88, Construction),
+/// the clear denominator-near-zero artifact cluster begins ≥128 (up to ~465), and 100 sits in
+/// the gap between them — conservatively dropping a handful of borderline 100–106 aggregates
+/// (energy E&P, casinos at an earnings trough) whose valuation is uninformative anyway. Re-run
+/// the probe to re-tune.
 const INDUSTRY_PE_MAX: f64 = 100.0;
 
 /// The exact `country` label to keep from the market-risk-premium dataset. Exact-match, not
@@ -2192,6 +2196,101 @@ mod tests {
             "US total ERP {} outside the sane 2-10% range — the dataset or filter may have regressed",
             us.total_equity_risk_premium
         );
+    }
+
+    /// Industry-P/E distribution probe — dumps the live per-exchange aggregate P/E
+    /// distribution so [`INDUSTRY_PE_MAX`] can be re-tuned from real data rather than
+    /// guessed. Mirrors `tuning_freshness_headroom_probe` on the FRED side: it only
+    /// reports (no assertions), and unlike `fmp_baseline_smoke` it is a calibration aid,
+    /// not a gate. For each board it walks the same weekday candidates production uses,
+    /// takes the first date that resolves, and prints every industry's raw aggregate P/E
+    /// sorted high→low, flagging which fall above the current ceiling (`> INDUSTRY_PE_MAX`,
+    /// the trough-artifact band) and which are non-positive (`<= 0.0`, no positive aggregate
+    /// earnings) — both of which the production map drops to `None`. Set the ceiling above
+    /// the highest *plausible* in-band aggregate but below the artifact cluster. Hits the
+    /// live API (≤2 calls per board, trivial against the 250/day free cap); run once per
+    /// change:
+    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///     src-tauri/Cargo.toml tuning_industry_pe_distribution_probe -- --ignored --nocapture
+    #[test]
+    #[ignore = "hits the live FMP API; set FMP_API_KEY. Calibration aid, not a gate — \
+                run with `-- --ignored --nocapture` to read the industry-P/E distribution."]
+    fn tuning_industry_pe_distribution_probe() {
+        let src = FmpDataSource::from_env().expect("FMP_API_KEY set");
+        let today = Utc::now().date_naive();
+        eprintln!(
+            "industry P/E distribution (today = {today}); current INDUSTRY_PE_MAX = {INDUSTRY_PE_MAX}; \
+             set the ceiling above the highest plausible in-band aggregate, below the artifact cluster:"
+        );
+        for exchange in SNAPSHOT_EXCHANGES {
+            let mut resolved = false;
+            for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
+                let date_str = date.format("%Y-%m-%d").to_string();
+                let (status, body) = src
+                    .get(FMP_INDUSTRY_PE_PATH, &[("date", date_str.as_str()), ("exchange", exchange)])
+                    .expect("industry-pe fetch");
+                let value = match interpret_response(status, &body) {
+                    Disposition::Value(v) => v,
+                    Disposition::Gap(reason) => {
+                        eprintln!("  {exchange} {date_str}: gap ({reason:?}) — trying earlier date");
+                        continue;
+                    }
+                };
+                let raws: Vec<FmpIndustryPeRaw> = match serde_json::from_value(value) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("  {exchange} {date_str}: malformed ({e}) — trying earlier date");
+                        continue;
+                    }
+                };
+                if raws.is_empty() {
+                    continue;
+                }
+                // The probe deliberately bypasses the *band* filter (the `>0` / `<=ceiling` drop
+                // it exists to calibrate) so the full artifact tail stays visible — but it must
+                // still honor the *exchange* guard production enforces (`industry_pe_map_from_value`
+                // bails on an off-board row), or a response where FMP ignored the `exchange` filter
+                // (a no-`exchange` call silently defaults to NASDAQ) would pollute one board's
+                // distribution with the other's and tune the ceiling against corrupted evidence.
+                // Keep only matching-board rows; surface any off-board count so misbehavior is loud.
+                let total = raws.len();
+                let mut rows: Vec<(String, f64)> = raws
+                    .into_iter()
+                    .filter(|r| r.exchange == *exchange)
+                    .map(|r| (r.industry, r.pe))
+                    .collect();
+                let off_board = total - rows.len();
+                // Sort high→low so the artifact tail is obvious at the top.
+                rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                let above = rows.iter().filter(|(_, pe)| *pe > INDUSTRY_PE_MAX).count();
+                let non_positive = rows.iter().filter(|(_, pe)| *pe <= 0.0).count();
+                let max_in_band = rows
+                    .iter()
+                    .map(|(_, pe)| *pe)
+                    .filter(|pe| *pe > 0.0 && *pe <= INDUSTRY_PE_MAX)
+                    .fold(f64::NAN, f64::max);
+                eprintln!(
+                    "\n=== {exchange} ({date_str}) — {n} industries: {above} above ceiling, \
+                     {non_positive} non-positive, {off_board} off-board ignored, max in-band = {max_in_band:.1} ===",
+                    n = rows.len(),
+                );
+                for (industry, pe) in &rows {
+                    let flag = if *pe > INDUSTRY_PE_MAX {
+                        " DROP>ceiling"
+                    } else if *pe <= 0.0 {
+                        " DROP<=0"
+                    } else {
+                        ""
+                    };
+                    eprintln!("  pe={pe:>8.1}  {industry}{flag}");
+                }
+                resolved = true;
+                break;
+            }
+            if !resolved {
+                eprintln!("  {exchange}: no industry-P/E data resolved over the candidate window");
+            }
+        }
     }
 
     /// Free-vs-premium probe for candidate Step-3 baseline endpoints whose tier the
