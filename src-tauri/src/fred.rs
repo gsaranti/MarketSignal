@@ -161,6 +161,100 @@ const MACRO_SERIES: &[(&str, &str, &str)] = &[
     ("MORTGAGE30US", "30-Year Fixed Mortgage Rate", "percent"),
 ];
 
+/// Publication cadence of a FRED series — the axis the freshness guard reads.
+/// `fetch_series` requests the newest observations with **no date bound**, so a
+/// **discontinued / frozen** series (its last datum published months ago — the
+/// `NASDAQVOLNDX` class of bug, see the internals doc-comment above) still "resolves"
+/// to a stale quote with no error. The guard ([`observations_to_quote`]) drops a quote
+/// whose latest observation is older than its cadence allows, so a frozen series
+/// becomes a recorded `Unavailable` gap rather than feeding a months-old level into
+/// the baseline. Bounds are deliberately **loose** — sized to catch a multi-month
+/// freeze, not to nitpick normal publication lag (JOLTS prints ~6 weeks after its
+/// reference month; GDP a month after quarter-end with later revisions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cadence {
+    Daily,
+    Weekly,
+    Monthly,
+    Quarterly,
+}
+
+impl Cadence {
+    /// Maximum acceptable staleness (today − latest observation date), in days,
+    /// before a series reads as discontinued rather than merely lagging.
+    ///
+    /// FRED dates each observation at its period **start**, so staleness peaks just
+    /// before the *next* period's value is published — that peak, not the cadence
+    /// interval, sets the bound. The monthly/quarterly bounds are sized to the laggiest
+    /// member of each bucket (JOLTS lags ~6 weeks; GDP's Qn advance estimate lands ~1
+    /// month after Qn ends, ~7 months after Qn started), so the guard is coarse for slow
+    /// series by design — it reliably catches a multi-month freeze, not a one-cycle
+    /// delay. The daily/weekly bounds stay tight, where the guard has the most value.
+    /// The `#[ignore]`d `tuning_freshness_headroom_probe` reports the live headroom
+    /// against these bounds so they can be re-tuned from real lag rather than guessed.
+    const fn max_staleness_days(self) -> i64 {
+        match self {
+            Cadence::Daily => 16, // business-day series + weekends/holidays/lag (DTWEXBGS lags ~1wk)
+            Cadence::Weekly => 21, // one-week cadence + publication lag + a holiday week
+            Cadence::Monthly => 110, // JOLTS: ~6wk lag peaks ~95d before the next print
+            Cadence::Quarterly => 230, // GDP: dated quarter-start, peaks ~209d before the next advance estimate
+        }
+    }
+}
+
+/// Cadence for every `INTERNALS_SERIES` + `MACRO_SERIES` id, the freshness guard's
+/// lookup table. The `freshness_table_covers_every_series` parity test asserts this
+/// set equals the two series tables exactly, so a new series with no cadence fails
+/// offline CI rather than going unguarded.
+const FRESHNESS: &[(&str, Cadence)] = &[
+    // Internals — all daily, market-priced series.
+    ("DGS2", Cadence::Daily),
+    ("DGS10", Cadence::Daily),
+    ("DTWEXBGS", Cadence::Daily),
+    ("DCOILWTICO", Cadence::Daily),
+    ("DHHNGSP", Cadence::Daily),
+    ("BAMLH0A0HYM2", Cadence::Daily),
+    ("BAMLC0A0CM", Cadence::Daily),
+    ("T10Y3M", Cadence::Daily),
+    ("T10Y2Y", Cadence::Daily),
+    ("VXVCLS", Cadence::Daily),
+    ("VXNCLS", Cadence::Daily),
+    ("BAMLC0A4CBBB", Cadence::Daily),
+    ("BAMLH0A2HYB", Cadence::Daily),
+    // Macro levels — mixed cadence.
+    ("DFEDTARU", Cadence::Daily),
+    ("DFEDTARL", Cadence::Daily),
+    ("T5YIE", Cadence::Daily),
+    ("T10YIE", Cadence::Daily),
+    ("UMCSENT", Cadence::Monthly),
+    ("PCEPI", Cadence::Monthly),
+    ("PPIFIS", Cadence::Monthly),
+    ("RSAFS", Cadence::Monthly),
+    ("JTSJOL", Cadence::Monthly),
+    ("GDPC1", Cadence::Quarterly),
+    ("NFCI", Cadence::Weekly),
+    ("ANFCI", Cadence::Weekly),
+    ("STLFSI4", Cadence::Weekly),
+    ("ICSA", Cadence::Weekly),
+    ("CCSA", Cadence::Weekly),
+    ("WALCL", Cadence::Weekly),
+    ("MORTGAGE30US", Cadence::Weekly),
+];
+
+/// Look up a series' publication cadence. Falls back to the tightest bound (`Daily`)
+/// for an unmapped id — fail-tight, so an accidentally-unmapped series is guarded (and
+/// surfaces as a dropped / `Unavailable` gap) rather than slipping through unguarded.
+/// The `freshness_table_covers_every_series` parity test guarantees every shipped
+/// series is mapped, so the fallback is unreachable in practice; it exists only to keep
+/// the production path panic-free (the fail-soft scan must never abort on a lookup).
+fn cadence_for(series_id: &str) -> Cadence {
+    FRESHNESS
+        .iter()
+        .find(|(id, _)| *id == series_id)
+        .map(|(_, c)| *c)
+        .unwrap_or(Cadence::Daily)
+}
+
 /// FRED's release-dates endpoint — the economic-release *schedule* the Step-3 calendar
 /// reads, distinct from the series observations above. `include_release_dates_with_no_data`
 /// surfaces upcoming (not-yet-released) dates; the realtime window bounds the dates to
@@ -195,10 +289,13 @@ const RELEASES: &[(u32, &str)] = &[
     (53, "Gross Domestic Product"),
 ];
 
-/// FRED's observations response, trimmed to the one field the baseline needs. Each
+/// FRED's observations response, trimmed to the two fields the baseline needs. Each
 /// observation's `value` is a **string** — a number like `"4.30"` or FRED's `"."`
 /// gap marker for a day with no datum — so it is parsed (and `"."` skipped) when
-/// shaping the quote, never deserialized as `f64` directly.
+/// shaping the quote, never deserialized as `f64` directly. The `date` (the
+/// observation's period, `"YYYY-MM-DD"`) is read off the latest numeric observation
+/// for the freshness guard: a frozen / discontinued series resolves to a stale value
+/// with no error, so its age is the only signal it has gone dark.
 #[derive(Debug, Deserialize)]
 struct FredObservations {
     observations: Vec<FredObservation>,
@@ -206,6 +303,7 @@ struct FredObservations {
 
 #[derive(Debug, Deserialize)]
 struct FredObservation {
+    date: String,
     value: String,
 }
 
@@ -267,26 +365,42 @@ fn interpret_response(status: u16, body: &str) -> Disposition {
 /// Shape a successful observations response into one quote: the most recent numeric
 /// observation is `price`, and `change_pct` is its percent change from the prior
 /// numeric observation (day-over-day, consistent with FMP's quote change). Returns
-/// `Ok(None)` when the series has no numeric observation in the window (all gaps) —
-/// a per-series absence, not an error.
+/// `Ok(None)` when the series has no usable current datum — either no numeric
+/// observation in the window (all gaps), or a **stale** latest observation (older
+/// than `cadence`'s bound relative to `today`): a per-series absence, not an error.
+///
+/// The freshness drop closes the frozen-series hole: `get` requests the newest
+/// observations with no date bound, so a discontinued series (the `NASDAQVOLNDX`
+/// class) resolves to a months-old value with no error. Dating the latest numeric
+/// observation against its [`Cadence`] catches that — the stale value is dropped to
+/// `Ok(None)`, recorded downstream as an `Unavailable` gap exactly like an all-gap
+/// window, rather than masquerading as a current level. `today` is injected (not read
+/// from the clock here) to keep the shaper pure and testable, mirroring
+/// [`releases_to_calendar`].
 ///
 /// Fail-closed on the value: FRED's documented `"."` is the **only** skippable
 /// marker. Any other non-numeric value — or one that parses to a non-finite float
 /// (`NaN` / `inf`, which `f64::parse` accepts) — is a contract violation that fails
 /// the scan rather than being silently dropped as a gap (which would let a stale
-/// observation masquerade as current, or a `NaN` contaminate the change math). A
-/// body that is not the expected observations shape is likewise an error.
+/// observation masquerade as current, or a `NaN` contaminate the change math). An
+/// unparseable `date` on the latest numeric observation is likewise an error (the
+/// freshness guard can't judge it), and a body that is not the expected observations
+/// shape is too.
 fn observations_to_quote(
     value: Value,
     symbol: &str,
     name: &str,
     unit: &str,
+    cadence: Cadence,
+    today: NaiveDate,
 ) -> Result<Option<Quote>> {
     let raw: FredObservations = serde_json::from_value(value)
         .context("FRED observations response did not match the expected shape")?;
     // The most-recent numeric observations, newest-first; latest + prior is all the
-    // change needs, so stop at two.
+    // change needs, so stop at two. The latest's date is captured for the freshness
+    // guard (fail-closed if it won't parse).
     let mut numeric: Vec<f64> = Vec::with_capacity(2);
+    let mut latest_date: Option<NaiveDate> = None;
     for obs in &raw.observations {
         let v = obs.value.trim();
         if v == "." {
@@ -299,6 +413,16 @@ fn observations_to_quote(
             .ok_or_else(|| {
                 anyhow!("FRED returned a non-numeric observation value {v:?} for series {symbol}")
             })?;
+        if latest_date.is_none() {
+            // The first numeric row is the latest; date it for the freshness check.
+            let d = NaiveDate::parse_from_str(obs.date.trim(), "%Y-%m-%d").with_context(|| {
+                format!(
+                    "FRED returned an unparseable observation date {:?} for series {symbol}",
+                    obs.date
+                )
+            })?;
+            latest_date = Some(d);
+        }
         numeric.push(parsed);
         if numeric.len() == 2 {
             break;
@@ -307,6 +431,15 @@ fn observations_to_quote(
     let Some(&latest) = numeric.first() else {
         return Ok(None); // every observation was a "." gap — no recent datum
     };
+    // Freshness guard: drop a frozen / discontinued series whose latest datum is staler
+    // than its cadence allows, so a months-old level can't read as current. `latest_date`
+    // is `Some` whenever `numeric.first()` is (both set on the same row).
+    if let Some(d) = latest_date {
+        let staleness = (today - d).num_days();
+        if staleness > cadence.max_staleness_days() {
+            return Ok(None);
+        }
+    }
     // Percent change off the prior numeric observation; a zero (or absent) prior
     // yields no change rather than a division by zero / spurious move.
     let change_pct = match numeric.get(1) {
@@ -427,8 +560,9 @@ impl FredDataSource {
 
     /// Fetch one quote per FRED series in `series`, recording a [`DataGap`] in `group`
     /// for any that don't resolve rather than failing the scan. A "does not exist" 400 is
-    /// an `OutOfScope` gap; an all-gap window is `Unavailable` (no value this run, so it
-    /// counts against coverage); an `api_key` rejection is `Rejected`
+    /// an `OutOfScope` gap; an all-gap window — or a **stale** latest observation, dated
+    /// against the series' cadence relative to `today` — is `Unavailable` (no usable value
+    /// this run, so it counts against coverage); an `api_key` rejection is `Rejected`
     /// and — being a whole-provider condition — stops the loop, recording the rest
     /// without hammering; a systemic / unrecognized response or a body that won't shape
     /// is `Unavailable` / `Malformed`. Shared by the internals and macro-levels groups,
@@ -437,6 +571,7 @@ impl FredDataSource {
         &self,
         series: &[(&str, &str, &str)],
         group: GroupKind,
+        today: NaiveDate,
         gaps: &mut Vec<DataGap>,
     ) -> Vec<Quote> {
         let mut out = Vec::with_capacity(series.len());
@@ -459,11 +594,19 @@ impl FredDataSource {
                 Err(_) => Disposition::Gap(GapReason::Unavailable), // transport — unreachable
             };
             match disposition {
-                Disposition::Value(value) => match observations_to_quote(value, series_id, name, unit) {
+                Disposition::Value(value) => match observations_to_quote(
+                    value,
+                    series_id,
+                    name,
+                    unit,
+                    cadence_for(series_id),
+                    today,
+                ) {
                     Ok(Some(quote)) => out.push(quote),
-                    // Every observation in the window was a "." gap — no value published
-                    // this run, not a permanent/premium absence, so it counts against
-                    // coverage (Unavailable), unlike an explicit "does not exist".
+                    // No usable current value — every observation was a "." gap, or the
+                    // latest numeric one is staler than its cadence allows (a frozen /
+                    // discontinued series). Not a permanent/premium absence, so it counts
+                    // against coverage (Unavailable), unlike an explicit "does not exist".
                     Ok(None) => gaps.push(DataGap::new(group, *series_id, *name, GapReason::Unavailable)),
                     Err(_) => gaps.push(DataGap::new(group, *series_id, *name, GapReason::Malformed)),
                 },
@@ -603,9 +746,12 @@ impl MarketDataSource for FredDataSource {
         // outcomes. FRED owns the internals + macro groups and the calendar; indices /
         // sectors / labor are left empty for the composite to fill from FMP / BLS.
         let mut gaps = Vec::new();
-        let internals = self.fetch_series(INTERNALS_SERIES, GroupKind::Internals, &mut gaps);
-        let macro_levels = self.fetch_series(MACRO_SERIES, GroupKind::MacroLevels, &mut gaps);
-        let calendar = self.fetch_calendar(Utc::now().date_naive(), &mut gaps);
+        // One `today` anchors both the freshness guard (per-series staleness) and the
+        // calendar window, so the whole scan reads against a single clock sample.
+        let today = Utc::now().date_naive();
+        let internals = self.fetch_series(INTERNALS_SERIES, GroupKind::Internals, today, &mut gaps);
+        let macro_levels = self.fetch_series(MACRO_SERIES, GroupKind::MacroLevels, today, &mut gaps);
+        let calendar = self.fetch_calendar(today, &mut gaps);
         Ok(BaselineMarketData {
             indices: Vec::new(),
             internals,
@@ -631,92 +777,13 @@ mod tests {
     use super::*;
     use crate::test_http::{Canned, MockHttp};
 
-    /// Publication cadence of a FRED series, the axis the freshness guard reads.
-    /// `fetch_series` requests the newest observations with **no date bound**, so a
-    /// **discontinued / frozen** series (its last datum published months ago — the
-    /// `NASDAQVOLNDX` class of bug, `fred.rs` internals doc-comment) still "resolves"
-    /// to a stale quote and slips past the smoke's count assert. The freshness guard
-    /// fails the live smoke when a series' latest observation is older than its cadence
-    /// allows. Bounds are deliberately **loose** — sized to catch a multi-month freeze,
-    /// not to nitpick normal publication lag (e.g. JOLTS prints ~6 weeks after its
-    /// reference month, GDP a month after quarter-end with later revisions).
-    #[derive(Debug, Clone, Copy)]
-    enum Cadence {
-        Daily,
-        Weekly,
-        Monthly,
-        Quarterly,
-    }
-
-    impl Cadence {
-        /// Maximum acceptable staleness (today − latest observation date), in days,
-        /// before a series reads as discontinued rather than merely lagging.
-        ///
-        /// FRED dates each observation at its period **start**, so staleness peaks
-        /// just before the *next* period's value is published — that peak, not the
-        /// cadence interval, sets the bound. The monthly/quarterly bounds are sized to
-        /// the laggiest member of each bucket (JOLTS lags ~6 weeks; GDP's Qn advance
-        /// estimate lands ~1 month after Qn ends, ~7 months after Qn started), so the
-        /// guard is coarse for slow series by design — it reliably catches a multi-month
-        /// freeze, not a one-cycle delay. The daily/weekly bounds stay tight, where the
-        /// guard has the most value.
-        fn max_staleness_days(self) -> i64 {
-            match self {
-                Cadence::Daily => 16,    // business-day series + weekends/holidays/lag (DTWEXBGS lags ~1wk)
-                Cadence::Weekly => 21,   // one-week cadence + publication lag + a holiday week
-                Cadence::Monthly => 110, // JOLTS: ~6wk lag peaks ~95d before the next print
-                Cadence::Quarterly => 230, // GDP: dated quarter-start, peaks ~209d before the next advance estimate
-            }
-        }
-    }
-
-    /// Cadence for every `INTERNALS_SERIES` + `MACRO_SERIES` id. The
-    /// `freshness_table_covers_every_series` parity test asserts this set equals the
-    /// two series tables exactly, so a new series with no cadence fails offline CI
-    /// rather than going unguarded in the live smoke.
-    const FRESHNESS: &[(&str, Cadence)] = &[
-        // Internals — all daily, market-priced series.
-        ("DGS2", Cadence::Daily),
-        ("DGS10", Cadence::Daily),
-        ("DTWEXBGS", Cadence::Daily),
-        ("DCOILWTICO", Cadence::Daily),
-        ("DHHNGSP", Cadence::Daily),
-        ("BAMLH0A0HYM2", Cadence::Daily),
-        ("BAMLC0A0CM", Cadence::Daily),
-        ("T10Y3M", Cadence::Daily),
-        ("T10Y2Y", Cadence::Daily),
-        ("VXVCLS", Cadence::Daily),
-        ("VXNCLS", Cadence::Daily),
-        ("BAMLC0A4CBBB", Cadence::Daily),
-        ("BAMLH0A2HYB", Cadence::Daily),
-        // Macro levels — mixed cadence.
-        ("DFEDTARU", Cadence::Daily),
-        ("DFEDTARL", Cadence::Daily),
-        ("T5YIE", Cadence::Daily),
-        ("T10YIE", Cadence::Daily),
-        ("UMCSENT", Cadence::Monthly),
-        ("PCEPI", Cadence::Monthly),
-        ("PPIFIS", Cadence::Monthly),
-        ("RSAFS", Cadence::Monthly),
-        ("JTSJOL", Cadence::Monthly),
-        ("GDPC1", Cadence::Quarterly),
-        ("NFCI", Cadence::Weekly),
-        ("ANFCI", Cadence::Weekly),
-        ("STLFSI4", Cadence::Weekly),
-        ("ICSA", Cadence::Weekly),
-        ("CCSA", Cadence::Weekly),
-        ("WALCL", Cadence::Weekly),
-        ("MORTGAGE30US", Cadence::Weekly),
-    ];
-
-    /// Look up a series' cadence, panicking if absent — the parity test guarantees
-    /// every series id is present, so an absence here is a contract violation.
-    fn cadence_for(series_id: &str) -> Cadence {
-        FRESHNESS
-            .iter()
-            .find(|(id, _)| *id == series_id)
-            .map(|(_, c)| *c)
-            .unwrap_or_else(|| panic!("no FRESHNESS cadence for series {series_id}"))
+    // `Cadence`, `FRESHNESS`, `cadence_for`, and `Cadence::max_staleness_days` now live
+    // in the production module above — the freshness guard runs in `observations_to_quote`,
+    // not just the smoke — and are reached here through `use super::*`. A fixed "today"
+    // near the offline fixtures' early-June-2026 dates keeps them fresh for the tests that
+    // aren't about freshness; the freshness behavior has its own dedicated tests below.
+    fn fresh_today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 6, 8).unwrap()
     }
 
     #[test]
@@ -869,6 +936,7 @@ mod tests {
         let quotes = source.fetch_series(
             &[("DGS10", "10-Year Treasury Yield", "percent")],
             GroupKind::MacroLevels,
+            fresh_today(),
             &mut gaps,
         );
         assert_eq!(server.attempts(), 1, "one series => one request");
@@ -895,6 +963,7 @@ mod tests {
         let quotes = source.fetch_series(
             &[("NOPE", "Missing Series", "percent")],
             GroupKind::MacroLevels,
+            fresh_today(),
             &mut gaps,
         );
         assert_eq!(server.attempts(), 1);
@@ -936,9 +1005,16 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let q = observations_to_quote(v, "DGS10", "10-Year Treasury Yield", "percent")
-            .unwrap()
-            .expect("a quote");
+        let q = observations_to_quote(
+            v,
+            "DGS10",
+            "10-Year Treasury Yield",
+            "percent",
+            Cadence::Daily,
+            fresh_today(),
+        )
+        .unwrap()
+        .expect("a quote");
         assert_eq!(q.symbol, "DGS10");
         assert_eq!(q.name, "10-Year Treasury Yield");
         assert!((q.price - 4.30).abs() < 1e-9);
@@ -960,9 +1036,16 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let q = observations_to_quote(v, "DCOILWTICO", "WTI Crude Oil", "USD per barrel")
-            .unwrap()
-            .expect("a quote past the gaps");
+        let q = observations_to_quote(
+            v,
+            "DCOILWTICO",
+            "WTI Crude Oil",
+            "USD per barrel",
+            Cadence::Daily,
+            fresh_today(),
+        )
+        .unwrap()
+        .expect("a quote past the gaps");
         assert!((q.price - 78.0).abs() < 1e-9);
         assert!((q.change_pct - (-2.0 / 80.0 * 100.0)).abs() < 1e-9);
     }
@@ -973,7 +1056,11 @@ mod tests {
         // not an error) — the caller then records it as an Unavailable gap.
         let v: Value =
             serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#).unwrap();
-        assert!(observations_to_quote(v, "DGS2", "x", "percent").unwrap().is_none());
+        assert!(
+            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -982,9 +1069,16 @@ mod tests {
         let v: Value =
             serde_json::from_str(r#"{"observations":[{"date":"2026-06-04","value":"4.30"}]}"#)
                 .unwrap();
-        let q = observations_to_quote(v, "DGS2", "2-Year Treasury Yield", "percent")
-            .unwrap()
-            .expect("a quote");
+        let q = observations_to_quote(
+            v,
+            "DGS2",
+            "2-Year Treasury Yield",
+            "percent",
+            Cadence::Daily,
+            fresh_today(),
+        )
+        .unwrap()
+        .expect("a quote");
         assert!((q.price - 4.30).abs() < 1e-9);
         assert_eq!(q.change_pct, 0.0);
     }
@@ -993,7 +1087,9 @@ mod tests {
     fn observations_to_quote_rejects_a_malformed_body() {
         // A 2xx body without the `observations` array is a contract violation.
         let v: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
-        assert!(observations_to_quote(v, "DGS2", "x", "percent").is_err());
+        assert!(
+            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today()).is_err()
+        );
     }
 
     #[test]
@@ -1008,10 +1104,135 @@ mod tests {
             ))
             .unwrap();
             assert!(
-                observations_to_quote(v, "DGS2", "x", "percent").is_err(),
+                observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today())
+                    .is_err(),
                 "value {bad:?} must fail closed, not skip"
             );
         }
+    }
+
+    #[test]
+    fn observations_to_quote_drops_a_stale_latest_observation() {
+        // A frozen / discontinued series resolves to an old value with no error; dated
+        // against its cadence it is too stale, so it drops to Ok(None) (an Unavailable gap
+        // downstream) rather than feeding a months-old level into the baseline.
+        let v: Value = serde_json::from_str(
+            r#"{"observations":[
+                {"date":"2026-01-02","value":"4.30"},
+                {"date":"2026-01-01","value":"4.20"}
+            ]}"#,
+        )
+        .unwrap();
+        // ~157 days stale vs the Daily bound (16) on 2026-06-08.
+        let q = observations_to_quote(
+            v,
+            "DGS10",
+            "10-Year Treasury Yield",
+            "percent",
+            Cadence::Daily,
+            fresh_today(),
+        )
+        .unwrap();
+        assert!(q.is_none(), "a stale daily series must drop, not resolve");
+    }
+
+    #[test]
+    fn observations_to_quote_freshness_is_a_closed_band_at_the_cadence_bound() {
+        // The guard keeps an observation exactly at the bound and drops one a day past it,
+        // pinning the inclusive `<=` and referencing the cadence's own const so a re-tune
+        // can't silently invalidate the test (mirrors the FMP industry-P/E closed band).
+        let today = fresh_today();
+        let bound = Cadence::Daily.max_staleness_days();
+        let at_bound = (today - Duration::days(bound)).format("%Y-%m-%d").to_string();
+        let past_bound = (today - Duration::days(bound + 1))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let exactly = serde_json::from_str::<Value>(&format!(
+            r#"{{"observations":[{{"date":"{at_bound}","value":"4.30"}}]}}"#
+        ))
+        .unwrap();
+        assert!(
+            observations_to_quote(exactly, "DGS10", "x", "percent", Cadence::Daily, today)
+                .unwrap()
+                .is_some(),
+            "an observation exactly at the staleness bound is kept"
+        );
+
+        let over = serde_json::from_str::<Value>(&format!(
+            r#"{{"observations":[{{"date":"{past_bound}","value":"4.30"}}]}}"#
+        ))
+        .unwrap();
+        assert!(
+            observations_to_quote(over, "DGS10", "x", "percent", Cadence::Daily, today)
+                .unwrap()
+                .is_none(),
+            "an observation one day past the bound is dropped"
+        );
+    }
+
+    #[test]
+    fn observations_to_quote_freshness_respects_per_cadence_bounds() {
+        // The same age reads as fresh for a slow cadence and stale for a fast one: a
+        // ~100-day-old observation is within the Monthly bound (110) but past the Daily
+        // bound (16), so cadence — not just age — decides the drop.
+        let today = fresh_today();
+        let old = (today - Duration::days(100)).format("%Y-%m-%d").to_string();
+        let body = format!(r#"{{"observations":[{{"date":"{old}","value":"4.30"}}]}}"#);
+
+        let monthly = serde_json::from_str::<Value>(&body).unwrap();
+        assert!(
+            observations_to_quote(monthly, "UMCSENT", "x", "index", Cadence::Monthly, today)
+                .unwrap()
+                .is_some(),
+            "a 100-day-old monthly observation is within the monthly bound"
+        );
+        let daily = serde_json::from_str::<Value>(&body).unwrap();
+        assert!(
+            observations_to_quote(daily, "DGS10", "x", "percent", Cadence::Daily, today)
+                .unwrap()
+                .is_none(),
+            "the same 100-day-old observation is stale for a daily series"
+        );
+    }
+
+    #[test]
+    fn observations_to_quote_rejects_an_unparseable_latest_date() {
+        // The latest numeric observation must carry a parseable date — the freshness guard
+        // can't judge an unparseable one, so it fails closed (a Malformed gap downstream)
+        // rather than letting an undateable value through.
+        let v: Value =
+            serde_json::from_str(r#"{"observations":[{"date":"June 4th","value":"4.30"}]}"#)
+                .unwrap();
+        assert!(
+            observations_to_quote(v, "DGS10", "x", "percent", Cadence::Daily, fresh_today())
+                .is_err(),
+            "an unparseable latest-observation date must fail closed"
+        );
+    }
+
+    #[test]
+    fn fetch_series_records_a_stale_series_as_an_unavailable_gap() {
+        // End to end over the wire: a series whose latest observation is months old drops
+        // to an Unavailable gap (counts against coverage), not a quote — the production
+        // freshness guard exercised through the adapter, not just the pure shaper.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"observations":[{"date":"2026-01-02","value":"4.30"},{"date":"2026-01-01","value":"4.20"}]}"#,
+        }]);
+        let source = test_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let quotes = source.fetch_series(
+            &[("DGS10", "10-Year Treasury Yield", "percent")],
+            GroupKind::Internals,
+            fresh_today(),
+            &mut gaps,
+        );
+        assert!(quotes.is_empty(), "a stale series resolves to no quote");
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].reason, GapReason::Unavailable);
+        assert_eq!(gaps[0].series_id, "DGS10");
     }
 
     #[test]
@@ -1231,6 +1452,46 @@ mod tests {
             assert!(
                 !parsed.release_dates.is_empty(),
                 "release {id} ({name}) resolved no dates over a wide window — retired id"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "hits the live FRED API; set FRED_API_KEY. Calibration aid, not a gate — \
+                run with `-- --ignored --nocapture` to read the headroom table."]
+    fn tuning_freshness_headroom_probe() {
+        // Reports each series' live staleness against its cadence bound (headroom =
+        // bound − staleness), tightest first, so the four `max_staleness_days` values can
+        // be re-tuned from real publication lag rather than guessed. Unlike the freshness
+        // assert in `fred_baseline_smoke` (the gate), this only reports — a series with
+        // thin or negative headroom is a signal to investigate / re-tune, not a failure.
+        // Tighten a bound only above the live max its members reach here.
+        let src = FredDataSource::from_env().expect("FRED_API_KEY set");
+        let today = Utc::now().date_naive();
+        let mut rows: Vec<(i64, &str, &str, Cadence, i64, NaiveDate)> = Vec::new();
+        for (series_id, name, _unit) in INTERNALS_SERIES.iter().chain(MACRO_SERIES) {
+            let (status, body) = src.get(series_id).expect("freshness re-fetch");
+            let value = match interpret_response(status, &body) {
+                Disposition::Value(v) => v,
+                Disposition::Gap(reason) => {
+                    panic!("series {series_id} ({name}) did not resolve on re-fetch ({reason:?})")
+                }
+            };
+            let date = latest_numeric_observation_date(&value).unwrap_or_else(|| {
+                panic!("series {series_id} ({name}) had no numeric observation to date")
+            });
+            let cadence = cadence_for(series_id);
+            let staleness = (today - date).num_days();
+            let headroom = cadence.max_staleness_days() - staleness;
+            rows.push((headroom, series_id, name, cadence, staleness, date));
+        }
+        rows.sort_by_key(|r| r.0); // tightest headroom first
+        eprintln!("freshness headroom (today = {today}); tighten a bound only above the live max:");
+        for (headroom, series_id, name, cadence, staleness, date) in &rows {
+            eprintln!(
+                "  headroom={headroom:>4}d  {series_id:<14} {name:<34} \
+                 stale={staleness:>4}d / {bound}d {cadence:?} (latest={date})",
+                bound = cadence.max_staleness_days(),
             );
         }
     }
