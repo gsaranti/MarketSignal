@@ -126,7 +126,8 @@ const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
 /// prior-week entries (so the report sees what each release printed, not just that it
 /// landed). Mixed daily (target range, breakevens), monthly (sentiment, PCE, PPI, retail,
 /// JOLTS) and quarterly (GDP) series; `change_pct` reads the change off the prior
-/// observation accordingly. Same `(series_id, display name, unit)` shape as the internals
+/// observation accordingly — except GDP, whose change is **annualized** (the BEA/headline
+/// convention; see [`ANNUALIZED_SERIES`]). Same `(series_id, display name, unit)` shape as the internals
 /// — the `series_id` doubles as the quote `symbol`, and the unit labels what each `price`
 /// level is quoted in (percent, an index level with its base period, a dollar figure, or
 /// a count).
@@ -150,7 +151,7 @@ const MACRO_SERIES: &[(&str, &str, &str)] = &[
         "millions of USD",
     ),
     ("JTSJOL", "Job Openings: Total Nonfarm (JOLTS)", "thousands of openings"),
-    ("GDPC1", "Real Gross Domestic Product", "billions of chained 2017 USD"),
+    ("GDPC1", "Real Gross Domestic Product (growth annualized)", "billions of chained 2017 USD"),
     // Weekly/daily risk + cycle gauges (financial conditions, claims, liquidity, housing).
     ("NFCI", "Chicago Fed National Financial Conditions Index", "index (0 = average)"),
     ("ANFCI", "Chicago Fed Adjusted NFCI", "index (0 = average)"),
@@ -198,6 +199,20 @@ impl Cadence {
             Cadence::Weekly => 21, // one-week cadence + publication lag + a holiday week
             Cadence::Monthly => 110, // JOLTS: ~6wk lag peaks ~95d before the next print
             Cadence::Quarterly => 230, // GDP: dated quarter-start, peaks ~209d before the next advance estimate
+        }
+    }
+
+    /// Periods per year — the compounding exponent for annualizing a single-period
+    /// change (see [`ANNUALIZED_SERIES`]). A quarterly QoQ change of `r` annualizes to
+    /// `(1 + r)^4 − 1`, the BEA/headline convention for GDP. Only consulted for the
+    /// handful of series flagged annualized; for every other series the per-period
+    /// change ships as-is.
+    const fn periods_per_year(self) -> i32 {
+        match self {
+            Cadence::Daily => 252,   // trading days
+            Cadence::Weekly => 52,
+            Cadence::Monthly => 12,
+            Cadence::Quarterly => 4,
         }
     }
 }
@@ -253,6 +268,21 @@ fn cadence_for(series_id: &str) -> Cadence {
         .find(|(id, _)| *id == series_id)
         .map(|(_, c)| *c)
         .unwrap_or(Cadence::Daily)
+}
+
+/// Series whose per-period change is reported **annualized** rather than as the raw
+/// change off the prior observation. Today this is GDP alone: FRED's `GDPC1` is a
+/// quarterly *level*, but the figure the world quotes ("GDP grew 2.8%") is the
+/// quarter-over-quarter change compounded to an annual rate (`(1 + qoq)^4 − 1`), the
+/// BEA convention. Keying it as data (rather than a special-case branch in the fetch
+/// loop) keeps the rule legible and lets a future quarterly/monthly series that also
+/// reports an annual rate join by id. The `price` level is untouched — only
+/// `change_pct` is annualized.
+const ANNUALIZED_SERIES: &[&str] = &["GDPC1"];
+
+/// Whether a series' `change_pct` should be annualized — see [`ANNUALIZED_SERIES`].
+fn is_annualized(series_id: &str) -> bool {
+    ANNUALIZED_SERIES.contains(&series_id)
 }
 
 /// FRED's release-dates endpoint — the economic-release *schedule* the Step-3 calendar
@@ -364,7 +394,9 @@ fn interpret_response(status: u16, body: &str) -> Disposition {
 
 /// Shape a successful observations response into one quote: the most recent numeric
 /// observation is `price`, and `change_pct` is its percent change from the prior
-/// numeric observation (day-over-day, consistent with FMP's quote change). Returns
+/// numeric observation (day-over-day, consistent with FMP's quote change) — or, when
+/// `annualize` is set ([`ANNUALIZED_SERIES`], GDP today), that single-period change
+/// compounded to an annual rate so the change reads as the headline figure. Returns
 /// `Ok(None)` when the series has no usable current datum — either no numeric
 /// observation in the window (all gaps), or a **stale** latest observation (older
 /// than `cadence`'s bound relative to `today`): a per-series absence, not an error.
@@ -393,6 +425,7 @@ fn observations_to_quote(
     unit: &str,
     cadence: Cadence,
     today: NaiveDate,
+    annualize: bool,
 ) -> Result<Option<Quote>> {
     let raw: FredObservations = serde_json::from_value(value)
         .context("FRED observations response did not match the expected shape")?;
@@ -441,9 +474,16 @@ fn observations_to_quote(
         }
     }
     // Percent change off the prior numeric observation; a zero (or absent) prior
-    // yields no change rather than a division by zero / spurious move.
-    let change_pct = match numeric.get(1) {
-        Some(&prev) if prev != 0.0 => (latest - prev) / prev * 100.0,
+    // yields no change rather than a division by zero / spurious move. For an
+    // annualized series (GDP) the single-period change is compounded to an annual
+    // rate — `(latest/prev)^periods − 1` — which needs a strictly positive prior as
+    // the ratio base (GDP levels always are; a non-positive prior falls back to no
+    // change just like the simple path).
+    let change_pct = match (annualize, numeric.get(1)) {
+        (true, Some(&prev)) if prev > 0.0 => {
+            ((latest / prev).powi(cadence.periods_per_year()) - 1.0) * 100.0
+        }
+        (false, Some(&prev)) if prev != 0.0 => (latest - prev) / prev * 100.0,
         _ => 0.0,
     };
     Ok(Some(Quote {
@@ -601,6 +641,7 @@ impl FredDataSource {
                     unit,
                     cadence_for(series_id),
                     today,
+                    is_annualized(series_id),
                 ) {
                     Ok(Some(quote)) => out.push(quote),
                     // No usable current value — every observation was a "." gap, or the
@@ -1012,6 +1053,7 @@ mod tests {
             "percent",
             Cadence::Daily,
             fresh_today(),
+            false,
         )
         .unwrap()
         .expect("a quote");
@@ -1021,6 +1063,74 @@ mod tests {
         assert!((q.change_pct - (0.10 / 4.20 * 100.0)).abs() < 1e-9);
         // The series' unit rides onto the quote from the table, labelling `price`.
         assert_eq!(q.unit, "percent");
+    }
+
+    #[test]
+    fn observations_to_quote_annualizes_a_quarterly_rate() {
+        // GDP: the quarter-over-quarter change is compounded to an annual rate, the
+        // headline figure. Latest 23500, prior 23300 -> a ~0.86% QoQ move that
+        // annualizes to ~3.5% — the change the model must see, not the raw quarterly one.
+        let v: Value = serde_json::from_str(
+            r#"{"observations":[
+                {"date":"2026-01-01","value":"23500"},
+                {"date":"2025-10-01","value":"23300"}
+            ]}"#,
+        )
+        .unwrap();
+        let q = observations_to_quote(
+            v,
+            "GDPC1",
+            "Real Gross Domestic Product (growth annualized)",
+            "billions of chained 2017 USD",
+            Cadence::Quarterly,
+            fresh_today(),
+            true,
+        )
+        .unwrap()
+        .expect("a quote");
+        // The level (price) is untouched — only the change is annualized.
+        assert!((q.price - 23500.0).abs() < 1e-9);
+        let expected = ((23500.0_f64 / 23300.0).powi(4) - 1.0) * 100.0;
+        assert!((q.change_pct - expected).abs() < 1e-9);
+        // And the annualized rate is materially larger than the raw quarterly change —
+        // the whole point of the convention.
+        let raw_qoq = (23500.0_f64 - 23300.0) / 23300.0 * 100.0;
+        assert!(
+            q.change_pct > raw_qoq * 3.0,
+            "annualized {} should be ~4x the raw QoQ {}",
+            q.change_pct,
+            raw_qoq
+        );
+    }
+
+    #[test]
+    fn observations_to_quote_leaves_a_nonannualized_series_unchanged() {
+        // The same two observations, but for a non-annualized series, keep the simple
+        // per-period change — annualization is opt-in via `ANNUALIZED_SERIES`, not the
+        // default for every series.
+        let body = r#"{"observations":[
+                {"date":"2026-01-01","value":"23500"},
+                {"date":"2025-10-01","value":"23300"}
+            ]}"#;
+        let v: Value = serde_json::from_str(body).unwrap();
+        let q = observations_to_quote(
+            v,
+            "PCEPI",
+            "x",
+            "index",
+            Cadence::Quarterly,
+            fresh_today(),
+            false,
+        )
+        .unwrap()
+        .expect("a quote");
+        let raw_qoq = (23500.0_f64 - 23300.0) / 23300.0 * 100.0;
+        assert!((q.change_pct - raw_qoq).abs() < 1e-9);
+        // The marker is keyed to GDP, not to the cadence: GDPC1 is annualized, a
+        // sibling quarterly series is not.
+        assert!(is_annualized("GDPC1"));
+        assert!(!is_annualized("PCEPI"));
+        assert_eq!(Cadence::Quarterly.periods_per_year(), 4);
     }
 
     #[test]
@@ -1043,6 +1153,7 @@ mod tests {
             "USD per barrel",
             Cadence::Daily,
             fresh_today(),
+            false,
         )
         .unwrap()
         .expect("a quote past the gaps");
@@ -1057,7 +1168,7 @@ mod tests {
         let v: Value =
             serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#).unwrap();
         assert!(
-            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today())
+            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), false)
                 .unwrap()
                 .is_none()
         );
@@ -1076,6 +1187,7 @@ mod tests {
             "percent",
             Cadence::Daily,
             fresh_today(),
+            false,
         )
         .unwrap()
         .expect("a quote");
@@ -1088,7 +1200,7 @@ mod tests {
         // A 2xx body without the `observations` array is a contract violation.
         let v: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
         assert!(
-            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today()).is_err()
+            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), false).is_err()
         );
     }
 
@@ -1104,7 +1216,7 @@ mod tests {
             ))
             .unwrap();
             assert!(
-                observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today())
+                observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), false)
                     .is_err(),
                 "value {bad:?} must fail closed, not skip"
             );
@@ -1131,6 +1243,7 @@ mod tests {
             "percent",
             Cadence::Daily,
             fresh_today(),
+            false,
         )
         .unwrap();
         assert!(q.is_none(), "a stale daily series must drop, not resolve");
@@ -1153,7 +1266,7 @@ mod tests {
         ))
         .unwrap();
         assert!(
-            observations_to_quote(exactly, "DGS10", "x", "percent", Cadence::Daily, today)
+            observations_to_quote(exactly, "DGS10", "x", "percent", Cadence::Daily, today, false)
                 .unwrap()
                 .is_some(),
             "an observation exactly at the staleness bound is kept"
@@ -1164,7 +1277,7 @@ mod tests {
         ))
         .unwrap();
         assert!(
-            observations_to_quote(over, "DGS10", "x", "percent", Cadence::Daily, today)
+            observations_to_quote(over, "DGS10", "x", "percent", Cadence::Daily, today, false)
                 .unwrap()
                 .is_none(),
             "an observation one day past the bound is dropped"
@@ -1182,14 +1295,14 @@ mod tests {
 
         let monthly = serde_json::from_str::<Value>(&body).unwrap();
         assert!(
-            observations_to_quote(monthly, "UMCSENT", "x", "index", Cadence::Monthly, today)
+            observations_to_quote(monthly, "UMCSENT", "x", "index", Cadence::Monthly, today, false)
                 .unwrap()
                 .is_some(),
             "a 100-day-old monthly observation is within the monthly bound"
         );
         let daily = serde_json::from_str::<Value>(&body).unwrap();
         assert!(
-            observations_to_quote(daily, "DGS10", "x", "percent", Cadence::Daily, today)
+            observations_to_quote(daily, "DGS10", "x", "percent", Cadence::Daily, today, false)
                 .unwrap()
                 .is_none(),
             "the same 100-day-old observation is stale for a daily series"
@@ -1205,7 +1318,7 @@ mod tests {
             serde_json::from_str(r#"{"observations":[{"date":"June 4th","value":"4.30"}]}"#)
                 .unwrap();
         assert!(
-            observations_to_quote(v, "DGS10", "x", "percent", Cadence::Daily, fresh_today())
+            observations_to_quote(v, "DGS10", "x", "percent", Cadence::Daily, fresh_today(), false)
                 .is_err(),
             "an unparseable latest-observation date must fail closed"
         );
