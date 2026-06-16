@@ -63,8 +63,13 @@ use crate::data_sources::{
 };
 use crate::progress::RunContext;
 
+/// Base URL for FRED's API. The endpoint paths below are joined onto it in each
+/// request helper; a test redirects the whole adapter at a localhost mock via
+/// [`FredDataSource::with_base_url`], so the wire path runs offline.
+const FRED_BASE: &str = "https://api.stlouisfed.org/fred";
+
 /// FRED's observations endpoint — the series time-series the baseline reads.
-const FRED_OBSERVATIONS_URL: &str = "https://api.stlouisfed.org/fred/series/observations";
+const FRED_OBSERVATIONS_PATH: &str = "/series/observations";
 
 /// Short timeout per request: the baseline scan issues several sequential calls,
 /// none of which should park for the model adapter's 120s ceiling. Mirrors `fmp`.
@@ -160,7 +165,7 @@ const MACRO_SERIES: &[(&str, &str, &str)] = &[
 /// reads, distinct from the series observations above. `include_release_dates_with_no_data`
 /// surfaces upcoming (not-yet-released) dates; the realtime window bounds the dates to
 /// the calendar span.
-const FRED_RELEASE_DATES_URL: &str = "https://api.stlouisfed.org/fred/release/dates";
+const FRED_RELEASE_DATES_PATH: &str = "/release/dates";
 
 /// The economic-release calendar window: days back (prior-week reports already released)
 /// and forward (the upcoming schedule) of today to keep. Applied both server-side (the
@@ -358,6 +363,9 @@ fn releases_to_calendar(
 pub struct FredDataSource {
     api_key: String,
     http: reqwest::blocking::Client,
+    /// API origin the endpoint paths are joined onto. Defaults to [`FRED_BASE`]; an
+    /// offline round-trip test overrides it via [`FredDataSource::with_base_url`].
+    base_url: String,
     /// Run context for live progress + cooperative cancellation; a no-op by default
     /// (tests / smokes), the live one attached via [`FredDataSource::with_context`].
     progress: Arc<RunContext>,
@@ -372,8 +380,18 @@ impl FredDataSource {
         Ok(Self {
             api_key,
             http,
+            base_url: FRED_BASE.to_string(),
             progress: RunContext::noop(),
         })
+    }
+
+    /// Redirect the adapter at an alternate API origin (a localhost mock) so the wire
+    /// path runs offline. Test-only; a trailing slash is trimmed so the joined path's
+    /// leading slash doesn't double up.
+    #[cfg(test)]
+    fn with_base_url(mut self, base_url: &str) -> Self {
+        self.base_url = base_url.trim_end_matches('/').to_string();
+        self
     }
 
     /// Attach a live run context so the per-series scan streams a tracker row per
@@ -395,8 +413,9 @@ impl FredDataSource {
     /// (the provider is unreachable) returns `Err` to the caller, which records it as an
     /// `Unavailable` gap rather than failing the scan.
     fn get(&self, series_id: &str) -> Result<(u16, String)> {
+        let url = format!("{}{FRED_OBSERVATIONS_PATH}", self.base_url);
         crate::http_retry::send_with_retry("FRED", || {
-            self.http.get(FRED_OBSERVATIONS_URL).query(&[
+            self.http.get(&url).query(&[
                 ("series_id", series_id),
                 ("api_key", self.api_key.as_str()),
                 ("file_type", "json"),
@@ -481,8 +500,9 @@ impl FredDataSource {
         realtime_end: &str,
     ) -> Result<(u16, String)> {
         let id = release_id.to_string();
+        let url = format!("{}{FRED_RELEASE_DATES_PATH}", self.base_url);
         crate::http_retry::send_with_retry("FRED release-dates", || {
-            self.http.get(FRED_RELEASE_DATES_URL).query(&[
+            self.http.get(&url).query(&[
                 ("release_id", id.as_str()),
                 ("api_key", self.api_key.as_str()),
                 ("file_type", "json"),
@@ -609,6 +629,7 @@ impl MarketDataSource for FredDataSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_http::{Canned, MockHttp};
 
     /// Publication cadence of a FRED series, the axis the freshness guard reads.
     /// `fetch_series` requests the newest observations with **no date bound**, so a
@@ -819,6 +840,90 @@ mod tests {
 
         // A 2xx that isn't valid JSON is a contract violation -> Malformed.
         assert!(matches!(interpret_response(200, "not json at all"), Disposition::Gap(Malformed)));
+    }
+
+    // ---- Offline round trip: adapter -> retry -> interpret -> domain output ----
+    //
+    // The matrix above pins `interpret_response` as a pure function; these drive the
+    // whole `get`/`get_release_dates` -> `send_with_retry` -> `interpret_response` path
+    // against a localhost mock (`crate::test_http`). FRED has two endpoints, each
+    // building its own URL, so each is rebased and covered: `fetch_series` (observations,
+    // through to the shaped `Quote`) and `get_release_dates` (the release-dates wire).
+    // Single-reply scripts, so no `BASE_BACKOFF` sleep is incurred.
+
+    fn test_source(base_url: &str) -> FredDataSource {
+        FredDataSource::new("test-key".to_string())
+            .expect("build adapter")
+            .with_base_url(base_url)
+    }
+
+    #[test]
+    fn fetch_series_round_trips_a_200_into_a_quote() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"observations":[{"date":"2026-06-04","value":"4.30"},{"date":"2026-06-03","value":"4.20"}]}"#,
+        }]);
+        let source = test_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let quotes = source.fetch_series(
+            &[("DGS10", "10-Year Treasury Yield", "percent")],
+            GroupKind::MacroLevels,
+            &mut gaps,
+        );
+        assert_eq!(server.attempts(), 1, "one series => one request");
+        let targets = server.request_targets();
+        assert_eq!(server.request_paths(), ["/series/observations"]);
+        assert!(targets[0].contains("series_id="), "the per-call query var must reach the wire: {targets:?}");
+        assert!(gaps.is_empty());
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0].symbol, "DGS10");
+        assert!((quotes[0].price - 4.30).abs() < 1e-9);
+        assert_eq!(quotes[0].unit, "percent");
+    }
+
+    #[test]
+    fn fetch_series_round_trips_an_absent_series_into_an_out_of_scope_gap() {
+        // A 400 "series does not exist" must classify as an OutOfScope gap over the wire.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 400,
+            headers: vec![],
+            body: r#"{"error_code":400,"error_message":"Bad Request. The series does not exist."}"#,
+        }]);
+        let source = test_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let quotes = source.fetch_series(
+            &[("NOPE", "Missing Series", "percent")],
+            GroupKind::MacroLevels,
+            &mut gaps,
+        );
+        assert_eq!(server.attempts(), 1);
+        assert_eq!(server.request_paths(), ["/series/observations"]);
+        assert!(quotes.is_empty());
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].reason, GapReason::OutOfScope);
+        assert_eq!(gaps[0].series_id, "NOPE");
+    }
+
+    #[test]
+    fn get_release_dates_round_trips_through_the_rebased_endpoint() {
+        // The second endpoint builds its own URL; this proves it is rebased onto the
+        // mock and the (status, body) rides back through the retry seam intact.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"release_dates":[{"release_id":10,"date":"2026-06-11"}]}"#,
+        }]);
+        let source = test_source(&server.base_url);
+        let (status, body) = source
+            .get_release_dates(10, "2026-06-08", "2026-06-22")
+            .expect("release-dates request reaches the mock");
+        assert_eq!(server.attempts(), 1);
+        // The distinct second-endpoint path proves it rebased onto the mock, not just
+        // that some FRED URL did — a `FRED_RELEASE_DATES_PATH` typo would fail here.
+        assert_eq!(server.request_paths(), ["/release/dates"]);
+        assert_eq!(status, 200);
+        assert!(body.contains("\"release_id\":10"));
     }
 
     #[test]

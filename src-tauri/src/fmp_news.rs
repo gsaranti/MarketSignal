@@ -28,7 +28,11 @@ use serde::Deserialize;
 use crate::news::{host_of, NewsSource, RawHeadline};
 use crate::progress::RunContext;
 
-const FMP_ARTICLES_URL: &str = "https://financialmodelingprep.com/stable/fmp-articles";
+/// Base URL for FMP's stable API. The single endpoint path below is joined onto it in
+/// [`FmpNewsSource::fetch_articles`]; a test redirects the adapter at a localhost mock
+/// via [`FmpNewsSource::with_base_url`], so the wire path runs offline.
+const FMP_NEWS_BASE: &str = "https://financialmodelingprep.com/stable";
+const FMP_ARTICLES_PATH: &str = "/fmp-articles";
 
 /// Per-request timeout, matching the Tavily and GDELT adapters.
 const FMP_NEWS_TIMEOUT: Duration = Duration::from_secs(20);
@@ -188,6 +192,9 @@ fn gather_fail_soft(
 pub struct FmpNewsSource {
     api_key: String,
     http: reqwest::blocking::Client,
+    /// API origin the endpoint path is joined onto. Defaults to [`FMP_NEWS_BASE`]; an
+    /// offline round-trip test overrides it via [`FmpNewsSource::with_base_url`].
+    base_url: String,
     /// Run context for the single tracker row the gather emits. Defaults to a no-op
     /// (tests / offline smokes); the live command attaches the real one via
     /// [`FmpNewsSource::with_context`].
@@ -203,8 +210,18 @@ impl FmpNewsSource {
         Ok(Self {
             api_key,
             http,
+            base_url: FMP_NEWS_BASE.to_string(),
             progress: RunContext::noop(),
         })
+    }
+
+    /// Redirect the adapter at an alternate API origin (a localhost mock) so the wire
+    /// path runs offline. Test-only; a trailing slash is trimmed so the joined path's
+    /// leading slash doesn't double up.
+    #[cfg(test)]
+    fn with_base_url(mut self, base_url: &str) -> Self {
+        self.base_url = base_url.trim_end_matches('/').to_string();
+        self
     }
 
     /// Attach a live run context so the single articles fetch streams a request row
@@ -225,8 +242,9 @@ impl FmpNewsSource {
     /// failed on. `gather` applies the fail-soft policy; this stays honest about a
     /// failure so the caller can log it. Retries ride the shared FMP backoff.
     fn fetch_articles(&self) -> Result<Vec<RawHeadline>> {
+        let url = format!("{}{FMP_ARTICLES_PATH}", self.base_url);
         let (status, body) = crate::http_retry::send_with_retry("FMP", || {
-            self.http.get(FMP_ARTICLES_URL).query(&[
+            self.http.get(&url).query(&[
                 ("page", "0"),
                 ("limit", ARTICLES_LIMIT),
                 ("apikey", self.api_key.as_str()),
@@ -247,6 +265,7 @@ impl NewsSource for FmpNewsSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_http::{Canned, MockHttp};
 
     #[test]
     fn interpret_fmp_articles_covers_the_status_matrix() {
@@ -269,6 +288,53 @@ mod tests {
         assert!(premium.contains("premium"), "402 message names the gate: {premium}");
         // A 2xx that isn't valid JSON is a contract violation -> error.
         assert!(interpret_fmp_articles(200, "not json").is_err());
+    }
+
+    // ---- Offline round trip: adapter -> retry -> interpret -> domain output ----
+    //
+    // The matrix above pins `interpret_fmp_articles` as a pure function; these drive the
+    // whole `fetch_articles` -> `send_with_retry` -> `interpret_fmp_articles` ->
+    // `headlines_from_articles` path against a localhost mock (`crate::test_http`). A
+    // non-retryable error status keeps the round trip a single sleepless request (retry
+    // mechanics live in `http_retry`).
+
+    fn test_source(base_url: &str) -> FmpNewsSource {
+        FmpNewsSource::new("test-key".to_string())
+            .expect("build adapter")
+            .with_base_url(base_url)
+    }
+
+    #[test]
+    fn fetch_articles_round_trips_a_200_into_headlines() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"[{"title":"E.l.f. Beauty Stock","date":"2026-06-11 21:06:55","content":"<p>news</p>","tickers":"NYSE:ELF","link":"https://financialmodelingprep.com/market-news/elf-stock"}]"#,
+        }]);
+        let source = test_source(&server.base_url);
+        let headlines = source.fetch_articles().expect("articles fetch succeeds");
+        assert_eq!(server.attempts(), 1);
+        assert_eq!(server.request_paths(), ["/fmp-articles"]);
+        assert_eq!(headlines.len(), 1);
+        assert_eq!(headlines[0].title, "E.l.f. Beauty Stock");
+        assert_eq!(headlines[0].source, "financialmodelingprep.com");
+    }
+
+    #[test]
+    fn fetch_articles_propagates_a_non_2xx_as_error() {
+        // A 402 premium gate is non-retryable and an error here; `gather` soft-degrades it
+        // to empty (covered in `gather_fail_soft`). A 402 also keeps the round trip a
+        // single sleepless request.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 402,
+            headers: vec![],
+            body: "premium",
+        }]);
+        let source = test_source(&server.base_url);
+        let result = source.fetch_articles();
+        assert_eq!(server.attempts(), 1);
+        assert_eq!(server.request_paths(), ["/fmp-articles"]);
+        assert!(result.is_err(), "a 402 is an error for fetch_articles");
     }
 
     #[test]

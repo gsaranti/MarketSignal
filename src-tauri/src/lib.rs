@@ -25,6 +25,8 @@ pub mod schedule;
 pub mod settings;
 pub mod storage;
 pub mod tavily;
+#[cfg(test)]
+mod test_http;
 pub mod vector_memory;
 
 use std::path::PathBuf;

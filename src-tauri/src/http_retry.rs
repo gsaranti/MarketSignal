@@ -121,10 +121,8 @@ pub fn send_with_retry(label: &str, build: impl Fn() -> RequestBuilder) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use crate::test_http::{Canned, MockHttp};
+    use std::net::TcpListener;
 
     #[test]
     fn is_retryable_covers_429_and_5xx_only() {
@@ -164,126 +162,9 @@ mod tests {
     // no adapter's hardcoded endpoint is involved. They are *not* `#[ignore]`d: they
     // run in the normal `cargo test` loop. They do incur the real `BASE_BACKOFF`
     // sleeps (1s, then 2s), but cargo runs tests in parallel, so the suite's added
-    // wall-clock is the slowest single case (~3s), not their sum.
-
-    /// One canned reply the mock server writes for a single inbound connection.
-    enum Canned {
-        /// A complete HTTP/1.1 reply with a matching `Content-Length`.
-        Reply {
-            status: u16,
-            headers: Vec<(&'static str, &'static str)>,
-            body: &'static str,
-        },
-        /// Declares `content_length` bytes but writes only `partial`, then lets the
-        /// connection close — simulating a body dropped mid-stream so the client's
-        /// `Response::text()` errors. Served as HTTP 200 (see `write_canned`) so the
-        /// status is non-retryable: the *only* path to a second attempt is the body
-        /// re-read branch, which is exactly what the dropped-body test pins.
-        DropBody {
-            content_length: usize,
-            partial: &'static str,
-        },
-    }
-
-    /// A throwaway localhost HTTP server that serves a fixed script of replies — one
-    /// per inbound connection — and counts the connections it accepted. The listener
-    /// is bound on the caller's thread (so the port is live before `serve` returns),
-    /// then handed to a detached worker that consumes the whole script and exits.
-    /// Size each script to the expected number of attempts so no `accept()` blocks
-    /// past the run.
-    struct MockHttp {
-        base_url: String,
-        attempts: Arc<AtomicUsize>,
-    }
-
-    impl MockHttp {
-        fn serve(script: Vec<Canned>) -> Self {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-            let port = listener.local_addr().expect("local_addr").port();
-            let attempts = Arc::new(AtomicUsize::new(0));
-            let counter = Arc::clone(&attempts);
-            std::thread::spawn(move || serve_script(listener, script, counter));
-            Self {
-                base_url: format!("http://127.0.0.1:{port}/"),
-                attempts,
-            }
-        }
-
-        /// Connections accepted so far == attempts `send_with_retry` actually made.
-        /// Every increment lands before the matching reply is written, so reading
-        /// this once `send_with_retry` has returned sees the final count.
-        fn attempts(&self) -> usize {
-            self.attempts.load(Ordering::SeqCst)
-        }
-    }
-
-    fn serve_script(listener: TcpListener, script: Vec<Canned>, counter: Arc<AtomicUsize>) {
-        for canned in script {
-            let mut stream = match listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(_) => break,
-            };
-            counter.fetch_add(1, Ordering::SeqCst);
-            drain_request(&mut stream);
-            let _ = write_canned(&mut stream, canned);
-            // `stream` drops at the end of the iteration: for `DropBody` that is the
-            // mid-body EOF; for `Reply` the `Content-Length` body is already complete.
-        }
-    }
-
-    /// Read the inbound request up to its header terminator so the client's write
-    /// completes before we reply. Best-effort and bounded by a read timeout — a
-    /// header-only GET is all these tests issue.
-    fn drain_request(stream: &mut TcpStream) {
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-        let mut seen: Vec<u8> = Vec::new();
-        let mut buf = [0u8; 512];
-        loop {
-            match stream.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    seen.extend_from_slice(&buf[..n]);
-                    if seen.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    }
-
-    fn write_canned(stream: &mut TcpStream, canned: Canned) -> std::io::Result<()> {
-        match canned {
-            Canned::Reply {
-                status,
-                headers,
-                body,
-            } => {
-                let mut resp = format!(
-                    "HTTP/1.1 {status} STATUS\r\nContent-Length: {}\r\nConnection: close\r\n",
-                    body.len()
-                );
-                for (k, v) in headers {
-                    resp.push_str(k);
-                    resp.push_str(": ");
-                    resp.push_str(v);
-                    resp.push_str("\r\n");
-                }
-                resp.push_str("\r\n");
-                resp.push_str(body);
-                stream.write_all(resp.as_bytes())
-            }
-            Canned::DropBody {
-                content_length,
-                partial,
-            } => {
-                let resp = format!(
-                    "HTTP/1.1 200 STATUS\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n{partial}"
-                );
-                stream.write_all(resp.as_bytes())
-            }
-        }
-    }
+    // wall-clock is the slowest single case (~3s), not their sum. The localhost mock
+    // server (`MockHttp` / `Canned`) lives in `crate::test_http`, shared with the
+    // per-adapter offline round-trip tests.
 
     #[test]
     fn retries_past_a_retryable_status_to_success() {

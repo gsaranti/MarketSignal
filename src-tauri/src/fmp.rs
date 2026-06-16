@@ -58,11 +58,17 @@ use crate::data_sources::{
 };
 use crate::progress::RunContext;
 
+/// Base URL for FMP's stable API. The endpoint paths below are joined onto it in
+/// [`FmpDataSource::get`]; a test redirects the whole adapter at a localhost mock via
+/// [`FmpDataSource::with_base_url`], so the wire path (URL build → retry → interpret)
+/// runs offline.
+const FMP_BASE: &str = "https://financialmodelingprep.com/stable";
+
 /// FMP's stable single-symbol quote endpoint — the one `connection_test` exercises.
-const FMP_QUOTE_URL: &str = "https://financialmodelingprep.com/stable/quote";
+const FMP_QUOTE_PATH: &str = "/quote";
 /// FMP's sector-performance snapshot endpoint. Requires a `date` query param
 /// (a dateless call returns HTTP 400).
-const FMP_SECTOR_URL: &str = "https://financialmodelingprep.com/stable/sector-performance-snapshot";
+const FMP_SECTOR_PATH: &str = "/sector-performance-snapshot";
 
 /// Short timeout per request: the baseline scan issues several sequential calls,
 /// none of which should park for the model adapter's 120s ceiling.
@@ -79,7 +85,7 @@ const SECTOR_LOOKBACK_WEEKDAYS: usize = 5;
 /// index over a trailing ~53-week window backs the multi-horizon `IndexPerformance`
 /// (weekly / MTD / YTD / 52-week range) — free on the equities tier (probed live
 /// Jun 2026, all four indices + the VIX return 200 with data).
-const FMP_EOD_URL: &str = "https://financialmodelingprep.com/stable/historical-price-eod/light";
+const FMP_EOD_PATH: &str = "/historical-price-eod/light";
 
 /// Trailing window requested for the EOD history: ~53 weeks, so the 52-week range and
 /// the year-to-date anchor both sit inside the window with margin.
@@ -88,29 +94,28 @@ const EOD_LOOKBACK_DAYS: i64 = 371;
 /// FMP's free market-mover lists — biggest gainers / losers and the most-active names.
 /// Each returns the whole US mover list in one call (no params). NB the most-active path
 /// is **plural** (`most-actives`); the singular `most-active` 404s (probed live Jun 2026).
-const FMP_GAINERS_URL: &str = "https://financialmodelingprep.com/stable/biggest-gainers";
-const FMP_LOSERS_URL: &str = "https://financialmodelingprep.com/stable/biggest-losers";
-const FMP_MOST_ACTIVE_URL: &str = "https://financialmodelingprep.com/stable/most-actives";
+const FMP_GAINERS_PATH: &str = "/biggest-gainers";
+const FMP_LOSERS_PATH: &str = "/biggest-losers";
+const FMP_MOST_ACTIVE_PATH: &str = "/most-actives";
 
 /// FMP's free earnings calendar — every US ticker reporting in a date window. Free on a
 /// ~1-month history window (probed live Jun 2026: forward dates return estimates with
 /// null actuals, past dates return both).
-const FMP_EARNINGS_URL: &str = "https://financialmodelingprep.com/stable/earnings-calendar";
+const FMP_EARNINGS_PATH: &str = "/earnings-calendar";
 
 /// FMP's free valuation + finer-rotation snapshots — all date-keyed like the
 /// sector-performance snapshot (a dateless call returns HTTP 400), all free-tier (probed
 /// live Jun 2026). `sector-pe-snapshot` is the per-sector aggregate P/E (a valuation
 /// complement to `sector-performance-snapshot`); the two `industry-*` snapshots are the
 /// finer ~130-industry cut (average move + aggregate P/E), joined by industry name.
-const FMP_SECTOR_PE_URL: &str = "https://financialmodelingprep.com/stable/sector-pe-snapshot";
-const FMP_INDUSTRY_PERF_URL: &str =
-    "https://financialmodelingprep.com/stable/industry-performance-snapshot";
-const FMP_INDUSTRY_PE_URL: &str = "https://financialmodelingprep.com/stable/industry-pe-snapshot";
+const FMP_SECTOR_PE_PATH: &str = "/sector-pe-snapshot";
+const FMP_INDUSTRY_PERF_PATH: &str = "/industry-performance-snapshot";
+const FMP_INDUSTRY_PE_PATH: &str = "/industry-pe-snapshot";
 
 /// FMP's free market-risk-premium endpoint — Damodaran's per-country equity-risk-premium
 /// dataset (no params). Filtered to the US row; a near-static annual constant (probed live
 /// Jun 2026: US total ERP ≈ 4.46%).
-const FMP_RISK_PREMIUM_URL: &str = "https://financialmodelingprep.com/stable/market-risk-premium";
+const FMP_RISK_PREMIUM_PATH: &str = "/market-risk-premium";
 
 /// The exchanges the valuation snapshots are gathered for. FMP's sector / industry snapshots
 /// are **exchange-specific** (verified live: a no-`exchange` call defaults to NASDAQ only;
@@ -747,6 +752,10 @@ fn eod_to_performance(value: Value, symbol: &str, name: &str) -> Result<Option<I
 pub struct FmpDataSource {
     api_key: String,
     http: reqwest::blocking::Client,
+    /// API origin the endpoint paths are joined onto. Defaults to [`FMP_BASE`]; an
+    /// offline round-trip test overrides it via [`FmpDataSource::with_base_url`] to
+    /// point the adapter at a localhost mock.
+    base_url: String,
     /// Run context for live progress + cooperative cancellation. Defaults to a no-op
     /// (tests / offline smokes); the live command path attaches the real one via
     /// [`FmpDataSource::with_context`].
@@ -762,8 +771,18 @@ impl FmpDataSource {
         Ok(Self {
             api_key,
             http,
+            base_url: FMP_BASE.to_string(),
             progress: RunContext::noop(),
         })
+    }
+
+    /// Redirect the adapter at an alternate API origin (a localhost mock) so the wire
+    /// path runs offline. Test-only; a trailing slash is trimmed so the joined path's
+    /// leading slash doesn't double up.
+    #[cfg(test)]
+    fn with_base_url(mut self, base_url: &str) -> Self {
+        self.base_url = base_url.trim_end_matches('/').to_string();
+        self
     }
 
     /// Attach a live run context so the per-series scan streams a tracker row per
@@ -781,14 +800,15 @@ impl FmpDataSource {
         Self::new(crate::config::AppConfig::from_env().fmp_key()?)
     }
 
-    /// GET one FMP endpoint with the key as a query param, returning the status
-    /// and raw body for `interpret_response` to judge. A transport error (the
-    /// provider is unreachable) returns `Err` to the caller, which records it as an
-    /// `Unavailable` gap rather than failing the scan.
-    fn get(&self, url: &str, extra: &[(&str, &str)]) -> Result<(u16, String)> {
+    /// GET one FMP endpoint (a `/path` joined onto [`Self::base_url`]) with the key as
+    /// a query param, returning the status and raw body for `interpret_response` to
+    /// judge. A transport error (the provider is unreachable) returns `Err` to the
+    /// caller, which records it as an `Unavailable` gap rather than failing the scan.
+    fn get(&self, path: &str, extra: &[(&str, &str)]) -> Result<(u16, String)> {
         let mut query: Vec<(&str, &str)> = vec![("apikey", self.api_key.as_str())];
         query.extend_from_slice(extra);
-        crate::http_retry::send_with_retry("FMP", || self.http.get(url).query(&query))
+        let url = format!("{}{path}", self.base_url);
+        crate::http_retry::send_with_retry("FMP", || self.http.get(&url).query(&query))
     }
 
     /// Fetch one quote per symbol, recording a [`DataGap`] in `group` for any that don't
@@ -823,7 +843,7 @@ impl FmpDataSource {
                 .request_started("FMP", group.as_str(), *symbol, *fallback_name);
             let gaps_before = gaps.len();
             let out_before = out.len();
-            let disposition = match self.get(FMP_QUOTE_URL, &[("symbol", symbol)]) {
+            let disposition = match self.get(FMP_QUOTE_PATH, &[("symbol", symbol)]) {
                 Ok((status, body)) => interpret_response(status, &body),
                 Err(_) => Disposition::Gap(GapReason::Unavailable), // transport — unreachable
             };
@@ -882,7 +902,7 @@ impl FmpDataSource {
             let group = GroupKind::Sectors.as_str();
             self.progress
                 .request_started("FMP", group, date_str.as_str(), name.as_str());
-            let disposition = match self.get(FMP_SECTOR_URL, &[("date", date_str.as_str())]) {
+            let disposition = match self.get(FMP_SECTOR_PATH, &[("date", date_str.as_str())]) {
                 Ok((status, body)) => interpret_response(status, &body),
                 Err(_) => Disposition::Gap(GapReason::Unavailable),
             };
@@ -953,7 +973,7 @@ impl FmpDataSource {
             let gaps_before = gaps.len();
             let out_before = out.len();
             let disposition = match self.get(
-                FMP_EOD_URL,
+                FMP_EOD_PATH,
                 &[("symbol", symbol), ("from", from_s.as_str()), ("to", to_s.as_str())],
             ) {
                 Ok((status, body)) => interpret_response(status, &body),
@@ -1003,9 +1023,9 @@ impl FmpDataSource {
     /// records the remaining lists, like the quote groups.
     fn fetch_movers(&self, gaps: &mut Vec<DataGap>) -> Vec<StockMover> {
         let endpoints = [
-            (MoverCategory::Gainer, FMP_GAINERS_URL, "biggest-gainers", "Biggest Gainers"),
-            (MoverCategory::Loser, FMP_LOSERS_URL, "biggest-losers", "Biggest Losers"),
-            (MoverCategory::MostActive, FMP_MOST_ACTIVE_URL, "most-actives", "Most Active"),
+            (MoverCategory::Gainer, FMP_GAINERS_PATH, "biggest-gainers", "Biggest Gainers"),
+            (MoverCategory::Loser, FMP_LOSERS_PATH, "biggest-losers", "Biggest Losers"),
+            (MoverCategory::MostActive, FMP_MOST_ACTIVE_PATH, "most-actives", "Most Active"),
         ];
         let mut out = Vec::new();
         let mut rejected = false;
@@ -1077,7 +1097,7 @@ impl FmpDataSource {
             .request_started("FMP", GroupKind::Earnings.as_str(), series_id, name);
         let gaps_before = gaps.len();
         let disposition =
-            match self.get(FMP_EARNINGS_URL, &[("from", from.as_str()), ("to", to.as_str())]) {
+            match self.get(FMP_EARNINGS_PATH, &[("from", from.as_str()), ("to", to.as_str())]) {
                 Ok((status, body)) => interpret_response(status, &body),
                 Err(_) => Disposition::Gap(GapReason::Unavailable),
             };
@@ -1142,7 +1162,7 @@ impl FmpDataSource {
             self.progress
                 .request_started("FMP", group, series_id.as_str(), name.as_str());
             let disposition =
-                match self.get(FMP_SECTOR_PE_URL, &[("date", date_str.as_str()), ("exchange", exchange)]) {
+                match self.get(FMP_SECTOR_PE_PATH, &[("date", date_str.as_str()), ("exchange", exchange)]) {
                     Ok((status, body)) => interpret_response(status, &body),
                     Err(_) => Disposition::Gap(GapReason::Unavailable),
                 };
@@ -1213,7 +1233,7 @@ impl FmpDataSource {
             self.progress
                 .request_started("FMP", group, series_id.as_str(), name.as_str());
             let disposition = match self.get(
-                FMP_INDUSTRY_PERF_URL,
+                FMP_INDUSTRY_PERF_PATH,
                 &[("date", date_str.as_str()), ("exchange", exchange)],
             ) {
                 Ok((status, body)) => interpret_response(status, &body),
@@ -1266,7 +1286,7 @@ impl FmpDataSource {
         let group = GroupKind::Industries.as_str();
         self.progress
             .request_started("FMP", group, series_id.as_str(), name.as_str());
-        let disposition = match self.get(FMP_INDUSTRY_PE_URL, &[("date", date_str), ("exchange", exchange)]) {
+        let disposition = match self.get(FMP_INDUSTRY_PE_PATH, &[("date", date_str), ("exchange", exchange)]) {
             Ok((status, body)) => interpret_response(status, &body),
             Err(_) => Disposition::Gap(GapReason::Unavailable),
         };
@@ -1315,7 +1335,7 @@ impl FmpDataSource {
         self.progress
             .request_started("FMP", GroupKind::MarketRiskPremium.as_str(), series_id, name);
         let gaps_before = gaps.len();
-        let disposition = match self.get(FMP_RISK_PREMIUM_URL, &[]) {
+        let disposition = match self.get(FMP_RISK_PREMIUM_PATH, &[]) {
             Ok((status, body)) => interpret_response(status, &body),
             Err(_) => Disposition::Gap(GapReason::Unavailable),
         };
@@ -1394,6 +1414,7 @@ impl MarketDataSource for FmpDataSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_http::{Canned, MockHttp};
 
     #[test]
     fn interpret_response_covers_the_full_matrix() {
@@ -1437,6 +1458,73 @@ mod tests {
         ));
         // A 2xx that isn't valid JSON is a contract violation -> Malformed.
         assert!(matches!(interpret_response(200, "not json at all"), Disposition::Gap(Malformed)));
+    }
+
+    // ---- Offline round trip: adapter -> retry -> interpret -> domain output ----
+    //
+    // `interpret_response` above pins the status/body matrix as a pure function; these
+    // drive the *whole* `get` -> `send_with_retry` -> `interpret_response` ->
+    // `quotes_from_value` path against a localhost mock (`crate::test_http`), the path a
+    // live FMP key was previously the only way to exercise. `with_base_url` redirects
+    // every endpoint at the mock; `fetch_quotes` with a single symbol is the smallest
+    // fetch that round-trips one request. Single-reply scripts (no retryable status), so
+    // no `BASE_BACKOFF` sleep is incurred — retry mechanics live in `http_retry`'s tests.
+
+    fn test_source(base_url: &str) -> FmpDataSource {
+        FmpDataSource::new("test-key".to_string())
+            .expect("build adapter")
+            .with_base_url(base_url)
+    }
+
+    #[test]
+    fn fetch_quotes_round_trips_a_200_into_a_quote() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"[{"symbol":"^GSPC","name":"S&P 500","price":5500.5,"changePercentage":0.42}]"#,
+        }]);
+        let source = test_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let quotes = source.fetch_quotes(
+            &[("^GSPC", "S&P 500", "index points")],
+            GroupKind::Indices,
+            &mut gaps,
+        );
+        assert_eq!(server.attempts(), 1, "one symbol => one request");
+        let targets = server.request_targets();
+        assert_eq!(server.request_paths(), ["/quote"]);
+        assert!(targets[0].contains("symbol="), "the per-call query var must reach the wire: {targets:?}");
+        assert!(gaps.is_empty(), "a clean 200 records no gap");
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0].symbol, "^GSPC");
+        assert_eq!(quotes[0].name, "S&P 500");
+        assert!((quotes[0].price - 5500.5).abs() < 1e-9);
+        assert_eq!(quotes[0].unit, "index points");
+    }
+
+    #[test]
+    fn fetch_quotes_round_trips_a_402_into_an_out_of_scope_gap() {
+        // A premium-gated endpoint replies 402: the wire path must classify it as an
+        // OutOfScope gap and yield no quote — the status/body split rides the real socket.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 402,
+            headers: vec![],
+            body: "Premium Query Parameter",
+        }]);
+        let source = test_source(&server.base_url);
+        let mut gaps = Vec::new();
+        let quotes = source.fetch_quotes(
+            &[("^GSPC", "S&P 500", "index points")],
+            GroupKind::Indices,
+            &mut gaps,
+        );
+        assert_eq!(server.attempts(), 1);
+        assert_eq!(server.request_paths(), ["/quote"]);
+        assert!(quotes.is_empty(), "a 402 yields no quote");
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].reason, GapReason::OutOfScope);
+        assert_eq!(gaps[0].series_id, "^GSPC");
+        assert_eq!(gaps[0].group, GroupKind::Indices);
     }
 
     #[test]

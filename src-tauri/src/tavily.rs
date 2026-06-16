@@ -34,7 +34,11 @@ use serde_json::json;
 use crate::news::{host_of, NewsSource, RawHeadline, NEWS_TOPICS};
 use crate::progress::RunContext;
 
-const TAVILY_SEARCH_URL: &str = "https://api.tavily.com/search";
+/// Base URL for Tavily's API. The single endpoint path below is joined onto it in
+/// [`TavilyNewsSource::run_search`]; a test redirects the adapter at a localhost mock
+/// via [`TavilyNewsSource::with_base_url`], so the wire path runs offline.
+const TAVILY_BASE: &str = "https://api.tavily.com";
+const TAVILY_SEARCH_PATH: &str = "/search";
 
 /// Per-request timeout. The gather issues one request per topic sequentially;
 /// none should park for the model adapter's 120s ceiling.
@@ -109,6 +113,9 @@ fn headlines_from_response(resp: TavilySearchResponse) -> Vec<RawHeadline> {
 pub struct TavilyNewsSource {
     api_key: String,
     http: reqwest::blocking::Client,
+    /// API origin the endpoint path is joined onto. Defaults to [`TAVILY_BASE`]; an
+    /// offline round-trip test overrides it via [`TavilyNewsSource::with_base_url`].
+    base_url: String,
     /// Run context for the per-topic tracker rows the `gather` sweep emits. Defaults
     /// to a no-op (tests / offline smokes); the live command attaches the real one via
     /// [`TavilyNewsSource::with_context`].
@@ -124,8 +131,18 @@ impl TavilyNewsSource {
         Ok(Self {
             api_key,
             http,
+            base_url: TAVILY_BASE.to_string(),
             progress: RunContext::noop(),
         })
+    }
+
+    /// Redirect the adapter at an alternate API origin (a localhost mock) so the wire
+    /// path runs offline. Test-only; a trailing slash is trimmed so the joined path's
+    /// leading slash doesn't double up.
+    #[cfg(test)]
+    fn with_base_url(mut self, base_url: &str) -> Self {
+        self.base_url = base_url.trim_end_matches('/').to_string();
+        self
     }
 
     /// Attach a live run context so the topic sweep streams one request row per Tavily
@@ -153,9 +170,10 @@ impl TavilyNewsSource {
             "max_results": RESULTS_PER_QUERY,
             "search_depth": "basic",
         });
+        let url = format!("{}{TAVILY_SEARCH_PATH}", self.base_url);
         let (status, text) = crate::http_retry::send_with_retry("Tavily", || {
             self.http
-                .post(TAVILY_SEARCH_URL)
+                .post(&url)
                 .bearer_auth(&self.api_key)
                 .json(&body)
         })?;
@@ -224,6 +242,7 @@ impl crate::research_executor::SearchBackend for TavilyNewsSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_http::{Canned, MockHttp};
 
     #[test]
     fn interpret_tavily_covers_the_status_matrix() {
@@ -239,6 +258,52 @@ mod tests {
         }
         // A 2xx that isn't valid JSON is a contract violation -> fatal.
         assert!(interpret_tavily(200, "not json").is_err());
+    }
+
+    // ---- Offline round trip: adapter -> retry -> interpret -> domain output ----
+    //
+    // The matrix above pins `interpret_tavily` as a pure function; these drive the whole
+    // `run_search` -> `send_with_retry` -> `interpret_tavily` -> `headlines_from_response`
+    // path against a localhost mock (`crate::test_http`). A non-retryable error status
+    // keeps the round trip a single sleepless request (retry mechanics live in
+    // `http_retry`).
+
+    fn test_source(base_url: &str) -> TavilyNewsSource {
+        TavilyNewsSource::new("test-key".to_string())
+            .expect("build adapter")
+            .with_base_url(base_url)
+    }
+
+    #[test]
+    fn run_search_round_trips_a_200_into_headlines() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"results":[{"title":"Fed holds","url":"https://www.reuters.com/markets/fed","content":"excerpt","published_date":"2026-06-05"}]}"#,
+        }]);
+        let source = test_source(&server.base_url);
+        let headlines = source.run_search("fed policy").expect("search succeeds");
+        assert_eq!(server.attempts(), 1);
+        assert_eq!(server.request_paths(), ["/search"]);
+        assert_eq!(headlines.len(), 1);
+        assert_eq!(headlines[0].title, "Fed holds");
+        assert_eq!(headlines[0].source, "reuters.com");
+    }
+
+    #[test]
+    fn run_search_propagates_a_non_2xx_as_fatal() {
+        // A 401 is non-retryable and fatal: `run_search` surfaces an Err over the wire
+        // (the sweep then degrades that topic to empty — covered in `sweep_topics`).
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 401,
+            headers: vec![],
+            body: "unauthorized",
+        }]);
+        let source = test_source(&server.base_url);
+        let result = source.run_search("fed policy");
+        assert_eq!(server.attempts(), 1);
+        assert_eq!(server.request_paths(), ["/search"]);
+        assert!(result.is_err(), "a 401 is fatal to the search");
     }
 
     #[test]

@@ -51,7 +51,11 @@ use crate::data_sources::{
 use crate::progress::RunContext;
 
 /// BLS Public Data API v2 time-series endpoint — a JSON POST batch of series ids.
-const BLS_DATA_URL: &str = "https://api.bls.gov/publicAPI/v2/timeseries/data/";
+/// Base URL for BLS's public timeseries API. The single endpoint path below is joined
+/// onto it in [`BlsDataSource::post`]; a test redirects the adapter at a localhost mock
+/// via [`BlsDataSource::with_base_url`], so the wire path runs offline.
+const BLS_BASE: &str = "https://api.bls.gov/publicAPI/v2";
+const BLS_DATA_PATH: &str = "/timeseries/data/";
 
 /// Short timeout for the single batched request, matching the sibling adapters'
 /// ceiling so a hung provider doesn't park the scan.
@@ -268,6 +272,9 @@ fn year_window(current_year: i32) -> (String, String) {
 /// Live BLS adapter behind the `MarketDataSource` trait.
 pub struct BlsDataSource {
     http: reqwest::blocking::Client,
+    /// API origin the endpoint path is joined onto. Defaults to [`BLS_BASE`]; an offline
+    /// round-trip test overrides it via [`BlsDataSource::with_base_url`].
+    base_url: String,
     /// Run context for live progress + cooperative cancellation; a no-op by default
     /// (tests / smokes), the live one attached via [`BlsDataSource::with_context`].
     progress: Arc<RunContext>,
@@ -281,8 +288,18 @@ impl BlsDataSource {
             .context("building the BLS HTTP client")?;
         Ok(Self {
             http,
+            base_url: BLS_BASE.to_string(),
             progress: RunContext::noop(),
         })
+    }
+
+    /// Redirect the adapter at an alternate API origin (a localhost mock) so the wire
+    /// path runs offline. Test-only; a trailing slash is trimmed so the joined path's
+    /// leading slash doesn't double up.
+    #[cfg(test)]
+    fn with_base_url(mut self, base_url: &str) -> Self {
+        self.base_url = base_url.trim_end_matches('/').to_string();
+        self
     }
 
     /// Attach a live run context. BLS is a single batched request, so it streams one
@@ -305,7 +322,8 @@ impl BlsDataSource {
             "startyear": start,
             "endyear": end,
         });
-        crate::http_retry::send_with_retry("BLS", || self.http.post(BLS_DATA_URL).json(&payload))
+        let url = format!("{}{BLS_DATA_PATH}", self.base_url);
+        crate::http_retry::send_with_retry("BLS", || self.http.post(&url).json(&payload))
     }
 }
 
@@ -377,6 +395,7 @@ impl BlsDataSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_http::{Canned, MockHttp};
 
     /// Build a series' `data` slice from a JSON array fixture, the way the live parse
     /// would; extra fields (`year`/`period`/`footnotes`) are tolerated and ignored.
@@ -417,6 +436,62 @@ mod tests {
             let (reason, _) = interpret_response(status, "").unwrap_err();
             assert_eq!(reason, GapReason::Unavailable, "HTTP {status}");
         }
+    }
+
+    // ---- Offline round trip: adapter -> retry -> interpret -> domain output ----
+    //
+    // The matrix above pins `interpret_response` as a pure function; these drive the
+    // whole `post` -> `send_with_retry` -> `interpret_response` -> `assemble_labor_levels`
+    // path against a localhost mock (`crate::test_http`). BLS is the first POST adapter,
+    // so this also confirms the mock serves a POST round trip (the body sits unread in the
+    // socket buffer; the reply still completes). One batched request, one canned reply, so
+    // no `BASE_BACKOFF` sleep is incurred.
+
+    fn test_source(base_url: &str) -> BlsDataSource {
+        BlsDataSource::new()
+            .expect("build adapter")
+            .with_base_url(base_url)
+    }
+
+    #[test]
+    fn gather_labor_round_trips_a_succeeded_batch_into_quotes() {
+        // One datum per labor series -> a quote each, no gaps.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"status":"REQUEST_SUCCEEDED","message":[],"Results":{"series":[
+                {"seriesID":"CUUR0000SA0","data":[{"value":"320.5"}]},
+                {"seriesID":"LNS14000000","data":[{"value":"4.1"}]},
+                {"seriesID":"CES0000000001","data":[{"value":"159000"}]},
+                {"seriesID":"CES0500000003","data":[{"value":"35.5"}]}
+            ]}}"#,
+        }]);
+        let source = test_source(&server.base_url);
+        let data = source.gather_labor();
+        assert_eq!(server.attempts(), 1, "BLS is one batched POST");
+        assert_eq!(server.request_paths(), ["/timeseries/data/"]);
+        assert!(data.gaps.is_empty(), "every series resolved");
+        assert_eq!(data.labor_levels.len(), LABOR_SERIES.len());
+    }
+
+    #[test]
+    fn gather_labor_round_trips_a_non_2xx_into_a_full_gap_set() {
+        // A non-2xx is a this-run outage: the whole labor group degrades to Unavailable
+        // gaps, none of which fails the scan (labor isn't a floor group). A 404 is
+        // non-retryable, so the round trip stays a single sleepless request (5xx/429
+        // retry mechanics are covered in `http_retry`).
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 404,
+            headers: vec![],
+            body: "not found",
+        }]);
+        let source = test_source(&server.base_url);
+        let data = source.gather_labor();
+        assert_eq!(server.attempts(), 1);
+        assert_eq!(server.request_paths(), ["/timeseries/data/"]);
+        assert!(data.labor_levels.is_empty());
+        assert_eq!(data.gaps.len(), LABOR_SERIES.len());
+        assert!(data.gaps.iter().all(|g| g.reason == GapReason::Unavailable));
     }
 
     #[test]
