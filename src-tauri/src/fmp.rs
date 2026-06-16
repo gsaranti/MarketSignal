@@ -131,6 +131,17 @@ const SNAPSHOT_EXCHANGES: &[&str] = &["NASDAQ", "NYSE"];
 /// middle. Tunable after a live run.
 const INDUSTRY_TOP_N: usize = 10;
 
+/// The plausible-aggregate ceiling for an industry P/E. Above this a multiple is treated as
+/// a near-zero-earnings artifact rather than a valuation: FMP's aggregate P/E divides an
+/// industry's summed price by its summed earnings, so an industry near an earnings trough can
+/// report an absurd multiple (a live run surfaced `pe ≈ 461`) that reads to the model as a
+/// real "expensive" level when it is noise from a denominator approaching zero. This is the
+/// symmetric upper bound to the non-positive drop in [`industry_pe_map_from_value`] — both
+/// withhold a meaningless figure (→ `None`) rather than fabricate or pass one. Tunable after
+/// a live run; an aggregate genuinely in the 50–80s (cyclical troughs in semis, homebuilders)
+/// stays under it.
+const INDUSTRY_PE_MAX: f64 = 100.0;
+
 /// The exact `country` label to keep from the market-risk-premium dataset. Exact-match, not
 /// a substring — "United Kingdom" and "United Arab Emirates" also start with "United".
 const RISK_PREMIUM_COUNTRY: &str = "United States";
@@ -569,12 +580,14 @@ fn industry_perf_from_value(value: Value, expected_exchange: &str) -> Result<Vec
 /// Shape a successful industry-PE snapshot into an `(industry, exchange) -> pe` map. Every
 /// row's wire `exchange` must match `expected_exchange`; a mismatch fails the leg (the same
 /// off-board guard as [`sector_pe_from_value`]). The map keys by (industry, exchange) so the
-/// performance↔P/E join can only ever pair same-board figures. Non-positive ratios are
-/// dropped: FMP reports `pe: 0.0` (not null) for an industry with no positive aggregate
-/// earnings, and a P/E is only a meaningful valuation when positive — so such an industry is
+/// performance↔P/E join can only ever pair same-board figures. Out-of-band ratios are
+/// dropped from both ends: FMP reports `pe: 0.0` (not null) for an industry with no positive
+/// aggregate earnings, and an aggregate divided by a denominator approaching zero from above
+/// inflates past any plausible level (a live run surfaced `pe ≈ 461`) — a P/E is only a
+/// meaningful valuation inside `(0.0, INDUSTRY_PE_MAX]`, so an industry outside that band is
 /// left out of the map and joins to `None`, rather than reaching the model as a misleading
-/// near-zero "cheap" multiple. A body that is not the expected array, or that carries an
-/// off-board row, is an error.
+/// near-zero "cheap" or absurdly-inflated "expensive" multiple. A body that is not the
+/// expected array, or that carries an off-board row, is an error.
 fn industry_pe_map_from_value(
     value: Value,
     expected_exchange: &str,
@@ -590,7 +603,7 @@ fn industry_pe_map_from_value(
                 raw.exchange
             );
         }
-        if raw.pe > 0.0 {
+        if raw.pe > 0.0 && raw.pe <= INDUSTRY_PE_MAX {
             map.entry((raw.industry, raw.exchange)).or_insert(raw.pe);
         }
     }
@@ -1973,6 +1986,51 @@ mod tests {
         assert_eq!(oil.pe, None);
         let semi = joined.iter().find(|i| i.industry == "Semiconductors").unwrap();
         assert_eq!(semi.pe, Some(63.9));
+    }
+
+    #[test]
+    fn industry_pe_map_drops_implausibly_high_ratios() {
+        // An industry near an earnings trough divides by a denominator approaching zero from
+        // above, inflating its aggregate P/E past any plausible level (a live run surfaced
+        // pe ≈ 461). Anything above INDUSTRY_PE_MAX is dropped — the symmetric upper bound to
+        // the non-positive drop — so the join yields None rather than an absurd "expensive"
+        // multiple, while an in-band aggregate survives.
+        let v = serde_json::json!([
+            {"industry":"Software Application","exchange":"NASDAQ","pe":461.0},
+            {"industry":"Semiconductors","exchange":"NASDAQ","pe":63.9}
+        ]);
+        let map = industry_pe_map_from_value(v, "NASDAQ").unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(!map.contains_key(&("Software Application".to_string(), "NASDAQ".to_string())));
+        // The join carries None for the dropped industry, Some for the in-band one.
+        let perf = vec![
+            ("Software Application".to_string(), "NASDAQ".to_string(), 12.4),
+            ("Semiconductors".to_string(), "NASDAQ".to_string(), -5.5),
+        ];
+        let joined = top_bottom_industries(perf, &map);
+        let soft = joined.iter().find(|i| i.industry == "Software Application").unwrap();
+        assert_eq!(soft.pe, None);
+        let semi = joined.iter().find(|i| i.industry == "Semiconductors").unwrap();
+        assert_eq!(semi.pe, Some(63.9));
+    }
+
+    #[test]
+    fn industry_pe_map_band_is_closed_at_the_ceiling() {
+        // The upper bound is inclusive: `(0.0, INDUSTRY_PE_MAX]`. An aggregate sitting exactly
+        // on INDUSTRY_PE_MAX is still a plausible valuation and is kept; the first multiple
+        // *past* it is dropped. This pins the gate's `<=` against an accidental flip to `<`
+        // (which would silently drop the boundary value) if the ceiling is ever tuned.
+        let just_over = INDUSTRY_PE_MAX + 0.01;
+        let v = serde_json::json!([
+            {"industry":"At Ceiling","exchange":"NASDAQ","pe":INDUSTRY_PE_MAX},
+            {"industry":"Just Over","exchange":"NASDAQ","pe":just_over}
+        ]);
+        let map = industry_pe_map_from_value(v, "NASDAQ").unwrap();
+        assert_eq!(
+            map.get(&("At Ceiling".to_string(), "NASDAQ".to_string())).copied(),
+            Some(INDUSTRY_PE_MAX),
+        );
+        assert!(!map.contains_key(&("Just Over".to_string(), "NASDAQ".to_string())));
     }
 
     #[test]

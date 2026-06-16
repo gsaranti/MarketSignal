@@ -191,7 +191,8 @@ the NYSE value read) rather than as an absolute market level. `sector_pe` gives 
 aggregate P/E per exchange, a valuation read to set against the `sectors` performance group. \
 `industries` is a finer cut than the broad sectors: per exchange, the run's strongest and \
 weakest industries by average daily move, each joined with that industry's aggregate P/E where \
-available (`pe` may be null when earnings are non-positive or the snapshot lacked it), so you \
+available (`pe` may be null when earnings are non-positive, implausibly inflated by a \
+near-zero earnings base, or the snapshot lacked it), so you \
 can read which narrow groups are rotating and whether they are richly or cheaply valued as \
 they do. Treat this as a level read — whether a group is expensive or cheap right now — not as \
 a claim about multiple expansion or de-rating over time, which a single snapshot cannot \
