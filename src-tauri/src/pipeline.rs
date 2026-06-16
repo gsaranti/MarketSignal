@@ -1272,7 +1272,7 @@ mod tests {
     use super::*;
     use chrono::FixedOffset;
 
-    use crate::data_sources::{DataGap, GapReason, Quote};
+    use crate::data_sources::{Change, DataGap, GapReason, Quote};
 
     // ---- Step-3 coverage gate ----
 
@@ -1283,7 +1283,7 @@ mod tests {
                 symbol: format!("S{i}"),
                 name: format!("S{i}"),
                 price: 1.0,
-                change_pct: 0.0,
+                change: Change::percent(0.0),
                 unit: "x".into(),
             })
             .collect()

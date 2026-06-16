@@ -25,24 +25,75 @@ use serde::{Deserialize, Serialize};
 
 use crate::progress::RunContext;
 
+/// How a [`Quote`]'s [`Change`] value should be read — the change's own unit, carried
+/// alongside the figure so a reader (the serialized baseline the model sees, or any text
+/// formatter) never has to infer it from the series id. Replaces the earlier convention
+/// where a percent-vs-point-delta change was disambiguated only by a `(Δ pp)` marker
+/// appended to the display name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    /// A percent change off the prior observation — the default for level / price / index
+    /// series (and FMP's wire-reported quote change).
+    #[default]
+    Percent,
+    /// A per-period change compounded to an annual rate (the BEA/headline convention; GDP).
+    Annualized,
+    /// The point change `latest − prior` — for series whose *level is already a rate* (a
+    /// yield / spread / policy rate / breakeven, where the figure is the percentage-point
+    /// move) or a *zero-centered index* (where a percent-of-prior is unstable across zero).
+    /// Combine with the quote's `unit` to read it: percentage points for a `percent` unit,
+    /// the level's own units otherwise.
+    PointDelta,
+}
+
+/// A [`Quote`]'s change off its prior reading, paired with the [`ChangeKind`] that says how
+/// to read it. The two travel together so the figure and its unit can never desync — the
+/// structural fix for what was an overloaded `change_pct` field (a percent for most series
+/// but a point delta for rate-valued ones, disambiguated only by a name marker).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Change {
+    pub value: f64,
+    pub kind: ChangeKind,
+}
+
+impl Change {
+    /// A percent change off the prior observation ([`ChangeKind::Percent`]).
+    pub fn percent(value: f64) -> Self {
+        Self { value, kind: ChangeKind::Percent }
+    }
+    /// A per-period change compounded to an annual rate ([`ChangeKind::Annualized`]).
+    pub fn annualized(value: f64) -> Self {
+        Self { value, kind: ChangeKind::Annualized }
+    }
+    /// A point change `latest − prior` ([`ChangeKind::PointDelta`]).
+    pub fn point_delta(value: f64) -> Self {
+        Self { value, kind: ChangeKind::PointDelta }
+    }
+}
+
 /// One quoted instrument in the baseline scan: a market index or a market
-/// internal (VIX, the dollar index, a commodity). `change_pct` is the change the
-/// provider reports for the quote — a percent change for most series, but a **point
-/// change** (level delta) for rate-valued series, whose display name the FRED adapter
-/// tags accordingly (see `fred::RATE_DELTA_SERIES`).
+/// internal (VIX, the dollar index, a commodity). `change` carries the move off the prior
+/// reading **and** the [`ChangeKind`] that says how to read it — a percent for most series,
+/// but a **point delta** (level move) for rate-valued series — so the figure is
+/// self-describing wherever it is rendered.
 ///
 /// `unit` annotates **`price`** — the unit the level is quoted in ("index points",
 /// "percent", "USD per barrel", "thousands of persons", …), supplied per series from
 /// each adapter's own table rather than the wire, so the model reading the serialized
 /// baseline can't misread an unlabeled level (a payroll count of thousands as ones, a
-/// yield level as a dollar figure). It does **not** describe `change_pct`, whose unit is
-/// a percent for most series and the level's own unit for a point-delta series.
+/// yield level as a dollar figure). The change's unit lives on `change.kind` (combined with
+/// `unit` for a point delta), not here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Quote {
     pub symbol: String,
     pub name: String,
     pub price: f64,
-    pub change_pct: f64,
+    /// Forward-compatible: a snapshot serialized before the typed change (which carried a
+    /// `change_pct` field instead) decodes with a default `Change`. The per-report delta
+    /// view reads only `price`/`name`, so the defaulted change is inert there.
+    #[serde(default)]
+    pub change: Change,
     pub unit: String,
 }
 
@@ -327,14 +378,15 @@ pub struct BaselineMarketData {
     /// sentiment, PCE, plus the headline activity reports — PPI, retail sales, JOLTS,
     /// real GDP — that back the `calendar`'s prior-week entries) — point-in-time FRED
     /// series, kept distinct from the market `internals`. Same `Quote` shape: `price` is
-    /// the latest level and `change_pct` its change from the prior observation
-    /// (day-over-day, month-over-month, or quarter-over-quarter by series frequency).
+    /// the latest level and `change` its move from the prior observation
+    /// (day-over-day, month-over-month, or quarter-over-quarter by series frequency),
+    /// carried with the `ChangeKind` that says how to read it.
     #[serde(default)]
     pub macro_levels: Vec<Quote>,
     /// Step-3 labor levels (CPI, unemployment rate, nonfarm payrolls, average hourly
     /// earnings) — point-in-time BLS series, kept distinct from the FRED `macro_levels`
     /// by source and concern. Same `Quote` shape: `price` is the latest reported level
-    /// and `change_pct` its month-over-month change from the prior reading.
+    /// and `change` its month-over-month move from the prior reading.
     #[serde(default)]
     pub labor_levels: Vec<Quote>,
     /// Step-3 economic-release calendar (`docs/weekly-report-workflow.md §Step 3`): the
@@ -440,14 +492,14 @@ impl MarketDataSource for StubMarketDataSource {
                     symbol: "^GSPC".into(),
                     name: "S&P 500".into(),
                     price: 5_500.0,
-                    change_pct: 0.4,
+                    change: Change::percent(0.4),
                     unit: "index points".into(),
                 },
                 Quote {
                     symbol: "^IXIC".into(),
                     name: "Nasdaq Composite".into(),
                     price: 17_800.0,
-                    change_pct: 0.6,
+                    change: Change::percent(0.6),
                     unit: "index points".into(),
                 },
             ],
@@ -455,7 +507,7 @@ impl MarketDataSource for StubMarketDataSource {
                 symbol: "^VIX".into(),
                 name: "CBOE Volatility Index".into(),
                 price: 14.2,
-                change_pct: -1.1,
+                change: Change::percent(-1.1),
                 unit: "index points".into(),
             }],
             sectors: vec![
@@ -472,14 +524,14 @@ impl MarketDataSource for StubMarketDataSource {
                 symbol: "DFEDTARU".into(),
                 name: "Fed Funds Target Range — Upper Limit".into(),
                 price: 4.5,
-                change_pct: 0.0,
+                change: Change::percent(0.0),
                 unit: "percent".into(),
             }],
             labor_levels: vec![Quote {
                 symbol: "LNS14000000".into(),
                 name: "Unemployment Rate".into(),
                 price: 4.1,
-                change_pct: 0.0,
+                change: Change::percent(0.0),
                 unit: "percent".into(),
             }],
             calendar: vec![EconomicRelease {
@@ -615,6 +667,21 @@ impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
 mod tests {
     use super::*;
 
+    #[test]
+    fn quote_decodes_a_pre_typed_change_snapshot_with_a_default_change() {
+        // Forward-compat: a baseline snapshot serialized before the typed change carried a
+        // `change_pct` field and no `change`. `#[serde(default)]` on `change` lets the older
+        // blob still decode (serde ignores the now-unknown `change_pct`), so the per-report
+        // delta view — which reads only price/name — keeps working across the schema change.
+        let old: Quote = serde_json::from_str(
+            r#"{"symbol":"DGS10","name":"10-Year Treasury Yield","price":4.3,"change_pct":0.1,"unit":"percent"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.price, 4.3);
+        assert_eq!(old.change, Change::default());
+        assert_eq!(old.change.kind, ChangeKind::Percent);
+    }
+
     /// A stub shaped like the secondary sources (`fred` + `bls`) — it contributes the
     /// `internals` / `macro_levels` (FRED) and `labor_levels` (BLS) groups the
     /// secondaries own, so the composite merge can be exercised offline.
@@ -653,7 +720,7 @@ mod tests {
             symbol: symbol.into(),
             name: symbol.into(),
             price: 1.0,
-            change_pct: 0.0,
+            change: Change::percent(0.0),
             unit: "index points".into(),
         }
     }

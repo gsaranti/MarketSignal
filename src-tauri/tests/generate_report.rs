@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use market_signal_temp_lib::agent::{MainAgent, MainAgentInput, MainAgentOutput, StubMainAgent};
 use market_signal_temp_lib::baseline_delta::{BaselineDeltas, Direction};
 use market_signal_temp_lib::data_sources::{
-    BaselineMarketData, MarketDataSource, Quote, StubMarketDataSource,
+    BaselineMarketData, Change, MarketDataSource, Quote, StubMarketDataSource,
 };
 use market_signal_temp_lib::embedding::{Embedder, StubEmbedder};
 use market_signal_temp_lib::headline_filter::StubHeadlineFilter;
@@ -72,14 +72,14 @@ fn base_with_sp(sp_price: f64) -> BaselineMarketData {
             symbol: "^GSPC".into(),
             name: "S&P 500".into(),
             price: sp_price,
-            change_pct: 0.0,
+            change: Change::percent(0.0),
             unit: "index points".into(),
         }],
         internals: vec![Quote {
             symbol: "^VIX".into(),
             name: "CBOE Volatility Index".into(),
             price: 14.0,
-            change_pct: 0.0,
+            change: Change::percent(0.0),
             unit: "index points".into(),
         }],
         ..Default::default()

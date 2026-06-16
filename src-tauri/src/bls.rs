@@ -8,7 +8,7 @@
 //! §Step 3`, `docs/data-sources.md §BLS`). These are point-in-time monthly levels
 //! reusing the same quote shape as `fred`'s macro levels, kept in a group distinct
 //! from the FRED `macro_levels` by source and concern. `price` is the latest reported
-//! level; `change_pct` is its month-over-month change from the prior reading.
+//! level; `change` is its month-over-month change from the prior reading.
 //!
 //! Unlike FMP and FRED, BLS is **keyless** (`docs/configuration.md` — BLS/GDELT need
 //! no credential), so `BlsDataSource::new()` takes no key and BLS is not part of the
@@ -46,7 +46,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::data_sources::{
-    BaselineMarketData, DataGap, GapReason, GroupKind, MarketDataSource, Quote,
+    BaselineMarketData, Change, DataGap, GapReason, GroupKind, MarketDataSource, Quote,
 };
 use crate::progress::RunContext;
 
@@ -64,7 +64,7 @@ const BLS_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 /// The BLS-owned labor levels of the Step-3 baseline (`docs/weekly-report-workflow.md
 /// §Step 3`, `docs/data-sources.md §BLS`): the CPI-U headline index (NSA, all items),
 /// the U-3 unemployment rate, total nonfarm payroll employment, and average hourly
-/// earnings for total private. Monthly series; `change_pct` reads month-over-month.
+/// earnings for total private. Monthly series; `change` reads month-over-month.
 /// `(series_id, display name, unit)`, with the BLS `series_id` doubling as the quote
 /// `symbol` — the same shape as `fred`'s series tables.
 ///
@@ -162,7 +162,7 @@ fn interpret_response(http_status: u16, body: &str) -> Result<BlsResponse, (GapR
 }
 
 /// Shape one series' observations into a quote: the most recent value is `price`, and
-/// `change_pct` is its percent change from the prior value (month-over-month for these
+/// `change` is its percent change from the prior value (month-over-month for these
 /// monthly series). Returns `Ok(None)` when the series has no observation (empty
 /// `data`) — a per-series absence, not an error.
 ///
@@ -208,7 +208,7 @@ fn series_to_quote(
         symbol: symbol.to_string(),
         name: name.to_string(),
         price: latest,
-        change_pct,
+        change: Change::percent(change_pct),
         unit: unit.to_string(),
     }))
 }
@@ -509,7 +509,7 @@ mod tests {
         assert_eq!(q.symbol, "CUUR0000SA0");
         assert_eq!(q.name, "CPI-U");
         assert!((q.price - 320.5).abs() < 1e-9);
-        assert!((q.change_pct - (1.5 / 319.0 * 100.0)).abs() < 1e-9);
+        assert!((q.change.value - (1.5 / 319.0 * 100.0)).abs() < 1e-9);
         // The series' unit rides onto the quote from the table, labelling `price`.
         assert_eq!(q.unit, "index (1982-84=100)");
     }
@@ -532,7 +532,7 @@ mod tests {
             .unwrap()
             .expect("a quote");
         assert!((q.price - 4.1).abs() < 1e-9);
-        assert_eq!(q.change_pct, 0.0);
+        assert_eq!(q.change.value, 0.0);
     }
 
     #[test]
@@ -608,8 +608,8 @@ mod tests {
         eprintln!("labor_levels ({}):", data.labor_levels.len());
         for q in &data.labor_levels {
             eprintln!(
-                "  {:<16} {:<42} price={:<12} change_pct={:<10} unit={}",
-                q.symbol, q.name, q.price, q.change_pct, q.unit
+                "  {:<16} {:<42} price={:<12} change={:<10} unit={}",
+                q.symbol, q.name, q.price, q.change.value, q.unit
             );
         }
 

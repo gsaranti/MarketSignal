@@ -20,7 +20,7 @@ use rusqlite::Connection;
 
 use crate::agent::ReportSummary;
 use crate::baseline_delta::{BaselineDeltas, SeriesDelta, SeriesTransition};
-use crate::data_sources::BaselineMarketData;
+use crate::data_sources::{BaselineMarketData, ChangeKind};
 use crate::research_executor::ResearchEvidence;
 
 /// What a memory row is (`docs/storage.md §Vector Memory`): a report
@@ -284,15 +284,15 @@ pub fn pre_research_query(
         .iter()
         .chain(&baseline.internals)
         .map(|q| {
-            // `change_pct` is a percent for most quotes, but a *point delta* for rate-valued
-            // FRED series (whose name already carries a `(Δ pp)` tag) — suffixing those with
-            // `%` would contradict the unit and re-introduce the mislabeling this convention
-            // fixes. Key off the series id (the quote `symbol`), the same source of truth the
-            // FRED adapter uses; a non-rate / non-FRED quote keeps its percent.
-            if crate::fred::is_rate_delta(&q.symbol) {
-                format!("- {}: {} {} ({:+.2})", q.name, q.price, q.unit, q.change_pct)
-            } else {
-                format!("- {}: {} {} ({:+.2}%)", q.name, q.price, q.unit, q.change_pct)
+            // The change is a percent for most quotes, but a *point delta* for rate-valued
+            // series — suffixing a point delta with `%` would contradict its unit. The kind
+            // travels on the quote (`change.kind`), so read it there rather than re-deriving
+            // it from the series id; a percent / annualized change keeps its `%`.
+            match q.change.kind {
+                ChangeKind::PointDelta => {
+                    format!("- {}: {} {} ({:+.2})", q.name, q.price, q.unit, q.change.value)
+                }
+                _ => format!("- {}: {} {} ({:+.2}%)", q.name, q.price, q.unit, q.change.value),
             }
         })
         .collect();
@@ -654,7 +654,7 @@ mod tests {
     // ---- retrieval query builders (Steps 4 / 10) ----
 
     use crate::baseline_delta::Direction;
-    use crate::data_sources::Quote;
+    use crate::data_sources::{Change, Quote};
     use crate::news::RawHeadline;
     use crate::research_executor::{EvidenceItem, Finding};
 
@@ -663,7 +663,7 @@ mod tests {
             symbol: name.into(),
             name: name.into(),
             price,
-            change_pct,
+            change: Change::percent(change_pct),
             unit: "index points".into(),
         }
     }
@@ -714,23 +714,23 @@ mod tests {
 
     #[test]
     fn pre_research_query_omits_percent_suffix_for_a_point_delta_quote() {
-        // A rate-valued FRED internal (DGS10) carries a point delta in `change_pct` (not a
-        // percent), with its name tagged `(Δ pp)`. The current-market-picture line must NOT
-        // suffix that figure with `%` — a `(+0.10%)` would contradict the name and the unit
-        // convention this slice establishes. A genuine-percent quote still keeps its `%`.
+        // A rate-valued FRED internal (DGS10) carries a point delta in `change` (kind
+        // PointDelta), not a percent. The current-market-picture line must NOT suffix that
+        // figure with `%` — a `(+0.10%)` would contradict the change's unit. A genuine-percent
+        // quote still keeps its `%`. The name is untagged now; the kind carries the unit.
         let baseline = BaselineMarketData {
             indices: vec![Quote {
                 symbol: "^GSPC".into(),
                 name: "S&P 500".into(),
                 price: 5610.0,
-                change_pct: 0.4,
+                change: Change::percent(0.4),
                 unit: "index points".into(),
             }],
             internals: vec![Quote {
                 symbol: "DGS10".into(),
-                name: "10-Year Treasury Yield (Δ pp)".into(),
+                name: "10-Year Treasury Yield".into(),
                 price: 4.3,
-                change_pct: 0.10,
+                change: Change::point_delta(0.10),
                 unit: "percent".into(),
             }],
             ..Default::default()
@@ -739,7 +739,7 @@ mod tests {
 
         // The point-delta rate renders its move with no `%`.
         assert!(
-            q.contains("- 10-Year Treasury Yield (Δ pp): 4.3 percent (+0.10)"),
+            q.contains("- 10-Year Treasury Yield: 4.3 percent (+0.10)"),
             "point-delta quote should render the move without a unit suffix: {q}"
         );
         assert!(

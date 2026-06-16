@@ -1096,13 +1096,15 @@ mod tests {
 
     #[test]
     fn user_prompt_embeds_baseline_when_present() {
-        use crate::data_sources::{DataGap, EconomicRelease, GapReason, GroupKind, Quote};
+        use crate::data_sources::{
+            Change, DataGap, EconomicRelease, GapReason, GroupKind, Quote,
+        };
         let baseline = BaselineMarketData {
             indices: vec![Quote {
                 symbol: "^GSPC".into(),
                 name: "S&P 500".into(),
                 price: 5500.0,
-                change_pct: 0.4,
+                change: Change::percent(0.4),
                 unit: "index points".into(),
             }],
             calendar: vec![EconomicRelease {
@@ -1144,13 +1146,13 @@ mod tests {
     }
 
     fn one_index_baseline() -> BaselineMarketData {
-        use crate::data_sources::Quote;
+        use crate::data_sources::{Change, Quote};
         BaselineMarketData {
             indices: vec![Quote {
                 symbol: "^GSPC".into(),
                 name: "S&P 500".into(),
                 price: 5_610.0,
-                change_pct: 0.4,
+                change: Change::percent(0.4),
                 unit: "index points".into(),
             }],
             ..Default::default()
@@ -1602,13 +1604,13 @@ mod tests {
     /// levels plus a change view gives the model enough to write a conforming header.
     fn populated_input() -> MainAgentInput {
         use crate::baseline_delta::{BaselineDeltas, Direction, SeriesDelta};
-        use crate::data_sources::{GroupKind, Quote};
+        use crate::data_sources::{Change, GroupKind, Quote};
 
         let q = |symbol: &str, name: &str, price: f64, change_pct: f64| Quote {
             symbol: symbol.into(),
             name: name.into(),
             price,
-            change_pct,
+            change: Change::percent(change_pct),
             unit: "index points".into(),
         };
         let baseline = BaselineMarketData {
@@ -1623,14 +1625,14 @@ mod tests {
                     symbol: "DGS10".into(),
                     name: "10-Year Treasury Yield".into(),
                     price: 4.18,
-                    change_pct: -3.0,
+                    change: Change::percent(-3.0),
                     unit: "percent".into(),
                 },
                 Quote {
                     symbol: "FEDFUNDS".into(),
                     name: "Federal Funds Target (upper)".into(),
                     price: 4.50,
-                    change_pct: 0.0,
+                    change: Change::percent(0.0),
                     unit: "percent".into(),
                 },
             ],

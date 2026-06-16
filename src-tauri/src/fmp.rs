@@ -52,7 +52,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::data_sources::{
-    emit_series_row, BaselineMarketData, DataGap, EarningsEvent, GapReason, GroupKind,
+    emit_series_row, BaselineMarketData, Change, DataGap, EarningsEvent, GapReason, GroupKind,
     IndexPerformance, IndustrySnapshot, MarketDataSource, MarketRiskPremium, MoverCategory, Quote,
     SectorPe, SectorPerformance, StockMover,
 };
@@ -411,7 +411,7 @@ fn quotes_from_value(value: Value, fallback_name: &str, unit: &str) -> Result<Ve
             },
             symbol: r.symbol,
             price: r.price,
-            change_pct: r.change_pct,
+            change: Change::percent(r.change_pct),
             unit: unit.to_string(),
         })
         .collect())
@@ -1555,7 +1555,8 @@ mod tests {
         assert_eq!(quotes[0].symbol, "^GSPC");
         assert_eq!(quotes[0].name, "S&P 500");
         assert!((quotes[0].price - 5500.5).abs() < 1e-9);
-        assert!((quotes[0].change_pct - 0.42).abs() < 1e-9);
+        assert!((quotes[0].change.value - 0.42).abs() < 1e-9);
+        assert_eq!(quotes[0].change.kind, crate::data_sources::ChangeKind::Percent);
         // The requested symbol's unit rides onto the quote from the table, not the wire.
         assert_eq!(quotes[0].unit, "index points");
 
@@ -1564,7 +1565,7 @@ mod tests {
             serde_json::from_str(r#"[{"symbol":"^DJI","price":40000.0,"changesPercentage":-1.5}]"#).unwrap();
         let q2 = quotes_from_value(v2, "Dow Jones", "index points").unwrap();
         assert_eq!(q2[0].name, "Dow Jones");
-        assert!((q2[0].change_pct + 1.5).abs() < 1e-9);
+        assert!((q2[0].change.value + 1.5).abs() < 1e-9);
 
         // An empty array is "no quotes", not an error.
         assert!(quotes_from_value(serde_json::from_str("[]").unwrap(), "x", "index points").unwrap().is_empty());
@@ -2066,8 +2067,8 @@ mod tests {
             eprintln!("{label} ({}):", quotes.len());
             for q in quotes {
                 eprintln!(
-                    "  {:<10} {:<28} price={:<12} change_pct={:<10} unit={}",
-                    q.symbol, q.name, q.price, q.change_pct, q.unit
+                    "  {:<10} {:<28} price={:<12} change={:<10} unit={}",
+                    q.symbol, q.name, q.price, q.change.value, q.unit
                 );
             }
         };

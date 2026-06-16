@@ -104,15 +104,11 @@ fn series_levels(data: &BaselineMarketData, group: GroupKind) -> Vec<(String, St
         quotes
             .iter()
             .map(|q| {
-                // Strip any point-delta name marker: it tags the baseline `change_pct`, not
-                // this cross-report move, and the delta view is already self-describing via
-                // its own `abs_change` / `pct_change` — leaving the tag in would pair a
-                // `(Δ pp)` name with a percent figure it doesn't describe.
-                (
-                    q.symbol.clone(),
-                    crate::fred::strip_point_delta_marker(&q.name).to_string(),
-                    q.price,
-                )
+                // The quote name is used verbatim: the typed `change` carries its own unit
+                // (`change.kind`), so the baseline name no longer holds a point-delta marker
+                // that this cross-report view — self-describing via its own `abs_change` /
+                // `pct_change` — would have to strip.
+                (q.symbol.clone(), q.name.clone(), q.price)
             })
             .collect()
     }
@@ -250,14 +246,14 @@ pub fn compute_deltas(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_sources::{MarketRiskPremium, SectorPe};
+    use crate::data_sources::{Change, MarketRiskPremium, SectorPe};
 
     fn quote(symbol: &str, name: &str, price: f64) -> Quote {
         Quote {
             symbol: symbol.into(),
             name: name.into(),
             price,
-            change_pct: 0.0,
+            change: Change::percent(0.0),
             unit: "index points".into(),
         }
     }
@@ -301,32 +297,32 @@ mod tests {
         assert!(!d.changed.iter().any(|s| s.id == "^TNX" || s.id == "^DXY"));
     }
 
-    /// A point-delta series' name carries a `(Δ pp)` / `(Δ level)` marker meaningful only for
-    /// the baseline `change_pct`. The delta view is self-describing (abs_change + pct_change),
-    /// so the marker is stripped — it must not ride into a frame where it would contradict the
-    /// percent figure shown. Covers both a changed delta and a `new` transition (one source:
-    /// `from_quotes`).
+    /// The quote name flows into the delta view verbatim. With the typed `change` carrying its
+    /// own unit (`change.kind`), the baseline name no longer holds a point-delta marker, so
+    /// `from_quotes` no longer strips one — this pins that pass-through (a changed delta and a
+    /// `new` transition, the two `from_quotes` outputs) so a future change can't silently
+    /// re-mangle the name.
     #[test]
-    fn strips_the_point_delta_name_marker_from_the_delta_view() {
+    fn carries_the_quote_name_into_the_delta_view_verbatim() {
         let prior = BaselineMarketData {
-            internals: vec![quote("DGS10", "10-Year Treasury Yield (Δ pp)", 4.2)],
+            internals: vec![quote("DGS10", "10-Year Treasury Yield", 4.2)],
             ..Default::default()
         };
         let current = BaselineMarketData {
             internals: vec![
-                quote("DGS10", "10-Year Treasury Yield (Δ pp)", 4.3),
-                quote("NFCI", "Chicago Fed NFCI (Δ level)", -0.4),
+                quote("DGS10", "10-Year Treasury Yield", 4.3),
+                quote("NFCI", "Chicago Fed NFCI", -0.4),
             ],
             ..Default::default()
         };
         let d = compute_deltas(&current, &prior, 7.0);
 
         let tnx = d.changed.iter().find(|s| s.id == "DGS10").unwrap();
-        assert_eq!(tnx.name, "10-Year Treasury Yield", "marker stripped from a changed delta");
+        assert_eq!(tnx.name, "10-Year Treasury Yield", "name carried verbatim on a changed delta");
         assert!((tnx.abs_change - 0.1).abs() < 1e-9, "the move is still carried by abs_change");
 
         let nfci = d.new.iter().find(|t| t.id == "NFCI").unwrap();
-        assert_eq!(nfci.name, "Chicago Fed NFCI", "marker stripped from a new transition");
+        assert_eq!(nfci.name, "Chicago Fed NFCI", "name carried verbatim on a new transition");
     }
 
     /// A zero prior level yields a move but no percentage (no honest denominator).

@@ -118,7 +118,7 @@ pub fn build_condensed_packet(
 mod tests {
     use super::*;
 
-    use crate::data_sources::Quote;
+    use crate::data_sources::{Change, Quote};
     use crate::news::RawHeadline;
     // `BaselineDeltas` and `ResearchEvidence` are already in scope via `super::*`.
     use crate::research_executor::{EvidenceItem, Finding, StopReason};
@@ -246,7 +246,7 @@ mod tests {
                 symbol: "^GSPC".into(),
                 name: "S&P 500".into(),
                 price: 5500.0,
-                change_pct: 0.8,
+                change: Change::percent(0.8),
                 unit: "index".into(),
             }],
             ..Default::default()
