@@ -151,17 +151,49 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     // documents truncated". Same per-report, accumulating, cascade-bounded model
     // as `document_truncations` (`delete_report_parse_runs`), so numerator and
     // denominator always span the same retained-report window and the rate stays
-    // honest.
+    // honest. `total_original_chars` is the chars-ratio denominator (Σ original
+    // chars across all parsed docs, truncated or not) — *nullable*, because a row
+    // recorded before this column existed has no value to backfill, and NULL marks
+    // that pre-migration cohort distinctly from a genuine `0` (an all-empty-docs
+    // run). The chars ratio is withheld while any NULL row remains; see
+    // `TruncationStats::parse_runs_missing_original_chars`.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS document_parse_runs (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            report_id   TEXT NOT NULL,
-            captured_at TEXT NOT NULL,
-            docs_parsed INTEGER NOT NULL
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id           TEXT NOT NULL,
+            captured_at         TEXT NOT NULL,
+            docs_parsed         INTEGER NOT NULL,
+            total_original_chars INTEGER
         )",
         [],
     )?;
+    // Additive migration for DBs created before `total_original_chars` shipped:
+    // `CREATE TABLE IF NOT EXISTS` above is a no-op on an existing table, so the
+    // column is added here. SQLite has no `ADD COLUMN IF NOT EXISTS`, so the
+    // `PRAGMA table_info` guard keeps it idempotent (a duplicate `ALTER` errors).
+    // A single additive nullable column is the one schema change SQLite makes
+    // without a table rebuild; there is no `user_version` migration framework to
+    // lean on, so this is the migration.
+    if !column_exists(conn, "document_parse_runs", "total_original_chars")? {
+        conn.execute(
+            "ALTER TABLE document_parse_runs ADD COLUMN total_original_chars INTEGER",
+            [],
+        )?;
+    }
     Ok(())
+}
+
+/// Whether `table` has a column named `column`, via `PRAGMA table_info`. Used to
+/// keep additive `ALTER TABLE ADD COLUMN` migrations idempotent in the absence of
+/// a `user_version` framework.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let found = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == column);
+    Ok(found)
 }
 
 /// One recorded research-inbox parse failure, as the panel join reads it. The
@@ -264,17 +296,25 @@ pub fn record_document_truncations(conn: &Connection, rows: &[DocumentTruncation
 /// denominator that turns the truncation numerator into a rate. One row per
 /// report whose inbox pass parsed at least one document; like
 /// [`record_document_truncations`] it appends rather than replaces, so the
-/// per-report history accumulates.
+/// per-report history accumulates. `total_original_chars` is the Σ of every
+/// parsed doc's original (pre-truncation) char count — the denominator for the
+/// chars-dropped *ratio*, distinct from the doc-count denominator above.
 pub fn record_document_parse_run(
     conn: &Connection,
     report_id: &str,
     captured_at: &str,
     docs_parsed: u64,
+    total_original_chars: u64,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO document_parse_runs (report_id, captured_at, docs_parsed)
-         VALUES (?1, ?2, ?3)",
-        rusqlite::params![report_id, captured_at, docs_parsed as i64],
+        "INSERT INTO document_parse_runs (report_id, captured_at, docs_parsed, total_original_chars)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![
+            report_id,
+            captured_at,
+            docs_parsed as i64,
+            total_original_chars as i64
+        ],
     )?;
     Ok(())
 }
@@ -304,6 +344,19 @@ pub struct TruncationStats {
     /// cohorts; the Settings consumer withholds the rate while it is. `0` once
     /// every truncation report also has a parse-run row.
     pub unaligned_truncations: u64,
+    /// Total original (pre-truncation) characters across all parse runs (Σ of
+    /// `total_original_chars` in `document_parse_runs`) — the chars-ratio
+    /// denominator. `0` when no run with a non-NULL char count has been recorded.
+    pub total_original_chars: u64,
+    /// Parse-run rows with a NULL `total_original_chars` — the pre-migration
+    /// cohort whose original-char count was never recorded. The chars *ratio*
+    /// denominator (`total_original_chars`) silently omits these (SQL `SUM`
+    /// skips NULL) while the numerator (`total_chars_dropped`) may still count
+    /// their truncations, so a non-zero value means the ratio would understate
+    /// its denominator; the Settings consumer withholds the chars ratio while it
+    /// is. `0` once every parse-run row carries a char count. Distinct from
+    /// `unaligned_truncations` (a *missing* parse-run row, not a NULL column).
+    pub parse_runs_missing_original_chars: u64,
     /// Distinct reports that recorded at least one truncation.
     pub reports_affected: u64,
     /// Total characters cut across all events (Σ of `original − kept`).
@@ -359,11 +412,22 @@ pub fn truncation_stats(conn: &Connection) -> Result<TruncationStats> {
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    let total_docs_parsed = conn.query_row(
-        "SELECT COALESCE(SUM(docs_parsed), 0) FROM document_parse_runs",
-        [],
-        |row| Ok(row.get::<_, i64>(0)? as u64),
-    )?;
+    let (total_docs_parsed, total_original_chars, parse_runs_missing_original_chars) = conn
+        .query_row(
+            "SELECT
+                COALESCE(SUM(docs_parsed), 0),
+                COALESCE(SUM(total_original_chars), 0),
+                COALESCE(SUM(CASE WHEN total_original_chars IS NULL THEN 1 ELSE 0 END), 0)
+             FROM document_parse_runs",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as u64,
+                    row.get::<_, i64>(1)? as u64,
+                    row.get::<_, i64>(2)? as u64,
+                ))
+            },
+        )?;
 
     // Truncations whose report never recorded a parse-run denominator — the
     // historical cohort gap. With an empty `document_parse_runs`, `NOT IN ()`
@@ -380,6 +444,8 @@ pub fn truncation_stats(conn: &Connection) -> Result<TruncationStats> {
         total_truncations,
         total_docs_parsed,
         unaligned_truncations,
+        total_original_chars,
+        parse_runs_missing_original_chars,
         reports_affected,
         total_chars_dropped,
         by_format,
@@ -988,16 +1054,21 @@ mod tests {
         )
         .unwrap();
 
-        // Denominator: rep-1 parsed 7 docs (3 truncated), rep-2 parsed 4 (1
-        // truncated) → 11 docs parsed against 3 truncations, the rate's two halves.
-        record_document_parse_run(&conn, "rep-1", "2026-06-01T09:00:00+00:00", 7).unwrap();
-        record_document_parse_run(&conn, "rep-2", "2026-06-08T09:00:00+00:00", 4).unwrap();
+        // Denominator: rep-1 parsed 7 docs (3 truncated) totalling 100k original
+        // chars, rep-2 parsed 4 (1 truncated) totalling 50k → 11 docs / 150k chars
+        // parsed against 3 truncations / 29k chars dropped, the two rates' halves.
+        record_document_parse_run(&conn, "rep-1", "2026-06-01T09:00:00+00:00", 7, 100_000).unwrap();
+        record_document_parse_run(&conn, "rep-2", "2026-06-08T09:00:00+00:00", 4, 50_000).unwrap();
 
         let stats = truncation_stats(&conn).unwrap();
         assert_eq!(stats.total_truncations, 3);
         assert_eq!(stats.total_docs_parsed, 11);
         // Both truncation reports recorded a parse-run, so the cohorts align.
         assert_eq!(stats.unaligned_truncations, 0);
+        // Chars-ratio denominator: 100k + 50k, with every parse-run carrying a
+        // count (no NULL cohort), so the chars ratio is safe to render.
+        assert_eq!(stats.total_original_chars, 150_000);
+        assert_eq!(stats.parse_runs_missing_original_chars, 0);
         assert_eq!(stats.reports_affected, 2);
         // (30k−12k) + (20k−12k) + (15k−12k) = 18k + 8k + 3k.
         assert_eq!(stats.total_chars_dropped, 29_000);
@@ -1030,16 +1101,21 @@ mod tests {
         // Two runs append rather than replace (the denominator accumulates the
         // way the numerator does), including a zero-truncation run that still
         // contributes its parsed-doc count.
-        record_document_parse_run(&conn, "rep-1", "2026-06-01T09:00:00+00:00", 5).unwrap();
-        record_document_parse_run(&conn, "rep-2", "2026-06-08T09:00:00+00:00", 3).unwrap();
+        record_document_parse_run(&conn, "rep-1", "2026-06-01T09:00:00+00:00", 5, 40_000).unwrap();
+        record_document_parse_run(&conn, "rep-2", "2026-06-08T09:00:00+00:00", 3, 20_000).unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM document_parse_runs"), 2);
-        assert_eq!(truncation_stats(&conn).unwrap().total_docs_parsed, 8);
+        let stats = truncation_stats(&conn).unwrap();
+        assert_eq!(stats.total_docs_parsed, 8);
+        // Both denominators (doc count and original chars) accumulate together.
+        assert_eq!(stats.total_original_chars, 60_000);
 
         // The cascade leg reaps only the named report's row, keeping the
         // denominator aligned with the truncation numerator's window.
         delete_report_parse_runs(&conn, "rep-1").unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM document_parse_runs"), 1);
-        assert_eq!(truncation_stats(&conn).unwrap().total_docs_parsed, 3);
+        let stats = truncation_stats(&conn).unwrap();
+        assert_eq!(stats.total_docs_parsed, 3);
+        assert_eq!(stats.total_original_chars, 20_000);
     }
 
     #[test]
@@ -1059,7 +1135,7 @@ mod tests {
         // would leave behind.
         record_document_truncations(&conn, &[trow("rep-1", "a.pdf"), trow("rep-2", "b.pdf")])
             .unwrap();
-        record_document_parse_run(&conn, "rep-1", "2026-06-15T09:00:00+00:00", 5).unwrap();
+        record_document_parse_run(&conn, "rep-1", "2026-06-15T09:00:00+00:00", 5, 40_000).unwrap();
 
         let stats = truncation_stats(&conn).unwrap();
         assert_eq!(stats.total_truncations, 2);
@@ -1068,7 +1144,79 @@ mod tests {
         assert_eq!(stats.unaligned_truncations, 1);
 
         // Once rep-2 records its own parse-run, the cohorts realign.
-        record_document_parse_run(&conn, "rep-2", "2026-06-15T09:00:00+00:00", 4).unwrap();
+        record_document_parse_run(&conn, "rep-2", "2026-06-15T09:00:00+00:00", 4, 30_000).unwrap();
         assert_eq!(truncation_stats(&conn).unwrap().unaligned_truncations, 0);
+    }
+
+    #[test]
+    fn truncation_stats_flags_a_parse_run_with_no_original_char_count() {
+        // A row recorded before `total_original_chars` shipped reads NULL — the
+        // chars-ratio cohort gap. Simulate it with a raw insert that omits the
+        // column (the production writer always supplies it), then assert the guard
+        // counts it and the chars denominator silently skips it.
+        let conn = mem();
+        conn.execute(
+            "INSERT INTO document_parse_runs (report_id, captured_at, docs_parsed)
+             VALUES ('legacy', '2026-06-01T09:00:00+00:00', 6)",
+            [],
+        )
+        .unwrap();
+        record_document_parse_run(&conn, "rep-2", "2026-06-08T09:00:00+00:00", 4, 50_000).unwrap();
+
+        let stats = truncation_stats(&conn).unwrap();
+        // Both rows count toward the doc denominator…
+        assert_eq!(stats.total_docs_parsed, 10);
+        // …but only the row carrying a char count contributes to the chars one,
+        // and the NULL row is flagged so the consumer withholds the chars ratio.
+        assert_eq!(stats.total_original_chars, 50_000);
+        assert_eq!(stats.parse_runs_missing_original_chars, 1);
+
+        // Backfilling the legacy row clears the gap.
+        conn.execute(
+            "UPDATE document_parse_runs SET total_original_chars = 30000 WHERE report_id = 'legacy'",
+            [],
+        )
+        .unwrap();
+        let stats = truncation_stats(&conn).unwrap();
+        assert_eq!(stats.total_original_chars, 80_000);
+        assert_eq!(stats.parse_runs_missing_original_chars, 0);
+    }
+
+    #[test]
+    fn init_schema_adds_total_original_chars_to_a_preexisting_parse_runs_table() {
+        // A DB created before the column shipped: the old table shape, with a row.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE document_parse_runs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_id   TEXT NOT NULL,
+                captured_at TEXT NOT NULL,
+                docs_parsed INTEGER NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO document_parse_runs (report_id, captured_at, docs_parsed)
+             VALUES ('old', '2026-06-01T09:00:00+00:00', 9)",
+            [],
+        )
+        .unwrap();
+
+        // init_schema migrates: the column is added and the old row reads NULL.
+        assert!(!column_exists(&conn, "document_parse_runs", "total_original_chars").unwrap());
+        init_schema(&conn).unwrap();
+        assert!(column_exists(&conn, "document_parse_runs", "total_original_chars").unwrap());
+        let legacy: Option<i64> = conn
+            .query_row(
+                "SELECT total_original_chars FROM document_parse_runs WHERE report_id = 'old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy, None);
+
+        // Idempotent: a second init_schema must not error on the duplicate column.
+        init_schema(&conn).unwrap();
     }
 }

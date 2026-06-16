@@ -234,6 +234,40 @@ const truncatedDocsValue = computed(() => {
   const pct = (s.total_truncations / s.total_docs_parsed) * 100;
   return `${truncated} of ${fmtNum(s.total_docs_parsed)} (${pct.toFixed(1)}%)`;
 });
+
+// The chars-dropped ratio as a "X of Y (Z%)" readout — chars cut over total
+// original chars across all parsed docs (the share of ingested text lost to
+// truncation). Mirrors `truncatedDocsValue`: falls back to the bare count
+// whenever the denominator can't support an honest ratio:
+//   - missing (0) — would render a nonsensical "of 0";
+//   - smaller than the numerator — would render an over-100% ratio (the two are
+//     written on independent best-effort channels, so a drop can briefly lead
+//     its parse-run);
+//   - incomplete — the numerator counts chars the denominator never did. Two
+//     distinct cohort gaps both produce this, and both must withhold the ratio:
+//       · a truncation whose report has no parse-run row at all
+//         (`unaligned_truncations` — the same gap that withholds the doc rate;
+//         that report's original chars are absent from `total_original_chars`
+//         while its dropped chars are in `total_chars_dropped`), and
+//       · a parse-run row that predates the chars column
+//         (`parse_runs_missing_original_chars`, NULL → skipped by SUM).
+//     Self-heals as those legacy rows age out of the retention window.
+// Only consulted inside the `hasTruncations` block, so the numerator is > 0 here.
+const charsDroppedValue = computed(() => {
+  const s = props.truncationStats;
+  if (!s) return "";
+  const dropped = fmtNum(s.total_chars_dropped);
+  if (
+    s.total_original_chars <= 0 ||
+    s.total_chars_dropped > s.total_original_chars ||
+    s.unaligned_truncations > 0 ||
+    s.parse_runs_missing_original_chars > 0
+  ) {
+    return dropped;
+  }
+  const pct = (s.total_chars_dropped / s.total_original_chars) * 100;
+  return `${dropped} of ${fmtNum(s.total_original_chars)} (${pct.toFixed(1)}%)`;
+});
 </script>
 
 <template>
@@ -465,7 +499,7 @@ const truncatedDocsValue = computed(() => {
               </div>
               <div class="trunc-row">
                 <dt>Characters dropped</dt>
-                <dd>{{ fmtNum(truncationStats.total_chars_dropped) }}</dd>
+                <dd>{{ charsDroppedValue }}</dd>
               </div>
               <div v-if="truncationStats.latest_captured_at" class="trunc-row">
                 <dt>Most recent</dt>

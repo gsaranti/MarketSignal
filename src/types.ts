@@ -121,19 +121,27 @@ export interface SettingsView {
 // Mirrors the Rust `storage::TruncationStats` returned by the `truncation_stats`
 // command — aggregate telemetry for how often the Step-6 inbox parser had to
 // head-truncate an oversized document, accumulated across reports
-// (docs/agents.md §Data Extraction). `total_truncations` is the numerator and
-// `total_docs_parsed` the denominator, so a true share-of-documents rate is
-// derivable. An all-zero aggregate (empty table) is the "overflow is rare"
-// signal the Settings diagnostics section renders as its empty state.
+// (docs/agents.md §Data Extraction). Two rates are derivable: `total_truncations`
+// over `total_docs_parsed` (share of documents truncated), and `total_chars_dropped`
+// over `total_original_chars` (share of ingested text cut). An all-zero aggregate
+// (empty table) is the "overflow is rare" signal the Settings diagnostics section
+// renders as its empty state.
 export interface TruncationStats {
   total_truncations: number;
-  // Documents parsed across all recorded runs — the rate denominator. 0 before
+  // Documents parsed across all recorded runs — the doc-rate denominator. 0 before
   // any run with a parsed document has been recorded.
   total_docs_parsed: number;
   // Truncations whose report has no parse-run denominator (typically recorded
   // before the denominator existed). > 0 means the rate would mix cohorts, so
   // the readout withholds it; 0 once every truncation report has a denominator.
   unaligned_truncations: number;
+  // Total original (pre-truncation) chars across all parse runs — the chars-rate
+  // denominator. 0 before any run with a char count has been recorded.
+  total_original_chars: number;
+  // Parse-run rows with no recorded char count (the pre-migration cohort). > 0
+  // means the chars denominator omits some rows whose truncations the numerator
+  // may still count, so the chars ratio withholds; 0 once every row has a count.
+  parse_runs_missing_original_chars: number;
   reports_affected: number;
   total_chars_dropped: number;
   by_format: FormatCount[];

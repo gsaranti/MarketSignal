@@ -104,6 +104,8 @@ test("a zero aggregate renders the empty state, not the readout", () => {
     total_truncations: 0,
     total_docs_parsed: 12,
     unaligned_truncations: 0,
+    total_original_chars: 48000,
+    parse_runs_missing_original_chars: 0,
     reports_affected: 0,
     total_chars_dropped: 0,
     by_format: [],
@@ -116,11 +118,13 @@ test("a zero aggregate renders the empty state, not the readout", () => {
   expect(section.find(".trunc-stats").exists()).toBe(false);
 });
 
-test("a populated aggregate renders the rate, counts, formatted chars, and per-format breakdown", () => {
+test("a populated aggregate renders both rates, counts, and per-format breakdown", () => {
   const stats: TruncationStats = {
     total_truncations: 3,
     total_docs_parsed: 11,
     unaligned_truncations: 0,
+    total_original_chars: 100000,
+    parse_runs_missing_original_chars: 0,
     reports_affected: 2,
     total_chars_dropped: 29000,
     by_format: [
@@ -133,12 +137,13 @@ test("a populated aggregate renders the rate, counts, formatted chars, and per-f
   const section = diagnostics(wrapper);
   expect(section.find(".trunc-empty").exists()).toBe(false);
 
-  // Scalar readout: the truncated-of-parsed rate (3/11 = 27.3%), reports
-  // affected, and thousands-grouped chars dropped.
+  // Scalar readout: the truncated-of-parsed doc rate (3/11 = 27.3%), reports
+  // affected, and the chars-dropped-of-original ratio (29k/100k = 29.0%), each a
+  // thousands-grouped "X of Y (Z%)".
   const values = section.findAll(".trunc-row dd").map((d) => d.text());
   expect(values).toContain("3 of 11 (27.3%)");
   expect(values).toContain("2");
-  expect(values).toContain("29,000");
+  expect(values).toContain("29,000 of 100,000 (29.0%)");
 
   // Per-format breakdown, in the backend's descending-count order.
   const formats = section.findAll(".trunc-format-item").map((li) => ({
@@ -156,6 +161,8 @@ test("a missing denominator falls back to the bare truncation count, not 'of 0'"
     total_truncations: 3,
     total_docs_parsed: 0,
     unaligned_truncations: 0,
+    total_original_chars: 0,
+    parse_runs_missing_original_chars: 0,
     reports_affected: 2,
     total_chars_dropped: 29000,
     by_format: [{ format: "pdf", count: 3 }],
@@ -176,6 +183,8 @@ test("a numerator above the denominator falls back to the bare count, not >100%"
     total_truncations: 5,
     total_docs_parsed: 3,
     unaligned_truncations: 0,
+    total_original_chars: 0,
+    parse_runs_missing_original_chars: 0,
     reports_affected: 2,
     total_chars_dropped: 29000,
     by_format: [{ format: "pdf", count: 5 }],
@@ -197,6 +206,8 @@ test("an unaligned cohort suppresses the rate even when it would otherwise compu
     total_truncations: 3,
     total_docs_parsed: 100,
     unaligned_truncations: 1,
+    total_original_chars: 0,
+    parse_runs_missing_original_chars: 0,
     reports_affected: 2,
     total_chars_dropped: 29000,
     by_format: [{ format: "pdf", count: 3 }],
@@ -208,5 +219,60 @@ test("an unaligned cohort suppresses the rate even when it would otherwise compu
     .map((d) => d.text());
   expect(values).toContain("3");
   expect(values).not.toContain("3 of 100 (3.0%)");
+  expect(values.some((v) => v.includes("%"))).toBe(false);
+});
+
+test("a chars-cohort gap suppresses the chars ratio while the doc rate still renders", () => {
+  // The two ratios guard independently: every truncation report has a parse-run
+  // (doc rate safe), but a parse run predates the chars denominator
+  // (parse_runs_missing_original_chars > 0), so the chars ratio is withheld to
+  // the bare count until that legacy row ages out — even though 29k/100k = 29.0%
+  // would otherwise compute.
+  const stats: TruncationStats = {
+    total_truncations: 3,
+    total_docs_parsed: 11,
+    unaligned_truncations: 0,
+    total_original_chars: 100000,
+    parse_runs_missing_original_chars: 1,
+    reports_affected: 2,
+    total_chars_dropped: 29000,
+    by_format: [{ format: "pdf", count: 3 }],
+    latest_captured_at: "2026-06-08T09:00:00+00:00",
+  };
+  const wrapper = makeWrapper({ truncationStats: stats });
+  const values = diagnostics(wrapper)
+    .findAll(".trunc-row dd")
+    .map((d) => d.text());
+  // Doc rate still computed; chars ratio withheld to the bare grouped count.
+  expect(values).toContain("3 of 11 (27.3%)");
+  expect(values).toContain("29,000");
+  expect(values).not.toContain("29,000 of 100,000 (29.0%)");
+});
+
+test("an unaligned truncation suppresses the chars ratio even with a nonzero denominator", () => {
+  // A truncation whose report has no parse-run row (unaligned_truncations > 0)
+  // puts its dropped chars in the numerator while its original chars never reach
+  // total_original_chars — so the chars ratio is unmatched, exactly as the doc
+  // rate is. The chars denominator is nonzero (a *newer* aligned run) and
+  // parse_runs_missing_original_chars is 0, so only the unaligned arm can catch
+  // it: 29k/100k = 29.0% would otherwise render dishonestly.
+  const stats: TruncationStats = {
+    total_truncations: 3,
+    total_docs_parsed: 11,
+    unaligned_truncations: 1,
+    total_original_chars: 100000,
+    parse_runs_missing_original_chars: 0,
+    reports_affected: 2,
+    total_chars_dropped: 29000,
+    by_format: [{ format: "pdf", count: 3 }],
+    latest_captured_at: "2026-06-08T09:00:00+00:00",
+  };
+  const wrapper = makeWrapper({ truncationStats: stats });
+  const values = diagnostics(wrapper)
+    .findAll(".trunc-row dd")
+    .map((d) => d.text());
+  // Both rates withheld (the unaligned gap hits both); chars shows the bare count.
+  expect(values).toContain("29,000");
+  expect(values).not.toContain("29,000 of 100,000 (29.0%)");
   expect(values.some((v) => v.includes("%"))).toBe(false);
 });

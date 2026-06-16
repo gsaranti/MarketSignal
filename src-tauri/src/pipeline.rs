@@ -364,11 +364,14 @@ pub fn generate_report(
         // the denominator. No row when nothing parsed, so an empty inbox (the
         // common case) touches no DB. Same swallow-and-log posture as above.
         if !inbox_docs.is_empty() {
+            let total_original_chars: u64 =
+                inbox_docs.iter().map(|d| d.original_chars as u64).sum();
             if let Err(e) = storage::record_document_parse_run(
                 &conn,
                 &summary.report_id,
                 &as_of.to_rfc3339(),
                 inbox_docs.len() as u64,
+                total_original_chars,
             ) {
                 eprintln!(
                     "parse-run telemetry persist failed for report {}: {e:#}",
@@ -2058,7 +2061,8 @@ mod tests {
             }],
         )
         .unwrap();
-        storage::record_document_parse_run(&conn, "old-00", "2026-01-01T00:00:00Z", 4).unwrap();
+        storage::record_document_parse_run(&conn, "old-00", "2026-01-01T00:00:00Z", 4, 80_000)
+            .unwrap();
 
         // Sabotage the *last* DB leg: the summary and snapshot deletes succeed
         // inside the transaction, then the row delete aborts — proving the
