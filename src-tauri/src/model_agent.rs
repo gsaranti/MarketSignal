@@ -188,7 +188,9 @@ industrials) reads. A P/E is therefore the aggregate for that one exchange's com
 whole-market multiple — read sector and industry valuations cross-sectionally (which groups \
 are rich versus cheap relative to one another, and how the NASDAQ growth read differs from \
 the NYSE value read) rather than as an absolute market level. `sector_pe` gives each sector's \
-aggregate P/E per exchange, a valuation read to set against the `sectors` performance group. \
+aggregate P/E per exchange, a valuation read to set against the `sectors` performance group \
+(`pe` may be null when a sector's aggregate earnings are non-positive or its multiple is \
+implausibly inflated by a near-zero earnings base — read a null as no usable valuation, not as zero). \
 `industries` is a finer cut than the broad sectors: per exchange, the run's strongest and \
 weakest industries by average daily move, each joined with that industry's aggregate P/E where \
 available (`pe` may be null when earnings are non-positive, implausibly inflated by a \
@@ -1111,7 +1113,6 @@ mod tests {
                 release: "Employment Situation".into(),
                 date: "2026-06-05".into(),
                 status: "released".into(),
-                expected: None,
             }],
             gaps: vec![DataGap::new(
                 GroupKind::LaborLevels,

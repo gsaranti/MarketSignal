@@ -111,16 +111,16 @@ pub struct SectorPerformance {
 /// it carries the release **name** and **date** but not the report's figures — those
 /// reach the model through the `macro_levels` / `labor_levels` series quotes. `status`
 /// is `"released"` for a date in the prior-week window or `"upcoming"` for a scheduled
-/// future date. `expected` is an optional analyst-consensus slot: the FRED release-dates
-/// feed carries names + dates only, not consensus, so it is `None` on this path.
-/// Consensus, where it bears on the thesis, reaches the report through the research phase
-/// rather than a market-data feed.
+/// future date. No analyst-consensus figure is carried: no market-data API serves free US
+/// consensus, so consensus — where it bears on the thesis — reaches the report through the
+/// research phase rather than this calendar. (A perpetually-`None` `expected` slot was
+/// removed rather than serialized as inert `null` the model could misread as "no estimate
+/// exists".)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EconomicRelease {
     pub release: String,
     pub date: String,
     pub status: String,
-    pub expected: Option<f64>,
 }
 
 /// One index's multi-horizon performance, derived from FMP's end-of-day history
@@ -189,12 +189,16 @@ pub struct EarningsEvent {
 /// is **exchange-specific**, so `exchange` is carried (not dropped): the baseline gathers
 /// both NASDAQ-listed (growth / tech-tilted) and NYSE-listed (broader, more value) reads, and
 /// `pe` is the aggregate for that one exchange's companies — not a whole-market multiple.
-/// One row per (sector, exchange).
+/// `pe` is `None` when no meaningful aggregate is available — the sector's summed earnings are
+/// non-positive (FMP reports `0.0` there) or the multiple is implausibly inflated by a
+/// near-zero earnings base (band-bounded to `(0.0, SECTOR_PE_MAX]` in `sector_pe_from_value`,
+/// the same drop-to-`None` stance as [`IndustrySnapshot::pe`]); the (sector, exchange) row
+/// still rides so the model sees the sector was scanned. One row per (sector, exchange).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SectorPe {
     pub sector: String,
     pub exchange: String,
-    pub pe: f64,
+    pub pe: Option<f64>,
 }
 
 /// One industry's finer-rotation read, joining FMP's free `industry-performance-snapshot`
@@ -538,7 +542,6 @@ impl MarketDataSource for StubMarketDataSource {
                 release: "Employment Situation".into(),
                 date: "2026-06-05".into(),
                 status: "released".into(),
-                expected: None,
             }],
             index_performance: vec![IndexPerformance {
                 symbol: "^GSPC".into(),
@@ -580,17 +583,17 @@ impl MarketDataSource for StubMarketDataSource {
                 SectorPe {
                     sector: "Technology".into(),
                     exchange: "NASDAQ".into(),
-                    pe: 38.4,
+                    pe: Some(38.4),
                 },
                 SectorPe {
                     sector: "Technology".into(),
                     exchange: "NYSE".into(),
-                    pe: 24.6,
+                    pe: Some(24.6),
                 },
                 SectorPe {
                     sector: "Energy".into(),
                     exchange: "NYSE".into(),
-                    pe: 12.1,
+                    pe: Some(12.1),
                 },
             ],
             industries: vec![
@@ -739,7 +742,6 @@ mod tests {
                 release: "Consumer Price Index".into(),
                 date: "2026-06-10".into(),
                 status: "upcoming".into(),
-                expected: None,
             }],
             // A FRED-side gap (an oil series that 5xx'd this run) must survive the merge
             // into the unified manifest the gate and the agent read.

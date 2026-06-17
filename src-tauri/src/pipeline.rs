@@ -521,6 +521,12 @@ fn prune_old_reports(conn: &rusqlite::Connection) {
 /// `document_truncations` (numerator) nor `document_parse_runs` (denominator)
 /// has a self-cap, so this report-id join is the only thing that bounds them —
 /// and they delete together so the truncation rate's window stays aligned.
+/// An independent self-cap (mirroring `baseline_snapshots`' 14-row prune, to let
+/// truncation history outlive the 30-report window) was *considered and
+/// deliberately rejected*: pruning the two tables on separate schedules would
+/// orphan a numerator from its denominator (the `unaligned_truncations` cohort
+/// gap the reader already guards), so cascade-only is the design here, not an
+/// oversight. Revisit only if a longer evidence window is genuinely wanted.
 fn delete_report_db_rows(conn: &rusqlite::Connection, report_id: &str) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     vector_memory::delete_report_summary(&tx, report_id)?;

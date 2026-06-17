@@ -613,7 +613,6 @@ fn releases_to_calendar(
             release: name.to_string(),
             date: date_str.to_string(),
             status: status.to_string(),
-            expected: None,
         });
     }
     Ok(out)
@@ -1620,7 +1619,6 @@ mod tests {
         assert_eq!(cal[0].date, "2026-06-05");
         assert_eq!(cal[0].status, "released");
         assert_eq!(cal[0].release, "Consumer Price Index");
-        assert!(cal[0].expected.is_none(), "the FRED release-dates path carries dates only, not consensus");
         // Today counts as upcoming — not yet confirmed released at an arbitrary run time.
         assert_eq!(cal[1].date, "2026-06-06");
         assert_eq!(cal[1].status, "upcoming");

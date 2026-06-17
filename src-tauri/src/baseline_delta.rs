@@ -118,16 +118,21 @@ fn series_levels(data: &BaselineMarketData, group: GroupKind) -> Vec<(String, St
         GroupKind::MacroLevels => from_quotes(&data.macro_levels),
         GroupKind::LaborLevels => from_quotes(&data.labor_levels),
         // Sector P/E is exchange-specific, so the join key pins (sector, exchange) — a
-        // NASDAQ tech P/E and an NYSE tech P/E are distinct series.
+        // NASDAQ tech P/E and an NYSE tech P/E are distinct series. A row whose `pe` was
+        // band-dropped to `None` (out of `(0.0, SECTOR_PE_MAX]`) has no level to diff, so it
+        // is skipped here — it surfaces as a `new`/`missing` transition the same way a series
+        // present in only one run does, rather than diffing against a fabricated level.
         GroupKind::SectorPe => data
             .sector_pe
             .iter()
-            .map(|s| {
-                (
-                    format!("{}|{}", s.sector, s.exchange),
-                    format!("{} ({})", s.sector, s.exchange),
-                    s.pe,
-                )
+            .filter_map(|s| {
+                s.pe.map(|pe| {
+                    (
+                        format!("{}|{}", s.sector, s.exchange),
+                        format!("{} ({})", s.sector, s.exchange),
+                        pe,
+                    )
+                })
             })
             .collect(),
         GroupKind::MarketRiskPremium => data
@@ -370,7 +375,7 @@ mod tests {
             sector_pe: vec![SectorPe {
                 sector: "Technology".into(),
                 exchange: "NASDAQ".into(),
-                pe: 30.0,
+                pe: Some(30.0),
             }],
             market_risk_premium: vec![MarketRiskPremium {
                 country: "United States".into(),
@@ -387,7 +392,7 @@ mod tests {
             sector_pe: vec![SectorPe {
                 sector: "Technology".into(),
                 exchange: "NASDAQ".into(),
-                pe: 31.5,
+                pe: Some(31.5),
             }],
             market_risk_premium: vec![MarketRiskPremium {
                 country: "United States".into(),

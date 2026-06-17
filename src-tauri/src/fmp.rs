@@ -147,6 +147,21 @@ const INDUSTRY_TOP_N: usize = 10;
 /// ≥128 denominator artifacts stay dropped. Re-run the probe to re-tune.
 const INDUSTRY_PE_MAX: f64 = 120.0;
 
+/// The plausible-aggregate ceiling for a *sector* P/E — the symmetric upper bound to the
+/// non-positive drop in [`sector_pe_from_value`], the same drop-to-`None` honesty stance as
+/// [`INDUSTRY_PE_MAX`]. FMP's sector aggregate divides a sector's summed price by its summed
+/// earnings, so the same denominator-near-zero artifact is possible (an aggregate inflated past
+/// any plausible level by a sector at an earnings trough), and the non-positive case is *more*
+/// reachable here than at the industry cut: a whole sector can carry net-negative trailing
+/// aggregate earnings in a broad downturn (FMP reports `pe: 0.0` there), which would otherwise
+/// pass through as a misleading near-zero "cheap" multiple. Set, conservatively, to the same
+/// 120.0 as the industry ceiling pending its own live calibration: a sector aggregate sums over
+/// far more constituents than an industry's, so the artifact tail should be *rarer* and the
+/// plausible band *tighter* — but until `tuning_sector_pe_distribution_probe` measures the real
+/// per-board distribution, the generous shared ceiling errs toward keeping a genuine high
+/// cyclical-trough sector multiple over false-dropping it. Re-run the probe to re-tune.
+const SECTOR_PE_MAX: f64 = 120.0;
+
 /// The exact `country` label to keep from the market-risk-premium dataset. Exact-match, not
 /// a substring — "United Kingdom" and "United Arab Emirates" also start with "United".
 const RISK_PREMIUM_COUNTRY: &str = "United States";
@@ -530,8 +545,13 @@ fn filter_earnings(events: Vec<EarningsEvent>) -> Vec<EarningsEvent> {
 /// off-board rows — the guard against FMP ignoring the `exchange` query param and returning,
 /// say, NASDAQ data for an NYSE request (which would otherwise duplicate one board and drop
 /// the other with no gap). Rows are then labelled by their (validated) wire exchange and
-/// deduplicated by (sector, exchange), keep first. A body that is not the expected array, or
-/// that carries an off-board row, is an error.
+/// deduplicated by (sector, exchange), keep first. Each kept row's aggregate `pe` is then
+/// band-bounded to `(0.0, SECTOR_PE_MAX]` (see [`SECTOR_PE_MAX`] and the matching industry
+/// drop in [`industry_pe_map_from_value`]): a non-positive aggregate (FMP's `0.0` for a sector
+/// with no positive summed earnings) or one inflated past the ceiling by a near-zero earnings
+/// base is dropped to `None` rather than passed as a misleading "cheap"/"expensive" multiple —
+/// but the (sector, exchange) row itself survives, so the model still sees the sector was
+/// scanned. A body that is not the expected array, or that carries an off-board row, is an error.
 fn sector_pe_from_value(value: Value, expected_exchange: &str) -> Result<Vec<SectorPe>> {
     let raws: Vec<FmpSectorPeRaw> = serde_json::from_value(value)
         .context("FMP sector-PE response did not match the expected array shape")?;
@@ -546,10 +566,11 @@ fn sector_pe_from_value(value: Value, expected_exchange: &str) -> Result<Vec<Sec
             );
         }
         if seen.insert((raw.sector.clone(), raw.exchange.clone())) {
+            let pe = (raw.pe > 0.0 && raw.pe <= SECTOR_PE_MAX).then_some(raw.pe);
             out.push(SectorPe {
                 sector: raw.sector,
                 exchange: raw.exchange,
-                pe: raw.pe,
+                pe,
             });
         }
     }
@@ -1851,8 +1872,31 @@ mod tests {
         let out = sector_pe_from_value(v, "NASDAQ").unwrap();
         assert_eq!(out.len(), 2); // the duplicate (Technology, NASDAQ) is dropped
         assert_eq!((out[0].sector.as_str(), out[0].exchange.as_str()), ("Technology", "NASDAQ"));
-        assert!((out[0].pe - 38.4).abs() < 1e-9); // first kept, not 99.0
+        assert_eq!(out[0].pe, Some(38.4)); // first kept, not 99.0; both in-band
         assert_eq!((out[1].sector.as_str(), out[1].exchange.as_str()), ("Energy", "NASDAQ"));
+    }
+
+    #[test]
+    fn sector_pe_from_value_drops_out_of_band_pe_to_none_keeping_the_row() {
+        // The band `(0.0, SECTOR_PE_MAX]`: a non-positive aggregate (FMP's 0.0 / a negative for
+        // a sector with no positive summed earnings) and one inflated past the ceiling both drop
+        // the *pe* to `None` — but the (sector, exchange) row survives so the model still sees
+        // the sector was scanned. An in-band value rides through as `Some`.
+        let v = serde_json::json!([
+            {"sector":"Technology","exchange":"NASDAQ","pe":38.4},
+            {"sector":"Energy","exchange":"NASDAQ","pe":0.0},
+            {"sector":"Utilities","exchange":"NASDAQ","pe":-5.0},
+            {"sector":"Materials","exchange":"NASDAQ","pe":SECTOR_PE_MAX + 0.1}
+        ]);
+        let out = sector_pe_from_value(v, "NASDAQ").unwrap();
+        assert_eq!(out.len(), 4, "every row survives — only the pe is dropped to None");
+        assert_eq!(out[0].pe, Some(38.4));
+        assert_eq!(out[1].pe, None, "non-positive 0.0 → None");
+        assert_eq!(out[2].pe, None, "negative → None");
+        assert_eq!(out[3].pe, None, "above SECTOR_PE_MAX → None");
+        // The boundary itself is in-band (inclusive upper bound).
+        let edge = serde_json::json!([{"sector":"X","exchange":"NASDAQ","pe":SECTOR_PE_MAX}]);
+        assert_eq!(sector_pe_from_value(edge, "NASDAQ").unwrap()[0].pe, Some(SECTOR_PE_MAX));
     }
 
     #[test]
@@ -2150,7 +2194,7 @@ mod tests {
         // a stale / wrong value still "resolves", so the smoke pins it to a sane range.
         eprintln!("sector_pe ({}):", data.sector_pe.len());
         for s in &data.sector_pe {
-            eprintln!("  {:<8} {:<24} pe={:.2}", s.exchange, s.sector, s.pe);
+            eprintln!("  {:<8} {:<24} pe={:?}", s.exchange, s.sector, s.pe);
         }
         eprintln!("industries ({}):", data.industries.len());
         for i in &data.industries {
@@ -2168,8 +2212,10 @@ mod tests {
         }
         assert!(!data.sector_pe.is_empty(), "no sector P/E rows resolved");
         assert!(
-            data.sector_pe.iter().any(|s| s.pe.is_finite() && s.pe > 0.0),
-            "no sector carried a finite positive P/E — the snapshot may have regressed"
+            data.sector_pe
+                .iter()
+                .any(|s| s.pe.is_some_and(|pe| pe.is_finite() && pe > 0.0)),
+            "no sector carried a finite positive in-band P/E — the snapshot may have regressed"
         );
         assert!(!data.industries.is_empty(), "no industry rows resolved");
         assert!(
@@ -2291,6 +2337,97 @@ mod tests {
             }
             if !resolved {
                 eprintln!("  {exchange}: no industry-P/E data resolved over the candidate window");
+            }
+        }
+    }
+
+    /// Sector-P/E distribution probe — the sector-cut sibling of
+    /// `tuning_industry_pe_distribution_probe`, so [`SECTOR_PE_MAX`] can be re-tuned from real
+    /// data rather than the conservative industry-shared 120.0 it ships at. Same shape: report
+    /// only (no assertions, a calibration aid not a gate), walk the production weekday
+    /// candidates per board, take the first date that resolves, and print every sector's raw
+    /// aggregate P/E sorted high→low, flagging those above the current ceiling (the
+    /// trough-artifact band) and the non-positive ones (no positive aggregate earnings) — both
+    /// of which production drops to `None`. A sector aggregate sums over far more constituents
+    /// than an industry's, so expect a *tighter* plausible band and a *rarer* artifact tail;
+    /// set the ceiling above the highest plausible in-band sector aggregate, below any artifact
+    /// cluster. Hits the live API (≤2 calls per board, trivial against the 250/day free cap);
+    /// run once per change:
+    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///     src-tauri/Cargo.toml tuning_sector_pe_distribution_probe -- --ignored --nocapture
+    #[test]
+    #[ignore = "hits the live FMP API; set FMP_API_KEY. Calibration aid, not a gate — \
+                run with `-- --ignored --nocapture` to read the sector-P/E distribution."]
+    fn tuning_sector_pe_distribution_probe() {
+        let src = FmpDataSource::from_env().expect("FMP_API_KEY set");
+        let today = Utc::now().date_naive();
+        eprintln!(
+            "sector P/E distribution (today = {today}); current SECTOR_PE_MAX = {SECTOR_PE_MAX}; \
+             set the ceiling above the highest plausible in-band aggregate, below any artifact cluster:"
+        );
+        for exchange in SNAPSHOT_EXCHANGES {
+            let mut resolved = false;
+            for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
+                let date_str = date.format("%Y-%m-%d").to_string();
+                let (status, body) = src
+                    .get(FMP_SECTOR_PE_PATH, &[("date", date_str.as_str()), ("exchange", exchange)])
+                    .expect("sector-pe fetch");
+                let value = match interpret_response(status, &body) {
+                    Disposition::Value(v) => v,
+                    Disposition::Gap(reason) => {
+                        eprintln!("  {exchange} {date_str}: gap ({reason:?}) — trying earlier date");
+                        continue;
+                    }
+                };
+                let raws: Vec<FmpSectorPeRaw> = match serde_json::from_value(value) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("  {exchange} {date_str}: malformed ({e}) — trying earlier date");
+                        continue;
+                    }
+                };
+                if raws.is_empty() {
+                    continue;
+                }
+                // Bypass the *band* filter (the drop this probe exists to calibrate) but honor
+                // the *exchange* guard production enforces (`sector_pe_from_value` bails on an
+                // off-board row), or a response where FMP ignored the `exchange` filter would
+                // pollute one board's distribution with the other's. Surface any off-board count.
+                let total = raws.len();
+                let mut rows: Vec<(String, f64)> = raws
+                    .into_iter()
+                    .filter(|r| r.exchange == *exchange)
+                    .map(|r| (r.sector, r.pe))
+                    .collect();
+                let off_board = total - rows.len();
+                rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                let above = rows.iter().filter(|(_, pe)| *pe > SECTOR_PE_MAX).count();
+                let non_positive = rows.iter().filter(|(_, pe)| *pe <= 0.0).count();
+                let max_in_band = rows
+                    .iter()
+                    .map(|(_, pe)| *pe)
+                    .filter(|pe| *pe > 0.0 && *pe <= SECTOR_PE_MAX)
+                    .fold(f64::NAN, f64::max);
+                eprintln!(
+                    "\n=== {exchange} ({date_str}) — {n} sectors: {above} above ceiling, \
+                     {non_positive} non-positive, {off_board} off-board ignored, max in-band = {max_in_band:.1} ===",
+                    n = rows.len(),
+                );
+                for (sector, pe) in &rows {
+                    let flag = if *pe > SECTOR_PE_MAX {
+                        " DROP>ceiling"
+                    } else if *pe <= 0.0 {
+                        " DROP<=0"
+                    } else {
+                        ""
+                    };
+                    eprintln!("  pe={pe:>8.1}  {sector}{flag}");
+                }
+                resolved = true;
+                break;
+            }
+            if !resolved {
+                eprintln!("  {exchange}: no sector-P/E data resolved over the candidate window");
             }
         }
     }
