@@ -25,7 +25,7 @@ use crate::agent::MainAgent;
 use crate::config::{WarningCategory, WarningKind};
 use crate::data_sources::MarketDataSource;
 use crate::embedding::Embedder;
-use crate::pipeline::{generate_report, GeneratedReport, ReportPaths, ResearchStages};
+use crate::pipeline::{generate_report, AnalystStages, GeneratedReport, ReportPaths, ResearchStages};
 use crate::progress::RunContext;
 use crate::storage;
 
@@ -152,10 +152,12 @@ impl Drop for RunToken {
 /// The schema is initialized up front so the Skipped and Failed paths — which
 /// may short-circuit before `generate_report` touches the database — still have
 /// `job_runs` (and `reports`) to write to.
+#[allow(clippy::too_many_arguments)] // each is a distinct injected stage/dependency or path, documented at the call sites
 pub fn run_job(
     agent: &dyn MainAgent,
     data: &dyn MarketDataSource,
     research: &ResearchStages,
+    analysts: &AnalystStages,
     embedder: &dyn Embedder,
     paths: &ReportPaths,
     guard: &RunGuard,
@@ -193,7 +195,7 @@ pub fn run_job(
     ctx.run_started(RUN_LABEL);
 
     let started_at = now_rfc3339();
-    match generate_report(agent, data, research, embedder, paths, ctx) {
+    match generate_report(agent, data, research, analysts, embedder, paths, ctx) {
         Ok(report) => {
             let finished_at = now_rfc3339();
             // Emit the terminal tracker event even if the job-history write fails, so a

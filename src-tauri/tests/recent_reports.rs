@@ -6,7 +6,7 @@ use market_signal_temp_lib::agent::StubMainAgent;
 use market_signal_temp_lib::data_sources::StubMarketDataSource;
 use market_signal_temp_lib::embedding::StubEmbedder;
 use market_signal_temp_lib::pipeline::{
-    generate_report, list_reports, load_report, ReportPaths, ResearchStages,
+    generate_report, list_reports, load_report, AnalystStages, ReportPaths, ResearchStages,
 };
 use market_signal_temp_lib::progress::RunContext;
 
@@ -23,6 +23,7 @@ fn lists_reports_newest_first_and_loads_one_back_by_id() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -32,6 +33,7 @@ fn lists_reports_newest_first_and_loads_one_back_by_id() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),

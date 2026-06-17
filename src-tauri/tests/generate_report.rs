@@ -5,7 +5,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use market_signal_temp_lib::agent::{MainAgent, MainAgentInput, MainAgentOutput, StubMainAgent};
+use market_signal_temp_lib::agent::{
+    AnalystAgent, AnalystOutput, MainAgent, MainAgentInput, MainAgentOutput, Posture,
+    StubAnalystAgent, StubMainAgent,
+};
 use market_signal_temp_lib::baseline_delta::{BaselineDeltas, Direction};
 use market_signal_temp_lib::data_sources::{
     BaselineMarketData, Change, MarketDataSource, Quote, StubMarketDataSource,
@@ -13,7 +16,7 @@ use market_signal_temp_lib::data_sources::{
 use market_signal_temp_lib::embedding::{Embedder, StubEmbedder};
 use market_signal_temp_lib::headline_filter::StubHeadlineFilter;
 use market_signal_temp_lib::news::StubNewsSource;
-use market_signal_temp_lib::pipeline::{generate_report, ReportPaths, ResearchStages};
+use market_signal_temp_lib::pipeline::{generate_report, AnalystStages, ReportPaths, ResearchStages};
 use market_signal_temp_lib::progress::RunContext;
 use market_signal_temp_lib::research_executor::StubSearchBackend;
 use market_signal_temp_lib::research_packet::ResearchPacket;
@@ -31,6 +34,7 @@ struct RecordingAgent {
     seen_deltas: Mutex<Option<Option<BaselineDeltas>>>,
     seen_research: Mutex<Option<Option<ResearchPacket>>>,
     seen_audit_memory: Mutex<Option<Vec<String>>>,
+    seen_analyst_reviews: Mutex<Option<Vec<AnalystOutput>>>,
 }
 
 impl RecordingAgent {
@@ -40,6 +44,7 @@ impl RecordingAgent {
             seen_deltas: Mutex::new(None),
             seen_research: Mutex::new(None),
             seen_audit_memory: Mutex::new(None),
+            seen_analyst_reviews: Mutex::new(None),
         }
     }
 }
@@ -50,7 +55,19 @@ impl MainAgent for RecordingAgent {
         *self.seen_deltas.lock().unwrap() = Some(input.deltas.clone());
         *self.seen_research.lock().unwrap() = Some(input.research.clone());
         *self.seen_audit_memory.lock().unwrap() = Some(input.audit_memory.clone());
+        *self.seen_analyst_reviews.lock().unwrap() = Some(input.analyst_reviews.clone());
         StubMainAgent.generate(input)
+    }
+}
+
+/// An analyst that always fails, to exercise the not-fail-soft contract: a failing
+/// analyst stage is a job failure (`docs/weekly-report-workflow.md §Step 9`), unlike
+/// the fail-soft research half.
+struct FailingAnalyst;
+
+impl AnalystAgent for FailingAnalyst {
+    fn review(&self, _packet: &ResearchPacket) -> anyhow::Result<AnalystOutput> {
+        anyhow::bail!("analyst model unreachable (simulated)")
     }
 }
 
@@ -95,6 +112,7 @@ fn generate_report_writes_markdown_file_and_db_row() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -132,6 +150,7 @@ fn step_6_baseline_scan_reaches_the_agent_input() {
         &agent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -159,6 +178,7 @@ fn research_packet_reaches_the_agent_input() {
         &agent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -184,6 +204,69 @@ fn research_packet_reaches_the_agent_input() {
     // and the packet's memory is empty (the two-run test below covers the populated
     // path).
     assert!(packet.memory.is_empty(), "first run has no memory to recall");
+}
+
+#[test]
+fn analyst_reviews_reach_the_agent_input() {
+    // Steps 12–15 → Step 16: the three stub analysts run over the packet and their
+    // reviews ride into the main agent's input, one per posture in Bull/Bear/Balanced
+    // order.
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths::under(dir.path());
+
+    let agent = RecordingAgent::new();
+    generate_report(
+        &agent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &AnalystStages::stub(),
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    )
+    .unwrap();
+
+    let reviews = agent
+        .seen_analyst_reviews
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("agent was invoked");
+    assert_eq!(
+        reviews.iter().map(|r| r.posture).collect::<Vec<_>>(),
+        vec![Posture::Bull, Posture::Bear, Posture::Balanced],
+        "all three analyst reviews reached the agent, in posture order"
+    );
+}
+
+#[test]
+fn a_failing_analyst_fails_the_run() {
+    // Not fail-soft: a single failing analyst aborts the run rather than degrading to a
+    // thinner report (`docs/weekly-report-workflow.md §Step 9`).
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths::under(dir.path());
+
+    let analysts = AnalystStages {
+        bull: Box::new(FailingAnalyst),
+        bear: Box::new(StubAnalystAgent::new(Posture::Bear)),
+        balanced: Box::new(StubAnalystAgent::new(Posture::Balanced)),
+    };
+    let result = generate_report(
+        &StubMainAgent,
+        &StubMarketDataSource,
+        &ResearchStages::stub(),
+        &analysts,
+        &StubEmbedder,
+        &paths,
+        &RunContext::noop(),
+    );
+    assert!(result.is_err(), "a failing analyst fails the run");
+    // No report row was persisted — the run aborted before the persist step.
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM reports", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "no report persists when an analyst fails");
 }
 
 /// A router that records the full input it was handed and then delegates to the
@@ -220,6 +303,7 @@ fn second_report_routes_with_the_first_reports_summary() {
         &StubMainAgent,
         &FixedMarketDataSource(base_with_sp(5_500.0)),
         &stages_with_recording_router(seen1.clone()),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -237,6 +321,7 @@ fn second_report_routes_with_the_first_reports_summary() {
         &StubMainAgent,
         &FixedMarketDataSource(base_with_sp(5_610.0)),
         &stages_with_recording_router(seen2.clone()),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -267,6 +352,7 @@ fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
         &agent1,
         &FixedMarketDataSource(base_with_sp(5_500.0)),
         &stages_with_recording_router(seen1.clone()),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -297,6 +383,7 @@ fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
         &agent2,
         &FixedMarketDataSource(base_with_sp(5_610.0)),
         &stages_with_recording_router(seen2.clone()),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -365,6 +452,7 @@ fn second_report_diffs_against_the_first_and_snapshots_persist() {
         &agent1,
         &FixedMarketDataSource(base_with_sp(5_500.0)),
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -382,6 +470,7 @@ fn second_report_diffs_against_the_first_and_snapshots_persist() {
         &agent2,
         &FixedMarketDataSource(base_with_sp(5_610.0)),
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -428,6 +517,7 @@ fn report_summary_lands_in_vector_memory() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -470,6 +560,7 @@ fn embedding_failure_never_fails_the_report() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &FailingEmbedder,
         &paths,
         &RunContext::noop(),
@@ -544,6 +635,7 @@ fn durable_learnings_land_in_vector_memory() {
         &ResearchStages::stub(),
         // Distinct learnings must stay distinct under the embedder; StubEmbedder
         // collapses real prose to ~1.0 cosine, which dedup would then over-merge.
+        &AnalystStages::stub(),
         &DistinctEmbedder,
         &paths,
         &RunContext::noop(),
@@ -598,6 +690,7 @@ fn durable_learnings_are_trimmed_and_capped() {
         &StubMarketDataSource,
         &ResearchStages::stub(),
         // Six distinct lessons must all survive to the cap; see DistinctEmbedder.
+        &AnalystStages::stub(),
         &DistinctEmbedder,
         &paths,
         &RunContext::noop(),
@@ -638,6 +731,7 @@ fn durable_learnings_dedup_drops_a_restatement() {
         &LearningAgent(vec![learning.into(), learning.into()]),
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &DistinctEmbedder,
         &paths,
         &RunContext::noop(),
@@ -666,6 +760,7 @@ fn learning_embedding_failure_never_fails_the_report() {
         &LearningAgent(vec!["A learning that will fail to embed.".into()]),
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &FailingEmbedder,
         &paths,
         &RunContext::noop(),
@@ -722,6 +817,7 @@ fn cancel_during_persist_skips_remaining_memory_writes() {
         ]),
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &embedder,
         &paths,
         &ctx,
@@ -761,6 +857,7 @@ fn learnings_written_on_one_run_are_recalled_on_the_next() {
         ]),
         &FixedMarketDataSource(base_with_sp(5_500.0)),
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -773,6 +870,7 @@ fn learnings_written_on_one_run_are_recalled_on_the_next() {
         &agent2,
         &FixedMarketDataSource(base_with_sp(5_610.0)),
         &stages_with_recording_router(seen2.clone()),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -828,6 +926,7 @@ fn inbox_documents_flow_to_router_and_packet_and_archive_after_persist() {
         &agent,
         &StubMarketDataSource,
         &stages_with_recording_router(seen.clone()),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -912,6 +1011,7 @@ fn a_failed_run_never_consumes_inbox_documents() {
         &FailingMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -937,6 +1037,7 @@ fn a_healed_inbox_clears_previously_recorded_failures() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -954,6 +1055,7 @@ fn a_healed_inbox_clears_previously_recorded_failures() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -1067,6 +1169,7 @@ fn retention_cascade_evicts_the_oldest_report_beyond_the_cap() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -1158,6 +1261,7 @@ fn retention_cascade_tolerates_an_already_missing_markdown_file() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -1214,6 +1318,7 @@ fn retention_cascade_skips_db_deletes_when_the_file_cannot_be_removed() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),

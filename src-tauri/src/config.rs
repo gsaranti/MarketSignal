@@ -27,6 +27,7 @@ use anyhow::{anyhow, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 
+use crate::agent::Posture;
 use crate::model_agent::{AgentModel, MainAgentConfig, Provider};
 use crate::storage;
 
@@ -167,6 +168,35 @@ impl AppConfig {
         };
         let api_key = present(key_opt)
             .ok_or_else(|| anyhow!("{var} is not set (required for the selected Main Agent model)"))?
+            .to_string();
+        Ok(MainAgentConfig { model, api_key })
+    }
+
+    /// Resolve one analyst adapter's config (`docs/configuration.md §Agent Model
+    /// Configuration`): the user-selected model for the given [`Posture`] and the API
+    /// key for that model's provider. Mirrors `main_agent_config` — same post-gate
+    /// resolution and error wording — but keyed by posture, since each of the three
+    /// analysts (Bull / Bear / Balanced) is independently configurable. Reuses
+    /// `MainAgentConfig` ({model, api_key}); the posture is carried by the adapter, not
+    /// the config.
+    pub fn analyst_config(&self, posture: Posture) -> Result<MainAgentConfig> {
+        let (label_opt, var) = match posture {
+            Posture::Bull => (&self.bull_agent_model, "MARKET_SIGNAL_BULL_AGENT_MODEL"),
+            Posture::Bear => (&self.bear_agent_model, "MARKET_SIGNAL_BEAR_AGENT_MODEL"),
+            Posture::Balanced => {
+                (&self.balanced_agent_model, "MARKET_SIGNAL_BALANCED_AGENT_MODEL")
+            }
+        };
+        let name = posture.display_name();
+        let label = present(label_opt)
+            .ok_or_else(|| anyhow!("{var} is not set (no {name} model selected)"))?;
+        let model = AgentModel::from_config_label(label)?;
+        let (key_opt, key_var) = match model.provider() {
+            Provider::OpenAi => (&self.openai_api_key, "OPENAI_API_KEY"),
+            Provider::Anthropic => (&self.anthropic_api_key, "ANTHROPIC_API_KEY"),
+        };
+        let api_key = present(key_opt)
+            .ok_or_else(|| anyhow!("{key_var} is not set (required for the selected {name} model)"))?
             .to_string();
         Ok(MainAgentConfig { model, api_key })
     }
@@ -365,6 +395,12 @@ pub fn blocked_summary(report: &ValidationReport) -> String {
 /// carries a secret that must never be printed.
 pub struct RunConfig {
     pub main: MainAgentConfig,
+    /// The three analyst adapter configs (`docs/weekly-report-workflow.md §§12–15`),
+    /// each the user-selected model + provider key for that posture. Resolved beside
+    /// `main` once the gate has passed.
+    pub bull: MainAgentConfig,
+    pub bear: MainAgentConfig,
+    pub balanced: MainAgentConfig,
     pub fmp_api_key: String,
     pub fred_api_key: String,
     pub tavily_api_key: String,
@@ -378,9 +414,11 @@ pub struct RunConfig {
 /// carries `RunConfig`, which deliberately has no `Debug` so an API key can
 /// never be printed.
 pub enum ScheduledRun {
-    /// Gate passed: carries the resolved run inputs (model config + every API key the
-    /// baseline scan and research half need).
-    Proceed(RunConfig),
+    /// Gate passed: carries the resolved run inputs (model configs + every API key the
+    /// baseline scan and research half need). Boxed because `RunConfig` now carries four
+    /// agent configs and six keys — far larger than the other variants, which would
+    /// otherwise size every `ScheduledRun` to it.
+    Proceed(Box<RunConfig>),
     /// The weekly job is disabled — an expected, quiet no-op (no diagnostic).
     Disabled,
     /// Blocked by a noteworthy reason (incomplete config or an unresolved model
@@ -410,6 +448,9 @@ pub fn decide_scheduled_run(cfg: &AppConfig, enabled: bool) -> ScheduledRun {
     let resolved = (|| -> Result<RunConfig> {
         Ok(RunConfig {
             main: cfg.main_agent_config()?,
+            bull: cfg.analyst_config(Posture::Bull)?,
+            bear: cfg.analyst_config(Posture::Bear)?,
+            balanced: cfg.analyst_config(Posture::Balanced)?,
             fmp_api_key: cfg.fmp_key()?,
             fred_api_key: cfg.fred_key()?,
             tavily_api_key: cfg.tavily_key()?,
@@ -418,7 +459,7 @@ pub fn decide_scheduled_run(cfg: &AppConfig, enabled: bool) -> ScheduledRun {
         })
     })();
     match resolved {
-        Ok(run_config) => ScheduledRun::Proceed(run_config),
+        Ok(run_config) => ScheduledRun::Proceed(Box::new(run_config)),
         Err(e) => ScheduledRun::Blocked(e.to_string()),
     }
 }
@@ -676,6 +717,14 @@ mod tests {
         match decide_scheduled_run(&complete(), true) {
             ScheduledRun::Proceed(rc) => {
                 assert_eq!(rc.main.model, AgentModel::ClaudeOpus);
+                // The three analyst configs resolve beside the main agent's, each its
+                // own model — and each picks up its provider's key (OpenAI for the
+                // gpt-5 pair, Anthropic for claude-sonnet).
+                assert_eq!(rc.bull.model, AgentModel::Gpt5);
+                assert_eq!(rc.bull.api_key, "sk-openai");
+                assert_eq!(rc.bear.model, AgentModel::Gpt5Mini);
+                assert_eq!(rc.balanced.model, AgentModel::ClaudeSonnet);
+                assert_eq!(rc.balanced.api_key, "sk-anthropic");
                 assert_eq!(rc.fmp_api_key, "fmp-key");
                 assert_eq!(rc.fred_api_key, "fred-key");
             }

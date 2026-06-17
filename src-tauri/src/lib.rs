@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod analyst_agent;
 pub mod baseline_delta;
 pub mod bls;
 pub mod config;
@@ -48,7 +49,7 @@ use data_sources::CompositeMarketDataSource;
 use fmp::FmpDataSource;
 use fred::FredDataSource;
 use model_agent::ModelMainAgent;
-use pipeline::{GeneratedReport, ReportPaths, ResearchStages};
+use pipeline::{AnalystStages, GeneratedReport, ReportPaths, ResearchStages};
 use progress::{ProgressMessage, ProgressReporter, RunContext};
 
 /// How long the scheduler sleeps between wake-ups while waiting for the next
@@ -197,6 +198,13 @@ async fn generate_report_manual(
         return Err(config::blocked_summary(&report));
     }
     let main_config = cfg.main_agent_config().map_err(|e| e.to_string())?;
+    // The three analyst adapter configs (Steps 12–15): each posture's user-selected
+    // model + provider key. The gate above already requires all three.
+    let bull_config = cfg.analyst_config(agent::Posture::Bull).map_err(|e| e.to_string())?;
+    let bear_config = cfg.analyst_config(agent::Posture::Bear).map_err(|e| e.to_string())?;
+    let balanced_config = cfg
+        .analyst_config(agent::Posture::Balanced)
+        .map_err(|e| e.to_string())?;
     let fmp_key = cfg.fmp_key().map_err(|e| e.to_string())?;
     let fred_key = cfg.fred_key().map_err(|e| e.to_string())?;
     // Research-half credentials (Steps 7–11): Tavily (news ingestion + the Step-9 search
@@ -243,12 +251,16 @@ async fn generate_report_manual(
             &ctx,
         )
         .map_err(|e| e.to_string())?;
+        // Steps 12–15: the three analyst adapters, one per posture, sharing the run's
+        // context like the other live stages so each review streams a request row.
+        let analysts = AnalystStages::live(bull_config, bear_config, balanced_config, &ctx)
+            .map_err(|e| e.to_string())?;
         // The Step-17 memory write's embedder: the fixed internal OpenAI embedding
         // stage (`text-embedding-3-large`), reusing the same key as the filter.
         let embedder = OpenAiEmbedder::new(openai_key)
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        run_job(&agent, &data, &research, &embedder, &paths, &guard, &ctx)
+        run_job(&agent, &data, &research, &analysts, &embedder, &paths, &guard, &ctx)
             .map_err(|e| e.to_string())
     })
     .await
@@ -648,12 +660,21 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
             &ctx,
         )
         .map_err(|e| e.to_string())?;
+        // Steps 12–15: the three analyst adapters, resolved on `RunConfig` beside the
+        // main agent and sharing the run's context like the manual command's.
+        let analysts = AnalystStages::live(
+            run_config.bull,
+            run_config.bear,
+            run_config.balanced,
+            &ctx,
+        )
+        .map_err(|e| e.to_string())?;
         // Identical to the manual command's embedder: the fixed internal OpenAI
         // embedding stage for the Step-17 memory write.
         let embedder = OpenAiEmbedder::new(run_config.openai_api_key)
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        run_job(&agent, &data, &research, &embedder, &paths, &guard, &ctx)
+        run_job(&agent, &data, &research, &analysts, &embedder, &paths, &guard, &ctx)
             .map_err(|e| e.to_string())
     })
     .await;

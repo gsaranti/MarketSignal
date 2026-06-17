@@ -29,8 +29,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::agent::{
-    MainAgent, MainAgentInput, MainAgentOutput, MarketCycle, RecentReport, ReportSummary,
-    RiskPosture, ThesisStance,
+    AnalystOutput, MainAgent, MainAgentInput, MainAgentOutput, MarketCycle, RecentReport,
+    ReportSummary, RiskPosture, ThesisStance,
 };
 use crate::baseline_delta::BaselineDeltas;
 use crate::data_sources::BaselineMarketData;
@@ -237,6 +237,15 @@ weighed; cite them like any other source where they inform the analysis. A trunc
 a document means only the head of a longer document is shown — weigh it accordingly rather than \
 assuming it is complete.
 
+The prompt also carries `analyst reviews` — three independent reads of this week's research \
+packet from a Bull, a Bear, and a Balanced analyst, each with its summary, key points, risks, \
+opportunities, and stated confidence. Evaluate them independently and critically rather than \
+averaging them: agree with one or more, reject weak reasoning, combine arguments, elevate a \
+minority view, or flag unsupported claims, and decide how much weight each perspective earns. \
+Do not stage a debate or quote the analysts as characters — the final report is your own \
+synthesis in one unified voice, the Market Signal Thesis. When the analyst-reviews block is \
+absent, synthesize from the data and research directly.
+
 Produce the report body as GitHub-flavored Markdown with these sections, in order:
 - # Weekly Market Report (title), followed by a short date / report-type line
 - ## Header Summary — the 3 to 6 bullets that also populate header_summary_bullets
@@ -434,6 +443,43 @@ fn build_user_prompt(
     }
 
     prompt
+}
+
+/// Render the Steps 12–15 analyst reviews as the synthesis block the main agent reasons
+/// over (`docs/weekly-report-workflow.md §Step 16`, `docs/agents.md §Synthesis
+/// Behavior`). Each review is a labeled sub-block (Bull / Bear / Balanced) carrying that
+/// analyst's summary, key points, risks, opportunities, and confidence. Returns an empty
+/// string when no reviews ran (the offline/stub path), so the prompt omits the section.
+/// Appended after [`build_user_prompt`]'s blocks rather than threaded through its
+/// signature — a focused, separately-tested seam — with a heading distinct from the
+/// memory and research blocks so they never read as one.
+fn format_analyst_reviews(reviews: &[AnalystOutput]) -> String {
+    if reviews.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from(
+        "\n\nAnalyst reviews of this week's research packet — three independent perspectives to \
+         critique and weigh in your synthesis (agree, reject weak reasoning, combine arguments, or \
+         elevate a minority view), then write the final report in one unified voice:",
+    );
+    for r in reviews {
+        block.push_str(&format!(
+            "\n\n--- {} (confidence: {}) ---\n{}",
+            r.posture.display_name(),
+            r.confidence.as_str(),
+            r.summary
+        ));
+        if !r.key_points.is_empty() {
+            block.push_str(&format!("\nKey points:\n- {}", r.key_points.join("\n- ")));
+        }
+        if !r.risks.is_empty() {
+            block.push_str(&format!("\nRisks:\n- {}", r.risks.join("\n- ")));
+        }
+        if !r.opportunities.is_empty() {
+            block.push_str(&format!("\nOpportunities:\n- {}", r.opportunities.join("\n- ")));
+        }
+    }
+    block
 }
 
 /// The model's structured return: the Markdown body plus the analytical fields.
@@ -997,13 +1043,16 @@ impl MainAgent for ModelMainAgent {
         let provider = self.config.model.provider();
         let model_id = self.config.model.model_id();
         let schema = response_envelope_schema();
-        let user = build_user_prompt(
+        let mut user = build_user_prompt(
             &input.baseline,
             input.deltas.as_ref(),
             input.research.as_ref(),
             &input.audit_memory,
             &input.recent_reports,
         );
+        // Steps 12–15 → Step 16: append the analyst reviews the synthesis reasons over.
+        // Empty on the offline/stub path, so the block is simply omitted.
+        user.push_str(&format_analyst_reviews(&input.analyst_reviews));
         let body = match provider {
             Provider::Anthropic => build_anthropic_request(model_id, SYSTEM_PROMPT, &user, &schema),
             Provider::OpenAi => build_openai_request(model_id, SYSTEM_PROMPT, &user, &schema),
@@ -1094,6 +1143,49 @@ mod tests {
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(body["response_format"]["json_schema"]["strict"], true);
         assert_eq!(body["messages"][1]["content"], USER_PROMPT);
+    }
+
+    fn sample_review(posture: crate::agent::Posture) -> AnalystOutput {
+        AnalystOutput {
+            posture,
+            summary: format!("{} summary line", posture.as_str()),
+            key_points: vec!["kp".into()],
+            risks: vec!["rk".into()],
+            opportunities: vec!["op".into()],
+            confidence: crate::agent::Confidence::High,
+        }
+    }
+
+    #[test]
+    fn analyst_block_renders_each_posture_when_present_and_is_empty_otherwise() {
+        use crate::agent::Posture;
+        let reviews = [
+            sample_review(Posture::Bull),
+            sample_review(Posture::Bear),
+            sample_review(Posture::Balanced),
+        ];
+        let block = format_analyst_reviews(&reviews);
+        assert!(block.contains("Analyst reviews of this week's research packet"), "{block}");
+        assert!(block.contains("Bull Analyst (confidence: high)"), "{block}");
+        assert!(block.contains("Bear Analyst"), "{block}");
+        assert!(block.contains("Balanced Analyst"), "{block}");
+        assert!(block.contains("Key points:"), "{block}");
+        // Empty input -> the block is omitted entirely, never rendered blank.
+        assert!(format_analyst_reviews(&[]).is_empty());
+    }
+
+    #[test]
+    fn analyst_block_heading_is_distinct_from_memory_and_research_blocks() {
+        let block = format_analyst_reviews(&[sample_review(crate::agent::Posture::Bull)]);
+        assert!(!block.contains("Recalled long-term memory"), "{block}");
+        assert!(!block.contains("Recalled memory for the retrospective audit"), "{block}");
+        assert!(!block.contains("Filtered news clusters"), "{block}");
+    }
+
+    #[test]
+    fn system_prompt_directs_independent_analyst_synthesis() {
+        assert!(SYSTEM_PROMPT.contains("analyst reviews"));
+        assert!(SYSTEM_PROMPT.contains("one unified voice"));
     }
 
     #[test]

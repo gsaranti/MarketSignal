@@ -144,6 +144,14 @@ pub struct MainAgentInput {
     /// section, an empty one (a first run or a DB/file failure) omits it. Best-effort and
     /// additive — never gates the run. Newest first.
     pub recent_reports: Vec<RecentReport>,
+    /// The Steps 12–15 analyst reviews (`docs/weekly-report-workflow.md §§12–15`):
+    /// the Bull, Bear, and Balanced reads of the same condensed research packet,
+    /// which the main agent critiques and weighs during synthesis (`§Step 16`,
+    /// `docs/agents.md §Synthesis Behavior`). Populated on the live path (the three
+    /// analyst stages run before the main agent); empty on the offline/stub path and
+    /// the early slices, in which case the synthesis prompt simply omits the block.
+    /// Ephemeral — never persisted (`§Step 12`).
+    pub analyst_reviews: Vec<AnalystOutput>,
 }
 
 /// What the main agent returns: the canonical Markdown body plus the structured
@@ -283,6 +291,126 @@ This frames where risk and reward look asymmetric — it is not buy/sell guidanc
 - Stubbed report — no external sources in this slice.
 "#;
 
+/// Which analytical perspective an analyst agent argues from (`docs/agents.md
+/// §Analyst Agents`). Each of the three fixed analyst stages (`docs/weekly-report
+/// -workflow.md §§12–15`) is one posture; the posture selects the adapter's system
+/// prompt and tags the review it returns so the main agent's synthesis can attribute
+/// each read. Serializes to the lowercase label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Posture {
+    Bull,
+    Bear,
+    Balanced,
+}
+
+impl Posture {
+    /// The three postures in the doc's order — the single source for constructing the
+    /// analyst trio so callers never hard-code the set.
+    pub const ALL: [Posture; 3] = [Self::Bull, Self::Bear, Self::Balanced];
+
+    /// Canonical lowercase label (the serde rename and the per-review tag).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Posture::Bull => "bull",
+            Posture::Bear => "bear",
+            Posture::Balanced => "balanced",
+        }
+    }
+
+    /// Human-readable analyst name, for prompts and the synthesis block.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Posture::Bull => "Bull Analyst",
+            Posture::Bear => "Bear Analyst",
+            Posture::Balanced => "Balanced Analyst",
+        }
+    }
+}
+
+/// How strongly an analyst holds its read (`docs/agents.md §Balanced Analyst` names
+/// assigning confidence levels as part of weighing evidence). Serializes lowercase;
+/// defaults to `Medium` so a model response that omits it still decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl Confidence {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Confidence::Low => "low",
+            Confidence::Medium => "medium",
+            Confidence::High => "high",
+        }
+    }
+}
+
+/// One analyst agent's structured review of the condensed research packet
+/// (`docs/weekly-report-workflow.md §§12–15`). This is the contract between the
+/// analyst stage and the main agent's synthesis (`§Step 16`): each analyst argues
+/// from its `posture` and returns its read as fields the main agent critiques and
+/// weighs. Ephemeral — never persisted (`§Step 12`); it rides into the main agent on
+/// [`MainAgentInput::analyst_reviews`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnalystOutput {
+    pub posture: Posture,
+    /// A short prose read of the week from this perspective.
+    pub summary: String,
+    /// The strongest specific points the perspective rests on.
+    pub key_points: Vec<String>,
+    /// Risks this perspective surfaces (a bull still names what could break its case).
+    pub risks: Vec<String>,
+    /// Opportunities or constructive developments this perspective surfaces.
+    pub opportunities: Vec<String>,
+    /// How strongly the analyst holds this read.
+    pub confidence: Confidence,
+}
+
+/// The analyst stage (`docs/agents.md §Analyst Agents`). One method: read the shared
+/// condensed research packet and return a structured review from the adapter's
+/// assigned posture. Sync and pure like [`MainAgent`] — the blocking model HTTP call
+/// inside the real adapter is offloaded via `spawn_blocking` at the application-layer
+/// seam, where the three analysts run concurrently (`docs/weekly-report-workflow.md
+/// §Step 12`).
+pub trait AnalystAgent {
+    fn review(&self, packet: &ResearchPacket) -> anyhow::Result<AnalystOutput>;
+}
+
+/// Deterministic offline stand-in for a real analyst adapter, tagged with the posture
+/// it argues from. Returns a fixed structured review so the pipeline and its tests run
+/// end to end without live keys.
+#[derive(Debug)]
+pub struct StubAnalystAgent {
+    posture: Posture,
+}
+
+impl StubAnalystAgent {
+    pub fn new(posture: Posture) -> Self {
+        Self { posture }
+    }
+}
+
+impl AnalystAgent for StubAnalystAgent {
+    fn review(&self, _packet: &ResearchPacket) -> anyhow::Result<AnalystOutput> {
+        Ok(AnalystOutput {
+            posture: self.posture,
+            summary: format!(
+                "{} read (offline stub): a fixed perspective for deterministic runs.",
+                self.posture.display_name()
+            ),
+            key_points: vec![format!("{} key point", self.posture.as_str())],
+            risks: vec![format!("{} risk", self.posture.as_str())],
+            opportunities: vec![format!("{} opportunity", self.posture.as_str())],
+            confidence: Confidence::Medium,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +455,60 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(v).unwrap(), v.as_str());
         }
+    }
+
+    #[test]
+    fn posture_and_confidence_serialize_lowercase() {
+        for p in Posture::ALL {
+            assert_eq!(serde_json::to_value(p).unwrap(), p.as_str());
+        }
+        for c in [Confidence::Low, Confidence::Medium, Confidence::High] {
+            assert_eq!(serde_json::to_value(c).unwrap(), c.as_str());
+        }
+    }
+
+    #[test]
+    fn analyst_output_round_trips_through_serde() {
+        let out = AnalystOutput {
+            posture: Posture::Bear,
+            summary: "Fragile breadth under a narrow rally.".into(),
+            key_points: vec!["Leadership is concentrated".into()],
+            risks: vec!["A reacceleration in core inflation".into()],
+            opportunities: vec!["Quality at a discount if the tape breaks".into()],
+            confidence: Confidence::High,
+        };
+        let json = serde_json::to_string(&out).unwrap();
+        let back: AnalystOutput = serde_json::from_str(&json).unwrap();
+        assert_eq!(out, back);
+        // The posture tag serializes to its lowercase label.
+        assert_eq!(serde_json::to_value(&out).unwrap()["posture"], "bear");
+    }
+
+    #[test]
+    fn stub_analyst_tags_its_posture_and_default_input_has_no_reviews() {
+        // Each stub is one posture and returns a review tagged with it.
+        for p in Posture::ALL {
+            let out = StubAnalystAgent::new(p)
+                .review(&crate::research_packet::ResearchPacket::default())
+                .unwrap();
+            assert_eq!(out.posture, p);
+            assert!(!out.summary.is_empty());
+        }
+        // The main agent input defaults to no analyst reviews (the offline/stub path),
+        // so the synthesis prompt omits the block until the live stage populates it.
+        assert!(MainAgentInput::default().analyst_reviews.is_empty());
+    }
+
+    #[test]
+    fn confidence_defaults_to_medium_when_absent() {
+        // The review schema marks confidence required, but a lenient decode keeps a
+        // malformed response from losing the rest of the review.
+        #[derive(Deserialize)]
+        struct Partial {
+            #[serde(default)]
+            confidence: Confidence,
+        }
+        let p: Partial = serde_json::from_str("{}").unwrap();
+        assert_eq!(p.confidence, Confidence::Medium);
     }
 }

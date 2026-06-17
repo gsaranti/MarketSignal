@@ -10,7 +10,11 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::agent::{MainAgent, MainAgentInput, RecentReport, ReportSummary};
+use crate::agent::{
+    AnalystAgent, AnalystOutput, MainAgent, MainAgentInput, Posture, RecentReport, ReportSummary,
+    StubAnalystAgent,
+};
+use crate::analyst_agent::ModelAnalystAgent;
 use crate::baseline_delta::{self, BaselineDeltas};
 use crate::data_sources::{
     BaselineMarketData, GroupKind, MarketDataSource, BASELINE_SCHEMA_VERSION,
@@ -18,6 +22,7 @@ use crate::data_sources::{
 use crate::document_parser::{self, ParsedResearchDoc};
 use crate::embedding::Embedder;
 use crate::headline_filter::HeadlineFilter;
+use crate::model_agent::MainAgentConfig;
 use crate::news::{self, NewsSource};
 use crate::progress::RunContext;
 use crate::research_executor::{execute_research, select_branch_policy, SearchBackend, WallClock};
@@ -123,6 +128,76 @@ impl ResearchStages {
     }
 }
 
+/// The three analyst stages (Steps 12–15), injected like [`ResearchStages`] so the spine
+/// stays offline-stubbable (`AnalystStages::stub`) while the live command constructs the
+/// real adapters (`AnalystStages::live`). Each is one [`Posture`] behind the
+/// [`AnalystAgent`] trait; the trio runs concurrently in [`run_analysts`]. The trait
+/// objects are `Send + Sync` so the scoped threads can borrow them.
+pub struct AnalystStages {
+    pub bull: Box<dyn AnalystAgent + Send + Sync>,
+    pub bear: Box<dyn AnalystAgent + Send + Sync>,
+    pub balanced: Box<dyn AnalystAgent + Send + Sync>,
+}
+
+impl AnalystStages {
+    /// The offline stub bundle: a deterministic stand-in for each posture, so
+    /// `generate_report` runs end to end against fixtures with no live keys. Used by the
+    /// integration tests and any offline smoke.
+    pub fn stub() -> Self {
+        Self {
+            bull: Box::new(StubAnalystAgent::new(Posture::Bull)),
+            bear: Box::new(StubAnalystAgent::new(Posture::Bear)),
+            balanced: Box::new(StubAnalystAgent::new(Posture::Balanced)),
+        }
+    }
+
+    /// The live analyst bundle for one run — the single construction shared by the
+    /// production command paths (`lib.rs`), so the wiring can't drift. Each posture's
+    /// user-selected model + provider key arrives as a resolved `MainAgentConfig`
+    /// (`config::RunConfig`); every adapter carries `ctx` so each review call streams a
+    /// per-request tracker row. Errors here are HTTP-client build failures only.
+    pub fn live(
+        bull: MainAgentConfig,
+        bear: MainAgentConfig,
+        balanced: MainAgentConfig,
+        ctx: &std::sync::Arc<RunContext>,
+    ) -> Result<Self> {
+        Ok(Self {
+            bull: Box::new(ModelAnalystAgent::new(Posture::Bull, bull)?.with_context(ctx.clone())),
+            bear: Box::new(ModelAnalystAgent::new(Posture::Bear, bear)?.with_context(ctx.clone())),
+            balanced: Box::new(
+                ModelAnalystAgent::new(Posture::Balanced, balanced)?.with_context(ctx.clone()),
+            ),
+        })
+    }
+}
+
+/// Run the three analyst agents (Bull / Bear / Balanced) concurrently over the shared
+/// condensed packet (`docs/weekly-report-workflow.md §Step 12`). Concurrency uses scoped
+/// OS threads rather than `tokio`, keeping the agent half off the async runtime (the
+/// spine's blocking-call discipline — `tokio` lives only at app-layer seams). Each
+/// analyst makes one blocking HTTP call and emits its own per-request tracker row;
+/// reviews come back in Bull/Bear/Balanced order. **Not fail-soft:** any analyst error
+/// (or a panicked thread) propagates as a job failure (`§Step 9` — the analyst reviews
+/// are fixed single-pass stages, unlike the fail-soft research half).
+fn run_analysts(analysts: &AnalystStages, packet: &ResearchPacket) -> Result<Vec<AnalystOutput>> {
+    let (bull, bear, balanced) = std::thread::scope(|s| {
+        let bull = s.spawn(|| analysts.bull.review(packet));
+        let bear = s.spawn(|| analysts.bear.review(packet));
+        let balanced = s.spawn(|| analysts.balanced.review(packet));
+        (bull.join(), bear.join(), balanced.join())
+    });
+    let mut reviews = Vec::with_capacity(3);
+    for joined in [bull, bear, balanced] {
+        match joined {
+            Ok(Ok(review)) => reviews.push(review),
+            Ok(Err(e)) => return Err(e),
+            Err(_) => bail!("an analyst stage thread panicked"),
+        }
+    }
+    Ok(reviews)
+}
+
 /// The result of a report run, returned to the caller (the Tauri command or a
 /// test). Carries the Markdown so the frontend can render it immediately.
 /// `Clone` so a scheduled run can hand the report to an open window via a
@@ -171,6 +246,7 @@ pub fn generate_report(
     agent: &dyn MainAgent,
     data: &dyn MarketDataSource,
     research: &ResearchStages,
+    analysts: &AnalystStages,
     embedder: &dyn Embedder,
     paths: &ReportPaths,
     ctx: &RunContext,
@@ -259,6 +335,24 @@ pub fn generate_report(
     // router's) so the freshest persisted reports are picked up after any upstream work.
     let recent_reports_for_audit = load_recent_reports_for_audit(&paths.db_path);
 
+    // Steps 12–15: the three analyst agents read the same condensed packet concurrently
+    // (`docs/weekly-report-workflow.md §Step 12`). Run before `research_packet` moves into
+    // the agent input below. Unlike the fail-soft research half, an analyst failure is a
+    // job failure (`run_analysts`, `§Step 9`): the error propagates exactly like the agent
+    // step's, so `jobs::run_job` records it as a failed (or, under a concurrent cancel,
+    // cancelled) run. Each analyst streams its own per-request row inside this step.
+    ctx.step_started("analysts", "Running the analyst agents");
+    let analyst_reviews = match run_analysts(analysts, &research_packet) {
+        Ok(reviews) => reviews,
+        Err(e) => {
+            let status = if ctx.is_cancelled() { "cancelled" } else { "failed" };
+            ctx.step_finished("analysts", status, Some(e.to_string()));
+            return Err(e);
+        }
+    };
+    ctx.step_finished("analysts", "ok", None);
+    bail_if_cancelled(ctx)?;
+
     ctx.step_started("agent", "Main agent writing the report");
     let output = match agent.generate(MainAgentInput {
         baseline,
@@ -268,6 +362,8 @@ pub fn generate_report(
         audit_memory,
         // Step 2 → Step 5: the recent reports are the audit's auditable object and its gate.
         recent_reports: recent_reports_for_audit,
+        // Steps 12–15 → Step 16: the analyst reviews the main agent synthesizes over.
+        analyst_reviews,
     }) {
         Ok(output) => output,
         Err(e) => {

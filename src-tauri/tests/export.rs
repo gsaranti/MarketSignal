@@ -7,7 +7,7 @@ use market_signal_temp_lib::agent::StubMainAgent;
 use market_signal_temp_lib::data_sources::StubMarketDataSource;
 use market_signal_temp_lib::embedding::StubEmbedder;
 use market_signal_temp_lib::pipeline::{
-    export_markdown_to, generate_report, ReportPaths, ResearchStages,
+    export_markdown_to, generate_report, AnalystStages, ReportPaths, ResearchStages,
 };
 use market_signal_temp_lib::progress::RunContext;
 
@@ -24,6 +24,7 @@ fn exports_stored_markdown_to_a_chosen_destination() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
@@ -50,6 +51,7 @@ fn exporting_an_unknown_id_is_a_typed_error() {
         &StubMainAgent,
         &StubMarketDataSource,
         &ResearchStages::stub(),
+        &AnalystStages::stub(),
         &StubEmbedder,
         &paths,
         &RunContext::noop(),
