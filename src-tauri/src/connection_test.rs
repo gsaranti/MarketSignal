@@ -124,7 +124,9 @@ fn build_client() -> Result<Client> {
 pub fn run_test(provider: CredentialProvider, api_key: &str) -> ConnectionTestResult {
     let http = match build_client() {
         Ok(c) => c,
-        Err(e) => return ConnectionTestResult::fail(format!("Couldn't start the connection test: {e}")),
+        Err(e) => {
+            return ConnectionTestResult::fail(format!("Couldn't start the connection test: {e}"))
+        }
     };
     match provider {
         CredentialProvider::OpenAi => {
@@ -213,7 +215,9 @@ fn interpret_status_only(provider: CredentialProvider, status: u16) -> Connectio
     } else if status == 401 || status == 403 {
         ConnectionTestResult::fail(format!("{name} rejected the key (HTTP {status})."))
     } else {
-        ConnectionTestResult::fail(format!("{name} returned an unexpected response (HTTP {status})."))
+        ConnectionTestResult::fail(format!(
+            "{name} returned an unexpected response (HTTP {status})."
+        ))
     }
 }
 
@@ -264,7 +268,9 @@ fn interpret_fred(status: u16, body: &str) -> ConnectionTestResult {
             return ConnectionTestResult::fail("FRED rejected the key (HTTP 400).");
         }
     }
-    ConnectionTestResult::fail(format!("FRED returned an unexpected response (HTTP {status})."))
+    ConnectionTestResult::fail(format!(
+        "FRED returned an unexpected response (HTTP {status})."
+    ))
 }
 
 /// Tavily's `/usage` returns 200 for a valid key and 401 for a bad one. A 404 is
@@ -280,7 +286,9 @@ fn interpret_tavily(status: u16) -> ConnectionTestResult {
             "Tavily's usage endpoint is unavailable on this plan — the key couldn't be checked here.",
         )
     } else {
-        ConnectionTestResult::fail(format!("Tavily returned an unexpected response (HTTP {status})."))
+        ConnectionTestResult::fail(format!(
+            "Tavily returned an unexpected response (HTTP {status})."
+        ))
     }
 }
 
@@ -319,10 +327,18 @@ mod tests {
     #[test]
     fn tavily_404_is_distinct_from_auth_failure() {
         let auth = interpret_tavily(401);
-        assert!(!auth.ok && auth.detail.contains("rejected"), "{}", auth.detail);
+        assert!(
+            !auth.ok && auth.detail.contains("rejected"),
+            "{}",
+            auth.detail
+        );
         let missing = interpret_tavily(404);
         assert!(!missing.ok);
-        assert!(missing.detail.contains("usage endpoint"), "{}", missing.detail);
+        assert!(
+            missing.detail.contains("usage endpoint"),
+            "{}",
+            missing.detail
+        );
         assert!(interpret_tavily(200).ok);
     }
 
@@ -341,7 +357,8 @@ mod tests {
     #[test]
     fn fmp_200_with_error_message_is_auth_failure() {
         // The case a status-only check would miss: HTTP 200, error in the body.
-        let body = r#"{"Error Message":"Invalid API KEY. Please retry or visit our documentation"}"#;
+        let body =
+            r#"{"Error Message":"Invalid API KEY. Please retry or visit our documentation"}"#;
         let res = interpret_fmp(200, body);
         assert!(!res.ok);
         assert!(res.detail.contains("rejected"), "{}", res.detail);
@@ -391,7 +408,11 @@ mod tests {
         // rejection, and a 5xx is a provider-side problem — both report "unexpected".
         let other_400 = interpret_fred(400, r#"{"error_message":"Bad Request. Something else."}"#);
         assert!(!other_400.ok);
-        assert!(other_400.detail.contains("unexpected"), "{}", other_400.detail);
+        assert!(
+            other_400.detail.contains("unexpected"),
+            "{}",
+            other_400.detail
+        );
         assert!(interpret_fred(500, "").detail.contains("unexpected"));
     }
 

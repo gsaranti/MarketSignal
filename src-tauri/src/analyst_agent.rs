@@ -74,21 +74,27 @@ the opportunities you see, and your confidence (low, medium, or high) in this re
 /// Analyst`).
 fn posture_guidance(posture: Posture) -> &'static str {
     match posture {
-        Posture::Bull => "Your perspective is the Bull Analyst. Focus on constructive \
+        Posture::Bull => {
+            "Your perspective is the Bull Analyst. Focus on constructive \
 interpretations: upside drivers, resilience in market structure, improving conditions, and \
 overly pessimistic assumptions worth challenging. Do not ignore negative data or force a bullish \
 conclusion — acknowledge the risks while focusing on the evidence that supports continued strength \
-or improving conditions.",
-        Posture::Bear => "Your perspective is the Bear Analyst. Focus on fragile assumptions and \
+or improving conditions."
+        }
+        Posture::Bear => {
+            "Your perspective is the Bear Analyst. Focus on fragile assumptions and \
 downside risks: weakening conditions, complacency worth challenging, and valuation, \
 macroeconomic, geopolitical, liquidity, and credit risks. Do not deny bullish conditions the data \
 supports — acknowledge the strength while focusing on hidden vulnerabilities, unsustainable \
-narratives, and structural risks.",
-        Posture::Balanced => "Your perspective is the Balanced Analyst. Weigh the evidence and \
+narratives, and structural risks."
+        }
+        Posture::Balanced => {
+            "Your perspective is the Balanced Analyst. Weigh the evidence and \
 identify the most probable interpretation: separate signal from noise, weigh bullish against \
 bearish evidence, assign confidence, separate short-term from long-term implications, and name the \
 conditions that would justify a thesis change. Do not stay artificially neutral — reach a bullish \
-or bearish read when the evidence strongly supports one.",
+or bearish read when the evidence strongly supports one."
+        }
     }
 }
 
@@ -199,7 +205,9 @@ fn build_user_prompt(packet: &ResearchPacket) -> String {
     let mut prompt = USER_INSTRUCTION.to_string();
     if packet != &ResearchPacket::default() {
         if let Ok(json) = serde_json::to_string_pretty(packet) {
-            prompt.push_str(&format!("\n\nCondensed research packet for this week:\n{json}"));
+            prompt.push_str(&format!(
+                "\n\nCondensed research packet for this week:\n{json}"
+            ));
         }
     }
     prompt.push_str(&skills::render_library(SKILL_LIBRARY_INTRO));
@@ -216,7 +224,10 @@ fn build_user_prompt(packet: &ResearchPacket) -> String {
 /// non-empty.
 fn envelope_to_output(posture: Posture, env: ReviewEnvelope) -> Result<AnalystOutput> {
     if env.summary.trim().is_empty() {
-        bail!("{} returned an empty review summary", posture.display_name());
+        bail!(
+            "{} returned an empty review summary",
+            posture.display_name()
+        );
     }
     Ok(AnalystOutput {
         posture,
@@ -264,7 +275,10 @@ impl ModelAnalystAgent {
     /// smoke and any caller that bypasses the gate. Reads the posture's user-selected
     /// model + its provider key (`config::AppConfig::analyst_config`).
     pub fn from_env(posture: Posture) -> Result<Self> {
-        Self::new(posture, crate::config::AppConfig::from_env().analyst_config(posture)?)
+        Self::new(
+            posture,
+            crate::config::AppConfig::from_env().analyst_config(posture)?,
+        )
     }
 
     fn call(&self, provider: Provider, body: &Value) -> Result<Value> {
@@ -276,7 +290,10 @@ impl ModelAnalystAgent {
                 .header("anthropic-version", ANTHROPIC_VERSION),
             Provider::OpenAi => self.http.post(OPENAI_URL).bearer_auth(&self.config.api_key),
         };
-        let resp = request.json(body).send().context("sending analyst request")?;
+        let resp = request
+            .json(body)
+            .send()
+            .context("sending analyst request")?;
         let status = resp.status();
         let text = resp.text().context("reading analyst response body")?;
         if !status.is_success() {
@@ -299,16 +316,20 @@ impl AnalystAgent for ModelAnalystAgent {
 
         // One tracker row for this analyst's review call.
         let name = self.posture.display_name();
-        self.progress
-            .request_started(provider.display_name(), REQUEST_GROUP, self.posture.as_str(), name);
+        self.progress.request_started(
+            provider.display_name(),
+            REQUEST_GROUP,
+            self.posture.as_str(),
+            name,
+        );
         let result = (|| -> Result<AnalystOutput> {
             let raw = self.call(provider, &body)?;
             let value = match provider {
                 Provider::Anthropic => extract_anthropic_tool_input(&raw, TOOL_NAME)?,
                 Provider::OpenAi => extract_openai_envelope(&raw)?,
             };
-            let env: ReviewEnvelope = serde_json::from_value(value)
-                .context("analyst review did not match the schema")?;
+            let env: ReviewEnvelope =
+                serde_json::from_value(value).context("analyst review did not match the schema")?;
             envelope_to_output(self.posture, env)
         })();
         match &result {
@@ -359,12 +380,21 @@ mod tests {
     fn system_prompt_carries_base_plus_posture_guidance() {
         for p in Posture::ALL {
             let prompt = system_prompt(p);
-            assert!(prompt.contains("market analyst on Market Signal"), "{p:?} base missing");
-            assert!(prompt.contains(p.display_name()), "{p:?} posture label missing");
+            assert!(
+                prompt.contains("market analyst on Market Signal"),
+                "{p:?} base missing"
+            );
+            assert!(
+                prompt.contains(p.display_name()),
+                "{p:?} posture label missing"
+            );
         }
         // The three guidances are distinct.
         assert_ne!(system_prompt(Posture::Bull), system_prompt(Posture::Bear));
-        assert_ne!(system_prompt(Posture::Bear), system_prompt(Posture::Balanced));
+        assert_ne!(
+            system_prompt(Posture::Bear),
+            system_prompt(Posture::Balanced)
+        );
     }
 
     #[test]
@@ -372,7 +402,10 @@ mod tests {
         // The skills directive lives in the shared base, so every posture carries it.
         for p in Posture::ALL {
             let prompt = system_prompt(p);
-            assert!(prompt.contains("`analytical skills`"), "{p:?} skills directive missing");
+            assert!(
+                prompt.contains("`analytical skills`"),
+                "{p:?} skills directive missing"
+            );
             assert!(
                 prompt.contains("reasoning tools, not output structure"),
                 "{p:?} skills framing missing"
@@ -395,7 +428,10 @@ mod tests {
         let body = build_openai_request("gpt-5", &system_prompt(Posture::Bear), "u");
         assert_eq!(body["model"], "gpt-5");
         assert_eq!(body["response_format"]["type"], "json_schema");
-        assert_eq!(body["response_format"]["json_schema"]["name"], "analyst_review");
+        assert_eq!(
+            body["response_format"]["json_schema"]["name"],
+            "analyst_review"
+        );
         assert_eq!(body["response_format"]["json_schema"]["strict"], true);
     }
 
@@ -419,9 +455,18 @@ mod tests {
         // function ride into the prompt in both the populated and default-packet paths.
         for packet in [one_index_packet(), ResearchPacket::default()] {
             let prompt = build_user_prompt(&packet);
-            assert!(prompt.contains("Analytical skills"), "intro missing: {prompt}");
-            assert!(prompt.contains("Market Regime Analysis"), "a skill name missing: {prompt}");
-            assert!(prompt.contains("Verdict to produce —"), "verdict marker missing: {prompt}");
+            assert!(
+                prompt.contains("Analytical skills"),
+                "intro missing: {prompt}"
+            );
+            assert!(
+                prompt.contains("Market Regime Analysis"),
+                "a skill name missing: {prompt}"
+            );
+            assert!(
+                prompt.contains("Verdict to produce —"),
+                "verdict marker missing: {prompt}"
+            );
         }
     }
 
@@ -476,7 +521,10 @@ mod tests {
         let agent = ModelAnalystAgent::from_env(Posture::Balanced).expect("analyst configured");
         let review = agent.review(&one_index_packet()).expect("review");
         assert_eq!(review.posture, Posture::Balanced);
-        assert!(!review.summary.trim().is_empty(), "the review carries a summary");
+        assert!(
+            !review.summary.trim().is_empty(),
+            "the review carries a summary"
+        );
         eprintln!(
             "analyst review: {} key points, {} risks, {} opportunities, confidence {}",
             review.key_points.len(),

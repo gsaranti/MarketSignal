@@ -159,15 +159,18 @@ impl AppConfig {
     /// `ModelMainAgent::from_env`. Errors mirror the gate's wording so a caller
     /// that bypasses the gate still gets a legible message.
     pub fn main_agent_config(&self) -> Result<MainAgentConfig> {
-        let label = present(&self.main_agent_model)
-            .ok_or_else(|| anyhow!("MARKET_SIGNAL_MAIN_AGENT_MODEL is not set (no Main Agent model selected)"))?;
+        let label = present(&self.main_agent_model).ok_or_else(|| {
+            anyhow!("MARKET_SIGNAL_MAIN_AGENT_MODEL is not set (no Main Agent model selected)")
+        })?;
         let model = AgentModel::from_config_label(label)?;
         let (key_opt, var) = match model.provider() {
             Provider::OpenAi => (&self.openai_api_key, "OPENAI_API_KEY"),
             Provider::Anthropic => (&self.anthropic_api_key, "ANTHROPIC_API_KEY"),
         };
         let api_key = present(key_opt)
-            .ok_or_else(|| anyhow!("{var} is not set (required for the selected Main Agent model)"))?
+            .ok_or_else(|| {
+                anyhow!("{var} is not set (required for the selected Main Agent model)")
+            })?
             .to_string();
         Ok(MainAgentConfig { model, api_key })
     }
@@ -183,9 +186,10 @@ impl AppConfig {
         let (label_opt, var) = match posture {
             Posture::Bull => (&self.bull_agent_model, "MARKET_SIGNAL_BULL_AGENT_MODEL"),
             Posture::Bear => (&self.bear_agent_model, "MARKET_SIGNAL_BEAR_AGENT_MODEL"),
-            Posture::Balanced => {
-                (&self.balanced_agent_model, "MARKET_SIGNAL_BALANCED_AGENT_MODEL")
-            }
+            Posture::Balanced => (
+                &self.balanced_agent_model,
+                "MARKET_SIGNAL_BALANCED_AGENT_MODEL",
+            ),
         };
         let name = posture.display_name();
         let label = present(label_opt)
@@ -196,7 +200,9 @@ impl AppConfig {
             Provider::Anthropic => (&self.anthropic_api_key, "ANTHROPIC_API_KEY"),
         };
         let api_key = present(key_opt)
-            .ok_or_else(|| anyhow!("{key_var} is not set (required for the selected {name} model)"))?
+            .ok_or_else(|| {
+                anyhow!("{key_var} is not set (required for the selected {name} model)")
+            })?
             .to_string();
         Ok(MainAgentConfig { model, api_key })
     }
@@ -295,10 +301,22 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
 
     // Agent configuration: all four agents need a present, parseable model.
     let slots = [
-        AgentSlot { name: "Main Agent", value: &cfg.main_agent_model },
-        AgentSlot { name: "Bull Analyst", value: &cfg.bull_agent_model },
-        AgentSlot { name: "Bear Analyst", value: &cfg.bear_agent_model },
-        AgentSlot { name: "Balanced Analyst", value: &cfg.balanced_agent_model },
+        AgentSlot {
+            name: "Main Agent",
+            value: &cfg.main_agent_model,
+        },
+        AgentSlot {
+            name: "Bull Analyst",
+            value: &cfg.bull_agent_model,
+        },
+        AgentSlot {
+            name: "Bear Analyst",
+            value: &cfg.bear_agent_model,
+        },
+        AgentSlot {
+            name: "Balanced Analyst",
+            value: &cfg.balanced_agent_model,
+        },
     ];
     // One concise line per problem rather than one row per agent, so the warning
     // area reads as a brief status, not a wall of repeated predicates.
@@ -316,7 +334,10 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
     }
     let mut agent_items = Vec::new();
     if !not_selected.is_empty() {
-        agent_items.push(format!("No model selected for {}.", join_list(&not_selected)));
+        agent_items.push(format!(
+            "No model selected for {}.",
+            join_list(&not_selected)
+        ));
     }
     if !unknown.is_empty() {
         agent_items.push(format!("Unknown model for {}.", unknown.join(", ")));
@@ -369,7 +390,10 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
     }
 
     let is_blocked = categories.iter().any(|c| c.kind.is_blocking());
-    ValidationReport { categories, is_blocked }
+    ValidationReport {
+        categories,
+        is_blocked,
+    }
 }
 
 /// A concise one-line reason a run was blocked, for the command's error return.
@@ -534,7 +558,11 @@ mod tests {
         let cat = category(&report, WarningKind::AgentConfiguration).expect("agent category");
         assert_eq!(cat.items.len(), 1);
         assert!(cat.items[0].contains("Bear Analyst"), "{:?}", cat.items);
-        assert!(cat.items[0].contains("No model selected"), "{:?}", cat.items);
+        assert!(
+            cat.items[0].contains("No model selected"),
+            "{:?}",
+            cat.items
+        );
     }
 
     #[test]
@@ -555,7 +583,11 @@ mod tests {
         let report = validate(&cfg);
         let cat = category(&report, WarningKind::AgentConfiguration).expect("agent category");
         assert!(cat.items[0].contains("Main Agent"), "{:?}", cat.items);
-        assert!(cat.items[0].contains("No model selected"), "{:?}", cat.items);
+        assert!(
+            cat.items[0].contains("No model selected"),
+            "{:?}",
+            cat.items
+        );
     }
 
     #[test]
@@ -577,7 +609,11 @@ mod tests {
         assert!(report.is_blocked);
         let cat = category(&report, WarningKind::ProviderCredentials).expect("credential category");
         assert_eq!(cat.items.len(), 1);
-        assert!(cat.items[0].contains("Financial Modeling Prep"), "{:?}", cat.items);
+        assert!(
+            cat.items[0].contains("Financial Modeling Prep"),
+            "{:?}",
+            cat.items
+        );
     }
 
     #[test]
@@ -602,7 +638,12 @@ mod tests {
         // Each category condenses to a single line that names every missing item.
         let agents = category(&report, WarningKind::AgentConfiguration).unwrap();
         assert_eq!(agents.items.len(), 1);
-        for name in ["Main Agent", "Bull Analyst", "Bear Analyst", "Balanced Analyst"] {
+        for name in [
+            "Main Agent",
+            "Bull Analyst",
+            "Bear Analyst",
+            "Balanced Analyst",
+        ] {
             assert!(agents.items[0].contains(name), "{:?}", agents.items);
         }
         let tokens = category(&report, WarningKind::ApiTokens).unwrap();

@@ -247,15 +247,30 @@ fn assemble_labor_levels(results: &BlsResults) -> (Vec<Quote>, Vec<DataGap>) {
     let mut gaps = Vec::new();
     for (id, name, unit) in LABOR_SERIES {
         let Some(series) = results.series.iter().find(|s| s.series_id == *id) else {
-            gaps.push(DataGap::new(GroupKind::LaborLevels, *id, *name, GapReason::Malformed));
+            gaps.push(DataGap::new(
+                GroupKind::LaborLevels,
+                *id,
+                *name,
+                GapReason::Malformed,
+            ));
             continue;
         };
         match series_to_quote(&series.data, id, name, unit) {
             Ok(Some(quote)) => labor_levels.push(quote),
             // Present but empty `data` for an expected series — no value this run, not a
             // permanent absence; counts against coverage (Unavailable).
-            Ok(None) => gaps.push(DataGap::new(GroupKind::LaborLevels, *id, *name, GapReason::Unavailable)),
-            Err(_) => gaps.push(DataGap::new(GroupKind::LaborLevels, *id, *name, GapReason::Malformed)),
+            Ok(None) => gaps.push(DataGap::new(
+                GroupKind::LaborLevels,
+                *id,
+                *name,
+                GapReason::Unavailable,
+            )),
+            Err(_) => gaps.push(DataGap::new(
+                GroupKind::LaborLevels,
+                *id,
+                *name,
+                GapReason::Malformed,
+            )),
         }
     }
     (labor_levels, gaps)
@@ -346,9 +361,13 @@ impl MarketDataSource for BlsDataSource {
         let status = if !data.labor_levels.is_empty() {
             "ok"
         } else {
-            data.gaps.first().map(|g| g.reason.as_str()).unwrap_or("empty")
+            data.gaps
+                .first()
+                .map(|g| g.reason.as_str())
+                .unwrap_or("empty")
         };
-        self.progress.request_finished("BLS", group, id, name, status, None);
+        self.progress
+            .request_finished("BLS", group, id, name, status, None);
         Ok(data)
     }
 }
@@ -368,7 +387,9 @@ impl BlsDataSource {
         let resp = match outcome {
             Ok(resp) => resp,
             Err((reason, detail)) => {
-                eprintln!("BLS labor batch unavailable ({detail}); recording all labor series as gaps");
+                eprintln!(
+                    "BLS labor batch unavailable ({detail}); recording all labor series as gaps"
+                );
                 return all_labor_gapped(reason);
             }
         };
@@ -556,8 +577,10 @@ mod tests {
         let with_data = r#"[{"year":"2026","period":"M04","value":"1.0"}]"#;
 
         // All requested series present -> a quote each, no gaps.
-        let full: Vec<(&str, &str)> =
-            LABOR_SERIES.iter().map(|(id, _, _)| (*id, with_data)).collect();
+        let full: Vec<(&str, &str)> = LABOR_SERIES
+            .iter()
+            .map(|(id, _, _)| (*id, with_data))
+            .collect();
         let (quotes, gaps) = assemble_labor_levels(&results_with(&full));
         assert_eq!(quotes.len(), LABOR_SERIES.len());
         assert!(gaps.is_empty());
@@ -578,8 +601,10 @@ mod tests {
         // A requested series present but with empty `data` is no value this run — an
         // Unavailable gap that counts against coverage; the others still resolve.
         let with_data = r#"[{"year":"2026","period":"M04","value":"1.0"}]"#;
-        let mut entries: Vec<(&str, &str)> =
-            LABOR_SERIES.iter().map(|(id, _, _)| (*id, with_data)).collect();
+        let mut entries: Vec<(&str, &str)> = LABOR_SERIES
+            .iter()
+            .map(|(id, _, _)| (*id, with_data))
+            .collect();
         entries[0].1 = "[]"; // first series returns no observations
         let (quotes, gaps) = assemble_labor_levels(&results_with(&entries));
         assert_eq!(quotes.len(), LABOR_SERIES.len() - 1);

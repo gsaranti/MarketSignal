@@ -25,7 +25,9 @@ use crate::agent::MainAgent;
 use crate::config::{WarningCategory, WarningKind};
 use crate::data_sources::MarketDataSource;
 use crate::embedding::Embedder;
-use crate::pipeline::{generate_report, AnalystStages, GeneratedReport, ReportPaths, ResearchStages};
+use crate::pipeline::{
+    generate_report, AnalystStages, GeneratedReport, ReportPaths, ResearchStages,
+};
 use crate::progress::RunContext;
 use crate::storage;
 
@@ -52,7 +54,11 @@ pub fn weekly_job_enabled(conn: &Connection) -> Result<bool> {
 
 /// Persist the Weekly Market job's enable/disable flag.
 pub fn set_weekly_job_enabled(conn: &Connection, enabled: bool) -> Result<()> {
-    storage::set_setting(conn, WEEKLY_JOB_ENABLED_KEY, if enabled { "true" } else { "false" })
+    storage::set_setting(
+        conn,
+        WEEKLY_JOB_ENABLED_KEY,
+        if enabled { "true" } else { "false" },
+    )
 }
 
 /// How a job run ended (`docs/scheduling.md §Job States`). `Missed` is modeled by
@@ -466,7 +472,9 @@ mod tests {
     fn latest_failure_surfaces_failed_job_category() {
         let conn = mem();
         insert(&conn, JobState::Failed, Some("provider unreachable"));
-        let w = failure_warning(&conn).unwrap().expect("a failed-job warning");
+        let w = failure_warning(&conn)
+            .unwrap()
+            .expect("a failed-job warning");
         assert_eq!(w.kind, WarningKind::FailedJob);
         assert!(w.items[0].contains("provider unreachable"), "{:?}", w.items);
     }
@@ -513,7 +521,9 @@ mod tests {
 
     /// A Wednesday-noon `now` whose most recent window is Sunday 2026-06-14 09:00.
     fn now_wed_after_a_window() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 6, 17, 12, 0, 0).single().unwrap()
+        Utc.with_ymd_and_hms(2026, 6, 17, 12, 0, 0)
+            .single()
+            .unwrap()
     }
 
     #[test]

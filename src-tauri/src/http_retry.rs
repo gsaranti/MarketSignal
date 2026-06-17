@@ -234,7 +234,10 @@ mod tests {
         let (status, body) = send_with_retry("test", || client.get(url.as_str()))
             .expect("exhaustion returns Ok(last attempt)");
         assert_eq!(status, 503);
-        assert_eq!(body, "down 3", "the last attempt's body must be the one returned");
+        assert_eq!(
+            body, "down 3",
+            "the last attempt's body must be the one returned"
+        );
         assert_eq!(server.attempts(), MAX_ATTEMPTS as usize);
     }
 

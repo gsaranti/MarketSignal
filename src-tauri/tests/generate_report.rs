@@ -16,7 +16,9 @@ use market_signal_temp_lib::data_sources::{
 use market_signal_temp_lib::embedding::{Embedder, StubEmbedder};
 use market_signal_temp_lib::headline_filter::StubHeadlineFilter;
 use market_signal_temp_lib::news::StubNewsSource;
-use market_signal_temp_lib::pipeline::{generate_report, AnalystStages, ReportPaths, ResearchStages};
+use market_signal_temp_lib::pipeline::{
+    generate_report, AnalystStages, ReportPaths, ResearchStages,
+};
 use market_signal_temp_lib::progress::RunContext;
 use market_signal_temp_lib::research_executor::StubSearchBackend;
 use market_signal_temp_lib::research_packet::ResearchPacket;
@@ -159,7 +161,12 @@ fn step_6_baseline_scan_reaches_the_agent_input() {
 
     // The pipeline gathered the data source's baseline and handed it to the agent
     // unchanged.
-    let seen = agent.seen.lock().unwrap().clone().expect("agent was invoked");
+    let seen = agent
+        .seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("agent was invoked");
     let expected = StubMarketDataSource.baseline_scan().unwrap();
     assert_eq!(seen, expected);
 }
@@ -203,7 +210,10 @@ fn research_packet_reaches_the_agent_input() {
     // On a first run the vector store is empty, so the Step-10 pull recalls nothing
     // and the packet's memory is empty (the two-run test below covers the populated
     // path).
-    assert!(packet.memory.is_empty(), "first run has no memory to recall");
+    assert!(
+        packet.memory.is_empty(),
+        "first run has no memory to recall"
+    );
 }
 
 #[test]
@@ -359,7 +369,10 @@ fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
     )
     .unwrap();
     let input1 = seen1.lock().unwrap().clone().expect("router ran on run 1");
-    assert!(input1.memory.is_empty(), "an empty store recalls nothing for routing");
+    assert!(
+        input1.memory.is_empty(),
+        "an empty store recalls nothing for routing"
+    );
     let packet1 = agent1
         .seen_research
         .lock()
@@ -367,14 +380,20 @@ fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
         .clone()
         .flatten()
         .expect("run 1 carried a packet");
-    assert!(packet1.memory.is_empty(), "an empty store recalls nothing for the packet");
+    assert!(
+        packet1.memory.is_empty(),
+        "an empty store recalls nothing for the packet"
+    );
     let audit1 = agent1
         .seen_audit_memory
         .lock()
         .unwrap()
         .clone()
         .expect("run 1 reached the agent");
-    assert!(audit1.is_empty(), "an empty store recalls nothing for the audit");
+    assert!(
+        audit1.is_empty(),
+        "an empty store recalls nothing for the audit"
+    );
 
     // Run 2: run 1's summary is in the store; both pulls surface it.
     let seen2 = Arc::new(Mutex::new(None));
@@ -410,7 +429,11 @@ fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
         .clone()
         .flatten()
         .expect("run 2 carried a packet");
-    assert_eq!(packet2.memory.len(), 1, "the Step-10 pull reached the agent's packet");
+    assert_eq!(
+        packet2.memory.len(),
+        1,
+        "the Step-10 pull reached the agent's packet"
+    );
     assert!(
         packet2.memory[0].contains("Risk posture:"),
         "the packet fragment is run 1's summary text: {}",
@@ -425,7 +448,11 @@ fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
         .unwrap()
         .clone()
         .expect("run 2 reached the agent");
-    assert_eq!(audit2.len(), 1, "the Step-4 pull reached the agent's audit channel");
+    assert_eq!(
+        audit2.len(),
+        1,
+        "the Step-4 pull reached the agent's audit channel"
+    );
     assert!(
         audit2[0].starts_with("[summary · ") && audit2[0].contains("Risk posture:"),
         "the audit fragment is run 1's summary text: {}",
@@ -437,7 +464,10 @@ fn memory_flows_into_routing_and_the_packet_on_the_second_run() {
     let memories: i64 = conn
         .query_row("SELECT COUNT(*) FROM vector_memory", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(memories, 2, "one summary row per persisted report, none from retrieval");
+    assert_eq!(
+        memories, 2,
+        "one summary row per persisted report, none from retrieval"
+    );
 }
 
 #[test]
@@ -459,7 +489,13 @@ fn second_report_diffs_against_the_first_and_snapshots_persist() {
     )
     .unwrap();
     assert!(
-        agent1.seen_deltas.lock().unwrap().clone().flatten().is_none(),
+        agent1
+            .seen_deltas
+            .lock()
+            .unwrap()
+            .clone()
+            .flatten()
+            .is_none(),
         "first report has no prior snapshot to diff"
     );
 
@@ -546,7 +582,10 @@ fn report_summary_lands_in_vector_memory() {
     let hits =
         market_signal_temp_lib::vector_memory::search_memory(&conn, &query, None, 5).unwrap();
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].report_id.as_deref(), Some(report.report_id.as_str()));
+    assert_eq!(
+        hits[0].report_id.as_deref(),
+        Some(report.report_id.as_str())
+    );
 }
 
 #[test]
@@ -576,7 +615,10 @@ fn embedding_failure_never_fails_the_report() {
     let memories: i64 = conn
         .query_row("SELECT COUNT(*) FROM vector_memory", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(memories, 0, "no memory row — and no error — on an embedding failure");
+    assert_eq!(
+        memories, 0,
+        "no memory row — and no error — on an embedding failure"
+    );
 }
 
 /// Wraps the stub agent and attaches a fixed set of durable learnings, driving
@@ -664,7 +706,11 @@ fn durable_learnings_land_in_vector_memory() {
         assert!(!blob.is_empty());
         assert_eq!(blob.len() % 4, 0, "embedding blob is whole f32s");
     }
-    assert!(learnings[0].1.starts_with("Breadth divergences"), "{}", learnings[0].1);
+    assert!(
+        learnings[0].1.starts_with("Breadth divergences"),
+        "{}",
+        learnings[0].1
+    );
 
     let summaries: i64 = conn
         .query_row(
@@ -673,7 +719,10 @@ fn durable_learnings_land_in_vector_memory() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(summaries, 1, "the summary write is unaffected by the learning leg");
+    assert_eq!(
+        summaries, 1,
+        "the summary write is unaffected by the learning leg"
+    );
 }
 
 #[test]
@@ -683,7 +732,9 @@ fn durable_learnings_are_trimmed_and_capped() {
 
     // Seven entries: one whitespace-only (dropped before the cap counts it) and six
     // real ones — one past the per-report cap of five.
-    let mut entries: Vec<String> = (1..=6).map(|i| format!("Durable lesson number {i}.")).collect();
+    let mut entries: Vec<String> = (1..=6)
+        .map(|i| format!("Durable lesson number {i}."))
+        .collect();
     entries.insert(2, "   \n ".into());
     let report = generate_report(
         &LearningAgent(entries),
@@ -705,7 +756,10 @@ fn durable_learnings_are_trimmed_and_capped() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(learnings, 5, "empties are dropped, then the app-layer cap truncates");
+    assert_eq!(
+        learnings, 5,
+        "empties are dropped, then the app-layer cap truncates"
+    );
     let blanks: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM vector_memory WHERE TRIM(content) = ''",
@@ -713,7 +767,10 @@ fn durable_learnings_are_trimmed_and_capped() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(blanks, 0, "a whitespace-only learning never reaches the store");
+    assert_eq!(
+        blanks, 0,
+        "a whitespace-only learning never reaches the store"
+    );
     assert!(std::path::Path::new(&report.markdown_path).exists());
 }
 
@@ -746,7 +803,10 @@ fn durable_learnings_dedup_drops_a_restatement() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(learnings, 1, "the restated learning is deduped to a single row");
+    assert_eq!(
+        learnings, 1,
+        "the restated learning is deduped to a single row"
+    );
 }
 
 #[test]
@@ -772,7 +832,10 @@ fn learning_embedding_failure_never_fails_the_report() {
     let memories: i64 = conn
         .query_row("SELECT COUNT(*) FROM vector_memory", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(memories, 0, "no learning row — and no error — on an embedding failure");
+    assert_eq!(
+        memories, 0,
+        "no learning row — and no error — on an embedding failure"
+    );
 }
 
 #[test]
@@ -827,7 +890,11 @@ fn cancel_during_persist_skips_remaining_memory_writes() {
 
     // Exactly one embedding call was spent — the in-flight summary embed. The two
     // learning embeds were skipped at the loop's cancel checkpoint.
-    assert_eq!(embedder.calls.load(Ordering::Relaxed), 1, "no paid call after the cancel");
+    assert_eq!(
+        embedder.calls.load(Ordering::Relaxed),
+        1,
+        "no paid call after the cancel"
+    );
     let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
     let (summaries, learnings): (i64, i64) = conn
         .query_row(
@@ -839,7 +906,10 @@ fn cancel_during_persist_skips_remaining_memory_writes() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(summaries, 1, "the already-in-flight summary write still lands");
+    assert_eq!(
+        summaries, 1,
+        "the already-in-flight summary write still lands"
+    );
     assert_eq!(learnings, 0, "no learning row after the cancel");
 }
 
@@ -936,7 +1006,11 @@ fn inbox_documents_flow_to_router_and_packet_and_archive_after_persist() {
     // The parsed document reached routing as a header + excerpt block.
     let input = seen.lock().unwrap().clone().expect("router ran");
     assert_eq!(input.inbox_documents.len(), 1, "one parsed document routed");
-    assert!(input.inbox_documents[0].contains("notes.md"), "{}", input.inbox_documents[0]);
+    assert!(
+        input.inbox_documents[0].contains("notes.md"),
+        "{}",
+        input.inbox_documents[0]
+    );
     assert!(
         input.inbox_documents[0].contains("Rates likely hold through summer."),
         "{}",
@@ -952,15 +1026,31 @@ fn inbox_documents_flow_to_router_and_packet_and_archive_after_persist() {
         .flatten()
         .expect("the agent received a packet");
     assert_eq!(packet.inbox_summaries.len(), 1);
-    assert!(packet.inbox_summaries[0].contains("# Fed outlook"), "{}", packet.inbox_summaries[0]);
+    assert!(
+        packet.inbox_summaries[0].contains("# Fed outlook"),
+        "{}",
+        packet.inbox_summaries[0]
+    );
 
     // The report persisted, so the parsed file was archived; the unparseable one
     // stays in the inbox with its reason recorded; the unsupported one is untouched.
-    assert!(!paths.inbox_dir.join("notes.md").exists(), "parsed file left the inbox");
-    assert!(paths.archive_dir.join("notes.md").exists(), "parsed file reached the archive");
-    assert!(paths.inbox_dir.join("broken.json").exists(), "failed file stays in the inbox");
+    assert!(
+        !paths.inbox_dir.join("notes.md").exists(),
+        "parsed file left the inbox"
+    );
+    assert!(
+        paths.archive_dir.join("notes.md").exists(),
+        "parsed file reached the archive"
+    );
+    assert!(
+        paths.inbox_dir.join("broken.json").exists(),
+        "failed file stays in the inbox"
+    );
     assert!(!paths.archive_dir.join("broken.json").exists());
-    assert!(paths.inbox_dir.join("chart.png").exists(), "unsupported file is untouched");
+    assert!(
+        paths.inbox_dir.join("chart.png").exists(),
+        "unsupported file is untouched"
+    );
 
     let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
     let failures: Vec<(String, String)> = conn
@@ -970,9 +1060,17 @@ fn inbox_documents_flow_to_router_and_packet_and_archive_after_persist() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    assert_eq!(failures.len(), 1, "exactly the broken file is recorded: {failures:?}");
+    assert_eq!(
+        failures.len(),
+        1,
+        "exactly the broken file is recorded: {failures:?}"
+    );
     assert_eq!(failures[0].0, "broken.json");
-    assert!(failures[0].1.contains("not valid JSON"), "{}", failures[0].1);
+    assert!(
+        failures[0].1.contains("not valid JSON"),
+        "{}",
+        failures[0].1
+    );
 
     // Nothing truncated (notes.md fits the parser's caps), yet the denominator
     // row was still recorded: one document parsed (broken.json and chart.png
@@ -984,10 +1082,18 @@ fn inbox_documents_flow_to_router_and_packet_and_archive_after_persist() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(parse_run_count, 1, "one parse-run row recorded for the report");
-    assert_eq!(docs_parsed, 1, "one parsed document recorded as the rate denominator");
+    assert_eq!(
+        parse_run_count, 1,
+        "one parse-run row recorded for the report"
+    );
+    assert_eq!(
+        docs_parsed, 1,
+        "one parsed document recorded as the rate denominator"
+    );
     let truncations: i64 = conn
-        .query_row("SELECT COUNT(*) FROM document_truncations", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM document_truncations", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(truncations, 0, "the small note never truncated");
 }
@@ -1045,7 +1151,9 @@ fn a_healed_inbox_clears_previously_recorded_failures() {
     .unwrap();
     let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM research_parse_failures", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM research_parse_failures", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(count, 1, "run 1 recorded the failure");
     drop(conn);
@@ -1064,10 +1172,15 @@ fn a_healed_inbox_clears_previously_recorded_failures() {
 
     let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM research_parse_failures", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM research_parse_failures", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(count, 0, "the healed file's row is gone");
-    assert!(paths.archive_dir.join("data.json").exists(), "and the fixed file archived");
+    assert!(
+        paths.archive_dir.join("data.json").exists(),
+        "and the fixed file archived"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1309,7 +1422,12 @@ fn retention_cascade_skips_db_deletes_when_the_file_cannot_be_removed() {
     let locked_path = seed_report(&conn, &locked_dir, "old-00", "2026-01-01T00:00:00Z");
     for i in 1..30 {
         let created_at = format!("2026-01-{:02}T00:00:00Z", i + 1);
-        seed_report(&conn, &paths.reports_dir, &format!("old-{i:02}"), &created_at);
+        seed_report(
+            &conn,
+            &paths.reports_dir,
+            &format!("old-{i:02}"),
+            &created_at,
+        );
     }
     drop(conn);
     std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o555)).unwrap();

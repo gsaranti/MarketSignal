@@ -69,7 +69,12 @@ impl MemoryHit {
     /// age; the cosine score stays internal (noise to a model). The content keeps
     /// its own newlines — fragments are blocks, not bullets.
     pub fn prompt_fragment(&self) -> String {
-        format!("[{} · {}] {}", self.kind.as_str(), self.created_at, self.content)
+        format!(
+            "[{} · {}] {}",
+            self.kind.as_str(),
+            self.created_at,
+            self.content
+        )
     }
 }
 
@@ -173,7 +178,11 @@ pub fn search_memory(
         });
     }
 
-    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     hits.truncate(top_k);
     Ok(hits)
 }
@@ -229,8 +238,16 @@ pub fn summary_memory_text(summary: &ReportSummary) -> String {
     );
     push_section(&mut out, "Header summary", &summary.header_summary_bullets);
     push_section(&mut out, "Key risks", &summary.key_risks);
-    push_section(&mut out, "Unresolved questions", &summary.unresolved_questions);
-    push_section(&mut out, "Forward outlook themes", &summary.forward_outlook_themes);
+    push_section(
+        &mut out,
+        "Unresolved questions",
+        &summary.unresolved_questions,
+    );
+    push_section(
+        &mut out,
+        "Forward outlook themes",
+        &summary.forward_outlook_themes,
+    );
     out
 }
 
@@ -290,9 +307,15 @@ pub fn pre_research_query(
             // it from the series id; a percent / annualized change keeps its `%`.
             match q.change.kind {
                 ChangeKind::PointDelta => {
-                    format!("- {}: {} {} ({:+.2})", q.name, q.price, q.unit, q.change.value)
+                    format!(
+                        "- {}: {} {} ({:+.2})",
+                        q.name, q.price, q.unit, q.change.value
+                    )
                 }
-                _ => format!("- {}: {} {} ({:+.2}%)", q.name, q.price, q.unit, q.change.value),
+                _ => format!(
+                    "- {}: {} {} ({:+.2}%)",
+                    q.name, q.price, q.unit, q.change.value
+                ),
             }
         })
         .collect();
@@ -357,7 +380,10 @@ fn push_transition_line(out: &mut String, label: &str, transitions: &[SeriesTran
 pub fn post_research_query(evidence: &ResearchEvidence) -> String {
     let mut out = String::new();
     for item in &evidence.items {
-        out.push_str(&format!("Research topic: {} — {}\n", item.topic, item.rationale));
+        out.push_str(&format!(
+            "Research topic: {} — {}\n",
+            item.topic, item.rationale
+        ));
         for finding in &item.findings {
             out.push_str(&format!("- {}", finding.query));
             let titles: Vec<&str> = finding
@@ -436,7 +462,10 @@ mod tests {
             risk_posture: RiskPosture::Mixed,
             market_cycle: MarketCycle::LateCycle,
             thesis_stance: ThesisStance::Uncertain,
-            header_summary_bullets: vec!["Breadth stayed thin.".into(), "Yields drifted up.".into()],
+            header_summary_bullets: vec![
+                "Breadth stayed thin.".into(),
+                "Yields drifted up.".into(),
+            ],
             key_risks: vec!["Sticky core inflation.".into()],
             unresolved_questions: vec![],
             forward_outlook_themes: vec![],
@@ -447,7 +476,10 @@ mod tests {
     fn blob_round_trips_and_rejects_truncation() {
         let v = vec![0.5f32, -1.25, 3.0, f32::MIN_POSITIVE];
         assert_eq!(blob_to_embedding(&embedding_to_blob(&v)).unwrap(), v);
-        assert!(blob_to_embedding(&[1, 2, 3]).is_none(), "13 % 4 != 0 must not decode");
+        assert!(
+            blob_to_embedding(&[1, 2, 3]).is_none(),
+            "13 % 4 != 0 must not decode"
+        );
     }
 
     #[test]
@@ -477,10 +509,24 @@ mod tests {
     #[test]
     fn search_filters_by_kind_or_spans_both() {
         let conn = mem();
-        insert_memory(&conn, MemoryKind::Summary, Some("r"), "the summary", &[1.0, 0.0], "t")
-            .unwrap();
-        insert_memory(&conn, MemoryKind::Learning, None, "the learning", &[1.0, 0.0], "t")
-            .unwrap();
+        insert_memory(
+            &conn,
+            MemoryKind::Summary,
+            Some("r"),
+            "the summary",
+            &[1.0, 0.0],
+            "t",
+        )
+        .unwrap();
+        insert_memory(
+            &conn,
+            MemoryKind::Learning,
+            None,
+            "the learning",
+            &[1.0, 0.0],
+            "t",
+        )
+        .unwrap();
 
         let learnings = search_memory(&conn, &[1.0, 0.0], Some(MemoryKind::Learning), 10).unwrap();
         assert_eq!(learnings.len(), 1);
@@ -495,9 +541,13 @@ mod tests {
     #[test]
     fn insert_rejects_non_finite_embeddings() {
         let conn = mem();
-        for bad in [vec![1.0, f32::NAN], vec![f32::INFINITY], vec![f32::NEG_INFINITY, 0.5]] {
-            let err = insert_memory(&conn, MemoryKind::Summary, Some("r"), "c", &bad, "t")
-                .unwrap_err();
+        for bad in [
+            vec![1.0, f32::NAN],
+            vec![f32::INFINITY],
+            vec![f32::NEG_INFINITY, 0.5],
+        ] {
+            let err =
+                insert_memory(&conn, MemoryKind::Summary, Some("r"), "c", &bad, "t").unwrap_err();
             assert!(err.to_string().contains("non-finite"), "{err}");
         }
         let count: i64 = conn
@@ -509,7 +559,15 @@ mod tests {
     #[test]
     fn search_skips_rows_with_non_finite_scores() {
         let conn = mem();
-        insert_memory(&conn, MemoryKind::Summary, Some("ok"), "finite", &[1.0, 0.0], "t").unwrap();
+        insert_memory(
+            &conn,
+            MemoryKind::Summary,
+            Some("ok"),
+            "finite",
+            &[1.0, 0.0],
+            "t",
+        )
+        .unwrap();
         // Insert refuses non-finite components, so plant the corrupt row the way it
         // would really arrive: bytes in the blob that decode to NaN.
         conn.execute(
@@ -534,8 +592,24 @@ mod tests {
             "one embedding per report summary is schema-enforced"
         );
         // Learnings are outside the partial index: same report_id, and several of them.
-        insert_memory(&conn, MemoryKind::Learning, Some("rep-1"), "l1", &[1.0], "t").unwrap();
-        insert_memory(&conn, MemoryKind::Learning, Some("rep-1"), "l2", &[1.0], "t").unwrap();
+        insert_memory(
+            &conn,
+            MemoryKind::Learning,
+            Some("rep-1"),
+            "l1",
+            &[1.0],
+            "t",
+        )
+        .unwrap();
+        insert_memory(
+            &conn,
+            MemoryKind::Learning,
+            Some("rep-1"),
+            "l2",
+            &[1.0],
+            "t",
+        )
+        .unwrap();
         // A different report's summary is fine.
         insert_memory(&conn, MemoryKind::Summary, Some("rep-2"), "s", &[1.0], "t").unwrap();
     }
@@ -545,8 +619,8 @@ mod tests {
         let conn = mem();
         // SQLite unique indexes treat NULLs as distinct, so the one-per-report index
         // can't catch NULL-id summaries — the API guard is what closes that hole.
-        let err = insert_memory(&conn, MemoryKind::Summary, None, "orphan", &[1.0], "t")
-            .unwrap_err();
+        let err =
+            insert_memory(&conn, MemoryKind::Summary, None, "orphan", &[1.0], "t").unwrap_err();
         assert!(err.to_string().contains("without a report_id"), "{err}");
         // Learnings legitimately carry no report_id.
         insert_memory(&conn, MemoryKind::Learning, None, "learning", &[1.0], "t").unwrap();
@@ -555,9 +629,24 @@ mod tests {
     #[test]
     fn search_skips_dimension_mismatched_rows() {
         let conn = mem();
-        insert_memory(&conn, MemoryKind::Summary, Some("ok"), "fits", &[1.0, 0.0], "t").unwrap();
-        insert_memory(&conn, MemoryKind::Summary, Some("old"), "stale dims", &[1.0, 0.0, 0.0], "t")
-            .unwrap();
+        insert_memory(
+            &conn,
+            MemoryKind::Summary,
+            Some("ok"),
+            "fits",
+            &[1.0, 0.0],
+            "t",
+        )
+        .unwrap();
+        insert_memory(
+            &conn,
+            MemoryKind::Summary,
+            Some("old"),
+            "stale dims",
+            &[1.0, 0.0, 0.0],
+            "t",
+        )
+        .unwrap();
         let hits = search_memory(&conn, &[1.0, 0.0], None, 10).unwrap();
         assert_eq!(hits.len(), 1, "the 3-dim row is skipped, not an error");
         assert_eq!(hits[0].content, "fits");
@@ -570,7 +659,15 @@ mod tests {
         insert_memory(&conn, MemoryKind::Summary, Some("rep-2"), "s2", &[1.0], "t").unwrap();
         // A learning tagged with the same report id must still survive the cascade —
         // the kind filter, not the report_id, is what protects durable learnings.
-        insert_memory(&conn, MemoryKind::Learning, Some("rep-1"), "l1", &[1.0], "t").unwrap();
+        insert_memory(
+            &conn,
+            MemoryKind::Learning,
+            Some("rep-1"),
+            "l1",
+            &[1.0],
+            "t",
+        )
+        .unwrap();
 
         assert_eq!(delete_report_summary(&conn, "rep-1").unwrap(), 1);
 
@@ -578,7 +675,10 @@ mod tests {
         let contents: Vec<&str> = remaining.iter().map(|h| h.content.as_str()).collect();
         assert_eq!(remaining.len(), 2);
         assert!(contents.contains(&"s2"), "other reports' summaries survive");
-        assert!(contents.contains(&"l1"), "durable learnings survive report deletion");
+        assert!(
+            contents.contains(&"l1"),
+            "durable learnings survive report deletion"
+        );
     }
 
     #[test]
@@ -587,8 +687,14 @@ mod tests {
         assert!(text.contains("Risk posture: mixed."), "{text}");
         assert!(text.contains("Market cycle: late-cycle."), "{text}");
         assert!(text.contains("Thesis stance: uncertain."), "{text}");
-        assert!(text.contains("Header summary:\n- Breadth stayed thin."), "{text}");
-        assert!(text.contains("Key risks:\n- Sticky core inflation."), "{text}");
+        assert!(
+            text.contains("Header summary:\n- Breadth stayed thin."),
+            "{text}"
+        );
+        assert!(
+            text.contains("Key risks:\n- Sticky core inflation."),
+            "{text}"
+        );
         // Empty optional sections are omitted entirely, not rendered as bare headers.
         assert!(!text.contains("Unresolved questions"), "{text}");
         assert!(!text.contains("Forward outlook themes"), "{text}");
@@ -609,20 +715,37 @@ mod tests {
         let conn = mem();
         // Nothing to be near yet: an empty learning corpus returns None, never 0.0
         // (the call site must be able to tell "no neighbor" from "an orthogonal one").
-        assert!(nearest_learning_similarity(&conn, &[1.0, 0.0]).unwrap().is_none());
+        assert!(nearest_learning_similarity(&conn, &[1.0, 0.0])
+            .unwrap()
+            .is_none());
 
         insert_memory(&conn, MemoryKind::Learning, None, "l", &[1.0, 0.0], "t").unwrap();
         // An identical direction scores ~1.0 (a duplicate); an orthogonal one ~0.0.
-        let same = nearest_learning_similarity(&conn, &[1.0, 0.0]).unwrap().unwrap();
-        assert!((same - 1.0).abs() < 1e-9, "identical embedding scores ~1.0: {same}");
-        let orthogonal = nearest_learning_similarity(&conn, &[0.0, 1.0]).unwrap().unwrap();
-        assert!(orthogonal.abs() < 1e-9, "orthogonal embedding scores ~0.0: {orthogonal}");
+        let same = nearest_learning_similarity(&conn, &[1.0, 0.0])
+            .unwrap()
+            .unwrap();
+        assert!(
+            (same - 1.0).abs() < 1e-9,
+            "identical embedding scores ~1.0: {same}"
+        );
+        let orthogonal = nearest_learning_similarity(&conn, &[0.0, 1.0])
+            .unwrap()
+            .unwrap();
+        assert!(
+            orthogonal.abs() < 1e-9,
+            "orthogonal embedding scores ~0.0: {orthogonal}"
+        );
 
         // The *closest* learning wins: a second row aligned with a new query
         // direction is returned over the now-orthogonal first row (top-1, not first).
         insert_memory(&conn, MemoryKind::Learning, None, "l2", &[0.0, 1.0], "t").unwrap();
-        let best = nearest_learning_similarity(&conn, &[0.0, 1.0]).unwrap().unwrap();
-        assert!((best - 1.0).abs() < 1e-9, "the closer of the two learnings wins: {best}");
+        let best = nearest_learning_similarity(&conn, &[0.0, 1.0])
+            .unwrap()
+            .unwrap();
+        assert!(
+            (best - 1.0).abs() < 1e-9,
+            "the closer of the two learnings wins: {best}"
+        );
     }
 
     #[test]
@@ -632,7 +755,9 @@ mod tests {
         // learning — dedup is within the learning corpus only.
         insert_memory(&conn, MemoryKind::Summary, Some("r"), "s", &[1.0, 0.0], "t").unwrap();
         assert!(
-            nearest_learning_similarity(&conn, &[1.0, 0.0]).unwrap().is_none(),
+            nearest_learning_similarity(&conn, &[1.0, 0.0])
+                .unwrap()
+                .is_none(),
             "a summary is not a learning"
         );
     }
@@ -647,7 +772,10 @@ mod tests {
             score: 0.87,
         };
         let frag = hit.prompt_fragment();
-        assert_eq!(frag, "[summary · 2026-06-04T13:00:00Z] Risk posture: mixed.");
+        assert_eq!(
+            frag,
+            "[summary · 2026-06-04T13:00:00Z] Risk posture: mixed."
+        );
         assert!(!frag.contains("0.87"), "the cosine score stays internal");
     }
 
@@ -677,7 +805,11 @@ mod tests {
             prior,
             abs_change: current - prior,
             pct_change: pct,
-            direction: if current >= prior { Direction::Up } else { Direction::Down },
+            direction: if current >= prior {
+                Direction::Up
+            } else {
+                Direction::Down
+            },
         }
     }
 
@@ -703,13 +835,28 @@ mod tests {
 
         // Recent context, levels, change view, and transitions all render.
         assert!(q.contains("Thesis stance: uncertain."), "{q}");
-        assert!(q.contains("Current market picture:\n- S&P 500: 5610 index points (+0.40%)"), "{q}");
-        assert!(q.contains("Change since the previous report (~7.0 days):"), "{q}");
+        assert!(
+            q.contains("Current market picture:\n- S&P 500: 5610 index points (+0.40%)"),
+            "{q}"
+        );
+        assert!(
+            q.contains("Change since the previous report (~7.0 days):"),
+            "{q}"
+        );
         assert!(q.contains("- S&P 500: 5500 -> 5610 (+2.00%)"), "{q}");
-        assert!(q.contains("Newly tracked series: 2-Year Treasury Yield"), "{q}");
-        assert!(!q.contains("Series missing this run"), "no missing series, no line");
+        assert!(
+            q.contains("Newly tracked series: 2-Year Treasury Yield"),
+            "{q}"
+        );
+        assert!(
+            !q.contains("Series missing this run"),
+            "no missing series, no line"
+        );
         // Deterministic: same inputs, same query text.
-        assert_eq!(q, pre_research_query(&[sample_summary()], &baseline, Some(&deltas)));
+        assert_eq!(
+            q,
+            pre_research_query(&[sample_summary()], &baseline, Some(&deltas))
+        );
     }
 
     #[test]
@@ -766,7 +913,14 @@ mod tests {
         // More changed series than the cap; the weakest relative moves drop out and
         // a no-percentage series ranks last rather than fabricating a percentage.
         let changed: Vec<SeriesDelta> = (0..QUERY_MAX_DELTA_LINES + 3)
-            .map(|i| delta(&format!("series-{i}"), 100.0, 100.0 + i as f64, Some(i as f64)))
+            .map(|i| {
+                delta(
+                    &format!("series-{i}"),
+                    100.0,
+                    100.0 + i as f64,
+                    Some(i as f64),
+                )
+            })
             .collect();
         let deltas = BaselineDeltas {
             elapsed_days: 7.0,
@@ -776,9 +930,15 @@ mod tests {
         };
         let q = pre_research_query(&[], &BaselineMarketData::default(), Some(&deltas));
         let lines = q.lines().filter(|l| l.starts_with("- series-")).count();
-        assert_eq!(lines, QUERY_MAX_DELTA_LINES, "capped at the strongest moves");
+        assert_eq!(
+            lines, QUERY_MAX_DELTA_LINES,
+            "capped at the strongest moves"
+        );
         // The strongest move survived; the weakest did not.
-        assert!(q.contains(&format!("series-{}", QUERY_MAX_DELTA_LINES + 2)), "{q}");
+        assert!(
+            q.contains(&format!("series-{}", QUERY_MAX_DELTA_LINES + 2)),
+            "{q}"
+        );
         assert!(!q.contains("- series-0:"), "{q}");
     }
 
@@ -811,8 +971,14 @@ mod tests {
             stopped_reason: None,
         };
         let q = post_research_query(&evidence);
-        assert!(q.contains("Research topic: AI capex — Semis led the move."), "{q}");
-        assert!(q.contains("- hyperscaler capex guidance: t1; t2; t3"), "{q}");
+        assert!(
+            q.contains("Research topic: AI capex — Semis led the move."),
+            "{q}"
+        );
+        assert!(
+            q.contains("- hyperscaler capex guidance: t1; t2; t3"),
+            "{q}"
+        );
         assert!(!q.contains("t4"), "source titles capped per finding: {q}");
         assert_eq!(post_research_query(&ResearchEvidence::default()), "");
     }

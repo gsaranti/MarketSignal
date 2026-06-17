@@ -323,11 +323,20 @@ mod tests {
         let d = compute_deltas(&current, &prior, 7.0);
 
         let tnx = d.changed.iter().find(|s| s.id == "DGS10").unwrap();
-        assert_eq!(tnx.name, "10-Year Treasury Yield", "name carried verbatim on a changed delta");
-        assert!((tnx.abs_change - 0.1).abs() < 1e-9, "the move is still carried by abs_change");
+        assert_eq!(
+            tnx.name, "10-Year Treasury Yield",
+            "name carried verbatim on a changed delta"
+        );
+        assert!(
+            (tnx.abs_change - 0.1).abs() < 1e-9,
+            "the move is still carried by abs_change"
+        );
 
         let nfci = d.new.iter().find(|t| t.id == "NFCI").unwrap();
-        assert_eq!(nfci.name, "Chicago Fed NFCI", "name carried verbatim on a new transition");
+        assert_eq!(
+            nfci.name, "Chicago Fed NFCI",
+            "name carried verbatim on a new transition"
+        );
     }
 
     /// A zero prior level yields a move but no percentage (no honest denominator).
@@ -406,7 +415,11 @@ mod tests {
             ..Default::default()
         };
         let d = compute_deltas(&current, &prior, 7.0);
-        let pe = d.changed.iter().find(|s| s.id == "Technology|NASDAQ").unwrap();
+        let pe = d
+            .changed
+            .iter()
+            .find(|s| s.id == "Technology|NASDAQ")
+            .unwrap();
         assert!((pe.abs_change - 1.5).abs() < 1e-9);
         let erp = d
             .changed

@@ -425,7 +425,10 @@ mod tests {
         assert!(!s.created_at.is_empty());
         assert!((3..=6).contains(&s.header_summary_bullets.len()));
         assert!(!out.markdown.is_empty());
-        assert!(out.durable_learnings.is_empty(), "the stub emits no learnings");
+        assert!(
+            out.durable_learnings.is_empty(),
+            "the stub emits no learnings"
+        );
 
         let json = serde_json::to_value(s).unwrap();
         assert_eq!(json["risk_posture"], "mixed");
@@ -437,7 +440,11 @@ mod tests {
     fn as_str_matches_serde_labels() {
         // The DB columns are written from `as_str()` while JSON uses serde's
         // kebab rename; this pins the two label sources together.
-        for v in [RiskPosture::RiskOn, RiskPosture::RiskOff, RiskPosture::Mixed] {
+        for v in [
+            RiskPosture::RiskOn,
+            RiskPosture::RiskOff,
+            RiskPosture::Mixed,
+        ] {
             assert_eq!(serde_json::to_value(v).unwrap(), v.as_str());
         }
         for v in [

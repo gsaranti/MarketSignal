@@ -60,15 +60,24 @@ pub struct Change {
 impl Change {
     /// A percent change off the prior observation ([`ChangeKind::Percent`]).
     pub fn percent(value: f64) -> Self {
-        Self { value, kind: ChangeKind::Percent }
+        Self {
+            value,
+            kind: ChangeKind::Percent,
+        }
     }
     /// A per-period change compounded to an annual rate ([`ChangeKind::Annualized`]).
     pub fn annualized(value: f64) -> Self {
-        Self { value, kind: ChangeKind::Annualized }
+        Self {
+            value,
+            kind: ChangeKind::Annualized,
+        }
     }
     /// A point change `latest − prior` ([`ChangeKind::PointDelta`]).
     pub fn point_delta(value: f64) -> Self {
-        Self { value, kind: ChangeKind::PointDelta }
+        Self {
+            value,
+            kind: ChangeKind::PointDelta,
+        }
     }
 }
 

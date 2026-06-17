@@ -291,11 +291,18 @@ mod tests {
 
     #[test]
     fn catalog_entries_are_well_formed_and_uniquely_named() {
-        assert!(!CATALOG.is_empty(), "the catalog must carry at least one skill");
+        assert!(
+            !CATALOG.is_empty(),
+            "the catalog must carry at least one skill"
+        );
         assert_eq!(CATALOG.len(), 16, "all 16 doc skills are authored");
         for s in CATALOG {
             assert!(!s.name.trim().is_empty(), "a skill has a blank name");
-            assert!(!s.description.trim().is_empty(), "{} has a blank description", s.name);
+            assert!(
+                !s.description.trim().is_empty(),
+                "{} has a blank description",
+                s.name
+            );
             assert!(!s.body.trim().is_empty(), "{} has a blank body", s.name);
             assert!(!s.output.trim().is_empty(), "{} has a blank output", s.name);
         }
@@ -311,7 +318,10 @@ mod tests {
     #[test]
     fn render_library_carries_intro_every_skill_and_the_verdict_marker() {
         let block = render_library("\n\nINTRO-SENTINEL:");
-        assert!(block.starts_with("\n\nINTRO-SENTINEL:"), "intro missing: {block}");
+        assert!(
+            block.starts_with("\n\nINTRO-SENTINEL:"),
+            "intro missing: {block}"
+        );
         for s in CATALOG {
             assert!(block.contains(s.name), "missing skill name {}", s.name);
             assert!(block.contains(s.body), "missing body for {}", s.name);

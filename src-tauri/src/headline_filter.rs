@@ -190,7 +190,10 @@ fn format_headlines(headlines: &[RawHeadline]) -> String {
 /// Build the GPT-5 mini request: a strict json_schema call whose user message is
 /// the standing instruction plus the numbered headlines.
 fn build_request(headlines: &[RawHeadline]) -> Value {
-    let user = format!("{USER_INSTRUCTION}\n\nHeadlines:\n{}", format_headlines(headlines));
+    let user = format!(
+        "{USER_INSTRUCTION}\n\nHeadlines:\n{}",
+        format_headlines(headlines)
+    );
     json!({
         "model": HEADLINE_FILTER_MODEL,
         "max_completion_tokens": MAX_TOKENS,
@@ -249,8 +252,12 @@ fn envelope_to_clusters(env: ClusterEnvelope, headlines: &[RawHeadline]) -> Vec<
             }
             // Negative -> drop (i64 so it's a drop, not a parse failure); out of
             // range -> drop; already claimed by this or a higher cluster -> skip.
-            let Ok(idx) = usize::try_from(i) else { continue };
-            let Some(h) = headlines.get(idx) else { continue };
+            let Ok(idx) = usize::try_from(i) else {
+                continue;
+            };
+            let Some(h) = headlines.get(idx) else {
+                continue;
+            };
             if !seen.insert(idx) {
                 continue;
             }
@@ -315,7 +322,9 @@ impl ModelHeadlineFilter {
             .send()
             .context("sending headline-filter request")?;
         let status = resp.status();
-        let text = resp.text().context("reading headline-filter response body")?;
+        let text = resp
+            .text()
+            .context("reading headline-filter response body")?;
         if !status.is_success() {
             bail!("headline-filter model returned {status}: {text}");
         }
@@ -426,7 +435,10 @@ mod tests {
         let body = build_request(&[headline("Fed holds rates")]);
         assert_eq!(body["model"], "gpt-5-mini");
         assert_eq!(body["response_format"]["type"], "json_schema");
-        assert_eq!(body["response_format"]["json_schema"]["name"], "headline_clusters");
+        assert_eq!(
+            body["response_format"]["json_schema"]["name"],
+            "headline_clusters"
+        );
         assert_eq!(body["response_format"]["json_schema"]["strict"], true);
         // The user message carries the numbered headline the model references by index.
         let user = body["messages"][1]["content"].as_str().unwrap();
@@ -463,7 +475,10 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].topic, "valid");
         assert_eq!(out[0].headlines.len(), 2);
-        assert!((out[0].relevance - 1.0).abs() < 1e-9, "relevance clamped to 1.0");
+        assert!(
+            (out[0].relevance - 1.0).abs() < 1e-9,
+            "relevance clamped to 1.0"
+        );
     }
 
     #[test]
@@ -507,7 +522,11 @@ mod tests {
         };
         let out = envelope_to_clusters(env, &headlines);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].headlines.len(), 2, "a keeps 0 and 1; the duplicate 0 collapses");
+        assert_eq!(
+            out[0].headlines.len(),
+            2,
+            "a keeps 0 and 1; the duplicate 0 collapses"
+        );
         assert_eq!(out[1].headlines.len(), 1, "b keeps only the fresh 2");
         // No headline appears in more than one cluster.
         let mut urls: Vec<String> = out
@@ -517,7 +536,11 @@ mod tests {
         let before = urls.len();
         urls.sort();
         urls.dedup();
-        assert_eq!(urls.len(), before, "retained headlines are distinct across clusters");
+        assert_eq!(
+            urls.len(),
+            before,
+            "retained headlines are distinct across clusters"
+        );
     }
 
     #[test]
@@ -552,7 +575,11 @@ mod tests {
         let out = envelope_to_clusters(env, &headlines);
         assert_eq!(out.len(), 1, "only the well-formed cluster survives");
         assert_eq!(out[0].topic, "good");
-        assert_eq!(out[0].headlines.len(), 2, "headline 0 was not consumed by the blank cluster");
+        assert_eq!(
+            out[0].headlines.len(),
+            2,
+            "headline 0 was not consumed by the blank cluster"
+        );
     }
 
     #[test]
@@ -570,7 +597,10 @@ mod tests {
             .collect();
         let out = envelope_to_clusters(ClusterEnvelope { clusters }, &headlines);
         let total: usize = out.iter().map(|c| c.headlines.len()).sum();
-        assert_eq!(total, MAX_RETAINED_HEADLINES, "total retained headlines capped at ~40");
+        assert_eq!(
+            total, MAX_RETAINED_HEADLINES,
+            "total retained headlines capped at ~40"
+        );
     }
 
     #[test]
@@ -596,10 +626,19 @@ mod tests {
         let filter = ModelHeadlineFilter::from_env().expect("OPENAI_API_KEY set");
         let clusters = filter.filter(deduped.clone()).expect("filter headlines");
 
-        assert!(!clusters.is_empty(), "the filter produced at least one cluster");
-        assert!(clusters.len() <= MAX_CLUSTERS, "respects the cluster ceiling");
+        assert!(
+            !clusters.is_empty(),
+            "the filter produced at least one cluster"
+        );
+        assert!(
+            clusters.len() <= MAX_CLUSTERS,
+            "respects the cluster ceiling"
+        );
         for c in &clusters {
-            assert!(!c.headlines.is_empty(), "every cluster has member headlines");
+            assert!(
+                !c.headlines.is_empty(),
+                "every cluster has member headlines"
+            );
             assert!(!c.topic.trim().is_empty(), "every cluster has a topic");
         }
         // The funnel narrows the headline count (not just the cluster count) and
@@ -609,11 +648,21 @@ mod tests {
             .flat_map(|c| c.headlines.iter().map(|h| h.url.clone()))
             .collect();
         let total = urls.len();
-        assert!(total <= MAX_RETAINED_HEADLINES, "retained headlines within the ~40 ceiling");
-        assert!(total < deduped.len(), "the funnel narrowed the headline count");
+        assert!(
+            total <= MAX_RETAINED_HEADLINES,
+            "retained headlines within the ~40 ceiling"
+        );
+        assert!(
+            total < deduped.len(),
+            "the funnel narrowed the headline count"
+        );
         urls.sort();
         urls.dedup();
-        assert_eq!(urls.len(), total, "retained headlines are distinct across clusters");
+        assert_eq!(
+            urls.len(),
+            total,
+            "retained headlines are distinct across clusters"
+        );
         eprintln!(
             "headline-filter funnel: {} deduped headlines -> {} clusters, {} retained headlines",
             deduped.len(),

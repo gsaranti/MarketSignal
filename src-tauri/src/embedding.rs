@@ -197,7 +197,10 @@ mod tests {
     #[test]
     fn parse_embedding_response_extracts_the_vector() {
         let raw = json!({ "data": [ { "embedding": [0.25, -0.5, 1.0] } ] });
-        assert_eq!(parse_embedding_response(&raw).unwrap(), vec![0.25, -0.5, 1.0]);
+        assert_eq!(
+            parse_embedding_response(&raw).unwrap(),
+            vec![0.25, -0.5, 1.0]
+        );
     }
 
     #[test]
@@ -220,7 +223,11 @@ mod tests {
         let v = embedder
             .embed("Risk posture: mixed. Market cycle: late-cycle. Thesis stance: uncertain.")
             .expect("live embedding call");
-        assert_eq!(v.len(), EMBEDDING_DIM, "text-embedding-3-large native dimension");
+        assert_eq!(
+            v.len(),
+            EMBEDDING_DIM,
+            "text-embedding-3-large native dimension"
+        );
         assert!(v.iter().all(|x| x.is_finite()));
         assert!(v.iter().any(|x| *x != 0.0));
         eprintln!("embedding smoke: {} dims, first 4 = {:?}", v.len(), &v[..4]);

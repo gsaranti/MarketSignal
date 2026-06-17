@@ -96,7 +96,11 @@ const OBSERVATION_LIMIT: &str = "10";
 const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
     ("DGS2", "2-Year Treasury Yield", "percent"),
     ("DGS10", "10-Year Treasury Yield", "percent"),
-    ("DTWEXBGS", "US Dollar Index (Broad)", "index (Jan 2006=100)"),
+    (
+        "DTWEXBGS",
+        "US Dollar Index (Broad)",
+        "index (Jan 2006=100)",
+    ),
     ("DCOILWTICO", "WTI Crude Oil", "USD per barrel"),
     ("DHHNGSP", "Henry Hub Natural Gas", "USD per million BTU"),
     // Credit + curve spreads (daily, market-priced) — the level is the signal.
@@ -109,8 +113,16 @@ const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
     // above. NB use VXNCLS (the CBOE VXN, ~20s), NOT the similarly-named NASDAQVOLNDX —
     // that series was discontinued (frozen Jan 2026) and reads ~11,900, an index level not
     // a vol gauge (live-verified Jun 2026).
-    ("VXVCLS", "CBOE S&P 500 3-Month Volatility (VXV)", "index points"),
-    ("VXNCLS", "CBOE NASDAQ-100 Volatility Index (VXN)", "index points"),
+    (
+        "VXVCLS",
+        "CBOE S&P 500 3-Month Volatility (VXV)",
+        "index points",
+    ),
+    (
+        "VXNCLS",
+        "CBOE NASDAQ-100 Volatility Index (VXN)",
+        "index points",
+    ),
     // Credit-quality dispersion on top of the aggregate HY/IG OAS: BBB (lowest IG rung)
     // and single-B (mid HY) widen at different speeds as risk appetite deteriorates.
     ("BAMLC0A4CBBB", "US Corporate BBB OAS", "percent"),
@@ -142,20 +154,44 @@ const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
 /// sheet (WALCL), and the 30-year mortgage rate — each read the same way (latest level
 /// + change off the prior observation).
 const MACRO_SERIES: &[(&str, &str, &str)] = &[
-    ("DFEDTARU", "Fed Funds Target Range — Upper Limit", "percent"),
-    ("DFEDTARL", "Fed Funds Target Range — Lower Limit", "percent"),
+    (
+        "DFEDTARU",
+        "Fed Funds Target Range — Upper Limit",
+        "percent",
+    ),
+    (
+        "DFEDTARL",
+        "Fed Funds Target Range — Lower Limit",
+        "percent",
+    ),
     ("T5YIE", "5-Year Breakeven Inflation Rate", "percent"),
     ("T10YIE", "10-Year Breakeven Inflation Rate", "percent"),
-    ("UMCSENT", "U. Michigan Consumer Sentiment", "index (1966Q1=100)"),
+    (
+        "UMCSENT",
+        "U. Michigan Consumer Sentiment",
+        "index (1966Q1=100)",
+    ),
     ("PCEPI", "PCE Price Index", "index (2017=100)"),
-    ("PPIFIS", "Producer Price Index (Final Demand)", "index (Nov 2009=100)"),
+    (
+        "PPIFIS",
+        "Producer Price Index (Final Demand)",
+        "index (Nov 2009=100)",
+    ),
     (
         "RSAFS",
         "Advance Retail Sales (Retail & Food Services)",
         "millions of USD",
     ),
-    ("JTSJOL", "Job Openings: Total Nonfarm (JOLTS)", "thousands of openings"),
-    ("GDPC1", "Real Gross Domestic Product (growth annualized)", "billions of chained 2017 USD"),
+    (
+        "JTSJOL",
+        "Job Openings: Total Nonfarm (JOLTS)",
+        "thousands of openings",
+    ),
+    (
+        "GDPC1",
+        "Real Gross Domestic Product (growth annualized)",
+        "billions of chained 2017 USD",
+    ),
     // Forward-looking expectation gauges — what the market / models *expect* for the
     // headline aggregates, a complement to the actual readings above. GDPNow's value is
     // already an annualized growth rate (SAAR), so it is deliberately **not** in
@@ -163,15 +199,39 @@ const MACRO_SERIES: &[(&str, &str, &str)] = &[
     // point delta (see RATE_DELTA_SERIES) — a percent-of-prior on GDPNow's nowcast reads as
     // a spurious ~128% "move". EXPINF1YR is a model-based inflation expectation alongside
     // the market-implied breakevens (T5YIE / T10YIE).
-    ("GDPNOW", "Atlanta Fed GDPNow — Real GDP Growth Nowcast (annualized rate)", "percent"),
-    ("EXPINF1YR", "Cleveland Fed 1-Year Expected Inflation", "percent"),
+    (
+        "GDPNOW",
+        "Atlanta Fed GDPNow — Real GDP Growth Nowcast (annualized rate)",
+        "percent",
+    ),
+    (
+        "EXPINF1YR",
+        "Cleveland Fed 1-Year Expected Inflation",
+        "percent",
+    ),
     // Weekly/daily risk + cycle gauges (financial conditions, claims, liquidity, housing).
-    ("NFCI", "Chicago Fed National Financial Conditions Index", "index (0 = average)"),
+    (
+        "NFCI",
+        "Chicago Fed National Financial Conditions Index",
+        "index (0 = average)",
+    ),
     ("ANFCI", "Chicago Fed Adjusted NFCI", "index (0 = average)"),
-    ("STLFSI4", "St. Louis Fed Financial Stress Index", "index (0 = normal)"),
+    (
+        "STLFSI4",
+        "St. Louis Fed Financial Stress Index",
+        "index (0 = normal)",
+    ),
     ("ICSA", "Initial Jobless Claims", "persons"),
-    ("CCSA", "Continued Jobless Claims (Insured Unemployment)", "persons"),
-    ("WALCL", "Fed Total Assets (Balance Sheet)", "millions of USD"),
+    (
+        "CCSA",
+        "Continued Jobless Claims (Insured Unemployment)",
+        "persons",
+    ),
+    (
+        "WALCL",
+        "Fed Total Assets (Balance Sheet)",
+        "millions of USD",
+    ),
     ("MORTGAGE30US", "30-Year Fixed Mortgage Rate", "percent"),
 ];
 
@@ -223,7 +283,7 @@ impl Cadence {
     /// change ships as-is.
     const fn periods_per_year(self) -> i32 {
         match self {
-            Cadence::Daily => 252,   // trading days
+            Cadence::Daily => 252, // trading days
             Cadence::Weekly => 52,
             Cadence::Monthly => 12,
             Cadence::Quarterly => 4,
@@ -577,7 +637,10 @@ fn observations_to_quote(
         symbol: symbol.to_string(),
         name: name.to_string(),
         price: latest,
-        change: Change { value, kind: change_kind },
+        change: Change {
+            value,
+            kind: change_kind,
+        },
         unit: unit.to_string(),
     }))
 }
@@ -734,8 +797,15 @@ impl FredDataSource {
                     // latest numeric one is staler than its cadence allows (a frozen /
                     // discontinued series). Not a permanent/premium absence, so it counts
                     // against coverage (Unavailable), unlike an explicit "does not exist".
-                    Ok(None) => gaps.push(DataGap::new(group, *series_id, *name, GapReason::Unavailable)),
-                    Err(_) => gaps.push(DataGap::new(group, *series_id, *name, GapReason::Malformed)),
+                    Ok(None) => gaps.push(DataGap::new(
+                        group,
+                        *series_id,
+                        *name,
+                        GapReason::Unavailable,
+                    )),
+                    Err(_) => {
+                        gaps.push(DataGap::new(group, *series_id, *name, GapReason::Malformed))
+                    }
                 },
                 Disposition::Gap(reason) => {
                     if reason == GapReason::Rejected {
@@ -846,7 +916,12 @@ impl FredDataSource {
                     if reason == GapReason::Rejected {
                         rejected = true;
                     }
-                    gaps.push(DataGap::new(GroupKind::Calendar, id_str.as_str(), *name, reason));
+                    gaps.push(DataGap::new(
+                        GroupKind::Calendar,
+                        id_str.as_str(),
+                        *name,
+                        reason,
+                    ));
                 }
             }
             emit_series_row(
@@ -877,7 +952,8 @@ impl MarketDataSource for FredDataSource {
         // calendar window, so the whole scan reads against a single clock sample.
         let today = Utc::now().date_naive();
         let internals = self.fetch_series(INTERNALS_SERIES, GroupKind::Internals, today, &mut gaps);
-        let macro_levels = self.fetch_series(MACRO_SERIES, GroupKind::MacroLevels, today, &mut gaps);
+        let macro_levels =
+            self.fetch_series(MACRO_SERIES, GroupKind::MacroLevels, today, &mut gaps);
         let calendar = self.fetch_calendar(today, &mut gaps);
         Ok(BaselineMarketData {
             indices: Vec::new(),
@@ -944,14 +1020,23 @@ mod tests {
     fn forward_expectation_gauges_are_present_and_gdpnow_is_not_annualized() {
         // The two forward-looking gauges are in the macro group with the right cadence...
         let macro_ids: Vec<&str> = MACRO_SERIES.iter().map(|(id, _, _)| *id).collect();
-        assert!(macro_ids.contains(&"GDPNOW"), "GDPNow missing from MACRO_SERIES");
-        assert!(macro_ids.contains(&"EXPINF1YR"), "expected-inflation missing from MACRO_SERIES");
+        assert!(
+            macro_ids.contains(&"GDPNOW"),
+            "GDPNow missing from MACRO_SERIES"
+        );
+        assert!(
+            macro_ids.contains(&"EXPINF1YR"),
+            "expected-inflation missing from MACRO_SERIES"
+        );
         assert_eq!(cadence_for("GDPNOW"), Cadence::Quarterly);
         assert_eq!(cadence_for("EXPINF1YR"), Cadence::Monthly);
         // ...and GDPNow stays out of ANNUALIZED_SERIES — its value is already an annual
         // rate (SAAR), so annualizing its change would double-count. This pins that
         // deliberate exclusion against a future "annualize every quarterly series" refactor.
-        assert!(!is_annualized("GDPNOW"), "GDPNow is already SAAR — must not be annualized");
+        assert!(
+            !is_annualized("GDPNOW"),
+            "GDPNow is already SAAR — must not be annualized"
+        );
         assert!(!is_annualized("EXPINF1YR"));
     }
 
@@ -1001,7 +1086,8 @@ mod tests {
         );
         // All gaps -> no dated value.
         let all_gaps: Value =
-            serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#).unwrap();
+            serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#)
+                .unwrap();
         assert!(latest_numeric_observation_date(&all_gaps).is_none());
         // Wrong shape -> None, not a panic.
         let bad: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
@@ -1026,29 +1112,51 @@ mod tests {
         use GapReason::*;
         // 2xx observations body -> a value to shape.
         assert!(matches!(
-            interpret_response(200, r#"{"observations":[{"date":"2026-06-04","value":"4.30"}]}"#),
+            interpret_response(
+                200,
+                r#"{"observations":[{"date":"2026-06-04","value":"4.30"}]}"#
+            ),
             Disposition::Value(_)
         ));
 
         // A 400 whose error_message says the series is absent -> OutOfScope per-series gap.
-        let absent = r#"{"error_code":400,"error_message":"Bad Request. The series does not exist."}"#;
-        assert!(matches!(interpret_response(400, absent), Disposition::Gap(OutOfScope)));
+        let absent =
+            r#"{"error_code":400,"error_message":"Bad Request. The series does not exist."}"#;
+        assert!(matches!(
+            interpret_response(400, absent),
+            Disposition::Gap(OutOfScope)
+        ));
 
         // A 400 whose error_message is an api_key problem -> Rejected (key rejected).
         let bad_key = r#"{"error_code":400,"error_message":"Bad Request. The value for variable api_key is not registered, is not active, or is otherwise invalid."}"#;
-        assert!(matches!(interpret_response(400, bad_key), Disposition::Gap(Rejected)));
+        assert!(matches!(
+            interpret_response(400, bad_key),
+            Disposition::Gap(Rejected)
+        ));
 
         // An unrecognized 400 (empty / unfamiliar message) fails closed as Malformed
         // rather than being misread as a missing series.
-        assert!(matches!(interpret_response(400, "{}"), Disposition::Gap(Malformed)));
+        assert!(matches!(
+            interpret_response(400, "{}"),
+            Disposition::Gap(Malformed)
+        ));
 
         // Systemic statuses -> Unavailable regardless of body.
         for status in [429, 500, 503] {
-            assert!(matches!(interpret_response(status, ""), Disposition::Gap(Unavailable)), "HTTP {status}");
+            assert!(
+                matches!(
+                    interpret_response(status, ""),
+                    Disposition::Gap(Unavailable)
+                ),
+                "HTTP {status}"
+            );
         }
 
         // A 2xx that isn't valid JSON is a contract violation -> Malformed.
-        assert!(matches!(interpret_response(200, "not json at all"), Disposition::Gap(Malformed)));
+        assert!(matches!(
+            interpret_response(200, "not json at all"),
+            Disposition::Gap(Malformed)
+        ));
     }
 
     // ---- Offline round trip: adapter -> retry -> interpret -> domain output ----
@@ -1084,7 +1192,10 @@ mod tests {
         assert_eq!(server.attempts(), 1, "one series => one request");
         let targets = server.request_targets();
         assert_eq!(server.request_paths(), ["/series/observations"]);
-        assert!(targets[0].contains("series_id="), "the per-call query var must reach the wire: {targets:?}");
+        assert!(
+            targets[0].contains("series_id="),
+            "the per-call query var must reach the wire: {targets:?}"
+        );
         assert!(gaps.is_empty());
         assert_eq!(quotes.len(), 1);
         assert_eq!(quotes[0].symbol, "DGS10");
@@ -1416,12 +1527,19 @@ mod tests {
         // A series with no numeric observation in the window returns Ok(None) (a skip,
         // not an error) — the caller then records it as an Unavailable gap.
         let v: Value =
-            serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#).unwrap();
-        assert!(
-            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), ChangeKind::Percent)
-                .unwrap()
-                .is_none()
-        );
+            serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#)
+                .unwrap();
+        assert!(observations_to_quote(
+            v,
+            "DGS2",
+            "x",
+            "percent",
+            Cadence::Daily,
+            fresh_today(),
+            ChangeKind::Percent
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]
@@ -1449,9 +1567,16 @@ mod tests {
     fn observations_to_quote_rejects_a_malformed_body() {
         // A 2xx body without the `observations` array is a contract violation.
         let v: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
-        assert!(
-            observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), ChangeKind::Percent).is_err()
-        );
+        assert!(observations_to_quote(
+            v,
+            "DGS2",
+            "x",
+            "percent",
+            Cadence::Daily,
+            fresh_today(),
+            ChangeKind::Percent
+        )
+        .is_err());
     }
 
     #[test]
@@ -1466,8 +1591,16 @@ mod tests {
             ))
             .unwrap();
             assert!(
-                observations_to_quote(v, "DGS2", "x", "percent", Cadence::Daily, fresh_today(), ChangeKind::Percent)
-                    .is_err(),
+                observations_to_quote(
+                    v,
+                    "DGS2",
+                    "x",
+                    "percent",
+                    Cadence::Daily,
+                    fresh_today(),
+                    ChangeKind::Percent
+                )
+                .is_err(),
                 "value {bad:?} must fail closed, not skip"
             );
         }
@@ -1506,7 +1639,9 @@ mod tests {
         // can't silently invalidate the test (mirrors the FMP industry-P/E closed band).
         let today = fresh_today();
         let bound = Cadence::Daily.max_staleness_days();
-        let at_bound = (today - Duration::days(bound)).format("%Y-%m-%d").to_string();
+        let at_bound = (today - Duration::days(bound))
+            .format("%Y-%m-%d")
+            .to_string();
         let past_bound = (today - Duration::days(bound + 1))
             .format("%Y-%m-%d")
             .to_string();
@@ -1516,9 +1651,17 @@ mod tests {
         ))
         .unwrap();
         assert!(
-            observations_to_quote(exactly, "DGS10", "x", "percent", Cadence::Daily, today, ChangeKind::Percent)
-                .unwrap()
-                .is_some(),
+            observations_to_quote(
+                exactly,
+                "DGS10",
+                "x",
+                "percent",
+                Cadence::Daily,
+                today,
+                ChangeKind::Percent
+            )
+            .unwrap()
+            .is_some(),
             "an observation exactly at the staleness bound is kept"
         );
 
@@ -1527,9 +1670,17 @@ mod tests {
         ))
         .unwrap();
         assert!(
-            observations_to_quote(over, "DGS10", "x", "percent", Cadence::Daily, today, ChangeKind::Percent)
-                .unwrap()
-                .is_none(),
+            observations_to_quote(
+                over,
+                "DGS10",
+                "x",
+                "percent",
+                Cadence::Daily,
+                today,
+                ChangeKind::Percent
+            )
+            .unwrap()
+            .is_none(),
             "an observation one day past the bound is dropped"
         );
     }
@@ -1545,16 +1696,32 @@ mod tests {
 
         let monthly = serde_json::from_str::<Value>(&body).unwrap();
         assert!(
-            observations_to_quote(monthly, "UMCSENT", "x", "index", Cadence::Monthly, today, ChangeKind::Percent)
-                .unwrap()
-                .is_some(),
+            observations_to_quote(
+                monthly,
+                "UMCSENT",
+                "x",
+                "index",
+                Cadence::Monthly,
+                today,
+                ChangeKind::Percent
+            )
+            .unwrap()
+            .is_some(),
             "a 100-day-old monthly observation is within the monthly bound"
         );
         let daily = serde_json::from_str::<Value>(&body).unwrap();
         assert!(
-            observations_to_quote(daily, "DGS10", "x", "percent", Cadence::Daily, today, ChangeKind::Percent)
-                .unwrap()
-                .is_none(),
+            observations_to_quote(
+                daily,
+                "DGS10",
+                "x",
+                "percent",
+                Cadence::Daily,
+                today,
+                ChangeKind::Percent
+            )
+            .unwrap()
+            .is_none(),
             "the same 100-day-old observation is stale for a daily series"
         );
     }
@@ -1568,8 +1735,16 @@ mod tests {
             serde_json::from_str(r#"{"observations":[{"date":"June 4th","value":"4.30"}]}"#)
                 .unwrap();
         assert!(
-            observations_to_quote(v, "DGS10", "x", "percent", Cadence::Daily, fresh_today(), ChangeKind::Percent)
-                .is_err(),
+            observations_to_quote(
+                v,
+                "DGS10",
+                "x",
+                "percent",
+                Cadence::Daily,
+                fresh_today(),
+                ChangeKind::Percent
+            )
+            .is_err(),
             "an unparseable latest-observation date must fail closed"
         );
     }
@@ -1781,8 +1956,7 @@ mod tests {
             .expect("releases catalog request")
             .text()
             .expect("releases catalog body");
-        let catalog: Catalog =
-            serde_json::from_str(&catalog_body).expect("releases catalog shape");
+        let catalog: Catalog = serde_json::from_str(&catalog_body).expect("releases catalog shape");
         let id_to_name: std::collections::HashMap<u32, &str> = catalog
             .releases
             .iter()

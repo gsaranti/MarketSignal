@@ -219,12 +219,22 @@ mod tests {
             ]
         }"#;
         let headlines = headlines_from_body(body).unwrap();
-        assert_eq!(headlines.len(), 1, "the two incomplete articles are dropped");
+        assert_eq!(
+            headlines.len(),
+            1,
+            "the two incomplete articles are dropped"
+        );
         assert_eq!(headlines[0].title, "Markets rally");
         // GDELT's `domain` is normalized through host_of (lowercased, www. dropped).
-        assert_eq!(headlines[0].source, "reuters.com", "source is the normalized domain");
+        assert_eq!(
+            headlines[0].source, "reuters.com",
+            "source is the normalized domain"
+        );
         assert_eq!(headlines[0].published.as_deref(), Some("20260605T120000Z"));
-        assert_eq!(headlines[0].snippet, None, "GDELT ArtList carries no excerpt");
+        assert_eq!(
+            headlines[0].snippet, None,
+            "GDELT ArtList carries no excerpt"
+        );
     }
 
     #[test]
@@ -256,6 +266,8 @@ mod tests {
             !headlines.is_empty(),
             "GDELT returned no headlines — rate-limited, or the query was rejected"
         );
-        assert!(headlines.iter().all(|h| !h.url.is_empty() && !h.title.is_empty()));
+        assert!(headlines
+            .iter()
+            .all(|h| !h.url.is_empty() && !h.title.is_empty()));
     }
 }

@@ -97,7 +97,9 @@ pub fn build_condensed_packet(
     // so a noisy topic can't blow the packet's token budget. `requests_made` and
     // `stopped_reason` ride through unchanged.
     let mut research = evidence;
-    research.items.sort_by(|a, b| b.priority.total_cmp(&a.priority));
+    research
+        .items
+        .sort_by(|a, b| b.priority.total_cmp(&a.priority));
     for item in &mut research.items {
         for finding in &mut item.findings {
             finding.sources.truncate(MAX_SOURCES_PER_FINDING);
@@ -204,7 +206,12 @@ mod tests {
             Vec::new(),
         );
 
-        let topics: Vec<&str> = packet.research.items.iter().map(|i| i.topic.as_str()).collect();
+        let topics: Vec<&str> = packet
+            .research
+            .items
+            .iter()
+            .map(|i| i.topic.as_str())
+            .collect();
         assert_eq!(topics, vec!["high", "mid", "low"], "highest priority first");
         // Every finding's source list is capped; the short one is left untouched.
         assert!(packet
@@ -232,7 +239,10 @@ mod tests {
         );
 
         assert_eq!(packet.research.requests_made, 42);
-        assert_eq!(packet.research.stopped_reason, Some(StopReason::RequestBudget));
+        assert_eq!(
+            packet.research.stopped_reason,
+            Some(StopReason::RequestBudget)
+        );
     }
 
     #[test]
@@ -266,7 +276,10 @@ mod tests {
             Vec::new(),
         );
 
-        assert_eq!(packet.baseline, baseline, "baseline carried through unchanged");
+        assert_eq!(
+            packet.baseline, baseline,
+            "baseline carried through unchanged"
+        );
         assert_eq!(
             packet.deltas,
             Some(deltas),
@@ -298,7 +311,8 @@ mod tests {
         // neither reorders nor trims it.
         let memory = vec![
             "[summary · 2026-06-04T13:00:00Z] Risk posture: risk-off.".to_string(),
-            "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".to_string(),
+            "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback."
+                .to_string(),
         ];
         let packet = build_condensed_packet(
             BaselineMarketData::default(),

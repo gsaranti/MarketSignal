@@ -156,7 +156,8 @@ const TOOL_NAME: &str = "emit_research_plan";
 /// HTTP timeout.
 const MAX_TOKENS: u32 = 4096;
 
-const SYSTEM_PROMPT: &str = "You are the research router for Market Signal's weekly market report. \
+const SYSTEM_PROMPT: &str =
+    "You are the research router for Market Signal's weekly market report. \
 Given this week's baseline market data, the change since the previous report, the filtered \
 news clusters, summaries of recent prior reports, and any recalled long-term memory, decide \
 which topics deserve deeper investigation for this report. Favor topics where the data moved \
@@ -322,7 +323,9 @@ fn build_user_prompt(input: &RouterInput) -> String {
 
     if input.baseline != BaselineMarketData::default() {
         if let Ok(json) = serde_json::to_string_pretty(&input.baseline) {
-            prompt.push_str(&format!("\n\nBaseline market data for this report:\n{json}"));
+            prompt.push_str(&format!(
+                "\n\nBaseline market data for this report:\n{json}"
+            ));
         }
     }
 
@@ -442,7 +445,9 @@ impl ModelResearchRouter {
             .send()
             .context("sending research-router request")?;
         let status = resp.status();
-        let text = resp.text().context("reading research-router response body")?;
+        let text = resp
+            .text()
+            .context("reading research-router response body")?;
         if !status.is_success() {
             bail!("research-router model returned {status}: {text}");
         }
@@ -470,8 +475,12 @@ impl ResearchRouter for ModelResearchRouter {
             return Ok(ResearchPlan::default());
         }
         // One tracker row for the Sonnet routing call.
-        self.progress
-            .request_started("Anthropic", "routing", "research-router", "Research routing");
+        self.progress.request_started(
+            "Anthropic",
+            "routing",
+            "research-router",
+            "Research routing",
+        );
         let result = (|| -> Result<ResearchPlan> {
             let raw = self.call(&build_request(&input))?;
             let value = extract_anthropic_tool_input(&raw, TOOL_NAME)?;
@@ -570,9 +579,16 @@ mod tests {
             })
             .collect();
         let plan = plan_from_envelope(PlanEnvelope { items });
-        assert_eq!(plan.items.len(), MAX_RESEARCH_ITEMS, "capped at the item ceiling");
+        assert_eq!(
+            plan.items.len(),
+            MAX_RESEARCH_ITEMS,
+            "capped at the item ceiling"
+        );
         // The 1.5 priority sorts first and is clamped to 1.0.
-        assert!((plan.items[0].priority - 1.0).abs() < 1e-9, "priority clamped to 1.0");
+        assert!(
+            (plan.items[0].priority - 1.0).abs() < 1e-9,
+            "priority clamped to 1.0"
+        );
         assert!(plan.items[0].priority >= plan.items[MAX_RESEARCH_ITEMS - 1].priority);
     }
 
@@ -633,7 +649,11 @@ mod tests {
         ];
         let plan = plan_from_envelope(PlanEnvelope { items });
         assert_eq!(plan.items.len(), 1, "the queryless item is dropped");
-        assert_eq!(plan.items[0].queries.len(), MAX_QUERIES_PER_ITEM, "capped per item");
+        assert_eq!(
+            plan.items[0].queries.len(),
+            MAX_QUERIES_PER_ITEM,
+            "capped per item"
+        );
         assert!(plan.items[0].queries.iter().all(|q| !q.trim().is_empty()));
     }
 
@@ -704,14 +724,21 @@ mod tests {
             clusters: vec![cluster("t", 0.5)],
             ..Default::default()
         });
-        assert!(!bare.contains("Summaries of recent prior reports"), "{bare}");
+        assert!(
+            !bare.contains("Summaries of recent prior reports"),
+            "{bare}"
+        );
     }
 
     #[test]
     fn route_on_empty_input_returns_an_empty_plan_without_a_call() {
         // A dummy key is fine: an empty packet short-circuits before any network call.
         let router = ModelResearchRouter::new("sk-test".into()).unwrap();
-        assert!(router.route(RouterInput::default()).unwrap().items.is_empty());
+        assert!(router
+            .route(RouterInput::default())
+            .unwrap()
+            .items
+            .is_empty());
     }
 
     #[test]
@@ -721,7 +748,8 @@ mod tests {
         let input = RouterInput {
             memory: vec![
                 "[summary · 2026-05-28T13:00:00Z] Risk posture: risk-off.".into(),
-                "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".into(),
+                "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback."
+                    .into(),
             ],
             ..Default::default()
         };
@@ -800,7 +828,10 @@ mod tests {
             .expect("OPENAI_API_KEY set")
             .filter(deduped)
             .expect("filter headlines");
-        assert!(!clusters.is_empty(), "the filter produced at least one cluster");
+        assert!(
+            !clusters.is_empty(),
+            "the filter produced at least one cluster"
+        );
         let cluster_count = clusters.len();
 
         let plan = ModelResearchRouter::from_env()
@@ -811,13 +842,25 @@ mod tests {
             })
             .expect("route research");
 
-        assert!(!plan.items.is_empty(), "routing produced at least one topic");
-        assert!(plan.items.len() <= MAX_RESEARCH_ITEMS, "respects the topic ceiling");
+        assert!(
+            !plan.items.is_empty(),
+            "routing produced at least one topic"
+        );
+        assert!(
+            plan.items.len() <= MAX_RESEARCH_ITEMS,
+            "respects the topic ceiling"
+        );
         for it in &plan.items {
             assert!(!it.topic.trim().is_empty(), "every topic has a label");
-            assert!(!it.rationale.trim().is_empty(), "every topic has a rationale");
+            assert!(
+                !it.rationale.trim().is_empty(),
+                "every topic has a rationale"
+            );
             assert!(!it.queries.is_empty(), "every topic has at least one query");
-            assert!(it.queries.len() <= MAX_QUERIES_PER_ITEM, "queries within the per-item ceiling");
+            assert!(
+                it.queries.len() <= MAX_QUERIES_PER_ITEM,
+                "queries within the per-item ceiling"
+            );
             assert!((0.0..=1.0).contains(&it.priority), "priority in range");
         }
         eprintln!(

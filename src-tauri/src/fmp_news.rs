@@ -169,7 +169,14 @@ fn gather_fail_soft(
     progress.request_started("FMP", "news", "fmp-articles", "FMP Articles feed");
     match fetch() {
         Ok(headlines) => {
-            progress.request_finished("FMP", "news", "fmp-articles", "FMP Articles feed", "ok", None);
+            progress.request_finished(
+                "FMP",
+                "news",
+                "fmp-articles",
+                "FMP Articles feed",
+                "ok",
+                None,
+            );
             headlines
         }
         Err(e) => {
@@ -250,7 +257,9 @@ impl FmpNewsSource {
                 ("apikey", self.api_key.as_str()),
             ])
         })?;
-        Ok(headlines_from_articles(interpret_fmp_articles(status, &body)?))
+        Ok(headlines_from_articles(interpret_fmp_articles(
+            status, &body,
+        )?))
     }
 }
 
@@ -285,7 +294,10 @@ mod tests {
         }
         // 402 names the premium gate so a tier regression reads off the tracker row.
         let premium = interpret_fmp_articles(402, "").unwrap_err().to_string();
-        assert!(premium.contains("premium"), "402 message names the gate: {premium}");
+        assert!(
+            premium.contains("premium"),
+            "402 message names the gate: {premium}"
+        );
         // A 2xx that isn't valid JSON is a contract violation -> error.
         assert!(interpret_fmp_articles(200, "not json").is_err());
     }
@@ -357,7 +369,10 @@ mod tests {
             headlines[0].source, "financialmodelingprep.com",
             "source is the link's host"
         );
-        assert_eq!(headlines[0].published.as_deref(), Some("2026-06-11 21:06:55"));
+        assert_eq!(
+            headlines[0].published.as_deref(),
+            Some("2026-06-11 21:06:55")
+        );
         // Snippet: ticker tag prefixed, HTML stripped, entities decoded.
         assert_eq!(
             headlines[0].snippet.as_deref(),
@@ -417,7 +432,12 @@ mod tests {
         let messages = rec.messages();
         assert_eq!(messages.len(), 2, "one started + one finished row");
         match &messages[1].event {
-            ProgressEvent::RequestFinished { provider, group, status, .. } => {
+            ProgressEvent::RequestFinished {
+                provider,
+                group,
+                status,
+                ..
+            } => {
                 assert_eq!(provider, "FMP");
                 assert_eq!(group, "news", "rows bucket under the tracker's news group");
                 assert_eq!(status, "ok");
@@ -471,12 +491,17 @@ mod tests {
         // require a non-empty result so a tier regression (402) or feed change
         // surfaces here rather than as a silently thinner funnel.
         let headlines = src.gather().unwrap();
-        eprintln!("FMP articles live gather returned {} headlines", headlines.len());
+        eprintln!(
+            "FMP articles live gather returned {} headlines",
+            headlines.len()
+        );
         assert!(
             !headlines.is_empty(),
             "FMP articles returned no headlines — premium-gated, or the feed moved"
         );
-        assert!(headlines.iter().all(|h| !h.title.is_empty() && !h.url.is_empty()));
+        assert!(headlines
+            .iter()
+            .all(|h| !h.title.is_empty() && !h.url.is_empty()));
         assert!(
             headlines.iter().any(|h| h.snippet.is_some()),
             "expected at least one article with editorial content"

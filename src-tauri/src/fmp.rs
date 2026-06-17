@@ -193,8 +193,20 @@ const MOVER_EXCHANGES: &[&str] = &["NASDAQ", "NYSE", "AMEX"];
 ///   *directional* product, so bare `"bull"`/`"bear"` are deliberately NOT markers — they
 ///   would drop real companies like "Build-A-Bear Workshop" for no added coverage.
 const MOVER_FUND_MARKERS: &[&str] = &[
-    " etf", " etn", " fund", "2x", "3x", "leveraged", "inverse", "ultrapro", "ultrashort",
-    "daily target", "proshares", "direxion", "graniteshares", "microsectors",
+    " etf",
+    " etn",
+    " fund",
+    "2x",
+    "3x",
+    "leveraged",
+    "inverse",
+    "ultrapro",
+    "ultrashort",
+    "daily target",
+    "proshares",
+    "direxion",
+    "graniteshares",
+    "microsectors",
 ];
 
 /// Earnings-calendar window and filter: the prior week + the upcoming fortnight, then keep
@@ -379,7 +391,12 @@ fn interpret_response(status: u16, body: &str) -> Disposition {
 /// One gap for the `sectors` group, which is a whole-snapshot (no per-series symbols),
 /// so it carries a synthetic series id / name rather than one per sector.
 fn sector_gap(reason: GapReason) -> DataGap {
-    DataGap::new(GroupKind::Sectors, "sector-performance", "Sector Performance", reason)
+    DataGap::new(
+        GroupKind::Sectors,
+        "sector-performance",
+        "Sector Performance",
+        reason,
+    )
 }
 
 /// One gap for the `sector-pe` group on `exchange` — like `sector_gap`, a whole-snapshot
@@ -484,7 +501,9 @@ fn movers_from_value(value: Value, category: MoverCategory) -> Result<Vec<StockM
 /// case-insensitive. Imperfect by nature (no free fund flag); the prompt caveat backs it.
 fn is_fund_or_leveraged(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    MOVER_FUND_MARKERS.iter().any(|marker| lower.contains(marker))
+    MOVER_FUND_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 /// Filter one raw mover list down to thesis-relevant individual-company names: priced at or
@@ -533,7 +552,10 @@ fn earnings_from_value(value: Value) -> Result<Vec<EarningsEvent>> {
 fn filter_earnings(events: Vec<EarningsEvent>) -> Vec<EarningsEvent> {
     let mut kept: Vec<EarningsEvent> = events
         .into_iter()
-        .filter(|e| e.revenue_estimated.is_some_and(|r| r >= EARNINGS_MIN_REVENUE))
+        .filter(|e| {
+            e.revenue_estimated
+                .is_some_and(|r| r >= EARNINGS_MIN_REVENUE)
+        })
         .collect();
     kept.sort_by(|a, b| {
         b.revenue_estimated
@@ -588,7 +610,10 @@ fn sector_pe_from_value(value: Value, expected_exchange: &str) -> Result<Vec<Sec
 /// labelled by their validated wire exchange and deduplicated by (industry, exchange), keep
 /// first, preserving arrival order. A body that is not the expected array, or that carries an
 /// off-board row, is an error.
-fn industry_perf_from_value(value: Value, expected_exchange: &str) -> Result<Vec<(String, String, f64)>> {
+fn industry_perf_from_value(
+    value: Value,
+    expected_exchange: &str,
+) -> Result<Vec<(String, String, f64)>> {
     let raws: Vec<FmpIndustryPerfRaw> = serde_json::from_value(value)
         .context("FMP industry-performance response did not match the expected array shape")?;
     let mut seen = HashSet::new();
@@ -784,7 +809,10 @@ fn eod_to_performance(value: Value, symbol: &str, name: &str) -> Result<Option<I
     let mut rows: Vec<(NaiveDate, f64)> = Vec::with_capacity(raws.len());
     for r in raws {
         let date = NaiveDate::parse_from_str(r.date.trim(), "%Y-%m-%d").with_context(|| {
-            format!("FMP EOD returned an unparseable date {:?} for {symbol}", r.date)
+            format!(
+                "FMP EOD returned an unparseable date {:?} for {symbol}",
+                r.date
+            )
         })?;
         rows.push((date, r.price));
     }
@@ -880,7 +908,12 @@ impl FmpDataSource {
             if rejected {
                 // No request is made for a short-circuited series, so it gets no
                 // tracker row — rows stay one-to-one with actual HTTP calls.
-                gaps.push(DataGap::new(group, *symbol, *fallback_name, GapReason::Rejected));
+                gaps.push(DataGap::new(
+                    group,
+                    *symbol,
+                    *fallback_name,
+                    GapReason::Rejected,
+                ));
                 continue;
             }
             self.progress
@@ -896,13 +929,19 @@ impl FmpDataSource {
                     // An empty "no data" 2xx array for an expected symbol is a this-run
                     // absence, not silence: record it so it counts against coverage and
                     // shows in the manifest rather than vanishing from both.
-                    Ok(quotes) if quotes.is_empty() => {
-                        gaps.push(DataGap::new(group, *symbol, *fallback_name, GapReason::Unavailable))
-                    }
+                    Ok(quotes) if quotes.is_empty() => gaps.push(DataGap::new(
+                        group,
+                        *symbol,
+                        *fallback_name,
+                        GapReason::Unavailable,
+                    )),
                     Ok(quotes) => out.extend(quotes),
-                    Err(_) => {
-                        gaps.push(DataGap::new(group, *symbol, *fallback_name, GapReason::Malformed))
-                    }
+                    Err(_) => gaps.push(DataGap::new(
+                        group,
+                        *symbol,
+                        *fallback_name,
+                        GapReason::Malformed,
+                    )),
                 },
                 Disposition::Gap(reason) => {
                     if reason == GapReason::Rejected {
@@ -951,8 +990,14 @@ impl FmpDataSource {
                 Err(_) => Disposition::Gap(GapReason::Unavailable),
             };
             let finish = |status: &str| {
-                self.progress
-                    .request_finished("FMP", group, date_str.as_str(), name.as_str(), status, None)
+                self.progress.request_finished(
+                    "FMP",
+                    group,
+                    date_str.as_str(),
+                    name.as_str(),
+                    status,
+                    None,
+                )
             };
             match disposition {
                 Disposition::Value(value) => match sectors_from_value(value) {
@@ -1012,13 +1057,21 @@ impl FmpDataSource {
                 ));
                 continue;
             }
-            self.progress
-                .request_started("FMP", GroupKind::IndexPerformance.as_str(), symbol, name);
+            self.progress.request_started(
+                "FMP",
+                GroupKind::IndexPerformance.as_str(),
+                symbol,
+                name,
+            );
             let gaps_before = gaps.len();
             let out_before = out.len();
             let disposition = match self.get(
                 FMP_EOD_PATH,
-                &[("symbol", symbol), ("from", from_s.as_str()), ("to", to_s.as_str())],
+                &[
+                    ("symbol", symbol),
+                    ("from", from_s.as_str()),
+                    ("to", to_s.as_str()),
+                ],
             ) {
                 Ok((status, body)) => interpret_response(status, &body),
                 Err(_) => Disposition::Gap(GapReason::Unavailable),
@@ -1041,7 +1094,12 @@ impl FmpDataSource {
                     if reason == GapReason::Rejected {
                         rejected = true;
                     }
-                    gaps.push(DataGap::new(GroupKind::IndexPerformance, symbol, name, reason));
+                    gaps.push(DataGap::new(
+                        GroupKind::IndexPerformance,
+                        symbol,
+                        name,
+                        reason,
+                    ));
                 }
             }
             emit_series_row(
@@ -1067,9 +1125,24 @@ impl FmpDataSource {
     /// records the remaining lists, like the quote groups.
     fn fetch_movers(&self, gaps: &mut Vec<DataGap>) -> Vec<StockMover> {
         let endpoints = [
-            (MoverCategory::Gainer, FMP_GAINERS_PATH, "biggest-gainers", "Biggest Gainers"),
-            (MoverCategory::Loser, FMP_LOSERS_PATH, "biggest-losers", "Biggest Losers"),
-            (MoverCategory::MostActive, FMP_MOST_ACTIVE_PATH, "most-actives", "Most Active"),
+            (
+                MoverCategory::Gainer,
+                FMP_GAINERS_PATH,
+                "biggest-gainers",
+                "Biggest Gainers",
+            ),
+            (
+                MoverCategory::Loser,
+                FMP_LOSERS_PATH,
+                "biggest-losers",
+                "Biggest Losers",
+            ),
+            (
+                MoverCategory::MostActive,
+                FMP_MOST_ACTIVE_PATH,
+                "most-actives",
+                "Most Active",
+            ),
         ];
         let mut out = Vec::new();
         let mut rejected = false;
@@ -1079,7 +1152,12 @@ impl FmpDataSource {
             }
             if rejected {
                 // No request made for a short-circuited list — no tracker row.
-                gaps.push(DataGap::new(GroupKind::Movers, series_id, name, GapReason::Rejected));
+                gaps.push(DataGap::new(
+                    GroupKind::Movers,
+                    series_id,
+                    name,
+                    GapReason::Rejected,
+                ));
                 continue;
             }
             self.progress
@@ -1093,9 +1171,12 @@ impl FmpDataSource {
             match disposition {
                 Disposition::Value(value) => match movers_from_value(value, category) {
                     Ok(movers) => out.extend(filter_movers(movers)),
-                    Err(_) => {
-                        gaps.push(DataGap::new(GroupKind::Movers, series_id, name, GapReason::Malformed))
-                    }
+                    Err(_) => gaps.push(DataGap::new(
+                        GroupKind::Movers,
+                        series_id,
+                        name,
+                        GapReason::Malformed,
+                    )),
                 },
                 // Permanent absence (402/404) is silent for this additive group.
                 Disposition::Gap(GapReason::OutOfScope) => {}
@@ -1140,16 +1221,23 @@ impl FmpDataSource {
         self.progress
             .request_started("FMP", GroupKind::Earnings.as_str(), series_id, name);
         let gaps_before = gaps.len();
-        let disposition =
-            match self.get(FMP_EARNINGS_PATH, &[("from", from.as_str()), ("to", to.as_str())]) {
-                Ok((status, body)) => interpret_response(status, &body),
-                Err(_) => Disposition::Gap(GapReason::Unavailable),
-            };
+        let disposition = match self.get(
+            FMP_EARNINGS_PATH,
+            &[("from", from.as_str()), ("to", to.as_str())],
+        ) {
+            Ok((status, body)) => interpret_response(status, &body),
+            Err(_) => Disposition::Gap(GapReason::Unavailable),
+        };
         let out = match disposition {
             Disposition::Value(value) => match earnings_from_value(value) {
                 Ok(events) => filter_earnings(events),
                 Err(_) => {
-                    gaps.push(DataGap::new(GroupKind::Earnings, series_id, name, GapReason::Malformed));
+                    gaps.push(DataGap::new(
+                        GroupKind::Earnings,
+                        series_id,
+                        name,
+                        GapReason::Malformed,
+                    ));
                     Vec::new()
                 }
             },
@@ -1193,7 +1281,11 @@ impl FmpDataSource {
     /// array for a date means no snapshot — try the prior weekday; a this-run failure
     /// (auth / quota / 5xx / transport / malformed) records one exchange-tagged `sector-pe`
     /// gap and stops walking; an exhausted walk returns empty with no gap.
-    fn fetch_sector_pe_for_exchange(&self, exchange: &str, gaps: &mut Vec<DataGap>) -> Vec<SectorPe> {
+    fn fetch_sector_pe_for_exchange(
+        &self,
+        exchange: &str,
+        gaps: &mut Vec<DataGap>,
+    ) -> Vec<SectorPe> {
         let today = Utc::now().date_naive();
         for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
             if self.progress.is_cancelled() {
@@ -1205,14 +1297,22 @@ impl FmpDataSource {
             let group = GroupKind::SectorPe.as_str();
             self.progress
                 .request_started("FMP", group, series_id.as_str(), name.as_str());
-            let disposition =
-                match self.get(FMP_SECTOR_PE_PATH, &[("date", date_str.as_str()), ("exchange", exchange)]) {
-                    Ok((status, body)) => interpret_response(status, &body),
-                    Err(_) => Disposition::Gap(GapReason::Unavailable),
-                };
+            let disposition = match self.get(
+                FMP_SECTOR_PE_PATH,
+                &[("date", date_str.as_str()), ("exchange", exchange)],
+            ) {
+                Ok((status, body)) => interpret_response(status, &body),
+                Err(_) => Disposition::Gap(GapReason::Unavailable),
+            };
             let finish = |status: &str| {
-                self.progress
-                    .request_finished("FMP", group, series_id.as_str(), name.as_str(), status, None)
+                self.progress.request_finished(
+                    "FMP",
+                    group,
+                    series_id.as_str(),
+                    name.as_str(),
+                    status,
+                    None,
+                )
             };
             match disposition {
                 Disposition::Value(value) => match sector_pe_from_value(value, exchange) {
@@ -1272,7 +1372,10 @@ impl FmpDataSource {
             }
             let date_str = date.format("%Y-%m-%d").to_string();
             let name = format!("Industry performance {exchange} ({date_str})");
-            let series_id = format!("industry-performance-{}-{date_str}", exchange.to_ascii_lowercase());
+            let series_id = format!(
+                "industry-performance-{}-{date_str}",
+                exchange.to_ascii_lowercase()
+            );
             let group = GroupKind::Industries.as_str();
             self.progress
                 .request_started("FMP", group, series_id.as_str(), name.as_str());
@@ -1284,8 +1387,14 @@ impl FmpDataSource {
                 Err(_) => Disposition::Gap(GapReason::Unavailable),
             };
             let finish = |status: &str| {
-                self.progress
-                    .request_finished("FMP", group, series_id.as_str(), name.as_str(), status, None)
+                self.progress.request_finished(
+                    "FMP",
+                    group,
+                    series_id.as_str(),
+                    name.as_str(),
+                    status,
+                    None,
+                )
             };
             match disposition {
                 Disposition::Value(value) => match industry_perf_from_value(value, exchange) {
@@ -1330,13 +1439,22 @@ impl FmpDataSource {
         let group = GroupKind::Industries.as_str();
         self.progress
             .request_started("FMP", group, series_id.as_str(), name.as_str());
-        let disposition = match self.get(FMP_INDUSTRY_PE_PATH, &[("date", date_str), ("exchange", exchange)]) {
+        let disposition = match self.get(
+            FMP_INDUSTRY_PE_PATH,
+            &[("date", date_str), ("exchange", exchange)],
+        ) {
             Ok((status, body)) => interpret_response(status, &body),
             Err(_) => Disposition::Gap(GapReason::Unavailable),
         };
         let finish = |status: &str| {
-            self.progress
-                .request_finished("FMP", group, series_id.as_str(), name.as_str(), status, None)
+            self.progress.request_finished(
+                "FMP",
+                group,
+                series_id.as_str(),
+                name.as_str(),
+                status,
+                None,
+            )
         };
         match disposition {
             Disposition::Value(value) => match industry_pe_map_from_value(value, exchange) {
@@ -1376,8 +1494,12 @@ impl FmpDataSource {
         }
         let series_id = "market-risk-premium";
         let name = "US Equity Risk Premium";
-        self.progress
-            .request_started("FMP", GroupKind::MarketRiskPremium.as_str(), series_id, name);
+        self.progress.request_started(
+            "FMP",
+            GroupKind::MarketRiskPremium.as_str(),
+            series_id,
+            name,
+        );
         let gaps_before = gaps.len();
         let disposition = match self.get(FMP_RISK_PREMIUM_PATH, &[]) {
             Ok((status, body)) => interpret_response(status, &body),
@@ -1398,7 +1520,12 @@ impl FmpDataSource {
             },
             Disposition::Gap(GapReason::OutOfScope) => Vec::new(),
             Disposition::Gap(reason) => {
-                gaps.push(DataGap::new(GroupKind::MarketRiskPremium, series_id, name, reason));
+                gaps.push(DataGap::new(
+                    GroupKind::MarketRiskPremium,
+                    series_id,
+                    name,
+                    reason,
+                ));
                 Vec::new()
             }
         };
@@ -1465,29 +1592,50 @@ mod tests {
         use GapReason::*;
         // 2xx array (incl. the empty "no data" array) -> a value to shape.
         assert!(matches!(
-            interpret_response(200, r#"[{"symbol":"^GSPC","price":1.0,"changePercentage":0.1}]"#),
+            interpret_response(
+                200,
+                r#"[{"symbol":"^GSPC","price":1.0,"changePercentage":0.1}]"#
+            ),
             Disposition::Value(_)
         ));
-        assert!(matches!(interpret_response(200, "[]"), Disposition::Value(_)));
+        assert!(matches!(
+            interpret_response(200, "[]"),
+            Disposition::Value(_)
+        ));
 
         // Explicit skip allowlist: a legitimate per-symbol absence -> OutOfScope gap.
         assert!(matches!(
             interpret_response(402, "Premium Query Parameter"),
             Disposition::Gap(OutOfScope)
         ));
-        assert!(matches!(interpret_response(404, ""), Disposition::Gap(OutOfScope)));
+        assert!(matches!(
+            interpret_response(404, ""),
+            Disposition::Gap(OutOfScope)
+        ));
 
         // Auth -> Rejected; systemic 429/5xx -> Unavailable; request-contract -> Malformed
         // (a 400, e.g. a malformed sector date, degrades to a gap rather than skipping
         // silently).
         for status in [401, 403] {
-            assert!(matches!(interpret_response(status, ""), Disposition::Gap(Rejected)), "HTTP {status}");
+            assert!(
+                matches!(interpret_response(status, ""), Disposition::Gap(Rejected)),
+                "HTTP {status}"
+            );
         }
         for status in [429, 500, 503] {
-            assert!(matches!(interpret_response(status, ""), Disposition::Gap(Unavailable)), "HTTP {status}");
+            assert!(
+                matches!(
+                    interpret_response(status, ""),
+                    Disposition::Gap(Unavailable)
+                ),
+                "HTTP {status}"
+            );
         }
         for status in [400, 408, 422] {
-            assert!(matches!(interpret_response(status, ""), Disposition::Gap(Malformed)), "HTTP {status}");
+            assert!(
+                matches!(interpret_response(status, ""), Disposition::Gap(Malformed)),
+                "HTTP {status}"
+            );
         }
 
         // A 200 {"Error Message"} body (rate-limit / plan) -> Rejected...
@@ -1501,7 +1649,10 @@ mod tests {
             Disposition::Gap(OutOfScope)
         ));
         // A 2xx that isn't valid JSON is a contract violation -> Malformed.
-        assert!(matches!(interpret_response(200, "not json at all"), Disposition::Gap(Malformed)));
+        assert!(matches!(
+            interpret_response(200, "not json at all"),
+            Disposition::Gap(Malformed)
+        ));
     }
 
     // ---- Offline round trip: adapter -> retry -> interpret -> domain output ----
@@ -1537,7 +1688,10 @@ mod tests {
         assert_eq!(server.attempts(), 1, "one symbol => one request");
         let targets = server.request_targets();
         assert_eq!(server.request_paths(), ["/quote"]);
-        assert!(targets[0].contains("symbol="), "the per-call query var must reach the wire: {targets:?}");
+        assert!(
+            targets[0].contains("symbol="),
+            "the per-call query var must reach the wire: {targets:?}"
+        );
         assert!(gaps.is_empty(), "a clean 200 records no gap");
         assert_eq!(quotes.len(), 1);
         assert_eq!(quotes[0].symbol, "^GSPC");
@@ -1573,28 +1727,37 @@ mod tests {
 
     #[test]
     fn quotes_from_value_maps_with_name_fallback_and_legacy_alias() {
-        let v: Value =
-            serde_json::from_str(r#"[{"symbol":"^GSPC","name":"S&P 500","price":5500.5,"changePercentage":0.42}]"#)
-                .unwrap();
+        let v: Value = serde_json::from_str(
+            r#"[{"symbol":"^GSPC","name":"S&P 500","price":5500.5,"changePercentage":0.42}]"#,
+        )
+        .unwrap();
         let quotes = quotes_from_value(v, "fallback", "index points").unwrap();
         assert_eq!(quotes.len(), 1);
         assert_eq!(quotes[0].symbol, "^GSPC");
         assert_eq!(quotes[0].name, "S&P 500");
         assert!((quotes[0].price - 5500.5).abs() < 1e-9);
         assert!((quotes[0].change.value - 0.42).abs() < 1e-9);
-        assert_eq!(quotes[0].change.kind, crate::data_sources::ChangeKind::Percent);
+        assert_eq!(
+            quotes[0].change.kind,
+            crate::data_sources::ChangeKind::Percent
+        );
         // The requested symbol's unit rides onto the quote from the table, not the wire.
         assert_eq!(quotes[0].unit, "index points");
 
         // No name -> local fallback; legacy `changesPercentage` accepted.
         let v2: Value =
-            serde_json::from_str(r#"[{"symbol":"^DJI","price":40000.0,"changesPercentage":-1.5}]"#).unwrap();
+            serde_json::from_str(r#"[{"symbol":"^DJI","price":40000.0,"changesPercentage":-1.5}]"#)
+                .unwrap();
         let q2 = quotes_from_value(v2, "Dow Jones", "index points").unwrap();
         assert_eq!(q2[0].name, "Dow Jones");
         assert!((q2[0].change.value + 1.5).abs() < 1e-9);
 
         // An empty array is "no quotes", not an error.
-        assert!(quotes_from_value(serde_json::from_str("[]").unwrap(), "x", "index points").unwrap().is_empty());
+        assert!(
+            quotes_from_value(serde_json::from_str("[]").unwrap(), "x", "index points")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1604,7 +1767,8 @@ mod tests {
         let no_price: Value =
             serde_json::from_str(r#"[{"symbol":"^GSPC","changePercentage":0.4}]"#).unwrap();
         assert!(quotes_from_value(no_price, "x", "index points").is_err());
-        let no_change: Value = serde_json::from_str(r#"[{"symbol":"^GSPC","price":5500.0}]"#).unwrap();
+        let no_change: Value =
+            serde_json::from_str(r#"[{"symbol":"^GSPC","price":5500.0}]"#).unwrap();
         assert!(quotes_from_value(no_change, "x", "index points").is_err());
         // A non-array 2xx body (object) is also malformed.
         let object: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
@@ -1662,7 +1826,13 @@ mod tests {
             .collect();
         assert_eq!(
             got,
-            ["2026-06-05", "2026-06-04", "2026-06-03", "2026-06-02", "2026-06-01"],
+            [
+                "2026-06-05",
+                "2026-06-04",
+                "2026-06-03",
+                "2026-06-02",
+                "2026-06-01"
+            ],
             "Sunday run starts at Fri 06-05 and walks back weekdays only"
         );
     }
@@ -1679,7 +1849,13 @@ mod tests {
             .collect();
         assert_eq!(
             got,
-            ["2026-06-10", "2026-06-09", "2026-06-08", "2026-06-05", "2026-06-04"],
+            [
+                "2026-06-10",
+                "2026-06-09",
+                "2026-06-08",
+                "2026-06-05",
+                "2026-06-04"
+            ],
             "weekday start includes today, then skips the weekend mid-walk"
         );
     }
@@ -1701,8 +1877,16 @@ mod tests {
         ];
         let p = index_performance_from_eod("^GSPC", "S&P 500", &rows).expect("a performance");
         assert_eq!(p.symbol, "^GSPC");
-        assert!((p.weekly_pct - 10.0).abs() < 1e-9, "weekly {}", p.weekly_pct);
-        assert!((p.mtd_pct - (15.0 / 95.0 * 100.0)).abs() < 1e-9, "mtd {}", p.mtd_pct);
+        assert!(
+            (p.weekly_pct - 10.0).abs() < 1e-9,
+            "weekly {}",
+            p.weekly_pct
+        );
+        assert!(
+            (p.mtd_pct - (15.0 / 95.0 * 100.0)).abs() < 1e-9,
+            "mtd {}",
+            p.mtd_pct
+        );
         assert!((p.ytd_pct - 25.0).abs() < 1e-9, "ytd {}", p.ytd_pct);
         assert!((p.low_52w - 70.0).abs() < 1e-9, "low {}", p.low_52w);
         assert!((p.high_52w - 120.0).abs() < 1e-9, "high {}", p.high_52w);
@@ -1736,7 +1920,11 @@ mod tests {
         let p = eod_to_performance(v, "^GSPC", "S&P 500")
             .unwrap()
             .expect("a performance");
-        assert!((p.weekly_pct - 10.0).abs() < 1e-9, "weekly {}", p.weekly_pct);
+        assert!(
+            (p.weekly_pct - 10.0).abs() < 1e-9,
+            "weekly {}",
+            p.weekly_pct
+        );
 
         // A non-array body is a contract violation.
         let obj: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
@@ -1769,8 +1957,7 @@ mod tests {
     fn movers_singular_alias_parses_and_name_falls_back() {
         // The quote-endpoint spelling `changePercentage` (singular) is accepted as an
         // alias, and a missing name falls back to the symbol.
-        let body =
-            serde_json::json!([{"symbol":"MSFT","price":410.0,"changePercentage":1.5,"exchange":"NASDAQ"}]);
+        let body = serde_json::json!([{"symbol":"MSFT","price":410.0,"changePercentage":1.5,"exchange":"NASDAQ"}]);
         let parsed = movers_from_value(body, MoverCategory::MostActive).unwrap();
         assert_eq!(parsed[0].name, "MSFT");
         assert_eq!(parsed[0].change_pct, 1.5);
@@ -1782,14 +1969,38 @@ mod tests {
         // exchange gate but aren't single-company signals; the name heuristic drops them
         // while keeping ordinary companies.
         let movers = vec![
-            StockMover { category: MoverCategory::Gainer, symbol: "NVDA".into(),
-                name: "NVIDIA Corporation".into(), price: 142.0, change_pct: 4.0, exchange: "NASDAQ".into() },
-            StockMover { category: MoverCategory::Gainer, symbol: "TQQQ".into(),
-                name: "ProShares - UltraPro QQQ".into(), price: 60.0, change_pct: 5.0, exchange: "NASDAQ".into() },
-            StockMover { category: MoverCategory::Gainer, symbol: "SOXS".into(),
-                name: "Direxion Daily Semiconductor Bear 3X ETF".into(), price: 7.0, change_pct: 9.0, exchange: "AMEX".into() },
-            StockMover { category: MoverCategory::Gainer, symbol: "AAL".into(),
-                name: "American Airlines Group Inc.".into(), price: 14.0, change_pct: 1.5, exchange: "NASDAQ".into() },
+            StockMover {
+                category: MoverCategory::Gainer,
+                symbol: "NVDA".into(),
+                name: "NVIDIA Corporation".into(),
+                price: 142.0,
+                change_pct: 4.0,
+                exchange: "NASDAQ".into(),
+            },
+            StockMover {
+                category: MoverCategory::Gainer,
+                symbol: "TQQQ".into(),
+                name: "ProShares - UltraPro QQQ".into(),
+                price: 60.0,
+                change_pct: 5.0,
+                exchange: "NASDAQ".into(),
+            },
+            StockMover {
+                category: MoverCategory::Gainer,
+                symbol: "SOXS".into(),
+                name: "Direxion Daily Semiconductor Bear 3X ETF".into(),
+                price: 7.0,
+                change_pct: 9.0,
+                exchange: "AMEX".into(),
+            },
+            StockMover {
+                category: MoverCategory::Gainer,
+                symbol: "AAL".into(),
+                name: "American Airlines Group Inc.".into(),
+                price: 14.0,
+                change_pct: 1.5,
+                exchange: "NASDAQ".into(),
+            },
         ];
         let kept = filter_movers(movers);
         let symbols: Vec<&str> = kept.iter().map(|m| m.symbol.as_str()).collect();
@@ -1802,10 +2013,22 @@ mod tests {
         // stays; the leveraged directional ETF is still caught (by "direxion" / "3x" /
         // " etf"), so dropping the bare markers cost no coverage.
         let movers = vec![
-            StockMover { category: MoverCategory::Gainer, symbol: "BBW".into(),
-                name: "Build-A-Bear Workshop, Inc.".into(), price: 40.0, change_pct: 6.0, exchange: "NYSE".into() },
-            StockMover { category: MoverCategory::Gainer, symbol: "SOXL".into(),
-                name: "Direxion Daily Semiconductor Bull 3X ETF".into(), price: 25.0, change_pct: 8.0, exchange: "AMEX".into() },
+            StockMover {
+                category: MoverCategory::Gainer,
+                symbol: "BBW".into(),
+                name: "Build-A-Bear Workshop, Inc.".into(),
+                price: 40.0,
+                change_pct: 6.0,
+                exchange: "NYSE".into(),
+            },
+            StockMover {
+                category: MoverCategory::Gainer,
+                symbol: "SOXL".into(),
+                name: "Direxion Daily Semiconductor Bull 3X ETF".into(),
+                price: 25.0,
+                change_pct: 8.0,
+                exchange: "AMEX".into(),
+            },
         ];
         let kept = filter_movers(movers);
         let symbols: Vec<&str> = kept.iter().map(|m| m.symbol.as_str()).collect();
@@ -1876,9 +2099,15 @@ mod tests {
         ]);
         let out = sector_pe_from_value(v, "NASDAQ").unwrap();
         assert_eq!(out.len(), 2); // the duplicate (Technology, NASDAQ) is dropped
-        assert_eq!((out[0].sector.as_str(), out[0].exchange.as_str()), ("Technology", "NASDAQ"));
+        assert_eq!(
+            (out[0].sector.as_str(), out[0].exchange.as_str()),
+            ("Technology", "NASDAQ")
+        );
         assert_eq!(out[0].pe, Some(38.4)); // first kept, not 99.0; both in-band
-        assert_eq!((out[1].sector.as_str(), out[1].exchange.as_str()), ("Energy", "NASDAQ"));
+        assert_eq!(
+            (out[1].sector.as_str(), out[1].exchange.as_str()),
+            ("Energy", "NASDAQ")
+        );
     }
 
     #[test]
@@ -1894,14 +2123,21 @@ mod tests {
             {"sector":"Materials","exchange":"NASDAQ","pe":SECTOR_PE_MAX + 0.1}
         ]);
         let out = sector_pe_from_value(v, "NASDAQ").unwrap();
-        assert_eq!(out.len(), 4, "every row survives — only the pe is dropped to None");
+        assert_eq!(
+            out.len(),
+            4,
+            "every row survives — only the pe is dropped to None"
+        );
         assert_eq!(out[0].pe, Some(38.4));
         assert_eq!(out[1].pe, None, "non-positive 0.0 → None");
         assert_eq!(out[2].pe, None, "negative → None");
         assert_eq!(out[3].pe, None, "above SECTOR_PE_MAX → None");
         // The boundary itself is in-band (inclusive upper bound).
         let edge = serde_json::json!([{"sector":"X","exchange":"NASDAQ","pe":SECTOR_PE_MAX}]);
-        assert_eq!(sector_pe_from_value(edge, "NASDAQ").unwrap()[0].pe, Some(SECTOR_PE_MAX));
+        assert_eq!(
+            sector_pe_from_value(edge, "NASDAQ").unwrap()[0].pe,
+            Some(SECTOR_PE_MAX)
+        );
     }
 
     #[test]
@@ -1920,9 +2156,11 @@ mod tests {
     fn sector_pe_from_value_requires_exchange_and_pe() {
         // Fail-closed: a row missing the wire exchange OR pe fails the parse (a Malformed gap
         // in the loop) rather than being stamped with a guessed exchange or a false 0.0.
-        assert!(
-            sector_pe_from_value(serde_json::json!([{"sector":"Technology","pe":1.0}]), "NASDAQ").is_err()
-        );
+        assert!(sector_pe_from_value(
+            serde_json::json!([{"sector":"Technology","pe":1.0}]),
+            "NASDAQ"
+        )
+        .is_err());
         assert!(sector_pe_from_value(
             serde_json::json!([{"sector":"Technology","exchange":"NASDAQ"}]),
             "NASDAQ"
@@ -1950,10 +2188,22 @@ mod tests {
             ("Airlines".to_string(), "NASDAQ".to_string(), -2.0),
             ("Biotech".to_string(), "NASDAQ".to_string(), -5.0),
         ];
-        let pe = pe_map(&[("Semiconductors", "NASDAQ", 41.2), ("Biotech", "NASDAQ", 18.0)]);
+        let pe = pe_map(&[
+            ("Semiconductors", "NASDAQ", 41.2),
+            ("Biotech", "NASDAQ", 18.0),
+        ]);
         let out = top_bottom_industries(perf, &pe);
         let names: Vec<&str> = out.iter().map(|i| i.industry.as_str()).collect();
-        assert_eq!(names, ["Semiconductors", "Banks", "Utilities", "Airlines", "Biotech"]);
+        assert_eq!(
+            names,
+            [
+                "Semiconductors",
+                "Banks",
+                "Utilities",
+                "Airlines",
+                "Biotech"
+            ]
+        );
         assert!(out.iter().all(|i| i.exchange == "NASDAQ"));
         // PE joins where present; absent industries carry None rather than dropping the row.
         assert_eq!(out[0].pe, Some(41.2));
@@ -1984,7 +2234,10 @@ mod tests {
         let out = top_bottom_industries(perf, &HashMap::new());
         assert_eq!(out.len(), 2 * INDUSTRY_TOP_N);
         // Strongest is the highest move; weakest is the lowest; the middle is dropped.
-        assert_eq!(out.first().unwrap().industry, format!("Ind{}", 2 * INDUSTRY_TOP_N + 3));
+        assert_eq!(
+            out.first().unwrap().industry,
+            format!("Ind{}", 2 * INDUSTRY_TOP_N + 3)
+        );
         assert_eq!(out.last().unwrap().industry, "Ind0");
         // No industry appears twice.
         let unique: HashSet<&str> = out.iter().map(|i| i.industry.as_str()).collect();
@@ -2002,7 +2255,10 @@ mod tests {
         ]);
         let perf = industry_perf_from_value(perf_v, "NASDAQ").unwrap();
         assert_eq!(perf.len(), 2); // the duplicate (Semiconductors, NASDAQ) is dropped
-        assert_eq!((perf[0].0.as_str(), perf[0].1.as_str()), ("Semiconductors", "NASDAQ"));
+        assert_eq!(
+            (perf[0].0.as_str(), perf[0].1.as_str()),
+            ("Semiconductors", "NASDAQ")
+        );
         assert!((perf[0].2 - 2.4).abs() < 1e-9); // first kept, not -1.0
         let pe_v = serde_json::json!([{"industry":"Semiconductors","exchange":"NASDAQ","pe":41.2}]);
         let pe = industry_pe_map_from_value(pe_v, "NASDAQ").unwrap();
@@ -2037,9 +2293,15 @@ mod tests {
             ("Semiconductors".to_string(), "NASDAQ".to_string(), -5.5),
         ];
         let joined = top_bottom_industries(perf, &map);
-        let oil = joined.iter().find(|i| i.industry == "Oil & Gas Energy").unwrap();
+        let oil = joined
+            .iter()
+            .find(|i| i.industry == "Oil & Gas Energy")
+            .unwrap();
         assert_eq!(oil.pe, None);
-        let semi = joined.iter().find(|i| i.industry == "Semiconductors").unwrap();
+        let semi = joined
+            .iter()
+            .find(|i| i.industry == "Semiconductors")
+            .unwrap();
         assert_eq!(semi.pe, Some(63.9));
     }
 
@@ -2059,13 +2321,23 @@ mod tests {
         assert!(!map.contains_key(&("Software Application".to_string(), "NASDAQ".to_string())));
         // The join carries None for the dropped industry, Some for the in-band one.
         let perf = vec![
-            ("Software Application".to_string(), "NASDAQ".to_string(), 12.4),
+            (
+                "Software Application".to_string(),
+                "NASDAQ".to_string(),
+                12.4,
+            ),
             ("Semiconductors".to_string(), "NASDAQ".to_string(), -5.5),
         ];
         let joined = top_bottom_industries(perf, &map);
-        let soft = joined.iter().find(|i| i.industry == "Software Application").unwrap();
+        let soft = joined
+            .iter()
+            .find(|i| i.industry == "Software Application")
+            .unwrap();
         assert_eq!(soft.pe, None);
-        let semi = joined.iter().find(|i| i.industry == "Semiconductors").unwrap();
+        let semi = joined
+            .iter()
+            .find(|i| i.industry == "Semiconductors")
+            .unwrap();
         assert_eq!(semi.pe, Some(63.9));
     }
 
@@ -2082,7 +2354,8 @@ mod tests {
         ]);
         let map = industry_pe_map_from_value(v, "NASDAQ").unwrap();
         assert_eq!(
-            map.get(&("At Ceiling".to_string(), "NASDAQ".to_string())).copied(),
+            map.get(&("At Ceiling".to_string(), "NASDAQ".to_string()))
+                .copied(),
             Some(INDUSTRY_PE_MAX),
         );
         assert!(!map.contains_key(&("Just Over".to_string(), "NASDAQ".to_string())));
@@ -2280,12 +2553,17 @@ mod tests {
             for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
                 let date_str = date.format("%Y-%m-%d").to_string();
                 let (status, body) = src
-                    .get(FMP_INDUSTRY_PE_PATH, &[("date", date_str.as_str()), ("exchange", exchange)])
+                    .get(
+                        FMP_INDUSTRY_PE_PATH,
+                        &[("date", date_str.as_str()), ("exchange", exchange)],
+                    )
                     .expect("industry-pe fetch");
                 let value = match interpret_response(status, &body) {
                     Disposition::Value(v) => v,
                     Disposition::Gap(reason) => {
-                        eprintln!("  {exchange} {date_str}: gap ({reason:?}) — trying earlier date");
+                        eprintln!(
+                            "  {exchange} {date_str}: gap ({reason:?}) — trying earlier date"
+                        );
                         continue;
                     }
                 };
@@ -2375,12 +2653,17 @@ mod tests {
             for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
                 let date_str = date.format("%Y-%m-%d").to_string();
                 let (status, body) = src
-                    .get(FMP_SECTOR_PE_PATH, &[("date", date_str.as_str()), ("exchange", exchange)])
+                    .get(
+                        FMP_SECTOR_PE_PATH,
+                        &[("date", date_str.as_str()), ("exchange", exchange)],
+                    )
                     .expect("sector-pe fetch");
                 let value = match interpret_response(status, &body) {
                     Disposition::Value(v) => v,
                     Disposition::Gap(reason) => {
-                        eprintln!("  {exchange} {date_str}: gap ({reason:?}) — trying earlier date");
+                        eprintln!(
+                            "  {exchange} {date_str}: gap ({reason:?}) — trying earlier date"
+                        );
                         continue;
                     }
                 };
@@ -2495,7 +2778,11 @@ mod tests {
         probe("biggest-gainers", &format!("{base}/biggest-gainers"), &[]);
         probe("biggest-losers", &format!("{base}/biggest-losers"), &[]);
         probe("most-active", &format!("{base}/most-active"), &[]);
-        probe("most-actives (plural alias)", &format!("{base}/most-actives"), &[]);
+        probe(
+            "most-actives (plural alias)",
+            &format!("{base}/most-actives"),
+            &[],
+        );
         // Earnings calendar — docs say "Free: historical up to 1 month"; confirm forward dates populate.
         probe(
             "earnings-calendar",
@@ -2522,25 +2809,65 @@ mod tests {
             &[("date", date.as_str())],
         );
         // Valuation context constant (near-static, per-country ERP).
-        probe("market-risk-premium", &format!("{base}/market-risk-premium"), &[]);
+        probe(
+            "market-risk-premium",
+            &format!("{base}/market-risk-premium"),
+            &[],
+        );
         // Commodities: gold already free via /quote; do copper/silver resolve on free?
-        probe("commodities-quote GCUSD (gold)", &format!("{base}/commodities-quote"), &[("symbol", "GCUSD")]);
-        probe("commodities-quote HGUSD (copper)", &format!("{base}/commodities-quote"), &[("symbol", "HGUSD")]);
-        probe("commodities-quote SIUSD (silver)", &format!("{base}/commodities-quote"), &[("symbol", "SIUSD")]);
+        probe(
+            "commodities-quote GCUSD (gold)",
+            &format!("{base}/commodities-quote"),
+            &[("symbol", "GCUSD")],
+        );
+        probe(
+            "commodities-quote HGUSD (copper)",
+            &format!("{base}/commodities-quote"),
+            &[("symbol", "HGUSD")],
+        );
+        probe(
+            "commodities-quote SIUSD (silver)",
+            &format!("{base}/commodities-quote"),
+            &[("symbol", "SIUSD")],
+        );
         // 1-call consolidation candidate: does it cover the 4 indices (and ^VIX)?
         probe("all-index-quotes", &format!("{base}/all-index-quotes"), &[]);
 
         // --- Corrected paths for the endpoints that 404'd above (404 = wrong path,
         // not premium; premium is 402, which none of these returned) ---
         // Constituent lists use the `*-constituent` paths, not the bare index name.
-        probe("sp500-constituent", &format!("{base}/sp500-constituent"), &[]);
-        probe("dowjones-constituent", &format!("{base}/dowjones-constituent"), &[]);
-        probe("nasdaq-constituent", &format!("{base}/nasdaq-constituent"), &[]);
+        probe(
+            "sp500-constituent",
+            &format!("{base}/sp500-constituent"),
+            &[],
+        );
+        probe(
+            "dowjones-constituent",
+            &format!("{base}/dowjones-constituent"),
+            &[],
+        );
+        probe(
+            "nasdaq-constituent",
+            &format!("{base}/nasdaq-constituent"),
+            &[],
+        );
         // Batch index quotes — the likely real name of the 1-call index consolidation.
-        probe("batch-index-quotes", &format!("{base}/batch-index-quotes"), &[]);
+        probe(
+            "batch-index-quotes",
+            &format!("{base}/batch-index-quotes"),
+            &[],
+        );
         // Copper / silver via the generic quote endpoint we already use for GCUSD gold.
-        probe("quote HGUSD (copper)", &format!("{base}/quote"), &[("symbol", "HGUSD")]);
-        probe("quote SIUSD (silver)", &format!("{base}/quote"), &[("symbol", "SIUSD")]);
+        probe(
+            "quote HGUSD (copper)",
+            &format!("{base}/quote"),
+            &[("symbol", "HGUSD")],
+        );
+        probe(
+            "quote SIUSD (silver)",
+            &format!("{base}/quote"),
+            &[("symbol", "SIUSD")],
+        );
     }
 
     /// Free-vs-premium probe for FMP's news endpoints — the Step-7 company-news

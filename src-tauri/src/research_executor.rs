@@ -211,8 +211,16 @@ const TRIGGER_RULES: &[TriggerRule] = &[
         threshold: 0.25,
         direction: Direction::Up,
         keywords: &[
-            "yield", "yields", "treasury", "treasuries", "bond", "bonds", "duration",
-            "10y", "2y", "30y",
+            "yield",
+            "yields",
+            "treasury",
+            "treasuries",
+            "bond",
+            "bonds",
+            "duration",
+            "10y",
+            "2y",
+            "30y",
         ],
         follow_up_query: "Implications of the recent rise in Treasury yields: Fed \
             rate-path repricing, inflation-expectation shifts, and bond-market and \
@@ -571,7 +579,10 @@ mod tests {
         );
 
         assert_eq!(evidence.stopped_reason, None, "full plan ran within budget");
-        assert_eq!(evidence.requests_made, 3, "2 + 1 plan queries, no branching");
+        assert_eq!(
+            evidence.requests_made, 3,
+            "2 + 1 plan queries, no branching"
+        );
         assert_eq!(evidence.items.len(), 2);
         // Higher-priority topic first.
         assert_eq!(evidence.items[0].topic, "oil");
@@ -605,7 +616,10 @@ mod tests {
         assert_eq!(evidence.stopped_reason, Some(StopReason::RequestBudget));
         assert_eq!(evidence.requests_made, MAX_RESEARCH_REQUESTS);
         let findings: usize = evidence.items.iter().map(|i| i.findings.len()).sum();
-        assert_eq!(findings, MAX_RESEARCH_REQUESTS, "one finding per request fired");
+        assert_eq!(
+            findings, MAX_RESEARCH_REQUESTS,
+            "one finding per request fired"
+        );
     }
 
     #[test]
@@ -619,8 +633,13 @@ mod tests {
         let plan = ResearchPlan {
             items: vec![item("oil", 5, 1.0)],
         };
-        let evidence =
-            execute_research(&plan, &StubSearchBackend, &NoBranch, &clock, &RunContext::noop());
+        let evidence = execute_research(
+            &plan,
+            &StubSearchBackend,
+            &NoBranch,
+            &clock,
+            &RunContext::noop(),
+        );
 
         assert_eq!(evidence.stopped_reason, Some(StopReason::TimeBudget));
         assert_eq!(evidence.requests_made, 3);
@@ -638,8 +657,7 @@ mod tests {
             items: vec![item("oil", 3, 1.0)],
         };
 
-        let evidence =
-            execute_research(&plan, &StubSearchBackend, &NoBranch, &fast_clock(), &ctx);
+        let evidence = execute_research(&plan, &StubSearchBackend, &NoBranch, &fast_clock(), &ctx);
 
         assert_eq!(evidence.stopped_reason, Some(StopReason::Cancelled));
         // The first request fired (cancel flipped during its started-event); the
@@ -666,7 +684,10 @@ mod tests {
         let depths: Vec<u32> = evidence.items[0].findings.iter().map(|f| f.depth).collect();
         assert_eq!(depths, vec![1, 2]);
         assert!(
-            evidence.items[0].findings.iter().all(|f| f.depth <= MAX_RESEARCH_DEPTH),
+            evidence.items[0]
+                .findings
+                .iter()
+                .all(|f| f.depth <= MAX_RESEARCH_DEPTH),
             "no finding exceeds the depth cap"
         );
     }
@@ -683,7 +704,10 @@ mod tests {
             &fast_clock(),
             &RunContext::noop(),
         );
-        assert_eq!(evidence.requests_made, 1, "no follow-ups without a brancher");
+        assert_eq!(
+            evidence.requests_made, 1,
+            "no follow-ups without a brancher"
+        );
     }
 
     /// A `SeriesDelta` carrying just the fields a `TriggerRule` reads — its series id and
@@ -734,7 +758,10 @@ mod tests {
             Some(8.0),
         )]));
         let q = policy
-            .follow_up(&item("Energy / oil supply shock", 1, 0.9), &depth1_finding())
+            .follow_up(
+                &item("Energy / oil supply shock", 1, 0.9),
+                &depth1_finding(),
+            )
             .expect("oil trigger fired and the topic matched");
         assert!(q.starts_with("Second-order effects of the recent oil spike"));
     }
@@ -748,7 +775,10 @@ mod tests {
             Some(3.0),
         )]));
         assert!(policy
-            .follow_up(&item("Energy / oil supply shock", 1, 0.9), &depth1_finding())
+            .follow_up(
+                &item("Energy / oil supply shock", 1, 0.9),
+                &depth1_finding()
+            )
             .is_none());
     }
 
@@ -758,7 +788,10 @@ mod tests {
         let policy =
             DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta("DGS10", 0.30, Some(7.1))]));
         let q = policy
-            .follow_up(&item("Treasury yields repricing", 1, 0.9), &depth1_finding())
+            .follow_up(
+                &item("Treasury yields repricing", 1, 0.9),
+                &depth1_finding(),
+            )
             .expect("yield trigger fired and the topic matched");
         assert!(q.contains("Treasury yields"));
     }
@@ -773,10 +806,16 @@ mod tests {
             series_delta("DGS10", -0.30, Some(-7.1)),
         ]));
         assert!(policy
-            .follow_up(&item("Energy / oil supply shock", 1, 0.9), &depth1_finding())
+            .follow_up(
+                &item("Energy / oil supply shock", 1, 0.9),
+                &depth1_finding()
+            )
             .is_none());
         assert!(policy
-            .follow_up(&item("Treasury yields repricing", 1, 0.9), &depth1_finding())
+            .follow_up(
+                &item("Treasury yields repricing", 1, 0.9),
+                &depth1_finding()
+            )
             .is_none());
     }
 
@@ -794,7 +833,10 @@ mod tests {
             .expect("oil rule emits on the oil topic");
         assert!(oil.contains("oil"));
         let yields = policy
-            .follow_up(&item("Treasury yields repricing", 1, 0.8), &depth1_finding())
+            .follow_up(
+                &item("Treasury yields repricing", 1, 0.8),
+                &depth1_finding(),
+            )
             .expect("yield rule emits on the yields topic");
         assert!(yields.contains("Treasury yields"));
     }
@@ -814,7 +856,10 @@ mod tests {
                 &depth1_finding(),
             )
             .expect("a topic matching both fired rules emits a merged follow-up");
-        assert!(q.contains("oil spike"), "merged query covers the oil rule: {q}");
+        assert!(
+            q.contains("oil spike"),
+            "merged query covers the oil rule: {q}"
+        );
         assert!(
             q.contains("Treasury yields"),
             "merged query covers the yield rule: {q}"
@@ -919,7 +964,10 @@ mod tests {
         let view = deltas(vec![series_delta("DGS10", 0.30, Some(7.1))]);
         let policy = select_branch_policy(Some(&view));
         let q = policy
-            .follow_up(&item("Treasury yields repricing", 1, 0.9), &depth1_finding())
+            .follow_up(
+                &item("Treasury yields repricing", 1, 0.9),
+                &depth1_finding(),
+            )
             .expect("delta policy fired the yield rule");
         assert!(q.contains("Treasury yields"));
     }
@@ -928,7 +976,10 @@ mod tests {
     fn select_branch_policy_falls_back_to_nobranch_without_a_change_view() {
         let policy = select_branch_policy(None);
         assert!(policy
-            .follow_up(&item("Treasury yields repricing", 1, 0.9), &depth1_finding())
+            .follow_up(
+                &item("Treasury yields repricing", 1, 0.9),
+                &depth1_finding()
+            )
             .is_none());
     }
 }

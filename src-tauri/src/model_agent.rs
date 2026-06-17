@@ -430,7 +430,9 @@ fn build_user_prompt(
         for report in recent_reports {
             let meta =
                 serde_json::to_string_pretty(&report.summary).unwrap_or_else(|_| "{}".to_string());
-            prompt.push_str(&format!("\n\n--- Prior report ---\nSummary metadata:\n{meta}"));
+            prompt.push_str(&format!(
+                "\n\n--- Prior report ---\nSummary metadata:\n{meta}"
+            ));
             if !report.markdown.is_empty() {
                 prompt.push_str(&format!("\n\nReport body:\n{}", report.markdown));
             }
@@ -484,7 +486,10 @@ fn format_analyst_reviews(reviews: &[AnalystOutput]) -> String {
             block.push_str(&format!("\nRisks:\n- {}", r.risks.join("\n- ")));
         }
         if !r.opportunities.is_empty() {
-            block.push_str(&format!("\nOpportunities:\n- {}", r.opportunities.join("\n- ")));
+            block.push_str(&format!(
+                "\nOpportunities:\n- {}",
+                r.opportunities.join("\n- ")
+            ));
         }
     }
     block
@@ -757,10 +762,7 @@ impl ModelMainAgent {
                 .post(ANTHROPIC_URL)
                 .header("x-api-key", &self.config.api_key)
                 .header("anthropic-version", ANTHROPIC_VERSION),
-            Provider::OpenAi => self
-                .http
-                .post(OPENAI_URL)
-                .bearer_auth(&self.config.api_key),
+            Provider::OpenAi => self.http.post(OPENAI_URL).bearer_auth(&self.config.api_key),
         };
         let resp = request.json(body).send().context("sending model request")?;
         let status = resp.status();
@@ -829,7 +831,9 @@ const TOKEN_FLUSH_CHARS: usize = 24;
 /// envelope text and returns `None`.
 fn stream_delta(provider: Provider, event: &Value) -> Option<&str> {
     match provider {
-        Provider::OpenAi => event.pointer("/choices/0/delta/content").and_then(Value::as_str),
+        Provider::OpenAi => event
+            .pointer("/choices/0/delta/content")
+            .and_then(Value::as_str),
         Provider::Anthropic => {
             if event.get("type").and_then(Value::as_str) != Some("content_block_delta") {
                 return None;
@@ -856,8 +860,8 @@ fn reconstruct_response(provider: Provider, envelope: &str) -> Result<Value> {
             "choices": [ { "message": { "role": "assistant", "content": envelope } } ]
         })),
         Provider::Anthropic => {
-            let input: Value = serde_json::from_str(envelope)
-                .context("parsing streamed Anthropic tool input")?;
+            let input: Value =
+                serde_json::from_str(envelope).context("parsing streamed Anthropic tool input")?;
             Ok(json!({
                 "content": [ { "type": "tool_use", "name": TOOL_NAME, "input": input } ]
             }))
@@ -1148,7 +1152,10 @@ mod tests {
             assert!(!m.display_name().is_empty());
         }
         assert_eq!(AgentModel::Gpt5.provider().display_name(), "OpenAI");
-        assert_eq!(AgentModel::ClaudeOpus.provider().display_name(), "Anthropic");
+        assert_eq!(
+            AgentModel::ClaudeOpus.provider().display_name(),
+            "Anthropic"
+        );
     }
 
     #[test]
@@ -1170,8 +1177,12 @@ mod tests {
 
     #[test]
     fn openai_request_uses_strict_json_schema() {
-        let body =
-            build_openai_request("gpt-5", SYSTEM_PROMPT, USER_PROMPT, &response_envelope_schema());
+        let body = build_openai_request(
+            "gpt-5",
+            SYSTEM_PROMPT,
+            USER_PROMPT,
+            &response_envelope_schema(),
+        );
         assert_eq!(body["model"], "gpt-5");
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(body["response_format"]["json_schema"]["strict"], true);
@@ -1198,7 +1209,10 @@ mod tests {
             sample_review(Posture::Balanced),
         ];
         let block = format_analyst_reviews(&reviews);
-        assert!(block.contains("Analyst reviews of this week's research packet"), "{block}");
+        assert!(
+            block.contains("Analyst reviews of this week's research packet"),
+            "{block}"
+        );
         assert!(block.contains("Bull Analyst (confidence: high)"), "{block}");
         assert!(block.contains("Bear Analyst"), "{block}");
         assert!(block.contains("Balanced Analyst"), "{block}");
@@ -1211,7 +1225,10 @@ mod tests {
     fn analyst_block_heading_is_distinct_from_memory_and_research_blocks() {
         let block = format_analyst_reviews(&[sample_review(crate::agent::Posture::Bull)]);
         assert!(!block.contains("Recalled long-term memory"), "{block}");
-        assert!(!block.contains("Recalled memory for the retrospective audit"), "{block}");
+        assert!(
+            !block.contains("Recalled memory for the retrospective audit"),
+            "{block}"
+        );
         assert!(!block.contains("Filtered news clusters"), "{block}");
     }
 
@@ -1223,9 +1240,7 @@ mod tests {
 
     #[test]
     fn user_prompt_embeds_baseline_when_present() {
-        use crate::data_sources::{
-            Change, DataGap, EconomicRelease, GapReason, GroupKind, Quote,
-        };
+        use crate::data_sources::{Change, DataGap, EconomicRelease, GapReason, GroupKind, Quote};
         let baseline = BaselineMarketData {
             indices: vec![Quote {
                 symbol: "^GSPC".into(),
@@ -1360,7 +1375,8 @@ mod tests {
             },
             memory: vec![
                 "[summary · 2026-05-28T13:00:00Z] Risk posture: risk-off.".into(),
-                "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".into(),
+                "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback."
+                    .into(),
             ],
             inbox_summaries: vec![
                 "### Research document: notes.md (MD)\n\nRates likely hold through summer.".into(),
@@ -1379,8 +1395,14 @@ mod tests {
             prompt.contains("Risk posture: risk-off.\n\n[learning"),
             "memory fragments join on blank lines: {prompt}"
         );
-        assert!(prompt.contains("User-supplied research documents"), "{prompt}");
-        assert!(prompt.contains("Rates likely hold through summer."), "{prompt}");
+        assert!(
+            prompt.contains("User-supplied research documents"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("Rates likely hold through summer."),
+            "{prompt}"
+        );
     }
 
     #[test]
@@ -1392,25 +1414,45 @@ mod tests {
         let empty = ResearchPacket::default();
         let with_packet = build_user_prompt(&one_index_baseline(), None, Some(&empty), &[], &[]);
         let without = build_user_prompt(&one_index_baseline(), None, None, &[], &[]);
-        assert_eq!(with_packet, without, "an empty packet adds nothing to the prompt");
-        assert!(!with_packet.contains("Filtered news clusters"), "{with_packet}");
-        assert!(!with_packet.contains("Deep-research evidence"), "{with_packet}");
-        assert!(!with_packet.contains("Recalled long-term memory"), "{with_packet}");
-        assert!(!with_packet.contains("User-supplied research documents"), "{with_packet}");
+        assert_eq!(
+            with_packet, without,
+            "an empty packet adds nothing to the prompt"
+        );
+        assert!(
+            !with_packet.contains("Filtered news clusters"),
+            "{with_packet}"
+        );
+        assert!(
+            !with_packet.contains("Deep-research evidence"),
+            "{with_packet}"
+        );
+        assert!(
+            !with_packet.contains("Recalled long-term memory"),
+            "{with_packet}"
+        );
+        assert!(
+            !with_packet.contains("User-supplied research documents"),
+            "{with_packet}"
+        );
     }
 
     #[test]
     fn user_prompt_appends_audit_memory_block_when_present() {
         // The Step-4 pull rides in on its own channel (no packet needed) under a heading
         // that names the retrospective audit; an empty pull adds nothing.
-        let audit =
-            ["[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".to_string()];
+        let audit = [
+            "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback."
+                .to_string(),
+        ];
         let with = build_user_prompt(&one_index_baseline(), None, None, &audit, &[]);
         assert!(
             with.contains("Recalled memory for the retrospective audit"),
             "{with}"
         );
-        assert!(with.contains("Breadth divergences preceded the pullback."), "{with}");
+        assert!(
+            with.contains("Breadth divergences preceded the pullback."),
+            "{with}"
+        );
 
         let without = build_user_prompt(&one_index_baseline(), None, None, &[], &[]);
         assert!(
@@ -1429,8 +1471,10 @@ mod tests {
             memory: vec!["[summary · 2026-05-28T13:00:00Z] Risk posture: risk-off.".into()],
             ..Default::default()
         };
-        let audit =
-            ["[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback.".to_string()];
+        let audit = [
+            "[learning · 2026-05-21T13:00:00Z] Breadth divergences preceded the pullback."
+                .to_string(),
+        ];
         let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet), &audit, &[]);
         assert!(
             prompt.contains("Recalled long-term memory"),
@@ -1469,14 +1513,23 @@ mod tests {
             markdown: "## Market Signal Thesis\nDefensive into the print.".into(),
         }];
         let with = build_user_prompt(&one_index_baseline(), None, None, &[], &recent);
-        assert!(with.contains("Recent prior reports"), "heading present: {with}");
+        assert!(
+            with.contains("Recent prior reports"),
+            "heading present: {with}"
+        );
         // Both the structured metadata and the Markdown body reach the model.
         assert!(with.contains("thesis_stance"), "metadata present: {with}");
         assert!(with.contains("bearish"), "metadata value present: {with}");
-        assert!(with.contains("Defensive into the print."), "body present: {with}");
+        assert!(
+            with.contains("Defensive into the print."),
+            "body present: {with}"
+        );
 
         let without = build_user_prompt(&one_index_baseline(), None, None, &[], &[]);
-        assert!(!without.contains("Recent prior reports"), "absent on an empty list: {without}");
+        assert!(
+            !without.contains("Recent prior reports"),
+            "absent on an empty list: {without}"
+        );
     }
 
     #[test]
@@ -1517,7 +1570,8 @@ mod tests {
     #[test]
     fn parses_openai_json_content_into_output() {
         let content = serde_json::to_string(&valid_envelope()).unwrap();
-        let raw = json!({ "choices": [ { "message": { "role": "assistant", "content": content } } ] });
+        let raw =
+            json!({ "choices": [ { "message": { "role": "assistant", "content": content } } ] });
         let out = parse_response(
             Provider::OpenAi,
             &raw,
@@ -1528,7 +1582,10 @@ mod tests {
 
         assert_eq!(out.summary.report_id, "rid-456");
         assert_eq!(out.summary.thesis_stance, ThesisStance::Uncertain);
-        assert_eq!(out.summary.forward_outlook_themes, vec!["liquidity and breadth"]);
+        assert_eq!(
+            out.summary.forward_outlook_themes,
+            vec!["liquidity and breadth"]
+        );
     }
 
     #[test]
@@ -1558,7 +1615,10 @@ mod tests {
             .collect();
         assert_eq!(props.len(), required.len());
         for key in props.keys() {
-            assert!(required.contains(&key.as_str()), "{key} missing from required");
+            assert!(
+                required.contains(&key.as_str()),
+                "{key} missing from required"
+            );
         }
         assert!(required.contains(&"durable_learnings"));
     }
@@ -1579,7 +1639,10 @@ mod tests {
     fn rejects_anthropic_response_without_tool_call() {
         let raw = json!({ "content": [ { "type": "text", "text": "no tool call here" } ] });
         let err = parse_response(Provider::Anthropic, &raw, "r".into(), "t".into()).unwrap_err();
-        assert!(err.to_string().contains(TOOL_NAME), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains(TOOL_NAME),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1597,7 +1660,12 @@ mod tests {
             &response_envelope_schema(),
         );
         assert_eq!(a["stream"], true);
-        let o = build_openai_request("gpt-5", SYSTEM_PROMPT, USER_PROMPT, &response_envelope_schema());
+        let o = build_openai_request(
+            "gpt-5",
+            SYSTEM_PROMPT,
+            USER_PROMPT,
+            &response_envelope_schema(),
+        );
         assert_eq!(o["stream"], true);
     }
 
@@ -1616,7 +1684,10 @@ mod tests {
             "delta": { "type": "input_json_delta", "partial_json": "{\"mark" }
         });
         assert_eq!(stream_delta(Provider::Anthropic, &ant), Some("{\"mark"));
-        assert_eq!(stream_delta(Provider::Anthropic, &json!({ "type": "ping" })), None);
+        assert_eq!(
+            stream_delta(Provider::Anthropic, &json!({ "type": "ping" })),
+            None
+        );
         let text_delta = json!({
             "type": "content_block_delta",
             "delta": { "type": "text_delta", "text": "ignored preamble" }
@@ -1629,8 +1700,7 @@ mod tests {
         // A realistic envelope: markdown first, with newline / quote / backslash escapes,
         // then the structured fields. Fed one character at a time — the worst case for a
         // partial escape landing on a chunk boundary.
-        let envelope =
-            r##"{"markdown":"# Title\n\nA \"quoted\" word and a slash \\ end.","risk_posture":"mixed"}"##;
+        let envelope = r##"{"markdown":"# Title\n\nA \"quoted\" word and a slash \\ end.","risk_posture":"mixed"}"##;
         let expected = "# Title\n\nA \"quoted\" word and a slash \\ end.";
 
         let mut extractor = MarkdownStreamExtractor::default();
@@ -1665,7 +1735,10 @@ mod tests {
     fn markdown_extractor_is_empty_until_the_field_opens() {
         let mut extractor = MarkdownStreamExtractor::default();
         assert_eq!(extractor.update("{\"risk_posture\":\"mixed\","), "");
-        assert_eq!(extractor.update("{\"risk_posture\":\"mixed\",\"markdown\":\"Hi"), "Hi");
+        assert_eq!(
+            extractor.update("{\"risk_posture\":\"mixed\",\"markdown\":\"Hi"),
+            "Hi"
+        );
     }
 
     #[test]
@@ -1707,15 +1780,23 @@ mod tests {
         let env = serde_json::to_string(&valid_envelope()).unwrap();
 
         let raw = reconstruct_response(Provider::OpenAi, &env).unwrap();
-        let out =
-            parse_response(Provider::OpenAi, &raw, "rid".into(), "2026-06-02T00:00:00Z".into())
-                .unwrap();
+        let out = parse_response(
+            Provider::OpenAi,
+            &raw,
+            "rid".into(),
+            "2026-06-02T00:00:00Z".into(),
+        )
+        .unwrap();
         assert_eq!(out.summary.header_summary_bullets.len(), 3);
 
         let raw = reconstruct_response(Provider::Anthropic, &env).unwrap();
-        let out =
-            parse_response(Provider::Anthropic, &raw, "rid".into(), "2026-06-02T00:00:00Z".into())
-                .unwrap();
+        let out = parse_response(
+            Provider::Anthropic,
+            &raw,
+            "rid".into(),
+            "2026-06-02T00:00:00Z".into(),
+        )
+        .unwrap();
         assert!(!out.markdown.is_empty());
 
         // A truncated stream is a typed parse error, not a panic (Anthropic arm parses
@@ -1797,14 +1878,16 @@ mod tests {
         // splits) — the bare `generate`'s no-op context drops every `agent_token`, which
         // is why the decoder was previously only fixture-tested.
         let rec = Arc::new(RecordingReporter::default());
-        let ctx = RunContext::new("stream-smoke", rec.clone(), Arc::new(AtomicBool::new(false)));
+        let ctx = RunContext::new(
+            "stream-smoke",
+            rec.clone(),
+            Arc::new(AtomicBool::new(false)),
+        );
         let agent = ModelMainAgent::from_env()
             .expect("env configured for a live run")
             .with_context(ctx);
 
-        let out = agent
-            .generate(populated_input())
-            .expect("live generate");
+        let out = agent.generate(populated_input()).expect("live generate");
 
         // Envelope accumulation + `reconstruct_response` are proven by a clean parse.
         assert!(!out.markdown.is_empty());
@@ -1838,9 +1921,21 @@ mod tests {
     fn skill_library_block_renders_every_skill_with_body_and_output() {
         let block = format_skill_library();
         for s in skills::CATALOG {
-            assert!(block.contains(s.name), "library missing skill name {}", s.name);
-            assert!(block.contains(s.body), "library missing body for {}", s.name);
-            assert!(block.contains(s.output), "library missing output for {}", s.name);
+            assert!(
+                block.contains(s.name),
+                "library missing skill name {}",
+                s.name
+            );
+            assert!(
+                block.contains(s.body),
+                "library missing body for {}",
+                s.name
+            );
+            assert!(
+                block.contains(s.output),
+                "library missing output for {}",
+                s.name
+            );
         }
         // The verdict marker turns each skill's `output` into a forcing function.
         assert!(block.contains("Verdict to produce —"), "{block}");

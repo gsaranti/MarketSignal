@@ -142,11 +142,18 @@ pub fn save(conn: &Connection, models: &AgentModels, credentials: &CredentialUpd
     // already-stored value must be non-blank. Checked before any write so a gated
     // save leaves the store untouched.
     let token_present = |key: &str, update: &Option<String>| -> Result<bool> {
-        if update.as_deref().map(str::trim).is_some_and(|s| !s.is_empty()) {
+        if update
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty())
+        {
             return Ok(true);
         }
         let stored = storage::get_setting(conn, key)?;
-        Ok(stored.as_deref().map(str::trim).is_some_and(|s| !s.is_empty()))
+        Ok(stored
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty()))
     };
     if !token_present(KEY_OPENAI_API_KEY, &credentials.openai)? {
         bail!("OpenAI API token is required to save the configuration");
@@ -202,7 +209,10 @@ mod tests {
     fn available_models_lists_all_five_with_provider_grouping() {
         let opts = available_models();
         assert_eq!(opts.len(), 5);
-        let gpt5 = opts.iter().find(|o| o.slug == "gpt-5").expect("gpt-5 option");
+        let gpt5 = opts
+            .iter()
+            .find(|o| o.slug == "gpt-5")
+            .expect("gpt-5 option");
         assert_eq!(gpt5.label, "GPT-5");
         assert_eq!(gpt5.provider, "OpenAI");
         let opus = opts

@@ -44,11 +44,11 @@ use tauri_plugin_opener::OpenerExt;
 
 use bls::BlsDataSource;
 use config::{AppConfig, ValidationReport};
-use embedding::OpenAiEmbedder;
-use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
 use data_sources::CompositeMarketDataSource;
+use embedding::OpenAiEmbedder;
 use fmp::FmpDataSource;
 use fred::FredDataSource;
+use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
 use model_agent::ModelMainAgent;
 use pipeline::{AnalystStages, GeneratedReport, ReportPaths, ResearchStages};
 use progress::{ProgressMessage, ProgressReporter, RunContext};
@@ -201,8 +201,12 @@ async fn generate_report_manual(
     let main_config = cfg.main_agent_config().map_err(|e| e.to_string())?;
     // The three analyst adapter configs (Steps 12–15): each posture's user-selected
     // model + provider key. The gate above already requires all three.
-    let bull_config = cfg.analyst_config(agent::Posture::Bull).map_err(|e| e.to_string())?;
-    let bear_config = cfg.analyst_config(agent::Posture::Bear).map_err(|e| e.to_string())?;
+    let bull_config = cfg
+        .analyst_config(agent::Posture::Bull)
+        .map_err(|e| e.to_string())?;
+    let bear_config = cfg
+        .analyst_config(agent::Posture::Bear)
+        .map_err(|e| e.to_string())?;
     let balanced_config = cfg
         .analyst_config(agent::Posture::Balanced)
         .map_err(|e| e.to_string())?;
@@ -244,14 +248,9 @@ async fn generate_report_manual(
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
-        let research = ResearchStages::live(
-            tavily_key,
-            fmp_key,
-            openai_key.clone(),
-            anthropic_key,
-            &ctx,
-        )
-        .map_err(|e| e.to_string())?;
+        let research =
+            ResearchStages::live(tavily_key, fmp_key, openai_key.clone(), anthropic_key, &ctx)
+                .map_err(|e| e.to_string())?;
         // Steps 12–15: the three analyst adapters, one per posture, sharing the run's
         // context like the other live stages so each review streams a request row.
         let analysts = AnalystStages::live(bull_config, bear_config, balanced_config, &ctx)
@@ -261,8 +260,10 @@ async fn generate_report_manual(
         let embedder = OpenAiEmbedder::new(openai_key)
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        run_job(&agent, &data, &research, &analysts, &embedder, &paths, &guard, &ctx)
-            .map_err(|e| e.to_string())
+        run_job(
+            &agent, &data, &research, &analysts, &embedder, &paths, &guard, &ctx,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("report generation task failed: {e}"))??;
@@ -350,8 +351,7 @@ async fn export_report_markdown(app: tauri::AppHandle, report_id: String) -> Res
 fn open_app_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
     let paths = report_paths(app)?;
     if let Some(parent) = paths.db_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("creating app data directory: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("creating app data directory: {e}"))?;
     }
     let conn = storage::open(&paths.db_path).map_err(|e| e.to_string())?;
     storage::init_schema(&conn).map_err(|e| e.to_string())?;
@@ -663,20 +663,18 @@ async fn run_scheduled_once(app: &tauri::AppHandle) {
         .map_err(|e| e.to_string())?;
         // Steps 12–15: the three analyst adapters, resolved on `RunConfig` beside the
         // main agent and sharing the run's context like the manual command's.
-        let analysts = AnalystStages::live(
-            run_config.bull,
-            run_config.bear,
-            run_config.balanced,
-            &ctx,
-        )
-        .map_err(|e| e.to_string())?;
+        let analysts =
+            AnalystStages::live(run_config.bull, run_config.bear, run_config.balanced, &ctx)
+                .map_err(|e| e.to_string())?;
         // Identical to the manual command's embedder: the fixed internal OpenAI
         // embedding stage for the Step-17 memory write.
         let embedder = OpenAiEmbedder::new(run_config.openai_api_key)
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        run_job(&agent, &data, &research, &analysts, &embedder, &paths, &guard, &ctx)
-            .map_err(|e| e.to_string())
+        run_job(
+            &agent, &data, &research, &analysts, &embedder, &paths, &guard, &ctx,
+        )
+        .map_err(|e| e.to_string())
     })
     .await;
 
@@ -762,7 +760,11 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "Quit Market Signal", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             let tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().cloned().ok_or("missing default window icon")?)
+                .icon(
+                    app.default_window_icon()
+                        .cloned()
+                        .ok_or("missing default window icon")?,
+                )
                 .tooltip("Market Signal")
                 .menu(&menu)
                 .show_menu_on_left_click(true)

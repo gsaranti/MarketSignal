@@ -91,7 +91,11 @@ pub fn list_folder(dir: &Path) -> Result<Vec<ResearchDocument>> {
 
     // Newest first; entries without a modified time (None < Some) sort last,
     // with a stable name tiebreak so equal-mtime files have a deterministic order.
-    docs.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.name.cmp(&b.name)));
+    docs.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     Ok(docs)
 }
 
@@ -113,9 +117,7 @@ pub fn annotate_parse_failures(docs: &mut [ResearchDocument], failures: &[ParseF
         doc.parse_error = failures
             .iter()
             .find(|f| {
-                f.name == doc.name
-                    && f.size_bytes == doc.size_bytes
-                    && f.modified == doc.modified
+                f.name == doc.name && f.size_bytes == doc.size_bytes && f.modified == doc.modified
             })
             .map(|f| f.reason.clone());
     }
@@ -195,7 +197,10 @@ mod tests {
     fn missing_folder_lists_as_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("does-not-exist");
-        assert_eq!(list_folder(&missing).unwrap(), Vec::<ResearchDocument>::new());
+        assert_eq!(
+            list_folder(&missing).unwrap(),
+            Vec::<ResearchDocument>::new()
+        );
     }
 
     #[test]

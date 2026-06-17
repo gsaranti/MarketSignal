@@ -76,9 +76,7 @@ struct TavilySearchResponse {
 /// Any non-2xx is fatal to the gather (see the module header's degradation note).
 fn interpret_tavily(status: u16, body: &str) -> Result<TavilySearchResponse> {
     match status {
-        200..=299 => {
-            serde_json::from_str(body).context("Tavily returned an unparseable 2xx body")
-        }
+        200..=299 => serde_json::from_str(body).context("Tavily returned an unparseable 2xx body"),
         401 | 403 => bail!("Tavily rejected the key (HTTP {status})"),
         429 | 500..=599 => bail!(
             "Tavily is unavailable (HTTP {status}) — failing the news gather rather than \
@@ -172,10 +170,7 @@ impl TavilyNewsSource {
         });
         let url = format!("{}{TAVILY_SEARCH_PATH}", self.base_url);
         let (status, text) = crate::http_retry::send_with_retry("Tavily", || {
-            self.http
-                .post(&url)
-                .bearer_auth(&self.api_key)
-                .json(&body)
+            self.http.post(&url).bearer_auth(&self.api_key).json(&body)
         })?;
         Ok(headlines_from_response(interpret_tavily(status, &text)?))
     }
@@ -254,7 +249,10 @@ mod tests {
 
         // Auth / availability / unexpected statuses are all fatal.
         for status in [401, 403, 429, 500, 503, 400, 404] {
-            assert!(interpret_tavily(status, "").is_err(), "HTTP {status} should be fatal");
+            assert!(
+                interpret_tavily(status, "").is_err(),
+                "HTTP {status} should be fatal"
+            );
         }
         // A 2xx that isn't valid JSON is a contract violation -> fatal.
         assert!(interpret_tavily(200, "not json").is_err());
@@ -390,7 +388,9 @@ mod tests {
     #[ignore = "hits the live Tavily API; set TAVILY_API_KEY"]
     fn live_search_smoke() {
         let tavily = TavilyNewsSource::from_env().expect("TAVILY_API_KEY set");
-        let headlines = tavily.run_search("US economy inflation and the Federal Reserve").unwrap();
+        let headlines = tavily
+            .run_search("US economy inflation and the Federal Reserve")
+            .unwrap();
         assert!(!headlines.is_empty(), "expected live Tavily results");
         assert!(headlines.iter().all(|h| !h.url.is_empty()));
     }

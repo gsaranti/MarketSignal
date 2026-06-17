@@ -236,7 +236,11 @@ mod tests {
             headline("Markets rally into the close", "https://shared.com/x"),
         ];
         let out = dedupe_headlines(raw);
-        assert_eq!(out.len(), 2, "the unique-title headline must survive: {out:?}");
+        assert_eq!(
+            out.len(),
+            2,
+            "the unique-title headline must survive: {out:?}"
+        );
         assert_eq!(out[0].title, "Fed holds rates");
         assert_eq!(out[1].title, "Markets rally into the close");
     }
@@ -295,7 +299,10 @@ mod tests {
         let gdelt = crate::gdelt::GdeltNewsSource::new().expect("gdelt client");
         let source = CompositeNewsSource::new(tavily, gdelt);
         let raw = source.gather().expect("gather headlines");
-        assert!(!raw.is_empty(), "expected some headlines from the live gather");
+        assert!(
+            !raw.is_empty(),
+            "expected some headlines from the live gather"
+        );
         let deduped = dedupe_headlines(raw.clone());
         assert!(deduped.len() <= raw.len(), "dedup never grows the set");
         assert!(!deduped.is_empty(), "dedup kept at least one headline");

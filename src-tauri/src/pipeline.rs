@@ -106,8 +106,7 @@ impl ResearchStages {
     ) -> Result<Self> {
         Ok(Self {
             news: Box::new(news::CompositeNewsSource::new(
-                crate::tavily::TavilyNewsSource::new(tavily_key.clone())?
-                    .with_context(ctx.clone()),
+                crate::tavily::TavilyNewsSource::new(tavily_key.clone())?.with_context(ctx.clone()),
                 news::CompositeNewsSource::new(
                     crate::gdelt::GdeltNewsSource::new()?.with_context(ctx.clone()),
                     crate::fmp_news::FmpNewsSource::new(fmp_key)?.with_context(ctx.clone()),
@@ -305,7 +304,11 @@ pub fn generate_report(
     // consumes the user's documents. Local CPU only — no request rows.
     ctx.step_started("inbox", "Reading research documents");
     let inbox_docs = process_research_inbox(&paths.inbox_dir, &paths.db_path, ctx);
-    let inbox_status = if ctx.is_cancelled() { "cancelled" } else { "ok" };
+    let inbox_status = if ctx.is_cancelled() {
+        "cancelled"
+    } else {
+        "ok"
+    };
     ctx.step_finished("inbox", inbox_status, None);
     bail_if_cancelled(ctx)?;
 
@@ -314,7 +317,10 @@ pub fn generate_report(
     // per-request rows streaming inside it. Computed here, before `baseline` and `deltas`
     // move into the agent input below.
     ctx.step_started("research", "Gathering and condensing research");
-    let AssembledResearch { packet: research_packet, audit_memory } = assemble_research_packet(
+    let AssembledResearch {
+        packet: research_packet,
+        audit_memory,
+    } = assemble_research_packet(
         research,
         &baseline,
         deltas.as_ref(),
@@ -324,7 +330,11 @@ pub fn generate_report(
         &paths.db_path,
         ctx,
     );
-    let research_status = if ctx.is_cancelled() { "cancelled" } else { "ok" };
+    let research_status = if ctx.is_cancelled() {
+        "cancelled"
+    } else {
+        "ok"
+    };
     ctx.step_finished("research", research_status, None);
     bail_if_cancelled(ctx)?;
 
@@ -345,7 +355,11 @@ pub fn generate_report(
     let analyst_reviews = match run_analysts(analysts, &research_packet) {
         Ok(reviews) => reviews,
         Err(e) => {
-            let status = if ctx.is_cancelled() { "cancelled" } else { "failed" };
+            let status = if ctx.is_cancelled() {
+                "cancelled"
+            } else {
+                "failed"
+            };
             ctx.step_finished("analysts", status, Some(e.to_string()));
             return Err(e);
         }
@@ -370,7 +384,11 @@ pub fn generate_report(
             // A cancel observed mid-stream surfaces as a parse error here; mark the
             // step cancelled (not failed) so the tracker reads consistently with the
             // run's Cancelled outcome.
-            let status = if ctx.is_cancelled() { "cancelled" } else { "failed" };
+            let status = if ctx.is_cancelled() {
+                "cancelled"
+            } else {
+                "failed"
+            };
             ctx.step_finished("agent", status, Some(e.to_string()));
             return Err(e);
         }
@@ -439,11 +457,8 @@ pub fn generate_report(
         // poll), and the same swallow-and-log discipline: a write failure must
         // never lose a report that already persisted. No row when nothing
         // overflowed, so the common case touches no DB.
-        let truncations = collect_document_truncations(
-            &inbox_docs,
-            &summary.report_id,
-            &as_of.to_rfc3339(),
-        );
+        let truncations =
+            collect_document_truncations(&inbox_docs, &summary.report_id, &as_of.to_rfc3339());
         if !truncations.is_empty() {
             if let Err(e) = storage::record_document_truncations(&conn, &truncations) {
                 eprintln!(
@@ -578,8 +593,7 @@ pub fn generate_report(
 /// evictee is re-selected next run, where its already-removed file reads as
 /// NotFound and the DB legs run again.
 fn prune_old_reports(conn: &rusqlite::Connection) {
-    let evictees = match storage::select_reports_beyond_retention(conn, storage::REPORT_RETENTION)
-    {
+    let evictees = match storage::select_reports_beyond_retention(conn, storage::REPORT_RETENTION) {
         Ok(evictees) => evictees,
         Err(e) => {
             eprintln!("report-retention: selecting reports beyond the cap failed: {e:#}");
@@ -747,7 +761,10 @@ fn assemble_research_packet(
             memory: pre_memory.clone(),
             // Routing picks topics, so it gets each document's head, not the
             // full condensed text the packet carries below.
-            inbox_documents: inbox_docs.iter().map(ParsedResearchDoc::router_excerpt).collect(),
+            inbox_documents: inbox_docs
+                .iter()
+                .map(ParsedResearchDoc::router_excerpt)
+                .collect(),
         }) {
             Ok(plan) => plan,
             Err(e) => {
@@ -763,7 +780,13 @@ fn assemble_research_packet(
     // scan that preceded it.
     let clock = WallClock::new();
     let policy = select_branch_policy(deltas);
-    let evidence = execute_research(&plan, research.search.as_ref(), policy.as_ref(), &clock, ctx);
+    let evidence = execute_research(
+        &plan,
+        research.search.as_ref(),
+        policy.as_ref(),
+        &clock,
+        ctx,
+    );
 
     // Step 10: the post-research memory pull — recalled against what the research
     // actually found, and the only memory the packet carries forward. Same cancel
@@ -787,12 +810,18 @@ fn assemble_research_packet(
         clusters,
         evidence,
         memory,
-        inbox_docs.iter().map(ParsedResearchDoc::prompt_block).collect(),
+        inbox_docs
+            .iter()
+            .map(ParsedResearchDoc::prompt_block)
+            .collect(),
     );
 
     // The Step-4 pull rides back out alongside the packet so the main agent's audit
     // gets it on its own channel, distinct from `packet.memory` (the Step-10 pull).
-    AssembledResearch { packet, audit_memory: pre_memory }
+    AssembledResearch {
+        packet,
+        audit_memory: pre_memory,
+    }
 }
 
 /// The Step-6 inbox stage: parse every supported document in the inbox
@@ -904,7 +933,11 @@ fn compute_prior_deltas(
             .context("parsing prior snapshot captured_at")?
             .with_timezone(&chrono::Utc);
         let elapsed_days = (as_of - prior_at).num_seconds() as f64 / 86_400.0;
-        Ok(Some(baseline_delta::compute_deltas(current, &prior, elapsed_days)))
+        Ok(Some(baseline_delta::compute_deltas(
+            current,
+            &prior,
+            elapsed_days,
+        )))
     })
 }
 
@@ -1079,14 +1112,21 @@ fn retrieve_memory(
     if query.trim().is_empty() {
         return Vec::new();
     }
-    read_db_fail_soft(db_path, &format!("research {label} memory retrieval"), |conn| {
-        if vector_memory::count_memory(conn)? == 0 {
-            return Ok(Vec::new());
-        }
-        let embedding = embedder.embed(bounded_query(query, MEMORY_QUERY_MAX_BYTES))?;
-        let hits = vector_memory::search_memory(conn, &embedding, None, MEMORY_TOP_K)?;
-        Ok(hits.iter().map(vector_memory::MemoryHit::prompt_fragment).collect())
-    })
+    read_db_fail_soft(
+        db_path,
+        &format!("research {label} memory retrieval"),
+        |conn| {
+            if vector_memory::count_memory(conn)? == 0 {
+                return Ok(Vec::new());
+            }
+            let embedding = embedder.embed(bounded_query(query, MEMORY_QUERY_MAX_BYTES))?;
+            let hits = vector_memory::search_memory(conn, &embedding, None, MEMORY_TOP_K)?;
+            Ok(hits
+                .iter()
+                .map(vector_memory::MemoryHit::prompt_fragment)
+                .collect())
+        },
+    )
 }
 
 /// Embed and store a run's durable learnings — Step 17's second memory leg
@@ -1342,11 +1382,7 @@ where
 /// carries **no `-<id8>` suffix** — same-name collisions are the user's own save
 /// dialog overwrite prompt, not ours. `ext` is the bare extension (`"md"`, `"pdf"`).
 /// Shares the local-date logic so an export's date matches the stored file's date.
-pub fn export_basename<Tz: chrono::TimeZone>(
-    created_at: &str,
-    ext: &str,
-    tz: &Tz,
-) -> Result<String>
+pub fn export_basename<Tz: chrono::TimeZone>(created_at: &str, ext: &str, tz: &Tz) -> Result<String>
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -1434,7 +1470,10 @@ mod tests {
             ..Default::default()
         };
         let err = enforce_coverage(&data).unwrap_err().to_string();
-        assert!(err.contains("macro levels") && err.contains("internals"), "{err}");
+        assert!(
+            err.contains("macro levels") && err.contains("internals"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1489,7 +1528,11 @@ mod tests {
         gaps.extend(covgaps(GroupKind::Earnings, GapReason::Rejected, 1));
         gaps.extend(covgaps(GroupKind::SectorPe, GapReason::Unavailable, 1));
         gaps.extend(covgaps(GroupKind::Industries, GapReason::Malformed, 2));
-        gaps.extend(covgaps(GroupKind::MarketRiskPremium, GapReason::Rejected, 1));
+        gaps.extend(covgaps(
+            GroupKind::MarketRiskPremium,
+            GapReason::Rejected,
+            1,
+        ));
         let data = BaselineMarketData {
             indices: covq(4),
             internals: covq(9),
@@ -1544,7 +1587,8 @@ mod tests {
     #[test]
     fn short_report_id_does_not_panic_on_the_eight_char_slice() {
         // A test-style id shorter than 8 chars must not panic on `get(..8)`.
-        let name = canonical_report_filename("2026-06-03T12:00:00Z", "rid", &minus_three()).unwrap();
+        let name =
+            canonical_report_filename("2026-06-03T12:00:00Z", "rid", &minus_three()).unwrap();
         assert!(name.ends_with("-rid.md"), "got {name}");
     }
 
@@ -1693,7 +1737,11 @@ mod tests {
     #[test]
     fn truncate_report_body_marks_only_when_cut() {
         let short = "a short report body";
-        assert_eq!(truncate_report_body(short, 100), short, "under the cap rides whole");
+        assert_eq!(
+            truncate_report_body(short, 100),
+            short,
+            "under the cap rides whole"
+        );
         let long = "x".repeat(50);
         let cut = truncate_report_body(&long, 10);
         assert!(cut.starts_with(&"x".repeat(10)), "head kept: {cut}");
@@ -1743,9 +1791,15 @@ mod tests {
             "a missing Markdown file drops the body, summary still carries"
         );
         assert_eq!(recent[1].summary.report_id, "new");
-        assert!(recent[1].markdown.contains("[truncated"), "an over-cap body is marked");
+        assert!(
+            recent[1].markdown.contains("[truncated"),
+            "an over-cap body is marked"
+        );
         assert_eq!(recent[2].summary.report_id, "old");
-        assert_eq!(recent[2].markdown, "the older report body", "an in-cap body rides whole");
+        assert_eq!(
+            recent[2].markdown, "the older report body",
+            "an in-cap body rides whole"
+        );
     }
 
     #[test]
@@ -1854,7 +1908,12 @@ mod tests {
         let recording = RecordingEmbedder(Mutex::new(None));
         let hits = retrieve_memory(&path, &recording, &oversized, "test");
         assert_eq!(hits.len(), 1, "the capped query still pulls");
-        let seen = recording.0.lock().unwrap().clone().expect("embedder was called");
+        let seen = recording
+            .0
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("embedder was called");
         assert!(seen.len() <= MEMORY_QUERY_MAX_BYTES, "byte cap respected");
         assert_eq!(
             seen.len(),
@@ -1873,7 +1932,11 @@ mod tests {
         let path = dir.path().join("market_signal.db");
         let counting = CountingEmbedder::new();
         assert!(retrieve_memory(&path, &counting, "real query", "test").is_empty());
-        assert_eq!(counting.calls(), 0, "no embedding call against an empty store");
+        assert_eq!(
+            counting.calls(),
+            0,
+            "no embedding call against an empty store"
+        );
 
         // Empty query: nothing to recall against, even with a populated store.
         let (_dir2, seeded) = seeded_store();
@@ -1923,7 +1986,10 @@ mod tests {
         persist_durable_learnings(
             &conn,
             &BasisEmbedder,
-            &["k0 breadth thinned".into(), "k0 breadth kept thinning".into()],
+            &[
+                "k0 breadth thinned".into(),
+                "k0 breadth kept thinning".into(),
+            ],
             "rep-1",
             "2026-06-01T00:00:00Z",
             &ctx,
@@ -1979,8 +2045,14 @@ mod tests {
     #[test]
     fn assemble_packet_happy_path_with_stubs_carries_news_and_evidence() {
         let packet = assemble_with(ResearchStages::stub());
-        assert!(!packet.news_clusters.is_empty(), "stub chain yields clusters");
-        assert!(!packet.research.items.is_empty(), "stub chain yields evidence");
+        assert!(
+            !packet.news_clusters.is_empty(),
+            "stub chain yields clusters"
+        );
+        assert!(
+            !packet.research.items.is_empty(),
+            "stub chain yields evidence"
+        );
     }
 
     /// One recent summary so `pre_research_query` renders a non-blank query (a default
@@ -2020,7 +2092,11 @@ mod tests {
             &db_path,
             &RunContext::noop(),
         );
-        assert_eq!(assembled.audit_memory.len(), 1, "the Step-4 pull reached audit_memory");
+        assert_eq!(
+            assembled.audit_memory.len(),
+            1,
+            "the Step-4 pull reached audit_memory"
+        );
         assert!(
             assembled.audit_memory[0].starts_with("[learning · "),
             "audit memory carries the store's prompt fragment, got {:?}",
@@ -2045,7 +2121,10 @@ mod tests {
             &db_path,
             &RunContext::noop(),
         );
-        assert!(assembled.audit_memory.is_empty(), "an empty store recalls no audit memory");
+        assert!(
+            assembled.audit_memory.is_empty(),
+            "an empty store recalls no audit memory"
+        );
     }
 
     #[test]
@@ -2082,8 +2161,14 @@ mod tests {
             router: Box::new(StubResearchRouter),
             search: Box::new(StubSearchBackend),
         });
-        assert!(packet.news_clusters.is_empty(), "a failed filter yields no clusters");
-        assert!(packet.research.items.is_empty(), "and so no routed evidence");
+        assert!(
+            packet.news_clusters.is_empty(),
+            "a failed filter yields no clusters"
+        );
+        assert!(
+            packet.research.items.is_empty(),
+            "and so no routed evidence"
+        );
     }
 
     #[test]
@@ -2097,8 +2182,14 @@ mod tests {
             router: Box::new(FailingRouter),
             search: Box::new(StubSearchBackend),
         });
-        assert!(!packet.news_clusters.is_empty(), "news survives a router failure");
-        assert!(packet.research.items.is_empty(), "but there is no routed evidence");
+        assert!(
+            !packet.news_clusters.is_empty(),
+            "news survives a router failure"
+        );
+        assert!(
+            packet.research.items.is_empty(),
+            "but there is no routed evidence"
+        );
     }
 
     /// Seed one report row whose markdown path never existed (the file leg reads
@@ -2209,7 +2300,8 @@ mod tests {
 
         // Next run, sabotage gone: the same evictee is re-selected and fully
         // evicted — the retry path the rollback preserves.
-        conn.execute("DROP TRIGGER block_report_delete", []).unwrap();
+        conn.execute("DROP TRIGGER block_report_delete", [])
+            .unwrap();
         prune_old_reports(&conn);
         assert_eq!(
             count("SELECT COUNT(*) FROM reports"),
@@ -2292,7 +2384,10 @@ mod tests {
             RunContext::new("t", Arc::new(NoopReporter), Arc::new(AtomicBool::new(true)));
         let docs = process_research_inbox(&inbox, &db_path, &cancelled);
         assert!(docs.is_empty(), "a cancelled pass parses nothing");
-        assert!(!db_path.exists(), "the failure write was skipped, not emptied");
+        assert!(
+            !db_path.exists(),
+            "the failure write was skipped, not emptied"
+        );
 
         // The same pass uncancelled records the failure — pinning that the
         // skip above came from the cancel, not from a quiet no-op.
@@ -2300,7 +2395,9 @@ mod tests {
         assert!(docs.is_empty());
         let conn = storage::open(&db_path).unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM research_parse_failures", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM research_parse_failures", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count, 1);
     }
@@ -2340,7 +2437,10 @@ mod tests {
         }];
         let (_dir, db_path) = seeded_store();
         let ctx = RunContext::new("t", Arc::new(NoopReporter), Arc::new(AtomicBool::new(true)));
-        let AssembledResearch { packet, audit_memory } = assemble_research_packet(
+        let AssembledResearch {
+            packet,
+            audit_memory,
+        } = assemble_research_packet(
             &stages,
             &BaselineMarketData::default(),
             None,
@@ -2356,7 +2456,10 @@ mod tests {
         // The Step-4 audit pull obeys the same cancel guard: a pre-cancelled run skips
         // it (the `PanicEmbedder` proves the embedding call never fires) and the audit
         // gets nothing.
-        assert!(audit_memory.is_empty(), "a cancelled run recalls no audit memory");
+        assert!(
+            audit_memory.is_empty(),
+            "a cancelled run recalls no audit memory"
+        );
     }
 
     // ---- live research-half smoke (news → filter → route → execute → packet) ----
@@ -2424,9 +2527,18 @@ mod tests {
         .packet;
 
         // Each stage produced real output (fail-soft would have let empty through).
-        assert!(!packet.news_clusters.is_empty(), "gather+filter yielded clusters");
-        assert!(!packet.research.items.is_empty(), "router yielded at least one topic");
-        assert!(packet.research.requests_made >= 1, "executor spent at least one search");
+        assert!(
+            !packet.news_clusters.is_empty(),
+            "gather+filter yielded clusters"
+        );
+        assert!(
+            !packet.research.items.is_empty(),
+            "router yielded at least one topic"
+        );
+        assert!(
+            packet.research.requests_made >= 1,
+            "executor spent at least one search"
+        );
         let total_sources: usize = packet
             .research
             .items
@@ -2434,7 +2546,10 @@ mod tests {
             .flat_map(|i| &i.findings)
             .map(|f| f.sources.len())
             .sum();
-        assert!(total_sources >= 1, "at least one executor search returned sources");
+        assert!(
+            total_sources >= 1,
+            "at least one executor search returned sources"
+        );
 
         // Tracker attribution: every request row carries a research-half group, and each
         // live stage emitted at least one row. The frontend buckets the four research
@@ -2471,7 +2586,12 @@ mod tests {
              routing {}, research {}",
             packet.news_clusters.len(),
             packet.research.items.len(),
-            packet.research.items.iter().map(|i| i.findings.len()).sum::<usize>(),
+            packet
+                .research
+                .items
+                .iter()
+                .map(|i| i.findings.len())
+                .sum::<usize>(),
             total_sources,
             packet.research.requests_made,
             packet.research.stopped_reason,
@@ -2557,7 +2677,10 @@ mod tests {
             })
             .collect();
         let paraphrase_floor = pair_cosines.iter().copied().fold(f64::INFINITY, f64::min);
-        let paraphrase_ceiling = pair_cosines.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let paraphrase_ceiling = pair_cosines
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
 
         // Max cosine across every pair of genuinely distinct lessons.
         let distinct_vecs: Vec<Vec<f32>> = DISTINCT_LESSONS
@@ -2567,7 +2690,8 @@ mod tests {
         let mut distinct_ceiling = f64::NEG_INFINITY;
         for (i, va) in distinct_vecs.iter().enumerate() {
             for vb in &distinct_vecs[i + 1..] {
-                distinct_ceiling = distinct_ceiling.max(crate::vector_memory::cosine_similarity(va, vb));
+                distinct_ceiling =
+                    distinct_ceiling.max(crate::vector_memory::cosine_similarity(va, vb));
             }
         }
 
@@ -2646,7 +2770,11 @@ mod tests {
 
         for (i, (rel, c, t)) in ranked.iter().enumerate() {
             let tag = if *rel { "REL" } else { "   " };
-            let cut = if i + 1 == MEMORY_TOP_K { "  <-- top-k cut" } else { "" };
+            let cut = if i + 1 == MEMORY_TOP_K {
+                "  <-- top-k cut"
+            } else {
+                ""
+            };
             eprintln!("{:>2}. {c:.4} [{tag}] {t}{cut}", i + 1);
         }
 

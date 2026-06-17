@@ -120,7 +120,12 @@ impl ParsedResearchDoc {
     /// both renderings.
     fn header_suffix(&self) -> String {
         match self.modified.as_deref().and_then(|m| m.get(..10)) {
-            Some(date) => format!("{} ({}, modified {})", self.name, self.format.to_uppercase(), date),
+            Some(date) => format!(
+                "{} ({}, modified {})",
+                self.name,
+                self.format.to_uppercase(),
+                date
+            ),
             None => format!("{} ({})", self.name, self.format.to_uppercase()),
         }
     }
@@ -206,7 +211,10 @@ pub fn archive_processed(inbox_dir: &Path, archive_dir: &Path, docs: &[ParsedRes
         let meta = match std::fs::metadata(&src) {
             Ok(meta) => meta,
             Err(e) => {
-                eprintln!("research-inbox: {} vanished before archiving: {e}", doc.name);
+                eprintln!(
+                    "research-inbox: {} vanished before archiving: {e}",
+                    doc.name
+                );
                 continue;
             }
         };
@@ -309,7 +317,9 @@ fn extract_text(format: &str, bytes: Vec<u8>) -> Result<String, String> {
 /// panic reads as a parse failure, never a crashed run. (An unwinding panic;
 /// the rarer unbounded-recursion abort class is not catchable in-process.)
 fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
-    match catch_unwind(AssertUnwindSafe(|| pdf_extract::extract_text_from_mem(bytes))) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        pdf_extract::extract_text_from_mem(bytes)
+    })) {
         Ok(Ok(text)) => Ok(text),
         Ok(Err(e)) => Err(format!("extracting PDF text failed: {e}")),
         Err(panic) => {
@@ -359,7 +369,11 @@ fn split_csv_records(text: &str) -> Vec<&str> {
         match c {
             '"' => in_quotes = !in_quotes,
             '\n' if !in_quotes => {
-                let end = if i > start && text.as_bytes()[i - 1] == b'\r' { i - 1 } else { i };
+                let end = if i > start && text.as_bytes()[i - 1] == b'\r' {
+                    i - 1
+                } else {
+                    i
+                };
                 records.push(&text[start..end]);
                 start = i + 1;
             }
@@ -506,7 +520,10 @@ mod tests {
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
              /Resources << /Font << /F1 5 0 R >> >> >>"
                 .to_string(),
-            format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
+            format!(
+                "<< /Length {} >>\nstream\n{stream}\nendstream",
+                stream.len()
+            ),
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
         ];
         let mut pdf = String::from("%PDF-1.4\n");
@@ -516,7 +533,10 @@ mod tests {
             pdf.push_str(&format!("{} 0 obj\n{body}\nendobj\n", i + 1));
         }
         let xref_at = pdf.len();
-        pdf.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1));
+        pdf.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
         for off in offsets {
             pdf.push_str(&format!("{off:010} 00000 n \n"));
         }
@@ -532,7 +552,11 @@ mod tests {
     #[test]
     fn markdown_and_txt_parse_as_utf8_text() {
         let tmp = tempfile::tempdir().unwrap();
-        write(tmp.path(), "note.md", b"# Fed outlook\n\nRates likely hold.");
+        write(
+            tmp.path(),
+            "note.md",
+            b"# Fed outlook\n\nRates likely hold.",
+        );
         let out = process_inbox(tmp.path(), &ctx());
         assert!(out.failures.is_empty());
         assert_eq!(out.docs.len(), 1);
@@ -547,13 +571,21 @@ mod tests {
         let out = process_inbox(tmp.path(), &ctx());
         assert!(out.docs.is_empty());
         assert_eq!(out.failures.len(), 1);
-        assert!(out.failures[0].reason.contains("UTF-8"), "{}", out.failures[0].reason);
+        assert!(
+            out.failures[0].reason.contains("UTF-8"),
+            "{}",
+            out.failures[0].reason
+        );
     }
 
     #[test]
     fn valid_json_is_validated_and_rendered() {
         let tmp = tempfile::tempdir().unwrap();
-        write(tmp.path(), "data.json", br#"{"thesis":"hold","horizon_weeks":6}"#);
+        write(
+            tmp.path(),
+            "data.json",
+            br#"{"thesis":"hold","horizon_weeks":6}"#,
+        );
         let out = process_inbox(tmp.path(), &ctx());
         assert!(out.failures.is_empty());
         assert!(out.docs[0].text.contains("\"thesis\": \"hold\""));
@@ -565,7 +597,11 @@ mod tests {
         write(tmp.path(), "broken.json", b"{ not json");
         let out = process_inbox(tmp.path(), &ctx());
         assert!(out.docs.is_empty());
-        assert!(out.failures[0].reason.contains("not valid JSON"), "{}", out.failures[0].reason);
+        assert!(
+            out.failures[0].reason.contains("not valid JSON"),
+            "{}",
+            out.failures[0].reason
+        );
     }
 
     #[test]
@@ -597,11 +633,21 @@ mod tests {
             csv.push_str(&format!("{i},\"first\nsecond\"\n"));
         }
         let condensed = condense_csv(&csv);
-        assert!(condensed.ends_with("… 5 more rows"), "records counted, not lines");
+        assert!(
+            condensed.ends_with("… 5 more rows"),
+            "records counted, not lines"
+        );
         let body = condensed.strip_suffix("… 5 more rows").unwrap();
-        assert_eq!(body.matches('"').count() % 2, 0, "no record was cut mid-field");
+        assert_eq!(
+            body.matches('"').count() % 2,
+            0,
+            "no record was cut mid-field"
+        );
         // Header + 100 two-line records survive intact.
-        assert!(body.starts_with("id,note\n0,\"first\nsecond\"\n"), "sample keeps whole records");
+        assert!(
+            body.starts_with("id,note\n0,\"first\nsecond\"\n"),
+            "sample keeps whole records"
+        );
         assert!(
             body.contains(&format!("\n{},\"first\nsecond\"\n", CSV_MAX_DATA_ROWS - 1)),
             "the last kept record is the capped one"
@@ -632,7 +678,11 @@ mod tests {
         write(tmp.path(), "deck.pdf", &minimal_pdf("Market thesis intact"));
         let out = process_inbox(tmp.path(), &ctx());
         assert!(out.failures.is_empty(), "{:?}", out.failures);
-        assert!(out.docs[0].text.contains("Market thesis intact"), "{}", out.docs[0].text);
+        assert!(
+            out.docs[0].text.contains("Market thesis intact"),
+            "{}",
+            out.docs[0].text
+        );
     }
 
     #[test]
@@ -671,7 +721,10 @@ mod tests {
         write(tmp.path(), "image.png", b"\x89PNG");
         let out = process_inbox(tmp.path(), &ctx());
         assert!(out.docs.is_empty());
-        assert!(out.failures.is_empty(), "unsupported is not a parse failure");
+        assert!(
+            out.failures.is_empty(),
+            "unsupported is not a parse failure"
+        );
     }
 
     #[test]
@@ -691,7 +744,10 @@ mod tests {
             RunContext::new("t", Arc::new(NoopReporter), Arc::new(AtomicBool::new(true)));
         let out = process_inbox(tmp.path(), &cancelled);
         assert!(out.docs.is_empty());
-        assert!(out.failures.is_empty(), "no failure is recorded for unreached files");
+        assert!(
+            out.failures.is_empty(),
+            "no failure is recorded for unreached files"
+        );
     }
 
     // ---- normalization ----
@@ -741,7 +797,10 @@ mod tests {
         assert!(doc.truncated());
         let block = doc.prompt_block();
         assert!(block.starts_with("### Research document: big.txt (TXT, modified 2026-06-09)"));
-        assert!(block.contains("[truncated — showing the first 900 of 1802 characters]"), "{block}");
+        assert!(
+            block.contains("[truncated — showing the first 900 of 1802 characters]"),
+            "{block}"
+        );
     }
 
     #[test]
@@ -756,7 +815,11 @@ mod tests {
         };
         let block = doc.prompt_block();
         assert_eq!(block, "### Research document: note.md (MD)\n\nshort");
-        assert_eq!(doc.router_excerpt(), block, "short docs ride whole in both forms");
+        assert_eq!(
+            doc.router_excerpt(),
+            block,
+            "short docs ride whole in both forms"
+        );
     }
 
     #[test]
@@ -798,7 +861,10 @@ mod tests {
         archive_processed(&inbox, &archive, &docs);
 
         assert!(!inbox.join("note.md").exists(), "moved out of the inbox");
-        assert!(archive.join("note.md").exists(), "the pre-existing file is untouched");
+        assert!(
+            archive.join("note.md").exists(),
+            "the pre-existing file is untouched"
+        );
         assert_eq!(
             std::fs::read_to_string(archive.join("note (2).md")).unwrap(),
             "fresh",
@@ -823,6 +889,9 @@ mod tests {
             original_chars: 5,
         }];
         archive_processed(&inbox, &archive, &docs);
-        assert!(inbox.join("note.md").exists(), "a changed file stays for the next run");
+        assert!(
+            inbox.join("note.md").exists(),
+            "a changed file stays for the next run"
+        );
     }
 }

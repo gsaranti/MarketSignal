@@ -271,7 +271,10 @@ pub struct DocumentTruncationRow {
 /// [`replace_parse_failures`], there is no leading `DELETE` — the table
 /// accumulates across runs so overflow frequency can be judged over time. One
 /// transaction so a reader never sees a half-written run.
-pub fn record_document_truncations(conn: &Connection, rows: &[DocumentTruncationRow]) -> Result<()> {
+pub fn record_document_truncations(
+    conn: &Connection,
+    rows: &[DocumentTruncationRow],
+) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     for row in rows {
         tx.execute(
@@ -585,10 +588,7 @@ pub struct ReportEvictee {
 /// the caller owns the per-evictee cascade. Uses the same `created_at DESC,
 /// rowid DESC` ordering as [`list_recent_reports`], so retention evicts exactly
 /// the reports the sidebar no longer shows. Empty at or under the cap.
-pub fn select_reports_beyond_retention(
-    conn: &Connection,
-    keep: u32,
-) -> Result<Vec<ReportEvictee>> {
+pub fn select_reports_beyond_retention(conn: &Connection, keep: u32) -> Result<Vec<ReportEvictee>> {
     let mut stmt = conn.prepare(
         "SELECT report_id, markdown_path FROM reports
          WHERE report_id NOT IN (
@@ -805,7 +805,9 @@ mod tests {
             let created_at = format!("2026-01-0{}T00:00:00Z", i + 1);
             insert_sample(&conn, &format!("id-{i}"), &created_at);
         }
-        assert!(select_reports_beyond_retention(&conn, 3).unwrap().is_empty());
+        assert!(select_reports_beyond_retention(&conn, 3)
+            .unwrap()
+            .is_empty());
         assert!(select_reports_beyond_retention(&conn, REPORT_RETENTION)
             .unwrap()
             .is_empty());
@@ -1021,23 +1023,38 @@ mod tests {
         assert_eq!(empty, TruncationStats::default());
         assert_eq!(empty.latest_captured_at, None);
 
-        let row = |report_id: &str, name: &str, format: &str, at: &str, original: u64, kept: u64| {
-            DocumentTruncationRow {
-                report_id: report_id.into(),
-                captured_at: at.into(),
-                name: name.into(),
-                format: format.into(),
-                original_chars: original,
-                kept_chars: kept,
-            }
-        };
+        let row =
+            |report_id: &str, name: &str, format: &str, at: &str, original: u64, kept: u64| {
+                DocumentTruncationRow {
+                    report_id: report_id.into(),
+                    captured_at: at.into(),
+                    name: name.into(),
+                    format: format.into(),
+                    original_chars: original,
+                    kept_chars: kept,
+                }
+            };
 
         // Two reports, three events across two formats.
         record_document_truncations(
             &conn,
             &[
-                row("rep-1", "a.pdf", "pdf", "2026-06-01T09:00:00+00:00", 30_000, 12_000),
-                row("rep-1", "b.pdf", "pdf", "2026-06-01T09:00:00+00:00", 20_000, 12_000),
+                row(
+                    "rep-1",
+                    "a.pdf",
+                    "pdf",
+                    "2026-06-01T09:00:00+00:00",
+                    30_000,
+                    12_000,
+                ),
+                row(
+                    "rep-1",
+                    "b.pdf",
+                    "pdf",
+                    "2026-06-01T09:00:00+00:00",
+                    20_000,
+                    12_000,
+                ),
             ],
         )
         .unwrap();
