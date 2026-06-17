@@ -154,13 +154,18 @@ const INDUSTRY_PE_MAX: f64 = 120.0;
 /// any plausible level by a sector at an earnings trough), and the non-positive case is *more*
 /// reachable here than at the industry cut: a whole sector can carry net-negative trailing
 /// aggregate earnings in a broad downturn (FMP reports `pe: 0.0` there), which would otherwise
-/// pass through as a misleading near-zero "cheap" multiple. Set, conservatively, to the same
-/// 120.0 as the industry ceiling pending its own live calibration: a sector aggregate sums over
-/// far more constituents than an industry's, so the artifact tail should be *rarer* and the
-/// plausible band *tighter* — but until `tuning_sector_pe_distribution_probe` measures the real
-/// per-board distribution, the generous shared ceiling errs toward keeping a genuine high
-/// cyclical-trough sector multiple over false-dropping it. Re-run the probe to re-tune.
-const SECTOR_PE_MAX: f64 = 120.0;
+/// pass through as a misleading near-zero "cheap" multiple. Calibrated against the live
+/// distribution (`tuning_sector_pe_distribution_probe`, 2026-06-17 board snapshot): the
+/// prediction held —
+/// summing over far more constituents than an industry's makes the artifact tail *rarer* and the
+/// plausible band *tighter*. Both boards showed zero sectors above the prior 120 ceiling and zero
+/// non-positive, the highest plausible aggregate sitting at 85.2 (NASDAQ Consumer Cyclical; NYSE
+/// topped at 45.6, Technology), with no artifact cluster at all — versus the industry cut's ~94
+/// plausible max and ≥128 artifact floor. The ceiling drops 120 → 100: ~15pt of headroom above
+/// the observed max so a genuine cyclical-trough sector multiple drifting past 85 is kept, while
+/// the hundreds-magnitude denominator-near-zero artifact a future trough could still produce
+/// (same mechanism as the industry ~461) stays dropped. Re-run the probe to re-tune.
+const SECTOR_PE_MAX: f64 = 100.0;
 
 /// The exact `country` label to keep from the market-risk-premium dataset. Exact-match, not
 /// a substring — "United Kingdom" and "United Arab Emirates" also start with "United".
