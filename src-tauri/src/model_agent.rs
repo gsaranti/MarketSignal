@@ -36,6 +36,7 @@ use crate::baseline_delta::BaselineDeltas;
 use crate::data_sources::BaselineMarketData;
 use crate::progress::RunContext;
 use crate::research_packet::ResearchPacket;
+use crate::skills;
 
 /// Which provider an agent model is served by. Selects the request shape, the
 /// auth header, and the endpoint.
@@ -159,6 +160,24 @@ const TOOL_NAME: &str = "emit_weekly_report";
 /// non-streaming response returns well within the client's 120s HTTP timeout.
 const MAX_TOKENS: u32 = 8192;
 
+/// The forced tool (Anthropic) / json_schema name (OpenAI) for the phase-1 skill
+/// selection call. Both feed the same [`SkillSelection`].
+const SKILL_SELECTION_TOOL_NAME: &str = "request_analyst_skills";
+
+/// The selection response is just a short list of skill names, so a small ceiling is
+/// ample and keeps the extra call fast.
+const SKILL_SELECTION_MAX_TOKENS: u32 = 512;
+
+/// System prompt for the phase-1 skill-selection call (`docs/analyst-skills.md`,
+/// progressive disclosure). Focused on the one decision — which lenses this week's packet
+/// warrants — separate from the full report [`SYSTEM_PROMPT`].
+const SKILL_SELECTION_SYSTEM_PROMPT: &str = "You are the Head Market Analyst for Market Signal, \
+selecting which analytical skills to apply to this week's report. You are shown this week's market \
+data and research and a catalog of available analytical skills, each with a short description. \
+Choose the skills whose lens is most relevant to what this week's data and research actually \
+warrant — not every skill applies every week. Request only the relevant subset; requesting none \
+is acceptable when none clearly apply.";
+
 const SYSTEM_PROMPT: &str = "You are the Head Market Analyst for Market Signal, a weekly \
 market-research publication. You write a single, cohesive weekly market report in one unified \
 voice — the Market Signal Thesis — that reads like a professional market publication: \
@@ -245,6 +264,13 @@ minority view, or flag unsupported claims, and decide how much weight each persp
 Do not stage a debate or quote the analysts as characters — the final report is your own \
 synthesis in one unified voice, the Market Signal Thesis. When the analyst-reviews block is \
 absent, synthesize from the data and research directly.
+
+The prompt may also carry `analytical skills you requested` — structured analytical lenses you \
+selected from Market Signal's skill library for this week's packet. Apply each as a lens while you \
+reason: let it sharpen the relevant part of your analysis and fold its conclusion into the unified \
+thesis and the report's existing sections. Do not write a skill up as its own section or name the \
+skills in the report — they are reasoning tools, not report structure. When no skills block is \
+present, reason from the data, research, and analyst reviews directly.
 
 Produce the report body as GitHub-flavored Markdown with these sections, in order:
 - # Weekly Market Report (title), followed by a short date / report-type line
@@ -478,6 +504,90 @@ fn format_analyst_reviews(reviews: &[AnalystOutput]) -> String {
         if !r.opportunities.is_empty() {
             block.push_str(&format!("\nOpportunities:\n- {}", r.opportunities.join("\n- ")));
         }
+    }
+    block
+}
+
+/// The model's phase-1 skill request: the names it selected from the catalog. The schema
+/// `enum` constrains these to authored catalog names, so an unknown name can't appear (and
+/// `skills::select_bodies` drops one defensively regardless).
+#[derive(Debug, Deserialize)]
+struct SkillSelection {
+    skills: Vec<String>,
+}
+
+/// JSON Schema for the skill-selection response: a `skills` array whose items are an
+/// `enum` of the catalog's names (`docs/analyst-skills.md` — the agent requests from the
+/// frontmatter it was shown). Shared by both arms; `additionalProperties` false so OpenAI
+/// strict mode accepts it.
+fn skill_selection_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "skills": {
+                "type": "array",
+                "items": { "type": "string", "enum": skills::catalog_names() },
+                "description": "Names of the analytical skills relevant to this week's packet (may be empty)."
+            }
+        },
+        "required": ["skills"]
+    })
+}
+
+/// Anthropic skill-selection request: a non-streaming forced-tool call whose
+/// `input_schema` is the selection schema (mirrors the analyst adapter's request shape).
+fn build_skill_selection_anthropic_request(model_id: &str, system: &str, user: &str) -> Value {
+    json!({
+        "model": model_id,
+        "max_tokens": SKILL_SELECTION_MAX_TOKENS,
+        "stream": false,
+        "system": system,
+        "tools": [
+            {
+                "name": SKILL_SELECTION_TOOL_NAME,
+                "description": "Request the analytical skills relevant to this week's packet.",
+                "strict": true,
+                "input_schema": skill_selection_schema()
+            }
+        ],
+        "tool_choice": { "type": "tool", "name": SKILL_SELECTION_TOOL_NAME },
+        "messages": [ { "role": "user", "content": user } ]
+    })
+}
+
+/// OpenAI skill-selection request: non-streaming strict json_schema.
+fn build_skill_selection_openai_request(model_id: &str, system: &str, user: &str) -> Value {
+    json!({
+        "model": model_id,
+        "max_completion_tokens": SKILL_SELECTION_MAX_TOKENS,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": { "name": "analyst_skill_selection", "strict": true, "schema": skill_selection_schema() }
+        },
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ]
+    })
+}
+
+/// Render the phase-2 block: the full bodies of the skills the agent requested, supplied
+/// into the generation prompt (`docs/analyst-skills.md`). Each is a labeled sub-block;
+/// returns an empty string when no skills were selected (or selection degraded), so the
+/// prompt omits the section. Heading is distinct from the analyst-reviews, memory, and
+/// research blocks so they never read as one.
+fn format_selected_skills(selected: &[&skills::Skill]) -> String {
+    if selected.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from(
+        "\n\nAnalytical skills you requested for this report — apply each as an analytical lens \
+         in your reasoning, folding its conclusion into the unified thesis and the report's \
+         existing sections rather than writing it up as a separate section:",
+    );
+    for s in selected {
+        block.push_str(&format!("\n\n--- {} ---\n{}", s.name, s.body));
     }
     block
 }
@@ -783,6 +893,80 @@ impl ModelMainAgent {
 
         reconstruct_response(provider, &envelope)
     }
+
+    /// Phase 1 of progressive disclosure (`docs/analyst-skills.md`): ask the model which
+    /// analytical skills this week's packet warrants, given the catalog's frontmatter, and
+    /// return the chosen skills' bodies for phase-2 supply.
+    ///
+    /// **Fail-soft** — any failure (an already-cancelled run, an HTTP error, a malformed
+    /// response) degrades to no skills so a flaky selection call never costs the report.
+    /// Skills are enrichment, *unlike* the not-fail-soft analyst stage; the report
+    /// generation call below keeps its own (unchanged) failure semantics.
+    fn select_skills(&self, grounding: &str) -> Vec<&'static skills::Skill> {
+        if self.progress.is_cancelled() {
+            return Vec::new();
+        }
+        match self.run_skill_selection(grounding) {
+            Ok(selected) => selected,
+            Err(e) => {
+                eprintln!("skill selection degraded to no skills: {e:#}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// The fallible body of [`select_skills`]: build the selection request, make the
+    /// non-streaming call, and resolve the requested names to skill bodies.
+    fn run_skill_selection(&self, grounding: &str) -> Result<Vec<&'static skills::Skill>> {
+        let provider = self.config.model.provider();
+        let model_id = self.config.model.model_id();
+        let user = format!(
+            "{grounding}\n\nAvailable analytical skills (name: description):\n{}\n\nRequest the \
+             skills whose lens is most relevant to this week's packet. Request only those that add \
+             analytical value; requesting none is fine.",
+            skills::frontmatter_catalog()
+        );
+        let body = match provider {
+            Provider::Anthropic => {
+                build_skill_selection_anthropic_request(model_id, SKILL_SELECTION_SYSTEM_PROMPT, &user)
+            }
+            Provider::OpenAi => {
+                build_skill_selection_openai_request(model_id, SKILL_SELECTION_SYSTEM_PROMPT, &user)
+            }
+        };
+        let raw = self.call_nonstreaming(provider, &body)?;
+        let value = match provider {
+            Provider::Anthropic => extract_anthropic_tool_input(&raw, SKILL_SELECTION_TOOL_NAME)?,
+            Provider::OpenAi => extract_openai_envelope(&raw)?,
+        };
+        let selection: SkillSelection =
+            serde_json::from_value(value).context("skill selection did not match the schema")?;
+        Ok(skills::select_bodies(&selection.skills))
+    }
+
+    /// Non-streaming POST + whole-body JSON parse, for the phase-1 selection call — the
+    /// report [`ModelMainAgent::call`] consumes an SSE stream, so the small selection
+    /// response needs its own plain transport (mirrors `analyst_agent`'s `call`).
+    fn call_nonstreaming(&self, provider: Provider, body: &Value) -> Result<Value> {
+        let request = match provider {
+            Provider::Anthropic => self
+                .http
+                .post(ANTHROPIC_URL)
+                .header("x-api-key", &self.config.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION),
+            Provider::OpenAi => self.http.post(OPENAI_URL).bearer_auth(&self.config.api_key),
+        };
+        let resp = request
+            .json(body)
+            .send()
+            .context("sending skill-selection request")?;
+        let status = resp.status();
+        let text = resp.text().context("reading skill-selection response body")?;
+        if !status.is_success() {
+            bail!("skill-selection model returned {status}: {text}");
+        }
+        serde_json::from_str(&text).context("parsing skill-selection response JSON")
+    }
 }
 
 /// Coalesce streamed report text into chunks of at least this many characters before
@@ -1050,6 +1234,12 @@ impl MainAgent for ModelMainAgent {
             &input.audit_memory,
             &input.recent_reports,
         );
+        // Progressive disclosure (`docs/analyst-skills.md`): phase 1 selects the analytical
+        // skills this packet warrants (grounded on the data/research assembled above), then
+        // phase 2 supplies the chosen bodies into the prompt. Fail-soft — a degraded
+        // selection appends nothing and the report still generates.
+        let selected_skills = self.select_skills(&user);
+        user.push_str(&format_selected_skills(&selected_skills));
         // Steps 12–15 → Step 16: append the analyst reviews the synthesis reasons over.
         // Empty on the offline/stub path, so the block is simply omitted.
         user.push_str(&format_analyst_reviews(&input.analyst_reviews));
@@ -1797,5 +1987,110 @@ mod tests {
             streamed, out.markdown,
             "streamed tokens did not reconstruct the report markdown"
         );
+    }
+
+    // --- Progressive-disclosure skill selection (docs/analyst-skills.md) ---
+
+    #[test]
+    fn skill_selection_schema_enumerates_the_catalog_names() {
+        let schema = skill_selection_schema();
+        let enumed = schema["properties"]["skills"]["items"]["enum"]
+            .as_array()
+            .expect("the skills items carry an enum");
+        for name in skills::catalog_names() {
+            assert!(
+                enumed.iter().any(|v| v == name),
+                "selection enum missing catalog skill {name}"
+            );
+        }
+        assert_eq!(schema["required"][0], "skills");
+    }
+
+    #[test]
+    fn skill_selection_anthropic_request_forces_the_tool_and_is_not_streamed() {
+        let body = build_skill_selection_anthropic_request(
+            "claude-opus-4-8",
+            SKILL_SELECTION_SYSTEM_PROMPT,
+            "u",
+        );
+        assert_eq!(body["model"], "claude-opus-4-8");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["tool_choice"]["name"], SKILL_SELECTION_TOOL_NAME);
+        assert_eq!(body["tools"][0]["name"], SKILL_SELECTION_TOOL_NAME);
+        assert_eq!(body["tools"][0]["strict"], true);
+    }
+
+    #[test]
+    fn skill_selection_openai_request_uses_strict_json_schema() {
+        let body =
+            build_skill_selection_openai_request("gpt-5", SKILL_SELECTION_SYSTEM_PROMPT, "u");
+        assert_eq!(body["model"], "gpt-5");
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(
+            body["response_format"]["json_schema"]["name"],
+            "analyst_skill_selection"
+        );
+        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+    }
+
+    #[test]
+    fn skill_selection_envelope_parses_and_resolves_to_bodies() {
+        let value = json!({ "skills": [skills::CATALOG[0].name, "No Such Skill"] });
+        let sel: SkillSelection = serde_json::from_value(value).unwrap();
+        let bodies = skills::select_bodies(&sel.skills);
+        assert_eq!(bodies.len(), 1, "unknown name dropped");
+        assert_eq!(bodies[0].name, skills::CATALOG[0].name);
+    }
+
+    #[test]
+    fn selected_skills_block_renders_when_present_and_is_empty_otherwise() {
+        let chosen = skills::select_bodies(&[skills::CATALOG[0].name.to_string()]);
+        let block = format_selected_skills(&chosen);
+        assert!(block.contains(skills::CATALOG[0].name), "{block}");
+        assert!(block.contains(skills::CATALOG[0].body), "the full body is supplied");
+        assert!(block.contains("apply each as an analytical lens"), "{block}");
+
+        assert_eq!(format_selected_skills(&[]), "");
+    }
+
+    #[test]
+    fn selected_skills_block_heading_is_distinct_from_other_blocks() {
+        let chosen = skills::select_bodies(&[skills::CATALOG[0].name.to_string()]);
+        let block = format_selected_skills(&chosen);
+        assert!(block.contains("Analytical skills you requested for this report"));
+        // Must not collide with the analyst-reviews, memory, or research headings.
+        assert!(!block.contains("Analyst reviews of this week's research packet"));
+        assert!(!block.contains("Recalled long-term memory"));
+        assert!(!block.contains("Deep-research evidence"));
+    }
+
+    #[test]
+    fn system_prompt_directs_skill_application() {
+        assert!(SYSTEM_PROMPT.contains("analytical skills you requested"));
+        assert!(SYSTEM_PROMPT.contains("reasoning tools, not report structure"));
+    }
+
+    #[test]
+    #[ignore = "hits the live provider API; set MARKET_SIGNAL_MAIN_AGENT_MODEL + the provider key"]
+    fn live_skill_selection_smoke() {
+        let agent = ModelMainAgent::from_env().expect("env configured for a live run");
+        let input = populated_input();
+        let grounding = build_user_prompt(
+            &input.baseline,
+            input.deltas.as_ref(),
+            input.research.as_ref(),
+            &input.audit_memory,
+            &input.recent_reports,
+        );
+        let chosen = agent.run_skill_selection(&grounding).expect("skill selection");
+        eprintln!(
+            "skill selection chose {} skill(s): {:?}",
+            chosen.len(),
+            chosen.iter().map(|s| s.name).collect::<Vec<_>>()
+        );
+        // Whatever it picked, every result is an authored catalog skill.
+        for s in &chosen {
+            assert!(skills::catalog_names().contains(&s.name));
+        }
     }
 }

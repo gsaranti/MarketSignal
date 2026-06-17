@@ -24,6 +24,7 @@ pub mod research_packet;
 pub mod research_router;
 pub mod schedule;
 pub mod settings;
+pub mod skills;
 pub mod storage;
 pub mod tavily;
 #[cfg(test)]
