@@ -1,18 +1,28 @@
 # Analyst Skills
 
 The following reusable skills are included in MVP.
-These skills operate as structured reusable prompts with expected output schemas.
+Each skill is a reusable analytical **lens**: a method the agent applies to this week's data and research, plus a structured **verdict** it must land. They are not pipeline stages, and not every lens applies to every report.
 
 ## How Skills Are Used
 
-The skills form a shared analytical library available to the three analyst agents (Bull, Bear, Balanced) and to the main agent during synthesis (see [agents.md](agents.md)). They are not pipeline stages and do not all run on every report.
+The skills form a shared analytical library. **As built, the main agent consumes them during synthesis** (Step 16; see [agents.md](agents.md)): the report's unified voice applies the relevant lenses and folds their conclusions into the Market Signal Thesis.
 
-Skills are provided through progressive disclosure:
-- Each agent first receives only the **frontmatter** of every skill — its name and a short description of what the skill does — so it knows what is available.
-- Given the research packet it is reviewing, the agent then **requests the specific skills** relevant to that packet, and the application layer supplies the full skill (the structured prompt and its expected output schema).
-- Only the requested subset is applied per report; which skills are relevant varies with current market conditions.
+The **whole library is supplied in full every report**:
+- The main agent receives every skill — each skill's method body and the structured verdict it should yield — in one pass, with no separate selection step.
+- Not every lens applies every week. The agent applies the ones this week's data and research actually warrant and leaves the rest aside.
+- Each applied lens's verdict is **folded into the thesis prose** — never written up as its own report section, and the skills are not named in the report. They are reasoning tools, not report structure.
 
-Each skill below is listed by name with the description an agent sees in the frontmatter; the full prompt body and output schema are supplied when the skill is requested.
+A skill's verdict shape is a **forcing function on the prose**: it disciplines the model to land a specific conclusion rather than vague "consider X" guidance. It is **not** a machine-readable channel — nothing is parsed back from the report or persisted.
+
+Each skill below is listed by name with its description and what it evaluates. The authoritative catalog — every skill's exact method body and verdict shape — lives in `src-tauri/src/skills.rs`.
+
+### Deviations from the original design
+
+Recorded for continuity; the catalog of skills below is unchanged.
+
+- **Consumers** — originally the three analyst agents (Bull / Bear / Balanced) *and* the main agent; as built, **main agent only**. Extending the skills to the analysts is a deferred follow-on.
+- **Delivery** — originally **progressive disclosure** (each agent sees only frontmatter, then requests the relevant subset via a selection call). Removed: the bodies are small (~150 tokens each, ~2.4k for all 16), and the phase-1 selection call re-sent the entire packet to the model just to save the frontmatter catalog — a round-trip and a fail-soft code path for negative net benefit. All 16 now ship inline; the model self-selects which lenses to apply.
+- **Output** — originally a per-skill **output schema** the application layer supplied and consumed; as built, the verdict is **prose-level only** (a forcing function folded into the thesis), with no parsed schema and no persistence. The richer structured-output channel remains a deferred option.
 
 ## Market Regime Analysis
 Determines the current market regime and the dominant forces driving market behavior.

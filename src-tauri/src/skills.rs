@@ -1,38 +1,42 @@
 //! The analyst skills library — a shared catalog of reusable analytical lenses
-//! supplied to the main agent by **progressive disclosure** (`docs/analyst-skills.md`).
+//! supplied to the main agent (`docs/analyst-skills.md`).
 //!
-//! The mechanism is two-phase (`model_agent`): the agent first sees only each skill's
-//! **frontmatter** ([`frontmatter_catalog`] — name + one-line description), requests the
-//! subset relevant to this week's packet, and the application layer supplies the chosen
-//! skills' full prompt **bodies** ([`select_bodies`]) into the generation prompt. Only
-//! the requested subset is applied per report.
+//! Each skill carries a method [`Skill::body`] (the analytical lens — which baseline series
+//! to read and how to judge them) and an explicit [`Skill::output`] verdict shape (the
+//! structured conclusion the lens should yield). The application layer supplies the **whole
+//! library** ([`CATALOG`]) into the generation prompt in one pass; the model applies the
+//! lenses this week's packet warrants and folds each verdict into the unified thesis prose.
 //!
-//! This module is the app-layer data the disclosure rests on: the [`CATALOG`] *is* the
-//! library, so the catalog the model selects from is exactly the set of authored skills.
-//! All 16 of the doc's skills are authored here. Two deliberate, recorded narrowings from
-//! the doc still hold:
-//! - **Consumers:** only the main agent (during synthesis) receives skills, not the three
-//!   Bull/Bear/Balanced analysts the doc also names.
-//! - **Output:** skills *steer the synthesis prose* (each `body` is a lens folded into
-//!   the unified thesis), so the doc's per-skill *output schema* is not built as a
-//!   separate output channel.
+//! Three design calls, all recorded against the doc:
+//! - **Delivery:** the library is small (~150 tokens/skill), so all 16 skills ship in full
+//!   every report. The doc's *progressive disclosure* (a phase-1 selection round-trip) was
+//!   removed as net-negative at this size — it re-sent the whole packet to the model just to
+//!   save the frontmatter catalog, paying a round-trip and a fail-soft code path to trim
+//!   ~1.5k tokens. The model now self-selects which lenses apply, inline.
+//! - **Output:** the per-skill [`Skill::output`] is a **forcing function** — it disciplines
+//!   the model's per-lens verdict, which is then folded into the thesis prose. It is *not* a
+//!   machine-readable channel: nothing is parsed back from the report or persisted (the
+//!   doc's per-skill output *schema* stays prose-level by design).
+//! - **Consumers:** the main agent only (during synthesis), not the three Bull/Bear/Balanced
+//!   analysts the doc also names.
 
-/// One analytical skill. The `name` + `description` are the frontmatter the agent sees
-/// during selection (phase 1); the `body` is the full prompt the application layer
-/// supplies once the skill is requested (phase 2). The descriptions are taken verbatim
-/// from `docs/analyst-skills.md` so the catalog matches the doc's frontmatter.
+/// One analytical skill. `name` + `description` identify it — the `description` is taken
+/// verbatim from `docs/analyst-skills.md`. `body` is the analytical method (the lens the
+/// agent applies); `output` is the structured verdict the lens should yield — a forcing
+/// function folded into the thesis prose, never parsed back or persisted.
 #[derive(Debug)]
 pub struct Skill {
     pub name: &'static str,
     pub description: &'static str,
     pub body: &'static str,
+    pub output: &'static str,
 }
 
-/// The authored skills available this slice. Each `body` grounds its lens in baseline
-/// data the Step-3 scan already gathers, and instructs steer-prose application (fold the
-/// conclusion into the unified thesis, not a separate section). Extending the library is
-/// purely additive — a follow-on appends entries here and they appear in the catalog and
-/// the selection enum automatically.
+/// The authored skills library. Each `body` grounds its lens in baseline data the Step-3
+/// scan already gathers and closes with the role its verdict plays in the thesis; each
+/// `output` names the structured verdict the lens must produce. Extending the library is
+/// purely additive — a follow-on appends entries here and they reach the generation prompt
+/// automatically.
 pub const CATALOG: &[Skill] = &[
     Skill {
         name: "Market Regime Analysis",
@@ -42,10 +46,12 @@ force driving it. Read the baseline indices, internals, sector performance, and 
 together: judge whether conditions are risk-on or risk-off, liquidity-driven or earnings-driven, \
 inflation-sensitive or growth-sensitive, and whether leadership is broadening or narrowing. Weigh \
 the financial-conditions indices (NFCI / ANFCI / STLFSI4), the curve and credit spreads, and \
-breadth (movers, sector dispersion) as regime evidence rather than isolated prints. State the \
-regime plainly, name the one or two forces that define it, and flag the development that would \
-mark a regime change. Fold this read into the thesis as the frame the rest of the report sits \
-inside — do not append it as a separate section.",
+breadth (movers, sector dispersion, and whether small-caps — the Russell 2000 — lead or lag the large-cap indices) as regime evidence rather than isolated prints. Fold this \
+read into the thesis as the frame the rest of the report sits inside — do not append it as a \
+separate section.",
+        output: "the regime (risk-on / risk-off, liquidity- vs earnings-driven, inflation- vs \
+growth-sensitive, leadership broadening / narrowing); the one or two dominant forces that define \
+it; and the single development that would mark a regime change.",
     },
     Skill {
         name: "Credit Stress Analysis",
@@ -56,22 +62,26 @@ buckets (credit-quality dispersion), the 10y-3m and 10y-2y curve spreads, and th
 financial-conditions indices in the baseline and its change view. Judge whether spreads are \
 widening or compressing, whether quality dispersion is rising (a risk-off tell), and whether a \
 move is corroborated by the curve and conditions indices or is an isolated wobble — distinguish a \
-genuine tightening from spread noise. Name the level and direction, what it implies for \
-refinancing and liquidity risk, and the spread move that would change the read. Carry the \
-conclusion into the thesis as a risk qualifier, not a standalone section.",
+genuine tightening from spread noise. Carry the conclusion into the thesis as a risk qualifier, \
+not a standalone section.",
+        output: "the spread level and direction (widening / compressing); whether credit-quality \
+dispersion is rising; what it implies for refinancing and liquidity risk; and the spread move \
+that would change the read.",
     },
     Skill {
         name: "Market Breadth Analysis",
         description: "Evaluates the health and participation level of the broader market beyond headline index performance.",
         body: "Market Breadth Analysis. Evaluate participation beneath the headline indices. Read \
-the internals, sector performance, and the equity-breadth movers (gainers / losers / \
-most-actives) against the index moves: judge whether a rally or selloff is broad-based or narrow, \
-whether leadership is concentrated, and how the NASDAQ growth read compares with the broader NYSE \
-read. Treat a divergence between index level and breadth as a signal the index alone hides. State \
-whether breadth confirms or contradicts the index trend, name the concentration risk if \
-leadership is narrow, and flag the breadth shift that would confirm or break the current move. \
-Fold this into the thesis as evidence on the durability of the index trend, not a separate \
-section.",
+the equity-breadth movers (gainers / losers / most-actives), the sector-performance dispersion, \
+and the multi-horizon index performance — in particular whether small-caps (the Russell 2000) are \
+confirming or lagging the large-cap indices — against the headline index moves: judge whether a \
+rally or selloff is broad-based or narrow, whether leadership is concentrated, and how the NASDAQ \
+growth read compares with the broader NYSE read. Treat a divergence between index level and \
+breadth as a signal the index alone hides. Fold this into the thesis as evidence on the \
+durability of the index trend, not a separate section.",
+        output: "whether breadth confirms or contradicts the index trend; the leadership-\
+concentration risk if breadth is narrow; and the breadth shift that would confirm or break the \
+current move.",
     },
     Skill {
         name: "Narrative vs Reality",
@@ -79,11 +89,12 @@ section.",
         body: "Narrative vs Reality. Separate genuine market and economic change from exaggerated \
 media narratives and short-term emotional reactions. Take the dominant narratives surfaced in \
 the research packet and test each against the baseline and its change view: do the indices, \
-internals, breadth, credit spreads, financial-conditions indices, and the macro prints actually \
+internals, breadth, credit spreads, financial-conditions indices, the earnings beats and misses, and the macro prints actually \
 corroborate the story, or is the move headline-driven and unconfirmed by positioning and data? \
-Name where the data backs the narrative and where it contradicts it, and call out a narrative \
-running ahead of the evidence. Fold the verdict into the thesis as a confidence weight on each \
-theme — do not append it as a separate section.",
+Fold the verdict into the thesis as a confidence weight on each theme — do not append it as a \
+separate section.",
+        output: "for each dominant narrative, whether the data corroborates or contradicts it; \
+and the narrative most running ahead of the evidence.",
     },
     Skill {
         name: "Second-Order Effects",
@@ -93,10 +104,11 @@ geopolitical, or policy developments this week surfaces. For each first-order mo
 view or the research packet, trace how it propagates into inflation (PCE, breakevens, expected \
 inflation, oil and gas), yields and the curve (the 10-year yield, the 10y-3m and 10y-2y spreads), \
 liquidity and financial conditions (NFCI / ANFCI / STLFSI4, credit spreads), sector performance, \
-and consumer behavior (consumer sentiment, retail sales). Name the two or three second-order \
-chains that matter most and the signal that would confirm each is playing out. Fold these into \
-the thesis as the forward consequences the strategy must price — do not append them as a separate \
-section.",
+and consumer behavior (consumer sentiment, retail sales). Fold these into the thesis as the \
+forward consequences the strategy must price — do not append them as a separate section.",
+        output: "the two or three second-order chains that matter most, each traced to its \
+transmission (inflation / yields / liquidity / sectors / consumer); and the signal that would \
+confirm each is playing out.",
     },
     Skill {
         name: "Inflation Decomposition",
@@ -107,9 +119,10 @@ together — PCE, PPI, the market-implied breakevens, the one-year expected-infl
 via oil and natural gas, and wage pressure via the labor levels — and lean on the research packet \
 for the shelter, services, and goods detail the baseline does not break out. Distinguish an \
 energy- or goods-led pulse that should fade from a services- or wage-led pressure that tends to \
-persist. Name which components are driving the print and whether the breadth is widening. Fold \
-the read into the thesis as the inflation trajectory the rate and valuation views depend on — do \
-not append it as a separate section.",
+persist. Fold the read into the thesis as the inflation trajectory the rate and valuation views \
+depend on — do not append it as a separate section.",
+        output: "which components are driving the print (energy / goods / services / shelter / \
+wages); and whether the pressure is temporary or structural, broadening or narrowing.",
     },
     Skill {
         name: "Historical Analog",
@@ -119,9 +132,10 @@ environments. Read the regime, valuations, credit, and the change view together,
 memory and the recent reports for the thesis's own prior turns, and identify the closest analog — \
 a dot-com-style valuation extreme, an inflationary or tightening cycle, a liquidity crisis, or a \
 prior commodity or geopolitical shock. Be explicit about where the analog holds and where it \
-breaks, so the comparison illuminates rather than forces a pattern. Name the one analog that \
-frames the present best and the difference that most limits it. Fold this into the thesis as \
+breaks, so the comparison illuminates rather than forces a pattern. Fold this into the thesis as \
 historical context for the central call — do not append it as a separate section.",
+        output: "the single closest historical analog; where it holds; and the one difference \
+that most limits the comparison.",
     },
     Skill {
         name: "Positioning & Sentiment",
@@ -131,21 +145,22 @@ the gathered tells — the volatility term structure (VIX against the 3-month VX
 Nasdaq), the equity-breadth movers and most-actives, sector dispersion, and consumer sentiment — \
 alongside the positioning and flow color in the research packet to judge whether the market is \
 fearful or greedy, complacent or capitulating, and where trades look crowded. Watch for euphoria, \
-or for excessive pessimism that sets up an asymmetric reaction. Name the current sentiment state \
-and the crowded trade most exposed to a reversal. Fold this into the thesis as a contrarian check \
-on the central call — do not append it as a separate section.",
+or for excessive pessimism that sets up an asymmetric reaction. Fold this into the thesis as a \
+contrarian check on the central call — do not append it as a separate section.",
+        output: "the current sentiment state (fear / greed, complacent / capitulating); and the \
+crowded trade most exposed to a reversal.",
     },
     Skill {
         name: "Thesis Stress Test",
         description: "Challenges the current market thesis and searches for weak assumptions or contradictory evidence.",
         body: "Thesis Stress Test. Challenge the current thesis and hunt for its weak assumptions. \
 Take the standing thesis from the recent reports and vector memory, then stress it against the \
-change view, the data-gaps manifest, and any contradictory evidence in the baseline and research: \
-name the assumptions that are most fragile, the signals the thesis is currently discounting, and \
-what could invalidate it. State the specific conditions that would force a reassessment or a \
-pivot. Be adversarial — the goal is to find where the thesis is wrong, not to reaffirm it. Fold \
-the findings into the thesis as its stated risks and pivot triggers — do not append them as a \
+change view, the data-gaps manifest, and any contradictory evidence in the baseline and research. \
+Be adversarial — the goal is to find where the thesis is wrong, not to reaffirm it. Fold the \
+findings into the thesis as its stated risks and pivot triggers — do not append them as a \
 separate section.",
+        output: "the thesis's most fragile assumptions; the signals it is currently discounting; \
+what could invalidate it; and the specific conditions that would force a reassessment or pivot.",
     },
     Skill {
         name: "Geopolitical Escalation",
@@ -155,33 +170,40 @@ implications. The baseline carries no geopolitical feed, so work from the confli
 tensions, sanctions, shipping disruptions, and supply-chain risks surfaced in the research packet, \
 and corroborate their market read against the gathered safe-haven and commodity moves — oil and \
 natural gas, gold, the dollar, and credit spreads. Judge whether a development is a contained \
-headline or a genuine escalation with commodity and supply-chain transmission. Name the one or \
-two risks that bear on the thesis and the market signal that would confirm escalation. Fold this \
-into the thesis as a tail-risk qualifier — do not append it as a separate section.",
+headline or a genuine escalation with commodity and supply-chain transmission. Fold this into the \
+thesis as a tail-risk qualifier — do not append it as a separate section.",
+        output: "the one or two geopolitical risks that bear on the thesis; whether each is a \
+contained headline or a genuine escalation; and the market signal that would confirm escalation.",
     },
     Skill {
         name: "AI Infrastructure Chain",
         description: "Analyzes the AI infrastructure ecosystem and its broader market implications.",
         body: "AI Infrastructure Chain. Analyze the AI infrastructure ecosystem and its market \
-implications. Anchor on what the baseline gathers — technology and semiconductor sector \
-performance, the industry-level P/E and rotation snapshots, and the power-demand link through the \
-energy series — and draw the chain detail (semiconductors, datacenters, HBM memory, networking, \
-optics, cooling, capital expenditure) from the research packet. Judge whether the buildout is \
-broadening or concentrating, whether valuations are supported by the capex trend, and where power \
-and energy constraints bind. Name the segment leading the chain and the signal that would mark a \
-turn. Fold this into the thesis as the read on the market's dominant structural driver — do not \
-append it as a separate section.",
+implications. Anchor on what the baseline gathers — technology-sector performance, the \
+semiconductor and related industries surfaced in the industry-level P/E and rotation snapshots, \
+and the power-demand link through the energy series — and draw the chain detail (semiconductors, \
+datacenters, HBM memory, networking, optics, cooling, capital expenditure) from the research \
+packet. Judge whether the buildout is broadening or concentrating, whether valuations are \
+supported by the capex trend, and where power and energy constraints bind. Fold this into the \
+thesis as the read on the market's dominant structural driver — do not append it as a separate \
+section.",
+        output: "the segment leading the chain; whether the buildout is broadening or \
+concentrating and whether valuations are supported by capex; and the signal that would mark a \
+turn.",
     },
     Skill {
         name: "Time Horizon Separation",
         description: "Separates short-term market reactions from medium-term and long-term structural market trends.",
         body: "Time Horizon Separation. Separate short-term reactions from medium- and long-term \
-structural trends. Use the cadence-honest change view to isolate this interval's moves, and weigh \
-them against the recent reports and vector memory to tell weekly noise from cyclical developments \
-from structural long-term shifts. Resist letting a single volatile print pull the thesis; resist \
-dismissing a slow structural change as noise. Name what is genuinely transient this week and what \
-is a durable shift the thesis should absorb. Fold this into the thesis as the calibration between \
-near-term commentary and the standing long-term view — do not append it as a separate section.",
+structural trends. Use the cadence-honest change view to isolate this interval's moves, and read \
+the multi-horizon index performance (weekly, month-to-date, year-to-date, and position in the \
+52-week range) to place each move on its timescale; weigh them against the recent reports and \
+vector memory to tell weekly noise from cyclical developments from structural long-term shifts. \
+Resist letting a single volatile print pull the thesis; resist dismissing a slow structural \
+change as noise. Fold this into the thesis as the calibration between near-term commentary and \
+the standing long-term view — do not append it as a separate section.",
+        output: "what is genuinely transient this week (weekly noise); and what is a durable \
+cyclical or structural shift the thesis should absorb.",
     },
     Skill {
         name: "Energy Security Analysis",
@@ -191,9 +213,10 @@ of energy disruptions. Read the gathered energy levels — oil (WTI) and natural
 the dollar as corroboration — and the change view, and draw OPEC activity, shipping chokepoints, \
 and grid-stress detail from the research packet. Judge whether an energy move is a supply shock \
 with inflation and growth consequences or ordinary volatility, and weigh the link between \
-AI-infrastructure power demand and energy prices. Name the energy risk that bears on the thesis \
-and the level that would change the read. Fold this into the thesis as an inflation-and-growth \
-qualifier — do not append it as a separate section.",
+AI-infrastructure power demand and energy prices. Fold this into the thesis as an \
+inflation-and-growth qualifier — do not append it as a separate section.",
+        output: "whether the energy move is a supply shock or ordinary volatility; the energy risk \
+that bears on the thesis; and the price level that would change the read.",
     },
     Skill {
         name: "Central Bank Interpretation",
@@ -203,9 +226,12 @@ market expectations. Read the gathered policy signals — the fed-funds target r
 and the one-year expected-inflation gauge, the curve spreads, the financial-conditions indices, \
 and the growth nowcast (GDPNow) — alongside the policy tone and rate-path expectations in the \
 research packet. Judge the likely policy direction, where the market's rate expectations may be \
-offside, and how the stance bears on equities, bonds, and liquidity. Name the policy read and the \
-data or communication that would shift it. Fold this into the thesis as the rates-and-liquidity \
-backdrop the rest of the report sits against — do not append it as a separate section.",
+offside, and how the stance bears on equities, bonds, and liquidity. Fold this into the thesis as \
+the rates-and-liquidity backdrop the rest of the report sits against — do not append it as a \
+separate section.",
+        output: "the likely policy direction; where market rate expectations may be offside; the \
+implication for equities, bonds, and liquidity; and the data or communication that would shift \
+the read.",
     },
     Skill {
         name: "Valuation Compression",
@@ -215,51 +241,27 @@ valuation multiples. Read the gathered valuation levels — the per-sector and p
 the market risk premium — against the 10-year yield and the change view, focusing on long-duration \
 growth assets and high-multiple sectors most sensitive to discount-rate moves. Judge whether \
 earnings growth is sufficient to justify current multiples or whether rising yields threaten \
-compression. Name the sectors most exposed and the yield move that would force a re-rating. Fold \
-this into the thesis as the valuation risk to the equity call — do not append it as a separate \
-section.",
+compression. Fold this into the thesis as the valuation risk to the equity call — do not append \
+it as a separate section.",
+        output: "whether earnings growth justifies current multiples; the sectors most exposed to \
+discount-rate moves; and the yield move that would force a re-rating.",
     },
     Skill {
         name: "Consensus vs Contrarian Analysis",
         description: "Evaluates what the market currently expects versus what outcomes would genuinely surprise participants.",
         body: "Consensus vs Contrarian Analysis. Evaluate what the market expects versus what would \
 genuinely surprise it. The economic calendar carries release names and dates but no consensus \
-estimates, so source the consensus expectations from the research packet, then test them against \
-the baseline, positioning, and the change view: identify overconsensus narratives, \
-underappreciated risks, and asymmetric setups where positioning is vulnerable to an unexpected \
-outcome. Look for where long-term expectations may be mispriced. Name the most crowded consensus \
-view and the contrarian outcome with the largest asymmetry. Fold this into the thesis as the \
-asymmetric-risk lens on the central call — do not append it as a separate section.",
+estimates — so source macro consensus from the research packet — while the earnings group already \
+carries large-cap estimate-versus-actual EPS and revenue, a direct read on where results are \
+beating or missing consensus. Test both against the baseline, positioning, and the change view: \
+identify overconsensus narratives, underappreciated risks, and asymmetric setups where \
+positioning is vulnerable to an unexpected outcome. Look for where long-term expectations may be \
+mispriced. Fold this into the thesis as the asymmetric-risk lens on the central call — do not \
+append it as a separate section.",
+        output: "the most crowded consensus view; the underappreciated risk or contrarian outcome \
+with the largest asymmetry; and where positioning is most vulnerable.",
     },
 ];
-
-/// The catalog's skill names, in catalog order — the source for the selection schema's
-/// `enum`, so the model can only request a skill that exists (and is authored).
-pub fn catalog_names() -> Vec<&'static str> {
-    CATALOG.iter().map(|s| s.name).collect()
-}
-
-/// Render the frontmatter the agent sees during selection (phase 1): one `name:
-/// description` line per skill. This is the cheap catalog the disclosure shows before any
-/// full body is supplied.
-pub fn frontmatter_catalog() -> String {
-    CATALOG
-        .iter()
-        .map(|s| format!("- {}: {}", s.name, s.description))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Resolve the model's requested skill names to their full skill bodies (phase 2).
-/// Iterating the catalog (not the request) makes the result **catalog-ordered,
-/// deduplicated, and free of unknown names** in one pass — a defensive filter, though the
-/// selection schema's `enum` already constrains the model to catalog names.
-pub fn select_bodies(names: &[String]) -> Vec<&'static Skill> {
-    CATALOG
-        .iter()
-        .filter(|s| names.iter().any(|n| n == s.name))
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {
@@ -273,59 +275,14 @@ mod tests {
             assert!(!s.name.trim().is_empty(), "a skill has a blank name");
             assert!(!s.description.trim().is_empty(), "{} has a blank description", s.name);
             assert!(!s.body.trim().is_empty(), "{} has a blank body", s.name);
+            assert!(!s.output.trim().is_empty(), "{} has a blank output", s.name);
         }
-        let names = catalog_names();
+        let names: Vec<&str> = CATALOG.iter().map(|s| s.name).collect();
         for (i, n) in names.iter().enumerate() {
             assert!(
                 !names[i + 1..].contains(n),
                 "duplicate skill name in the catalog: {n}"
             );
         }
-    }
-
-    #[test]
-    fn frontmatter_catalog_lists_every_skill() {
-        let catalog = frontmatter_catalog();
-        for s in CATALOG {
-            assert!(catalog.contains(s.name), "frontmatter missing name {}", s.name);
-            assert!(
-                catalog.contains(s.description),
-                "frontmatter missing description for {}",
-                s.name
-            );
-        }
-        // The body must NOT leak into the frontmatter — disclosure shows only name +
-        // description until a skill is requested.
-        assert!(
-            !catalog.contains(CATALOG[0].body),
-            "frontmatter leaked a full skill body"
-        );
-    }
-
-    #[test]
-    fn select_bodies_resolves_known_names_in_catalog_order() {
-        // Request the first two by name, out of catalog order; result is catalog-ordered.
-        let want = vec![CATALOG[1].name.to_string(), CATALOG[0].name.to_string()];
-        let got = select_bodies(&want);
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].name, CATALOG[0].name, "result is catalog-ordered");
-        assert_eq!(got[1].name, CATALOG[1].name);
-    }
-
-    #[test]
-    fn select_bodies_drops_unknown_names_and_dedups() {
-        let req = vec![
-            CATALOG[0].name.to_string(),
-            CATALOG[0].name.to_string(), // duplicate
-            "No Such Skill".to_string(), // unknown
-        ];
-        let got = select_bodies(&req);
-        assert_eq!(got.len(), 1, "unknown dropped, duplicate collapsed");
-        assert_eq!(got[0].name, CATALOG[0].name);
-    }
-
-    #[test]
-    fn select_bodies_is_empty_for_no_request() {
-        assert!(select_bodies(&[]).is_empty());
     }
 }
