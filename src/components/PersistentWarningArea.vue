@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import Icon from "./Icon.vue";
-import type { ValidationReport } from "../types";
+import type { ValidationReport, WarningCategory } from "../types";
 
 // Persistent Warning Area (docs/interface.md). Deliberately rendered in the
 // chrome/status register — sans type on an inset-well (paper-edge) band with an
@@ -14,6 +14,28 @@ const props = defineProps<{
   report: ValidationReport | null;
   error: string | null;
 }>();
+
+// Dismiss is offered only for the two non-blocking categories (failed / missed
+// jobs); the blocking config gaps are gate state, not dismissible notices, so they
+// carry no dismiss control (mirrors `WarningKind::is_blocking` on the backend). The
+// dismiss carries the row's rendered `dismiss_id` so the backend suppresses *this*
+// warning, not a newer one it would re-derive; the parent runs `dismiss_warning`
+// with both and re-checks the config to refresh the band.
+const emit = defineEmits<{ (e: "dismiss", kind: string, dismissId: string): void }>();
+
+const DISMISSIBLE_KINDS = new Set(["failed-job", "missed-scheduled-job"]);
+function isDismissible(kind: string): boolean {
+  return DISMISSIBLE_KINDS.has(kind);
+}
+
+// A category gets a dismiss control only when it is a dismissible kind *and* carries
+// an identity to dismiss (the backend always pairs the two; this stays defensive).
+function canDismiss(cat: WarningCategory): boolean {
+  return isDismissible(cat.kind) && cat.dismiss_id != null;
+}
+function dismiss(cat: WarningCategory): void {
+  if (cat.dismiss_id != null) emit("dismiss", cat.kind, cat.dismiss_id);
+}
 
 // Only the backend's non-empty categories are ever present in the report.
 const categories = computed(() => props.report?.categories ?? []);
@@ -82,7 +104,18 @@ function formatItems(items: string[]): string {
       </li>
       <li v-for="cat in categories" :key="cat.kind" class="warning-row">
         <span class="warning-label">{{ cat.title }}</span>
-        <span class="warning-body">{{ formatItems(cat.items) }}</span>
+        <span class="warning-body">
+          <span class="warning-text">{{ formatItems(cat.items) }}</span>
+          <button
+            v-if="canDismiss(cat)"
+            type="button"
+            class="warning-dismiss"
+            :aria-label="`Dismiss: ${cat.title}`"
+            @click="dismiss(cat)"
+          >
+            <Icon name="close" :size="12" color="currentColor" />
+          </button>
+        </span>
       </li>
     </ul>
   </section>
@@ -200,9 +233,15 @@ function formatItems(items: string[]): string {
   color: var(--ink-2);
 }
 
-/* Sans, not serif-italic: keeps the status text out of the reading register. */
+/* Sans, not serif-italic: keeps the status text out of the reading register. The
+   body is a flex row so a dismiss control (when present) sits at the trailing edge
+   without breaking the wide-mode two-column grid — each row still has exactly two
+   grid children (label + body), and the button lives inside the body cell. */
 .warning-body {
   min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
   line-height: var(--lh-ui);
@@ -210,8 +249,43 @@ function formatItems(items: string[]): string {
   overflow-wrap: anywhere;
 }
 
+.warning-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+/* A quiet ghost icon button — muted ink at rest, accent on hover/focus. The
+   negative margins let its padded hit area extend to the row edges without adding
+   visible height to the band. */
+.warning-dismiss {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s-1);
+  margin: calc(-1 * var(--s-1)) calc(-1 * var(--s-1)) calc(-1 * var(--s-1)) 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.warning-dismiss:hover {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.warning-dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .warning-chevron {
+  .warning-chevron,
+  .warning-dismiss {
     transition: none;
   }
 }

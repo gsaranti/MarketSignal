@@ -23,7 +23,8 @@ export type IconName =
   | "sidebar"
   | "rule"
   | "file"
-  | "quote";
+  | "quote"
+  | "close";
 
 const PATHS: Record<IconName, SvgEl[]> = {
   report: [
@@ -82,6 +83,10 @@ const PATHS: Record<IconName, SvgEl[]> = {
   quote: [
     ["path", { d: "M5 6h4v4H5z M5 10v3a2 2 0 002 2" }],
     ["path", { d: "M11 6h4v4h-4z M11 10v3a2 2 0 002 2" }],
+  ],
+  close: [
+    ["line", { x1: 5, y1: 5, x2: 15, y2: 15 }],
+    ["line", { x1: 15, y1: 5, x2: 5, y2: 15 }],
   ],
 };
 

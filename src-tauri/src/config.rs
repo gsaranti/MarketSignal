@@ -25,7 +25,7 @@
 
 use anyhow::{anyhow, Result};
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::agent::Posture;
 use crate::model_agent::{AgentModel, MainAgentConfig, Provider};
@@ -48,7 +48,7 @@ pub const KEY_TAVILY_API_KEY: &str = "tavily_api_key";
 /// `docs/interface.md §Persistent Warning Area`). The three configuration
 /// categories are produced by `validate`; the two job categories are produced by
 /// the scheduler and are modeled here so the warning structure is whole.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WarningKind {
     AgentConfiguration,
@@ -74,11 +74,20 @@ impl WarningKind {
 
 /// One warning category for display: its kind, a human-readable title used as
 /// the Persistent Warning Area row label, and the concrete missing items.
+///
+/// `dismiss_id` is the *identity* of the specific warning being shown, for the two
+/// dismissible (non-blocking) categories — the failed run's id, the missed window's
+/// timestamp. The frontend echoes it back to `dismiss_warning` so the dismissal
+/// targets the rendered warning, not whatever the backend would re-derive as current
+/// at click time (`docs/interface.md §Persistent Warning Area` — a later event must
+/// still surface fresh). `None` for the blocking config categories, which are gate
+/// state and carry no dismiss control.
 #[derive(Debug, Clone, Serialize)]
 pub struct WarningCategory {
     pub kind: WarningKind,
     pub title: String,
     pub items: Vec<String>,
+    pub dismiss_id: Option<String>,
 }
 
 /// The result of validating the configuration: the active warning categories
@@ -347,6 +356,7 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
             kind: WarningKind::AgentConfiguration,
             title: "Agent configuration".to_string(),
             items: agent_items,
+            dismiss_id: None,
         });
     }
 
@@ -364,6 +374,7 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
             kind: WarningKind::ApiTokens,
             title: "API tokens".to_string(),
             items: vec![format!("Missing for {}.", join_list(&missing_tokens))],
+            dismiss_id: None,
         });
     }
 
@@ -386,6 +397,7 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
             kind: WarningKind::ProviderCredentials,
             title: "Provider credentials".to_string(),
             items: vec![format!("Missing for {}.", join_list(&missing_creds))],
+            dismiss_id: None,
         });
     }
 

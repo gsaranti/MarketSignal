@@ -31,6 +31,10 @@ export interface WarningCategory {
   kind: string;
   title: string;
   items: string[];
+  // The identity of the shown warning, echoed back to `dismiss_warning` so the
+  // dismissal targets this row and not a newer one the backend would re-derive.
+  // Present only for the two non-blocking (dismissible) categories; null otherwise.
+  dismiss_id: string | null;
 }
 
 export interface ValidationReport {

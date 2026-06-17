@@ -325,6 +325,21 @@ async function refreshValidation() {
   }
 }
 
+// Dismiss one Persistent Warning Area warning (failed / missed job) by the identity
+// the row rendered, then re-derive the band. Passing the shown `dismissId` (not just
+// the kind) is what keeps a stale click from suppressing a newer warning the backend
+// would otherwise re-derive. Best-effort: if the dismiss call fails the warning
+// simply stays shown — the refresh keeps the band truthful, so no separate error
+// channel is needed.
+async function dismissWarning(kind: string, dismissId: string) {
+  try {
+    await invoke("dismiss_warning", { kind, id: dismissId });
+  } catch {
+    // ignore — refreshValidation below re-renders whatever is still active
+  }
+  await refreshValidation();
+}
+
 async function refreshJobStatus() {
   jobStatusError.value = null;
   try {
@@ -790,7 +805,11 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
       @select="selectAndShow"
     />
     <div class="main-column">
-      <PersistentWarningArea :report="validation" :error="validationError" />
+      <PersistentWarningArea
+        :report="validation"
+        :error="validationError"
+        @dismiss="dismissWarning"
+      />
       <div class="view-area">
         <template v-if="view === 'report'">
           <!-- While a run is in flight (or its terminal log is reopened) the pane

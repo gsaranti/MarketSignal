@@ -135,6 +135,26 @@ fn check_configuration(app: tauri::AppHandle) -> ValidationReport {
     report
 }
 
+/// Dismiss one Persistent Warning Area warning (`docs/interface.md §Persistent
+/// Warning Area` — a dismissed warning stays gone until a fresh event in its
+/// category). `id` is the `WarningCategory.dismiss_id` the frontend rendered and
+/// echoes back, so the dismissal targets the *shown* warning rather than whatever
+/// the backend would re-derive as current at click time — a stale click can then
+/// only ever dismiss the row it was on, and a newer failure / missed window still
+/// surfaces fresh. Only the two non-blocking categories (failed / missed jobs) are
+/// dismissible; a blocking configuration gap is gate state, so a dismiss of one is a
+/// no-op (handled in `jobs::dismiss_warning_category`). The frontend re-runs
+/// `check_configuration` afterward to repopulate the band.
+#[tauri::command]
+fn dismiss_warning(
+    app: tauri::AppHandle,
+    kind: config::WarningKind,
+    id: String,
+) -> Result<(), String> {
+    let conn = open_app_db(&app)?;
+    jobs::dismiss_warning_category(&conn, kind, &id).map_err(|e| e.to_string())
+}
+
 /// The on-disk layout for a run — the SQLite database, the reports directory,
 /// and the research inbox/archive, all under the app data directory
 /// (`ReportPaths::under` owns the names). One source for the path layout, shared
@@ -739,6 +759,7 @@ pub fn run() {
             load_report,
             export_report_markdown,
             check_configuration,
+            dismiss_warning,
             job_status,
             set_job_enabled,
             get_settings,

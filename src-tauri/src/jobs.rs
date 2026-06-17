@@ -38,6 +38,17 @@ const WEEKLY_MARKET_JOB: &str = "weekly_market";
 /// `app_settings` key for the weekly job's enable/disable flag.
 const WEEKLY_JOB_ENABLED_KEY: &str = "weekly_job_enabled";
 
+/// `app_settings` keys recording a dismissed Persistent Warning Area warning
+/// (`docs/interface.md §Persistent Warning Area` — "Dismissing a warning
+/// permanently removes it. A subsequent event in the same category produces a fresh
+/// warning."). Each stores the *identity* of the dismissed warning so a later,
+/// distinct event re-surfaces: the failed run's `job_runs.id` for the failed-job
+/// category, and the missed window's RFC3339 timestamp for the missed-scheduled-job
+/// category. Only the two non-blocking categories are dismissible; the blocking
+/// configuration gaps are gate state, not notices.
+const DISMISSED_FAILED_JOB_RUN_ID_KEY: &str = "dismissed_failed_job_run_id";
+const DISMISSED_MISSED_WINDOW_KEY: &str = "dismissed_missed_window";
+
 /// Reason recorded and returned when a run is rejected by the concurrency guard.
 const SKIP_REASON: &str = "another report run is already in progress";
 
@@ -294,22 +305,31 @@ pub fn record_run(conn: &Connection, run: &JobRun) -> Result<()> {
 pub fn failure_warning(conn: &Connection) -> Result<Option<WarningCategory>> {
     let latest = conn
         .query_row(
-            "SELECT state, finished_at, detail FROM job_runs
+            "SELECT id, state, finished_at, detail FROM job_runs
              WHERE state IN ('successful', 'failed')
              ORDER BY id DESC LIMIT 1",
             [],
             |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             },
         )
         .optional()?;
 
     match latest {
-        Some((state, finished_at, detail)) if state == JobState::Failed.as_str() => {
+        Some((id, state, finished_at, detail)) if state == JobState::Failed.as_str() => {
+            // Suppressed if the user dismissed this exact failed run; a later
+            // failure carries a higher `id`, so the marker no longer matches and a
+            // fresh warning surfaces.
+            if storage::get_setting(conn, DISMISSED_FAILED_JOB_RUN_ID_KEY)?.as_deref()
+                == Some(id.to_string().as_str())
+            {
+                return Ok(None);
+            }
             let item = match detail {
                 Some(d) => format!("{finished_at} — {d}"),
                 None => format!("{finished_at} — job execution failed"),
@@ -318,6 +338,7 @@ pub fn failure_warning(conn: &Connection) -> Result<Option<WarningCategory>> {
                 kind: WarningKind::FailedJob,
                 title: "Last job failed".to_string(),
                 items: vec![item],
+                dismiss_id: Some(id.to_string()),
             }))
         }
         _ => Ok(None),
@@ -376,6 +397,15 @@ where
         return Ok(None);
     }
 
+    // Suppressed if the user dismissed this exact window; a later missed window
+    // carries a different timestamp, so the marker no longer matches and a fresh
+    // warning surfaces.
+    if storage::get_setting(conn, DISMISSED_MISSED_WINDOW_KEY)?.as_deref()
+        == Some(missed_window_id(&window_utc).as_str())
+    {
+        return Ok(None);
+    }
+
     let item = format!(
         "The scheduled run for {} did not start.",
         window.format("%Y-%m-%d %H:%M")
@@ -384,7 +414,42 @@ where
         kind: WarningKind::MissedScheduledJob,
         title: "Scheduled job missed".to_string(),
         items: vec![item],
+        dismiss_id: Some(missed_window_id(&window_utc)),
     }))
+}
+
+/// The dismissal identity for a missed-scheduled-job window: the window's UTC
+/// RFC3339 timestamp. One source of truth shared by `missed_warning` (to test the
+/// marker) and `dismiss_warning_category` (to write it), so the two can never drift.
+fn missed_window_id(window_utc: &DateTime<Utc>) -> String {
+    window_utc.to_rfc3339()
+}
+
+/// Dismiss one Persistent Warning Area warning by the *identity the frontend
+/// rendered* (`docs/interface.md §Persistent Warning Area`). `dismiss_id` is the
+/// `WarningCategory.dismiss_id` echoed back from the shown row — the failed run's id
+/// for `FailedJob`, the missed window's timestamp for `MissedScheduledJob` — written
+/// verbatim into the per-category `app_settings` marker. `failure_warning` /
+/// `missed_warning` then suppress only the warning whose *current* identity equals
+/// the marker, so dismissing a stale row records that stale identity (already gone)
+/// and a later, distinct event (a newer failure, a later missed window) still
+/// surfaces fresh. Keying off the rendered id — rather than re-deriving "current" at
+/// click time — is what makes a stale click safe. The three blocking configuration
+/// categories are gate state rather than dismissible notices, so a dismiss of one is
+/// a no-op (the UI also offers no control for them).
+pub fn dismiss_warning_category(conn: &Connection, kind: WarningKind, dismiss_id: &str) -> Result<()> {
+    match kind {
+        WarningKind::FailedJob => {
+            storage::set_setting(conn, DISMISSED_FAILED_JOB_RUN_ID_KEY, dismiss_id)?;
+        }
+        WarningKind::MissedScheduledJob => {
+            storage::set_setting(conn, DISMISSED_MISSED_WINDOW_KEY, dismiss_id)?;
+        }
+        WarningKind::AgentConfiguration
+        | WarningKind::ApiTokens
+        | WarningKind::ProviderCredentials => {}
+    }
+    Ok(())
 }
 
 /// A snapshot of job status for the UI (`docs/scheduling.md §Job Status
@@ -594,5 +659,109 @@ mod tests {
         let guard = RunGuard::default();
         let _token = guard.try_begin().unwrap();
         assert!(job_status(&mem(), &guard).unwrap().is_running);
+    }
+
+    /// The rendered identity of the current warning of `kind` — the `dismiss_id` the
+    /// frontend would echo back. Panics if no such warning is shown, since these
+    /// tests dismiss a warning they just asserted is present.
+    fn shown_dismiss_id(category: Option<WarningCategory>) -> String {
+        category
+            .expect("a warning is shown")
+            .dismiss_id
+            .expect("a dismissible warning carries an identity")
+    }
+
+    #[test]
+    fn dismissing_the_failed_job_warning_suppresses_it() {
+        let conn = mem();
+        insert(&conn, JobState::Failed, Some("boom"));
+        let id = shown_dismiss_id(failure_warning(&conn).unwrap());
+        dismiss_warning_category(&conn, WarningKind::FailedJob, &id).unwrap();
+        assert!(
+            failure_warning(&conn).unwrap().is_none(),
+            "a dismissed failure must not re-surface"
+        );
+    }
+
+    #[test]
+    fn a_newer_failure_resurfaces_after_dismiss() {
+        let conn = mem();
+        insert(&conn, JobState::Failed, Some("first"));
+        let id = shown_dismiss_id(failure_warning(&conn).unwrap());
+        dismiss_warning_category(&conn, WarningKind::FailedJob, &id).unwrap();
+        assert!(failure_warning(&conn).unwrap().is_none());
+        // A second, distinct failure (a new id) is a fresh event the marker can't match.
+        insert(&conn, JobState::Failed, Some("second"));
+        let w = failure_warning(&conn)
+            .unwrap()
+            .expect("a fresh failed-job warning");
+        assert!(w.items[0].contains("second"), "{:?}", w.items);
+    }
+
+    #[test]
+    fn dismissing_a_blocking_category_is_a_noop() {
+        let conn = mem();
+        insert(&conn, JobState::Failed, Some("boom"));
+        // A blocking config category is gate state, not a dismissible notice: its
+        // dismiss writes no marker, whatever id is passed, so the failed-job warning
+        // is untouched.
+        dismiss_warning_category(&conn, WarningKind::ApiTokens, "1").unwrap();
+        assert!(
+            failure_warning(&conn).unwrap().is_some(),
+            "a blocking-category dismiss must not suppress the failed-job warning"
+        );
+    }
+
+    #[test]
+    fn dismissing_the_missed_window_warning_suppresses_it() {
+        let conn = mem();
+        insert_at(&conn, "2026-06-07T09:00:05+00:00"); // last activity the prior Sunday
+        let now = now_wed_after_a_window();
+        let id = shown_dismiss_id(missed_warning(&conn, now, true).unwrap());
+        dismiss_warning_category(&conn, WarningKind::MissedScheduledJob, &id).unwrap();
+        assert!(
+            missed_warning(&conn, now, true).unwrap().is_none(),
+            "a dismissed missed window must not re-surface"
+        );
+    }
+
+    #[test]
+    fn a_later_missed_window_resurfaces_after_dismiss() {
+        let conn = mem();
+        insert_at(&conn, "2026-06-07T09:00:05+00:00");
+        let first_now = now_wed_after_a_window(); // window: Sunday 2026-06-14
+        let id = shown_dismiss_id(missed_warning(&conn, first_now, true).unwrap());
+        dismiss_warning_category(&conn, WarningKind::MissedScheduledJob, &id).unwrap();
+        assert!(missed_warning(&conn, first_now, true).unwrap().is_none());
+        // A week on, the next window (Sunday 2026-06-21) is a distinct missed event.
+        let next_now = Utc.with_ymd_and_hms(2026, 6, 24, 12, 0, 0).single().unwrap();
+        let w = missed_warning(&conn, next_now, true)
+            .unwrap()
+            .expect("a fresh missed-window warning");
+        assert!(w.items[0].contains("2026-06-21"), "{:?}", w.items);
+    }
+
+    #[test]
+    fn dismissing_a_stale_missed_window_does_not_hide_a_newer_one() {
+        // The fix's core (regression for the stale-click bug): a dismiss carries the
+        // *rendered* identity, so clicking a stale row can only ever dismiss the
+        // window that was shown — never a newer, unseen one that has since become
+        // current. Under the old re-snapshot-at-click-time shape this hid the fresh
+        // warning.
+        let conn = mem();
+        insert_at(&conn, "2026-06-07T09:00:05+00:00");
+        // The row the user is looking at: the 2026-06-14 window.
+        let stale_now = now_wed_after_a_window();
+        let stale_id = shown_dismiss_id(missed_warning(&conn, stale_now, true).unwrap());
+        // Time passes; a newer window (2026-06-21) is now current and also missed.
+        let later_now = Utc.with_ymd_and_hms(2026, 6, 24, 12, 0, 0).single().unwrap();
+        assert!(missed_warning(&conn, later_now, true).unwrap().is_some());
+        // The user clicks dismiss on the stale 06-14 row (its rendered identity).
+        dismiss_warning_category(&conn, WarningKind::MissedScheduledJob, &stale_id).unwrap();
+        // The fresh 06-21 warning must still surface — dismissing the old row never hid it.
+        let w = missed_warning(&conn, later_now, true)
+            .unwrap()
+            .expect("the newer window must remain visible");
+        assert!(w.items[0].contains("2026-06-21"), "{:?}", w.items);
     }
 }
