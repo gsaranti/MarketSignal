@@ -1,10 +1,10 @@
-# Weekly Market Report Workflow
+# Market Signal Report Workflow
 
-Market Signal has a single recurring job flow:
-- the Weekly Market Report job
+Market Signal has a single report workflow:
+- the Market Signal Report job
 
-The Weekly Market Report workflow:
-- analyzes the prior week's market behavior
+The Market Signal Report workflow:
+- analyzes market behavior since the previous report
 - evaluates prior thesis accuracy
 - performs dynamic and forward-looking research
 - runs the analyst agents
@@ -18,11 +18,10 @@ The report combines:
 - forward-looking market preparation
 - long-term market-thesis evolution
 
-The Weekly Market Report workflow runs for:
-- scheduled Weekly Market reports
-- manual Weekly Market report generation
+The Market Signal Report workflow runs on demand:
+- user-initiated Market Signal report generation
 
-The Weekly Market Report focuses on synthesizing the previous week's market behavior, evaluating evolving macro and geopolitical conditions, updating the long-term market thesis, and identifying forward-looking risks and opportunities.
+The Market Signal Report focuses on synthesizing market behavior since the previous report, evaluating evolving macro and geopolitical conditions, updating the long-term market thesis, and identifying forward-looking risks and opportunities.
 
 The report emphasizes:
 - structural market developments
@@ -34,31 +33,29 @@ The report emphasizes:
 - market positioning and sentiment
 - upcoming market-moving events
 
-The report also performs retrospective auditing of prior Weekly Market reports to evaluate:
+The report also performs retrospective auditing of prior Market Signal reports to evaluate:
 - thesis accuracy
 - incorrect assumptions
 - overlooked risks
 - useful signals
 - and whether prior market concerns evolved as expected
 
-For when this job runs and how it interacts with sleep, offline, and concurrent-execution conditions, see [scheduling.md](scheduling.md).
+For job states, offline behavior, concurrent-run protection, and error handling, see [scheduling.md](scheduling.md).
 
 ## Step 1: Job Start and Validation
 
-The scheduled or manual job starts by loading application configuration and validating that the job is allowed to run.
+The job starts by loading application configuration and validating that the job is allowed to run.
 
 The application checks:
-- whether the Weekly Market job is enabled
 - whether another job is already running
 - whether the Main Agent and all Analyst Agents are configured
 - whether the required OpenAI and Anthropic API tokens exist (both are always required — see [configuration.md §API Tokens](configuration.md#api-tokens))
 - whether the required external data provider credentials are configured
-- whether the machine has network access to required APIs and model providers
 
 If validation fails, the job does not continue. The application displays the appropriate warning state and avoids creating duplicate unresolved warnings.
 
 The canonical rules for each check live in:
-- enable/disable state and concurrent-job protection: [scheduling.md](scheduling.md)
+- concurrent-run protection: [scheduling.md §Concurrent Job Protection](scheduling.md#concurrent-job-protection)
 - agent model configuration and API token requirements: [configuration.md](configuration.md)
 - external data provider credential requirements: [configuration.md §External Data Provider Credentials](configuration.md#external-data-provider-credentials)
 - offline / unreachable-provider behavior: [scheduling.md §Offline Behavior](scheduling.md#offline-behavior)
@@ -107,7 +104,7 @@ Macro:
 - CPI/PCE/jobs calendar
 - inflation expectations
 - consumer confidence
-- major economic reports from the prior week
+- recent major economic reports
 
 Market movers:
 - biggest gainers
@@ -115,7 +112,7 @@ Market movers:
 - most-active names
 
 Earnings:
-- large-cap companies reporting in the prior-week and upcoming window
+- large-cap companies reporting in the recent and upcoming window
 
 Valuation and finer rotation (per exchange — NASDAQ growth + NYSE value):
 - sector valuation (per-sector aggregate P/E)
@@ -159,11 +156,11 @@ For what is stored in vector memory and the retention rules around it, see [stor
 
 ## Step 5: Audit Prior Reports
 
-With the baseline scan and change view already gathered ([Step 3](#step-3-gather-baseline-market-data)) and relevant memory recalled ([Step 4](#step-4-retrieve-vector-memory-pre-research)), the application supplies prior report context together with the current measured market state to the main agent. The main agent then evaluates a bounded set of prior Weekly Market reports against what actually occurred — grounding the audit in the current measured baseline rather than prose recollection alone.
+With the baseline scan and change view already gathered ([Step 3](#step-3-gather-baseline-market-data)) and relevant memory recalled ([Step 4](#step-4-retrieve-vector-memory-pre-research)), the application supplies prior report context together with the current measured market state to the main agent. The main agent then evaluates a bounded set of prior Market Signal reports against what actually occurred — grounding the audit in the current measured baseline rather than prose recollection alone.
 
 The change view measures only the most recent interval — the move since the immediately previous report (see [storage.md §Baseline Snapshots](storage.md#baseline-snapshots)) — so reports earlier in the audit window are judged against the current measured baseline levels, not a per-report delta. (The snapshot store retains enough history to diff the current scan against each audited report's snapshot, so per-report measured deltas across the whole window are a possible future enrichment rather than a present guarantee.)
 
-The audit window should usually include the previous 2–6 Weekly Market reports, depending on relevance and context limits.
+The audit window should usually include the previous 2–6 Market Signal reports, depending on relevance and context limits.
 
 The retrospective audit process may evaluate:
 - whether major market concerns materialized
@@ -275,7 +272,7 @@ Examples include:
 The system is expected to think similarly to a professional analyst team that prepares for future market-moving conditions well before they fully materialize.
 
 The market thesis should therefore reflect:
-- what shaped markets during the previous week
+- what shaped markets since the previous report
 - what is likely developing next
 - what longer-term structural forces may shape future market behavior
 

@@ -23,7 +23,7 @@ Supported formats:
 
 ## Processing at Job Start
 
-At the start of each scheduled job:
+At the start of each report job:
 1. The application checks the inbox folder.
 2. If the folder is empty, the job continues normally.
 3. If documents exist, the application parses them per format and condenses each into a bounded excerpt deterministically — no model stage runs, and any truncation is disclosed in the excerpt itself (amended 2026-06-12; see [agents.md §Data Extraction](agents.md#data-extraction)).

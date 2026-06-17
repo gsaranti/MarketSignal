@@ -5,7 +5,7 @@
 Canonical Markdown reports are stored as files on the local filesystem. Each file uses the same naming convention as exports:
 
 ```text
-YYYY-MM-DD-market-signal-weekly-report.md
+YYYY-MM-DD-market-signal-report.md
 ```
 
 See [export.md §Export Naming](export.md#export-naming) for the canonical filename convention.
@@ -46,7 +46,7 @@ The structured report summary metadata is a JSON object the main agent populates
 
 Required fields:
 - `report_id` — UUID for the report.
-- `report_type` — currently always `weekly_market`.
+- `report_type` — always `market_signal` (the report kind; the legacy value `weekly_market` is migrated to it — see [§Legacy Naming Migration](#legacy-naming-migration)).
 - `created_at` — ISO-8601 timestamp.
 - `risk_posture` — one of the risk-posture labels above (`risk-on`, `risk-off`, `mixed`).
 - `market_cycle` — one of the market-cycle labels above (`late-cycle`, `recessionary`, `recovery`).
@@ -60,7 +60,7 @@ Optional fields (may be empty arrays):
 
 Detailed analysis remains in the canonical Markdown report; this schema captures only the queryable fields used for cross-report retrieval and continuity.
 
-Only the most recent 30 Weekly Market reports are retained.
+Only the most recent 30 Market Signal reports are retained.
 
 Older reports are deleted automatically.
 
@@ -70,11 +70,20 @@ When a report is removed:
 - associated vector-memory summary references
 are deleted together. (There is no HTML to remove — HTML is rendered on demand, never stored; see [§SQLite](#sqlite).)
 
+### Legacy Naming Migration
+
+The report's stored identifiers were renamed when the product moved from a fixed weekly schedule to on-demand generation. Reports created under the earlier convention are migrated in place on first launch after the upgrade:
+
+- the `report_type` metadata value `weekly_market` is rewritten to `market_signal`;
+- report files named `YYYY-MM-DD-market-signal-weekly-report.md` are renamed to `YYYY-MM-DD-market-signal-report.md`, and any stored file paths are updated to match.
+
+The migration is one-time and idempotent: a report already carrying the new identifiers is left untouched. No report content changes — only the type slug and the filename.
+
 ### Baseline Snapshots
 
 Each report stores a snapshot of the baseline market-data scan that produced it (the Step-3 gather, serialized as JSON). On the next report, the application diffs the current scan against the most recent prior snapshot to produce a per-report change view — the level moves since the previous report — handed to the main agent so the thesis can ground "what changed" in measured deltas rather than the prior report's prose.
 
-The most recent 14 snapshots are retained, pruned independently of the 30-report report-retention window. The cadence is report-indexed, not calendar-indexed: because reports can be generated manually at any time (see [scheduling.md §Manual Report Generation](scheduling.md#manual-report-generation)), the change view reports the actual elapsed interval since the previous report rather than assuming a week.
+The most recent 14 snapshots are retained, pruned independently of the 30-report report-retention window. The cadence is report-indexed, not calendar-indexed: because reports can be generated on demand at any time (see [scheduling.md §Generating a Report](scheduling.md#generating-a-report)), the change view reports the actual elapsed interval since the previous report rather than assuming a week.
 
 A missing or unreadable prior snapshot is non-fatal: the report is generated without a change view. Snapshots are additive context, never a precondition for a report.
 

@@ -1,6 +1,6 @@
 # Run Tracking and Cancellation
 
-While a Weekly Market Report job is running, the application shows a live **run
+While a Market Signal Report job is running, the application shows a live **run
 tracker** in place of the report, so the user can watch the job progress and stop
 it at any point. The tracker is presentation only — it observes the workflow
 defined in [weekly-report-workflow.md](weekly-report-workflow.md); it does not
@@ -27,7 +27,7 @@ job's progress as it happens:
   the same provider was rejected, short-circuiting the rest — produces no row. So
   each row corresponds to one request the workflow chose to make, resolved to its
   final outcome.
-- **The main agent's report, streamed live.** As the main agent writes the weekly
+- **The main agent's report, streamed live.** As the main agent writes the
   report, its text streams into the tracker as it is produced, rather than
   appearing only once the report is finished.
 

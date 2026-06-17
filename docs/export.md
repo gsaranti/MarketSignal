@@ -4,7 +4,7 @@ Reports are authored and stored internally as Markdown. The application also gen
 
 ## Export Options
 
-Users can export a Weekly Market report as:
+Users can export a Market Signal report as:
 - Markdown
 - PDF
 
@@ -35,8 +35,8 @@ Exported files use the report date and report title in the filename.
 
 Example:
 ```text
-2026-05-24-market-signal-weekly-report.md
-2026-05-24-market-signal-weekly-report.pdf
+2026-05-24-market-signal-report.md
+2026-05-24-market-signal-report.pdf
 ```
 
 ## Export Behavior

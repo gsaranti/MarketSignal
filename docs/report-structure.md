@@ -42,11 +42,11 @@ The agent-facing JSON shape and the authoring rules the agent is given (series c
 Within these sections the agent may embed charts via the [`chart` fenced-block convention](#embedded-charts) above.
 
 ```text
-# Weekly Market Report
+# Market Signal Report
 
 Date
 Report Type:
-- Weekly Market Report
+- Market Signal Report
 
 ## Header Summary
 3–6 key bullets summarizing the most important conclusions, risks, developments, and thesis changes.
@@ -115,7 +115,7 @@ If conditions are unusually uncertain or bifurcated, the thesis may explicitly d
 
 ## Retrospective Audit
 
-Evaluation of prior Weekly Market reports and whether previous assumptions, risks, and market expectations evolved as anticipated.
+Evaluation of prior Market Signal reports and whether previous assumptions, risks, and market expectations evolved as anticipated.
 
 This section may discuss:
 - thesis confirmations

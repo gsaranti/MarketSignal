@@ -27,20 +27,17 @@
 - Agent model selection (default = none selected) — configuration.md §Agent Model Configuration
 - API tokens (OpenAI, Anthropic) — configuration.md §API Tokens; data-sources.md §LLM Providers
 - External data provider credentials (FMP + Tavily required; FRED needs a free API key; BLS/GDELT keyless) — configuration.md §External Data Provider Credentials; data-sources.md
-- Execution gate / pre-run validation — configuration.md; scheduling.md §Job Controls; weekly-report-workflow.md §Step 1
+- Execution gate / pre-run validation — configuration.md; weekly-report-workflow.md §Step 1
 
-## Scheduling & runtime
-- Weekly job schedule (Sunday 9:00 AM local) — scheduling.md §Weekly Market Report Job
-- Job states (Successful / Failed / Missed / Skipped / Cancelled) — scheduling.md §Job States
-- App-must-be-running / system tray — scheduling.md §Application Runtime Requirements
-- System sleep behavior — scheduling.md §System Sleep Behavior
-- Offline behavior — scheduling.md §Offline Behavior
+## Job execution & runtime
+- On-demand report generation (no scheduler) — scheduling.md §Generating a Report
+- The report job (analytical focus) — scheduling.md §The Market Signal Report Job
+- Job states (Successful / Failed / Skipped / Cancelled) — scheduling.md §Job States
+- Application runtime (windowed app, no background jobs) — scheduling.md §Application Runtime
+- Offline behavior (unreachable provider → Failed run; no pre-run reachability gate) — scheduling.md §Offline Behavior
 - Concurrent job protection (single workflow) — scheduling.md §Concurrent Job Protection
 - Job status visibility — scheduling.md §Job Status Visibility
-- Enable/disable controls (enabled by default) — scheduling.md §Job Controls
-- Manual report generation — scheduling.md §Manual Report Generation
 - Error handling — scheduling.md §Error Handling
-- Missed job detection (no replay/queue) — scheduling.md §Missed Job Detection
 
 ## Run tracking & cancellation
 - Live run tracker (replaces the report pane while a job runs; latest-run-only) — run-tracking.md §What the Tracker Shows; interface.md
@@ -50,7 +47,7 @@
 - Run-is-not-a-report invariant — run-tracking.md §A Run Is Not a Report
 - Reaching the tracker (footer: View progress / View run log) — run-tracking.md §Reaching the Tracker
 
-## Weekly report workflow (18 steps)
+## Report workflow (18 steps)
 - End-to-end step list — weekly-report-workflow.md §Steps 1–18
 - News ingestion funnel (~500 → ~5 topics) — weekly-report-workflow.md §Step 7
 - Research routing / research plan — weekly-report-workflow.md §Step 8
@@ -106,7 +103,7 @@
 - Main layout tree — interface.md §Main Layout
 - Latest Report View / Recent Reports Sidebar — interface.md; weekly-report-workflow.md §Step 18
 - Run Tracker (live job progress; replaces report pane) — interface.md; run-tracking.md
-- Persistent Warning Area (5 categories, de-dup, dismiss) — interface.md §Persistent Warning Area; scheduling.md §Error Handling
+- Persistent Warning Area (4 categories, de-dup, dismiss) — interface.md §Persistent Warning Area; scheduling.md §Error Handling
 
 ## Export
 - Export options (Markdown, PDF) — export.md §Export Options

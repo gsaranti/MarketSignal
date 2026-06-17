@@ -1,7 +1,7 @@
 # Analyst Skills
 
 The following reusable skills are included in MVP.
-Each skill is a reusable analytical **lens**: a method the agent applies to this week's data and research, plus a structured **verdict** it must land. They are not pipeline stages, and not every lens applies to every report.
+Each skill is a reusable analytical **lens**: a method the agent applies to the current report's data and research, plus a structured **verdict** it must land. They are not pipeline stages, and not every lens applies to every report.
 
 ## How Skills Are Used
 
@@ -9,7 +9,7 @@ The skills form a shared analytical library. **As built, both the main agent and
 
 The **whole library is supplied in full every report**:
 - Each consumer — the main agent and each analyst — receives every skill, each skill's method body and the structured verdict it should yield, in one pass with no separate selection step.
-- Not every lens applies every week. Each consumer applies the ones this week's data and research actually warrant and leaves the rest aside.
+- Not every lens applies to every report. Each consumer applies the ones the current report's data and research actually warrant and leaves the rest aside.
 - Each applied lens's verdict is **folded into the consumer's own output** — the main agent's thesis prose, an analyst's review — never written up as its own report section or review field, and the skills are not named. They are reasoning tools, not output structure.
 
 A skill's verdict shape is a **forcing function on the prose**: it disciplines the model to land a specific conclusion rather than vague "consider X" guidance. It is **not** a machine-readable channel — nothing is parsed back from the report or persisted.
@@ -20,7 +20,7 @@ Each skill below is listed by name with its description and what it evaluates. T
 
 Recorded for continuity; the catalog of skills below is unchanged.
 
-- **Consumers** — the original design (the three analyst agents — Bull / Bear / Balanced — *and* the main agent) is now **fully as-built**: the main-agent consumer shipped first, and the analyst follow-on has since landed. Each analyst receives the full library inline and self-selects the lenses its posture and the week warrant, forcing-function-only like the main agent (no parsed or persisted channel). The analyst verdict is folded into its review's key points, risks, and opportunities rather than thesis prose.
+- **Consumers** — the original design (the three analyst agents — Bull / Bear / Balanced — *and* the main agent) is now **fully as-built**: the main-agent consumer shipped first, and the analyst follow-on has since landed. Each analyst receives the full library inline and self-selects the lenses its posture and the report warrant, forcing-function-only like the main agent (no parsed or persisted channel). The analyst verdict is folded into its review's key points, risks, and opportunities rather than thesis prose.
 - **Delivery** — originally **progressive disclosure** (each agent sees only frontmatter, then requests the relevant subset via a selection call). Removed: the bodies are small (~150 tokens each, ~2.4k for all 16), and the phase-1 selection call re-sent the entire packet to the model just to save the frontmatter catalog — a round-trip and a fail-soft code path for negative net benefit. All 16 now ship inline; the model self-selects which lenses to apply.
 - **Output** — originally a per-skill **output schema** the application layer supplied and consumed; as built, the verdict is **prose-level only** (a forcing function folded into the thesis), with no parsed schema and no persistence. The richer structured-output channel remains a deferred option.
 

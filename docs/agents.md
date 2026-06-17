@@ -29,8 +29,8 @@ The main agent is responsible for:
 
 The main agent owns the final report.
 
-The main agent is responsible for producing a cohesive weekly market publication that:
-- evaluates the prior week's market behavior
+The main agent is responsible for producing a cohesive market publication that:
+- evaluates market behavior since the previous report
 - reviews evolving market theses
 - identifies important structural developments
 - prepares for future market-moving conditions
@@ -55,7 +55,7 @@ The main agent evaluates all analyst agent outputs and determines how much weigh
 
 The final report is written in one unified voice as the Market Signal Thesis.
 
-The report should behave like a professional weekly market publication focused on:
+The report should behave like a professional market publication focused on:
 - thesis evolution
 - structural market developments
 - major macroeconomic and geopolitical forces
@@ -77,7 +77,7 @@ These agents are not optional tools. They are fixed review stages in the report-
 Each analyst agent receives the same condensed research packet and produces a structured analysis from its assigned analytical perspective.
 
 The analyst agents evaluate:
-- the prior week's market developments
+- market developments since the previous report
 - evolving macroeconomic conditions
 - geopolitical developments
 - market positioning

@@ -6,10 +6,9 @@ The Settings section includes:
 - model selection
 - API token configuration
 - external data provider credentials
-- scheduled job enable/disable controls
-- manual job execution controls
+- report generation controls
 
-The scheduled job enable/disable controls and manual job execution controls are described in [scheduling.md](scheduling.md). This file covers model selection, API tokens, and external data provider credentials.
+The report generation controls are described in [scheduling.md](scheduling.md). This file covers model selection, API tokens, and external data provider credentials.
 
 ## Agent Model Configuration
 
@@ -34,14 +33,13 @@ By default, the application starts with no models selected for:
 - Bear Analyst
 - Balanced Analyst
 
-The user must configure a model for all four agents before scheduled jobs can run.
+The user must configure a model for all four agents before a report can be generated.
 
 If any agent does not have a configured model:
-- the Weekly Market job does not execute
-- manual report execution is disabled
+- report generation is disabled
 - the application displays a warning message on the homepage indicating which agents still require configuration
 
-Scheduled jobs are enabled by default, but jobs cannot execute until all required agent models and provider credentials are configured.
+A report cannot be generated until all required agent models and provider credentials are configured.
 
 A newly installed application therefore begins in an incomplete configuration state until the user finishes model and API setup.
 
@@ -76,8 +74,7 @@ The **Financial Modeling Prep**, **FRED**, and **Tavily** credentials are all re
 BLS and GDELT are also accessed through public APIs but need no Settings credential: **BLS** works keyless (an optional free key raises its rate limits), and **GDELT** needs no key.
 
 If a required external provider credential (the Financial Modeling Prep, FRED, or Tavily credential) is missing:
-- dependent jobs do not execute
-- manual report execution is disabled
+- report generation is disabled
 - the application displays a validation warning explaining which credential is missing
 
 For the data providers themselves and what each is used for, see [data-sources.md](data-sources.md).
