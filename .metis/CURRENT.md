@@ -2,17 +2,27 @@
 
 ## What happened
 
-**Shipped warning dismissal** for the Persistent Warning Area's two non-blocking categories (failed / missed jobs) — the last indexed spec behavior (`docs/interface.md §Persistent Warning Area`, `INDEX.md`) that was modeled but unbuilt. A session-start reconciliation found the docs corpus otherwise **essentially feature-complete** (the full 18-step workflow, scheduler/tray/missed-detection, interface, export, storage all ship), so this was the one clean offline-buildable gap. Ran the full Metis loop: plan → implement → metis-task-reviewer **approve** → external **Codex** pass. **Codex caught a real P2 both my scope report and the reviewer under-rated as "benign":** the first cut dismissed by *kind* and re-derived the "current" identity at click time, so a **stale click could suppress a newer, unseen warning** (verified reachable — a blocked scheduled window refreshes nothing). Fixed by carrying the **rendered `WarningCategory.dismiss_id`** end-to-end (builder → serialized contract → UI → `dismiss_warning` command, written verbatim) — a stale click then only ever dismisses the row it was on. Added a regression test (`dismissing_a_stale_missed_window_does_not_hide_a_newer_one`). Lesson → memory `dismiss-rendered-identity`. Squash-merged and **pushed** to `origin/main` as `e3399aa`. BUILD.md amended this session (Persistent Warning Area sentence) to record the dismissal slice + the rendered-identity decision.
+**Pivoted the product from auto-scheduled to manual / on-demand report generation**, and **renamed the report "Weekly Market Report" → "Market Signal Report"** (a full rename including the stored contracts). Decisions locked with the user: pure manual (no scheduler, timer, tray, or reminder — the user picks cadence); **keep** the Failed-job warning; generalize the report's analytical window to cadence-agnostic ("developments since the previous report", leaning on the existing cadence-honest delta view); rename `report_type` `weekly_market` → `market_signal` and the filename `…-weekly-report.md` → `…-report.md` **with a one-time migration**; drop the tray / must-stay-running requirement; and make network unreachability a **Failed run, not a pre-run gate** (this **closes the old "network pre-flight" open question** as won't-build). The rationale: a tray-resident desktop app is an unreliable scheduler, and the whole *Missed*-state machinery only instrumented that unreliability.
+
+This session was a **documentation-only pass** executing that decision: 14 `docs/` files rewritten + `.metis/BUILD.md` and `INDEX.md` reconciled to the target spine. Job states went 5→4 (Missed dropped); the Persistent Warning Area 5→4 (MissedScheduledJob dropped, FailedJob kept). metis-task-reviewer returned **approve-with-nits** (fixed a BUILD first-vertical-slice filename contradiction + incidental cadence residue); an external **Codex** pass then caught two `analyst-skills.md` "this week's" lines my survey grep had filtered out (fixed). **No code was touched.**
 
 ## Current state
 
-`main` = `e3399aa`, working tree clean, **in sync with `origin/main`** (pushed). Nothing in flight. Verification was green throughout: lib `390 passed / 20 ignored`, clippy clean, Vitest `90` + Node `38`, `npm run build` clean.
+`main` = **`10667b9`** (squash-merge of the docs pivot off `docs/manual-only-pivot`) + this handoff commit. Working tree otherwise clean. **`main` is ahead of `origin/main`** — not pushed (the user asked to `pull`, not push; awaiting a push decision).
+
+`BUILD.md` is at the **target spine** and carries a **"Pending code slices"** note (`§Scheduling & runtime`) — the docs describe the destination; the code still carries the old scheduled model. The four queued code slices:
+1. Remove the Rust timer, `decide_scheduled_run`, `ScheduledRun`, the scheduled `lib.rs` command path, missed-detection, the enabled flag, and the `MissedScheduledJob` warning kind (+ `jobs::missed_warning`).
+2. Remove the Tauri tray / must-stay-running wiring.
+3. Run the `weekly_market`→`market_signal` `report_type` + filename rename **migration** (idempotent, one-time — see `docs/storage.md §Legacy Naming Migration`).
+4. Drop "weekly"/"prior week" from the agent prompts (`model_agent.rs`, `analyst_agent.rs`).
+
+The analyst trait, the manual command path, and the cadence-honest delta view **already match** the target and need no change.
 
 ## Open questions
 
-- *(live, needs a run)* **Empirical skills calibration** — read generated reports to see which of the 16 lenses actually improve the thesis and the analyst reviews, which get ignored, and whether prose-only delivery creates repetitive language across the 16 (spans the main agent and the analysts). The sole named skills follow-on; no test catches prose dilution.
-- *(deliberate deviation, not a true gap)* **Network-reachability pre-flight at the gate** — `docs/weekly-report-workflow.md §Step 1` lists it, but `config.rs:20-24` consciously surfaces unreachability as a *job failure* instead. Building a real pre-check would reverse that call — a product decision, not owed work.
+- *(live, needs a run)* **Empirical skills calibration** — read generated reports to see which of the 16 lenses actually improve the thesis and the analyst reviews, which get ignored, and whether prose-only delivery creates repetitive language across the 16. The sole named skills follow-on; no test catches prose dilution.
+- *(migration care)* Slice 3's rename migration mutates existing rows/files — it must be idempotent and update stored file paths, not just rename on disk (spec'd in `storage.md §Legacy Naming Migration`).
 
 ## Where to start
 
-`main` is clean and pushed; nothing owed. Open a fresh direction. Reconciliation this session showed the docs corpus is **essentially fully implemented** — the two items above are the only remaining frontiers: the live skills calibration (needs a live run + reading real reports) and the optional network pre-flight gate (a deliberate deviation, build only to reverse it).
+The docs/spine pivot is **landed on `main` (not pushed)**. First decide whether to **push** `main` to `origin`. Then plan + implement the **first code slice — scheduler removal** (slice 1): it's the self-contained one that unblocks the rest, and a clean `/metis-plan-task` target. Run the rename **migration** (slice 3) carefully for idempotency.
