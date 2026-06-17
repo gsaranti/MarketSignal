@@ -498,24 +498,18 @@ fn format_analyst_reviews(reviews: &[AnalystOutput]) -> String {
 /// the doc's phase-1 selection round-trip; the heading is distinct from the analyst-reviews,
 /// memory, and research blocks so they never read as one.
 fn format_skill_library() -> String {
-    if skills::CATALOG.is_empty() {
-        return String::new();
-    }
-    let mut block = String::from(
-        "\n\nAnalytical skills for this report — a library of analytical lenses. Not every \
-         lens applies every week: apply the ones this week's data and research warrant, and \
-         for each you apply produce its stated verdict and fold that conclusion into the \
-         unified thesis and the report's existing sections rather than writing it up as a \
-         separate section:",
-    );
-    for s in skills::CATALOG {
-        block.push_str(&format!(
-            "\n\n--- {} ---\n{}\nVerdict to produce — {}",
-            s.name, s.body, s.output
-        ));
-    }
-    block
+    skills::render_library(SKILL_LIBRARY_INTRO)
 }
+
+/// The main-agent heading for the skills block — synthesis framing (fold each verdict into
+/// the unified thesis and the report's existing sections). The per-skill bodies + verdict
+/// markers come from the shared [`skills::render_library`]; only this intro is main-agent
+/// specific (the analyst stage supplies its own).
+const SKILL_LIBRARY_INTRO: &str = "\n\nAnalytical skills for this report — a library of \
+analytical lenses. Not every lens applies every week: apply the ones this week's data and \
+research warrant, and for each you apply produce its stated verdict and fold that conclusion \
+into the unified thesis and the report's existing sections rather than writing it up as a \
+separate section:";
 
 /// The model's structured return: the Markdown body plus the analytical fields.
 /// `report_id` / `report_type` / `created_at` are deliberately absent — the

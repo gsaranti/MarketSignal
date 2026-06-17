@@ -32,6 +32,7 @@ use crate::model_agent::{
 };
 use crate::progress::RunContext;
 use crate::research_packet::ResearchPacket;
+use crate::skills;
 
 /// Provider endpoints — the analyst stage calls the provider directly, like the
 /// other model adapters.
@@ -60,9 +61,14 @@ perspective. Ground every point in the provided packet — the baseline numbers,
 the news, and the research evidence; never invent data or lean on prior knowledge the packet does \
 not support. Your review is one of three independent perspectives the Head Market Analyst will \
 critique and weigh when synthesizing the final report; argue your perspective in good faith as a \
-professional analyst rather than forcing a predetermined conclusion. Return: a short summary of \
-your read of the week, the key points your read rests on, the risks you see, the opportunities you \
-see, and your confidence (low, medium, or high) in this read.";
+professional analyst rather than forcing a predetermined conclusion. The prompt also carries \
+`analytical skills` — a library of analytical lenses, each with the method it applies and the \
+structured verdict it should yield. Not every lens applies every week: work through the ones this \
+week's data and research warrant, produce each relevant lens's verdict, and let it inform your \
+review — its key points, the risks you see, and the opportunities you see. The skills are \
+reasoning tools, not output structure; do not name them or write one up as its own field. Return: \
+a short summary of your read of the week, the key points your read rests on, the risks you see, \
+the opportunities you see, and your confidence (low, medium, or high) in this read.";
 
 /// The posture-specific half of the system prompt (`docs/agents.md §Bull/Bear/Balanced
 /// Analyst`).
@@ -93,6 +99,17 @@ fn system_prompt(posture: Posture) -> String {
 }
 
 const USER_INSTRUCTION: &str = "Produce your structured analytical review of this week's market.";
+
+/// The analyst heading for the skills block — review framing (let each verdict inform the
+/// review's key points, risks, and opportunities). The per-skill bodies + verdict markers
+/// come from the shared [`skills::render_library`]; only this intro is analyst-specific (the
+/// main agent supplies its own synthesis-framed heading). The whole library ships to every
+/// analyst, which self-selects the lenses its posture and this week's packet warrant — the
+/// same all-16-inline call the main agent makes.
+const SKILL_LIBRARY_INTRO: &str = "\n\nAnalytical skills — a library of analytical lenses. Not \
+every lens applies every week: apply the ones this week's data and research warrant, and for each \
+you apply produce its stated verdict and let that conclusion inform your review's key points, \
+risks, and opportunities rather than writing it up as its own item:";
 
 /// The model's structured return. Every field is required — the strict schema forces
 /// the provider to emit them, so a missing field is a malformed response that fails the
@@ -171,18 +188,22 @@ fn build_openai_request(model_id: &str, system: &str, user: &str) -> Value {
     })
 }
 
-/// Build the user message: the standing instruction plus the condensed research
-/// packet serialized as JSON — the canonical analyst input (`docs/weekly-report
-/// -workflow.md §Step 11`). A default (empty) packet falls back to the bare
-/// instruction so the prompt never carries an empty data block.
+/// Build the user message: the standing instruction, the condensed research packet
+/// serialized as JSON — the canonical analyst input (`docs/weekly-report-workflow.md
+/// §Step 11`) — and the full analytical-skills library (`docs/analyst-skills.md`). A
+/// default (empty) packet falls back to the bare instruction so the prompt never carries an
+/// empty data block, but the skills library is appended in every case: the lenses are
+/// packet-independent, mirroring the main agent, which appends the whole library
+/// unconditionally.
 fn build_user_prompt(packet: &ResearchPacket) -> String {
-    if packet == &ResearchPacket::default() {
-        return USER_INSTRUCTION.to_string();
+    let mut prompt = USER_INSTRUCTION.to_string();
+    if packet != &ResearchPacket::default() {
+        if let Ok(json) = serde_json::to_string_pretty(packet) {
+            prompt.push_str(&format!("\n\nCondensed research packet for this week:\n{json}"));
+        }
     }
-    match serde_json::to_string_pretty(packet) {
-        Ok(json) => format!("{USER_INSTRUCTION}\n\nCondensed research packet for this week:\n{json}"),
-        Err(_) => USER_INSTRUCTION.to_string(),
-    }
+    prompt.push_str(&skills::render_library(SKILL_LIBRARY_INTRO));
+    prompt
 }
 
 /// Validate the model's envelope and tag it with the adapter's posture. The summary is
@@ -347,6 +368,19 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_directs_skill_application_for_every_posture() {
+        // The skills directive lives in the shared base, so every posture carries it.
+        for p in Posture::ALL {
+            let prompt = system_prompt(p);
+            assert!(prompt.contains("`analytical skills`"), "{p:?} skills directive missing");
+            assert!(
+                prompt.contains("reasoning tools, not output structure"),
+                "{p:?} skills framing missing"
+            );
+        }
+    }
+
+    #[test]
     fn anthropic_request_forces_the_tool_and_is_not_streamed() {
         let body = build_anthropic_request("claude-opus-4-8", &system_prompt(Posture::Bull), "u");
         assert_eq!(body["model"], "claude-opus-4-8");
@@ -366,13 +400,29 @@ mod tests {
     }
 
     #[test]
-    fn user_prompt_embeds_packet_when_present_and_is_bare_when_empty() {
+    fn user_prompt_embeds_packet_when_present_and_omits_the_data_block_when_empty() {
         let with = build_user_prompt(&one_index_packet());
+        assert!(with.starts_with(USER_INSTRUCTION), "{with}");
         assert!(with.contains("Condensed research packet"), "{with}");
         assert!(with.contains("S&P 500"), "{with}");
 
+        // A default packet still leads with the bare instruction and carries no data block,
+        // but is no longer exactly USER_INSTRUCTION — the skills library is appended (below).
         let bare = build_user_prompt(&ResearchPacket::default());
-        assert_eq!(bare, USER_INSTRUCTION);
+        assert!(bare.starts_with(USER_INSTRUCTION), "{bare}");
+        assert!(!bare.contains("Condensed research packet"), "{bare}");
+    }
+
+    #[test]
+    fn user_prompt_carries_the_skill_library_with_and_without_a_packet() {
+        // The lenses are packet-independent, so the full library + its verdict forcing
+        // function ride into the prompt in both the populated and default-packet paths.
+        for packet in [one_index_packet(), ResearchPacket::default()] {
+            let prompt = build_user_prompt(&packet);
+            assert!(prompt.contains("Analytical skills"), "intro missing: {prompt}");
+            assert!(prompt.contains("Market Regime Analysis"), "a skill name missing: {prompt}");
+            assert!(prompt.contains("Verdict to produce —"), "verdict marker missing: {prompt}");
+        }
     }
 
     #[test]

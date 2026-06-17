@@ -1,11 +1,15 @@
 //! The analyst skills library — a shared catalog of reusable analytical lenses
-//! supplied to the main agent (`docs/analyst-skills.md`).
+//! supplied to the main agent and the three Bull/Bear/Balanced analysts (`docs/analyst-skills.md`).
 //!
 //! Each skill carries a method [`Skill::body`] (the analytical lens — which baseline series
 //! to read and how to judge them) and an explicit [`Skill::output`] verdict shape (the
-//! structured conclusion the lens should yield). The application layer supplies the **whole
-//! library** ([`CATALOG`]) into the generation prompt in one pass; the model applies the
-//! lenses this week's packet warrants and folds each verdict into the unified thesis prose.
+//! structured conclusion the lens should yield). Each consumer supplies the **whole
+//! library** ([`CATALOG`]) into its prompt in one pass via [`render_library`]; the model
+//! applies the lenses this week's packet warrants and folds each verdict into its own output
+//! (the main agent's unified thesis, an analyst's structured review). The bodies are
+//! **consumer-neutral** — where each verdict lands is set by the per-consumer intro passed to
+//! [`render_library`], not by the body — so the same lens serves both stages without pulling
+//! an analyst toward final-synthesis behavior.
 //!
 //! Three design calls, all recorded against the doc:
 //! - **Delivery:** the library is small (~150 tokens/skill), so all 16 skills ship in full
@@ -14,16 +18,16 @@
 //!   save the frontmatter catalog, paying a round-trip and a fail-soft code path to trim
 //!   ~1.5k tokens. The model now self-selects which lenses apply, inline.
 //! - **Output:** the per-skill [`Skill::output`] is a **forcing function** — it disciplines
-//!   the model's per-lens verdict, which is then folded into the thesis prose. It is *not* a
-//!   machine-readable channel: nothing is parsed back from the report or persisted (the
-//!   doc's per-skill output *schema* stays prose-level by design).
-//! - **Consumers:** the main agent only (during synthesis), not the three Bull/Bear/Balanced
-//!   analysts the doc also names.
+//!   the model's per-lens verdict, which is then folded into the consumer's own output. It is
+//!   *not* a machine-readable channel: nothing is parsed back from the report or persisted
+//!   (the doc's per-skill output *schema* stays prose-level by design).
+//! - **Consumers:** the main agent (during synthesis) and the three Bull/Bear/Balanced
+//!   analysts (when forming their independent reviews) — the full original consumer set.
 
 /// One analytical skill. `name` + `description` identify it — the `description` is taken
 /// verbatim from `docs/analyst-skills.md`. `body` is the analytical method (the lens the
 /// agent applies); `output` is the structured verdict the lens should yield — a forcing
-/// function folded into the thesis prose, never parsed back or persisted.
+/// function folded into the consumer's own output, never parsed back or persisted.
 #[derive(Debug)]
 pub struct Skill {
     pub name: &'static str,
@@ -33,9 +37,9 @@ pub struct Skill {
 }
 
 /// The authored skills library. Each `body` grounds its lens in baseline data the Step-3
-/// scan already gathers and closes with the role its verdict plays in the thesis; each
+/// scan already gathers and closes with the consumer-neutral role its verdict plays; each
 /// `output` names the structured verdict the lens must produce. Extending the library is
-/// purely additive — a follow-on appends entries here and they reach the generation prompt
+/// purely additive — a follow-on appends entries here and they reach every consumer's prompt
 /// automatically.
 pub const CATALOG: &[Skill] = &[
     Skill {
@@ -46,9 +50,8 @@ force driving it. Read the baseline indices, internals, sector performance, and 
 together: judge whether conditions are risk-on or risk-off, liquidity-driven or earnings-driven, \
 inflation-sensitive or growth-sensitive, and whether leadership is broadening or narrowing. Weigh \
 the financial-conditions indices (NFCI / ANFCI / STLFSI4), the curve and credit spreads, and \
-breadth (movers, sector dispersion, and whether small-caps — the Russell 2000 — lead or lag the large-cap indices) as regime evidence rather than isolated prints. Fold this \
-read into the thesis as the frame the rest of the report sits inside — do not append it as a \
-separate section.",
+breadth (movers, sector dispersion, and whether small-caps — the Russell 2000 — lead or lag the large-cap indices) as regime evidence rather than isolated prints. Carry this read as the frame the rest of your analysis sits inside — \
+not a standalone point.",
         output: "the regime (risk-on / risk-off, liquidity- vs earnings-driven, inflation- vs \
 growth-sensitive, leadership broadening / narrowing); the one or two dominant forces that define \
 it; and the single development that would mark a regime change.",
@@ -62,8 +65,8 @@ buckets (credit-quality dispersion), the 10y-3m and 10y-2y curve spreads, and th
 financial-conditions indices in the baseline and its change view. Judge whether spreads are \
 widening or compressing, whether quality dispersion is rising (a risk-off tell), and whether a \
 move is corroborated by the curve and conditions indices or is an isolated wobble — distinguish a \
-genuine tightening from spread noise. Carry the conclusion into the thesis as a risk qualifier, \
-not a standalone section.",
+genuine tightening from spread noise. Carry the conclusion as a risk qualifier, not a \
+standalone point.",
         output: "the spread level and direction (widening / compressing); whether credit-quality \
 dispersion is rising; what it implies for refinancing and liquidity risk; and the spread move \
 that would change the read.",
@@ -77,8 +80,8 @@ and the multi-horizon index performance — in particular whether small-caps (th
 confirming or lagging the large-cap indices — against the headline index moves: judge whether a \
 rally or selloff is broad-based or narrow, whether leadership is concentrated, and how the NASDAQ \
 growth read compares with the broader NYSE read. Treat a divergence between index level and \
-breadth as a signal the index alone hides. Fold this into the thesis as evidence on the \
-durability of the index trend, not a separate section.",
+breadth as a signal the index alone hides. Carry this as evidence on the durability of \
+the index trend, not a standalone point.",
         output: "whether breadth confirms or contradicts the index trend; the leadership-\
 concentration risk if breadth is narrow; and the breadth shift that would confirm or break the \
 current move.",
@@ -91,8 +94,7 @@ media narratives and short-term emotional reactions. Take the dominant narrative
 the research packet and test each against the baseline and its change view: do the indices, \
 internals, breadth, credit spreads, financial-conditions indices, the earnings beats and misses, and the macro prints actually \
 corroborate the story, or is the move headline-driven and unconfirmed by positioning and data? \
-Fold the verdict into the thesis as a confidence weight on each theme — do not append it as a \
-separate section.",
+Carry the verdict as a confidence weight on each theme — not a standalone point.",
         output: "for each dominant narrative, whether the data corroborates or contradicts it; \
 and the narrative most running ahead of the evidence.",
     },
@@ -104,8 +106,8 @@ geopolitical, or policy developments this week surfaces. For each first-order mo
 view or the research packet, trace how it propagates into inflation (PCE, breakevens, expected \
 inflation, oil and gas), yields and the curve (the 10-year yield, the 10y-3m and 10y-2y spreads), \
 liquidity and financial conditions (NFCI / ANFCI / STLFSI4, credit spreads), sector performance, \
-and consumer behavior (consumer sentiment, retail sales). Fold these into the thesis as the \
-forward consequences the strategy must price — do not append them as a separate section.",
+and consumer behavior (consumer sentiment, retail sales). Carry these as the \
+forward consequences your analysis must price — not standalone points.",
         output: "the two or three second-order chains that matter most, each traced to its \
 transmission (inflation / yields / liquidity / sectors / consumer); and the signal that would \
 confirm each is playing out.",
@@ -119,8 +121,8 @@ together — PCE, PPI, the market-implied breakevens, the one-year expected-infl
 via oil and natural gas, and wage pressure via the labor levels — and lean on the research packet \
 for the shelter, services, and goods detail the baseline does not break out. Distinguish an \
 energy- or goods-led pulse that should fade from a services- or wage-led pressure that tends to \
-persist. Fold the read into the thesis as the inflation trajectory the rate and valuation views \
-depend on — do not append it as a separate section.",
+persist. Carry the read as the inflation trajectory the rate and valuation views \
+depend on — not a standalone point.",
         output: "which components are driving the print (energy / goods / services / shelter / \
 wages); and whether the pressure is temporary or structural, broadening or narrowing.",
     },
@@ -132,8 +134,8 @@ environments. Read the regime, valuations, credit, and the change view together,
 memory and the recent reports for the thesis's own prior turns, and identify the closest analog — \
 a dot-com-style valuation extreme, an inflationary or tightening cycle, a liquidity crisis, or a \
 prior commodity or geopolitical shock. Be explicit about where the analog holds and where it \
-breaks, so the comparison illuminates rather than forces a pattern. Fold this into the thesis as \
-historical context for the central call — do not append it as a separate section.",
+breaks, so the comparison illuminates rather than forces a pattern. Carry this as historical context for your central read — not a \
+standalone point.",
         output: "the single closest historical analog; where it holds; and the one difference \
 that most limits the comparison.",
     },
@@ -145,8 +147,8 @@ the gathered tells — the volatility term structure (VIX against the 3-month VX
 Nasdaq), the equity-breadth movers and most-actives, sector dispersion, and consumer sentiment — \
 alongside the positioning and flow color in the research packet to judge whether the market is \
 fearful or greedy, complacent or capitulating, and where trades look crowded. Watch for euphoria, \
-or for excessive pessimism that sets up an asymmetric reaction. Fold this into the thesis as a \
-contrarian check on the central call — do not append it as a separate section.",
+or for excessive pessimism that sets up an asymmetric reaction. Carry this as a contrarian check on your central read — not a \
+standalone point.",
         output: "the current sentiment state (fear / greed, complacent / capitulating); and the \
 crowded trade most exposed to a reversal.",
     },
@@ -156,9 +158,8 @@ crowded trade most exposed to a reversal.",
         body: "Thesis Stress Test. Challenge the current thesis and hunt for its weak assumptions. \
 Take the standing thesis from the recent reports and vector memory, then stress it against the \
 change view, the data-gaps manifest, and any contradictory evidence in the baseline and research. \
-Be adversarial — the goal is to find where the thesis is wrong, not to reaffirm it. Fold the \
-findings into the thesis as its stated risks and pivot triggers — do not append them as a \
-separate section.",
+Be adversarial — the goal is to find where the thesis is wrong, not to reaffirm it. Carry the findings as the stated risks and pivot triggers — not \
+standalone points.",
         output: "the thesis's most fragile assumptions; the signals it is currently discounting; \
 what could invalidate it; and the specific conditions that would force a reassessment or pivot.",
     },
@@ -170,8 +171,8 @@ implications. The baseline carries no geopolitical feed, so work from the confli
 tensions, sanctions, shipping disruptions, and supply-chain risks surfaced in the research packet, \
 and corroborate their market read against the gathered safe-haven and commodity moves — oil and \
 natural gas, gold, the dollar, and credit spreads. Judge whether a development is a contained \
-headline or a genuine escalation with commodity and supply-chain transmission. Fold this into the \
-thesis as a tail-risk qualifier — do not append it as a separate section.",
+headline or a genuine escalation with commodity and supply-chain transmission. Carry this as a tail-risk qualifier — not a standalone \
+point.",
         output: "the one or two geopolitical risks that bear on the thesis; whether each is a \
 contained headline or a genuine escalation; and the market signal that would confirm escalation.",
     },
@@ -184,9 +185,8 @@ semiconductor and related industries surfaced in the industry-level P/E and rota
 and the power-demand link through the energy series — and draw the chain detail (semiconductors, \
 datacenters, HBM memory, networking, optics, cooling, capital expenditure) from the research \
 packet. Judge whether the buildout is broadening or concentrating, whether valuations are \
-supported by the capex trend, and where power and energy constraints bind. Fold this into the \
-thesis as the read on the market's dominant structural driver — do not append it as a separate \
-section.",
+supported by the capex trend, and where power and energy constraints bind. Carry this as the read on the market's dominant structural \
+driver — not a standalone point.",
         output: "the segment leading the chain; whether the buildout is broadening or \
 concentrating and whether valuations are supported by capex; and the signal that would mark a \
 turn.",
@@ -200,8 +200,8 @@ the multi-horizon index performance (weekly, month-to-date, year-to-date, and po
 52-week range) to place each move on its timescale; weigh them against the recent reports and \
 vector memory to tell weekly noise from cyclical developments from structural long-term shifts. \
 Resist letting a single volatile print pull the thesis; resist dismissing a slow structural \
-change as noise. Fold this into the thesis as the calibration between near-term commentary and \
-the standing long-term view — do not append it as a separate section.",
+change as noise. Carry this as the calibration between near-term commentary and \
+the standing long-term view — not a standalone point.",
         output: "what is genuinely transient this week (weekly noise); and what is a durable \
 cyclical or structural shift the thesis should absorb.",
     },
@@ -213,8 +213,8 @@ of energy disruptions. Read the gathered energy levels — oil (WTI) and natural
 the dollar as corroboration — and the change view, and draw OPEC activity, shipping chokepoints, \
 and grid-stress detail from the research packet. Judge whether an energy move is a supply shock \
 with inflation and growth consequences or ordinary volatility, and weigh the link between \
-AI-infrastructure power demand and energy prices. Fold this into the thesis as an \
-inflation-and-growth qualifier — do not append it as a separate section.",
+AI-infrastructure power demand and energy prices. Carry this as an inflation-and-growth qualifier — not a standalone \
+point.",
         output: "whether the energy move is a supply shock or ordinary volatility; the energy risk \
 that bears on the thesis; and the price level that would change the read.",
     },
@@ -226,9 +226,8 @@ market expectations. Read the gathered policy signals — the fed-funds target r
 and the one-year expected-inflation gauge, the curve spreads, the financial-conditions indices, \
 and the growth nowcast (GDPNow) — alongside the policy tone and rate-path expectations in the \
 research packet. Judge the likely policy direction, where the market's rate expectations may be \
-offside, and how the stance bears on equities, bonds, and liquidity. Fold this into the thesis as \
-the rates-and-liquidity backdrop the rest of the report sits against — do not append it as a \
-separate section.",
+offside, and how the stance bears on equities, bonds, and liquidity. Carry this as the rates-and-liquidity backdrop the rest of your \
+analysis sits against — not a standalone point.",
         output: "the likely policy direction; where market rate expectations may be offside; the \
 implication for equities, bonds, and liquidity; and the data or communication that would shift \
 the read.",
@@ -241,8 +240,8 @@ valuation multiples. Read the gathered valuation levels — the per-sector and p
 the market risk premium — against the 10-year yield and the change view, focusing on long-duration \
 growth assets and high-multiple sectors most sensitive to discount-rate moves. Judge whether \
 earnings growth is sufficient to justify current multiples or whether rising yields threaten \
-compression. Fold this into the thesis as the valuation risk to the equity call — do not append \
-it as a separate section.",
+compression. Carry this as the valuation risk to the equity call — not a standalone \
+point.",
         output: "whether earnings growth justifies current multiples; the sectors most exposed to \
 discount-rate moves; and the yield move that would force a re-rating.",
     },
@@ -256,12 +255,35 @@ carries large-cap estimate-versus-actual EPS and revenue, a direct read on where
 beating or missing consensus. Test both against the baseline, positioning, and the change view: \
 identify overconsensus narratives, underappreciated risks, and asymmetric setups where \
 positioning is vulnerable to an unexpected outcome. Look for where long-term expectations may be \
-mispriced. Fold this into the thesis as the asymmetric-risk lens on the central call — do not \
-append it as a separate section.",
+mispriced. Carry this as the asymmetric-risk lens on your central read — not a \
+standalone point.",
         output: "the most crowded consensus view; the underappreciated risk or contrarian outcome \
 with the largest asymmetry; and where positioning is most vulnerable.",
     },
 ];
+
+/// Render the whole [`CATALOG`] as a prompt block: the supplied `intro` followed by one
+/// labeled sub-block per skill carrying its method `body` and the structured `output`
+/// verdict it should yield (the `Verdict to produce —` forcing function). Returns an empty
+/// string when the catalog is empty so a caller appends nothing.
+///
+/// The per-skill format and the verdict marker live here, in one place — both consumers
+/// (the main agent's synthesis prompt and the three analysts' review prompts) supply their
+/// own `intro` and share this body, so the marker convention can't drift between them. The
+/// `intro` carries its own leading whitespace.
+pub fn render_library(intro: &str) -> String {
+    if CATALOG.is_empty() {
+        return String::new();
+    }
+    let mut block = String::from(intro);
+    for s in CATALOG {
+        block.push_str(&format!(
+            "\n\n--- {} ---\n{}\nVerdict to produce — {}",
+            s.name, s.body, s.output
+        ));
+    }
+    block
+}
 
 #[cfg(test)]
 mod tests {
@@ -284,5 +306,18 @@ mod tests {
                 "duplicate skill name in the catalog: {n}"
             );
         }
+    }
+
+    #[test]
+    fn render_library_carries_intro_every_skill_and_the_verdict_marker() {
+        let block = render_library("\n\nINTRO-SENTINEL:");
+        assert!(block.starts_with("\n\nINTRO-SENTINEL:"), "intro missing: {block}");
+        for s in CATALOG {
+            assert!(block.contains(s.name), "missing skill name {}", s.name);
+            assert!(block.contains(s.body), "missing body for {}", s.name);
+            assert!(block.contains(s.output), "missing output for {}", s.name);
+        }
+        // The verdict marker is the forcing function — one source of truth for both consumers.
+        assert!(block.contains("Verdict to produce —"), "{block}");
     }
 }
