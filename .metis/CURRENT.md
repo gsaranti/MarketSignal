@@ -6,7 +6,7 @@ Planned, implemented, reviewed, and committed **slice 1 of the manual-only pivot
 
 ## Current state
 
-Slice 1 is **committed + squash-merged to `main` = `19b7f5d`** (off branch `feat/scheduler-removal`, now deleted); working tree clean. **`main` is ahead 1 of `origin/main` — local-only, NOT pushed** (the user runs `git pull`, not push; `git pull` was a no-op since local is ahead, so the slice is unpublished).
+Slice 1 is **committed, squash-merged, and pushed** — `origin/main` = local `main` = **`430b05f`** (the slice commit `19b7f5d` + this handoff), in sync. Branch `feat/scheduler-removal` deleted; working tree clean.
 
 `BUILD.md` updated this session (user-authorized): §Scheduling & runtime "Pending code slices" now marks **slice 1 LANDED**, and the load-bearing analyst-layer references were corrected (no more `RunConfig` / `ScheduledRun` / "both command paths"). **Slices 2–4 remain**, with two scope refinements found this session:
 - (3) the rename migration also covers the **product-name display strings** — `RecentReportsSidebar` / `LatestReportView` "Weekly Market Report", `RUN_LABEL`, the gdelt user-agent string.
@@ -16,11 +16,10 @@ The tray comments (`lib.rs` ~584/614) are slice 2's to clear (deliberately defer
 
 ## Open questions
 
-- *(push decision)* `main` (`19b7f5d`) is unpushed — publish slice 1 to `origin` now, or keep accumulating slices locally first? Doesn't block the next slice.
 - *(deferred design call)* **Cadence windows** — the GDELT `1w` window and `research_executor`'s ~weekly-calibrated delta thresholds still assume a roughly-weekly gap and under-cover long intervals between on-demand runs (rate-limit-constrained; memory `manual-pivot-cadence-windows`). Make them elapsed-aware?
 - *(live, needs a run)* **Empirical skills calibration** — which of the 16 lenses improve the thesis/analyst reviews, which get ignored, and whether prose-only delivery repeats language across the 16. No test catches prose dilution.
 - *(migration care)* Slice 3's rename mutates existing rows/files — must be idempotent and update **stored file paths**, not just rename on disk (`storage.md §Legacy Naming Migration`).
 
 ## Where to start
 
-Next code slice: **slice 2 (tray removal)** — self-contained, and it clears the deliberately-deferred stale tray comments; a clean `/metis-plan-task` target. Then slice 3 (rename migration — run carefully for idempotency, and fold in the display-string rename) and slice 4 (prompt "weekly" cleanup, wider scope per above). Settle the push question whenever convenient.
+Next code slice: **slice 2 (tray removal)** — self-contained, and it clears the deliberately-deferred stale tray comments; a clean `/metis-plan-task` target. Then slice 3 (rename migration — run carefully for idempotency, and fold in the display-string rename) and slice 4 (prompt "weekly" cleanup, wider scope per above).
