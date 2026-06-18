@@ -225,10 +225,10 @@ impl MainAgent for StubMainAgent {
 /// A small but structurally valid report body following the section order in
 /// `docs/report-structure.md`, written so the frontend `.prose` styling has
 /// real headings, a list, a blockquote, and a table to render.
-const STUB_REPORT_MARKDOWN: &str = r#"# Weekly Market Report
+const STUB_REPORT_MARKDOWN: &str = r#"# Market Signal Report
 
-Date: this week
-Report Type: Weekly Market Report
+Date: current
+Report Type: Market Signal Report
 
 ## Header Summary
 
@@ -244,7 +244,7 @@ patience over conviction in either direction.
 
 ## Index Picture
 
-- Dow: roughly flat on the week.
+- Dow: roughly flat.
 - S&P 500: modest gains, leadership concentrated.
 - Nasdaq: outperformed on a handful of megacaps.
 
@@ -264,8 +264,8 @@ stance. We favor balance, with explicit triggers that would move the thesis.
 
 ## Retrospective Audit
 
-With no prior Market Signal reports on record yet, there is nothing to audit
-this week; subsequent reports will revisit whether these assumptions and risks
+With no prior Market Signal reports on record yet, there is nothing to audit;
+subsequent reports will revisit whether these assumptions and risks
 played out as anticipated.
 
 ## Investment Strategy
@@ -359,7 +359,7 @@ impl Confidence {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalystOutput {
     pub posture: Posture,
-    /// A short prose read of the week from this perspective.
+    /// A short prose read of the market from this perspective.
     pub summary: String,
     /// The strongest specific points the perspective rests on.
     pub key_points: Vec<String>,

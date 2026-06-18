@@ -5,7 +5,7 @@
 //! to read and how to judge them) and an explicit [`Skill::output`] verdict shape (the
 //! structured conclusion the lens should yield). Each consumer supplies the **whole
 //! library** ([`CATALOG`]) into its prompt in one pass via [`render_library`]; the model
-//! applies the lenses this week's packet warrants and folds each verdict into its own output
+//! applies the lenses the packet warrants and folds each verdict into its own output
 //! (the main agent's unified thesis, an analyst's structured review). The bodies are
 //! **consumer-neutral** — where each verdict lands is set by the per-consumer intro passed to
 //! [`render_library`], not by the body — so the same lens serves both stages without pulling
@@ -102,7 +102,7 @@ and the narrative most running ahead of the evidence.",
         name: "Second-Order Effects",
         description: "Analyzes downstream consequences of major market, economic, geopolitical, or policy developments.",
         body: "Second-Order Effects. Map the downstream consequences of the major market, economic, \
-geopolitical, or policy developments this week surfaces. For each first-order move in the change \
+geopolitical, or policy developments the change view or research packet surfaces. For each first-order move in the change \
 view or the research packet, trace how it propagates into inflation (PCE, breakevens, expected \
 inflation, oil and gas), yields and the curve (the 10-year yield, the 10y-3m and 10y-2y spreads), \
 liquidity and financial conditions (NFCI / ANFCI / STLFSI4, credit spreads), sector performance, \
@@ -198,11 +198,11 @@ turn.",
 structural trends. Use the cadence-honest change view to isolate this interval's moves, and read \
 the multi-horizon index performance (weekly, month-to-date, year-to-date, and position in the \
 52-week range) to place each move on its timescale; weigh them against the recent reports and \
-vector memory to tell weekly noise from cyclical developments from structural long-term shifts. \
+vector memory to tell short-term noise from cyclical developments from structural long-term shifts. \
 Resist letting a single volatile print pull the thesis; resist dismissing a slow structural \
 change as noise. Carry this as the calibration between near-term commentary and \
 the standing long-term view — not a standalone point.",
-        output: "what is genuinely transient this week (weekly noise); and what is a durable \
+        output: "what is genuinely transient (short-term noise); and what is a durable \
 cyclical or structural shift the thesis should absorb.",
     },
     Skill {

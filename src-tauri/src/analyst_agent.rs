@@ -52,22 +52,22 @@ const REQUEST_GROUP: &str = "analyst";
 
 /// The shared instruction, common to all three postures. The posture-specific
 /// guidance ([`posture_guidance`]) is appended per analyst.
-const BASE_SYSTEM_PROMPT: &str = "You are a market analyst on Market Signal's weekly research \
-team, contributing one perspective to a weekly market report. You are given this week's condensed \
+const BASE_SYSTEM_PROMPT: &str = "You are a market analyst on Market Signal's research \
+team, contributing one perspective to a market report. You are given the condensed \
 research packet — the baseline market data and its change view, the filtered news clusters, the \
 deep-research evidence and its sources, any recalled long-term memory, and any user-supplied \
-research documents. Produce a structured analytical review of the week from your assigned \
+research documents. Produce a structured analytical review from your assigned \
 perspective. Ground every point in the provided packet — the baseline numbers, the change view, \
 the news, and the research evidence; never invent data or lean on prior knowledge the packet does \
 not support. Your review is one of three independent perspectives the Head Market Analyst will \
 critique and weigh when synthesizing the final report; argue your perspective in good faith as a \
 professional analyst rather than forcing a predetermined conclusion. The prompt also carries \
 `analytical skills` — a library of analytical lenses, each with the method it applies and the \
-structured verdict it should yield. Not every lens applies every week: work through the ones this \
-week's data and research warrant, produce each relevant lens's verdict, and let it inform your \
+structured verdict it should yield. Not every lens applies to every report: work through the ones the \
+current data and research warrant, produce each relevant lens's verdict, and let it inform your \
 review — its key points, the risks you see, and the opportunities you see. The skills are \
 reasoning tools, not output structure; do not name them or write one up as its own field. Return: \
-a short summary of your read of the week, the key points your read rests on, the risks you see, \
+a short summary of your read, the key points your read rests on, the risks you see, \
 the opportunities you see, and your confidence (low, medium, or high) in this read.";
 
 /// The posture-specific half of the system prompt (`docs/agents.md §Bull/Bear/Balanced
@@ -104,16 +104,16 @@ fn system_prompt(posture: Posture) -> String {
     format!("{BASE_SYSTEM_PROMPT}\n\n{}", posture_guidance(posture))
 }
 
-const USER_INSTRUCTION: &str = "Produce your structured analytical review of this week's market.";
+const USER_INSTRUCTION: &str = "Produce your structured analytical review of the current market.";
 
 /// The analyst heading for the skills block — review framing (let each verdict inform the
 /// review's key points, risks, and opportunities). The per-skill bodies + verdict markers
 /// come from the shared [`skills::render_library`]; only this intro is analyst-specific (the
 /// main agent supplies its own synthesis-framed heading). The whole library ships to every
-/// analyst, which self-selects the lenses its posture and this week's packet warrant — the
+/// analyst, which self-selects the lenses its posture and the packet warrant — the
 /// same all-16-inline call the main agent makes.
 const SKILL_LIBRARY_INTRO: &str = "\n\nAnalytical skills — a library of analytical lenses. Not \
-every lens applies every week: apply the ones this week's data and research warrant, and for each \
+every lens applies to every report: apply the ones the current data and research warrant, and for each \
 you apply produce its stated verdict and let that conclusion inform your review's key points, \
 risks, and opportunities rather than writing it up as its own item:";
 
@@ -143,7 +143,7 @@ fn review_schema() -> Value {
         "properties": {
             "summary": {
                 "type": "string",
-                "description": "A short prose read of the week from this perspective."
+                "description": "A short prose read of the market from this perspective."
             },
             "key_points": { "type": "array", "items": { "type": "string" } },
             "risks": { "type": "array", "items": { "type": "string" } },
@@ -167,7 +167,7 @@ fn build_anthropic_request(model_id: &str, system: &str, user: &str) -> Value {
         "tools": [
             {
                 "name": TOOL_NAME,
-                "description": "Emit this analyst's structured review of the week.",
+                "description": "Emit this analyst's structured review of the current market.",
                 "strict": true,
                 "input_schema": review_schema()
             }
@@ -206,7 +206,7 @@ fn build_user_prompt(packet: &ResearchPacket) -> String {
     if packet != &ResearchPacket::default() {
         if let Ok(json) = serde_json::to_string_pretty(packet) {
             prompt.push_str(&format!(
-                "\n\nCondensed research packet for this week:\n{json}"
+                "\n\nCondensed research packet:\n{json}"
             ));
         }
     }

@@ -114,7 +114,7 @@ const HEADLINE_FILTER_MODEL: &str = "gpt-5-mini";
 const MAX_TOKENS: u32 = 4096;
 
 const SYSTEM_PROMPT: &str = "You filter a large set of market-news headlines down to the most \
-important stories for a weekly market report. You are given a numbered list of headlines. First \
+important stories for a market report. You are given a numbered list of headlines. First \
 drop headlines that are off-topic, low-signal, or duplicates of others; then group the remaining \
 important ones into at most 10 major market-relevant topics. Keep at most about 40 of the most \
 relevant headlines in total across all clusters, and assign each headline to at most one topic. \

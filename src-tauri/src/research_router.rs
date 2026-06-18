@@ -157,15 +157,15 @@ const TOOL_NAME: &str = "emit_research_plan";
 const MAX_TOKENS: u32 = 4096;
 
 const SYSTEM_PROMPT: &str =
-    "You are the research router for Market Signal's weekly market report. \
-Given this week's baseline market data, the change since the previous report, the filtered \
+    "You are the research router for Market Signal's market report. \
+Given the current baseline market data, the change since the previous report, the filtered \
 news clusters, summaries of recent prior reports, and any recalled long-term memory, decide \
 which topics deserve deeper investigation for this report. Favor topics where the data moved \
 materially, where second-order implications matter, or where a known upcoming event could move \
 markets. When prior-report summaries are provided, weigh thesis continuity: favor topics that \
 answer a prior report's unresolved questions or test its key risks and forward outlook themes \
-against this week's data. When long-term memory fragments are provided — prior report summaries \
-and durable learnings recalled against this week's market picture — use them to steer \
+against the current data. When long-term memory fragments are provided — prior report summaries \
+and durable learnings recalled against the current market picture — use them to steer \
 investigation: favor topics that test a recurring pattern, revisit a past analytical mistake, or \
 probe a historical analog the memory surfaces. When user-supplied research documents are \
 provided — files the user placed in the research inbox, parsed and excerpted by the application \
@@ -173,11 +173,11 @@ layer — treat them as deliberately curated, high-signal input: favor topics th
 substantiate when the market evidence supports them. \
 Return at most 5 topics — fewer if fewer matter. For each topic give: a \
 short topic label, a one-to-two-sentence rationale tying it to the provided evidence, a priority \
-from 0.0 to 1.0 for how much it matters this week, and at most 4 concrete research questions to \
+from 0.0 to 1.0 for how much it matters now, and at most 4 concrete research questions to \
 investigate. Ground every topic in the provided baseline, change view, clusters, prior-report \
 summaries, recalled memory, or user-supplied documents; never invent data.";
 
-const USER_INSTRUCTION: &str = "Produce the bounded research plan for this week's report.";
+const USER_INSTRUCTION: &str = "Produce the bounded research plan for this report.";
 
 /// The model's structured return: a list of plan items. Mirrors the
 /// `headline_filter` envelope — the deterministic caps live in
@@ -388,7 +388,7 @@ fn build_request(input: &RouterInput) -> Value {
         "tools": [
             {
                 "name": TOOL_NAME,
-                "description": "Emit the bounded research plan for this week's report.",
+                "description": "Emit the bounded research plan for this report.",
                 "strict": true,
                 "input_schema": plan_schema()
             }

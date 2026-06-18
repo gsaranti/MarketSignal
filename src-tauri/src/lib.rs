@@ -167,7 +167,7 @@ fn research_archive_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(report_paths(app)?.archive_dir)
 }
 
-/// Manually generate a Weekly Market Report end to end. The execution gate runs
+/// Manually generate a Market Signal Report end to end. The execution gate runs
 /// first: the configuration is validated and a blocked run is refused before any
 /// work begins. Once the gate passes, this resolves the app data directory, runs
 /// the agent through the pipeline, and returns the generated report for the

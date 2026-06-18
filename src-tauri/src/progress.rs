@@ -290,7 +290,7 @@ mod tests {
     fn emits_carry_a_monotonic_seq_and_the_run_id() {
         let rec = Arc::new(RecordingReporter::default());
         let ctx = RunContext::new("run-1", rec.clone(), Arc::new(AtomicBool::new(false)));
-        ctx.run_started("Weekly report");
+        ctx.run_started("Market Signal report");
         ctx.step_started("baseline", "Baseline scan");
         ctx.step_finished("baseline", "ok", None);
 

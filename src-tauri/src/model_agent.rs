@@ -154,14 +154,14 @@ pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// The single tool the Anthropic arm forces, and the json_schema name on the
 /// OpenAI arm. Both feed the same `ResponseEnvelope`.
-const TOOL_NAME: &str = "emit_weekly_report";
+const TOOL_NAME: &str = "emit_market_signal_report";
 
 /// Generous ceiling for a full report body; small enough that a single
 /// non-streaming response returns well within the client's 120s HTTP timeout.
 const MAX_TOKENS: u32 = 8192;
 
-const SYSTEM_PROMPT: &str = "You are the Head Market Analyst for Market Signal, a weekly \
-market-research publication. You write a single, cohesive weekly market report in one unified \
+const SYSTEM_PROMPT: &str = "You are the Head Market Analyst for Market Signal, a \
+market-research publication. You write a single, cohesive market report in one unified \
 voice — the Market Signal Thesis — that reads like a professional market publication: \
 thesis-driven, forward-looking, and focused on structural developments rather than reactive \
 daily commentary.
@@ -200,12 +200,12 @@ can read which narrow groups are rotating and whether they are richly or cheaply
 they do. Treat this as a level read — whether a group is expensive or cheap right now — not as \
 a claim about multiple expansion or de-rating over time, which a single snapshot cannot \
 support. `market_risk_premium` is the US equity-risk-premium (a near-static annual constant, \
-so read its level, not week-to-week change) — the excess return demanded over the risk-free \
+so read its level, not period-to-period change) — the excess return demanded over the risk-free \
 rate, a valuation anchor for how richly equities are priced. Use these to ground the regime \
 and strategy reads in valuation, not momentum alone.
 
-When present, the prompt also carries this week's news and deep research, condensed by the \
-application layer. `news clusters` are the week's most market-significant stories, each a topic \
+When present, the prompt also carries the current news and deep research, condensed by the \
+application layer. `news clusters` are the most market-significant stories, each a topic \
 with a relevance score and its member headlines. `deep-research evidence` is the bounded \
 follow-up investigation into the topics that mattered most — each item a topic with its \
 findings and their sources, plus the request/stop accounting for the research phase. Use these \
@@ -213,17 +213,17 @@ to explain *why* the data moved and to source the Key Market Drivers, the thesis
 Sources section; ground every claim in the provided headlines and evidence rather than your own \
 prior knowledge, and treat an absent or empty research block as no qualifying news this run, not \
 a quiet market. The prompt may also carry `recalled long-term memory` — prior report summaries \
-and durable learnings retrieved from the system's vector memory against this week's research. \
+and durable learnings retrieved from the system's vector memory against the current research. \
 Use it for continuity: to strengthen, weaken, or revise the standing thesis, surface historical \
-analogs, and avoid repeating past analytical mistakes. Weigh it as recall, not fresh data — this \
-week's baseline and research evidence take precedence where they conflict, and an absent memory \
-block simply means nothing relevant was recalled. The prompt may also carry `recent prior reports` — the most recent weekly reports this one \
+analogs, and avoid repeating past analytical mistakes. Weigh it as recall, not fresh data — the current \
+baseline and research evidence take precedence where they conflict, and an absent memory \
+block simply means nothing relevant was recalled. The prompt may also carry `recent prior reports` — the most recent reports this one \
 continues, each with its structured summary metadata and its Markdown body (a body may be \
 head-truncated, marked inline). These are the prior reports the Retrospective Audit evaluates: \
 read their theses, stances, and flagged risks, and judge directionally how they held up against \
 what the market actually did this period. A second memory block may also appear — `recalled \
 memory for the retrospective audit` — semantic recall against the recent reports and current \
-market state rather than this week's research. Let it *steer* the audit: its `[learning · …]` \
+market state rather than this run's research. Let it *steer* the audit: its `[learning · …]` \
 fragments are standing lessons that point at what to scrutinise and that you weigh in the thesis \
 and strategy, and its `[summary · …]` fragments are supplementary recall (often older reports \
 beyond the recent window). It does not by itself license the section — a learning, or a recalled \
@@ -238,7 +238,7 @@ weighed; cite them like any other source where they inform the analysis. A trunc
 a document means only the head of a longer document is shown — weigh it accordingly rather than \
 assuming it is complete.
 
-The prompt also carries `analyst reviews` — three independent reads of this week's research \
+The prompt also carries `analyst reviews` — three independent reads of the research \
 packet from a Bull, a Bear, and a Balanced analyst, each with its summary, key points, risks, \
 opportunities, and stated confidence. Evaluate them independently and critically rather than \
 averaging them: agree with one or more, reject weak reasoning, combine arguments, elevate a \
@@ -249,13 +249,13 @@ absent, synthesize from the data and research directly.
 
 The prompt also carries `analytical skills` — Market Signal's full library of analytical lenses, \
 each with the method it applies and the structured verdict it should yield. Not every lens applies \
-every week: work through the ones this week's data and research actually warrant, produce each \
+to every report: work through the ones the current data and research actually warrant, produce each \
 relevant lens's verdict, and fold that verdict into the unified thesis and the report's existing \
 sections. Do not write a skill up as its own section or name the skills in the report — they are \
 reasoning tools, not report structure.
 
 Produce the report body as GitHub-flavored Markdown with these sections, in order:
-- # Weekly Market Report (title), followed by a short date / report-type line
+- # Market Signal Report (title), followed by a short date / report-type line
 - ## Header Summary — the 3 to 6 bullets that also populate header_summary_bullets
 - ## Market Regime — the risk-posture and market-cycle read
 - ## Index Picture — Dow, S&P 500, Nasdaq
@@ -283,18 +283,18 @@ never invent or estimate a series to fill a chart. Use at most three series with
 at most one marked `emphasis` (the single highlighted series). By default each \
 point is a time step (oldest-to-newest): \"line\" for a trend or path (a yield \
 series, an index path, a spread); \"bar\" for a single signed quantity tracked \
-across successive periods, shown as bars above / below zero (an index's week-by- \
-week return, the weekly change in jobless claims); and \"area\" for a single \
+across successive periods, shown as bars above / below zero (an index's period-over-period \
+return, the weekly change in jobless claims); and \"area\" for a single \
 magnitude over time (a credit spread, a volatility level). Bar and area are drawn \
 from a zero baseline, so reach for them when the data is signed or sits near zero, \
 and use a line for levels far from zero. \
 A \"bar\" chart may instead carry an optional `categories` array — one label per \
 point — to compare a quantity across named groups rather than over time (returns \
-by sector, the week's biggest movers): {\"type\": \"bar\", \"title\": \"Sector \
-returns, week to date (%)\", \"categories\": [\"Tech\", \"Energy\", \
+by sector, the run's biggest movers): {\"type\": \"bar\", \"title\": \"Sector \
+returns, period to date (%)\", \"categories\": [\"Tech\", \"Energy\", \
 \"Financials\", \"Utilities\"], \"series\": [{\"points\": [2.1, -1.4, 0.6, \
 -0.3]}]}. A categorical bar shows at most two series — for a two-series comparison \
-(e.g. this week vs. last) give each series a short, distinct `label` and mark one \
+(e.g. current vs. prior period) give each series a short, distinct `label` and mark one \
 `emphasis`, so the legend names which colour is which; for three or more series, \
 use a table. Give exactly one category per point (at most 16). Prefer short, distinct category \
 labels — a long name is shortened on the axis (its full text stays available on \
@@ -316,13 +316,13 @@ Also provide durable_learnings: long-lived analytical lessons from this run wort
 future reports' reasoning — a mistake the system should avoid repeating, an analytical strategy \
 that proved useful, an explicit thesis change, a market pattern worth remembering, or a \
 historical analog that became relevant. Hold a high bar: a durable learning is signal that will \
-still matter months from now, not a restatement of this week's news or data moves — most weeks \
+still matter months from now, not a restatement of this run's news or data moves — most reports \
 have none or one, never more than five, and an empty array is the normal case. Write each as a \
 single self-contained statement that stands alone without this report's context, because it is \
 recalled in isolation, possibly years later.";
 
 const USER_PROMPT: &str =
-    "Write this week's Market Signal weekly market report, including its structured summary.";
+    "Write the Market Signal market report, including its structured summary.";
 
 /// Build the user message: the standing instruction plus, when present, the
 /// Step-3 baseline market-data scan serialized as JSON so the model grounds the
@@ -384,14 +384,14 @@ fn build_user_prompt(
         if !packet.news_clusters.is_empty() {
             if let Ok(json) = serde_json::to_string_pretty(&packet.news_clusters) {
                 prompt.push_str(&format!(
-                    "\n\nFiltered news clusters for this week (most market-significant first):\n{json}"
+                    "\n\nFiltered news clusters (most market-significant first):\n{json}"
                 ));
             }
         }
         if !packet.research.items.is_empty() {
             if let Ok(json) = serde_json::to_string_pretty(&packet.research) {
                 prompt.push_str(&format!(
-                    "\n\nDeep-research evidence gathered for this week (topics highest-priority first):\n{json}"
+                    "\n\nDeep-research evidence (topics highest-priority first):\n{json}"
                 ));
             }
         }
@@ -400,7 +400,7 @@ fn build_user_prompt(
         // as bullets.
         if !packet.memory.is_empty() {
             prompt.push_str(&format!(
-                "\n\nRecalled long-term memory, most relevant first (prior report summaries and durable learnings retrieved against this week's research):\n{}",
+                "\n\nRecalled long-term memory, most relevant first (prior report summaries and durable learnings retrieved against the current research):\n{}",
                 packet.memory.join("\n\n")
             ));
         }
@@ -423,7 +423,7 @@ fn build_user_prompt(
     // omitted entirely on a first run or a degraded read.
     if !recent_reports.is_empty() {
         prompt.push_str(
-            "\n\nRecent prior reports, most recent first — the weekly reports this one continues, \
+            "\n\nRecent prior reports, most recent first — the reports this one continues, \
              and the prior reports the Retrospective Audit evaluates. Each carries its structured \
              summary metadata and its Markdown body (a body may be head-truncated, marked inline):",
         );
@@ -441,7 +441,7 @@ fn build_user_prompt(
 
     // The Step-4 pre-research memory pull, on its own channel (not the packet): the
     // recall the retrospective audit reasons over. Heading is deliberately distinct
-    // from the Step-10 "retrieved against this week's research" block above so the two
+    // from the Step-10 "retrieved against the current research" block above so the two
     // don't read as one. Fragments are blocks (own newlines), so they join on blank
     // lines. It now *steers* the audit (what to scrutinise); the recent-reports block
     // above is what gates and grounds it.
@@ -468,7 +468,7 @@ fn format_analyst_reviews(reviews: &[AnalystOutput]) -> String {
         return String::new();
     }
     let mut block = String::from(
-        "\n\nAnalyst reviews of this week's research packet — three independent perspectives to \
+        "\n\nAnalyst reviews of the research packet — three independent perspectives to \
          critique and weigh in your synthesis (agree, reject weak reasoning, combine arguments, or \
          elevate a minority view), then write the final report in one unified voice:",
     );
@@ -511,7 +511,7 @@ fn format_skill_library() -> String {
 /// markers come from the shared [`skills::render_library`]; only this intro is main-agent
 /// specific (the analyst stage supplies its own).
 const SKILL_LIBRARY_INTRO: &str = "\n\nAnalytical skills for this report — a library of \
-analytical lenses. Not every lens applies every week: apply the ones this week's data and \
+analytical lenses. Not every lens applies to every report: apply the ones the current data and \
 research warrant, and for each you apply produce its stated verdict and fold that conclusion \
 into the unified thesis and the report's existing sections rather than writing it up as a \
 separate section:";
@@ -548,7 +548,7 @@ fn response_envelope_schema() -> Value {
         "properties": {
             "markdown": {
                 "type": "string",
-                "description": "The full weekly market report as GitHub-flavored Markdown."
+                "description": "The full market report as GitHub-flavored Markdown."
             },
             "risk_posture": { "type": "string", "enum": ["risk-on", "risk-off", "mixed"] },
             "market_cycle": { "type": "string", "enum": ["late-cycle", "recessionary", "recovery"] },
@@ -594,7 +594,7 @@ fn build_anthropic_request(model_id: &str, system: &str, user: &str, schema: &Va
         "tools": [
             {
                 "name": TOOL_NAME,
-                "description": "Emit the finished weekly market report and its structured summary.",
+                "description": "Emit the finished market report and its structured summary.",
                 "strict": true,
                 "input_schema": schema
             }
@@ -612,7 +612,7 @@ fn build_openai_request(model_id: &str, system: &str, user: &str, schema: &Value
         "stream": true,
         "response_format": {
             "type": "json_schema",
-            "json_schema": { "name": "weekly_market_report", "strict": true, "schema": schema }
+            "json_schema": { "name": "market_signal_report", "strict": true, "schema": schema }
         },
         "messages": [
             { "role": "system", "content": system },
@@ -1084,7 +1084,7 @@ impl MainAgent for ModelMainAgent {
             &input.recent_reports,
         );
         // Analytical skills (`docs/analyst-skills.md`): supply the whole library in one pass.
-        // The model applies the lenses this week's packet warrants and folds each verdict
+        // The model applies the lenses the packet warrants and folds each verdict
         // into the thesis — no phase-1 selection round-trip at this library size.
         user.push_str(&format_skill_library());
         // Steps 12–15 → Step 16: append the analyst reviews the synthesis reasons over.
@@ -1109,7 +1109,7 @@ mod tests {
 
     fn valid_envelope() -> Value {
         json!({
-            "markdown": "# Weekly Market Report\n\n## Header Summary\n- a\n- b\n- c\n",
+            "markdown": "# Market Signal Report\n\n## Header Summary\n- a\n- b\n- c\n",
             "risk_posture": "mixed",
             "market_cycle": "late-cycle",
             "thesis_stance": "uncertain",
@@ -1210,7 +1210,7 @@ mod tests {
         ];
         let block = format_analyst_reviews(&reviews);
         assert!(
-            block.contains("Analyst reviews of this week's research packet"),
+            block.contains("Analyst reviews of the research packet"),
             "{block}"
         );
         assert!(block.contains("Bull Analyst (confidence: high)"), "{block}");
@@ -1385,7 +1385,7 @@ mod tests {
         };
         let prompt = build_user_prompt(&one_index_baseline(), None, Some(&packet), &[], &[]);
         // All four packet sections ride into the prompt, grounding the report in the
-        // week's news, research, recalled memory, and the user's own documents.
+        // news, research, recalled memory, and the user's own documents.
         assert!(prompt.contains("Filtered news clusters"), "{prompt}");
         assert!(prompt.contains("AI / semiconductors"), "{prompt}");
         assert!(prompt.contains("Deep-research evidence"), "{prompt}");
@@ -1948,7 +1948,7 @@ mod tests {
         let block = format_skill_library();
         assert!(block.contains("Analytical skills for this report"));
         // Must not collide with the analyst-reviews, memory, or research headings.
-        assert!(!block.contains("Analyst reviews of this week's research packet"));
+        assert!(!block.contains("Analyst reviews of the research packet"));
         assert!(!block.contains("Recalled long-term memory"));
         assert!(!block.contains("Deep-research evidence"));
     }
