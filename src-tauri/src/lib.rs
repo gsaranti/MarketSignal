@@ -34,9 +34,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -541,18 +539,6 @@ fn truncation_stats(app: tauri::AppHandle) -> storage::TruncationStats {
     storage::truncation_stats(&conn).unwrap_or_default()
 }
 
-/// Reveal and focus every window. Shared by the tray "Show" menu item and the
-/// macOS Dock-icon reopen handler — both undo the hide-to-tray performed on
-/// window close. `set_focus` no-ops on a hidden or minimized window (and it
-/// activates the app itself), so unminimize and show first, then focus.
-fn restore_windows(app: &tauri::AppHandle) {
-    for window in app.webview_windows().values() {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -580,57 +566,6 @@ pub fn run() {
             reveal_research_archive,
             truncation_stats
         ])
-        .setup(|app| {
-            // Tray runtime: the app stays resident so scheduled jobs keep running
-            // when the window is closed (`docs/scheduling.md §Application Runtime
-            // Requirements`).
-            let show = MenuItem::with_id(app, "show", "Show Market Signal", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Market Signal", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
-            let tray = TrayIconBuilder::new()
-                .icon(
-                    app.default_window_icon()
-                        .cloned()
-                        .ok_or("missing default window icon")?,
-                )
-                .tooltip("Market Signal")
-                .menu(&menu)
-                .show_menu_on_left_click(true)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => restore_windows(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .build(app)?;
-            // Keep the TrayIcon alive for the app's lifetime: a dropped handle
-            // severs menu-event delivery — the icon still draws, but clicks reach
-            // no handler (tauri-apps/tauri#11462).
-            app.manage(tray);
-
-            Ok(())
-        })
-        .on_window_event(|window, event| {
-            // Closing the window hides it to the tray rather than quitting, so the
-            // scheduler keeps running. Quitting is explicit (tray "Quit").
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-        })
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|app, event| {
-            // macOS: clicking the Dock icon asks the app to reopen. When the
-            // window has been hidden to the tray on close there are no visible
-            // windows, so restore them — matching the tray "Show" menu item.
-            // (Reopen is macOS-only; other platforms never emit it.)
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen {
-                has_visible_windows: false,
-                ..
-            } = event
-            {
-                restore_windows(app);
-            }
-        });
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
