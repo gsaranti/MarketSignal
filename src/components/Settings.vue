@@ -25,10 +25,6 @@ const props = defineProps<{
   loading: boolean;
   saving: boolean;
   error: string | null;
-  // Weekly-schedule control — Settings is the single home for it; the footer
-  // only reports run status (docs/interface.md §Settings).
-  jobEnabled: boolean | null;
-  jobBusy: boolean;
   // Appearance (Light/Dark) — applied + persisted by App via ./theme; this just
   // drives the switch state. Independent of the config form's gated Save.
   dark: boolean;
@@ -44,7 +40,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "save", payload: { models: AgentModels; credentials: CredentialUpdate }): void;
-  (e: "set-enabled", value: boolean): void;
   (e: "set-dark", value: boolean): void;
   (e: "test", key: CredKey): void;
 }>();
@@ -155,13 +150,6 @@ const canSave = computed(
     dirty.value &&
     tokensSatisfied.value
 );
-
-// Scheduled-job control — the footer reports status; this is where it's toggled.
-const scheduleEnabled = computed(() => props.jobEnabled ?? false);
-function toggleSchedule() {
-  if (props.jobBusy || props.jobEnabled === null) return;
-  emit("set-enabled", !scheduleEnabled.value);
-}
 
 // Appearance toggle — flips and applies instantly (App owns the apply+persist).
 function toggleDark() {
@@ -278,52 +266,15 @@ const charsDroppedValue = computed(() => {
 
     <div class="settings-scroll">
       <div class="settings-body">
-        <!-- Weekly-schedule control: the single home for enabling/disabling the
-             Sunday job (docs/interface.md §Settings). The footer only reports
-             status. Leads the surface (not below Save) and renders regardless of
-             the config form's load state. -->
-        <section
-          class="settings-section settings-section--lead"
-          aria-labelledby="sec-schedule"
-        >
-          <h3 id="sec-schedule" class="section-eyebrow">Scheduled job</h3>
-          <div class="control-row">
-            <div class="control-text">
-              <div class="control-label">Weekly report</div>
-              <div class="control-hint">
-                {{
-                  scheduleEnabled
-                    ? "Runs automatically every Sunday at 9:00 AM."
-                    : "Scheduled runs are paused."
-                }}
-              </div>
-            </div>
-            <button
-              type="button"
-              class="switch"
-              role="switch"
-              :aria-checked="scheduleEnabled"
-              :aria-label="
-                scheduleEnabled
-                  ? 'Disable weekly report job'
-                  : 'Enable weekly report job'
-              "
-              :disabled="jobBusy || jobEnabled === null"
-              @click="toggleSchedule"
-            >
-              <span
-                class="switch-knob"
-                :class="{ 'switch-knob--on': scheduleEnabled }"
-              ></span>
-            </button>
-          </div>
-        </section>
-
         <!-- Appearance: the design kit's "Dark surface" switch. Applies + persists
              instantly (App.vue / theme.ts), independent of the config form's
              token-gated Save and of its load state — so it renders even if
-             settings fail to load. -->
-        <section class="settings-section" aria-labelledby="sec-appearance">
+             settings fail to load. Leads the surface (directly under the toolbar
+             seam), so it drops the section rule + top padding. -->
+        <section
+          class="settings-section settings-section--lead"
+          aria-labelledby="sec-appearance"
+        >
           <h3 id="sec-appearance" class="section-eyebrow">Appearance</h3>
           <div class="control-row">
             <div class="control-text">
@@ -721,7 +672,7 @@ const charsDroppedValue = computed(() => {
   color: var(--ink-3);
 }
 
-/* Schedule control row — label/hint on the left, switch on the right. */
+/* Toggle control row — label/hint on the left, switch on the right. */
 .control-row {
   display: flex;
   align-items: center;

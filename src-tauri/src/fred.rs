@@ -859,7 +859,7 @@ impl FredDataSource {
     /// an additive group with no floor, so it degrades quietly: a per-release "does not
     /// exist" 400 is silent (a permanent absence shouldn't clutter the manifest), while a
     /// this-run failure (auth / quota / 5xx / transport / malformed) is recorded as a
-    /// `Calendar` gap so the agent knows the schedule was thinned this week. An empty
+    /// `Calendar` gap so the agent knows the schedule was thinned on this run. An empty
     /// result (a quiet window) is valid; the actual figures reach the model through the
     /// series groups regardless.
     fn fetch_calendar(&self, today: NaiveDate, gaps: &mut Vec<DataGap>) -> Vec<EconomicRelease> {

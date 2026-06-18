@@ -17,11 +17,11 @@
 //! environment or the database, so the pass/block matrix is unit-testable
 //! without env mutation.
 //!
-//! Scope note: network reachability — the gate's fourth Step-1 check — and the
-//! two scheduler-owned warning categories (failed / missed jobs) are modeled in
-//! `WarningKind` but not produced here. Network unreachability surfaces as a
-//! job *failure* (`docs/scheduling.md §Offline Behavior`), which lands with the
-//! scheduler slice that owns the failed-job category.
+//! Scope note: the non-blocking failed-job warning category is modeled in
+//! `WarningKind` but produced from job history by `jobs::failure_warning`, not
+//! here. Network reachability is not a gate check — an unreachable provider
+//! surfaces as a job *failure* (`docs/scheduling.md §Offline Behavior`), not a
+//! pre-run block.
 
 use anyhow::{anyhow, Result};
 use rusqlite::Connection;
@@ -44,10 +44,10 @@ pub const KEY_FMP_API_KEY: &str = "fmp_api_key";
 pub const KEY_FRED_API_KEY: &str = "fred_api_key";
 pub const KEY_TAVILY_API_KEY: &str = "tavily_api_key";
 
-/// The five de-duplicating Persistent Warning Area categories (walk Q4,
+/// The four de-duplicating Persistent Warning Area categories (walk Q4,
 /// `docs/interface.md §Persistent Warning Area`). The three configuration
-/// categories are produced by `validate`; the two job categories are produced by
-/// the scheduler and are modeled here so the warning structure is whole.
+/// categories are produced by `validate`; the one job category (`FailedJob`) is
+/// produced from job history and is modeled here so the warning structure is whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WarningKind {
@@ -55,7 +55,6 @@ pub enum WarningKind {
     ApiTokens,
     ProviderCredentials,
     FailedJob,
-    MissedScheduledJob,
 }
 
 impl WarningKind {
@@ -75,13 +74,13 @@ impl WarningKind {
 /// One warning category for display: its kind, a human-readable title used as
 /// the Persistent Warning Area row label, and the concrete missing items.
 ///
-/// `dismiss_id` is the *identity* of the specific warning being shown, for the two
-/// dismissible (non-blocking) categories — the failed run's id, the missed window's
-/// timestamp. The frontend echoes it back to `dismiss_warning` so the dismissal
-/// targets the rendered warning, not whatever the backend would re-derive as current
-/// at click time (`docs/interface.md §Persistent Warning Area` — a later event must
-/// still surface fresh). `None` for the blocking config categories, which are gate
-/// state and carry no dismiss control.
+/// `dismiss_id` is the *identity* of the specific warning being shown, for the one
+/// dismissible (non-blocking) category — the failed run's id. The frontend echoes it
+/// back to `dismiss_warning` so the dismissal targets the rendered warning, not
+/// whatever the backend would re-derive as current at click time
+/// (`docs/interface.md §Persistent Warning Area` — a later event must still surface
+/// fresh). `None` for the blocking config categories, which are gate state and carry
+/// no dismiss control.
 #[derive(Debug, Clone, Serialize)]
 pub struct WarningCategory {
     pub kind: WarningKind,
@@ -424,82 +423,6 @@ pub fn blocked_summary(report: &ValidationReport) -> String {
     )
 }
 
-/// The resolved inputs a run needs once the gate has passed: the Main Agent adapter
-/// config, the FMP + FRED data-source keys for the baseline scan, and the Tavily +
-/// OpenAI + Anthropic keys for the research half (Tavily news ingestion, the GPT-5-mini
-/// headline filter, and the Sonnet research router). No `Debug` derive — every field
-/// carries a secret that must never be printed.
-pub struct RunConfig {
-    pub main: MainAgentConfig,
-    /// The three analyst adapter configs (`docs/weekly-report-workflow.md §§12–15`),
-    /// each the user-selected model + provider key for that posture. Resolved beside
-    /// `main` once the gate has passed.
-    pub bull: MainAgentConfig,
-    pub bear: MainAgentConfig,
-    pub balanced: MainAgentConfig,
-    pub fmp_api_key: String,
-    pub fred_api_key: String,
-    pub tavily_api_key: String,
-    pub openai_api_key: String,
-    pub anthropic_api_key: String,
-}
-
-/// The scheduler's pre-run decision for a *scheduled* fire. Distinct from a
-/// manual run, which ignores the enable flag — disabling the weekly schedule
-/// must not block a manual "Generate". No `Debug` derive: the `Proceed` variant
-/// carries `RunConfig`, which deliberately has no `Debug` so an API key can
-/// never be printed.
-pub enum ScheduledRun {
-    /// Gate passed: carries the resolved run inputs (model configs + every API key the
-    /// baseline scan and research half need). Boxed because `RunConfig` now carries four
-    /// agent configs and six keys — far larger than the other variants, which would
-    /// otherwise size every `ScheduledRun` to it.
-    Proceed(Box<RunConfig>),
-    /// The weekly job is disabled — an expected, quiet no-op (no diagnostic).
-    Disabled,
-    /// Blocked by a noteworthy reason (incomplete config or an unresolved model
-    /// key) worth logging; the human-readable reason rides along.
-    Blocked(String),
-}
-
-/// Decide whether a scheduled fire should proceed: the enable flag, then the
-/// execution gate, then a resolvable Main Agent model + key, the FMP + FRED
-/// data-source keys, and the Tavily / OpenAI / Anthropic keys the research half needs
-/// (`docs/weekly-report-workflow.md §Step 1`). Pure over its inputs — `validate` and
-/// every accessor read only from `cfg` — so the enabled / blocked / proceed composition
-/// the scheduler walks is unit-testable without the environment or a running app. The
-/// resolution error arm is defensive: after a passing `validate` (which already requires
-/// both provider keys, the FMP / FRED / Tavily credentials, and a parseable main model)
-/// it is effectively unreachable, mirroring the manual command's pattern.
-pub fn decide_scheduled_run(cfg: &AppConfig, enabled: bool) -> ScheduledRun {
-    if !enabled {
-        return ScheduledRun::Disabled;
-    }
-    if validate(cfg).is_blocked {
-        return ScheduledRun::Blocked("configuration incomplete — run skipped".to_string());
-    }
-    // Resolve every credential the run needs in one fallible block; the first missing one
-    // blocks (defensive after a passing `validate`). Sequential rather than a wide tuple
-    // match now that six inputs ride on `RunConfig`.
-    let resolved = (|| -> Result<RunConfig> {
-        Ok(RunConfig {
-            main: cfg.main_agent_config()?,
-            bull: cfg.analyst_config(Posture::Bull)?,
-            bear: cfg.analyst_config(Posture::Bear)?,
-            balanced: cfg.analyst_config(Posture::Balanced)?,
-            fmp_api_key: cfg.fmp_key()?,
-            fred_api_key: cfg.fred_key()?,
-            tavily_api_key: cfg.tavily_key()?,
-            openai_api_key: cfg.openai_key()?,
-            anthropic_api_key: cfg.anthropic_key()?,
-        })
-    })();
-    match resolved {
-        Ok(run_config) => ScheduledRun::Proceed(Box::new(run_config)),
-        Err(e) => ScheduledRun::Blocked(e.to_string()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -759,49 +682,6 @@ mod tests {
     #[test]
     fn job_warning_kinds_are_non_blocking() {
         assert!(!WarningKind::FailedJob.is_blocking());
-        assert!(!WarningKind::MissedScheduledJob.is_blocking());
         assert!(WarningKind::AgentConfiguration.is_blocking());
-    }
-
-    #[test]
-    fn scheduled_run_proceeds_for_a_complete_enabled_config() {
-        // Match rather than unwrap so `MainAgentConfig` never needs a `Debug`
-        // impl that could print the secret.
-        match decide_scheduled_run(&complete(), true) {
-            ScheduledRun::Proceed(rc) => {
-                assert_eq!(rc.main.model, AgentModel::ClaudeOpus);
-                // The three analyst configs resolve beside the main agent's, each its
-                // own model — and each picks up its provider's key (OpenAI for the
-                // gpt-5 pair, Anthropic for claude-sonnet).
-                assert_eq!(rc.bull.model, AgentModel::Gpt5);
-                assert_eq!(rc.bull.api_key, "sk-openai");
-                assert_eq!(rc.bear.model, AgentModel::Gpt5Mini);
-                assert_eq!(rc.balanced.model, AgentModel::ClaudeSonnet);
-                assert_eq!(rc.balanced.api_key, "sk-anthropic");
-                assert_eq!(rc.fmp_api_key, "fmp-key");
-                assert_eq!(rc.fred_api_key, "fred-key");
-            }
-            _ => panic!("expected Proceed for a complete, enabled config"),
-        }
-    }
-
-    #[test]
-    fn scheduled_run_is_a_quiet_skip_when_disabled() {
-        // A complete config that is disabled must not run — and silently, so a
-        // disabled weekly schedule produces no per-window diagnostic.
-        assert!(matches!(
-            decide_scheduled_run(&complete(), false),
-            ScheduledRun::Disabled
-        ));
-    }
-
-    #[test]
-    fn scheduled_run_is_blocked_when_config_incomplete() {
-        let mut cfg = complete();
-        cfg.tavily_api_key = None; // a blocking gap, even with the job enabled
-        match decide_scheduled_run(&cfg, true) {
-            ScheduledRun::Blocked(reason) => assert!(reason.contains("incomplete"), "{reason}"),
-            _ => panic!("expected Blocked when a required credential is missing"),
-        }
     }
 }

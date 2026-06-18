@@ -15,7 +15,6 @@ import type { JobStatus } from "../../src/types";
 
 function status(overrides: Partial<JobStatus> = {}): JobStatus {
   return {
-    enabled: true,
     is_running: false,
     last_successful_at: null,
     last_failed_at: null,

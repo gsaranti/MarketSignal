@@ -75,10 +75,10 @@ const FMP_SECTOR_PATH: &str = "/sector-performance-snapshot";
 const FMP_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
 /// How many trading-day candidates back to probe for the most recent sector snapshot.
-/// The weekly job fires Sunday 9am, when the latest snapshot is the prior Friday's;
+/// A run can land on a weekend, when the latest snapshot is the prior Friday's;
 /// `sector_candidate_dates` skips the closed-market weekend without spending a request,
 /// so this budget covers weekdays (the holidays that actually need walking back over)
-/// rather than being burned on the guaranteed-empty Saturday and Sunday.
+/// rather than being burned on a guaranteed-empty Saturday or Sunday.
 const SECTOR_LOOKBACK_WEEKDAYS: usize = 5;
 
 /// FMP's end-of-day historical-price endpoint (light: date + close). One call per
@@ -721,9 +721,9 @@ fn risk_premium_from_value(value: Value) -> Result<Vec<MarketRiskPremium>> {
 /// or before `today`, then each prior weekday, up to `lookback` candidates. Weekends
 /// are skipped without spending a request — FMP publishes no Saturday or Sunday
 /// snapshot — so the lookback budget covers trading-day candidates (the holidays that
-/// actually need walking back over) rather than being burned on the weekend. The weekly
-/// job fires Sunday, so the old calendar walk spent its first two requests on the
-/// guaranteed-empty Sun/Sat every run.
+/// actually need walking back over) rather than being burned on the weekend. A run
+/// landing on a weekend would otherwise spend its first one or two requests on the
+/// guaranteed-empty Sat/Sun.
 fn sector_candidate_dates(today: NaiveDate, lookback: usize) -> Vec<NaiveDate> {
     let mut out = Vec::with_capacity(lookback);
     let mut date = today;
@@ -1032,7 +1032,7 @@ impl FmpDataSource {
     /// (402 / 404) or a history too short to anchor is skipped *silently* — the daily
     /// quote already covers that symbol and a recurring premium gap would be noise. A
     /// this-run failure (auth / quota / 5xx / transport / malformed), by contrast, is
-    /// recorded as a gap so the agent sees the enrichment was lost this week; a
+    /// recorded as a gap so the agent sees the enrichment was lost on this run; a
     /// `Rejected` stops the loop, like the quote groups.
     fn fetch_index_performance(&self, gaps: &mut Vec<DataGap>) -> Vec<IndexPerformance> {
         let to = Utc::now().date_naive();
@@ -1816,7 +1816,7 @@ mod tests {
 
     #[test]
     fn sector_candidate_dates_skips_weekends_from_a_sunday() {
-        // The weekly job fires Sunday: candidates skip Sat/Sun and start at the prior
+        // A run on a Sunday: candidates skip Sat/Sun and start at the prior
         // Friday, then walk back over weekdays only.
         let sunday = NaiveDate::from_ymd_opt(2026, 6, 7).unwrap();
         assert_eq!(sunday.weekday(), Weekday::Sun, "fixture sanity");

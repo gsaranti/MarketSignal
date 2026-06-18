@@ -24,7 +24,7 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection> {
 
 /// Create the application tables if they do not exist: `reports` (one row per
 /// generated report) and `job_runs` (one row per job lifecycle outcome, owned by
-/// the scheduler/orchestration layer — see `jobs`). Warning-state tables remain
+/// the orchestration layer — see `jobs`). Warning-state tables remain
 /// out of scope for now; HTML is never persisted (rendered on demand for
 /// display/PDF, settled 2026-06-12), so it gets no table. Idempotent, so any run
 /// path can call it.
@@ -54,11 +54,11 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // Persistent user/application state: the weekly job's enabled flag and the
-    // Settings store — agent models, API tokens, provider credentials, written by
-    // `settings::save` and read by `config::AppConfig::load`. A small key/value
-    // table rather than typed columns; values that survive restarts but are not
-    // part of a report record.
+    // Persistent user/application state: the Settings store — agent models, API
+    // tokens, provider credentials, written by `settings::save` and read by
+    // `config::AppConfig::load` — plus the dismissed-warning markers. A small
+    // key/value table rather than typed columns; values that survive restarts but
+    // are not part of a report record.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_settings (
             key   TEXT PRIMARY KEY,
@@ -874,22 +874,22 @@ mod tests {
 
     #[test]
     fn unset_setting_reads_as_none() {
-        assert_eq!(get_setting(&mem(), "weekly_job_enabled").unwrap(), None);
+        assert_eq!(get_setting(&mem(), "demo_key").unwrap(), None);
     }
 
     #[test]
     fn set_then_get_round_trips_and_upserts() {
         let conn = mem();
-        set_setting(&conn, "weekly_job_enabled", "false").unwrap();
+        set_setting(&conn, "demo_key", "first").unwrap();
         assert_eq!(
-            get_setting(&conn, "weekly_job_enabled").unwrap().as_deref(),
-            Some("false")
+            get_setting(&conn, "demo_key").unwrap().as_deref(),
+            Some("first")
         );
         // Second write to the same key updates rather than erroring on the PK.
-        set_setting(&conn, "weekly_job_enabled", "true").unwrap();
+        set_setting(&conn, "demo_key", "second").unwrap();
         assert_eq!(
-            get_setting(&conn, "weekly_job_enabled").unwrap().as_deref(),
-            Some("true")
+            get_setting(&conn, "demo_key").unwrap().as_deref(),
+            Some("second")
         );
     }
 

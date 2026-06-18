@@ -42,8 +42,9 @@ const GDELT_TIMEOUT: Duration = Duration::from_secs(20);
 /// ceiling — taken in full since one query now covers every news category.
 const GDELT_MAX_RECORDS: &str = "250";
 
-/// Coverage window requested — the weekly report covers the prior week, so a
-/// one-week lookback keeps the geopolitical feed recent and bounded.
+/// Coverage window requested — a one-week lookback keeps the geopolitical feed
+/// recent and bounded. A fixed window (not the report's actual since-last-report
+/// interval), since GDELT's rate limits make one bounded query the only safe gather.
 const GDELT_TIMESPAN: &str = "1w";
 
 /// GDELT gates on the User-Agent: requests without a descriptive one are
@@ -52,7 +53,7 @@ const GDELT_TIMESPAN: &str = "1w";
 /// client identifies itself the same way; reqwest sends none by default, so set
 /// one explicitly. (This is necessary but not sufficient — GDELT also enforces a
 /// ~1-request-per-5s budget with an escalating IP lockout; we stay well under it
-/// by issuing a single combined query per weekly gather, and degrade fail-soft on
+/// by issuing a single combined query per gather, and degrade fail-soft on
 /// a 429.)
 const GDELT_USER_AGENT: &str =
     "MarketSignal/0.1 (weekly market report; news ingestion via GDELT DOC 2.0)";

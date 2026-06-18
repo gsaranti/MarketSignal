@@ -158,8 +158,8 @@ async function exportPdf() {
       <div v-else class="report-empty">
         <div class="report-empty-eyebrow">Weekly market report</div>
         <p class="report-empty-body">
-          No issue has been generated yet. When you generate one — or the
-          Sunday job runs — it will appear here.
+          No issue has been generated yet. When you generate one, it will appear
+          here.
         </p>
       </div>
     </div>

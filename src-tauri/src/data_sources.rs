@@ -134,7 +134,7 @@ pub struct EconomicRelease {
 
 /// One index's multi-horizon performance, derived from FMP's end-of-day history
 /// (`historical-price-eod`). Complements the daily `Quote` in `indices` with the
-/// longer-horizon returns a *weekly* thesis needs: week-over-week, month-to-date, and
+/// longer-horizon returns the thesis needs: week-over-week, month-to-date, and
 /// year-to-date returns, plus where the latest close sits inside its trailing 52-week
 /// range. Every `*_pct` is a percent; `pct_from_52w_high` is ≤ 0 (distance below the
 /// high). `low_52w` / `high_52w` are price levels in the index's own units.
@@ -284,7 +284,7 @@ impl GroupKind {
 /// Why a requested series / release didn't land in the baseline this run. The
 /// distinction drives two things: the coverage gate counts only the *this-run* reasons
 /// against a group's coverage (`OutOfScope` is permanent and excluded, so a series a
-/// deployment never had doesn't drag the ratio down every week), and the agent reads a
+/// deployment never had doesn't drag the ratio down on every run), and the agent reads a
 /// transient outage differently from a permanent absence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

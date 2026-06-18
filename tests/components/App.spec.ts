@@ -1,6 +1,6 @@
 // First SFC spec to exercise the `@tauri-apps/api` boundary. App.vue is the only
-// component that imports it — four modules: core (`invoke`, 7 commands), event
-// (`listen`), window (`getCurrentWindow().onFocusChanged`), and app (`getVersion`).
+// component that imports it — four modules: core (`invoke`), event (`listen`),
+// window (`getCurrentWindow().onFocusChanged`), and app (`getVersion`).
 //
 // This establishes the project's Tauri-mock pattern. `vi.mock` factories are
 // hoisted above imports, so the mock *functions* are declared via `vi.hoisted`
@@ -8,11 +8,10 @@
 // `vitest.config.ts` sets `globals: false`, so every test helper (incl. `vi`) is
 // imported explicitly.
 //
-// Three assertions: (1) App's `onMounted` bootstrap contract — the exact command /
+// Two assertions: (1) App's `onMounted` bootstrap contract — the exact command /
 // listener / window / version set it fires on mount, which doubles as proof the
 // four-module mock is complete enough to mount the real App; (2) the `@save`
-// wiring round-trips a child emit into `invoke("save_settings", payload)`; (3) the
-// `@set-enabled` wiring round-trips into `invoke("set_job_enabled", { enabled })`.
+// wiring round-trips a child emit into `invoke("save_settings", payload)`.
 
 import { describe, test, expect, beforeEach, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
@@ -152,10 +151,10 @@ describe("App.vue Tauri boundary", () => {
     expect(tauri.getCurrentWindow).toHaveBeenCalled();
     expect(tauri.onFocusChanged).toHaveBeenCalledTimes(1);
 
-    // Exactly the two listeners, no more — sorted-equality so the assertion is a
-    // true set check (catches a dropped or duplicated listener), order-agnostic.
+    // Exactly the one listener — sorted-equality so the assertion is a true set
+    // check (catches a dropped or duplicated listener), order-agnostic.
     const events = tauri.listen.mock.calls.map((c) => c[0]).sort();
-    expect(events).toEqual(["job-finished", "job-progress"]);
+    expect(events).toEqual(["job-progress"]);
 
     // Exactly the seven refresh commands onMounted issues — sorted-equality
     // enforces the set with no extras or duplicates (not a subset), while
@@ -202,29 +201,6 @@ describe("App.vue Tauri boundary", () => {
 
     // The @save="saveSettings" wiring forwards the child payload verbatim.
     expect(tauri.invoke).toHaveBeenCalledWith("save_settings", payload);
-
-    wrapper.unmount();
-  });
-
-  test("a Settings @set-enabled emit round-trips into invoke('set_job_enabled', { enabled })", async () => {
-    const wrapper = mount(App);
-    await flushPromises();
-
-    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
-    await flushPromises();
-
-    const settings = wrapper.findComponent(Settings);
-    expect(settings.exists()).toBe(true);
-
-    // The default mock reports the job enabled; toggling it off must reach the
-    // backend. This covers App's @set-enabled="setJobEnabled" binding + handler —
-    // glue the child-level Settings spec (which stops at the emit) can't see.
-    settings.vm.$emit("set-enabled", false);
-    await flushPromises();
-
-    expect(tauri.invoke).toHaveBeenCalledWith("set_job_enabled", {
-      enabled: false,
-    });
 
     wrapper.unmount();
   });
@@ -560,85 +536,10 @@ describe("App.vue generate", () => {
   });
 });
 
-// The job-finished listener: the scheduler emits a GeneratedReport (success) or
-// null (failure / skip / missed) when a run ends, so an open window updates
-// without a manual refresh. Driven through the captured "job-finished" emitter.
-describe("App.vue job-finished listener", () => {
-  test("a payload while watching the tracker lands the report", async () => {
-    const wrapper = mount(App);
-    await flushPromises();
-    const finished = emitterFor(tauri.listen, "job-finished");
-
-    // Put the user on the tracker pane (footer handle), then deliver the report.
-    wrapper.findComponent(JobStatusPanel).vm.$emit("view-tracker");
-    await flushPromises();
-    finished(sampleReport);
-    await flushPromises();
-
-    const latest = wrapper.findComponent(LatestReportView);
-    expect(latest.exists()).toBe(true);
-    expect(latest.props("report")).toEqual(sampleReport);
-
-    wrapper.unmount();
-  });
-
-  test("a payload while reading another report does not yank the pane", async () => {
-    tauri.invoke.mockImplementation(
-      makeInvokeRouter({
-        load_report: () => sampleReport,
-        // Keep rep-1 "still selected" so the post-finish list refresh doesn't
-        // blank-pane auto-select onto the new report and confound the assertion.
-        list_reports: () => [sampleSummary2, sampleSummary],
-      })
-    );
-    const wrapper = mount(App);
-    await flushPromises();
-    const finished = emitterFor(tauri.listen, "job-finished");
-
-    // Reading report rep-1 (reportPaneMode stays "report").
-    wrapper.findComponent(RecentReportsSidebar).vm.$emit("select", "rep-1");
-    await flushPromises();
-    expect(wrapper.findComponent(LatestReportView).props("report")).toEqual(sampleReport);
-
-    // A scheduled rep-2 finishes; the reader must not be moved off rep-1.
-    finished(sampleReport2);
-    await flushPromises();
-    expect(wrapper.findComponent(LatestReportView).props("report")).toEqual(sampleReport);
-
-    wrapper.unmount();
-  });
-
-  test("a null payload refreshes status but loads no report", async () => {
-    const wrapper = mount(App);
-    await flushPromises();
-    const finished = emitterFor(tauri.listen, "job-finished");
-
-    tauri.invoke.mockClear();
-    finished(null);
-    await flushPromises();
-
-    // The null path refreshes validation / status / inbox / archive, but not the
-    // report list — refreshReports lives inside the `if (event.payload)` arm.
-    const cmds = invokedCommands();
-    expect(cmds).toEqual(
-      expect.arrayContaining([
-        "check_configuration",
-        "job_status",
-        "list_research_inbox",
-        "list_research_archive",
-      ])
-    );
-    expect(cmds).not.toContain("list_reports");
-    expect(wrapper.findComponent(LatestReportView).props("report")).toBeNull();
-
-    wrapper.unmount();
-  });
-});
-
 // The window focus-refresh path: regaining focus re-checks config / status and
-// re-lists reports + both research folders, so a missed window or a background
-// scheduled run surfaces on return. Driven through the captured onFocusChanged
-// callback (focusEmitter).
+// re-lists reports + both research folders, so external changes (e.g. files
+// dropped into the inbox via Finder) surface on return. Driven through the
+// captured onFocusChanged callback (focusEmitter).
 describe("App.vue focus refresh", () => {
   test("regaining focus refreshes config, status, reports, and both folders", async () => {
     const wrapper = mount(App);

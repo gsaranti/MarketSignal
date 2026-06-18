@@ -64,7 +64,6 @@ export interface ResearchDocument {
 // (docs/scheduling.md §Job Status Visibility). Timestamps are canonical UTC
 // RFC3339 strings; the UI renders them in local time.
 export interface JobStatus {
-  enabled: boolean;
   is_running: boolean;
   last_successful_at: string | null;
   last_failed_at: string | null;

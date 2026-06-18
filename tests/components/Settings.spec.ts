@@ -1,12 +1,12 @@
-// Settings.vue is presentational — props in, four events out (save / set-enabled /
-// set-dark / test) — and, unlike App.vue, imports no `@tauri-apps/api`, so it
-// mounts with no Tauri mock, exactly like ResearchDocuments.spec.ts. (The handoff
-// framed Settings as an invoke-caller; it isn't — only App.vue is.)
+// Settings.vue is presentational — props in, three events out (save / set-dark /
+// test) — and, unlike App.vue, imports no `@tauri-apps/api`, so it mounts with no
+// Tauri mock, exactly like ResearchDocuments.spec.ts. (The handoff framed Settings
+// as an invoke-caller; it isn't — only App.vue is.)
 //
 // Pins the emit contract that carries real logic: the save payload omits
 // untouched credentials (the secret is never re-sent — Settings.vue onSave) and
-// includes only the typed ones, a no-edit submit doesn't emit, and the
-// appearance / schedule toggles flip the current prop value.
+// includes only the typed ones, a no-edit submit doesn't emit, and the appearance
+// toggle flips the current prop value.
 
 import { test, expect } from "vitest";
 import { mount } from "@vue/test-utils";
@@ -33,8 +33,6 @@ const baseProps = {
   loading: false,
   saving: false,
   error: null as string | null,
-  jobEnabled: true as boolean | null,
-  jobBusy: false,
   dark: false,
   testing: { openai: false, anthropic: false, fmp: false, fred: false, tavily: false },
   testResults: { openai: null, anthropic: null, fmp: null, fred: null, tavily: null },
@@ -77,12 +75,6 @@ test("the appearance toggle emits set-dark with the flipped value", async () => 
   const wrapper = makeWrapper({ dark: false });
   await wrapper.find('section[aria-labelledby="sec-appearance"] button').trigger("click");
   expect(wrapper.emitted("set-dark")).toEqual([[true]]);
-});
-
-test("the schedule toggle emits set-enabled with the flipped value", async () => {
-  const wrapper = makeWrapper({ jobEnabled: true });
-  await wrapper.find('section[aria-labelledby="sec-schedule"] button').trigger("click");
-  expect(wrapper.emitted("set-enabled")).toEqual([[false]]);
 });
 
 // --- Truncation diagnostics section ----------------------------------------

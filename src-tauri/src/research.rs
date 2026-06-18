@@ -2,8 +2,8 @@
 //! in the research inbox and archive.
 //!
 //! Both folders live under the app data directory (`docs/research-documents.md`):
-//! the user drops PDFs/notes into the inbox for the weekly pipeline to consider,
-//! and successfully-processed documents are moved to the archive. The two share
+//! the user drops PDFs/notes into the inbox for the pipeline to consider on the
+//! next run, and successfully-processed documents are moved to the archive. The two share
 //! this deterministic, Tauri-free core — it reads directory entries and deletes a
 //! single file by name — so it can be driven directly by unit tests against temp
 //! dirs. The caller passes whichever folder it means.

@@ -8,8 +8,8 @@
 //! snapshot here — in Rust, deterministically — so the agent reads an exact, bounded
 //! diff rather than re-deriving arithmetic from two raw snapshots.
 //!
-//! Cadence-honest by construction: reports are not guaranteed weekly (manual runs,
-//! missed scheduled runs), so the diff carries the actual elapsed interval
+//! Cadence-honest by construction: reports are not guaranteed weekly (the user
+//! chooses when to generate one), so the diff carries the actual elapsed interval
 //! ([`BaselineDeltas::elapsed_days`]) rather than assuming a week — a 35 bp move means
 //! very different things over an hour versus three weeks.
 //!

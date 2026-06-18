@@ -1,7 +1,7 @@
 //! Shared retry-with-backoff for the gated HTTP data adapters.
 //!
 //! The baseline scan fires ~30 sequential requests across FMP, FRED, BLS and
-//! Tavily on a once-weekly job; a single transient 429 / 5xx / dropped connection
+//! Tavily on each report run; a single transient 429 / 5xx / dropped connection
 //! should not fail the whole report. This wraps a request in a bounded exponential
 //! backoff that retries the transient *HTTP-status / transport* failures — an HTTP-429
 //! rate limit, a 5xx, or a transport error (including a connection dropped mid-body) —
@@ -27,7 +27,7 @@ use anyhow::{Context, Result};
 use reqwest::blocking::{RequestBuilder, Response};
 
 /// Max attempts (1 initial + up to 2 retries) and the base backoff. Fixed schedule
-/// (no jitter): a single weekly-job client is not a thundering herd, so 1s → 2s is
+/// (no jitter): a single on-demand client is not a thundering herd, so 1s → 2s is
 /// enough to ride out a brief rate limit without pulling in a `rand` dependency.
 const MAX_ATTEMPTS: u32 = 3;
 const BASE_BACKOFF: Duration = Duration::from_secs(1);

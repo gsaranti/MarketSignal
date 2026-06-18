@@ -4,8 +4,8 @@
 
 // Render an ISO-8601 (UTC) instant as its `YYYY-MM-DD` date in the user's local
 // time zone — the calendar date that matches their wall clock. Reports are
-// local-time artifacts (the job runs "Sunday 9:00 AM local"; docs/scheduling.md),
-// and the backend already names report files by local date
+// local-time artifacts (generated and dated in the user's local time;
+// docs/scheduling.md), and the backend already names report files by local date
 // (pipeline::canonical_report_filename / export_basename via chrono::Local), so
 // deriving the displayed date the same way keeps the sidebar/toolbar datelines,
 // the Markdown export name, and the PDF export name in agreement. A naive

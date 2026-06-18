@@ -12,9 +12,9 @@
 //!
 //! Unlike FMP and FRED, BLS is **keyless** (`docs/configuration.md` — BLS/GDELT need
 //! no credential), so `BlsDataSource::new()` takes no key and BLS is not part of the
-//! execution gate. The trade-off is the public v2 tier's 25-query/day cap, which the
-//! once-weekly job sits comfortably under; a single batched request per scan keeps the
-//! burn at one query.
+//! execution gate. The trade-off is the public v2 tier's 25-query/day cap; a single
+//! batched request per scan keeps the burn at one query, so even frequent on-demand
+//! runs sit comfortably under it.
 //!
 //! Like `fmp`/`fred`, the HTTP call is synchronous (`reqwest::blocking`) so the trait
 //! stays sync; the blocking work is offloaded via `spawn_blocking` at the Tauri

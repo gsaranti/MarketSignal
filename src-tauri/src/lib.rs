@@ -22,7 +22,6 @@ pub mod research;
 pub mod research_executor;
 pub mod research_packet;
 pub mod research_router;
-pub mod schedule;
 pub mod settings;
 pub mod skills;
 pub mod storage;
@@ -34,7 +33,6 @@ pub mod vector_memory;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -52,12 +50,6 @@ use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
 use model_agent::ModelMainAgent;
 use pipeline::{AnalystStages, GeneratedReport, ReportPaths, ResearchStages};
 use progress::{ProgressMessage, ProgressReporter, RunContext};
-
-/// How long the scheduler sleeps between wake-ups while waiting for the next
-/// window. Bounded (rather than one long sleep to the window) so a clock change
-/// or a suspend/resume is re-evaluated within the hour instead of overshooting
-/// silently.
-const SCHEDULER_POLL_CHUNK: Duration = Duration::from_secs(60 * 60);
 
 /// Tauri event name carrying every [`ProgressMessage`] for the live job tracker.
 /// The frontend listens on this and accumulates the run's trace by `run_id`.
@@ -127,10 +119,6 @@ fn check_configuration(app: tauri::AppHandle) -> ValidationReport {
         if let Ok(Some(warning)) = jobs::failure_warning(conn) {
             report.categories.push(warning);
         }
-        let enabled = jobs::weekly_job_enabled(conn).unwrap_or(true);
-        if let Ok(Some(warning)) = jobs::missed_warning(conn, chrono::Local::now(), enabled) {
-            report.categories.push(warning);
-        }
     }
     report
 }
@@ -140,11 +128,11 @@ fn check_configuration(app: tauri::AppHandle) -> ValidationReport {
 /// category). `id` is the `WarningCategory.dismiss_id` the frontend rendered and
 /// echoes back, so the dismissal targets the *shown* warning rather than whatever
 /// the backend would re-derive as current at click time — a stale click can then
-/// only ever dismiss the row it was on, and a newer failure / missed window still
-/// surfaces fresh. Only the two non-blocking categories (failed / missed jobs) are
-/// dismissible; a blocking configuration gap is gate state, so a dismiss of one is a
-/// no-op (handled in `jobs::dismiss_warning_category`). The frontend re-runs
-/// `check_configuration` afterward to repopulate the band.
+/// only ever dismiss the row it was on, and a newer failure still surfaces fresh.
+/// Only the non-blocking failed-job category is dismissible; a blocking
+/// configuration gap is gate state, so a dismiss of one is a no-op (handled in
+/// `jobs::dismiss_warning_category`). The frontend re-runs `check_configuration`
+/// afterward to repopulate the band.
 #[tauri::command]
 fn dismiss_warning(
     app: tauri::AppHandle,
@@ -158,7 +146,8 @@ fn dismiss_warning(
 /// The on-disk layout for a run — the SQLite database, the reports directory,
 /// and the research inbox/archive, all under the app data directory
 /// (`ReportPaths::under` owns the names). One source for the path layout, shared
-/// by the manual command and the scheduler so they can never drift apart.
+/// by the manual command and the research-folder helpers so they can never drift
+/// apart.
 fn report_paths(app: &tauri::AppHandle) -> Result<ReportPaths, String> {
     let data_dir = app
         .path()
@@ -379,8 +368,8 @@ fn open_app_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
 }
 
 /// Current job status for the UI's status panel (`docs/scheduling.md §Job Status
-/// Visibility`): last successful run, last failure, last skipped event, whether
-/// a run is in flight, and the enable flag.
+/// Visibility`): last successful run, last failure, last skipped event, and
+/// whether a run is in flight.
 #[tauri::command]
 fn job_status(
     app: tauri::AppHandle,
@@ -388,15 +377,6 @@ fn job_status(
 ) -> Result<JobStatus, String> {
     let conn = open_app_db(&app)?;
     jobs::job_status(&conn, &guard).map_err(|e| e.to_string())
-}
-
-/// Persist the Weekly Market job's enable/disable flag (`docs/scheduling.md
-/// §Job Controls`). The scheduler reads this each time a window fires, so a
-/// disabled job no-ops rather than running.
-#[tauri::command]
-fn set_job_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    let conn = open_app_db(&app)?;
-    jobs::set_weekly_job_enabled(&conn, enabled).map_err(|e| e.to_string())
 }
 
 /// The current Settings state (`docs/configuration.md`, `docs/interface.md
@@ -561,178 +541,6 @@ fn truncation_stats(app: tauri::AppHandle) -> storage::TruncationStats {
     storage::truncation_stats(&conn).unwrap_or_default()
 }
 
-/// Debug-only schedule override: when `MARKET_SIGNAL_SCHEDULE_OVERRIDE` is set to
-/// a number of seconds, the scheduler fires on that fixed interval instead of the
-/// weekly window, so a `tauri dev` smoke can exercise a scheduled run in seconds.
-/// Compiled out of release builds entirely.
-#[cfg(debug_assertions)]
-fn schedule_override_secs() -> Option<u64> {
-    std::env::var("MARKET_SIGNAL_SCHEDULE_OVERRIDE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-}
-
-#[cfg(not(debug_assertions))]
-fn schedule_override_secs() -> Option<u64> {
-    None
-}
-
-/// The tokio timer that drives scheduled runs. Computes the next Sunday-9AM
-/// local window, sleeps until it in bounded chunks, fires, and repeats. A window
-/// the machine slept through is not replayed (`docs/scheduling.md §System Sleep
-/// Behavior`): if wake-up overshoots the window by more than a short grace, the
-/// run is skipped and surfaces as a missed-job warning on next check instead.
-fn spawn_scheduler(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        // Debug fast-path: a fixed interval for smoke testing the fire path.
-        if let Some(secs) = schedule_override_secs() {
-            loop {
-                tokio::time::sleep(Duration::from_secs(secs)).await;
-                run_scheduled_once(&app).await;
-            }
-        }
-
-        let grace = chrono::Duration::minutes(15);
-        loop {
-            let next = schedule::next_run_after(chrono::Local::now());
-            // Sleep toward the window in bounded chunks.
-            loop {
-                let now = chrono::Local::now();
-                if now >= next {
-                    break;
-                }
-                let remaining = (next - now).to_std().unwrap_or(Duration::ZERO);
-                tokio::time::sleep(remaining.min(SCHEDULER_POLL_CHUNK)).await;
-            }
-            // Fire only if we reached the window roughly on time. A large
-            // overshoot means the machine slept past it — that window is missed,
-            // not replayed; the loop advances to the next future window.
-            if chrono::Local::now() - next <= grace {
-                run_scheduled_once(&app).await;
-            } else {
-                // Overshot: the window is missed, not replayed — but nudge an
-                // open window to refresh so the missed-job warning surfaces on
-                // resume (`docs/scheduling.md §Missed Job Detection`), reusing the
-                // same channel a finished run uses (no report to carry).
-                let _ = app.emit("job-finished", Option::<GeneratedReport>::None);
-            }
-        }
-    });
-}
-
-/// One scheduled fire: re-check the enable flag and the execution gate, then run
-/// the identical workflow as the manual command (`docs/weekly-report-workflow.md
-/// §Step 1`). A disabled job or a blocked configuration no-ops — a blocked run
-/// records nothing, since its warnings already surface via `check_configuration`.
-/// Concurrency with a manual run is handled inside `run_job` (→ Skipped). On any
-/// terminal outcome a `job-finished` event lets an open window refresh.
-async fn run_scheduled_once(app: &tauri::AppHandle) {
-    let paths = match report_paths(app) {
-        Ok(p) => p,
-        Err(e) => return log_scheduler(e),
-    };
-
-    // Read the enable flag and load the config from one short-lived connection,
-    // opened and dropped here before any await; `run_job` opens its own on the
-    // blocking thread. Deliberately scoped this way: no `rusqlite::Connection`
-    // (which is not `Send`) ever crosses an await point.
-    let (enabled, cfg) = match open_app_db(app) {
-        Ok(conn) => match jobs::weekly_job_enabled(&conn) {
-            Ok(enabled) => (enabled, AppConfig::load(&conn)),
-            Err(e) => return log_scheduler(format!("reading enable flag: {e}")),
-        },
-        Err(e) => return log_scheduler(format!("opening database: {e}")),
-    };
-
-    // The same pre-run decision the manual command makes, plus the enable flag,
-    // as one pure step (`config::decide_scheduled_run`).
-    let run_config = match config::decide_scheduled_run(&cfg, enabled) {
-        config::ScheduledRun::Proceed(run_config) => run_config,
-        config::ScheduledRun::Disabled => return, // expected, quiet no-op
-        config::ScheduledRun::Blocked(reason) => return log_scheduler(reason),
-    };
-
-    let guard = app.state::<RunGuard>().inner().clone();
-    // A scheduled run streams to an open window through the same context as a manual
-    // run, so the tracker shows a Sunday-9AM run live and its Cancel button works.
-    let ctx = live_run_context(app, app.state::<CancelFlag>().inner().0.clone());
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let agent = ModelMainAgent::new(run_config.main)
-            .map_err(|e| e.to_string())?
-            .with_context(ctx.clone());
-        // FMP + FRED + BLS merged behind one trait, identical to the manual command's
-        // baseline source (`docs/weekly-report-workflow.md §Step 3`). BLS is keyless,
-        // nested as the outer secondary to fold in the labor_levels group.
-        let fmp = FmpDataSource::new(run_config.fmp_api_key.clone())
-            .map_err(|e| e.to_string())?
-            .with_context(ctx.clone());
-        let fred = FredDataSource::new(run_config.fred_api_key)
-            .map_err(|e| e.to_string())?
-            .with_context(ctx.clone());
-        let bls = BlsDataSource::new()
-            .map_err(|e| e.to_string())?
-            .with_context(ctx.clone());
-        let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
-        let research = ResearchStages::live(
-            run_config.tavily_api_key,
-            run_config.fmp_api_key,
-            run_config.openai_api_key.clone(),
-            run_config.anthropic_api_key,
-            &ctx,
-        )
-        .map_err(|e| e.to_string())?;
-        // Steps 12–15: the three analyst adapters, resolved on `RunConfig` beside the
-        // main agent and sharing the run's context like the manual command's.
-        let analysts =
-            AnalystStages::live(run_config.bull, run_config.bear, run_config.balanced, &ctx)
-                .map_err(|e| e.to_string())?;
-        // Identical to the manual command's embedder: the fixed internal OpenAI
-        // embedding stage for the Step-17 memory write.
-        let embedder = OpenAiEmbedder::new(run_config.openai_api_key)
-            .map_err(|e| e.to_string())?
-            .with_context(ctx.clone());
-        run_job(
-            &agent, &data, &research, &analysts, &embedder, &paths, &guard, &ctx,
-        )
-        .map_err(|e| e.to_string())
-    })
-    .await;
-
-    // Carry the freshly generated report to an open window so its Latest Report
-    // View updates without a manual refresh (`docs/weekly-report-workflow.md
-    // §Step 18`); on failure/skip the payload is None and only the warning area
-    // and status panel refresh. The Recent Reports sidebar re-lists via
-    // `list_reports` on this same event, so a scheduled run's new report also
-    // appears in the sidebar.
-    let report: Option<GeneratedReport> = match outcome {
-        Ok(Ok(JobOutcome::Successful(report))) => Some(*report),
-        Ok(Ok(JobOutcome::Failed(msg))) => {
-            log_scheduler(format!("job failed: {msg}"));
-            None
-        }
-        Ok(Ok(JobOutcome::Skipped(reason))) => {
-            log_scheduler(format!("skipped: {reason}"));
-            None
-        }
-        Ok(Ok(JobOutcome::Cancelled(reason))) => {
-            log_scheduler(format!("cancelled: {reason}"));
-            None
-        }
-        Ok(Err(e)) => {
-            log_scheduler(e);
-            None
-        }
-        Err(e) => return log_scheduler(format!("run task failed: {e}")),
-    };
-    let _ = app.emit("job-finished", report);
-}
-
-/// Scheduler diagnostics go to stderr — the scheduler runs headless, so there is
-/// no UI surface to route them to beyond the warning area the next check rebuilds.
-fn log_scheduler(message: String) {
-    eprintln!("scheduler: {message}");
-}
-
 /// Reveal and focus every window. Shared by the tray "Show" menu item and the
 /// macOS Dock-icon reopen handler — both undo the hide-to-tray performed on
 /// window close. `set_focus` no-ops on a hidden or minimized window (and it
@@ -761,7 +569,6 @@ pub fn run() {
             check_configuration,
             dismiss_warning,
             job_status,
-            set_job_enabled,
             get_settings,
             save_settings,
             test_connection,
@@ -800,8 +607,6 @@ pub fn run() {
             // no handler (tauri-apps/tauri#11462).
             app.manage(tray);
 
-            // Start the Sunday-9AM-local timer.
-            spawn_scheduler(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {

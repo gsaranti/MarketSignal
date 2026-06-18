@@ -15,15 +15,15 @@ const props = defineProps<{
   error: string | null;
 }>();
 
-// Dismiss is offered only for the two non-blocking categories (failed / missed
-// jobs); the blocking config gaps are gate state, not dismissible notices, so they
-// carry no dismiss control (mirrors `WarningKind::is_blocking` on the backend). The
-// dismiss carries the row's rendered `dismiss_id` so the backend suppresses *this*
-// warning, not a newer one it would re-derive; the parent runs `dismiss_warning`
-// with both and re-checks the config to refresh the band.
+// Dismiss is offered only for the non-blocking failed-job category; the blocking
+// config gaps are gate state, not dismissible notices, so they carry no dismiss
+// control (mirrors `WarningKind::is_blocking` on the backend). The dismiss carries
+// the row's rendered `dismiss_id` so the backend suppresses *this* warning, not a
+// newer one it would re-derive; the parent runs `dismiss_warning` with both and
+// re-checks the config to refresh the band.
 const emit = defineEmits<{ (e: "dismiss", kind: string, dismissId: string): void }>();
 
-const DISMISSIBLE_KINDS = new Set(["failed-job", "missed-scheduled-job"]);
+const DISMISSIBLE_KINDS = new Set(["failed-job"]);
 function isDismissible(kind: string): boolean {
   return DISMISSIBLE_KINDS.has(kind);
 }

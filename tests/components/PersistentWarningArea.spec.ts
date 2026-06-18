@@ -101,9 +101,9 @@ test("re-expands when a NEW warning kind appears after the user collapsed the ba
   expect(wrapper.find(".warning-toggle").attributes("aria-expanded")).toBe("true");
 });
 
-// The two non-blocking categories carry a dismiss control; the blocking config
-// categories (twoCategoryReport above) do not. Kinds match the backend's kebab-case
-// `WarningKind` serialization.
+// The one non-blocking category (failed-job) carries a dismiss control; the
+// blocking config categories (twoCategoryReport above) do not. Kinds match the
+// backend's kebab-case `WarningKind` serialization.
 const dismissibleReport: ValidationReport = deepFreeze({
   is_blocked: false,
   categories: [
@@ -113,33 +113,22 @@ const dismissibleReport: ValidationReport = deepFreeze({
       items: ["2026-06-14 — provider unreachable"],
       dismiss_id: "7",
     },
-    {
-      kind: "missed-scheduled-job",
-      title: "Scheduled job missed",
-      items: ["The scheduled run for 2026-06-14 09:00 did not start."],
-      dismiss_id: "2026-06-14T09:00:00+00:00",
-    },
   ],
 });
 
-test("offers a dismiss control on the non-blocking categories and emits the kind + identity", async () => {
+test("offers a dismiss control on the non-blocking category and emits the kind + identity", async () => {
   const wrapper = mount(PersistentWarningArea, {
     props: { report: dismissibleReport, error: null },
   });
   const buttons = wrapper.findAll(".warning-dismiss");
-  expect(buttons).toHaveLength(2);
+  expect(buttons).toHaveLength(1);
   // The accessible name carries the category title (the icon itself is aria-hidden).
   expect(buttons[0].attributes("aria-label")).toBe("Dismiss: Last job failed");
-  expect(buttons[1].attributes("aria-label")).toBe("Dismiss: Scheduled job missed");
 
   await buttons[0].trigger("click");
-  await buttons[1].trigger("click");
   // Emits the rendered identity alongside the kind so the backend dismisses *this*
   // warning, not a newer one it would re-derive.
-  expect(wrapper.emitted("dismiss")).toEqual([
-    ["failed-job", "7"],
-    ["missed-scheduled-job", "2026-06-14T09:00:00+00:00"],
-  ]);
+  expect(wrapper.emitted("dismiss")).toEqual([["failed-job", "7"]]);
 });
 
 test("blocking config categories and the error row carry no dismiss control", () => {

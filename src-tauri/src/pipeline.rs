@@ -46,7 +46,7 @@ pub struct ReportPaths {
 
 impl ReportPaths {
     /// The canonical app-data layout under one base directory — the single
-    /// source for these names, shared by the production commands and scheduler
+    /// source for these names, shared by the manual command
     /// (`lib.rs::report_paths`) and every test's temp dir, so the layouts can
     /// never drift apart.
     pub fn under(base: &std::path::Path) -> Self {
@@ -151,10 +151,10 @@ impl AnalystStages {
     }
 
     /// The live analyst bundle for one run — the single construction shared by the
-    /// production command paths (`lib.rs`), so the wiring can't drift. Each posture's
+    /// production command path (`lib.rs`), so the wiring can't drift. Each posture's
     /// user-selected model + provider key arrives as a resolved `MainAgentConfig`
-    /// (`config::RunConfig`); every adapter carries `ctx` so each review call streams a
-    /// per-request tracker row. Errors here are HTTP-client build failures only.
+    /// (`AppConfig::analyst_config`); every adapter carries `ctx` so each review call
+    /// streams a per-request tracker row. Errors here are HTTP-client build failures only.
     pub fn live(
         bull: MainAgentConfig,
         bear: MainAgentConfig,
@@ -199,9 +199,7 @@ fn run_analysts(analysts: &AnalystStages, packet: &ResearchPacket) -> Result<Vec
 
 /// The result of a report run, returned to the caller (the Tauri command or a
 /// test). Carries the Markdown so the frontend can render it immediately.
-/// `Clone` so a scheduled run can hand the report to an open window via a
-/// `job-finished` event (Tauri's `emit` requires `Clone`).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct GeneratedReport {
     pub report_id: String,
     pub markdown: String,
@@ -991,7 +989,7 @@ fn read_db_fail_soft<T: Default>(
 const MAIN_AGENT_RECENT_REPORTS: u32 = 3;
 
 /// Per-report ceiling on the Markdown body carried in the Step-2 context, in chars
-/// (~3k tokens — the inbox `PER_DOC_CHAR_CAP` magnitude). A typical weekly report rides
+/// (~3k tokens — the inbox `PER_DOC_CHAR_CAP` magnitude). A typical report rides
 /// whole; only a pathological one is head-truncated, visibly (a marker matching the
 /// inbox-doc convention the system prompt already explains). Tunable alongside the
 /// packet caps.
@@ -1350,8 +1348,8 @@ pub fn export_markdown_to(
 /// Split out as a pure, timezone-injectable function so the two decisions it
 /// encodes are unit-testable without the system clock or the filesystem:
 ///
-/// - **Local date segment.** The report is a local-time artifact (the scheduled
-///   window is Sunday 9 AM local — see `docs/scheduling.md`), so the filename a
+/// - **Local date segment.** The report is a local-time artifact (generated and
+///   dated in the user's local time — see `docs/scheduling.md`), so the filename a
 ///   user reads matches their wall clock, even though the `created_at` persisted
 ///   in SQLite stays canonical UTC. `tz` names the zone whose calendar date
 ///   labels the file; production passes `chrono::Local`, tests pass a fixed

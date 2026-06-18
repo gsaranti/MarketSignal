@@ -9,15 +9,14 @@
 //! driven directly by an integration test against a stub agent — the Tauri
 //! command is only a thin async wrapper that resolves paths and shares the guard.
 //!
-//! Scope note (scheduler slice 1): this slice produces Successful / Failed /
-//! Skipped on the *manual* run path. The Sunday-9AM timer, the tray runtime,
-//! missed-job detection, and `MissedScheduledJob` production are the next slice.
+//! Report generation is on demand only — there is no scheduler, so this module
+//! produces just the four manual-run states (Successful / Failed / Skipped /
+//! Cancelled); there is no missed-job detection or `MissedScheduledJob` warning.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
-use chrono::{DateTime, TimeZone, Utc};
+use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
@@ -35,19 +34,14 @@ use crate::storage;
 /// can share the table later.
 const WEEKLY_MARKET_JOB: &str = "weekly_market";
 
-/// `app_settings` key for the weekly job's enable/disable flag.
-const WEEKLY_JOB_ENABLED_KEY: &str = "weekly_job_enabled";
-
-/// `app_settings` keys recording a dismissed Persistent Warning Area warning
+/// `app_settings` key recording a dismissed Persistent Warning Area warning
 /// (`docs/interface.md §Persistent Warning Area` — "Dismissing a warning
 /// permanently removes it. A subsequent event in the same category produces a fresh
-/// warning."). Each stores the *identity* of the dismissed warning so a later,
-/// distinct event re-surfaces: the failed run's `job_runs.id` for the failed-job
-/// category, and the missed window's RFC3339 timestamp for the missed-scheduled-job
-/// category. Only the two non-blocking categories are dismissible; the blocking
-/// configuration gaps are gate state, not notices.
+/// warning."). Stores the *identity* of the dismissed warning — the failed run's
+/// `job_runs.id` — so a later, distinct failure re-surfaces. Only the non-blocking
+/// failed-job category is dismissible; the blocking configuration gaps are gate
+/// state, not notices.
 const DISMISSED_FAILED_JOB_RUN_ID_KEY: &str = "dismissed_failed_job_run_id";
-const DISMISSED_MISSED_WINDOW_KEY: &str = "dismissed_missed_window";
 
 /// Reason recorded and returned when a run is rejected by the concurrency guard.
 const SKIP_REASON: &str = "another report run is already in progress";
@@ -55,29 +49,12 @@ const SKIP_REASON: &str = "another report run is already in progress";
 /// Human title for the run tracker, emitted as the run starts.
 const RUN_LABEL: &str = "Weekly market report";
 
-/// Whether the Weekly Market job is enabled. Enabled by default
-/// (`docs/scheduling.md §Job Controls`): an absent setting reads as `true`, so a
-/// fresh install schedules the job without the user opting in. Only an explicit
-/// "false" disables it.
-pub fn weekly_job_enabled(conn: &Connection) -> Result<bool> {
-    Ok(storage::get_setting(conn, WEEKLY_JOB_ENABLED_KEY)?.as_deref() != Some("false"))
-}
-
-/// Persist the Weekly Market job's enable/disable flag.
-pub fn set_weekly_job_enabled(conn: &Connection, enabled: bool) -> Result<()> {
-    storage::set_setting(
-        conn,
-        WEEKLY_JOB_ENABLED_KEY,
-        if enabled { "true" } else { "false" },
-    )
-}
-
-/// How a job run ended (`docs/scheduling.md §Job States`). `Missed` is modeled by
-/// the scheduler slice that owns scheduled-window detection, not here, so it is
-/// intentionally absent from this enum until that slice lands. `Cancelled` is the
-/// user-initiated stop from the live run tracker — recorded like `Skipped` (it never
-/// produced a report and never raises a failed-job warning), but kept distinct so the
-/// status panel and history can tell an aborted run from a concurrency skip.
+/// How a job run ended (`docs/scheduling.md §Job States`). There is no `Missed`
+/// state — report generation is on demand, so a report is never "due" while
+/// unattended. `Cancelled` is the user-initiated stop from the live run tracker —
+/// recorded like `Skipped` (it never produced a report and never raises a
+/// failed-job warning), but kept distinct so the status panel and history can tell
+/// an aborted run from a concurrency skip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobState {
     Successful,
@@ -345,105 +322,21 @@ pub fn failure_warning(conn: &Connection) -> Result<Option<WarningCategory>> {
     }
 }
 
-/// Build the Persistent Warning Area's `MissedScheduledJob` category, or `None`
-/// when no scheduled window was missed (`docs/scheduling.md §Missed Job
-/// Detection`). A missed job is a *derived* warning, not a `job_runs` row — a
-/// missed window never started, so there is nothing to record; it is computed on
-/// next open by comparing job history against the most recent scheduled window.
-///
-/// The rule: with the job enabled, look at the most recent run that exists (any
-/// state) by insertion order. If that latest run started *before* the most
-/// recent Sunday-9AM window, then the window came and went with no run — missed.
-/// A run at or after the window means it either fired or a later manual run has
-/// since caught up, so the warning clears. No runs at all means the app was not
-/// around to miss anything (a fresh install), so no warning — this deliberately
-/// under-reports the install-then-immediately-miss case; a persisted last-launch
-/// heartbeat would be needed to catch it. `MissedScheduledJob` is non-blocking,
-/// so it never gates a run.
-pub fn missed_warning<Tz>(
-    conn: &Connection,
-    now: DateTime<Tz>,
-    enabled: bool,
-) -> Result<Option<WarningCategory>>
-where
-    Tz: TimeZone,
-    Tz::Offset: std::fmt::Display,
-{
-    if !enabled {
-        return Ok(None);
-    }
-    let window = crate::schedule::previous_window_at_or_before(now);
-    let window_utc = window.with_timezone(&Utc);
-
-    let latest = conn
-        .query_row(
-            "SELECT started_at FROM job_runs ORDER BY id DESC LIMIT 1",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-
-    let latest_started = match latest {
-        // No history: the app was never running to miss a window.
-        None => return Ok(None),
-        Some(s) => DateTime::parse_from_rfc3339(&s)
-            .map_err(|e| anyhow!("job_runs.started_at not RFC3339 ({s:?}): {e}"))?
-            .with_timezone(&Utc),
-    };
-
-    if latest_started >= window_utc {
-        // A run started at or after the most recent window — it fired, or a
-        // later manual run has caught up. Nothing missed.
-        return Ok(None);
-    }
-
-    // Suppressed if the user dismissed this exact window; a later missed window
-    // carries a different timestamp, so the marker no longer matches and a fresh
-    // warning surfaces.
-    if storage::get_setting(conn, DISMISSED_MISSED_WINDOW_KEY)?.as_deref()
-        == Some(missed_window_id(&window_utc).as_str())
-    {
-        return Ok(None);
-    }
-
-    let item = format!(
-        "The scheduled run for {} did not start.",
-        window.format("%Y-%m-%d %H:%M")
-    );
-    Ok(Some(WarningCategory {
-        kind: WarningKind::MissedScheduledJob,
-        title: "Scheduled job missed".to_string(),
-        items: vec![item],
-        dismiss_id: Some(missed_window_id(&window_utc)),
-    }))
-}
-
-/// The dismissal identity for a missed-scheduled-job window: the window's UTC
-/// RFC3339 timestamp. One source of truth shared by `missed_warning` (to test the
-/// marker) and `dismiss_warning_category` (to write it), so the two can never drift.
-fn missed_window_id(window_utc: &DateTime<Utc>) -> String {
-    window_utc.to_rfc3339()
-}
-
 /// Dismiss one Persistent Warning Area warning by the *identity the frontend
 /// rendered* (`docs/interface.md §Persistent Warning Area`). `dismiss_id` is the
 /// `WarningCategory.dismiss_id` echoed back from the shown row — the failed run's id
-/// for `FailedJob`, the missed window's timestamp for `MissedScheduledJob` — written
-/// verbatim into the per-category `app_settings` marker. `failure_warning` /
-/// `missed_warning` then suppress only the warning whose *current* identity equals
-/// the marker, so dismissing a stale row records that stale identity (already gone)
-/// and a later, distinct event (a newer failure, a later missed window) still
-/// surfaces fresh. Keying off the rendered id — rather than re-deriving "current" at
-/// click time — is what makes a stale click safe. The three blocking configuration
-/// categories are gate state rather than dismissible notices, so a dismiss of one is
-/// a no-op (the UI also offers no control for them).
+/// for `FailedJob` — written verbatim into the `app_settings` marker.
+/// `failure_warning` then suppresses only the warning whose *current* identity
+/// equals the marker, so dismissing a stale row records that stale identity
+/// (already gone) and a later, distinct failure still surfaces fresh. Keying off
+/// the rendered id — rather than re-deriving "current" at click time — is what
+/// makes a stale click safe. The three blocking configuration categories are gate
+/// state rather than dismissible notices, so a dismiss of one is a no-op (the UI
+/// also offers no control for them).
 pub fn dismiss_warning_category(conn: &Connection, kind: WarningKind, dismiss_id: &str) -> Result<()> {
     match kind {
         WarningKind::FailedJob => {
             storage::set_setting(conn, DISMISSED_FAILED_JOB_RUN_ID_KEY, dismiss_id)?;
-        }
-        WarningKind::MissedScheduledJob => {
-            storage::set_setting(conn, DISMISSED_MISSED_WINDOW_KEY, dismiss_id)?;
         }
         WarningKind::AgentConfiguration
         | WarningKind::ApiTokens
@@ -453,12 +346,11 @@ pub fn dismiss_warning_category(conn: &Connection, kind: WarningKind, dismiss_id
 }
 
 /// A snapshot of job status for the UI (`docs/scheduling.md §Job Status
-/// Visibility`): last successful run, last failure, last skipped event, whether
-/// a run is in flight now, and whether the job is enabled. Timestamps are the
-/// canonical UTC RFC3339 strings; the frontend renders them in local time.
+/// Visibility`): last successful run, last failure, last skipped event, and
+/// whether a run is in flight now. Timestamps are the canonical UTC RFC3339
+/// strings; the frontend renders them in local time.
 #[derive(Debug, Clone, Serialize)]
 pub struct JobStatus {
-    pub enabled: bool,
     pub is_running: bool,
     pub last_successful_at: Option<String>,
     pub last_failed_at: Option<String>,
@@ -467,10 +359,10 @@ pub struct JobStatus {
     pub last_cancelled_at: Option<String>,
 }
 
-/// Assemble the current `JobStatus` from job history, the enable flag, and the
-/// live run guard. Each "last X" is the most recent run of that state by
-/// insertion order (`id`), independent of the others — a later failure does not
-/// erase the last successful run's timestamp, and vice versa.
+/// Assemble the current `JobStatus` from job history and the live run guard. Each
+/// "last X" is the most recent run of that state by insertion order (`id`),
+/// independent of the others — a later failure does not erase the last successful
+/// run's timestamp, and vice versa.
 pub fn job_status(conn: &Connection, guard: &RunGuard) -> Result<JobStatus> {
     let last_of = |state: &str| -> Result<Option<(String, Option<String>)>> {
         Ok(conn
@@ -484,7 +376,6 @@ pub fn job_status(conn: &Connection, guard: &RunGuard) -> Result<JobStatus> {
     };
     let failed = last_of(JobState::Failed.as_str())?;
     Ok(JobStatus {
-        enabled: weekly_job_enabled(conn)?,
         is_running: guard.is_running(),
         last_successful_at: last_of(JobState::Successful.as_str())?.map(|(at, _)| at),
         last_failed_at: failed.as_ref().map(|(at, _)| at.clone()),
@@ -497,8 +388,7 @@ pub fn job_status(conn: &Connection, guard: &RunGuard) -> Result<JobStatus> {
 /// Current time as an RFC3339 string. UTC remains the canonical persisted form
 /// for `job_runs` timestamps (sortable and unambiguous); local-time conversion
 /// is a display concern handled at the seams that show time to the user — the
-/// report filename (`pipeline`) and the frontend. The scheduled *window* is
-/// computed in local time by `schedule`.
+/// report filename (`pipeline`) and the frontend.
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
@@ -569,76 +459,6 @@ mod tests {
         assert!(!WarningKind::FailedJob.is_blocking());
     }
 
-    fn insert_at(conn: &Connection, started_at: &str) {
-        record_run(
-            conn,
-            &JobRun {
-                job_type: WEEKLY_MARKET_JOB,
-                state: JobState::Successful,
-                started_at,
-                finished_at: started_at,
-                report_id: None,
-                detail: None,
-            },
-        )
-        .unwrap();
-    }
-
-    /// A Wednesday-noon `now` whose most recent window is Sunday 2026-06-14 09:00.
-    fn now_wed_after_a_window() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 6, 17, 12, 0, 0)
-            .single()
-            .unwrap()
-    }
-
-    #[test]
-    fn default_enabled_is_true_until_explicitly_disabled() {
-        let conn = mem();
-        assert!(weekly_job_enabled(&conn).unwrap());
-        set_weekly_job_enabled(&conn, false).unwrap();
-        assert!(!weekly_job_enabled(&conn).unwrap());
-        set_weekly_job_enabled(&conn, true).unwrap();
-        assert!(weekly_job_enabled(&conn).unwrap());
-    }
-
-    #[test]
-    fn missed_when_latest_run_predates_the_window() {
-        let conn = mem();
-        // Last activity was the prior Sunday; the 06-14 window then had no run.
-        insert_at(&conn, "2026-06-07T09:00:05+00:00");
-        let w = missed_warning(&conn, now_wed_after_a_window(), true)
-            .unwrap()
-            .expect("a missed-window warning");
-        assert_eq!(w.kind, WarningKind::MissedScheduledJob);
-        assert!(w.items[0].contains("2026-06-14"), "{:?}", w.items);
-    }
-
-    #[test]
-    fn not_missed_when_a_run_started_at_or_after_the_window() {
-        let conn = mem();
-        insert_at(&conn, "2026-06-14T09:00:05+00:00"); // the window fired
-        assert!(missed_warning(&conn, now_wed_after_a_window(), true)
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
-    fn no_history_is_not_a_missed_window() {
-        // A fresh install was not around to miss anything.
-        assert!(missed_warning(&mem(), now_wed_after_a_window(), true)
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
-    fn disabled_job_never_reports_a_missed_window() {
-        let conn = mem();
-        insert_at(&conn, "2026-06-07T09:00:05+00:00");
-        assert!(missed_warning(&conn, now_wed_after_a_window(), false)
-            .unwrap()
-            .is_none());
-    }
-
     #[test]
     fn job_status_reports_last_of_each_state_independently() {
         let conn = mem();
@@ -646,7 +466,6 @@ mod tests {
         insert(&conn, JobState::Failed, Some("provider 500"));
         insert(&conn, JobState::Skipped, Some(SKIP_REASON));
         let st = job_status(&conn, &RunGuard::default()).unwrap();
-        assert!(st.enabled);
         assert!(!st.is_running);
         assert!(st.last_successful_at.is_some());
         assert!(st.last_failed_at.is_some());
@@ -712,56 +531,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dismissing_the_missed_window_warning_suppresses_it() {
-        let conn = mem();
-        insert_at(&conn, "2026-06-07T09:00:05+00:00"); // last activity the prior Sunday
-        let now = now_wed_after_a_window();
-        let id = shown_dismiss_id(missed_warning(&conn, now, true).unwrap());
-        dismiss_warning_category(&conn, WarningKind::MissedScheduledJob, &id).unwrap();
-        assert!(
-            missed_warning(&conn, now, true).unwrap().is_none(),
-            "a dismissed missed window must not re-surface"
-        );
-    }
-
-    #[test]
-    fn a_later_missed_window_resurfaces_after_dismiss() {
-        let conn = mem();
-        insert_at(&conn, "2026-06-07T09:00:05+00:00");
-        let first_now = now_wed_after_a_window(); // window: Sunday 2026-06-14
-        let id = shown_dismiss_id(missed_warning(&conn, first_now, true).unwrap());
-        dismiss_warning_category(&conn, WarningKind::MissedScheduledJob, &id).unwrap();
-        assert!(missed_warning(&conn, first_now, true).unwrap().is_none());
-        // A week on, the next window (Sunday 2026-06-21) is a distinct missed event.
-        let next_now = Utc.with_ymd_and_hms(2026, 6, 24, 12, 0, 0).single().unwrap();
-        let w = missed_warning(&conn, next_now, true)
-            .unwrap()
-            .expect("a fresh missed-window warning");
-        assert!(w.items[0].contains("2026-06-21"), "{:?}", w.items);
-    }
-
-    #[test]
-    fn dismissing_a_stale_missed_window_does_not_hide_a_newer_one() {
-        // The fix's core (regression for the stale-click bug): a dismiss carries the
-        // *rendered* identity, so clicking a stale row can only ever dismiss the
-        // window that was shown — never a newer, unseen one that has since become
-        // current. Under the old re-snapshot-at-click-time shape this hid the fresh
-        // warning.
-        let conn = mem();
-        insert_at(&conn, "2026-06-07T09:00:05+00:00");
-        // The row the user is looking at: the 2026-06-14 window.
-        let stale_now = now_wed_after_a_window();
-        let stale_id = shown_dismiss_id(missed_warning(&conn, stale_now, true).unwrap());
-        // Time passes; a newer window (2026-06-21) is now current and also missed.
-        let later_now = Utc.with_ymd_and_hms(2026, 6, 24, 12, 0, 0).single().unwrap();
-        assert!(missed_warning(&conn, later_now, true).unwrap().is_some());
-        // The user clicks dismiss on the stale 06-14 row (its rendered identity).
-        dismiss_warning_category(&conn, WarningKind::MissedScheduledJob, &stale_id).unwrap();
-        // The fresh 06-21 warning must still surface — dismissing the old row never hid it.
-        let w = missed_warning(&conn, later_now, true)
-            .unwrap()
-            .expect("the newer window must remain visible");
-        assert!(w.items[0].contains("2026-06-21"), "{:?}", w.items);
-    }
 }

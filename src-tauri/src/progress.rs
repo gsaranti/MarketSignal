@@ -8,8 +8,7 @@
 //!
 //! - [`ProgressReporter`] is a trait the application layer implements. The live
 //!   Tauri command supplies an `emit`-backed reporter (defined in `lib.rs`, so
-//!   this module keeps no `tauri` dependency); tests — and a scheduled run with
-//!   no open window — use [`NoopReporter`].
+//!   this module keeps no `tauri` dependency); tests use [`NoopReporter`].
 //! - [`RunContext`] bundles the run id, the reporter, a shared cancel flag, and a
 //!   monotonic sequence counter. It is threaded into `generate_report` and held
 //!   by the real adapters, so neither the `MarketDataSource` nor the `MainAgent`
@@ -103,8 +102,7 @@ pub trait ProgressReporter: Send + Sync {
     fn report(&self, message: &ProgressMessage);
 }
 
-/// Drops every event. The default reporter for tests, offline smokes, and a
-/// scheduled run with no window to stream to.
+/// Drops every event. The default reporter for tests and offline smokes.
 pub struct NoopReporter;
 
 impl ProgressReporter for NoopReporter {

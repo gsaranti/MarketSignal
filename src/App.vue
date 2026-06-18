@@ -271,7 +271,6 @@ const validationError = ref<string | null>(null);
 
 const jobStatus = ref<JobStatus | null>(null);
 const jobStatusError = ref<string | null>(null);
-const jobBusy = ref(false);
 
 // Settings state lives here alongside the other surfaces' state; the Settings
 // view is presentational. One `settingsError` carries both load and save errors.
@@ -325,7 +324,7 @@ async function refreshValidation() {
   }
 }
 
-// Dismiss one Persistent Warning Area warning (failed / missed job) by the identity
+// Dismiss one Persistent Warning Area warning (failed job) by the identity
 // the row rendered, then re-derive the band. Passing the shown `dismissId` (not just
 // the kind) is what keeps a stale click from suppressing a newer warning the backend
 // would otherwise re-derive. Best-effort: if the dismiss call fails the warning
@@ -357,25 +356,6 @@ const dark = ref(readDark());
 function setDark(value: boolean) {
   writeDark(value);
   dark.value = value;
-}
-
-async function setJobEnabled(value: boolean) {
-  jobBusy.value = true;
-  let failure: string | null = null;
-  try {
-    await invoke("set_job_enabled", { enabled: value });
-  } catch (e) {
-    failure = String(e);
-  } finally {
-    jobBusy.value = false;
-  }
-  // Re-read the authoritative state, and refresh warnings: enabling/disabling
-  // changes whether a missed-window warning applies. refreshJobStatus() clears
-  // jobStatusError, so restore a toggle failure *after* it — otherwise a failed
-  // toggle followed by a successful status read would silently swallow the error.
-  await refreshJobStatus();
-  if (failure !== null) jobStatusError.value = failure;
-  void refreshValidation();
 }
 
 async function generate() {
@@ -422,7 +402,7 @@ async function generate() {
   } finally {
     generating.value = false;
     // Re-check after a run: config may have changed, and a run updates job
-    // history (failed/missed warnings, last-run status). Refresh reports too, so a
+    // history (failed-job warning, last-run status). Refresh reports too, so a
     // report that persisted but whose command then errored (e.g. a job-history write
     // failure after the report itself was written) still appears in the sidebar.
     void refreshValidation();
@@ -718,60 +698,28 @@ onMounted(async () => {
   // Load settings up front so the gate's config state is known on first paint
   // (the report view's Generate button depends on it via the warning area).
   void refreshSettings();
-  // The background scheduler emits this when a scheduled run finishes (or when it
-  // detects an overslept window), so an open window reflects the new state
-  // without a manual refresh. A successful run carries its report so the Latest
-  // Report View updates too; failure/skip/missed send null.
   // Live run progress: the backend streams one of these per step / per baseline
   // request / per coalesced agent-token chunk while a run is in flight. They feed
-  // the tracker for both manual and scheduled runs.
+  // the run tracker.
   unlisteners.push(
     await listen<ProgressMessage>("job-progress", (event) =>
       handleProgress(event.payload)
     )
   );
-  unlisteners.push(
-    await listen<GeneratedReport | null>("job-finished", (event) => {
-      if (event.payload) {
-        // Surface its row immediately (see generate) so a scheduled run's report
-        // appears in the sidebar even if the list refresh below fails.
-        upsertReportSummary(event.payload.summary);
-        void refreshReports();
-        // Switch to the fresh report only if the user was watching this run's
-        // tracker; otherwise stay put (a scheduled run shouldn't yank a reader).
-        if (reportPaneMode.value === "tracker") {
-          selectedReport.value = event.payload;
-          selectedReportId.value = event.payload.report_id;
-          reportError.value = null;
-          error.value = null;
-          reportPaneMode.value = "report";
-        }
-      }
-      void refreshValidation();
-      void refreshJobStatus();
-      // A scheduled run may have consumed inbox documents or recorded parse
-      // failures — mirror the manual path's post-run folder refresh so an open
-      // window's inbox/archive (and badge) match disk.
-      void refreshDocuments();
-      void refreshArchive();
-    })
-  );
-  // Closing to the tray hides the window but keeps this app mounted, so
-  // onMounted won't fire again on reopen. Refresh when the window regains focus
-  // so a missed-window warning surfaces on next open/resume, per
-  // docs/scheduling.md §Missed Job Detection.
+  // The window can be backgrounded while the app stays mounted, so onMounted
+  // won't fire again on reopen. Re-sync on regaining focus — chiefly the research
+  // inbox/archive, which the user can change in Finder while the app is unfocused;
+  // config / status / reports are refreshed defensively too.
   unlisteners.push(
     await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (focused) {
         void refreshValidation();
         void refreshJobStatus();
-        // A scheduled run while backgrounded may have added a report; re-list so
-        // the sidebar reflects it on return.
+        // Re-list defensively so the sidebar reflects the latest persisted state.
         void refreshReports();
         // The user may have dropped files into the inbox folder (via Finder)
-        // while the app was in the background — pick those up on return. The
-        // archive can change too (a background run files documents, or the user
-        // deletes from it in Finder), so refresh it as well.
+        // while the app was unfocused — pick those up on return. The archive can
+        // change too (the user deletes from it in Finder), so refresh it as well.
         void refreshDocuments();
         void refreshArchive();
       }
@@ -873,14 +821,11 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :loading="settingsLoading"
           :saving="settingsSaving"
           :error="settingsError"
-          :job-enabled="jobStatus?.enabled ?? null"
-          :job-busy="jobBusy"
           :dark="dark"
           :testing="connectionTesting"
           :test-results="connectionTests"
           :truncation-stats="truncationStats"
           @save="saveSettings"
-          @set-enabled="setJobEnabled"
           @set-dark="setDark"
           @test="testConnection"
         />

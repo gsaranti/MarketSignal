@@ -27,7 +27,6 @@ export const defaultValidation: ValidationReport = {
 };
 
 export const defaultJobStatus: JobStatus = {
-  enabled: true,
   is_running: false,
   last_successful_at: null,
   last_failed_at: null,
@@ -80,7 +79,6 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     truncation_stats: () => defaultTruncationStats,
     // Action commands a spec may drive through a user interaction.
     save_settings: () => null,
-    set_job_enabled: () => null,
   };
 }
 

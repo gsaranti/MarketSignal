@@ -2,11 +2,11 @@
 import { computed } from "vue";
 import type { JobStatus } from "../types";
 
-// Weekly-job status (docs/scheduling.md §Job Status Visibility). Reports run
-// history (last run / last failure / last skipped) and the in-flight indicator;
-// the enable/disable control lives in Settings. It also carries the persistent
-// manual "Generate now" trigger (the kit's footer division — generation is a job
-// action, the report toolbar is reading-only). Recessed chrome on paper-soft.
+// Job status (docs/scheduling.md §Job Status Visibility). Reports run history
+// (last run / last failure / last skipped / last cancelled) and the in-flight
+// indicator. It also carries the persistent manual "Generate now" trigger (the
+// kit's footer division — generation is a job action, the report toolbar is
+// reading-only). Recessed chrome on paper-soft.
 const props = defineProps<{
   status: JobStatus | null;
   error: string | null;
@@ -58,7 +58,7 @@ function formatLocal(iso: string): string {
   <footer v-if="visible" class="job-panel">
     <div class="job-status" aria-live="polite">
       <div v-if="isRunning" class="job-running">
-        <span class="job-running-label">Generating this week's report…</span>
+        <span class="job-running-label">Generating report…</span>
         <span class="job-running-bar" aria-hidden="true">
           <span class="job-running-fill"></span>
         </span>
