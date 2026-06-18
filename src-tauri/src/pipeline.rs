@@ -16,6 +16,7 @@ use crate::agent::{
 };
 use crate::analyst_agent::ModelAnalystAgent;
 use crate::baseline_delta::{self, BaselineDeltas};
+use crate::cadence;
 use crate::data_sources::{
     BaselineMarketData, GroupKind, MarketDataSource, BASELINE_SCHEMA_VERSION,
 };
@@ -179,11 +180,15 @@ impl AnalystStages {
 /// reviews come back in Bull/Bear/Balanced order. **Not fail-soft:** any analyst error
 /// (or a panicked thread) propagates as a job failure (`§Step 9` — the analyst reviews
 /// are fixed single-pass stages, unlike the fail-soft research half).
-fn run_analysts(analysts: &AnalystStages, packet: &ResearchPacket) -> Result<Vec<AnalystOutput>> {
+fn run_analysts(
+    analysts: &AnalystStages,
+    packet: &ResearchPacket,
+    cadence: cadence::ReportCadence,
+) -> Result<Vec<AnalystOutput>> {
     let (bull, bear, balanced) = std::thread::scope(|s| {
-        let bull = s.spawn(|| analysts.bull.review(packet));
-        let bear = s.spawn(|| analysts.bear.review(packet));
-        let balanced = s.spawn(|| analysts.balanced.review(packet));
+        let bull = s.spawn(|| analysts.bull.review(packet, cadence));
+        let bear = s.spawn(|| analysts.bear.review(packet, cadence));
+        let balanced = s.spawn(|| analysts.balanced.review(packet, cadence));
         (bull.join(), bear.join(), balanced.join())
     });
     let mut reviews = Vec::with_capacity(3);
@@ -286,6 +291,11 @@ pub fn generate_report(
     // input. Reads/compute are best-effort (`None` on a first report or any failure); the
     // serialization is captured here because `baseline` is consumed by the agent below.
     let deltas = compute_prior_deltas(&paths.db_path, &baseline, as_of);
+    // The run cadence is computed independently of `deltas` (from the prior snapshot's
+    // timestamp alone), so an existing user whose prior baseline won't decode still gets
+    // the true elapsed interval rather than first-report treatment. Threaded to the news
+    // gather, the analysts, and the main agent below.
+    let cadence = compute_cadence(&paths.db_path, as_of);
     let baseline_json = serde_json::to_string(&baseline).ok();
 
     // The bounded recent-report context for research routing — Step 8's
@@ -322,6 +332,7 @@ pub fn generate_report(
         research,
         &baseline,
         deltas.as_ref(),
+        cadence,
         &recent_reports,
         &inbox_docs,
         embedder,
@@ -350,7 +361,7 @@ pub fn generate_report(
     // step's, so `jobs::run_job` records it as a failed (or, under a concurrent cancel,
     // cancelled) run. Each analyst streams its own per-request row inside this step.
     ctx.step_started("analysts", "Running the analyst agents");
-    let analyst_reviews = match run_analysts(analysts, &research_packet) {
+    let analyst_reviews = match run_analysts(analysts, &research_packet, cadence) {
         Ok(reviews) => reviews,
         Err(e) => {
             let status = if ctx.is_cancelled() {
@@ -369,6 +380,8 @@ pub fn generate_report(
     let output = match agent.generate(MainAgentInput {
         baseline,
         deltas,
+        // The run cadence (independent of `deltas`) — the main agent's posture steer.
+        cadence,
         research: Some(research_packet),
         // Step 4 → Step 5: the pre-research pull steers the main agent's audit.
         audit_memory,
@@ -691,6 +704,7 @@ fn assemble_research_packet(
     research: &ResearchStages,
     baseline: &BaselineMarketData,
     deltas: Option<&BaselineDeltas>,
+    cadence: cadence::ReportCadence,
     recent_reports: &[ReportSummary],
     inbox_docs: &[ParsedResearchDoc],
     embedder: &dyn Embedder,
@@ -698,8 +712,10 @@ fn assemble_research_packet(
     ctx: &RunContext,
 ) -> AssembledResearch {
     // Step 7: gather raw headlines (Tavily + GDELT + FMP Articles) and run the
-    // deterministic dedup pre-pass.
-    let headlines = match research.news.gather() {
+    // deterministic dedup pre-pass. The news adapters size their recency windows to
+    // the run cadence (the elapsed interval since the last report), so a daily run
+    // isn't fed a fixed week of news and a monthly run isn't starved of it.
+    let headlines = match research.news.gather(cadence) {
         Ok(raw) => news::dedupe_headlines(raw),
         Err(e) => {
             eprintln!("research: news gather degraded to empty: {e:#}");
@@ -908,6 +924,33 @@ fn bail_if_cancelled(ctx: &RunContext) -> Result<()> {
     Ok(())
 }
 
+/// The run's report cadence: the elapsed interval since the previous report,
+/// classified ([`cadence::ReportCadence`]). Deliberately computed from the latest
+/// baseline snapshot's `captured_at` *alone* — the baseline JSON is never decoded —
+/// so a prior report whose payload won't deserialize still yields the true interval.
+/// This is the one place cadence must *not* reuse [`compute_prior_deltas`]: that
+/// collapses "first report", a DB error, and an undecodable prior into the same
+/// `None`, which would mislabel an existing user's run as a first report (wrong news
+/// windows, "first report" prompt wording). Here only a genuine absence degrades to
+/// the first-report cadence: no prior snapshot, a DB read error, or a stored
+/// timestamp that won't parse. The change view (`compute_prior_deltas`) still
+/// degrades independently — a corrupt prior loses the diff but not the cadence.
+fn compute_cadence(
+    db_path: &std::path::Path,
+    as_of: chrono::DateTime<chrono::Utc>,
+) -> cadence::ReportCadence {
+    let elapsed_days: Option<f64> = read_db_fail_soft(db_path, "cadence elapsed read", |conn| {
+        let Some((captured_at, _baseline_json)) = storage::latest_baseline_snapshot(conn)? else {
+            return Ok(None);
+        };
+        let prior_at = chrono::DateTime::parse_from_rfc3339(&captured_at)
+            .context("parsing prior snapshot captured_at")?
+            .with_timezone(&chrono::Utc);
+        Ok(Some((as_of - prior_at).num_seconds() as f64 / 86_400.0))
+    });
+    cadence::ReportCadence::from_elapsed(elapsed_days)
+}
+
 /// Best-effort change view for this run: read the previous report's baseline snapshot and
 /// diff this run's scan against it (`baseline_delta::compute_deltas`), anchored on the
 /// elapsed interval `as_of − captured_at`. Returns `None` — and the run proceeds without
@@ -916,6 +959,8 @@ fn bail_if_cancelled(ctx: &RunContext) -> Result<()> {
 /// to `None`. Routed through the shared [`read_db_fail_soft`] shell (`Option::default()`
 /// is `None`), so a DB-level failure now leaves the same labeled stderr trace as the
 /// other fail-soft reads — only an absent prior snapshot is the silent, expected `None`.
+/// (Cadence is computed separately — see [`compute_cadence`] — precisely so an
+/// undecodable prior here still yields the true interval there.)
 fn compute_prior_deltas(
     db_path: &std::path::Path,
     current: &BaselineMarketData,
@@ -1630,7 +1675,7 @@ mod tests {
     /// A news source that always errors, to drive the news-gather fail-soft arm.
     struct FailingNews;
     impl NewsSource for FailingNews {
-        fn gather(&self) -> anyhow::Result<Vec<RawHeadline>> {
+        fn gather(&self, _cadence: cadence::ReportCadence) -> anyhow::Result<Vec<RawHeadline>> {
             anyhow::bail!("news source down")
         }
     }
@@ -1638,7 +1683,7 @@ mod tests {
     /// A news source that returns no headlines, to drive the empty-gather short-circuit.
     struct EmptyNews;
     impl NewsSource for EmptyNews {
-        fn gather(&self) -> anyhow::Result<Vec<RawHeadline>> {
+        fn gather(&self, _cadence: cadence::ReportCadence) -> anyhow::Result<Vec<RawHeadline>> {
             Ok(Vec::new())
         }
     }
@@ -1683,6 +1728,7 @@ mod tests {
             &stages,
             &BaselineMarketData::default(),
             None,
+            crate::cadence::ReportCadence::from_elapsed(None),
             &[],
             &[],
             &StubEmbedder,
@@ -1712,6 +1758,47 @@ mod tests {
             .unwrap()
             .with_timezone(&chrono::Utc);
         assert!(compute_prior_deltas(&path, &BaselineMarketData::default(), as_of).is_none());
+    }
+
+    #[test]
+    fn cadence_survives_a_corrupt_prior_snapshot_even_as_the_change_view_degrades() {
+        // The regression behind the "derive cadence from deltas" bug: an existing user
+        // whose prior baseline JSON won't decode must still get the *true* cadence (right
+        // news windows, no "first report" wording), even though the change view correctly
+        // degrades to no deltas. `compute_cadence` reads only `captured_at`; the diff
+        // (`compute_prior_deltas`) needs the decodable payload — so they part ways here.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("market_signal.db");
+        let conn = storage::open(&db).unwrap();
+        storage::init_schema(&conn).unwrap();
+        // A snapshot with a valid timestamp but an undecodable baseline payload.
+        storage::insert_baseline_snapshot(
+            &conn,
+            "corrupt-prior",
+            "2026-06-08T00:00:00Z",
+            BASELINE_SCHEMA_VERSION,
+            "this is not valid baseline json {{{",
+        )
+        .unwrap();
+        let as_of = chrono::DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        // Cadence is recovered from the timestamp alone: ~7 days → not a first report.
+        let cadence = compute_cadence(&db, as_of);
+        assert_eq!(
+            cadence.bucket(),
+            cadence::CadenceBucket::Weekly,
+            "a ~7-day interval is recovered despite the corrupt payload"
+        );
+        assert!(cadence.elapsed_days().is_some(), "the elapsed interval is known");
+
+        // The change view, which needs the decodable payload, still degrades to none —
+        // the deliberate decoupling, not a flat-market signal.
+        assert!(
+            compute_prior_deltas(&db, &BaselineMarketData::default(), as_of).is_none(),
+            "the corrupt payload drops the diff"
+        );
     }
 
     // ---- Step-2 recent prior-report context (`load_recent_reports_for_audit`) ----
@@ -2084,6 +2171,7 @@ mod tests {
             &ResearchStages::stub(),
             &BaselineMarketData::default(),
             None,
+            crate::cadence::ReportCadence::from_elapsed(None),
             &recent,
             &[],
             &StubEmbedder,
@@ -2113,6 +2201,7 @@ mod tests {
             &ResearchStages::stub(),
             &BaselineMarketData::default(),
             None,
+            crate::cadence::ReportCadence::from_elapsed(None),
             &recent,
             &[],
             &StubEmbedder,
@@ -2442,6 +2531,7 @@ mod tests {
             &stages,
             &BaselineMarketData::default(),
             None,
+            crate::cadence::ReportCadence::from_elapsed(None),
             &recent,
             &[],
             &PanicEmbedder,
@@ -2516,6 +2606,7 @@ mod tests {
             &stages,
             &BaselineMarketData::default(),
             None,
+            crate::cadence::ReportCadence::from_elapsed(None),
             &[],
             &[],
             &crate::embedding::StubEmbedder,

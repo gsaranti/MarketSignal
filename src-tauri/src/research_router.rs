@@ -819,7 +819,7 @@ mod tests {
         let tavily = crate::tavily::TavilyNewsSource::from_env().expect("TAVILY_API_KEY set");
         let gdelt = crate::gdelt::GdeltNewsSource::new().expect("gdelt client");
         let raw = CompositeNewsSource::new(tavily, gdelt)
-            .gather()
+            .gather(crate::cadence::ReportCadence::from_elapsed(None))
             .expect("gather headlines");
         let deduped = dedupe_headlines(raw);
         assert!(!deduped.is_empty(), "expected headlines to filter");

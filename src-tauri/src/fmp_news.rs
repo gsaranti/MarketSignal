@@ -25,6 +25,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
+use crate::cadence::ReportCadence;
 use crate::news::{host_of, NewsSource, RawHeadline};
 use crate::progress::RunContext;
 
@@ -266,7 +267,11 @@ impl FmpNewsSource {
 impl NewsSource for FmpNewsSource {
     /// Fail-soft: a failing fetch logs and degrades to no headlines rather than
     /// failing the gather, so this best-effort supplement can never fail the job.
-    fn gather(&self) -> Result<Vec<RawHeadline>> {
+    ///
+    /// The run cadence is ignored: FMP Articles is a single bounded editorial page
+    /// with no recency window to size (unlike Tavily/GDELT), so it returns the same
+    /// page regardless of the elapsed interval.
+    fn gather(&self, _cadence: ReportCadence) -> Result<Vec<RawHeadline>> {
         Ok(gather_fail_soft(&self.progress, || self.fetch_articles()))
     }
 }
@@ -490,7 +495,7 @@ mod tests {
         // gather is fail-soft and never errors, so a bare success check is vacuous —
         // require a non-empty result so a tier regression (402) or feed change
         // surfaces here rather than as a silently thinner funnel.
-        let headlines = src.gather().unwrap();
+        let headlines = src.gather(ReportCadence::from_elapsed(None)).unwrap();
         eprintln!(
             "FMP articles live gather returned {} headlines",
             headlines.len()

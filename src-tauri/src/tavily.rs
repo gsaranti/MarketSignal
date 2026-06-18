@@ -31,6 +31,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::cadence::ReportCadence;
 use crate::news::{host_of, NewsSource, RawHeadline, NEWS_TOPICS};
 use crate::progress::RunContext;
 
@@ -49,6 +50,56 @@ const TAVILY_TIMEOUT: Duration = Duration::from_secs(20);
 /// budget once GDELT and FMP Articles are added. 20 is Tavily's `basic` per-query
 /// ceiling.
 const RESULTS_PER_QUERY: u32 = 20;
+
+/// Floor and cap (in days) on the cadence-sized Tavily recency window. The floor keeps
+/// a same-day regeneration from asking for a sub-day window; the cap holds a long gap to
+/// a month of recency. App-layer tunables, not doc-pinned. The first report (no elapsed
+/// interval) omits the window entirely and takes Tavily's own default.
+const TAVILY_WINDOW_FLOOR_DAYS: u32 = 1;
+const TAVILY_WINDOW_CAP_DAYS: u32 = 30;
+
+/// Clamp the elapsed interval to the Tavily lookback window in whole days, or `None` on
+/// the first report (no interval). Rounds *up* (a partial day still covers its whole
+/// span) and clamps to `[TAVILY_WINDOW_FLOOR_DAYS, TAVILY_WINDOW_CAP_DAYS]`.
+fn tavily_window_days(elapsed_days: Option<f64>) -> Option<u32> {
+    elapsed_days.map(|d| {
+        let days = d.ceil().max(0.0) as u32;
+        days.clamp(TAVILY_WINDOW_FLOOR_DAYS, TAVILY_WINDOW_CAP_DAYS)
+    })
+}
+
+/// The Tavily `start_date` (`YYYY-MM-DD`) for this run: `reference` (today) minus the
+/// cadence-sized lookback window, so the topic sweep looks back over the elapsed
+/// interval since the previous report. `None` on the first report — the parameter is
+/// then omitted and Tavily applies its own default. `reference` is injected so the
+/// mapping is unit-testable without the wall clock. The documented Tavily recency
+/// parameter is `start_date`/`end_date` (or the coarser `time_range`); the former
+/// `days` field is no longer part of the Search API, so a date bound is used instead.
+fn tavily_start_date(reference: chrono::NaiveDate, elapsed_days: Option<f64>) -> Option<String> {
+    tavily_window_days(elapsed_days).map(|days| {
+        (reference - chrono::Duration::days(i64::from(days)))
+            .format("%Y-%m-%d")
+            .to_string()
+    })
+}
+
+/// Build the Tavily `/search` request body. The `start_date` recency bound is included
+/// only when `Some` — a `None` (the first report, and the Step-9 executor path) omits
+/// it so Tavily applies its own default. Split out as the unit-test seam for the wire
+/// shape (the round trip itself runs against the localhost mock, which does not capture
+/// POST bodies).
+fn search_body(query: &str, start_date: Option<&str>) -> serde_json::Value {
+    let mut body = json!({
+        "query": query,
+        "topic": "news",
+        "max_results": RESULTS_PER_QUERY,
+        "search_depth": "basic",
+    });
+    if let Some(start_date) = start_date {
+        body["start_date"] = json!(start_date);
+    }
+    body
+}
 
 /// One Tavily search result, trimmed to the fields a headline needs. `title` and
 /// `url` are what the filter keys on; `content` is the excerpt Tavily returns and
@@ -161,13 +212,13 @@ impl TavilyNewsSource {
     /// Step-7 topic sweep (`gather`) and the Step-9 executor's arbitrary plan
     /// queries (`SearchBackend`). A transport error (Tavily unreachable) or any
     /// non-2xx response propagates as a fatal error.
-    fn run_search(&self, query: &str) -> Result<Vec<RawHeadline>> {
-        let body = json!({
-            "query": query,
-            "topic": "news",
-            "max_results": RESULTS_PER_QUERY,
-            "search_depth": "basic",
-        });
+    ///
+    /// `start_date` is the recency bound: the Step-7 gather passes a cadence-sized date
+    /// so an on-demand run looks back over the elapsed interval rather than a fixed
+    /// default; the Step-9 executor passes `None` and lets Tavily apply its own default.
+    /// When `None`, the parameter is omitted entirely.
+    fn run_search(&self, query: &str, start_date: Option<&str>) -> Result<Vec<RawHeadline>> {
+        let body = search_body(query, start_date);
         let url = format!("{}{TAVILY_SEARCH_PATH}", self.base_url);
         let (status, text) = crate::http_retry::send_with_retry("Tavily", || {
             self.http.post(&url).bearer_auth(&self.api_key).json(&body)
@@ -219,18 +270,23 @@ fn sweep_topics(
 }
 
 impl NewsSource for TavilyNewsSource {
-    fn gather(&self) -> Result<Vec<RawHeadline>> {
+    fn gather(&self, cadence: ReportCadence) -> Result<Vec<RawHeadline>> {
+        // Size the recency window to the elapsed interval since the last report: a
+        // `start_date` of today minus the cadence-sized lookback.
+        let today = chrono::Utc::now().date_naive();
+        let start_date = tavily_start_date(today, cadence.elapsed_days());
         Ok(sweep_topics(NEWS_TOPICS, &self.progress, |query| {
-            self.run_search(query)
+            self.run_search(query, start_date.as_deref())
         }))
     }
 }
 
 impl crate::research_executor::SearchBackend for TavilyNewsSource {
     /// The Step-9 executor drives arbitrary plan queries through the same Tavily
-    /// `/search` path the topic sweep uses.
+    /// `/search` path the topic sweep uses — with no recency bound (`None`), since a
+    /// plan query targets a topic, not a time slice.
     fn search(&self, query: &str) -> Result<Vec<RawHeadline>> {
-        self.run_search(query)
+        self.run_search(query, None)
     }
 }
 
@@ -273,6 +329,60 @@ mod tests {
     }
 
     #[test]
+    fn window_days_are_sized_to_the_elapsed_interval_and_clamped() {
+        // First report (no interval) omits the window — Tavily's own default applies.
+        assert_eq!(tavily_window_days(None), None);
+        // A partial day rounds up to the floor.
+        assert_eq!(tavily_window_days(Some(0.3)), Some(1));
+        // A whole interval rounds up to its day count.
+        assert_eq!(tavily_window_days(Some(7.0)), Some(7));
+        assert_eq!(tavily_window_days(Some(6.2)), Some(7));
+        // A long gap is held to the cap.
+        assert_eq!(tavily_window_days(Some(90.0)), Some(30));
+        // Clock skew floors to the minimum window.
+        assert_eq!(tavily_window_days(Some(-2.0)), Some(1));
+    }
+
+    #[test]
+    fn start_date_is_today_minus_the_clamped_window() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 18).unwrap();
+        // First report: no bound.
+        assert_eq!(tavily_start_date(today, None), None);
+        // A weekly gap looks back seven days from the reference date.
+        assert_eq!(
+            tavily_start_date(today, Some(7.0)).as_deref(),
+            Some("2026-06-11")
+        );
+        // A partial day floors to a one-day lookback.
+        assert_eq!(
+            tavily_start_date(today, Some(0.3)).as_deref(),
+            Some("2026-06-17")
+        );
+        // A long gap is held to the 30-day cap (not an unbounded lookback).
+        assert_eq!(
+            tavily_start_date(today, Some(120.0)).as_deref(),
+            Some("2026-05-19")
+        );
+    }
+
+    #[test]
+    fn search_body_includes_start_date_only_when_present() {
+        // The Step-7 gather passes a date bound: `start_date` reaches the wire body
+        // (the documented Tavily recency parameter — not the retired `days` field).
+        let with = search_body("fed policy", Some("2026-06-11"));
+        assert_eq!(with["start_date"], serde_json::json!("2026-06-11"));
+        assert_eq!(with["topic"], serde_json::json!("news"));
+        assert!(with.get("days").is_none(), "the retired days field is not sent");
+        // The first report / Step-9 executor path passes None: `start_date` is absent
+        // so Tavily applies its default rather than an empty window.
+        let without = search_body("fed policy", None);
+        assert!(
+            without.get("start_date").is_none(),
+            "start_date omitted when unset: {without}"
+        );
+    }
+
+    #[test]
     fn run_search_round_trips_a_200_into_headlines() {
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
@@ -280,7 +390,9 @@ mod tests {
             body: r#"{"results":[{"title":"Fed holds","url":"https://www.reuters.com/markets/fed","content":"excerpt","published_date":"2026-06-05"}]}"#,
         }]);
         let source = test_source(&server.base_url);
-        let headlines = source.run_search("fed policy").expect("search succeeds");
+        let headlines = source
+            .run_search("fed policy", None)
+            .expect("search succeeds");
         assert_eq!(server.attempts(), 1);
         assert_eq!(server.request_paths(), ["/search"]);
         assert_eq!(headlines.len(), 1);
@@ -298,7 +410,7 @@ mod tests {
             body: "unauthorized",
         }]);
         let source = test_source(&server.base_url);
-        let result = source.run_search("fed policy");
+        let result = source.run_search("fed policy", None);
         assert_eq!(server.attempts(), 1);
         assert_eq!(server.request_paths(), ["/search"]);
         assert!(result.is_err(), "a 401 is fatal to the search");
@@ -389,7 +501,7 @@ mod tests {
     fn live_search_smoke() {
         let tavily = TavilyNewsSource::from_env().expect("TAVILY_API_KEY set");
         let headlines = tavily
-            .run_search("US economy inflation and the Federal Reserve")
+            .run_search("US economy inflation and the Federal Reserve", None)
             .unwrap();
         assert!(!headlines.is_empty(), "expected live Tavily results");
         assert!(headlines.iter().all(|h| !h.url.is_empty()));

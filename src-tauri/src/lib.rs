@@ -2,6 +2,7 @@ pub mod agent;
 pub mod analyst_agent;
 pub mod baseline_delta;
 pub mod bls;
+pub mod cadence;
 pub mod config;
 pub mod connection_test;
 pub mod data_sources;

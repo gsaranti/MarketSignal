@@ -26,6 +26,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::agent::{AnalystAgent, AnalystOutput, Confidence, Posture};
+use crate::cadence::ReportCadence;
 use crate::model_agent::{
     extract_anthropic_tool_input, extract_openai_envelope, MainAgentConfig, Provider,
     ANTHROPIC_VERSION,
@@ -201,8 +202,16 @@ fn build_openai_request(model_id: &str, system: &str, user: &str) -> Value {
 /// empty data block, but the skills library is appended in every case: the lenses are
 /// packet-independent, mirroring the main agent, which appends the whole library
 /// unconditionally.
-fn build_user_prompt(packet: &ResearchPacket) -> String {
+fn build_user_prompt(packet: &ResearchPacket, cadence: ReportCadence) -> String {
     let mut prompt = USER_INSTRUCTION.to_string();
+    // Report cadence cue: how long since the previous report, so the analyst weights
+    // recent moves versus the structural picture. Passed in by the application layer
+    // (the same value the main agent reads), not derived from the packet's change view —
+    // a corrupt prior snapshot drops the change view but not the cadence. Appended
+    // unconditionally like the skills library below — on the first report it states the
+    // first-report case rather than implying a prior.
+    prompt.push_str("\n\n");
+    prompt.push_str(&cadence.analyst_cue());
     if packet != &ResearchPacket::default() {
         if let Ok(json) = serde_json::to_string_pretty(packet) {
             prompt.push_str(&format!(
@@ -304,11 +313,11 @@ impl ModelAnalystAgent {
 }
 
 impl AnalystAgent for ModelAnalystAgent {
-    fn review(&self, packet: &ResearchPacket) -> Result<AnalystOutput> {
+    fn review(&self, packet: &ResearchPacket, cadence: ReportCadence) -> Result<AnalystOutput> {
         let provider = self.config.model.provider();
         let model_id = self.config.model.model_id();
         let system = system_prompt(self.posture);
-        let user = build_user_prompt(packet);
+        let user = build_user_prompt(packet, cadence);
         let body = match provider {
             Provider::Anthropic => build_anthropic_request(model_id, &system, &user),
             Provider::OpenAi => build_openai_request(model_id, &system, &user),
@@ -437,16 +446,31 @@ mod tests {
 
     #[test]
     fn user_prompt_embeds_packet_when_present_and_omits_the_data_block_when_empty() {
-        let with = build_user_prompt(&one_index_packet());
+        let with = build_user_prompt(&one_index_packet(), ReportCadence::default());
         assert!(with.starts_with(USER_INSTRUCTION), "{with}");
         assert!(with.contains("Condensed research packet"), "{with}");
         assert!(with.contains("S&P 500"), "{with}");
 
         // A default packet still leads with the bare instruction and carries no data block,
         // but is no longer exactly USER_INSTRUCTION — the skills library is appended (below).
-        let bare = build_user_prompt(&ResearchPacket::default());
+        let bare = build_user_prompt(&ResearchPacket::default(), ReportCadence::default());
         assert!(bare.starts_with(USER_INSTRUCTION), "{bare}");
         assert!(!bare.contains("Condensed research packet"), "{bare}");
+    }
+
+    #[test]
+    fn user_prompt_carries_a_cadence_cue_reflecting_the_passed_cadence() {
+        // The first-report cadence gets the first-report cue, regardless of the packet.
+        let first = build_user_prompt(&ResearchPacket::default(), ReportCadence::from_elapsed(None));
+        assert!(first.contains("Report cadence:"), "{first}");
+        assert!(first.contains("first report"), "{first}");
+
+        // A long elapsed interval gets the reassess-the-structure cue — and it comes from
+        // the passed cadence, not the packet's change view (so a corrupt-prior packet with
+        // no deltas still gets the right cue).
+        let long = build_user_prompt(&one_index_packet(), ReportCadence::from_elapsed(Some(35.0)));
+        assert!(long.contains("Report cadence:"), "{long}");
+        assert!(long.contains("reassess the structural picture"), "{long}");
     }
 
     #[test]
@@ -454,7 +478,7 @@ mod tests {
         // The lenses are packet-independent, so the full library + its verdict forcing
         // function ride into the prompt in both the populated and default-packet paths.
         for packet in [one_index_packet(), ResearchPacket::default()] {
-            let prompt = build_user_prompt(&packet);
+            let prompt = build_user_prompt(&packet, ReportCadence::default());
             assert!(
                 prompt.contains("Analytical skills"),
                 "intro missing: {prompt}"
@@ -519,7 +543,9 @@ mod tests {
     #[ignore = "hits a live OpenAI/Anthropic agent model; set the analyst model + provider key"]
     fn analyst_review_smoke() {
         let agent = ModelAnalystAgent::from_env(Posture::Balanced).expect("analyst configured");
-        let review = agent.review(&one_index_packet()).expect("review");
+        let review = agent
+            .review(&one_index_packet(), ReportCadence::from_elapsed(Some(7.0)))
+            .expect("review");
         assert_eq!(review.posture, Posture::Balanced);
         assert!(
             !review.summary.trim().is_empty(),

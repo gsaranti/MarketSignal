@@ -68,7 +68,11 @@ impl MainAgent for RecordingAgent {
 struct FailingAnalyst;
 
 impl AnalystAgent for FailingAnalyst {
-    fn review(&self, _packet: &ResearchPacket) -> anyhow::Result<AnalystOutput> {
+    fn review(
+        &self,
+        _packet: &ResearchPacket,
+        _cadence: market_signal_temp_lib::cadence::ReportCadence,
+    ) -> anyhow::Result<AnalystOutput> {
         anyhow::bail!("analyst model unreachable (simulated)")
     }
 }
