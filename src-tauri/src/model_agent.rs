@@ -33,6 +33,7 @@ use crate::agent::{
     ReportSummary, RiskPosture, ThesisStance,
 };
 use crate::baseline_delta::BaselineDeltas;
+use crate::cadence::ReportCadence;
 use crate::data_sources::BaselineMarketData;
 use crate::progress::RunContext;
 use crate::research_packet::ResearchPacket;
@@ -165,6 +166,14 @@ market-research publication. You write a single, cohesive market report in one u
 voice — the Market Signal Thesis — that reads like a professional market publication: \
 thesis-driven, forward-looking, and focused on structural developments rather than reactive \
 daily commentary.
+
+Market Signal reports are generated on demand, so the interval since the previous report \
+varies — it may be intraday, daily, weekly, monthly, or longer. The prompt states this \
+report's cadence; calibrate the report's depth and posture to it. A short interval is a \
+tactical update that builds on the prior thesis and focuses on what changed; a long interval \
+warrants a fuller structural refresh that re-examines whether the thesis still holds. Keep the \
+unified, thesis-driven voice in every case — a tactical update is still anchored to the \
+standing thesis, not reactive commentary.
 
 Ground your analysis in the baseline market data provided with this prompt. That data \
 may carry a `gaps` list — series or releases that could not be gathered this run; treat \
@@ -453,6 +462,18 @@ fn build_user_prompt(
     }
 
     prompt
+}
+
+/// Render the run's report-cadence block — how the main agent should pitch *this*
+/// report given the elapsed interval since the previous one (a short interval is a
+/// tactical update that builds on the prior thesis; a long one a fuller structural
+/// refresh). Appended in [`MainAgent::generate`] from the application layer's
+/// independently-computed `MainAgentInput.cadence` (deliberately *not* derived from the
+/// change view, which is absent on both a first report and an undecodable prior), so it
+/// fires even when the delta block does not. A separately-tested seam, like
+/// [`format_analyst_reviews`]; the standing instruction lives in [`SYSTEM_PROMPT`].
+fn format_cadence(cadence: ReportCadence) -> String {
+    format!("\n\n{}", cadence.main_agent_guidance())
 }
 
 /// Render the Steps 12–15 analyst reviews as the synthesis block the main agent reasons
@@ -1083,6 +1104,10 @@ impl MainAgent for ModelMainAgent {
             &input.audit_memory,
             &input.recent_reports,
         );
+        // Report cadence: the posture steer for this run's elapsed interval. Appended
+        // from the independently-computed `input.cadence` (robust to a corrupt prior),
+        // so it fires even when the delta block above is absent.
+        user.push_str(&format_cadence(input.cadence));
         // Analytical skills (`docs/analyst-skills.md`): supply the whole library in one pass.
         // The model applies the lenses the packet warrants and folds each verdict
         // into the thesis — no phase-1 selection round-trip at this library size.
@@ -1280,6 +1305,9 @@ mod tests {
 
     #[test]
     fn user_prompt_is_bare_when_baseline_empty() {
+        // An empty baseline (offline smoke) carries no data block — the bare instruction.
+        // The cadence block is appended in `generate` (see `format_cadence`), not here,
+        // so `build_user_prompt` of an empty baseline is exactly USER_PROMPT.
         assert_eq!(
             build_user_prompt(&BaselineMarketData::default(), None, None, &[], &[]),
             USER_PROMPT
@@ -1337,6 +1365,26 @@ mod tests {
             !prompt.contains("Change since the previous report"),
             "{prompt}"
         );
+    }
+
+    #[test]
+    fn format_cadence_fires_on_the_first_report() {
+        // The first-report cadence (no prior interval) still produces a block telling the
+        // model to establish the thesis from scratch — the framing the delta block cannot
+        // reach on a first run, which is why cadence rides its own channel.
+        let block = format_cadence(ReportCadence::from_elapsed(None));
+        assert!(block.contains("Report cadence:"), "{block}");
+        assert!(block.contains("first Market Signal report"), "{block}");
+    }
+
+    #[test]
+    fn format_cadence_reflects_the_elapsed_interval() {
+        // A ~weekly gap gets the standard-cadence guidance; a long gap gets the
+        // structural-refresh guidance — so the model is steered to write differently.
+        let weekly = format_cadence(ReportCadence::from_elapsed(Some(6.0)));
+        assert!(weekly.contains("roughly weekly cadence"), "{weekly}");
+        let monthly = format_cadence(ReportCadence::from_elapsed(Some(40.0)));
+        assert!(monthly.contains("roughly monthly cadence"), "{monthly}");
     }
 
     #[test]

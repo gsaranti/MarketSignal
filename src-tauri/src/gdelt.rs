@@ -30,6 +30,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
+use crate::cadence::ReportCadence;
 use crate::news::{host_of, NewsSource, RawHeadline};
 use crate::progress::RunContext;
 
@@ -42,10 +43,35 @@ const GDELT_TIMEOUT: Duration = Duration::from_secs(20);
 /// ceiling — taken in full since one query now covers every news category.
 const GDELT_MAX_RECORDS: &str = "250";
 
-/// Coverage window requested — a one-week lookback keeps the geopolitical feed
-/// recent and bounded. A fixed window (not the report's actual since-last-report
-/// interval), since GDELT's rate limits make one bounded query the only safe gather.
-const GDELT_TIMESPAN: &str = "1w";
+/// Coverage window used on the **first report**, when there is no prior report to
+/// measure an interval against — a one-week lookback keeps the geopolitical feed
+/// recent and bounded. On every later run the window is sized to the actual elapsed
+/// interval since the last report (see [`gdelt_timespan`]).
+const GDELT_DEFAULT_TIMESPAN: &str = "1w";
+
+/// Floor and cap (in days) on the cadence-sized GDELT window. The floor keeps a
+/// same-day regeneration from requesting a window so narrow it returns almost
+/// nothing; the cap holds a long gap to a month's lookback — plenty for the
+/// broad-trend layer, and `DateDesc` + `GDELT_MAX_RECORDS` already surface the most
+/// recent articles first. App-layer tunables, not doc-pinned.
+const GDELT_WINDOW_FLOOR_DAYS: i64 = 1;
+const GDELT_WINDOW_CAP_DAYS: i64 = 31;
+
+/// Pick the GDELT `timespan` for this run from the report cadence. The first report
+/// (no elapsed interval) keeps the fixed [`GDELT_DEFAULT_TIMESPAN`]; every later run
+/// rounds the elapsed days *up* (so a partial day still covers its whole span) and
+/// clamps to `[GDELT_WINDOW_FLOOR_DAYS, GDELT_WINDOW_CAP_DAYS]`, rendered as GDELT's
+/// `"<n>d"` form. This changes only the window width, not the request count — still a
+/// single bounded query, so it stays inside GDELT's burst budget.
+fn gdelt_timespan(elapsed_days: Option<f64>) -> String {
+    match elapsed_days {
+        None => GDELT_DEFAULT_TIMESPAN.to_string(),
+        Some(d) => {
+            let days = (d.ceil() as i64).clamp(GDELT_WINDOW_FLOOR_DAYS, GDELT_WINDOW_CAP_DAYS);
+            format!("{days}d")
+        }
+    }
+}
 
 /// GDELT gates on the User-Agent: requests without a descriptive one are
 /// rate-limited / refused even at low volume (gdelt-doc-api#22 — "the API now
@@ -141,10 +167,11 @@ impl GdeltNewsSource {
         self
     }
 
-    /// Run one query, returning its headlines or an error it failed on. `gather`
-    /// applies the fail-soft policy; this stays honest about a failure so the
-    /// caller can log it.
-    fn search(&self, query: &str) -> Result<Vec<RawHeadline>> {
+    /// Run one query over the given `timespan` window, returning its headlines or an
+    /// error it failed on. `gather` applies the fail-soft policy and computes the
+    /// window from the run cadence; this stays honest about a failure so the caller
+    /// can log it.
+    fn search(&self, query: &str, timespan: &str) -> Result<Vec<RawHeadline>> {
         let resp = self
             .http
             .get(GDELT_DOC_URL)
@@ -153,7 +180,7 @@ impl GdeltNewsSource {
                 ("mode", "ArtList"),
                 ("format", "json"),
                 ("maxrecords", GDELT_MAX_RECORDS),
-                ("timespan", GDELT_TIMESPAN),
+                ("timespan", timespan),
                 ("sort", "DateDesc"),
             ])
             .send()
@@ -170,15 +197,17 @@ impl GdeltNewsSource {
 impl NewsSource for GdeltNewsSource {
     /// Fail-soft: a failing query logs and degrades to no headlines rather than
     /// failing the gather, so GDELT (keyless, best-effort) can never fail the job.
-    fn gather(&self) -> Result<Vec<RawHeadline>> {
+    fn gather(&self, cadence: ReportCadence) -> Result<Vec<RawHeadline>> {
         // Cooperative cancel: skip the call entirely if a stop was already requested.
         if self.progress.is_cancelled() {
             return Ok(Vec::new());
         }
+        // Size the lookback to the elapsed interval since the last report.
+        let timespan = gdelt_timespan(cadence.elapsed_days());
         // One tracker row for GDELT's single combined query.
         self.progress
             .request_started("GDELT", "news", "gdelt-sweep", "Geopolitical news sweep");
-        match self.search(GDELT_QUERY) {
+        match self.search(GDELT_QUERY, &timespan) {
             Ok(headlines) => {
                 self.progress.request_finished(
                     "GDELT",
@@ -254,6 +283,21 @@ mod tests {
     }
 
     #[test]
+    fn timespan_is_sized_to_the_elapsed_interval_and_clamped() {
+        // First report (no interval) keeps the fixed default.
+        assert_eq!(gdelt_timespan(None), "1w");
+        // A partial day rounds up to the floor rather than collapsing to nothing.
+        assert_eq!(gdelt_timespan(Some(0.3)), "1d");
+        // A whole interval rounds up to its day count.
+        assert_eq!(gdelt_timespan(Some(7.0)), "7d");
+        assert_eq!(gdelt_timespan(Some(6.2)), "7d");
+        // A long gap is held to the cap, not an unbounded month-plus window.
+        assert_eq!(gdelt_timespan(Some(120.0)), "31d");
+        // Clock skew (a negative interval) floors to the minimum window.
+        assert_eq!(gdelt_timespan(Some(-3.0)), "1d");
+    }
+
+    #[test]
     #[ignore = "hits the live GDELT API (keyless)"]
     fn live_gather_smoke() {
         let gdelt = GdeltNewsSource::new().unwrap();
@@ -261,7 +305,7 @@ mod tests {
         // result would silently pass even when GDELT is rate-limited to nothing
         // (the failure mode that motivated the single-query consolidation). Require
         // a non-empty result so that regression surfaces here.
-        let headlines = gdelt.gather().unwrap();
+        let headlines = gdelt.gather(ReportCadence::from_elapsed(None)).unwrap();
         eprintln!("GDELT live gather returned {} headlines", headlines.len());
         assert!(
             !headlines.is_empty(),

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::baseline_delta::BaselineDeltas;
+use crate::cadence::ReportCadence;
 use crate::data_sources::BaselineMarketData;
 use crate::research_packet::ResearchPacket;
 
@@ -118,6 +119,15 @@ pub struct MainAgentInput {
     /// first report, or when no prior snapshot could be read or decoded — the deltas are
     /// additive and never gate a run.
     pub deltas: Option<BaselineDeltas>,
+    /// The run's report cadence (`cadence::ReportCadence`): the elapsed interval since
+    /// the previous report, classified. Computed by the application layer from the prior
+    /// snapshot's timestamp alone — deliberately *not* derived from `deltas`, which is
+    /// `None` for both a first report and an undecodable prior, so an existing user with
+    /// a corrupt prior snapshot would otherwise be mislabeled a first run. Drives the
+    /// main agent's posture steer (a short interval is a tactical update; a long one a
+    /// structural refresh), and it is meaningful even when `deltas` is absent. `Default`
+    /// is the first-report cadence.
+    pub cadence: ReportCadence,
     /// The Step-11 condensed research packet (`research_packet`): the filtered news
     /// clusters and bounded deep-research evidence the application layer assembled from
     /// the research half. `None` on the offline/stub path (no research stages run) — the
@@ -378,7 +388,15 @@ pub struct AnalystOutput {
 /// seam, where the three analysts run concurrently (`docs/weekly-report-workflow.md
 /// §Step 12`).
 pub trait AnalystAgent {
-    fn review(&self, packet: &ResearchPacket) -> anyhow::Result<AnalystOutput>;
+    /// `cadence` is the run's report cadence — how long since the previous report — so
+    /// the analyst can weight recent moves versus the structural picture. Passed
+    /// explicitly (not read from the packet's change view) so a corrupt prior snapshot
+    /// still yields the true interval (see [`MainAgentInput::cadence`]).
+    fn review(
+        &self,
+        packet: &ResearchPacket,
+        cadence: ReportCadence,
+    ) -> anyhow::Result<AnalystOutput>;
 }
 
 /// Deterministic offline stand-in for a real analyst adapter, tagged with the posture
@@ -396,7 +414,11 @@ impl StubAnalystAgent {
 }
 
 impl AnalystAgent for StubAnalystAgent {
-    fn review(&self, _packet: &ResearchPacket) -> anyhow::Result<AnalystOutput> {
+    fn review(
+        &self,
+        _packet: &ResearchPacket,
+        _cadence: ReportCadence,
+    ) -> anyhow::Result<AnalystOutput> {
         Ok(AnalystOutput {
             posture: self.posture,
             summary: format!(
@@ -496,7 +518,10 @@ mod tests {
         // Each stub is one posture and returns a review tagged with it.
         for p in Posture::ALL {
             let out = StubAnalystAgent::new(p)
-                .review(&crate::research_packet::ResearchPacket::default())
+                .review(
+                    &crate::research_packet::ResearchPacket::default(),
+                    ReportCadence::default(),
+                )
                 .unwrap();
             assert_eq!(out.posture, p);
             assert!(!out.summary.is_empty());

@@ -22,6 +22,8 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::cadence::ReportCadence;
+
 /// The market-news topics the gathering pass queries each provider for, derived
 /// from the Step-3 news categories (`docs/weekly-report-workflow.md §Step 3` —
 /// politics, geopolitics, China/trade, energy, earnings, AI/semiconductors, and
@@ -52,11 +54,14 @@ pub struct RawHeadline {
     pub snippet: Option<String>,
 }
 
-/// The news-source stage. One method: gather a broad set of raw headlines. Sync,
-/// like the `MarketDataSource` trait — the blocking HTTP call inside each real
-/// adapter is offloaded via `spawn_blocking` at the Tauri command seam.
+/// The news-source stage. One method: gather a broad set of raw headlines over the
+/// run's [`ReportCadence`] — the adapters size their recency windows to the elapsed
+/// interval so an on-demand run isn't fed a fixed week of news regardless of when the
+/// last report ran (`cadence`). Sync, like the `MarketDataSource` trait — the blocking
+/// HTTP call inside each real adapter is offloaded via `spawn_blocking` at the Tauri
+/// command seam.
 pub trait NewsSource {
-    fn gather(&self) -> anyhow::Result<Vec<RawHeadline>>;
+    fn gather(&self, cadence: ReportCadence) -> anyhow::Result<Vec<RawHeadline>>;
 }
 
 /// Deterministic offline stand-in for the real news adapters. Returns a small,
@@ -65,7 +70,7 @@ pub trait NewsSource {
 pub struct StubNewsSource;
 
 impl NewsSource for StubNewsSource {
-    fn gather(&self) -> anyhow::Result<Vec<RawHeadline>> {
+    fn gather(&self, _cadence: ReportCadence) -> anyhow::Result<Vec<RawHeadline>> {
         Ok(vec![
             RawHeadline {
                 title: "Fed holds rates steady as inflation cools".into(),
@@ -102,9 +107,10 @@ impl<P, S> CompositeNewsSource<P, S> {
 }
 
 impl<P: NewsSource, S: NewsSource> NewsSource for CompositeNewsSource<P, S> {
-    fn gather(&self) -> anyhow::Result<Vec<RawHeadline>> {
-        let mut headlines = self.primary.gather()?;
-        headlines.extend(self.secondary.gather()?);
+    fn gather(&self, cadence: ReportCadence) -> anyhow::Result<Vec<RawHeadline>> {
+        // Both children size their windows to the same cadence.
+        let mut headlines = self.primary.gather(cadence)?;
+        headlines.extend(self.secondary.gather(cadence)?);
         Ok(headlines)
     }
 }
@@ -203,9 +209,14 @@ mod tests {
     /// A stub that always fails its gather, to check composite error propagation.
     struct FailingNewsSource;
     impl NewsSource for FailingNewsSource {
-        fn gather(&self) -> anyhow::Result<Vec<RawHeadline>> {
+        fn gather(&self, _cadence: ReportCadence) -> anyhow::Result<Vec<RawHeadline>> {
             anyhow::bail!("news source down")
         }
+    }
+
+    /// The first-report cadence (no prior interval) — the default the gather tests use.
+    fn no_cadence() -> ReportCadence {
+        ReportCadence::from_elapsed(None)
     }
 
     #[test]
@@ -257,12 +268,12 @@ mod tests {
     fn composite_concatenates_primary_then_secondary() {
         struct One;
         impl NewsSource for One {
-            fn gather(&self) -> anyhow::Result<Vec<RawHeadline>> {
+            fn gather(&self, _cadence: ReportCadence) -> anyhow::Result<Vec<RawHeadline>> {
                 Ok(vec![headline("primary", "https://p.com/1")])
             }
         }
         let composite = CompositeNewsSource::new(One, StubNewsSource);
-        let out = composite.gather().unwrap();
+        let out = composite.gather(no_cadence()).unwrap();
         assert_eq!(out[0].title, "primary", "primary headline comes first");
         assert!(out.len() > 1, "secondary headlines follow");
     }
@@ -270,7 +281,7 @@ mod tests {
     #[test]
     fn composite_propagates_a_source_failure() {
         let composite = CompositeNewsSource::new(StubNewsSource, FailingNewsSource);
-        assert!(composite.gather().is_err());
+        assert!(composite.gather(no_cadence()).is_err());
     }
 
     #[test]
@@ -298,7 +309,7 @@ mod tests {
         let tavily = crate::tavily::TavilyNewsSource::from_env().expect("TAVILY_API_KEY set");
         let gdelt = crate::gdelt::GdeltNewsSource::new().expect("gdelt client");
         let source = CompositeNewsSource::new(tavily, gdelt);
-        let raw = source.gather().expect("gather headlines");
+        let raw = source.gather(no_cadence()).expect("gather headlines");
         assert!(
             !raw.is_empty(),
             "expected some headlines from the live gather"

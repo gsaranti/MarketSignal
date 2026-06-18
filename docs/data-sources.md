@@ -90,6 +90,8 @@ Responsibilities:
 
 The application uses Tavily as the primary research and news-ingestion system.
 
+Because reports are generated on demand (no fixed cadence — see [scheduling.md §Generating a Report](scheduling.md#generating-a-report)), the Step-7 news sweep sizes Tavily's recency bound to the **elapsed interval since the previous report**: it sends a `start_date` of today minus the elapsed days (clamped to a floor and a one-month cap), so a daily run isn't fed a stale week and a monthly run isn't starved of coverage. (`start_date`/`end_date` are the documented Tavily Search recency parameters; the former `days` field is no longer part of the API.) The first report (no prior interval) omits the bound and takes Tavily's own default. The Step-9 research executor's plan queries carry no recency bound — they target a topic, not a time slice.
+
 ### FMP Articles
 Docs - https://site.financialmodelingprep.com/developer/docs (Articles)
 
@@ -115,6 +117,8 @@ Responsibilities:
 - large-scale news trend identification
 
 The application uses GDELT to strengthen geopolitical and macro event awareness.
+
+GDELT's single combined query sizes its `timespan` lookback to the **elapsed interval since the previous report** (rounded up to whole days, clamped to a floor and a one-month cap), rather than a fixed week — keeping the geopolitical feed matched to the on-demand cadence. The first report (no prior interval) uses a one-week default. This changes only the window width, not the request count: it stays a single bounded query, so GDELT's burst rate limit is unaffected.
 
 ## LLM Providers
 - [OpenAI](https://platform.openai.com/docs)
