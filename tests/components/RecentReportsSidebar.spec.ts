@@ -59,7 +59,7 @@ test("renders one report row per report, dated locally with a short id", () => {
   const wrapper = makeWrapper();
   const rows = wrapper.findAll(".sidebar-list .report-row");
   expect(rows).toHaveLength(2);
-  expect(rows[0].find(".row-title").text()).toBe("Weekly Market Report");
+  expect(rows[0].find(".row-title").text()).toBe("Market Signal Report");
   expect(rows[0].find(".row-meta").text()).toBe(
     `${localDate(reports[0].created_at)} · #11111111`
   );

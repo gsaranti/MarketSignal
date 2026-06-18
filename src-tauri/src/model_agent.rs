@@ -668,7 +668,7 @@ fn envelope_to_output(
 
     let summary = ReportSummary {
         report_id,
-        report_type: "weekly_market".to_string(),
+        report_type: "market_signal".to_string(),
         created_at,
         risk_posture: env.risk_posture,
         market_cycle: env.market_cycle,
@@ -1550,7 +1550,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(out.summary.report_id, "rid-123");
-        assert_eq!(out.summary.report_type, "weekly_market");
+        assert_eq!(out.summary.report_type, "market_signal");
         assert_eq!(out.summary.created_at, "2026-06-02T00:00:00Z");
         assert_eq!(out.summary.header_summary_bullets.len(), 3);
         assert!(!out.markdown.is_empty());

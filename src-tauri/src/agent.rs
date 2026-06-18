@@ -184,7 +184,7 @@ impl MainAgent for StubMainAgent {
     fn generate(&self, _input: MainAgentInput) -> anyhow::Result<MainAgentOutput> {
         let summary = ReportSummary {
             report_id: Uuid::new_v4().to_string(),
-            report_type: "weekly_market".to_string(),
+            report_type: "market_signal".to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             risk_posture: RiskPosture::Mixed,
             market_cycle: MarketCycle::LateCycle,
@@ -421,7 +421,7 @@ mod tests {
         let s = &out.summary;
 
         assert!(!s.report_id.is_empty());
-        assert_eq!(s.report_type, "weekly_market");
+        assert_eq!(s.report_type, "market_signal");
         assert!(!s.created_at.is_empty());
         assert!((3..=6).contains(&s.header_summary_bullets.len()));
         assert!(!out.markdown.is_empty());

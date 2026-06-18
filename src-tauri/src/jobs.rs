@@ -47,7 +47,7 @@ const DISMISSED_FAILED_JOB_RUN_ID_KEY: &str = "dismissed_failed_job_run_id";
 const SKIP_REASON: &str = "another report run is already in progress";
 
 /// Human title for the run tracker, emitted as the run starts.
-const RUN_LABEL: &str = "Weekly market report";
+const RUN_LABEL: &str = "Market Signal report";
 
 /// How a job run ended (`docs/scheduling.md §Job States`). There is no `Missed`
 /// state — report generation is on demand, so a report is never "due" while

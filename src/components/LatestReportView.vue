@@ -89,7 +89,7 @@ const canExport = computed(
 // Markdown export name and the toolbar dateline so all three agree.
 async function exportPdf() {
   if (!props.report) return;
-  const base = `${localDate(props.report.summary.created_at)}-market-signal-weekly-report`;
+  const base = `${localDate(props.report.summary.created_at)}-market-signal-report`;
   const previousTitle = document.title;
   document.title = base;
   try {
@@ -156,7 +156,7 @@ async function exportPdf() {
         v-html="renderedHtml"
       ></article>
       <div v-else class="report-empty">
-        <div class="report-empty-eyebrow">Weekly market report</div>
+        <div class="report-empty-eyebrow">Market Signal report</div>
         <p class="report-empty-body">
           No issue has been generated yet. When you generate one, it will appear
           here.

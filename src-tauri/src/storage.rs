@@ -479,7 +479,7 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
 }
 
 /// How many of the most recent reports the sidebar lists (`docs/storage.md` —
-/// only the most recent 30 Weekly Market reports are retained). This bounds the
+/// only the most recent 30 Market Signal reports are retained). This bounds the
 /// *display* query; the retention cascade that enforces the same number on disk
 /// is bounded by [`REPORT_RETENTION`] below.
 pub const RECENT_REPORTS_LIMIT: u32 = 30;
@@ -568,8 +568,106 @@ pub fn insert_report(conn: &Connection, record: &ReportRecord) -> Result<()> {
     Ok(())
 }
 
+/// One-time, idempotent migration of pre-pivot report identifiers
+/// (`docs/storage.md §Legacy Naming Migration`), run once at launch: rewrite the
+/// `report_type` slug `weekly_market` → `market_signal`, and rename
+/// `…-market-signal-weekly-report…` Markdown files → `…-market-signal-report…`,
+/// updating each row's stored path to match.
+///
+/// Drives off each row's *stored* `markdown_path` (a substring replace), so the
+/// real `-<id8>` suffix on the canonical filename is preserved — the doc's
+/// simplified `…-weekly-report.md` example omits it. The `report_type` column and
+/// the `summary_json` blob are rewritten together, from the deserialized summary,
+/// so the two can never disagree afterward. No report content changes; vector
+/// memory carries neither the slug nor the filename, so it is untouched (no
+/// re-embedding).
+///
+/// Idempotent: a row already on the new slug and path is skipped, so a re-run — or
+/// a launch after a prior partial run — is a no-op. Per-row fail-soft: an
+/// undecodable summary is logged and skipped, and a file-rename failure is logged
+/// and leaves the stored path at the file's actual on-disk location (never updated
+/// to a path that does not exist), so the next launch retries it.
+pub fn migrate_legacy_naming(conn: &Connection) -> Result<()> {
+    const LEGACY_SLUG: &str = "weekly_market";
+    const NEW_SLUG: &str = "market_signal";
+    const LEGACY_NAME: &str = "market-signal-weekly-report";
+    const NEW_NAME: &str = "market-signal-report";
+
+    // Snapshot the rows before mutating so the read statement isn't held open
+    // across the per-row UPDATE.
+    let mut stmt = conn.prepare("SELECT report_id, summary_json, markdown_path FROM reports")?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+
+    for (report_id, summary_json, markdown_path) in rows {
+        let mut summary: ReportSummary = match serde_json::from_str(&summary_json) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "legacy-naming migration: skipping report {report_id}, undecodable summary ({e})"
+                );
+                continue;
+            }
+        };
+
+        let slug_stale = summary.report_type == LEGACY_SLUG;
+        let new_path = markdown_path.replace(LEGACY_NAME, NEW_NAME);
+        let path_stale = new_path != markdown_path;
+
+        if !slug_stale && !path_stale {
+            continue; // already on the new identifiers — idempotent no-op
+        }
+
+        if slug_stale {
+            summary.report_type = NEW_SLUG.to_string();
+        }
+
+        // Rename the file before recording the new path, so the persisted path
+        // always points at where the file actually is. If the old file is gone but
+        // the new one is present, a prior run renamed it — adopt the new path. If
+        // neither exists (a pre-existing orphan), still adopt the new path so the
+        // stored convention is consistent; the read path already errors on a
+        // missing file.
+        let stored_path = if path_stale {
+            let old = std::path::Path::new(&markdown_path);
+            let new = std::path::Path::new(&new_path);
+            if old.exists() && !new.exists() {
+                match std::fs::rename(old, new) {
+                    Ok(()) => new_path.clone(),
+                    Err(e) => {
+                        eprintln!(
+                            "legacy-naming migration: could not rename {markdown_path} -> {new_path} ({e}); leaving stored path"
+                        );
+                        markdown_path.clone()
+                    }
+                }
+            } else {
+                new_path.clone()
+            }
+        } else {
+            markdown_path.clone()
+        };
+
+        let summary_json_new = serde_json::to_string(&summary)?;
+        conn.execute(
+            "UPDATE reports SET report_type = ?1, summary_json = ?2, markdown_path = ?3
+             WHERE report_id = ?4",
+            rusqlite::params![summary.report_type, summary_json_new, stored_path, report_id],
+        )?;
+    }
+    Ok(())
+}
+
 /// How many reports the retention cascade keeps (`docs/storage.md` — only the
-/// most recent 30 Weekly Market reports are retained; older reports are deleted
+/// most recent 30 Market Signal reports are retained; older reports are deleted
 /// automatically). Deliberately a separate constant from [`RECENT_REPORTS_LIMIT`],
 /// which bounds the sidebar's display query; the two agree today, and the shared
 /// `created_at DESC, rowid DESC` ordering keeps the display window and the
@@ -754,6 +852,90 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn migrate_legacy_naming_rewrites_slug_and_renames_file_idempotently() {
+        let conn = mem();
+        let tmp = tempfile::tempdir().unwrap();
+
+        // A pre-pivot report: the legacy slug in both the column and the JSON blob,
+        // and a real Markdown file at the legacy `…-weekly-report…` name (carrying
+        // the real `-<id8>` suffix the doc's simplified example omits).
+        let legacy_path = tmp
+            .path()
+            .join("2026-06-03-market-signal-weekly-report-aaaaaaaa.md");
+        std::fs::write(&legacy_path, "# Report\n").unwrap();
+        let legacy_path_str = legacy_path.to_string_lossy().into_owned();
+        let summary = sample_summary("rid-legacy", "2026-06-03T12:00:00Z");
+        assert_eq!(summary.report_type, "weekly_market", "fixture starts legacy");
+        let summary_json = serde_json::to_string(&summary).unwrap();
+        insert_report(
+            &conn,
+            &ReportRecord {
+                summary: &summary,
+                markdown_path: &legacy_path_str,
+                summary_json: &summary_json,
+            },
+        )
+        .unwrap();
+
+        migrate_legacy_naming(&conn).unwrap();
+
+        // File renamed on disk to the new convention; the legacy name is gone.
+        let new_path = tmp
+            .path()
+            .join("2026-06-03-market-signal-report-aaaaaaaa.md");
+        assert!(new_path.exists(), "renamed to the new convention");
+        assert!(!legacy_path.exists(), "legacy file removed");
+
+        // The stored path, the JSON slug, and the report_type column all migrated.
+        let (stored_path, migrated) = get_report_record(&conn, "rid-legacy").unwrap().unwrap();
+        assert_eq!(stored_path, new_path.to_string_lossy());
+        assert_eq!(
+            migrated.report_type, "market_signal",
+            "summary_json slug rewritten"
+        );
+        let col: String = conn
+            .query_row(
+                "SELECT report_type FROM reports WHERE report_id = ?1",
+                ["rid-legacy"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col, "market_signal", "report_type column rewritten");
+
+        // Idempotent: a second pass finds nothing stale and changes nothing.
+        migrate_legacy_naming(&conn).unwrap();
+        let (stored_path_again, _) = get_report_record(&conn, "rid-legacy").unwrap().unwrap();
+        assert_eq!(stored_path_again, stored_path, "second pass is a no-op");
+        assert!(new_path.exists());
+    }
+
+    #[test]
+    fn migrate_legacy_naming_leaves_already_migrated_rows_untouched() {
+        let conn = mem();
+        let mut summary = sample_summary("rid-new", "2026-06-03T12:00:00Z");
+        summary.report_type = "market_signal".to_string();
+        // Already on the new path, and deliberately not on disk: a row needing no
+        // change is skipped before any filesystem touch.
+        let new_path = "/tmp/2026-06-03-market-signal-report-bbbbbbbb.md";
+        let summary_json = serde_json::to_string(&summary).unwrap();
+        insert_report(
+            &conn,
+            &ReportRecord {
+                summary: &summary,
+                markdown_path: new_path,
+                summary_json: &summary_json,
+            },
+        )
+        .unwrap();
+
+        migrate_legacy_naming(&conn).unwrap();
+
+        let (stored_path, migrated) = get_report_record(&conn, "rid-new").unwrap().unwrap();
+        assert_eq!(stored_path, new_path, "path left untouched");
+        assert_eq!(migrated.report_type, "market_signal");
     }
 
     #[test]

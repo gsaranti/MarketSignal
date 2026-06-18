@@ -56,7 +56,7 @@ const GDELT_TIMESPAN: &str = "1w";
 /// by issuing a single combined query per gather, and degrade fail-soft on
 /// a 429.)
 const GDELT_USER_AGENT: &str =
-    "MarketSignal/0.1 (weekly market report; news ingestion via GDELT DOC 2.0)";
+    "MarketSignal/0.1 (market signal report; news ingestion via GDELT DOC 2.0)";
 
 /// The single broad query covering the Step-3 news categories (politics,
 /// geopolitics, China/trade, energy, earnings, AI/semiconductors, major economic

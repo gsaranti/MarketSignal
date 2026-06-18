@@ -1343,7 +1343,7 @@ pub fn export_markdown_to(
 }
 
 /// Build the canonical Markdown filename for a report:
-/// `YYYY-MM-DD-market-signal-weekly-report-<id8>.md`.
+/// `YYYY-MM-DD-market-signal-report-<id8>.md`.
 ///
 /// Split out as a pure, timezone-injectable function so the two decisions it
 /// encodes are unit-testable without the system clock or the filesystem:
@@ -1370,11 +1370,11 @@ where
 {
     let local_date = local_date_segment(created_at, tz)?;
     let id8 = report_id.get(..8).unwrap_or(report_id);
-    Ok(format!("{local_date}-market-signal-weekly-report-{id8}.md"))
+    Ok(format!("{local_date}-market-signal-report-{id8}.md"))
 }
 
 /// Build the export filename a user sees in the Save dialog
-/// (`docs/export.md §Export Naming`): `YYYY-MM-DD-market-signal-weekly-report.<ext>`.
+/// (`docs/export.md §Export Naming`): `YYYY-MM-DD-market-signal-report.<ext>`.
 ///
 /// Deliberately distinct from `canonical_report_filename`: the spec's export name
 /// carries **no `-<id8>` suffix** — same-name collisions are the user's own save
@@ -1385,7 +1385,7 @@ where
     Tz::Offset: std::fmt::Display,
 {
     let local_date = local_date_segment(created_at, tz)?;
-    Ok(format!("{local_date}-market-signal-weekly-report.{ext}"))
+    Ok(format!("{local_date}-market-signal-report.{ext}"))
 }
 
 /// The `YYYY-MM-DD` local-date segment shared by the canonical filename and the
@@ -1567,7 +1567,7 @@ mod tests {
             canonical_report_filename("2026-06-03T01:30:00Z", "1ca71d1f-aaaa", &minus_three())
                 .unwrap();
         assert!(
-            name.starts_with("2026-06-02-market-signal-weekly-report-"),
+            name.starts_with("2026-06-02-market-signal-report-"),
             "expected the local (UTC-3) date 2026-06-02, got {name}"
         );
     }
@@ -1578,8 +1578,8 @@ mod tests {
         let a = canonical_report_filename("2026-06-03T12:00:00Z", "aaaaaaaa-1111", &tz).unwrap();
         let b = canonical_report_filename("2026-06-03T15:00:00Z", "bbbbbbbb-2222", &tz).unwrap();
         assert_ne!(a, b, "same-date reruns must not collide on one filename");
-        assert_eq!(a, "2026-06-03-market-signal-weekly-report-aaaaaaaa.md");
-        assert_eq!(b, "2026-06-03-market-signal-weekly-report-bbbbbbbb.md");
+        assert_eq!(a, "2026-06-03-market-signal-report-aaaaaaaa.md");
+        assert_eq!(b, "2026-06-03-market-signal-report-bbbbbbbb.md");
     }
 
     #[test]
@@ -1601,9 +1601,9 @@ mod tests {
         // The spec's export name (docs/export.md §Export Naming) is suffix-free,
         // distinct from the internal canonical filename's `-<id8>` segment.
         let md = export_basename("2026-06-03T12:00:00Z", "md", &minus_three()).unwrap();
-        assert_eq!(md, "2026-06-03-market-signal-weekly-report.md");
+        assert_eq!(md, "2026-06-03-market-signal-report.md");
         let pdf = export_basename("2026-06-03T12:00:00Z", "pdf", &minus_three()).unwrap();
-        assert_eq!(pdf, "2026-06-03-market-signal-weekly-report.pdf");
+        assert_eq!(pdf, "2026-06-03-market-signal-report.pdf");
     }
 
     #[test]
@@ -1611,7 +1611,7 @@ mod tests {
         // Shares local_date_segment with the canonical filename: 01:30 UTC on the
         // 3rd is 22:30 on the 2nd at UTC-3, so the export date is the local one.
         let name = export_basename("2026-06-03T01:30:00Z", "md", &minus_three()).unwrap();
-        assert_eq!(name, "2026-06-02-market-signal-weekly-report.md");
+        assert_eq!(name, "2026-06-02-market-signal-report.md");
     }
 
     #[test]

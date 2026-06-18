@@ -54,7 +54,7 @@ function shortId(id: string): string {
           @click="$emit('select', r.report_id)"
         >
           <div class="row-main">
-            <div class="row-title">Weekly Market Report</div>
+            <div class="row-title">Market Signal Report</div>
             <div class="row-meta">
               {{ shortDate(r.created_at) }} · #{{ shortId(r.report_id) }}
             </div>
@@ -76,7 +76,7 @@ function shortId(id: string): string {
         @click="$emit('navigate', 'report')"
       >
         <div class="row-main">
-          <div class="row-title">Weekly Market Report</div>
+          <div class="row-title">Market Signal Report</div>
           <div
             class="row-meta"
             :class="{ 'is-error': reportsError }"

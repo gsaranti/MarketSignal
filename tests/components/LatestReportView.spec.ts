@@ -156,7 +156,7 @@ test("an export failure shows a non-destructive alert strip without unmounting t
 test("Export PDF seeds the print title with the spec basename and restores it after", async () => {
   const report = makeReport("# Body");
   const wrapper = makeWrapper({ report });
-  const expectedBase = `${localDate(report.summary.created_at)}-market-signal-weekly-report`;
+  const expectedBase = `${localDate(report.summary.created_at)}-market-signal-report`;
 
   const original = window.print;
   const originalTitle = document.title;

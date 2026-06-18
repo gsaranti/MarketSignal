@@ -310,7 +310,7 @@ fn load_report(app: tauri::AppHandle, report_id: String) -> Result<GeneratedRepo
 /// (`docs/export.md`). The report is resolved first — a bad id or a Markdown file
 /// removed out-of-band fails here, before any dialog pops — which also yields the
 /// `created_at` used to suggest the spec's export filename
-/// (`YYYY-MM-DD-market-signal-weekly-report.md`, no internal id suffix). The
+/// (`YYYY-MM-DD-market-signal-report.md`, no internal id suffix). The
 /// native Save dialog runs on a blocking thread: `blocking_save_file` parks the
 /// calling thread until the user responds and must not run on the async runtime
 /// thread, so it goes through `spawn_blocking` (the same seam
@@ -546,6 +546,24 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(RunGuard::default())
         .manage(CancelFlag::default())
+        .setup(|app| {
+            // One-time legacy-naming migration (docs/storage.md §Legacy Naming
+            // Migration): on first launch after the manual-only pivot, rewrite
+            // pre-pivot `report_type` slugs and `…-weekly-report` filenames in
+            // place. Best-effort — a failure logs and launch proceeds (the app
+            // still works against the old names), matching the codebase's
+            // fail-soft persistence posture. Idempotent, so a later launch with
+            // nothing to migrate is a cheap no-op.
+            match open_app_db(app.handle()) {
+                Ok(conn) => {
+                    if let Err(e) = storage::migrate_legacy_naming(&conn) {
+                        eprintln!("legacy-naming migration: degraded ({e})");
+                    }
+                }
+                Err(e) => eprintln!("legacy-naming migration: could not open database ({e})"),
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             generate_report_manual,
             cancel_run,
