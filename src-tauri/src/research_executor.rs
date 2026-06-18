@@ -185,6 +185,45 @@ struct TriggerRule {
     follow_up_query: &'static str,
 }
 
+/// The cadence anchor for the trigger thresholds, in days. Each rule's `threshold` is the
+/// move that fires it over a *weekly* interval; the effective threshold for a given run is
+/// that anchor value scaled by [`cadence_scale`] against the run's actual elapsed interval.
+/// Seven days is one calendar week — the ~weekly cadence the raw thresholds were originally
+/// calibrated to, and which falls inside the cadence module's `Weekly` band (`[3, 14)` days).
+const THRESHOLD_ANCHOR_DAYS: f64 = 7.0;
+
+/// Clamp floor on the cadence scale factor (see [`cadence_scale`]). Keeps a near-zero
+/// interval (an intraday regeneration, or clock skew yielding a non-positive elapsed) from
+/// collapsing the threshold onto market noise — over any interval a move must still clear
+/// at least this fraction of the weekly threshold. Robustness-critical; an app-layer
+/// tunable, calibrated against real runs.
+const THRESHOLD_SCALE_MIN: f64 = 0.5;
+
+/// Clamp ceiling on the cadence scale factor (see [`cadence_scale`]). Keeps a long gap from
+/// raising the threshold so far that a rule can effectively never fire. A calibration
+/// nicety (the floor is the load-bearing clamp); an app-layer tunable.
+const THRESHOLD_SCALE_MAX: f64 = 2.5;
+
+/// Time-normalize a rule's weekly-anchored threshold to a run's actual cadence:
+/// `sqrt(elapsed_days / THRESHOLD_ANCHOR_DAYS)`, clamped into
+/// `[THRESHOLD_SCALE_MIN, THRESHOLD_SCALE_MAX]`. The square root is the random-walk law —
+/// a series' expected move grows with the square root of elapsed time — so a move must be
+/// "big for the interval" to fire: a daily gap fires on a smaller move than a weekly one,
+/// a monthly gap demands a larger one. At exactly the weekly anchor the factor is `1.0`, so
+/// the raw thresholds (and every weekly-cadence test) are preserved unchanged.
+///
+/// The function is total: a degenerate interval — non-positive (clock skew between runs) or
+/// non-finite (`NaN`) — floors to `THRESHOLD_SCALE_MIN` rather than zeroing or poisoning the
+/// threshold. The early return is what keeps that honest: `f64::clamp` would propagate a
+/// `NaN` straight through, so the degenerate cases are handled before the clamp.
+fn cadence_scale(elapsed_days: f64) -> f64 {
+    let ratio = elapsed_days / THRESHOLD_ANCHOR_DAYS;
+    if !ratio.is_finite() || ratio <= 0.0 {
+        return THRESHOLD_SCALE_MIN;
+    }
+    ratio.sqrt().clamp(THRESHOLD_SCALE_MIN, THRESHOLD_SCALE_MAX)
+}
+
 /// The seeded delta-trigger table. Only delta-conditioned triggers over level-bearing
 /// series the change view actually carries are expressible here, so the first cut ships
 /// **oil** and **Treasury yields** — both FRED `internals` series, inside
@@ -193,7 +232,9 @@ struct TriggerRule {
 /// not in the delta groups (sector performance is excluded; only sector P/E is carried),
 /// and "rally despite weak macro" is a compound index-vs-macro condition. Adding a clean
 /// single-series trigger (dollar index, natural gas, a credit spread, VIX) is a one-row
-/// edit here. Thresholds are raw-magnitude, calibrated to the ~weekly cadence (tunable).
+/// edit here. Each `threshold` is the **weekly-anchored** magnitude — the move that fires
+/// over a ~weekly interval; [`rule_fired`] scales it to the run's real cadence via
+/// [`cadence_scale`], so the raw values stay weekly-calibrated and tunable.
 const TRIGGER_RULES: &[TriggerRule] = &[
     TriggerRule {
         series_ids: &["DCOILWTICO"],
@@ -320,15 +361,19 @@ pub fn select_branch_policy(deltas: Option<&BaselineDeltas>) -> Box<dyn BranchPo
 }
 
 /// Whether `rule` fired against `deltas`: any matching series id that moved in the rule's
-/// `direction` and cleared the threshold by the rule's metric. The direction gate is what
-/// keeps "oil spikes" / "yields rise sharply" from firing on a sharp decline.
+/// `direction` and cleared the **cadence-scaled** threshold by the rule's metric. The
+/// threshold is the rule's weekly anchor scaled to this run's actual interval via
+/// [`cadence_scale`] (so the same move fires over a short gap but not a long one). The
+/// direction gate keeps "oil spikes" / "yields rise sharply" from firing on a sharp
+/// decline.
 fn rule_fired(rule: &TriggerRule, deltas: &BaselineDeltas) -> bool {
+    let threshold = rule.threshold * cadence_scale(deltas.elapsed_days);
     deltas.changed.iter().any(|d| {
         rule.series_ids.contains(&d.id.as_str())
             && d.direction == rule.direction
             && match rule.metric {
-                Metric::Abs => d.abs_change.abs() >= rule.threshold,
-                Metric::Pct => d.pct_change.is_some_and(|p| p.abs() >= rule.threshold),
+                Metric::Abs => d.abs_change.abs() >= threshold,
+                Metric::Pct => d.pct_change.is_some_and(|p| p.abs() >= threshold),
             }
     })
 }
@@ -730,10 +775,17 @@ mod tests {
         }
     }
 
-    /// A change view over a ~weekly interval carrying the given level changes.
+    /// A change view over a ~weekly interval carrying the given level changes — the
+    /// cadence the raw thresholds are anchored to, so `cadence_scale` is `1.0` here and the
+    /// delta-policy tests see the unscaled thresholds.
     fn deltas(changed: Vec<SeriesDelta>) -> BaselineDeltas {
+        deltas_over(changed, 7.0)
+    }
+
+    /// A change view over an explicit elapsed interval, for the cadence-scaling tests.
+    fn deltas_over(changed: Vec<SeriesDelta>, elapsed_days: f64) -> BaselineDeltas {
         BaselineDeltas {
-            elapsed_days: 7.0,
+            elapsed_days,
             changed,
             new: Vec::new(),
             missing: Vec::new(),
@@ -981,5 +1033,126 @@ mod tests {
                 &depth1_finding()
             )
             .is_none());
+    }
+
+    // --- Cadence scaling of the trigger thresholds (sqrt-of-time, weekly-anchored) ---
+
+    #[test]
+    fn cadence_scale_is_unity_at_the_weekly_anchor() {
+        // The anchor identity: at exactly the weekly cadence the factor is 1.0, so the raw
+        // thresholds (and every weekly-cadence delta-policy test above) are unchanged.
+        assert!((cadence_scale(THRESHOLD_ANCHOR_DAYS) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cadence_scale_grows_with_the_interval() {
+        // Monotone increasing between the clamps: a longer gap demands a larger move. A
+        // 4x interval is a 2x factor under the square-root law (still inside the ceiling).
+        assert!(cadence_scale(1.75) < cadence_scale(7.0));
+        assert!(cadence_scale(7.0) < cadence_scale(28.0));
+        assert!((cadence_scale(28.0) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cadence_scale_floors_on_degenerate_intervals() {
+        // A near-zero, zero, negative (clock skew), or non-finite interval lands on the
+        // floor rather than collapsing the threshold to ~0 or poisoning it with NaN.
+        for bad in [0.01, 0.0, -5.0, f64::NAN] {
+            assert_eq!(
+                cadence_scale(bad),
+                THRESHOLD_SCALE_MIN,
+                "degenerate interval {bad} floors to THRESHOLD_SCALE_MIN"
+            );
+        }
+    }
+
+    #[test]
+    fn cadence_scale_caps_on_a_long_gap() {
+        // A multi-month gap is capped so a rule can still fire (sqrt(365/7) ~= 7.2,
+        // clamped to the ceiling).
+        assert_eq!(cadence_scale(365.0), THRESHOLD_SCALE_MAX);
+    }
+
+    #[test]
+    fn delta_policy_suppresses_a_weekly_move_over_a_long_gap() {
+        // An 8% oil move clears the 7% weekly threshold — but over a 30-day gap the
+        // threshold scales up (sqrt(30/7) ~= 2.07 -> ~14.5%), so the same move no longer
+        // fires: a month of drift shouldn't read as a spike.
+        let weekly = DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta(
+            "DCOILWTICO",
+            6.0,
+            Some(8.0),
+        )]));
+        assert!(
+            weekly
+                .follow_up(&item("oil supply shock", 1, 0.9), &depth1_finding())
+                .is_some(),
+            "8% oil fires over a weekly interval"
+        );
+        let monthly = DeltaBranchPolicy::from_deltas(&deltas_over(
+            vec![series_delta("DCOILWTICO", 6.0, Some(8.0))],
+            30.0,
+        ));
+        assert!(
+            monthly
+                .follow_up(&item("oil supply shock", 1, 0.9), &depth1_finding())
+                .is_none(),
+            "the same 8% move does not fire over a 30-day gap"
+        );
+    }
+
+    #[test]
+    fn delta_policy_fires_a_sub_weekly_move_over_a_short_gap() {
+        // A 4% oil move is below the 7% weekly threshold — but over a 1-day gap the
+        // threshold scales down (sqrt(1/7) ~= 0.38, clamped to the 0.5 floor -> 3.5%), so
+        // a move that's small for a week is a real spike for a day.
+        let weekly = DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta(
+            "DCOILWTICO",
+            3.0,
+            Some(4.0),
+        )]));
+        assert!(
+            weekly
+                .follow_up(&item("oil supply shock", 1, 0.9), &depth1_finding())
+                .is_none(),
+            "4% oil does not fire over a weekly interval"
+        );
+        let daily = DeltaBranchPolicy::from_deltas(&deltas_over(
+            vec![series_delta("DCOILWTICO", 3.0, Some(4.0))],
+            1.0,
+        ));
+        assert!(
+            daily
+                .follow_up(&item("oil supply shock", 1, 0.9), &depth1_finding())
+                .is_some(),
+            "the same 4% move fires over a 1-day gap"
+        );
+    }
+
+    #[test]
+    fn delta_policy_scales_the_absolute_yield_threshold_too() {
+        // The Abs metric scales identically: 20 bp on the 10y clears the 25 bp weekly
+        // threshold over a 1-day gap (floor 0.5 -> 12.5 bp) but not over a 30-day gap
+        // (~2.07x -> ~51.7 bp).
+        let daily = DeltaBranchPolicy::from_deltas(&deltas_over(
+            vec![series_delta("DGS10", 0.20, Some(4.5))],
+            1.0,
+        ));
+        assert!(
+            daily
+                .follow_up(&item("Treasury yields repricing", 1, 0.9), &depth1_finding())
+                .is_some(),
+            "20 bp fires over a 1-day gap"
+        );
+        let monthly = DeltaBranchPolicy::from_deltas(&deltas_over(
+            vec![series_delta("DGS10", 0.20, Some(4.5))],
+            30.0,
+        ));
+        assert!(
+            monthly
+                .follow_up(&item("Treasury yields repricing", 1, 0.9), &depth1_finding())
+                .is_none(),
+            "the same 20 bp move does not fire over a 30-day gap"
+        );
     }
 }
