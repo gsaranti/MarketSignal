@@ -666,6 +666,30 @@ pub fn migrate_legacy_naming(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// One-time, idempotent migration of the pre-pivot `job_runs.job_type` slug
+/// `weekly_market` → `market_signal`, run once at launch beside
+/// [`migrate_legacy_naming`]. Sibling concern, separate column: the legacy-naming
+/// migration (`docs/storage.md §Legacy Naming Migration`) covers `report_type` +
+/// filenames; this carries the job-slug rename the manual-only pivot left behind.
+///
+/// A single column rewrite — `job_type` is a write-only label today (no read query
+/// filters on it), so this is historical-data hygiene that keeps old rows on the
+/// same slug the going-forward producer ([`crate::jobs`]) now mints, not a
+/// correctness fix. Idempotent for free: the `WHERE` matches only legacy rows, so a
+/// re-run — or a launch after the table is already clean — changes nothing. The new
+/// slug is duplicated here deliberately rather than shared with `jobs`: this freezes
+/// the historical legacy→new mapping, independent of the producer's current value.
+pub fn migrate_legacy_job_type(conn: &Connection) -> Result<()> {
+    const LEGACY_SLUG: &str = "weekly_market";
+    const NEW_SLUG: &str = "market_signal";
+
+    conn.execute(
+        "UPDATE job_runs SET job_type = ?1 WHERE job_type = ?2",
+        rusqlite::params![NEW_SLUG, LEGACY_SLUG],
+    )?;
+    Ok(())
+}
+
 /// How many reports the retention cascade keeps (`docs/storage.md` — only the
 /// most recent 30 Market Signal reports are retained; older reports are deleted
 /// automatically). Deliberately a separate constant from [`RECENT_REPORTS_LIMIT`],
@@ -936,6 +960,62 @@ mod tests {
         let (stored_path, migrated) = get_report_record(&conn, "rid-new").unwrap().unwrap();
         assert_eq!(stored_path, new_path, "path left untouched");
         assert_eq!(migrated.report_type, "market_signal");
+    }
+
+    #[test]
+    fn migrate_legacy_job_type_rewrites_slug_idempotently() {
+        let conn = mem();
+        // A pre-pivot job_runs row carrying the legacy slug.
+        conn.execute(
+            "INSERT INTO job_runs (job_type, state, started_at, finished_at)
+             VALUES ('weekly_market', 'successful', '2026-06-03T12:00:00Z', '2026-06-03T12:05:00Z')",
+            [],
+        )
+        .unwrap();
+
+        migrate_legacy_job_type(&conn).unwrap();
+
+        let slug: String = conn
+            .query_row("SELECT job_type FROM job_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(slug, "market_signal", "legacy job slug rewritten");
+
+        // Idempotent: a second pass matches no legacy rows and changes nothing.
+        migrate_legacy_job_type(&conn).unwrap();
+        let slug_again: String = conn
+            .query_row("SELECT job_type FROM job_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(slug_again, "market_signal", "second pass is a no-op");
+    }
+
+    #[test]
+    fn migrate_legacy_job_type_leaves_non_legacy_rows_untouched() {
+        let conn = mem();
+        // An already-current row plus a hypothetical future job type: the
+        // slug-scoped WHERE must rewrite neither.
+        conn.execute(
+            "INSERT INTO job_runs (job_type, state, started_at, finished_at)
+             VALUES ('market_signal', 'successful', '2026-06-03T12:00:00Z', '2026-06-03T12:05:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO job_runs (job_type, state, started_at, finished_at)
+             VALUES ('some_other_job', 'failed', '2026-06-04T12:00:00Z', '2026-06-04T12:05:00Z')",
+            [],
+        )
+        .unwrap();
+
+        migrate_legacy_job_type(&conn).unwrap();
+
+        let other: String = conn
+            .query_row(
+                "SELECT job_type FROM job_runs WHERE state = 'failed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(other, "some_other_job", "non-legacy slug left untouched");
     }
 
     #[test]

@@ -32,7 +32,7 @@ use crate::storage;
 
 /// The only job type today; the schema carries it so additional recurring jobs
 /// can share the table later.
-const WEEKLY_MARKET_JOB: &str = "weekly_market";
+const MARKET_SIGNAL_JOB: &str = "market_signal";
 
 /// `app_settings` key recording a dismissed Persistent Warning Area warning
 /// (`docs/interface.md §Persistent Warning Area` — "Dismissing a warning
@@ -169,7 +169,7 @@ pub fn run_job(
             record_run(
                 &conn,
                 &JobRun {
-                    job_type: WEEKLY_MARKET_JOB,
+                    job_type: MARKET_SIGNAL_JOB,
                     state: JobState::Skipped,
                     started_at: &now,
                     finished_at: &now,
@@ -198,7 +198,7 @@ pub fn run_job(
             let recorded = record_run(
                 &conn,
                 &JobRun {
-                    job_type: WEEKLY_MARKET_JOB,
+                    job_type: MARKET_SIGNAL_JOB,
                     state: JobState::Successful,
                     started_at: &started_at,
                     finished_at: &finished_at,
@@ -221,7 +221,7 @@ pub fn run_job(
             let recorded = record_run(
                 &conn,
                 &JobRun {
-                    job_type: WEEKLY_MARKET_JOB,
+                    job_type: MARKET_SIGNAL_JOB,
                     state: JobState::Cancelled,
                     started_at: &started_at,
                     finished_at: &finished_at,
@@ -239,7 +239,7 @@ pub fn run_job(
             let recorded = record_run(
                 &conn,
                 &JobRun {
-                    job_type: WEEKLY_MARKET_JOB,
+                    job_type: MARKET_SIGNAL_JOB,
                     state: JobState::Failed,
                     started_at: &started_at,
                     finished_at: &finished_at,
@@ -407,7 +407,7 @@ mod tests {
         record_run(
             conn,
             &JobRun {
-                job_type: WEEKLY_MARKET_JOB,
+                job_type: MARKET_SIGNAL_JOB,
                 state,
                 started_at: "2026-06-01T09:00:00Z",
                 finished_at: "2026-06-01T09:05:00Z",

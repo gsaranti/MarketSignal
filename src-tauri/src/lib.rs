@@ -559,6 +559,13 @@ pub fn run() {
                     if let Err(e) = storage::migrate_legacy_naming(&conn) {
                         eprintln!("legacy-naming migration: degraded ({e})");
                     }
+                    // Sibling slug migration: rewrite the pre-pivot
+                    // `job_runs.job_type` value `weekly_market` → `market_signal`.
+                    // Independent of the naming migration above (different column),
+                    // same best-effort posture — a failure logs and launch proceeds.
+                    if let Err(e) = storage::migrate_legacy_job_type(&conn) {
+                        eprintln!("legacy-job-type migration: degraded ({e})");
+                    }
                 }
                 Err(e) => eprintln!("legacy-naming migration: could not open database ({e})"),
             }

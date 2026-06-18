@@ -75,9 +75,10 @@ are deleted together. (There is no HTML to remove — HTML is rendered on demand
 The report's stored identifiers were renamed when the product moved from a fixed weekly schedule to on-demand generation. Reports created under the earlier convention are migrated in place on first launch after the upgrade:
 
 - the `report_type` metadata value `weekly_market` is rewritten to `market_signal`;
-- report files named `YYYY-MM-DD-market-signal-weekly-report.md` are renamed to `YYYY-MM-DD-market-signal-report.md`, and any stored file paths are updated to match.
+- report files named `YYYY-MM-DD-market-signal-weekly-report.md` are renamed to `YYYY-MM-DD-market-signal-report.md`, and any stored file paths are updated to match;
+- the `job_runs.job_type` value `weekly_market` is rewritten to `market_signal` — a separate single-column migration covering the job-run history's slug, distinct from the `report_type` rewrite above.
 
-The migration is one-time and idempotent: a report already carrying the new identifiers is left untouched. No report content changes — only the type slug and the filename.
+The migration is one-time and idempotent: a report (or job-run row) already carrying the new identifiers is left untouched. No report content changes — only the type slug, the job-run slug, and the filename.
 
 ### Baseline Snapshots
 
