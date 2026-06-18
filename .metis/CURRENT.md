@@ -2,17 +2,15 @@
 
 ## What happened
 
-Planned, implemented, reviewed, and committed **slice 1 of the manual-only pivot — scheduler removal** (first of the 4 queued code slices; the prior session was docs-only). Full-stack: removed the Rust timer, `decide_scheduled_run`, `ScheduledRun`, `RunConfig`, the scheduled `lib.rs` command path, missed-detection, the enable flag (+ `JobStatus.enabled`), the `MissedScheduledJob` warning kind (+ `jobs::missed_warning`), and `schedule.rs`; plus the frontend schedule UI and the user-facing "Sunday job" / "this week's report" copy. `WarningKind` → **4** categories, `JobState` → **4** states; dropped the now-dead `Clone` on `GeneratedReport`. metis-task-reviewer: **approve-with-nits**. Then **five rounds of external Codex review** drove an exhaustive comment sweep — stale scheduler / weekly-cadence rationale across ~12 backend modules + frontend. Load-bearing lesson the next session should keep: diff-based review (human / metis / Codex) repeatedly missed stale rationale in *unchanged* files — including a user-facing string — so the reliable tool after a concept removal is a **whole-repo bare-keyword grep up front**, not incremental review. Verified green throughout (cargo test 375 + integration; clippy clean; npm build + 38/85).
+Planned, implemented, metis-reviewed (**approve**), GUI-smoke-verified, Codex-reviewed, and merged/pushed **slice 2 of the manual-only pivot — tray removal** (2nd of the 4 code slices). Removed the Tauri tray runtime from `lib.rs` + `Cargo.toml` only: the `.setup` tray-icon block (Show/Quit menu + managed `TrayIcon`), the `on_window_event` `CloseRequested`→`prevent_close()`+`hide()` interceptor, the macOS `Reopen` handler + the `restore_windows` helper, and the `tauri` `tray-icon` Cargo feature — the app is now an ordinary windowed app where closing the window quits it. The **GUI smoke ran this session** (launch → click the window close button → process exits) and **close→quit holds**, so the plan's flagged `WindowEvent::Destroyed`→`exit(0)` fallback was unneeded. Codex's lone finding — a lingering `tray-icon` entry in `Cargo.lock` — was a **non-issue**: it's an *optional* dep of `tauri`, pinned regardless of feature state, removable only by removing `tauri`; the "regenerate the lockfile" remediation is a no-op (new memory `cargo-feature-removal-lockfile`; verify removals with `cargo tree -i <crate> --target all`, not a lockfile grep). Verified green: cargo build, clippy --all-targets --all-features, test 375 + integration.
 
 ## Current state
 
-Slice 1 is **committed, squash-merged, and pushed** — `origin/main` = local `main` = **`430b05f`** (the slice commit `19b7f5d` + this handoff), in sync. Branch `feat/scheduler-removal` deleted; working tree clean.
+Slice 2 is **committed, fast-forward-merged, and pushed** — `origin/main` = local `main` = **`e27ef86`**, in sync. Branch `feat/tray-removal` deleted; working tree clean.
 
-`BUILD.md` updated this session (user-authorized): §Scheduling & runtime "Pending code slices" now marks **slice 1 LANDED**, and the load-bearing analyst-layer references were corrected (no more `RunConfig` / `ScheduledRun` / "both command paths"). **Slices 2–4 remain**, with two scope refinements found this session:
+`BUILD.md` updated this session (user-authorized): §Scheduling & runtime "Pending code slices" now marks **slices 1 & 2 LANDED & pushed**. **Slices 3–4 remain**, with the scope refinements already recorded there:
 - (3) the rename migration also covers the **product-name display strings** — `RecentReportsSidebar` / `LatestReportView` "Weekly Market Report", `RUN_LABEL`, the gdelt user-agent string.
 - (4) the prompt "weekly" cleanup is **wider than first scoped** — not just `model_agent.rs` / `analyst_agent.rs` but also `research_router.rs`, `skills.rs`, `agent.rs`, and the `emit_weekly_report` tool name.
-
-The tray comments (`lib.rs` ~584/614) are slice 2's to clear (deliberately deferred, not drift).
 
 ## Open questions
 
@@ -22,4 +20,4 @@ The tray comments (`lib.rs` ~584/614) are slice 2's to clear (deliberately defer
 
 ## Where to start
 
-Next code slice: **slice 2 (tray removal)** — self-contained, and it clears the deliberately-deferred stale tray comments; a clean `/metis-plan-task` target. Then slice 3 (rename migration — run carefully for idempotency, and fold in the display-string rename) and slice 4 (prompt "weekly" cleanup, wider scope per above).
+Next code slice: **slice 3 (rename migration)** — `weekly_market` → `market_signal` `report_type` + `…-weekly-report.md` → `…-report.md`, folding in the product-name display strings (above). Carry the migration-care flag: idempotent, and rewrite **stored file paths**, not just rename on disk. A clean `/metis-plan-task` target. Then slice 4 (prompt "weekly" cleanup, wider scope per above).
