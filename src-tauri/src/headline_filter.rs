@@ -1,6 +1,6 @@
 //! The headline-filter stage: a pure structured-in / structured-out boundary
 //! that reduces gathered headlines to the bounded set of clustered important
-//! stories (`docs/weekly-report-workflow.md §Step 7`).
+//! stories (`docs/report-workflow.md §Step 7`).
 //!
 //! This is the filtering half of Step 7. The application layer gathers raw
 //! headlines (`news` + the `tavily`/`gdelt`/`fmp_news` adapters) and runs the deterministic
@@ -37,7 +37,7 @@ pub const MAX_CLUSTERS: usize = 10;
 
 /// The funnel also bounds the *number of headlines* retained across all clusters,
 /// not just the cluster count — the "~40 relevant headlines" stage of Step 7's
-/// funnel (`docs/weekly-report-workflow.md §Step 7`). A deterministic backstop so
+/// funnel (`docs/report-workflow.md §Step 7`). A deterministic backstop so
 /// a lax model response can't carry hundreds of headlines into the Step-8 packet;
 /// the prompt asks the model to do the real relevance filtering, so this rarely
 /// binds for a well-behaved response.

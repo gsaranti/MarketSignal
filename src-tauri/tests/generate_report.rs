@@ -10,6 +10,7 @@ use market_signal_temp_lib::agent::{
     StubAnalystAgent, StubMainAgent,
 };
 use market_signal_temp_lib::baseline_delta::{BaselineDeltas, Direction};
+use market_signal_temp_lib::cadence::ReportCadence;
 use market_signal_temp_lib::data_sources::{
     BaselineMarketData, Change, MarketDataSource, Quote, StubMarketDataSource,
 };
@@ -63,7 +64,7 @@ impl MainAgent for RecordingAgent {
 }
 
 /// An analyst that always fails, to exercise the not-fail-soft contract: a failing
-/// analyst stage is a job failure (`docs/weekly-report-workflow.md §Step 9`), unlike
+/// analyst stage is a job failure (`docs/report-workflow.md §Step 9`), unlike
 /// the fail-soft research half.
 struct FailingAnalyst;
 
@@ -82,8 +83,23 @@ impl AnalystAgent for FailingAnalyst {
 struct FixedMarketDataSource(BaselineMarketData);
 
 impl MarketDataSource for FixedMarketDataSource {
-    fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData> {
+    fn baseline_scan(&self, _cadence: ReportCadence) -> anyhow::Result<BaselineMarketData> {
         Ok(self.0.clone())
+    }
+}
+
+/// A data source that records the cadence it was handed on each scan and returns a
+/// fixed, coverage-passing baseline. Lets a test prove the *computed* run cadence reaches
+/// `baseline_scan` (the new wiring), not just that the window-math helpers are correct.
+struct CadenceRecordingDataSource {
+    seen: std::sync::Arc<std::sync::Mutex<Vec<ReportCadence>>>,
+    baseline: BaselineMarketData,
+}
+
+impl MarketDataSource for CadenceRecordingDataSource {
+    fn baseline_scan(&self, cadence: ReportCadence) -> anyhow::Result<BaselineMarketData> {
+        self.seen.lock().unwrap().push(cadence);
+        Ok(self.baseline.clone())
     }
 }
 
@@ -147,6 +163,50 @@ fn generate_report_writes_markdown_file_and_db_row() {
 }
 
 #[test]
+fn computed_cadence_reaches_the_baseline_scan() {
+    // Run 1 has no prior snapshot, so `baseline_scan` sees the first-report cadence (None);
+    // run 1 also persists a snapshot. Run 2's `compute_cadence` reads that snapshot and hands
+    // `baseline_scan` a *computed* (non-default) cadence — proving the new wiring end to end
+    // (cadence -> baseline_scan), which the per-adapter window-math helper tests cannot.
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ReportPaths::under(dir.path());
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let data = CadenceRecordingDataSource {
+        seen: std::sync::Arc::clone(&seen),
+        baseline: base_with_sp(5_000.0),
+    };
+
+    for _ in 0..2 {
+        generate_report(
+            &StubMainAgent,
+            &data,
+            &ResearchStages::stub(),
+            &AnalystStages::stub(),
+            &StubEmbedder,
+            &paths,
+            &RunContext::noop(),
+        )
+        .unwrap();
+    }
+
+    let recorded = seen.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 2, "baseline_scan ran once per report");
+    // Run 1: no prior snapshot → the default (first-report) cadence.
+    assert_eq!(
+        recorded[0].elapsed_days(),
+        None,
+        "run 1 (no prior snapshot) hands baseline_scan the first-report cadence"
+    );
+    // Run 2: a prior snapshot exists, so a computed cadence (Some) reaches the scan —
+    // distinct from the default, and the wiring the helper tests can't exercise.
+    assert!(
+        recorded[1].elapsed_days().is_some(),
+        "run 2 hands baseline_scan a computed cadence, not the default"
+    );
+}
+
+#[test]
 fn step_6_baseline_scan_reaches_the_agent_input() {
     let dir = tempfile::tempdir().unwrap();
     let paths = ReportPaths::under(dir.path());
@@ -171,7 +231,7 @@ fn step_6_baseline_scan_reaches_the_agent_input() {
         .unwrap()
         .clone()
         .expect("agent was invoked");
-    let expected = StubMarketDataSource.baseline_scan().unwrap();
+    let expected = StubMarketDataSource.baseline_scan(ReportCadence::default()).unwrap();
     assert_eq!(seen, expected);
 }
 
@@ -256,7 +316,7 @@ fn analyst_reviews_reach_the_agent_input() {
 #[test]
 fn a_failing_analyst_fails_the_run() {
     // Not fail-soft: a single failing analyst aborts the run rather than degrading to a
-    // thinner report (`docs/weekly-report-workflow.md §Step 9`).
+    // thinner report (`docs/report-workflow.md §Step 9`).
     let dir = tempfile::tempdir().unwrap();
     let paths = ReportPaths::under(dir.path());
 
@@ -975,7 +1035,7 @@ fn learnings_written_on_one_run_are_recalled_on_the_next() {
 }
 
 // ---------------------------------------------------------------------------
-// Step-6 research-inbox parsing (docs/weekly-report-workflow.md §Step 6,
+// Step-6 research-inbox parsing (docs/report-workflow.md §Step 6,
 // docs/research-documents.md): parsed documents reach routing and the packet;
 // successes archive after the report persists; failures stay in the inbox with
 // a recorded reason; a failed run consumes nothing.

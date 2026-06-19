@@ -10,7 +10,7 @@
 - [data-sources.md](data-sources.md) — External data and model providers: Financial Modeling Prep, FRED, BLS, Tavily, GDELT, and LLM providers.
 - [research-documents.md](research-documents.md) — The `/research-inbox` and `/research-archive` workflow for user-supplied documents.
 - [agents.md](agents.md) — Agent pipeline architecture: the main agent, the three analyst agents, and the non-configurable fixed internal models.
-- [weekly-report-workflow.md](weekly-report-workflow.md) — The 18-step Market Signal Report job flow from validation through HTML generation.
+- [report-workflow.md](report-workflow.md) — The 18-step Market Signal Report job flow from validation through HTML generation.
 - [analyst-skills.md](analyst-skills.md) — The 16 reusable analytical skills (Market Regime Analysis, Narrative vs Reality, etc.).
 - [thesis-continuity.md](thesis-continuity.md) — How market theses evolve across reports: continuity, stability, pivot conditions, and memory-guided evolution.
 - [report-structure.md](report-structure.md) — Canonical Markdown authoring format, the HTML-for-presentation rule, and the standard report sections.

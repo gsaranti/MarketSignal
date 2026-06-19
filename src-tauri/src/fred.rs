@@ -5,7 +5,7 @@
 //! (`data_sources`), the sibling of `fmp`. It owns the Step-3 market internals FMP
 //! does not serve on its free tier (verified live: HTTP 402 "premium"): the
 //! **2Y / 10Y Treasury yields**, the **US dollar index**, and the **oil / natural
-//! gas** commodity prices (`docs/weekly-report-workflow.md §Step 3`,
+//! gas** commodity prices (`docs/report-workflow.md §Step 3`,
 //! `docs/data-sources.md §FRED`). Each is a canonical free FRED daily series; the
 //! results are appended to the baseline's `internals` group alongside FMP's VIX and
 //! gold by the composite source. (Gold is served free on FMP via `GCUSD` and stays
@@ -22,7 +22,7 @@
 //! month.
 //!
 //! It additionally owns the Step-3 **economic-release calendar** (`calendar`): the
-//! prior-week and upcoming US economic reports (CPI, PCE, jobs, GDP, …), built
+//! recent and upcoming US economic reports (CPI, PCE, jobs, GDP, …), built
 //! from FRED's free *release-dates* schedule rather than the observations endpoint.
 //! FMP's economic-calendar endpoint is premium-gated (verified live: HTTP 402), so the
 //! schedule comes from FRED; the actual figures reach the model through the series
@@ -61,6 +61,7 @@ use crate::data_sources::{
     emit_series_row, BaselineMarketData, Change, ChangeKind, DataGap, EconomicRelease, GapReason,
     GroupKind, MarketDataSource, Quote,
 };
+use crate::cadence::ReportCadence;
 use crate::progress::RunContext;
 
 /// Base URL for FRED's API. The endpoint paths below are joined onto it in each
@@ -80,8 +81,8 @@ const FRED_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 /// (weekends / holidays / unpublished days) so the day-over-day change resolves.
 const OBSERVATION_LIMIT: &str = "10";
 
-/// The FRED-owned market internals of the Step-3 baseline (`docs/weekly-report
-/// -workflow.md §Step 3`), paired with a display name and the `price` unit. Each is a
+/// The FRED-owned market internals of the Step-3 baseline
+/// (`docs/report-workflow.md §Step 3`), paired with a display name and the `price` unit. Each is a
 /// free FRED daily series; the FRED `series_id` doubles as the quote `symbol`. Yields
 /// and the breakevens are quoted in percent; the dollar index is an index level; oil
 /// and gas are dollar prices — the unit labels which, so the model doesn't read a yield
@@ -129,13 +130,13 @@ const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
     ("BAMLH0A2HYB", "US High-Yield B OAS", "percent"),
 ];
 
-/// The FRED-owned macro levels of the Step-3 baseline (`docs/weekly-report
-/// -workflow.md §Step 3`, the "Macro" group): the Fed-funds target range as the
+/// The FRED-owned macro levels of the Step-3 baseline
+/// (`docs/report-workflow.md §Step 3`, the "Macro" group): the Fed-funds target range as the
 /// policy-stance proxy (futures-implied expectations aren't on FRED's free tier), the
 /// 5y / 10y inflation breakevens, U. Michigan consumer sentiment, the PCE price index,
 /// and the headline activity reports — PPI, retail sales, job openings (JOLTS), and real
 /// GDP — that supply the **actual readings** for the economic-release `calendar`'s
-/// prior-week entries (so the report sees what each release printed, not just that it
+/// recent entries (so the report sees what each release printed, not just that it
 /// landed). Two **forward-looking expectation gauges** join alongside the actual readings:
 /// the Atlanta Fed GDPNow current-quarter real-GDP nowcast and the Cleveland Fed 1-year
 /// expected-inflation series — a forward complement to the actual GDP print and the
@@ -430,11 +431,29 @@ fn change_kind_for(series_id: &str) -> ChangeKind {
 /// the calendar span.
 const FRED_RELEASE_DATES_PATH: &str = "/release/dates";
 
-/// The economic-release calendar window: days back (prior-week reports already released)
-/// and forward (the upcoming schedule) of today to keep. Applied both server-side (the
-/// `realtime_start` / `realtime_end` query params) and again in `releases_to_calendar`.
+/// The economic-release calendar window: days back (reports already released since the
+/// previous report) and forward (the upcoming schedule) of today to keep. Applied both
+/// server-side (the `realtime_start` / `realtime_end` query params) and again in
+/// `releases_to_calendar`.
+///
+/// The *back* window scales with the run cadence ([`calendar_back_days`]) so a monthly run
+/// keeps the whole gap's releases, not just the last ~10 days; [`CALENDAR_BACK_DAYS`] is the
+/// floor and [`CALENDAR_BACK_MAX_DAYS`] the cap. The *forward* window stays fixed — the
+/// upcoming schedule is equally relevant regardless of the interval since the last report.
 const CALENDAR_BACK_DAYS: i64 = 10;
+const CALENDAR_BACK_MAX_DAYS: i64 = 45;
 const CALENDAR_FWD_DAYS: i64 = 21;
+
+/// The economic-release calendar lookback in whole days for this run: [`CALENDAR_BACK_DAYS`]
+/// on the first report (no prior interval), else the elapsed interval rounded up and clamped
+/// to `[CALENDAR_BACK_DAYS, CALENDAR_BACK_MAX_DAYS]`. The saturating `f64 as i64` cast makes a
+/// non-finite or absurd interval clamp to the floor/cap rather than panic.
+fn calendar_back_days(elapsed_days: Option<f64>) -> i64 {
+    match elapsed_days {
+        None => CALENDAR_BACK_DAYS,
+        Some(d) => (d.ceil() as i64).clamp(CALENDAR_BACK_DAYS, CALENDAR_BACK_MAX_DAYS),
+    }
+}
 
 /// The curated market-moving US economic releases of the Step-3 calendar, as
 /// `(FRED release_id, display name)`. The ids are pinned against FRED's `releases`
@@ -854,7 +873,7 @@ impl FredDataSource {
         })
     }
 
-    /// Gather the Step-3 economic-release calendar: each curated release's prior-week and
+    /// Gather the Step-3 economic-release calendar: each curated release's recent and
     /// upcoming dates within the window, shaped into `EconomicRelease`s. The calendar is
     /// an additive group with no floor, so it degrades quietly: a per-release "does not
     /// exist" 400 is silent (a permanent absence shouldn't clutter the manifest), while a
@@ -862,8 +881,13 @@ impl FredDataSource {
     /// `Calendar` gap so the agent knows the schedule was thinned on this run. An empty
     /// result (a quiet window) is valid; the actual figures reach the model through the
     /// series groups regardless.
-    fn fetch_calendar(&self, today: NaiveDate, gaps: &mut Vec<DataGap>) -> Vec<EconomicRelease> {
-        let start = (today - Duration::days(CALENDAR_BACK_DAYS))
+    fn fetch_calendar(
+        &self,
+        today: NaiveDate,
+        back_days: i64,
+        gaps: &mut Vec<DataGap>,
+    ) -> Vec<EconomicRelease> {
+        let start = (today - Duration::days(back_days))
             .format("%Y-%m-%d")
             .to_string();
         let end = (today + Duration::days(CALENDAR_FWD_DAYS))
@@ -940,7 +964,7 @@ impl FredDataSource {
 }
 
 impl MarketDataSource for FredDataSource {
-    fn baseline_scan(&self) -> Result<BaselineMarketData> {
+    fn baseline_scan(&self, cadence: ReportCadence) -> Result<BaselineMarketData> {
         // Each series degrades to a recorded gap rather than failing the scan; an empty
         // `internals` or `macro_levels` group is no longer this adapter's call to abort
         // on — the central coverage gate (`pipeline::enforce_coverage`) decides the run's
@@ -954,7 +978,8 @@ impl MarketDataSource for FredDataSource {
         let internals = self.fetch_series(INTERNALS_SERIES, GroupKind::Internals, today, &mut gaps);
         let macro_levels =
             self.fetch_series(MACRO_SERIES, GroupKind::MacroLevels, today, &mut gaps);
-        let calendar = self.fetch_calendar(today, &mut gaps);
+        let calendar =
+            self.fetch_calendar(today, calendar_back_days(cadence.elapsed_days()), &mut gaps);
         Ok(BaselineMarketData {
             indices: Vec::new(),
             internals,
@@ -985,6 +1010,22 @@ mod tests {
     // not just the smoke — and are reached here through `use super::*`. A fixed "today"
     // near the offline fixtures' early-June-2026 dates keeps them fresh for the tests that
     // aren't about freshness; the freshness behavior has its own dedicated tests below.
+    #[test]
+    fn calendar_back_days_floors_caps_and_scales() {
+        // First report (no interval) → the floor.
+        assert_eq!(calendar_back_days(None), CALENDAR_BACK_DAYS);
+        // Sub-floor run keeps the default lookback.
+        assert_eq!(calendar_back_days(Some(2.0)), CALENDAR_BACK_DAYS);
+        // A multi-week run rounds up to ~its interval, above the floor.
+        assert_eq!(calendar_back_days(Some(20.0)), 20);
+        // A long gap is capped.
+        assert_eq!(calendar_back_days(Some(90.0)), CALENDAR_BACK_MAX_DAYS);
+        // Degenerate intervals clamp to the floor/cap, never panic.
+        assert_eq!(calendar_back_days(Some(-3.0)), CALENDAR_BACK_DAYS);
+        assert_eq!(calendar_back_days(Some(f64::NAN)), CALENDAR_BACK_DAYS);
+        assert_eq!(calendar_back_days(Some(f64::INFINITY)), CALENDAR_BACK_MAX_DAYS);
+    }
+
     fn fresh_today() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 6, 8).unwrap()
     }
@@ -1824,7 +1865,7 @@ mod tests {
     #[ignore = "hits the live FRED API; set FRED_API_KEY"]
     fn fred_baseline_smoke() {
         let src = FredDataSource::from_env().expect("FRED_API_KEY set");
-        let data = src.baseline_scan().expect("live baseline scan");
+        let data = src.baseline_scan(ReportCadence::default()).expect("live baseline scan");
 
         // Print the resolved mapping so a maintainer can confirm each series came
         // back (run with `-- --ignored --nocapture`); the offline tests can only

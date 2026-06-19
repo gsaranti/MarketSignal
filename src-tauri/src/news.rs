@@ -1,5 +1,5 @@
 //! The news-ingestion source contract: a structured raw-headline boundary for
-//! Step 7 (`docs/weekly-report-workflow.md §Step 7`).
+//! Step 7 (`docs/report-workflow.md §Step 7`).
 //!
 //! Mirrors the `data_sources` spine — the application layer owns all I/O, each
 //! news source is a trait the orchestrator drives, and a deterministic stub
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::cadence::ReportCadence;
 
 /// The market-news topics the gathering pass queries each provider for, derived
-/// from the Step-3 news categories (`docs/weekly-report-workflow.md §Step 3` —
+/// from the Step-3 news categories (`docs/report-workflow.md §Step 3` —
 /// politics, geopolitics, China/trade, energy, earnings, AI/semiconductors, and
 /// major economic developments). Plain free-text queries, accepted by both
 /// Tavily's search API and GDELT's document query.
@@ -121,7 +121,7 @@ impl<P: NewsSource, S: NewsSource> NewsSource for CompositeNewsSource<P, S> {
 /// earliest provider's framing of a story survives. This trims the raw gather
 /// (the same story syndicated across outlets, or returned by overlapping topic
 /// queries) without displacing the model's later *semantic* dedup, relevance
-/// scoring, and clustering (`docs/weekly-report-workflow.md §Step 7`).
+/// scoring, and clustering (`docs/report-workflow.md §Step 7`).
 pub fn dedupe_headlines(headlines: Vec<RawHeadline>) -> Vec<RawHeadline> {
     let mut seen_urls = HashSet::new();
     let mut seen_titles = HashSet::new();

@@ -26,7 +26,7 @@ The report job:
 - retrospectively evaluates prior report accuracy and thesis quality
 
 The end-to-end steps that run inside this job are defined in
-[weekly-report-workflow.md](weekly-report-workflow.md).
+[report-workflow.md](report-workflow.md).
 
 ## Job States
 

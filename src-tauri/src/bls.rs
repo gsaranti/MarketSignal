@@ -4,7 +4,7 @@
 //! The third data-source adapter behind the `MarketDataSource` trait
 //! (`data_sources`), sibling to `fmp` and `fred`. It owns the Step-3 **labor levels**
 //! group (`labor_levels`): the CPI-U headline index, the U-3 unemployment rate, total
-//! nonfarm payrolls, and average hourly earnings (`docs/weekly-report-workflow.md
+//! nonfarm payrolls, and average hourly earnings (`docs/report-workflow.md
 //! §Step 3`, `docs/data-sources.md §BLS`). These are point-in-time monthly levels
 //! reusing the same quote shape as `fred`'s macro levels, kept in a group distinct
 //! from the FRED `macro_levels` by source and concern. `price` is the latest reported
@@ -48,6 +48,7 @@ use serde_json::Value;
 use crate::data_sources::{
     BaselineMarketData, Change, DataGap, GapReason, GroupKind, MarketDataSource, Quote,
 };
+use crate::cadence::ReportCadence;
 use crate::progress::RunContext;
 
 /// BLS Public Data API v2 time-series endpoint — a JSON POST batch of series ids.
@@ -61,7 +62,7 @@ const BLS_DATA_PATH: &str = "/timeseries/data/";
 /// ceiling so a hung provider doesn't park the scan.
 const BLS_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
-/// The BLS-owned labor levels of the Step-3 baseline (`docs/weekly-report-workflow.md
+/// The BLS-owned labor levels of the Step-3 baseline (`docs/report-workflow.md
 /// §Step 3`, `docs/data-sources.md §BLS`): the CPI-U headline index (NSA, all items),
 /// the U-3 unemployment rate, total nonfarm payroll employment, and average hourly
 /// earnings for total private. Monthly series; `change` reads month-over-month.
@@ -343,7 +344,7 @@ impl BlsDataSource {
 }
 
 impl MarketDataSource for BlsDataSource {
-    fn baseline_scan(&self) -> Result<BaselineMarketData> {
+    fn baseline_scan(&self, _cadence: ReportCadence) -> Result<BaselineMarketData> {
         // Cancel before the single request: skip the POST and let the pipeline's
         // post-baseline checkpoint unwind the run.
         if self.progress.is_cancelled() {
@@ -624,7 +625,7 @@ mod tests {
     #[ignore = "hits the live BLS API"]
     fn bls_baseline_smoke() {
         let src = BlsDataSource::new().expect("BLS client builds");
-        let data = src.baseline_scan().expect("live baseline scan");
+        let data = src.baseline_scan(ReportCadence::default()).expect("live baseline scan");
 
         // Print the resolved mapping so a maintainer can confirm each series came back
         // (run with `-- --ignored --nocapture`); the offline tests can only check

@@ -166,7 +166,7 @@ Key:
 - geopolitical developments,
 - and market signals
 
-that should be monitored in upcoming weeks and report cycles.
+that should be monitored over the period ahead and in upcoming reports.
 
 ## Sources
 ```

@@ -6,9 +6,9 @@ The pipeline is not tool-driven by the main agent. The analyst agents are requir
 
 The application layer executes external API calls and deterministic data retrieval.
 
-Agents do not directly perform unbounded API access. When deeper research is needed, the application layer executes a bounded research plan against configured data sources. That plan is produced by the fixed research-routing model, not the main agent — the main agent shapes research only indirectly, through the inputs that feed routing (prior-report context, unresolved thesis questions, and retrieved memory). See [weekly-report-workflow.md §Step 8](weekly-report-workflow.md#step-8-perform-research-routing).
+Agents do not directly perform unbounded API access. When deeper research is needed, the application layer executes a bounded research plan against configured data sources. That plan is produced by the fixed research-routing model, not the main agent — the main agent shapes research only indirectly, through the inputs that feed routing (prior-report context, unresolved thesis questions, and retrieved memory). See [report-workflow.md §Step 8](report-workflow.md#step-8-perform-research-routing).
 
-The end-to-end ordering of pipeline stages — including when each agent runs relative to research gathering, news filtering, and report saving — is defined in [weekly-report-workflow.md](weekly-report-workflow.md).
+The end-to-end ordering of pipeline stages — including when each agent runs relative to research gathering, news filtering, and report saving — is defined in [report-workflow.md](report-workflow.md).
 
 ## Main Agent
 

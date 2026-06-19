@@ -18,8 +18,23 @@ pub struct ReportRecord<'a> {
 }
 
 /// Open (creating if absent) the SQLite database at `db_path`.
+///
+/// Sets two concurrency-hygiene pragmas. The on-demand run path opens its own
+/// connection, and a concurrency-*skipped* attempt writes its `job_runs` row from
+/// a second connection while the winning run is mid-flight. With SQLite's default
+/// (no busy timeout), a write that hits the other connection's lock returns
+/// `SQLITE_BUSY` *immediately* — surfacing as a generic DB error instead of the
+/// clean "Skipped" outcome. `busy_timeout` makes a brief write-write overlap wait
+/// (up to the bound) rather than fail; WAL lets a reader and a writer coexist so
+/// the live run's reads don't block the skip-path write either. Both are
+/// idempotent to set on every open.
 pub fn open(db_path: &std::path::Path) -> Result<Connection> {
-    Ok(Connection::open(db_path)?)
+    let conn = Connection::open(db_path)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    // `PRAGMA journal_mode=WAL` returns a result row, so go through `execute_batch`
+    // (which discards rows) rather than `pragma_update` (which rejects them).
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    Ok(conn)
 }
 
 /// Create the application tables if they do not exist: `reports` (one row per
@@ -846,6 +861,24 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn open_sets_wal_and_busy_timeout() {
+        // WAL needs a file-backed DB (in-memory reports "memory"), so go through a
+        // tempdir rather than `mem()`.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = open(&tmp.path().join("hygiene.db")).unwrap();
+
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal", "open() should enable WAL");
+
+        let timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(timeout, 5000, "open() should set a 5s busy timeout");
     }
 
     fn sample_summary(id: &str, created_at: &str) -> ReportSummary {

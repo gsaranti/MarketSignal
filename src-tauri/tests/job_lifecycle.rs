@@ -4,6 +4,7 @@
 //! `job_runs` row and the right side effects, all offline.
 
 use market_signal_temp_lib::agent::{MainAgent, MainAgentInput, MainAgentOutput, StubMainAgent};
+use market_signal_temp_lib::cadence::ReportCadence;
 use market_signal_temp_lib::data_sources::{
     BaselineMarketData, MarketDataSource, StubMarketDataSource,
 };
@@ -27,7 +28,7 @@ impl MainAgent for FailingAgent {
 struct FailingDataSource;
 
 impl MarketDataSource for FailingDataSource {
-    fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData> {
+    fn baseline_scan(&self, _cadence: ReportCadence) -> anyhow::Result<BaselineMarketData> {
         anyhow::bail!("data provider unreachable (simulated)")
     }
 }
@@ -217,9 +218,9 @@ fn cancelled_run_records_cancelled_job_and_writes_no_report() {
     // pre-set flag would be cleared before the run polls it).
     struct CancellingData(Arc<AtomicBool>);
     impl MarketDataSource for CancellingData {
-        fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData> {
+        fn baseline_scan(&self, cadence: ReportCadence) -> anyhow::Result<BaselineMarketData> {
             self.0.store(true, Ordering::Relaxed);
-            StubMarketDataSource.baseline_scan()
+            StubMarketDataSource.baseline_scan(cadence)
         }
     }
 
