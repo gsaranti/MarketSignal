@@ -2,18 +2,25 @@
 
 ## What happened
 
-Closed the **last cadence gap: research-branch threshold cadence-scaling** (`/metis-plan-task` → `/metis-implement-task` → `/metis-review-task` **approve**, then PR #31 squash-merged). `research_executor`'s `DeltaBranchPolicy` thresholds — formerly weekly-calibrated absolutes (oil +7% `Pct`, 10y +25bp `Abs`) — are now sqrt-of-time scaled per run: `cadence_scale(elapsed_days) = sqrt(elapsed_days / THRESHOLD_ANCHOR_DAYS=7)` clamped to `[THRESHOLD_SCALE_MIN=0.5, THRESHOLD_SCALE_MAX=2.5]`, applied once in `rule_fired` to both metrics. **Simplified the plan's "thread `ReportCadence` in"** → keys off the change view's pre-existing `BaselineDeltas.elapsed_days`, so **no signature / `pipeline.rs` change**. `scale(7)=1.0` preserves the weekly calibration exactly (all prior weekly tests unchanged); a degenerate interval (clock skew / non-finite) floors via an explicit early return *before* the clamp (`f64::clamp` propagates `NaN`). metis-task-reviewer **approve** (clean) + an external Codex pass (**no findings**; one doc-comment imprecision — wrongly calling 7 the "center" of the `[3,14)` Weekly band — fixed). 399 lib tests (+7), clippy clean. **`docs/` corpus needed no change** (thresholds were never doc-pinned; `§Step 9` is cadence-neutral); BUILD.md + memory `manual-pivot-cadence-windows` amended.
+Ran a full **audit of the report-generation logic** (auto-run removal, cadence soundness at the data + prompt levels, prompt quality, persistence, docs) — found it **largely sound** (auto-run fully removed; cadence & persistence correct; no blocking issues). Landed the four actionable follow-ups as **PR #32 (squash-merged @ `47fb074`)**:
+1. **SQLite hygiene** — `storage::open` now sets `busy_timeout=5s` + `journal_mode=WAL`, closing a confirmed defect where a concurrency-*skipped* run could surface a spurious `SQLITE_BUSY` instead of the clean "Skipped".
+2. **Cadence-scaled calendar windows** — threaded `ReportCadence` through `MarketDataSource::baseline_scan(cadence)` (mirroring `gather(cadence)`; `compute_cadence` moved above the scan). FMP earnings + FRED economic-release **back**-windows now scale to the elapsed interval, floored at the old default, capped `EARNINGS_BACK_MAX_DAYS=31` / `CALENDAR_BACK_MAX_DAYS=45`; forward windows + the fixed 7-day index horizon unchanged.
+3. **Prompt-rigor upgrades** — main agent: analytical-standards (conviction / anti-hedging / quantitative anchoring), always-on falsifiability, injection guard; analysts: distinct per-posture *methods* + a counter-argument forcing function + schema specificity. Forcing-functions stay **prose-only** (Codex's "schema-back the counter-argument" point consciously declined, per the skills decision).
+4. **Doc rename + reconcile** — `weekly-report-workflow.md → report-workflow.md` (incl. 4 refs split across line-wrapped doc comments a contiguous grep + the metis review missed — caught by Codex; memory `rename-grep-split-identifiers`).
+
+metis review **approve-with-nits**; 405 lib tests + clippy clean. BUILD.md amended this session (the four changes + the now-fixed doc-path refs).
 
 ## Current state
 
-`origin/main` = local `main` = **`5d81874`**, in sync; working tree clean; feature branch deleted. PR #31 merged @ `9e848be`; follow-up commit `5d81874` flipped BUILD.md's threshold entry from "pending commit/merge" to **LANDED & pushed**. **No work in flight, no queued code slices.** Cadence awareness is now complete end-to-end (data windows + agent posture from PR #30, plus this slice's research-branch scaling).
+`origin/main` = local `main` = **`47fb074`**, in sync; tree clean; `audit-followups` deleted (local + remote). **No work in flight, no queued slices.**
 
 ## Open questions
 
-Both live-run only, neither owes code:
-- *(deferred, needs a live run)* **Research-threshold constant-value calibration** — the scaling *mechanism* is DONE; only the constant *values* (`THRESHOLD_SCALE_MIN=0.5` / `_MAX=2.5` clamps, `THRESHOLD_ANCHOR_DAYS=7`) await tuning against real daily/weekly/monthly snapshots (like the dedup threshold 0.65 was). The three knobs are `const`s in `research_executor.rs`. **Don't re-implement the curve** (memory `manual-pivot-cadence-windows`).
-- *(live, needs a run)* **Empirical skills calibration** — which of the 16 lenses improve the thesis/analyst reviews, which get ignored, and whether prose-only delivery repeats language across the 16. No test catches prose dilution (memory `skills-forcing-function-only`).
+All **live-run only**, none owes code:
+- **Cadence-const calibration** — the research-threshold clamps (`THRESHOLD_SCALE_MIN/MAX`, `THRESHOLD_ANCHOR_DAYS=7`, `research_executor.rs`) **and now the calendar back-window caps** (`EARNINGS_BACK_MAX_DAYS=31` `fmp.rs`, `CALENDAR_BACK_MAX_DAYS=45` `fred.rs`) await tuning vs real daily/weekly/monthly snapshots. Don't re-implement the curves (memory `manual-pivot-cadence-windows`).
+- **Empirical prompt/skills calibration** — which of the 16 lenses + this session's new analytical-standards / posture-methods / counter-argument additions actually improve the report, which get ignored, and prose-repetition across them. No test catches prose dilution (memory `skills-forcing-function-only`).
+- **Prompt worked-examples** *(deferred)* — the audit's one un-actioned item (a strong-vs-weak risk/thesis exemplar); validate against a live run alongside the calibration above.
 
 ## Where to start
 
-No owed code; cadence work is done. Both remaining items need a **live run**. Most concrete: a live end-to-end run to observe research-branch fire/no-fire decisions across cadences and tune the clamp/anchor `const`s in `research_executor.rs`; skills calibration can ride the same run. Otherwise open a fresh direction.
+No owed code — the whole audit landed. Every remaining item needs a **live end-to-end run**: tune the cadence consts (research thresholds + the new calendar caps), observe whether the prompt-rigor additions improve reports, and judge the skills + worked-examples questions on the same run. Otherwise open a fresh direction.
