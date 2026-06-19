@@ -1,6 +1,6 @@
 //! The pre-run execution gate: structured configuration validation.
 //!
-//! `docs/weekly-report-workflow.md §Step 1` and `docs/configuration.md` require
+//! `docs/report-workflow.md §Step 1` and `docs/configuration.md` require
 //! that no report run starts until the configuration is complete — all four
 //! agent models selected, both provider API tokens present, and both external
 //! data-provider credentials present. This module turns that requirement into a
@@ -215,8 +215,8 @@ impl AppConfig {
         Ok(MainAgentConfig { model, api_key })
     }
 
-    /// The FMP API key for the baseline market-data scan (`docs/weekly-report
-    /// -workflow.md §Step 3`), resolved from validated configuration. Mirrors
+    /// The FMP API key for the baseline market-data scan
+    /// (`docs/report-workflow.md §Step 3`), resolved from validated configuration. Mirrors
     /// `main_agent_config`'s post-gate resolution: after a passing `validate` the
     /// credential is present, so the error arm is defensive.
     pub fn fmp_key(&self) -> Result<String> {
@@ -228,7 +228,7 @@ impl AppConfig {
     }
 
     /// The FRED API key for the macro / commodity half of the baseline scan
-    /// (`docs/weekly-report-workflow.md §Step 3`), resolved from validated
+    /// (`docs/report-workflow.md §Step 3`), resolved from validated
     /// configuration. Mirrors `fmp_key`: after a passing `validate` the credential
     /// is present, so the error arm is defensive.
     pub fn fred_key(&self) -> Result<String> {
@@ -239,7 +239,7 @@ impl AppConfig {
             .to_string())
     }
 
-    /// The Tavily API key for Step-7 news ingestion (`docs/weekly-report-workflow
+    /// The Tavily API key for Step-7 news ingestion (`docs/report-workflow
     /// .md §Step 7`), resolved from validated configuration. Mirrors `fmp_key` /
     /// `fred_key`: after a passing `validate` the credential is present (Tavily is
     /// a required provider credential), so the error arm is defensive.

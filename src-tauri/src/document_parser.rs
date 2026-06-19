@@ -1,4 +1,4 @@
-//! Step-6 research-inbox parsing (`docs/weekly-report-workflow.md §Step 6`,
+//! Step-6 research-inbox parsing (`docs/report-workflow.md §Step 6`,
 //! `docs/research-documents.md`): turn the user-supplied files in the research
 //! inbox into bounded text the research router and the condensed packet can
 //! carry.

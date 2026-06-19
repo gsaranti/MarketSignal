@@ -276,7 +276,7 @@ const QUERY_MAX_TRANSITIONS: usize = 6;
 const QUERY_MAX_SOURCE_TITLES: usize = 3;
 
 /// The deterministic text the Step-4 pre-research pull embeds
-/// (`docs/weekly-report-workflow.md §Step 4`): memory is recalled against where
+/// (`docs/report-workflow.md §Step 4`): memory is recalled against where
 /// the market actually is this period — the recent report context, the salient
 /// baseline levels (indices + internals, never the full baseline JSON), and the
 /// strongest moves in the change view. Pure and bounded: each section is omitted
@@ -373,7 +373,7 @@ fn push_transition_line(out: &mut String, label: &str, transitions: &[SeriesTran
 }
 
 /// The deterministic text the Step-10 post-research pull embeds
-/// (`docs/weekly-report-workflow.md §Step 10`): memory is recalled against what
+/// (`docs/report-workflow.md §Step 10`): memory is recalled against what
 /// the research actually found — each routed topic with its rationale, its
 /// concrete queries, and a bounded slice of the source titles the executor
 /// surfaced. Pure; empty evidence renders an empty string.

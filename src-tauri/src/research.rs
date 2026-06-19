@@ -8,7 +8,7 @@
 //! single file by name — so it can be driven directly by unit tests against temp
 //! dirs. The caller passes whichever folder it means.
 //!
-//! Job-start parsing and the move-to-archive step (`docs/weekly-report-workflow.md`
+//! Job-start parsing and the move-to-archive step (`docs/report-workflow.md`
 //! §Step 6) live in `document_parser` and the pipeline's inbox stage; this module
 //! stays the listing/deletion core (§User Permissions — delete yes from either
 //! folder, manual archive no). The parse-failure error state the panel shows is

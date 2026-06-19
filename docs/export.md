@@ -41,6 +41,6 @@ Example:
 
 ## Export Behavior
 
-Exports are generated from the stored report artifacts.
+Markdown export uses the stored canonical Markdown report. PDF export renders the report's HTML on demand and prints that to PDF — the HTML is never stored, only rendered when needed for display or export.
 
 Exporting a report does not re-run the agent workflow, regenerate analysis, or modify the stored report.

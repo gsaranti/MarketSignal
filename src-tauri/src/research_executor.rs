@@ -1,4 +1,4 @@
-//! Step 9: the bounded research executor (`docs/weekly-report-workflow.md §Step 9`).
+//! Step 9: the bounded research executor (`docs/report-workflow.md §Step 9`).
 //!
 //! The first consumer of the Step-8 `ResearchPlan`. Where routing decides *what*
 //! to investigate, this stage executes it: it walks the plan's topics in priority
@@ -42,7 +42,7 @@ use crate::news::RawHeadline;
 use crate::progress::RunContext;
 use crate::research_router::{ResearchItem, ResearchPlan};
 
-/// Hard ceiling on research requests per job (`docs/weekly-report-workflow.md
+/// Hard ceiling on research requests per job (`docs/report-workflow.md
 /// §Step 9`). Counted across every topic and every branching depth; the
 /// `(N+1)`-th request is refused, so exactly this many searches can fire.
 pub const MAX_RESEARCH_REQUESTS: usize = 50;
@@ -172,7 +172,7 @@ enum Metric {
 /// second-order investigation for a research topic whose label or rationale contains any
 /// of `keywords`. The direction gate keeps the rules faithful to the doc's *directional*
 /// triggers — "if oil **spikes**", "if yields **rise sharply**"
-/// (`docs/weekly-report-workflow.md §Step 9`) — so a sharp *decline* (a different thesis:
+/// (`docs/report-workflow.md §Step 9`) — so a sharp *decline* (a different thesis:
 /// demand destruction, flight-to-quality) doesn't fire a rise-flavored follow-up. A
 /// future crash rule is a one-row `Direction::Down` entry with its own query.
 #[derive(Debug)]
@@ -269,7 +269,7 @@ const TRIGGER_RULES: &[TriggerRule] = &[
     },
 ];
 
-/// The real follow-up generator (`docs/weekly-report-workflow.md §Step 9`): deterministic
+/// The real follow-up generator (`docs/report-workflow.md §Step 9`): deterministic
 /// delta-rules keyed off this run's baseline change view. Built via
 /// [`DeltaBranchPolicy::from_deltas`], which resolves at construction which
 /// [`TRIGGER_RULES`] fired (a tracked series moved past its threshold in the rule's

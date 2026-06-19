@@ -1,7 +1,7 @@
 //! The research-routing stage: a pure structured-in / structured-out boundary
 //! that turns this run's baseline, its change view, the Step-7 news clusters, and
 //! the recent prior-report summaries into a bounded research plan
-//! (`docs/weekly-report-workflow.md §Step 8`).
+//! (`docs/report-workflow.md §Step 8`).
 //!
 //! This is Step 8. Step 7 narrows ~500 headlines to ~10 clusters
 //! (`headline_filter`); routing decides which at most ~5 of those topics — plus
@@ -35,14 +35,14 @@ use crate::news::RawHeadline;
 use crate::progress::RunContext;
 
 /// The bounded ceiling on topics the plan carries — the "~5 deeply analyzed
-/// topics" Step 7's funnel hands to routing (`docs/weekly-report-workflow.md
+/// topics" Step 7's funnel hands to routing (`docs/report-workflow.md
 /// §Step 7`). Enforced in `plan_from_envelope` (the model is asked for at most
 /// this many, but the cap is applied deterministically rather than trusted).
 pub const MAX_RESEARCH_ITEMS: usize = 5;
 
 /// The per-topic ceiling on concrete research questions. A shape bound, not the
 /// hard request budget — the 50-request / depth-2 / 30-minute limits live in the
-/// Step-9 executor (`docs/weekly-report-workflow.md §Step 9`), not the plan — but
+/// Step-9 executor (`docs/report-workflow.md §Step 9`), not the plan — but
 /// keeping each topic to a handful of directions stops a lax model response from
 /// handing the executor an unbounded fan-out (5 topics × 4 × depth-2 stays inside
 /// the 50-request budget with headroom).
@@ -59,7 +59,7 @@ pub struct ResearchItem {
     pub queries: Vec<String>,
 }
 
-/// The bounded research plan (`docs/weekly-report-workflow.md §Step 8`): the
+/// The bounded research plan (`docs/report-workflow.md §Step 8`): the
 /// topics that deserve deeper investigation this report, ranked by priority and
 /// capped at `MAX_RESEARCH_ITEMS`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -88,13 +88,13 @@ pub struct RouterInput {
     /// read site (`pipeline::load_recent_report_context`). Empty on a first
     /// report or when the best-effort read degraded.
     pub recent_reports: Vec<ReportSummary>,
-    /// The Step-4 pre-research vector-memory pull (`docs/weekly-report-workflow.md
+    /// The Step-4 pre-research vector-memory pull (`docs/report-workflow.md
     /// §Step 4`): recalled fragments, most relevant first, each in the
     /// `MemoryHit::prompt_fragment` form. Ephemeral routing context only — the
     /// packet carries the separate Step-10 pull, never this one. Empty on an
     /// early run's bare store or when the fail-soft pull degraded.
     pub memory: Vec<String>,
-    /// The Step-6 parsed research-inbox documents (`docs/weekly-report-workflow.md
+    /// The Step-6 parsed research-inbox documents (`docs/report-workflow.md
     /// §Step 8`'s "parsed research inbox documents"): one short excerpt block per
     /// successfully parsed user-supplied document
     /// (`document_parser::ParsedResearchDoc::router_excerpt`) — routing picks

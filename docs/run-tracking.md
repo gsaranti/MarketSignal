@@ -3,7 +3,7 @@
 While a Market Signal Report job is running, the application shows a live **run
 tracker** in place of the report, so the user can watch the job progress and stop
 it at any point. The tracker is presentation only — it observes the workflow
-defined in [weekly-report-workflow.md](weekly-report-workflow.md); it does not
+defined in [report-workflow.md](report-workflow.md); it does not
 change what the job does.
 
 ## What the Tracker Shows

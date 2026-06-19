@@ -1,4 +1,4 @@
-//! Step 11: the condensed research packet (`docs/weekly-report-workflow.md §Step 11`).
+//! Step 11: the condensed research packet (`docs/report-workflow.md §Step 11`).
 //!
 //! The canonical input the analyst agents (and, at synthesis, the main agent) reason
 //! over: the application layer gathers the curated evidence from the research half and
@@ -40,7 +40,7 @@ pub const MAX_PACKET_CLUSTERS: usize = 8;
 /// source list can grow before it crowds the packet.
 pub const MAX_SOURCES_PER_FINDING: usize = 5;
 
-/// The condensed research packet (`docs/weekly-report-workflow.md §Step 11`): the
+/// The condensed research packet (`docs/report-workflow.md §Step 11`): the
 /// canonical, token-bounded input for the analyst agents.
 ///
 /// `Serialize` (but not `Deserialize`) for parity with [`ResearchEvidence`] and for
@@ -61,13 +61,13 @@ pub struct ResearchPacket {
     /// source list capped at [`MAX_SOURCES_PER_FINDING`]. The request/stop accounting
     /// is carried through untouched so a truncated phase stays visible.
     pub research: ResearchEvidence,
-    /// The Step-10 research-informed vector-memory pull (`docs/weekly-report-workflow.md
+    /// The Step-10 research-informed vector-memory pull (`docs/report-workflow.md
     /// §Step 10`): recalled fragments, most relevant first, each in the
     /// `MemoryHit::prompt_fragment` form. Deliberately *not* the Step-4 pre-research
     /// pull — the packet carries only the research-informed result set (replace, not
     /// merge). Empty on an early run's bare store or when the fail-soft pull degraded.
     pub memory: Vec<String>,
-    /// The Step-6 research-inbox documents (`docs/weekly-report-workflow.md §Step 6`,
+    /// The Step-6 research-inbox documents (`docs/report-workflow.md §Step 6`,
     /// "research inbox summaries" in §Step 11): one prompt block per successfully
     /// parsed user-supplied document, in the inbox's newest-first order. The doc's
     /// "summaries" ship as deterministic condensed excerpts — bounded upstream by

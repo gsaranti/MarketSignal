@@ -116,7 +116,7 @@ The skill evaluates:
 Separates short-term market reactions from medium-term and long-term structural market trends.
 The skill helps prevent the system from confusing temporary volatility with meaningful changes to the broader market thesis.
 The skill also helps the system distinguish between:
-- weekly market noise
+- short-term market noise
 - cyclical developments
 - structural long-term market shifts
 

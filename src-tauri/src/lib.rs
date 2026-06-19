@@ -95,7 +95,7 @@ fn cancel_run(cancel: tauri::State<'_, CancelFlag>) {
 }
 
 /// Report the current warning state for the Persistent Warning Area. Read-only:
-/// it validates the config substrate (`docs/weekly-report-workflow.md §Step 1`)
+/// it validates the config substrate (`docs/report-workflow.md §Step 1`)
 /// and merges in the non-blocking `FailedJob` warning from job history
 /// (`docs/scheduling.md §Error Handling`), but runs no job. The frontend calls
 /// this on load and after a generate attempt to repopulate the warning area, so
@@ -243,7 +243,7 @@ async fn generate_report_manual(
             .with_context(ctx.clone());
         // The baseline scan is FMP (indices / VIX / gold / sectors) + FRED (yields,
         // dollar index, oil, gas, macro levels) + BLS (labor levels) merged behind one
-        // trait (`docs/weekly-report-workflow.md §Step 3`). BLS is keyless (not in the
+        // trait (`docs/report-workflow.md §Step 3`). BLS is keyless (not in the
         // execution gate); it nests as the outer secondary so its labor_levels group
         // folds into the FMP+FRED baseline.
         let fmp = FmpDataSource::new(fmp_key.clone())
@@ -298,7 +298,7 @@ fn list_reports(app: tauri::AppHandle) -> Result<Vec<agent::ReportSummary>, Stri
 }
 
 /// Load one persisted report by id for the Latest Report View: its summary plus
-/// its canonical Markdown read back from disk (`docs/weekly-report-workflow.md
+/// its canonical Markdown read back from disk (`docs/report-workflow.md
 /// §Step 18`). An unknown id, or a Markdown file removed out-of-band, surfaces as
 /// an error the view renders.
 #[tauri::command]
