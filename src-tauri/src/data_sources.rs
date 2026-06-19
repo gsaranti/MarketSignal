@@ -12,17 +12,18 @@
 //! below runs them and merges them into one baseline.
 //!
 //! `BaselineMarketData` is the Step-3 baseline scan
-//! (`docs/weekly-report-workflow.md §Step 3`), gathered before agent reasoning.
+//! (`docs/report-workflow.md §Step 3`), gathered before agent reasoning.
 //! FMP fills indices, sectors, and the VIX + gold internals; FRED appends its
 //! commodity / yield series to the same `internals` group and fills the
 //! `macro_levels` group (Fed-funds target range, inflation breakevens, consumer
-//! sentiment, PCE) and the economic-release `calendar` (the prior-week + upcoming US
+//! sentiment, PCE) and the economic-release `calendar` (the recent + upcoming US
 //! reports, from FRED's free release-dates schedule — FMP's economic-calendar endpoint
 //! is premium-gated); BLS fills the `labor_levels` group (CPI, unemployment, payrolls,
 //! wages).
 
 use serde::{Deserialize, Serialize};
 
+use crate::cadence::ReportCadence;
 use crate::progress::RunContext;
 
 /// How a [`Quote`]'s [`Change`] value should be read — the change's own unit, carried
@@ -114,12 +115,12 @@ pub struct SectorPerformance {
 }
 
 /// One entry in the Step-3 economic-release calendar: a scheduled or just-released US
-/// economic report (`docs/weekly-report-workflow.md §Step 3` — the "CPI/PCE/jobs
-/// calendar" and "major economic reports from the prior week"). Sourced from FRED's
+/// economic report (`docs/report-workflow.md §Step 3` — the "CPI/PCE/jobs
+/// calendar" and "major economic reports from the recent window"). Sourced from FRED's
 /// free release-dates schedule (FMP's economic-calendar endpoint is premium-gated), so
 /// it carries the release **name** and **date** but not the report's figures — those
 /// reach the model through the `macro_levels` / `labor_levels` series quotes. `status`
-/// is `"released"` for a date in the prior-week window or `"upcoming"` for a scheduled
+/// is `"released"` for a date in the recent window or `"upcoming"` for a scheduled
 /// future date. No analyst-consensus figure is carried: no market-data API serves free US
 /// consensus, so consensus — where it bears on the thesis — reaches the report through the
 /// research phase rather than this calendar. (A perpetually-`None` `expected` slot was
@@ -389,7 +390,7 @@ pub struct BaselineMarketData {
     pub sectors: Vec<SectorPerformance>,
     /// Step-3 macro levels (Fed-funds target range, inflation breakevens, consumer
     /// sentiment, PCE, plus the headline activity reports — PPI, retail sales, JOLTS,
-    /// real GDP — that back the `calendar`'s prior-week entries) — point-in-time FRED
+    /// real GDP — that back the `calendar`'s recent entries) — point-in-time FRED
     /// series, kept distinct from the market `internals`. Same `Quote` shape: `price` is
     /// the latest level and `change` its move from the prior observation
     /// (day-over-day, month-over-month, or quarter-over-quarter by series frequency),
@@ -402,8 +403,8 @@ pub struct BaselineMarketData {
     /// and `change` its month-over-month move from the prior reading.
     #[serde(default)]
     pub labor_levels: Vec<Quote>,
-    /// Step-3 economic-release calendar (`docs/weekly-report-workflow.md §Step 3`): the
-    /// prior-week and upcoming US economic reports (CPI, PCE, jobs, GDP, …) as a
+    /// Step-3 economic-release calendar (`docs/report-workflow.md §Step 3`): the
+    /// recent and upcoming US economic reports (CPI, PCE, jobs, GDP, …) as a
     /// release schedule from FRED's free release-dates endpoint. A schedule of names +
     /// dates, not figures — the actual readings reach the model via `macro_levels` /
     /// `labor_levels`. Empty is valid (a quiet window, or the calendar soft-degraded); it
@@ -424,7 +425,7 @@ pub struct BaselineMarketData {
     /// breadth read is additive over the required index/internals grounding.
     #[serde(default)]
     pub movers: Vec<StockMover>,
-    /// Step-3 earnings calendar: large-cap US companies reporting in the prior-week +
+    /// Step-3 earnings calendar: large-cap US companies reporting in the recent +
     /// upcoming window (FMP's free earnings calendar, filtered by revenue estimate). Recent
     /// rows carry actual-vs-estimate; upcoming rows carry estimates only. Empty is valid —
     /// additive and non-floor like `movers`, soft-degrading rather than failing the run.
@@ -489,7 +490,11 @@ pub(crate) fn emit_series_row(
 /// like the `MainAgent` trait — the blocking HTTP call inside the real adapter is
 /// offloaded via `spawn_blocking` at the Tauri command seam.
 pub trait MarketDataSource {
-    fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData>;
+    /// Gather the baseline scan, sizing any cadence-dependent lookback window (the
+    /// earnings / economic-release calendars) to `cadence` — the elapsed interval since
+    /// the previous report. Most implementors ignore it; only the FMP and FRED adapters
+    /// read it (so a monthly run's calendars cover the whole gap, not just the last week).
+    fn baseline_scan(&self, cadence: ReportCadence) -> anyhow::Result<BaselineMarketData>;
 }
 
 /// Deterministic offline stand-in for the real data adapter. Returns a small,
@@ -498,7 +503,7 @@ pub trait MarketDataSource {
 pub struct StubMarketDataSource;
 
 impl MarketDataSource for StubMarketDataSource {
-    fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData> {
+    fn baseline_scan(&self, _cadence: ReportCadence) -> anyhow::Result<BaselineMarketData> {
         Ok(BaselineMarketData {
             indices: vec![
                 Quote {
@@ -655,9 +660,9 @@ impl<P, S> CompositeMarketDataSource<P, S> {
 impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
     for CompositeMarketDataSource<P, S>
 {
-    fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData> {
-        let mut merged = self.primary.baseline_scan()?;
-        let extra = self.secondary.baseline_scan()?;
+    fn baseline_scan(&self, cadence: ReportCadence) -> anyhow::Result<BaselineMarketData> {
+        let mut merged = self.primary.baseline_scan(cadence)?;
+        let extra = self.secondary.baseline_scan(cadence)?;
         merged.indices.extend(extra.indices);
         merged.internals.extend(extra.internals);
         merged.sectors.extend(extra.sectors);
@@ -706,7 +711,7 @@ mod tests {
     }
 
     impl MarketDataSource for FredShapedStub {
-        fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData> {
+        fn baseline_scan(&self, _cadence: ReportCadence) -> anyhow::Result<BaselineMarketData> {
             Ok(BaselineMarketData {
                 internals: self.internals.clone(),
                 macro_levels: self.macro_levels.clone(),
@@ -722,7 +727,7 @@ mod tests {
     struct FailingStub;
 
     impl MarketDataSource for FailingStub {
-        fn baseline_scan(&self) -> anyhow::Result<BaselineMarketData> {
+        fn baseline_scan(&self, _cadence: ReportCadence) -> anyhow::Result<BaselineMarketData> {
             anyhow::bail!("provider down")
         }
     }
@@ -762,7 +767,7 @@ mod tests {
             )],
         };
         let composite = CompositeMarketDataSource::new(StubMarketDataSource, secondary);
-        let data = composite.baseline_scan().unwrap();
+        let data = composite.baseline_scan(ReportCadence::default()).unwrap();
 
         assert!(!data.indices.is_empty(), "primary indices survive");
         assert!(!data.sectors.is_empty(), "primary sectors survive");
@@ -796,12 +801,12 @@ mod tests {
         // A FRED-side failure must fail the whole scan, since FRED sources
         // non-optional baseline series.
         let composite = CompositeMarketDataSource::new(StubMarketDataSource, FailingStub);
-        assert!(composite.baseline_scan().is_err());
+        assert!(composite.baseline_scan(ReportCadence::default()).is_err());
     }
 
     #[test]
     fn stub_populates_groups_and_round_trips() {
-        let data = StubMarketDataSource.baseline_scan().unwrap();
+        let data = StubMarketDataSource.baseline_scan(ReportCadence::default()).unwrap();
         assert!(!data.indices.is_empty());
         assert!(!data.internals.is_empty());
         assert!(!data.sectors.is_empty());

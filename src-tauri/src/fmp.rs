@@ -8,7 +8,7 @@
 //! performance**, each index's **multi-horizon performance** (weekly / MTD / YTD /
 //! 52-week range) derived from FMP's free end-of-day history, the **market movers**
 //! (biggest gainers / losers / most-active names), the **earnings calendar** (the
-//! prior-week + upcoming large-cap reporters), and the **valuation + finer-rotation**
+//! recent + upcoming large-cap reporters), and the **valuation + finer-rotation**
 //! snapshots — per-sector P/E, the strongest / weakest industries (average move joined
 //! with aggregate P/E), and the US equity-risk-premium. The
 //! remaining macro / commodity internals — Treasury yields, the dollar index, oil,
@@ -56,6 +56,7 @@ use crate::data_sources::{
     IndexPerformance, IndustrySnapshot, MarketDataSource, MarketRiskPremium, MoverCategory, Quote,
     SectorPe, SectorPerformance, StockMover,
 };
+use crate::cadence::ReportCadence;
 use crate::progress::RunContext;
 
 /// Base URL for FMP's stable API. The endpoint paths below are joined onto it in
@@ -209,16 +210,34 @@ const MOVER_FUND_MARKERS: &[&str] = &[
     "microsectors",
 ];
 
-/// Earnings-calendar window and filter: the prior week + the upcoming fortnight, then keep
-/// only large-cap reporters (quarterly revenue estimate at or above the floor — no free
-/// index-membership list to filter by, so revenue magnitude is the proxy), capped at the
-/// largest N by revenue estimate. Tunable after a live run.
+/// Earnings-calendar window and filter: a cadence-sized lookback (the reporters since the
+/// previous report) + the upcoming fortnight, then keep only large-cap reporters (quarterly
+/// revenue estimate at or above the floor — no free index-membership list to filter by, so
+/// revenue magnitude is the proxy), capped at the largest N by revenue estimate. Tunable
+/// after a live run.
+///
+/// The *back* window scales with the run cadence ([`earnings_back_days`]): [`EARNINGS_BACK_DAYS`]
+/// is the floor (a sub-weekly run still gets a week of recent context) and
+/// [`EARNINGS_BACK_MAX_DAYS`] the cap (FMP's free earnings window is ~1 month). The *forward*
+/// window stays fixed — "upcoming" is upcoming regardless of how long since the last report.
 const EARNINGS_BACK_DAYS: i64 = 7;
+const EARNINGS_BACK_MAX_DAYS: i64 = 31;
 const EARNINGS_FWD_DAYS: i64 = 14;
 const EARNINGS_MIN_REVENUE: f64 = 5_000_000_000.0;
 const EARNINGS_MAX_ROWS: usize = 25;
 
-/// The four headline indices of the baseline scan (`docs/weekly-report-workflow
+/// The earnings-calendar lookback in whole days for this run: [`EARNINGS_BACK_DAYS`] on the
+/// first report (no prior interval), else the elapsed interval rounded up and clamped to
+/// `[EARNINGS_BACK_DAYS, EARNINGS_BACK_MAX_DAYS]`. The saturating `f64 as i64` cast makes a
+/// non-finite or absurd interval clamp to the floor/cap rather than panic.
+fn earnings_back_days(elapsed_days: Option<f64>) -> i64 {
+    match elapsed_days {
+        None => EARNINGS_BACK_DAYS,
+        Some(d) => (d.ceil() as i64).clamp(EARNINGS_BACK_DAYS, EARNINGS_BACK_MAX_DAYS),
+    }
+}
+
+/// The four headline indices of the baseline scan (`docs/report-workflow
 /// .md §Step 3`), paired with a display name used when FMP omits one and the `price`
 /// unit. All four are free-tier on FMP (verified live). The unit rides from the table,
 /// not the wire — FMP's quote object carries no unit — and labels the level for the
@@ -1201,16 +1220,16 @@ impl FmpDataSource {
         out
     }
 
-    /// Fetch the earnings calendar over the prior-week + upcoming-fortnight window in one
+    /// Fetch the earnings calendar over the recent + upcoming-fortnight window in one
     /// call, then filter to large-cap reporters. Additive and non-floor like `movers`: a
     /// permanent absence or an empty / all-filtered window is silent; a this-run failure
     /// (auth / quota / 5xx / transport / malformed) records one `Earnings` gap.
-    fn fetch_earnings(&self, gaps: &mut Vec<DataGap>) -> Vec<EarningsEvent> {
+    fn fetch_earnings(&self, back_days: i64, gaps: &mut Vec<DataGap>) -> Vec<EarningsEvent> {
         if self.progress.is_cancelled() {
             return Vec::new();
         }
         let today = Utc::now().date_naive();
-        let from = (today - Duration::days(EARNINGS_BACK_DAYS))
+        let from = (today - Duration::days(back_days))
             .format("%Y-%m-%d")
             .to_string();
         let to = (today + Duration::days(EARNINGS_FWD_DAYS))
@@ -1544,7 +1563,7 @@ impl FmpDataSource {
 }
 
 impl MarketDataSource for FmpDataSource {
-    fn baseline_scan(&self) -> Result<BaselineMarketData> {
+    fn baseline_scan(&self, cadence: ReportCadence) -> Result<BaselineMarketData> {
         // Every group degrades to recorded gaps rather than failing: a thin or empty
         // `indices` group is no longer this adapter's call to abort on — the central
         // coverage gate (`pipeline::enforce_coverage`) decides the run's floor over the
@@ -1558,7 +1577,7 @@ impl MarketDataSource for FmpDataSource {
         let sectors = self.fetch_sectors(&mut gaps);
         let index_performance = self.fetch_index_performance(&mut gaps);
         let movers = self.fetch_movers(&mut gaps);
-        let earnings = self.fetch_earnings(&mut gaps);
+        let earnings = self.fetch_earnings(earnings_back_days(cadence.elapsed_days()), &mut gaps);
         let sector_pe = self.fetch_sector_pe(&mut gaps);
         let industries = self.fetch_industries(&mut gaps);
         let market_risk_premium = self.fetch_market_risk_premium(&mut gaps);
@@ -1586,6 +1605,24 @@ impl MarketDataSource for FmpDataSource {
 mod tests {
     use super::*;
     use crate::test_http::{Canned, MockHttp};
+
+    #[test]
+    fn earnings_back_days_floors_caps_and_scales() {
+        // First report (no interval) → the floor.
+        assert_eq!(earnings_back_days(None), EARNINGS_BACK_DAYS);
+        // Sub-weekly run floors to the default week of context.
+        assert_eq!(earnings_back_days(Some(1.0)), EARNINGS_BACK_DAYS);
+        // A multi-week run rounds up to ~its interval, above the floor and below the cap.
+        assert_eq!(earnings_back_days(Some(10.0)), 10);
+        assert_eq!(earnings_back_days(Some(30.0)), 30);
+        // A longer gap is capped at FMP's ~1-month free window.
+        assert_eq!(earnings_back_days(Some(45.0)), EARNINGS_BACK_MAX_DAYS);
+        assert_eq!(earnings_back_days(Some(120.0)), EARNINGS_BACK_MAX_DAYS);
+        // Degenerate intervals (clock skew, non-finite) clamp to the floor, never panic.
+        assert_eq!(earnings_back_days(Some(-5.0)), EARNINGS_BACK_DAYS);
+        assert_eq!(earnings_back_days(Some(f64::NAN)), EARNINGS_BACK_DAYS);
+        assert_eq!(earnings_back_days(Some(f64::INFINITY)), EARNINGS_BACK_MAX_DAYS);
+    }
 
     #[test]
     fn interpret_response_covers_the_full_matrix() {
@@ -2380,7 +2417,7 @@ mod tests {
     #[ignore = "hits the live FMP API; set FMP_API_KEY"]
     fn fmp_baseline_smoke() {
         let src = FmpDataSource::from_env().expect("FMP_API_KEY set");
-        let data = src.baseline_scan().expect("live baseline scan");
+        let data = src.baseline_scan(ReportCadence::default()).expect("live baseline scan");
 
         // Print the resolved mapping so a maintainer can confirm each symbol /
         // endpoint actually came back (run with `-- --ignored --nocapture`); the

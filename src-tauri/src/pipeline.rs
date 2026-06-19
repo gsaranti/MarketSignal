@@ -173,7 +173,7 @@ impl AnalystStages {
 }
 
 /// Run the three analyst agents (Bull / Bear / Balanced) concurrently over the shared
-/// condensed packet (`docs/weekly-report-workflow.md §Step 12`). Concurrency uses scoped
+/// condensed packet (`docs/report-workflow.md §Step 12`). Concurrency uses scoped
 /// OS threads rather than `tokio`, keeping the agent half off the async runtime (the
 /// spine's blocking-call discipline — `tokio` lives only at app-layer seams). Each
 /// analyst makes one blocking HTTP call and emits its own per-request tracker row;
@@ -227,7 +227,7 @@ pub struct GeneratedReport {
 /// offline smokes pass `ResearchStages::stub()`, keeping this the same offline-driven
 /// spine the agent and data halves already are.
 ///
-/// `embedder` is the vector-memory seam (`docs/weekly-report-workflow.md §§4, 10, 17`;
+/// `embedder` is the vector-memory seam (`docs/report-workflow.md §§4, 10, 17`;
 /// see `vector_memory`): the research half runs the two fail-soft retrieval pulls
 /// against it (`assemble_research_packet`), and after the report record persists the
 /// summary is embedded and stored best-effort. The live command supplies
@@ -259,8 +259,17 @@ pub fn generate_report(
     // differ by the agent's runtime); the snapshot↔report join is by `report_id`, not time.
     let as_of = chrono::Utc::now();
 
+    // The run cadence — the elapsed interval since the previous report — is computed
+    // independently of `deltas` (from the prior snapshot's timestamp alone), so an existing
+    // user whose prior baseline won't decode still gets the true interval rather than
+    // first-report treatment. Computed up here because the baseline scan reads it to size its
+    // cadence-dependent lookback windows (the earnings / economic-release calendars), so a
+    // monthly run's calendars cover the whole gap rather than just the last week; it is also
+    // threaded to the news gather, the analysts, and the main agent below.
+    let cadence = compute_cadence(&paths.db_path, as_of);
+
     // Step 3: baseline market data is gathered before agent reasoning and is not
-    // optional (`docs/weekly-report-workflow.md §Step 3`). Each adapter records what it
+    // optional (`docs/report-workflow.md §Step 3`). Each adapter records what it
     // couldn't resolve in `baseline.gaps` instead of failing; the coverage gate then
     // decides whether what landed clears the run's mandatory floor. A gate failure
     // propagates unwrapped — like the agent error below — so `jobs::run_job` persists
@@ -268,7 +277,7 @@ pub fn generate_report(
     // ride into `MainAgentInput` and on into the model prompt, so the agent reasons over
     // what's known-absent rather than inferring it.
     ctx.step_started("baseline", "Gathering baseline market data");
-    let baseline = match data.baseline_scan() {
+    let baseline = match data.baseline_scan(cadence) {
         Ok(baseline) => baseline,
         Err(e) => {
             ctx.step_finished("baseline", "failed", Some(e.to_string()));
@@ -291,11 +300,6 @@ pub fn generate_report(
     // input. Reads/compute are best-effort (`None` on a first report or any failure); the
     // serialization is captured here because `baseline` is consumed by the agent below.
     let deltas = compute_prior_deltas(&paths.db_path, &baseline, as_of);
-    // The run cadence is computed independently of `deltas` (from the prior snapshot's
-    // timestamp alone), so an existing user whose prior baseline won't decode still gets
-    // the true elapsed interval rather than first-report treatment. Threaded to the news
-    // gather, the analysts, and the main agent below.
-    let cadence = compute_cadence(&paths.db_path, as_of);
     let baseline_json = serde_json::to_string(&baseline).ok();
 
     // The bounded recent-report context for research routing — Step 8's
@@ -303,7 +307,7 @@ pub fn generate_report(
     // report or any DB failure degrades to empty and never gates the run.
     let recent_reports = load_recent_report_context(&paths.db_path);
 
-    // Step 6: parse the research inbox (`docs/weekly-report-workflow.md §Step 6`,
+    // Step 6: parse the research inbox (`docs/report-workflow.md §Step 6`,
     // `docs/research-documents.md`). Fully fail-soft — an unlistable folder or an
     // unparseable file never gates the run; failures are recorded for the panel's
     // error state and the file is left in the inbox for the next run. The parsed
@@ -355,7 +359,7 @@ pub fn generate_report(
     let recent_reports_for_audit = load_recent_reports_for_audit(&paths.db_path);
 
     // Steps 12–15: the three analyst agents read the same condensed packet concurrently
-    // (`docs/weekly-report-workflow.md §Step 12`). Run before `research_packet` moves into
+    // (`docs/report-workflow.md §Step 12`). Run before `research_packet` moves into
     // the agent input below. Unlike the fail-soft research half, an analyst failure is a
     // job failure (`run_analysts`, `§Step 9`): the error propagates exactly like the agent
     // step's, so `jobs::run_job` records it as a failed (or, under a concurrent cancel,
@@ -542,7 +546,7 @@ pub fn generate_report(
 
         // Best-effort: embed and store the run's durable learnings — Step 17's
         // second memory leg ("durable learnings identified by the main agent",
-        // `docs/weekly-report-workflow.md §Step 17`). Trim / cap / near-duplicate
+        // `docs/report-workflow.md §Step 17`). Trim / cap / near-duplicate
         // drop and the per-learning best-effort writes all live in
         // `persist_durable_learnings`.
         persist_durable_learnings(
@@ -663,7 +667,7 @@ fn delete_report_db_rows(conn: &rusqlite::Connection, report_id: &str) -> Result
 /// Step-4 pre-research memory pull, surfaced separately so the main agent's retrospective
 /// audit can consume it. The two memory pulls stay on distinct channels — `packet.memory`
 /// is the Step-10 research-informed pull, `audit_memory` is the Step-4 pull — per the doc's
-/// replace-not-merge rule (`docs/weekly-report-workflow.md §Step 10`).
+/// replace-not-merge rule (`docs/report-workflow.md §Step 10`).
 struct AssembledResearch {
     packet: ResearchPacket,
     /// The Step-4 pre-research pull's prompt fragments (most relevant first); empty when
@@ -672,12 +676,12 @@ struct AssembledResearch {
 }
 
 /// Run the research half (Steps 7–11) and condense it into the packet the main agent
-/// reasons over (`docs/weekly-report-workflow.md §§7–11`). **Fully fail-soft** — the
+/// reasons over (`docs/report-workflow.md §§7–11`). **Fully fail-soft** — the
 /// locked posture for this slice: a failure in any stage degrades that stage to empty and
 /// the phase continues, so a flaky news, headline-filter, or routing call yields a thinner
 /// report rather than failing the run. Only the baseline coverage floor gates a run; the
 /// research half never does. (This is a conscious deviation from
-/// `docs/weekly-report-workflow.md §250`, which treats a failing model call in any stage as
+/// `docs/report-workflow.md §250`, which treats a failing model call in any stage as
 /// a job failure — recorded as a flag for the session-end build-spec note.)
 ///
 /// The bounded executor is already fail-soft per query (`research_executor`) and
@@ -985,7 +989,7 @@ fn compute_prior_deltas(
 }
 
 /// Bounded count of recent report summaries handed to research routing — the
-/// "recent Markdown report context" input of `docs/weekly-report-workflow.md
+/// "recent Markdown report context" input of `docs/report-workflow.md
 /// §Step 8`; §Step 2 requires only "a bounded set". Three reports ≈ three weeks
 /// of thesis arc at negligible prompt cost.
 const ROUTER_RECENT_REPORTS: u32 = 3;
@@ -1027,7 +1031,7 @@ fn read_db_fail_soft<T: Default>(
 }
 
 /// Bounded count of recent prior reports handed to the main agent as Step-2
-/// context (`docs/weekly-report-workflow.md §Step 2`). Matches `ROUTER_RECENT_REPORTS`
+/// context (`docs/report-workflow.md §Step 2`). Matches `ROUTER_RECENT_REPORTS`
 /// today and sits inside the audit's "usually 2–6 reports" window (`§Step 5`); a
 /// separate constant so the audit window can widen without moving routing's. Tunable
 /// alongside the other prompt-budget caps.
@@ -1083,7 +1087,7 @@ fn truncate_report_body(body: &str, cap: usize) -> String {
 /// Selectivity comes from top-k over a small corpus (≤30 summaries plus
 /// learnings) — no similarity floor; threshold tuning is deferred alongside the
 /// brancher's ("Vector memory is used selectively",
-/// `docs/weekly-report-workflow.md §Step 4`).
+/// `docs/report-workflow.md §Step 4`).
 const MEMORY_TOP_K: usize = 5;
 
 /// Per-report cap on durable-learning rows the Step-17 persist write accepts.
@@ -1173,7 +1177,7 @@ fn retrieve_memory(
 }
 
 /// Embed and store a run's durable learnings — Step 17's second memory leg
-/// (`docs/weekly-report-workflow.md §Step 17`). The app-layer bounds live here,
+/// (`docs/report-workflow.md §Step 17`). The app-layer bounds live here,
 /// not the model contract: entries are trimmed, empties dropped, the rest capped
 /// at [`LEARNINGS_PER_REPORT_CAP`], and each survivor checked against the store
 /// for a near-restatement before a row is spent. Each learning is its own atomic
