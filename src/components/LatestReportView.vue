@@ -3,7 +3,7 @@ import { computed } from "vue";
 import MarkdownIt from "markdown-it";
 import Icon from "./Icon.vue";
 import { renderChart } from "../renderChart";
-import { localDate } from "../format";
+import { localDate, localDateTime } from "../format";
 import type { GeneratedReport } from "../types";
 
 const props = defineProps<{
@@ -67,7 +67,7 @@ const renderedHtml = computed(() =>
 // report is loaded.
 const toolbarLabel = computed(() =>
   props.report
-    ? `${localDate(props.report.summary.created_at)} · #${props.report.report_id.slice(0, 8)}`
+    ? `${localDateTime(props.report.summary.created_at)} · #${props.report.report_id.slice(0, 8)}`
     : "Latest report"
 );
 

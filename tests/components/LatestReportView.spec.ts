@@ -12,7 +12,7 @@ import { test, expect, vi, type VueWrapper } from "vitest";
 import { mount } from "@vue/test-utils";
 import LatestReportView from "../../src/components/LatestReportView.vue";
 import { deepFreeze } from "../helpers/freeze";
-import { localDate } from "../../src/format";
+import { localDate, localDateTime } from "../../src/format";
 import type { GeneratedReport } from "../../src/types";
 
 function makeReport(markdown: string, createdAt = "2026-06-08T13:00:00Z"): GeneratedReport {
@@ -112,7 +112,7 @@ test("the toolbar label reflects the loaded issue, and the Latest tag is gated o
   const report = makeReport("# Body");
   const latest = makeWrapper({ report, isLatest: true });
   expect(latest.find(".toolbar-label").text()).toBe(
-    `${localDate(report.summary.created_at)} · #abcdef12`
+    `${localDateTime(report.summary.created_at)} · #abcdef12`
   );
   expect(latest.find(".toolbar-tag").exists()).toBe(true);
 

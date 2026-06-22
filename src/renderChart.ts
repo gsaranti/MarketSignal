@@ -128,7 +128,14 @@ function isFiniteNumber(v: unknown): v is number {
 function parseSpec(content: string): ChartSpec | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content);
+    // Normalize Unicode dash/minus variants (U+2010–2015, U+2212) that sit
+    // directly before a digit to ASCII hyphen-minus, so a model emitting a
+    // negative like "‑0.21" (U+2011) instead of "-0.21" still yields valid JSON
+    // rather than silently dropping the chart to a raw code block. Scoped to
+    // dash-before-digit: an em-dash inside a title ("10Y — 2Y", followed by a
+    // space) is left untouched, so only number-position dashes are rewritten.
+    const normalized = content.replace(/[‐-―−](?=\d)/g, "-");
+    parsed = JSON.parse(normalized);
   } catch {
     return null;
   }

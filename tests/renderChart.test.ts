@@ -523,6 +523,29 @@ test("rejects malformed / out-of-contract specs", () => {
   for (const [name, body] of bad) assert.equal(renderChart(body), null, name);
 });
 
+test("normalizes a Unicode dash before a digit so a negative still parses", () => {
+  // A model emitting U+2011 (non-breaking hyphen) instead of ASCII '-' in a
+  // negative number — the real failure observed live ("…,‑0.21,…"), which made
+  // the chart JSON invalid and dropped it to a raw code block. The normalized
+  // output must match the ASCII-hyphen equivalent exactly.
+  const nb = String.fromCharCode(0x2011); // U+2011 non-breaking hyphen
+  const withNb = `{"type":"bar","categories":["A","B"],"series":[{"points":[1.52,${nb}0.21]}]}`;
+  const withAscii = `{"type":"bar","categories":["A","B"],"series":[{"points":[1.52,-0.21]}]}`;
+  const a = renderChart(withNb);
+  assert.ok(a !== null, "U+2011 negative should normalize and render");
+  assert.equal(a, renderChart(withAscii), "should match the ASCII-hyphen equivalent");
+});
+
+test("leaves a Unicode em-dash in a title untouched (only number-position dashes normalize)", () => {
+  // The em-dash is followed by a space, not a digit, so the lookahead leaves it
+  // verbatim — titles keep their typography; only minus-in-a-number is rewritten.
+  const emDash = String.fromCharCode(0x2014); // U+2014 em dash
+  const title = `10Y ${emDash} 2Y spread`;
+  const svg = renderChart(spec({ type: "line", title, series: [{ points: [1, 2] }] }));
+  assert.ok(svg !== null);
+  assert.ok(svg.includes(title), "title em-dash should be preserved");
+});
+
 test("rejects invalid categories specs", () => {
   const bad: Array<[string, string]> = [
     ["categories on line", spec({ type: "line", categories: ["A", "B"], series: [{ points: [1, 2] }] })],

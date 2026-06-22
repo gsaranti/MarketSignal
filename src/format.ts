@@ -18,3 +18,15 @@ export function localDate(iso: string): string {
   const day = String(d.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
+
+// Render an ISO-8601 (UTC) instant as `YYYY-MM-DD HH:MM` in the user's local time
+// zone — the local calendar date plus 24-hour wall-clock time. Used on the report
+// datelines (sidebar rows, the toolbar) so two reports generated on the same day
+// are distinguishable; the date-only `localDate` still backs the export filename,
+// whose 8-char id already disambiguates same-day files.
+export function localDateTime(iso: string): string {
+  const d = new Date(iso);
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  return `${localDate(iso)} ${hours}:${minutes}`;
+}
