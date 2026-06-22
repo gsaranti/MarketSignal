@@ -530,6 +530,7 @@ mod tests {
             report_id: report_id.into(),
             report_type: "weekly_market".into(),
             created_at: "2026-06-04T13:00:00Z".into(),
+            title: "Prior issue headline".into(),
             risk_posture: RiskPosture::RiskOff,
             market_cycle: MarketCycle::LateCycle,
             thesis_stance: ThesisStance::Bearish,

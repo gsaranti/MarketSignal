@@ -48,6 +48,7 @@ Required fields:
 - `report_id` — UUID for the report.
 - `report_type` — always `market_signal` (the report kind; the legacy value `weekly_market` is migrated to it — see [§Legacy Naming Migration](#legacy-naming-migration)).
 - `created_at` — ISO-8601 timestamp.
+- `title` — a short, specific per-issue headline the main agent writes (e.g. "Rotation, not rupture"), distinct from the constant `report_type` product name. Surfaced as the report's label in the UI (the Recent Reports list). Stored on the summary with a serde default, so summaries persisted before this field decode with an empty title and the UI falls back to the product name "Market Signal Report".
 - `risk_posture` — one of the risk-posture labels above (`risk-on`, `risk-off`, `mixed`).
 - `market_cycle` — one of the market-cycle labels above (`late-cycle`, `recessionary`, `recovery`).
 - `thesis_stance` — one of: `bullish`, `bearish`, `mixed`, `uncertain`.

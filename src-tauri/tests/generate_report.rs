@@ -1274,6 +1274,7 @@ fn seed_report(
         report_id: id.to_string(),
         report_type: "weekly_market".to_string(),
         created_at: created_at.to_string(),
+        title: "Integration fixture headline".to_string(),
         risk_posture: RiskPosture::Mixed,
         market_cycle: MarketCycle::LateCycle,
         thesis_stance: ThesisStance::Uncertain,

@@ -40,9 +40,15 @@ use crate::skills;
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
 
-/// A review is a summary plus a few short lists, so a modest ceiling is ample and
-/// keeps the response inside the HTTP timeout.
-const MAX_TOKENS: u32 = 4096;
+/// A review is a summary plus a few short lists, so this ceiling is ample. Matched
+/// to the main agent's 8192: the analyst prompt now carries the full 16-lens skill
+/// library and a thorough review's lists run long, so 8192 (up from 4096) leaves
+/// generous headroom against truncation. NB the live analyst-parse failure that
+/// prompted the bump turned out *not* to be truncation — `stop_reason` was
+/// `tool_use`, and the real cause was Anthropic returning array fields as
+/// JSON-encoded strings, now handled by [`ReviewEnvelope`]'s `string_or_seq`
+/// deserializer. The larger ceiling stays as defensible headroom regardless.
+const MAX_TOKENS: u32 = 8192;
 
 /// The single tool the Anthropic arm forces, and the json_schema name on the OpenAI
 /// arm. Both feed the same [`ReviewEnvelope`].
@@ -137,12 +143,18 @@ risks, and opportunities rather than writing it up as its own item:";
 /// (`docs/report-workflow.md §Step 9`); the defaults that would have masked it
 /// were deliberately removed. `envelope_to_output` further rejects a blank summary. The
 /// posture is supplied by the application layer (the adapter knows which analyst it is),
-/// not the model.
+/// not the model. The list fields tolerate Anthropic tool-use's intermittent
+/// double-encoding (an array returned as a JSON-encoded string) via
+/// [`crate::model_agent::string_or_seq`] — observed live on a Sonnet review whose
+/// `risks`/`opportunities` came back stringified while `key_points` was a real array.
 #[derive(Debug, Deserialize)]
 struct ReviewEnvelope {
     summary: String,
+    #[serde(deserialize_with = "crate::model_agent::string_or_seq")]
     key_points: Vec<String>,
+    #[serde(deserialize_with = "crate::model_agent::string_or_seq")]
     risks: Vec<String>,
+    #[serde(deserialize_with = "crate::model_agent::string_or_seq")]
     opportunities: Vec<String>,
     confidence: Confidence,
 }
@@ -362,8 +374,27 @@ impl AnalystAgent for ModelAnalystAgent {
                 Provider::Anthropic => extract_anthropic_tool_input(&raw, TOOL_NAME)?,
                 Provider::OpenAi => extract_openai_envelope(&raw)?,
             };
-            let env: ReviewEnvelope =
-                serde_json::from_value(value).context("analyst review did not match the schema")?;
+            let env: ReviewEnvelope = serde_json::from_value(value.clone())
+                .map_err(|e| {
+                    // Diagnostic: a parse failure here can be either Sonnet schema
+                    // non-adherence (Anthropic input_schema is guidance, not enforced)
+                    // or a `max_tokens` truncation — both surface identically. Dump the
+                    // raw extracted value + the provider's stop/finish reason so a live
+                    // run reveals which. Side-effect only; the error/contract is unchanged.
+                    let stop = match provider {
+                        Provider::Anthropic => raw.get("stop_reason").cloned(),
+                        Provider::OpenAi => raw.pointer("/choices/0/finish_reason").cloned(),
+                    };
+                    eprintln!(
+                        "analyst review parse failed [{:?} {}]: {e}; stop_reason={:?}; raw_value={}",
+                        self.posture,
+                        provider.display_name(),
+                        stop,
+                        value
+                    );
+                    anyhow::Error::new(e)
+                })
+                .context("analyst review did not match the schema")?;
             envelope_to_output(self.posture, env)
         })();
         match &result {
@@ -545,6 +576,28 @@ mod tests {
                 "verdict marker missing: {prompt}"
             );
         }
+    }
+
+    #[test]
+    fn review_envelope_tolerates_stringified_arrays() {
+        // The exact live failure: a Sonnet review returned risks/opportunities as
+        // JSON-encoded strings while key_points was a real array (same response,
+        // stop_reason=tool_use, not a truncation). string_or_seq must parse all three.
+        let value = serde_json::json!({
+            "summary": "A balanced read of the tape.",
+            "key_points": ["breadth broadening", "credit calm"],
+            "risks": "[\"a hot core PCE print\",\"a yield push past 4.75%\"]",
+            "opportunities": "[\"rate-sensitive rotation\"]",
+            "confidence": "medium"
+        });
+        let env: ReviewEnvelope = serde_json::from_value(value).unwrap();
+        let out = envelope_to_output(Posture::Balanced, env).unwrap();
+        assert_eq!(out.key_points, vec!["breadth broadening", "credit calm"]);
+        assert_eq!(
+            out.risks,
+            vec!["a hot core PCE print", "a yield push past 4.75%"]
+        );
+        assert_eq!(out.opportunities, vec!["rate-sensitive rotation"]);
     }
 
     #[test]

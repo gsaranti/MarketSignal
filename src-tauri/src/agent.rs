@@ -82,6 +82,13 @@ pub struct ReportSummary {
     pub report_id: String,
     pub report_type: String,
     pub created_at: String,
+    /// A short, specific per-issue headline the main agent writes (e.g. "Rotation,
+    /// not rupture") — surfaced as the report's label in the UI in place of the
+    /// generic product name. `#[serde(default)]` so summaries persisted before this
+    /// field still decode: an older row carries an empty title and the UI falls back
+    /// to the product name.
+    #[serde(default)]
+    pub title: String,
     pub risk_posture: RiskPosture,
     pub market_cycle: MarketCycle,
     pub thesis_stance: ThesisStance,
@@ -196,6 +203,7 @@ impl MainAgent for StubMainAgent {
             report_id: Uuid::new_v4().to_string(),
             report_type: "market_signal".to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
+            title: "Thin breadth, softening cut odds".to_string(),
             risk_posture: RiskPosture::Mixed,
             market_cycle: MarketCycle::LateCycle,
             thesis_stance: ThesisStance::Uncertain,
