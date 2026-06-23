@@ -156,10 +156,11 @@ function formatLocal(iso: string): string {
   flex: 1;
 }
 
-/* Long-running-job indicator — text plus a single static 1px bar, per the
-   design kit's status row. Deliberately no spinner, no shimmer: the pipeline
-   surfaces no step telemetry, so the fill reads as "in progress", not a
-   determinate percentage. */
+/* Long-running-job indicator — text plus a 1px bar (the design kit's status row).
+   The fill sweeps as an indeterminate indicator: it conveys liveness — a static
+   fill read as frozen/stalled — without implying a determinate percentage, since
+   the footer carries no step telemetry (the run tracker has the per-step detail).
+   Reduced-motion falls back to a static fill. */
 .job-running {
   display: flex;
   align-items: center;
@@ -190,6 +191,25 @@ function formatLocal(iso: string): string {
   bottom: 0;
   width: 38%;
   background: var(--ink);
+  animation: job-running-sweep 1.5s ease-in-out infinite;
+}
+
+/* Indeterminate sweep: the fill travels across the track, which clips it at each
+   end (the track is overflow:hidden), then loops — restrained, no shimmer. */
+@keyframes job-running-sweep {
+  from {
+    left: -38%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .job-running-fill {
+    animation: none;
+    left: 0;
+  }
 }
 
 .job-error {
