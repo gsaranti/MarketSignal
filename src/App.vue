@@ -69,11 +69,63 @@ const reportPaneMode = ref<"report" | "tracker">("report");
 const runTrace = ref<RunTrace | null>(null);
 const runActive = ref(false);
 const cancelRequested = ref(false);
+// Wall-clock start of the in-flight run (epoch ms), stamped at `run-started`. Drives
+// the footer's live elapsed timer; null when no run has started this session.
+const runStartedAt = ref<number | null>(null);
 
 // The synthetic first step: the run only ever starts once the execution gate has
 // passed (`check_configuration`), so we show that as a completed step rather than
 // emitting a backend event for an instant, already-done check.
 const GATE_STEP_LABEL = "Credentials & configuration";
+
+// The canonical coarse pipeline steps, in the order the backend emits them
+// (`pipeline.rs` step_started calls) plus the synthesized `gate`. Used only as the
+// denominator for the footer's determinate progress fill — the fine-grained per-
+// request rows live in the tracker, not here.
+const PIPELINE_STEP_KEYS = [
+  "gate",
+  "baseline",
+  "coverage",
+  "inbox",
+  "research",
+  "analysts",
+  "agent",
+  "persist",
+] as const;
+
+// Determinate run progress for the footer status row (the design kit's long-job
+// component: a 1px fill whose width tracks real step completion, plus a "step N of T"
+// caption). The fraction is how far through the fixed pipeline the run has reached;
+// it advances on each step boundary and is honest (never a faked sweep). Null unless
+// a run is in flight.
+const runProgress = computed<{
+  fraction: number;
+  stepNumber: number;
+  total: number;
+  label: string;
+} | null>(() => {
+  const trace = runTrace.value;
+  if (!trace || !runActive.value) return null;
+  const total = PIPELINE_STEP_KEYS.length;
+  let reached = 0; // 1-based index of the furthest canonical step touched
+  let running: { idx: number; label: string } | null = null;
+  let lastTouched: { idx: number; label: string } | null = null;
+  for (let i = 0; i < PIPELINE_STEP_KEYS.length; i++) {
+    const step = trace.steps.find((s) => s.key === PIPELINE_STEP_KEYS[i]);
+    if (!step || step.status === "pending") continue;
+    reached = i + 1;
+    lastTouched = { idx: i + 1, label: step.label };
+    if (step.status === "running") running = { idx: i + 1, label: step.label };
+  }
+  const current = running ?? lastTouched;
+  if (!current) return null;
+  return {
+    fraction: reached / total,
+    stepNumber: current.idx,
+    total,
+    label: current.label,
+  };
+});
 
 // Find or create a step by key. step-started always precedes its requests/tokens
 // and step-finished, so the lookup normally hits; the create is a safety net.
@@ -140,6 +192,7 @@ function handleProgress(msg: ProgressMessage) {
       terminal: null,
     };
     runActive.value = true;
+    runStartedAt.value = Date.now();
     cancelRequested.value = false;
     return;
   }
@@ -861,6 +914,8 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
         :blocked="blocked"
         :generating="generating"
         :run-active="runActive"
+        :progress="runProgress"
+        :run-started-at="runStartedAt"
         :has-run-log="runTrace !== null"
         :viewing-tracker="view === 'report' && reportPaneMode === 'tracker'"
         @generate="generate"
