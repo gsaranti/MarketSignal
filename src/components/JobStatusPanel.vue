@@ -59,9 +59,7 @@ function formatLocal(iso: string): string {
     <div class="job-status" aria-live="polite">
       <div v-if="isRunning" class="job-running">
         <span class="job-running-label">Generating report…</span>
-        <span class="job-running-bar" aria-hidden="true">
-          <span class="job-running-fill"></span>
-        </span>
+        <span class="job-running-bar" aria-hidden="true"></span>
       </div>
       <p v-else-if="error" class="job-error">
         Couldn't read job status — {{ error }}
@@ -156,11 +154,12 @@ function formatLocal(iso: string): string {
   flex: 1;
 }
 
-/* Long-running-job indicator — text plus a 1px bar (the design kit's status row).
-   The fill sweeps as an indeterminate indicator: it conveys liveness — a static
-   fill read as frozen/stalled — without implying a determinate percentage, since
-   the footer carries no step telemetry (the run tracker has the per-step detail).
-   Reduced-motion falls back to a static fill. */
+/* Long-running-job indicator — text plus a single steady 1px rule (the design
+   kit's status row: "a steady, undecorated status row — text and a single 1px
+   progress indicator"). Deliberately motionless: the design system caps motion
+   at state-change confirmations and rejects loading shimmer, so liveness is
+   carried by the "Generating report…" label and the run tracker's per-step rows,
+   not by an animated sweep. */
 .job-running {
   display: flex;
   align-items: center;
@@ -179,37 +178,7 @@ function formatLocal(iso: string): string {
 .job-running-bar {
   flex: 1;
   height: 1px;
-  background: var(--hairline-soft);
-  position: relative;
-  overflow: hidden;
-}
-
-.job-running-fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 38%;
-  background: var(--ink);
-  animation: job-running-sweep 1.5s ease-in-out infinite;
-}
-
-/* Indeterminate sweep: the fill travels across the track, which clips it at each
-   end (the track is overflow:hidden), then loops — restrained, no shimmer. */
-@keyframes job-running-sweep {
-  from {
-    left: -38%;
-  }
-  to {
-    left: 100%;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .job-running-fill {
-    animation: none;
-    left: 0;
-  }
+  background: var(--hairline);
 }
 
 .job-error {
