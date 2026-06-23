@@ -28,13 +28,13 @@ build at an explicit directory — for tests, automation, and isolated live runs
 
 ## Markdown File Storage
 
-Canonical Markdown reports are stored as files on the local filesystem. Each file uses the same naming convention as exports:
+Canonical Markdown reports are stored as files on the local filesystem. Each file is named with the report date plus an 8-character `report_id` suffix, so a same-date rerun never overwrites an earlier run's file:
 
 ```text
-YYYY-MM-DD-market-signal-report.md
+YYYY-MM-DD-market-signal-report-<id8>.md
 ```
 
-See [export.md §Export Naming](export.md#export-naming) for the canonical filename convention.
+That `-<id8>` suffix is the one difference from the **export** filename, which drops it (a same-name export collision is the user's own save-dialog overwrite prompt, not the app's) — see [export.md §Export Naming](export.md#export-naming).
 
 ## SQLite
 

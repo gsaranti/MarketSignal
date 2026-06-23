@@ -66,8 +66,9 @@ halves), and the safety model (no unbounded agent I/O).
 Three stores, by responsibility (`docs/storage.md`):
 
 - **Filesystem** — canonical Markdown reports named
-  `YYYY-MM-DD-market-signal-report.md`, plus the `/research-inbox` and
-  `/research-archive` folders.
+  `YYYY-MM-DD-market-signal-report-<id8>.md` (the `report_id` prefix keeps
+  same-day reruns distinct; exports drop the suffix), plus the `/research-inbox`
+  and `/research-archive` folders.
 - **SQLite** — report records, metadata, job history, warning state, per-report
   baseline snapshots, and the vector-memory table.
 - **Vector memory** — one embedding per report summary and per durable learning
