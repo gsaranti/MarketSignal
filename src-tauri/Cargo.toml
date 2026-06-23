@@ -14,6 +14,13 @@ edition = "2021"
 name = "market_signal_temp_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Dev-only demo mode (see src/demo.rs). NOT in `default`, so `tauri build`
+# (default features only) compiles it out entirely — no demo code or mock data
+# reaches the shipped binary. Enable for a cost-free GUI run: `tauri dev
+# --features demo-run` with MARKET_SIGNAL_DEMO=1.
+demo-run = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
