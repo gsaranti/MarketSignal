@@ -1,5 +1,31 @@
 # Storage
 
+## Storage Location
+
+All persisted state lives **outside the application bundle**, in the per-user
+application-data directory resolved from the app's bundle identifier (not its
+product name):
+
+```text
+~/Library/Application Support/com.georgesarantinos.market-signal/
+    market_signal.db        the SQLite database (see below)
+    reports/                canonical Markdown reports
+    research-inbox/         documents awaiting processing
+    research-archive/       processed documents
+```
+
+Because the location is keyed by the **bundle identifier**, it is stable across
+versions: rebuilding or replacing the installed app (a new `tauri build`) reads
+and writes the same store, so existing reports, metadata, and vector memory are
+preserved across updates. The bundle never contains data, so replacing the
+`.app` cannot lose any.
+
+**Development isolation.** Debug builds (`tauri dev`) nest their store under a
+`dev/` subdirectory of the path above, so a development session never touches
+production data; release builds (`tauri build`) use the directory as-is. The
+`MARKET_SIGNAL_DATA_DIR` environment variable overrides both — pointing any
+build at an explicit directory — for tests, automation, and isolated live runs.
+
 ## Markdown File Storage
 
 Canonical Markdown reports are stored as files on the local filesystem. Each file uses the same naming convention as exports:
