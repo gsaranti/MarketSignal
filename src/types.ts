@@ -183,6 +183,7 @@ export type ProgressKind =
   | "request-started"
   | "request-finished"
   | "agent-token"
+  | "agent-thinking"
   | "run-finished";
 
 export interface ProgressMessage {
@@ -202,7 +203,8 @@ export interface ProgressMessage {
   group?: string;
   series_id?: string;
   name?: string;
-  // agent-token: a coalesced chunk of the streamed report text.
+  // agent-token / agent-thinking: a coalesced chunk of the streamed report text or
+  // the agent's streamed reasoning, respectively.
   delta?: string;
   // run-finished: the new report's id, on success only.
   report_id?: string | null;
@@ -223,7 +225,9 @@ export interface TrackerRequest {
 export type StepStatus = "pending" | "running" | "ok" | "failed" | "cancelled";
 
 // One pipeline step in the tracker. `requests` carries the baseline step's
-// per-series rows; `agentText` accumulates the main-agent step's streamed report.
+// per-series rows; `agentText` accumulates the main-agent step's streamed report;
+// `agentThinking` accumulates its streamed reasoning (extended-thinking summary),
+// shown as a quieter stream above the report. Empty for non-thinking models.
 export interface TrackerStep {
   key: string;
   label: string;
@@ -231,6 +235,7 @@ export interface TrackerStep {
   detail: string | null;
   requests: TrackerRequest[];
   agentText: string;
+  agentThinking: string;
 }
 
 // The assembled trace for one run, built in App.vue from the event stream and

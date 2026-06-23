@@ -30,6 +30,12 @@ job's progress as it happens:
 - **The main agent's report, streamed live.** As the main agent writes the
   report, its text streams into the tracker as it is produced, rather than
   appearing only once the report is finished.
+- **The main agent's reasoning, streamed live.** When the selected model
+  reasons before answering (extended thinking), a summary of that reasoning
+  streams into the tracker as a quieter, subordinate stream shown above the
+  report text — a view into how the thesis is being weighed as it forms. Models
+  that do not surface their reasoning simply show none; nothing breaks and no
+  error is raised.
 
 The tracker is a live view of one run. Its contents are kept for the current
 application session and reflect the **latest run only**; they are not persisted

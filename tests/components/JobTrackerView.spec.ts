@@ -29,6 +29,7 @@ const activeTrace: RunTrace = deepFreeze({
       status: "ok",
       detail: null,
       agentText: "",
+      agentThinking: "",
       requests: [
         { provider: "FMP", group: "indices", seriesId: "SPX", name: "S&P 500 index level, a deliberately long name that clips", status: "ok", detail: null },
         { provider: "FRED", group: "macro", seriesId: "DCOILWTICO", name: "WTI crude", status: "empty", detail: null },
@@ -36,10 +37,10 @@ const activeTrace: RunTrace = deepFreeze({
         { provider: "Tavily", group: "news", seriesId: "q-oil", name: "oil price news", status: "running", detail: null },
       ],
     },
-    { key: "route", label: "Research routing", status: "ok", detail: null, agentText: "", requests: [] },
-    { key: "gather", label: "News gather", status: "failed", detail: "Tavily returned 500", agentText: "", requests: [] },
-    { key: "report", label: "Drafting report", status: "running", detail: null, agentText: "## Market Signal Thesis\n\nThe tape is constructive.", requests: [] },
-    { key: "memory", label: "Memory write", status: "cancelled", detail: "Run cancelled", agentText: "", requests: [] },
+    { key: "route", label: "Research routing", status: "ok", detail: null, agentText: "", agentThinking: "", requests: [] },
+    { key: "gather", label: "News gather", status: "failed", detail: "Tavily returned 500", agentText: "", agentThinking: "", requests: [] },
+    { key: "report", label: "Drafting report", status: "running", detail: null, agentText: "## Market Signal Thesis\n\nThe tape is constructive.", agentThinking: "Weighing thin breadth against softening cut odds.", requests: [] },
+    { key: "memory", label: "Memory write", status: "cancelled", detail: "Run cancelled", agentText: "", agentThinking: "", requests: [] },
   ],
 });
 
@@ -48,7 +49,7 @@ function terminalTrace(status: string): RunTrace {
     runId: "run-1",
     label: "Weekly Market Report",
     terminal: { status, detail: null },
-    steps: [{ key: "report", label: "Drafting report", status: "ok", detail: null, agentText: "", requests: [] }],
+    steps: [{ key: "report", label: "Drafting report", status: "ok", detail: null, agentText: "", agentThinking: "", requests: [] }],
   });
 }
 
@@ -68,7 +69,7 @@ test("an active run with no running step yet falls back to 'Generating report'",
     runId: "run-1",
     label: "Weekly Market Report",
     terminal: null,
-    steps: [{ key: "baseline", label: "Baseline scan", status: "pending", detail: null, agentText: "", requests: [] }],
+    steps: [{ key: "baseline", label: "Baseline scan", status: "pending", detail: null, agentText: "", agentThinking: "", requests: [] }],
   });
   const wrapper = mount(JobTrackerView, {
     props: { trace: pending, active: true, cancelRequested: false },
@@ -149,6 +150,21 @@ test("the streamed agent text renders only where present", () => {
   const streams = wrapper.findAll(".agent-stream");
   expect(streams).toHaveLength(1);
   expect(streams[0].text()).toContain("Market Signal Thesis");
+});
+
+test("the streamed reasoning renders only where present, labeled and above the report", () => {
+  const wrapper = mount(JobTrackerView, {
+    props: { trace: activeTrace, active: true, cancelRequested: false },
+  });
+  // Only the one step carrying reasoning shows the pane (empty agentThinking renders nothing).
+  const reasoning = wrapper.findAll(".agent-thinking-body");
+  expect(reasoning).toHaveLength(1);
+  expect(reasoning[0].text()).toContain("Weighing thin breadth");
+  // It is labeled (distinct from the report-text console) and sits above the report stream.
+  const reportStep = wrapper.findAll(".step")[3];
+  expect(reportStep.find(".agent-thinking-label").text()).toBe("Reasoning");
+  const html = reportStep.html();
+  expect(html.indexOf("agent-thinking")).toBeLessThan(html.indexOf("agent-stream"));
 });
 
 test("a run with no steps yet shows the Starting edge state", () => {

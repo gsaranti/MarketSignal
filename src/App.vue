@@ -80,7 +80,15 @@ const GATE_STEP_LABEL = "Credentials & configuration";
 function ensureStep(trace: RunTrace, key: string, label: string): TrackerStep {
   let step = trace.steps.find((s) => s.key === key);
   if (!step) {
-    step = { key, label, status: "running", detail: null, requests: [], agentText: "" };
+    step = {
+      key,
+      label,
+      status: "running",
+      detail: null,
+      requests: [],
+      agentText: "",
+      agentThinking: "",
+    };
     trace.steps.push(step);
   }
   return step;
@@ -121,6 +129,7 @@ function handleProgress(msg: ProgressMessage) {
           detail: null,
           requests: [],
           agentText: "",
+          agentThinking: "",
         },
       ],
       terminal: null,
@@ -187,6 +196,9 @@ function handleProgress(msg: ProgressMessage) {
     }
     case "agent-token":
       ensureStep(trace, "agent", "Main agent").agentText += msg.delta ?? "";
+      break;
+    case "agent-thinking":
+      ensureStep(trace, "agent", "Main agent").agentThinking += msg.delta ?? "";
       break;
     case "run-finished": {
       trace.terminal = { status: msg.status ?? "", detail: msg.detail ?? null };

@@ -153,13 +153,31 @@ const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-/// The single tool the Anthropic arm forces, and the json_schema name on the
-/// OpenAI arm. Both feed the same `ResponseEnvelope`.
-const TOOL_NAME: &str = "emit_market_signal_report";
+/// The json_schema name on the OpenAI structured-output arm.
+const OPENAI_SCHEMA_NAME: &str = "market_signal_report";
 
-/// Generous ceiling for a full report body; small enough that a single
-/// non-streaming response returns well within the client's 120s HTTP timeout.
-const MAX_TOKENS: u32 = 8192;
+/// Output ceiling for one Anthropic generation. Raised from the old report-only 8192 to
+/// give extended thinking headroom: with thinking on, the reasoning *and* the report
+/// body both draw from `max_tokens`, so the cap must cover both. The call streams
+/// (`stream: true`), so a high cap risks no HTTP timeout the way a non-streaming body
+/// would. App-layer tunable, calibrated against live runs.
+const ANTHROPIC_MAX_TOKENS: u32 = 24_000;
+
+/// Output ceiling for one OpenAI generation. Kept at its pre-thinking value — Phase 1
+/// leaves the OpenAI arm unchanged (its Responses-API migration is a later phase), so
+/// the OpenAI request must not inherit the Anthropic thinking headroom above.
+const OPENAI_MAX_TOKENS: u32 = 8_192;
+
+/// `budget_tokens` for haiku-4-5's extended thinking (it has no adaptive/effort mode).
+/// Must stay strictly below [`ANTHROPIC_MAX_TOKENS`]. A tunable, calibrated against live runs.
+const HAIKU_THINKING_BUDGET_TOKENS: u32 = 8_192;
+
+/// Per-request total HTTP timeout, by provider, applied in [`ModelMainAgent::call`].
+/// The Anthropic arm's extended thinking front-loads latency before the report streams,
+/// so it gets more headroom; the OpenAI arm keeps its prior 120s ceiling (Phase 1 leaves
+/// the OpenAI path unchanged). These override the client-level backstop per request.
+const ANTHROPIC_TIMEOUT_SECS: u64 = 300;
+const OPENAI_TIMEOUT_SECS: u64 = 120;
 
 const SYSTEM_PROMPT: &str = "You are the Head Market Analyst for Market Signal, a \
 market-research publication. You write a single, cohesive market report in one unified \
@@ -673,28 +691,52 @@ fn response_envelope_schema() -> Value {
     })
 }
 
-/// Anthropic Messages API request: a single forced tool, with strict schema
-/// validation, whose `input_schema` is the envelope (parity with the OpenAI
-/// arm's strict json_schema). `cache_control` on the system block is correct
-/// placement for when the condensed packet grows the prefix past Opus's
-/// ~4096-token cache minimum; below that it is a no-op, not an error.
-fn build_anthropic_request(model_id: &str, system: &str, user: &str, schema: &Value) -> Value {
+/// The per-model Anthropic thinking configuration. Extended thinking is the
+/// highest-value quality lever for the Step-16 synthesis, and its summary streams to
+/// the run tracker as `thinking_delta` SSE events. The shape is model-gated:
+/// `claude-opus-4-8` / `claude-sonnet-4-6` take **adaptive** thinking (`budget_tokens`
+/// 400s on opus-4-8 and is deprecated on sonnet-4-6), with `display: "summarized"` so
+/// the streamed thoughts carry readable text rather than the default omitted (empty)
+/// blocks; `claude-haiku-4-5` has no adaptive/effort mode, so it uses the older
+/// budget-bounded extended thinking. This is the Anthropic half of the future
+/// capability gate. The OpenAI models never reach this — they route to the unchanged
+/// Chat Completions arm, never `build_anthropic_request` — so their match arm asserts
+/// the invariant rather than returning an unused config.
+fn anthropic_thinking(model: AgentModel) -> Value {
+    match model {
+        AgentModel::ClaudeOpus | AgentModel::ClaudeSonnet => {
+            json!({ "type": "adaptive", "display": "summarized" })
+        }
+        AgentModel::ClaudeHaiku => {
+            json!({ "type": "enabled", "budget_tokens": HAIKU_THINKING_BUDGET_TOKENS })
+        }
+        AgentModel::Gpt5 | AgentModel::Gpt5Mini => {
+            unreachable!("anthropic_thinking called for an OpenAI model: {model:?}")
+        }
+    }
+}
+
+/// Anthropic Messages API request for the main agent. Structured output rides on
+/// `output_config.format` (a json_schema) rather than a forced `tool_choice`, because
+/// a forced tool is incompatible with extended thinking — this swap is the unblocker
+/// for the thinking work. The `thinking` block ([`anthropic_thinking`]) turns reasoning
+/// on per-model and makes its summary stream as `thinking_delta` events. `cache_control`
+/// on the system block is correct placement for when the condensed packet grows the
+/// prefix past Opus's ~4096-token cache minimum; below that it is a no-op, not an error.
+/// (The router and analyst stages keep the forced-tool shape — see
+/// `extract_anthropic_tool_input` — so this change is scoped to the main agent.)
+fn build_anthropic_request(model: AgentModel, system: &str, user: &str, schema: &Value) -> Value {
     json!({
-        "model": model_id,
-        "max_tokens": MAX_TOKENS,
+        "model": model.model_id(),
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
         "stream": true,
+        "thinking": anthropic_thinking(model),
         "system": [
             { "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }
         ],
-        "tools": [
-            {
-                "name": TOOL_NAME,
-                "description": "Emit the finished market report and its structured summary.",
-                "strict": true,
-                "input_schema": schema
-            }
-        ],
-        "tool_choice": { "type": "tool", "name": TOOL_NAME },
+        "output_config": {
+            "format": { "type": "json_schema", "schema": schema }
+        },
         "messages": [ { "role": "user", "content": user } ]
     })
 }
@@ -703,11 +745,11 @@ fn build_anthropic_request(model_id: &str, system: &str, user: &str, schema: &Va
 fn build_openai_request(model_id: &str, system: &str, user: &str, schema: &Value) -> Value {
     json!({
         "model": model_id,
-        "max_completion_tokens": MAX_TOKENS,
+        "max_completion_tokens": OPENAI_MAX_TOKENS,
         "stream": true,
         "response_format": {
             "type": "json_schema",
-            "json_schema": { "name": "market_signal_report", "strict": true, "schema": schema }
+            "json_schema": { "name": OPENAI_SCHEMA_NAME, "strict": true, "schema": schema }
         },
         "messages": [
             { "role": "system", "content": system },
@@ -733,6 +775,25 @@ pub(crate) fn extract_anthropic_tool_input(raw: &Value, tool_name: &str) -> Resu
         })
         .and_then(|b| b.get("input").cloned())
         .ok_or_else(|| anyhow!("Anthropic response contained no {tool_name} tool_use block"))
+}
+
+/// Pull the main agent's structured output out of an Anthropic `output_config.format`
+/// response: the first `text` content block's text, parsed as the envelope JSON. With
+/// thinking on, the response also carries `thinking` blocks — those are skipped, so the
+/// envelope is read from the `text` block alone. This is the main-agent counterpart to
+/// the forced-tool `extract_anthropic_tool_input`, which the router and analyst stages
+/// still use; the two extractors keep the two request shapes independent.
+fn extract_anthropic_text_output(raw: &Value) -> Result<Value> {
+    let text = raw
+        .get("content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("Anthropic response missing a content array"))?
+        .iter()
+        .find(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+        .and_then(|b| b.get("text"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("Anthropic response contained no text output block"))?;
+    serde_json::from_str(text).context("Anthropic structured output was not valid JSON")
 }
 
 /// Pull the envelope value out of an OpenAI response: the first choice's message
@@ -796,7 +857,7 @@ fn parse_response(
     created_at: String,
 ) -> Result<MainAgentOutput> {
     let value = match provider {
-        Provider::Anthropic => extract_anthropic_tool_input(raw, TOOL_NAME)?,
+        Provider::Anthropic => extract_anthropic_text_output(raw)?,
         Provider::OpenAi => extract_openai_envelope(raw)?,
     };
     let env: ResponseEnvelope =
@@ -817,8 +878,11 @@ pub struct ModelMainAgent {
 
 impl ModelMainAgent {
     pub fn new(config: MainAgentConfig) -> Result<Self> {
+        // A generous client-level backstop; the real, provider-specific ceilings are set
+        // per request in `call` (Anthropic gets thinking headroom, OpenAI keeps its prior
+        // 120s). Sized to the larger of the two so it never undercuts a per-request value.
         let http = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(ANTHROPIC_TIMEOUT_SECS))
             .build()
             .context("building the HTTP client")?;
         Ok(Self {
@@ -856,15 +920,26 @@ impl ModelMainAgent {
     /// token extraction is a pure side-channel to the progress reporter, so a bug in
     /// the decoder can only affect what the tracker shows, never the parsed report.
     fn call(&self, provider: Provider, body: &Value) -> Result<Value> {
-        let request = match provider {
-            Provider::Anthropic => self
-                .http
-                .post(ANTHROPIC_URL)
-                .header("x-api-key", &self.config.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION),
-            Provider::OpenAi => self.http.post(OPENAI_URL).bearer_auth(&self.config.api_key),
+        // Provider-specific total timeout (a per-request override of the client backstop):
+        // the Anthropic arm gets thinking headroom; the OpenAI arm keeps its prior ceiling.
+        let (request, timeout) = match provider {
+            Provider::Anthropic => (
+                self.http
+                    .post(ANTHROPIC_URL)
+                    .header("x-api-key", &self.config.api_key)
+                    .header("anthropic-version", ANTHROPIC_VERSION),
+                Duration::from_secs(ANTHROPIC_TIMEOUT_SECS),
+            ),
+            Provider::OpenAi => (
+                self.http.post(OPENAI_URL).bearer_auth(&self.config.api_key),
+                Duration::from_secs(OPENAI_TIMEOUT_SECS),
+            ),
         };
-        let resp = request.json(body).send().context("sending model request")?;
+        let resp = request
+            .timeout(timeout)
+            .json(body)
+            .send()
+            .context("sending model request")?;
         let status = resp.status();
         if !status.is_success() {
             // A rejected streaming request answers with a normal (non-SSE) error body.
@@ -873,11 +948,14 @@ impl ModelMainAgent {
         }
 
         // Accumulate the structured envelope from the SSE deltas while streaming the
-        // decoded `markdown` field to the tracker. Token emits are coalesced to bound
-        // the event count over a long report.
+        // decoded `markdown` field to the tracker. The Anthropic arm also carries a
+        // second channel — the model's `thinking_delta` reasoning — which streams to the
+        // tracker's thinking pane without ever entering the envelope. Both channels'
+        // emits are coalesced to bound the event count over a long report.
         let mut envelope = String::new();
         let mut extractor = MarkdownStreamExtractor::default();
         let mut pending = String::new();
+        let mut thinking_pending = String::new();
         let reader = BufReader::new(resp);
         for line in reader.lines() {
             // Cancel checkpoint mid-stream: stop reading so a cancel requested during
@@ -900,16 +978,29 @@ impl ModelMainAgent {
             let Ok(event) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
-            if let Some(fragment) = stream_delta(provider, &event) {
-                envelope.push_str(fragment);
-                pending.push_str(&extractor.update(&envelope));
-                if pending.chars().count() >= TOKEN_FLUSH_CHARS {
-                    self.progress.agent_token(std::mem::take(&mut pending));
+            match stream_delta(provider, &event) {
+                Some((StreamChannel::Output, fragment)) => {
+                    envelope.push_str(fragment);
+                    pending.push_str(&extractor.update(&envelope));
+                    if pending.chars().count() >= TOKEN_FLUSH_CHARS {
+                        self.progress.agent_token(std::mem::take(&mut pending));
+                    }
                 }
+                Some((StreamChannel::Thinking, fragment)) => {
+                    thinking_pending.push_str(fragment);
+                    if thinking_pending.chars().count() >= TOKEN_FLUSH_CHARS {
+                        self.progress
+                            .agent_thinking(std::mem::take(&mut thinking_pending));
+                    }
+                }
+                None => {}
             }
         }
         if !pending.is_empty() {
             self.progress.agent_token(pending);
+        }
+        if !thinking_pending.is_empty() {
+            self.progress.agent_thinking(thinking_pending);
         }
 
         reconstruct_response(provider, &envelope)
@@ -921,28 +1012,48 @@ impl ModelMainAgent {
 /// than one per model token.
 const TOKEN_FLUSH_CHARS: usize = 24;
 
-/// Pull the incremental text fragment out of one SSE event, per provider:
+/// Which tracker channel a streamed fragment feeds: the structured-output text the
+/// envelope is accumulated from, or the model's reasoning (the Anthropic thinking
+/// summary). Only the Anthropic arm ever emits `Thinking`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamChannel {
+    Output,
+    Thinking,
+}
+
+/// Pull the incremental fragment out of one SSE event, tagged by channel:
 /// - OpenAI Chat Completions stream: `choices[0].delta.content` — fragments of the
-///   structured-output JSON string.
-/// - Anthropic Messages stream: a `content_block_delta` carrying an `input_json_delta`,
-///   whose `partial_json` are fragments of the forced tool's input JSON.
+///   structured-output JSON string (always `Output`).
+/// - Anthropic Messages stream (`output_config.format` + thinking): a
+///   `content_block_delta` carrying a `text_delta` (fragments of the structured report
+///   JSON → `Output`) or a `thinking_delta` (the streamed reasoning summary →
+///   `Thinking`). The old forced-tool `input_json_delta` no longer appears for the main
+///   agent.
 ///
-/// Every other event type (role deltas, `message_start`/`_stop`, `ping`) carries no
-/// envelope text and returns `None`.
-fn stream_delta(provider: Provider, event: &Value) -> Option<&str> {
+/// Every other event type (role deltas, `message_start`/`_stop`, block start/stop,
+/// `ping`) carries no fragment and returns `None`.
+fn stream_delta(provider: Provider, event: &Value) -> Option<(StreamChannel, &str)> {
     match provider {
         Provider::OpenAi => event
             .pointer("/choices/0/delta/content")
-            .and_then(Value::as_str),
+            .and_then(Value::as_str)
+            .map(|s| (StreamChannel::Output, s)),
         Provider::Anthropic => {
             if event.get("type").and_then(Value::as_str) != Some("content_block_delta") {
                 return None;
             }
             let delta = event.get("delta")?;
-            if delta.get("type").and_then(Value::as_str) != Some("input_json_delta") {
-                return None;
+            match delta.get("type").and_then(Value::as_str) {
+                Some("text_delta") => delta
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(|s| (StreamChannel::Output, s)),
+                Some("thinking_delta") => delta
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .map(|s| (StreamChannel::Thinking, s)),
+                _ => None,
             }
-            delta.get("partial_json").and_then(Value::as_str)
         }
     }
 }
@@ -950,22 +1061,20 @@ fn stream_delta(provider: Provider, event: &Value) -> Option<&str> {
 /// Rebuild the `Value` `parse_response` expects from the accumulated streamed
 /// envelope, so the streaming and non-streaming paths share one parse/validation path:
 /// - OpenAI: the envelope *is* the message content JSON string.
-/// - Anthropic: the envelope is the tool input JSON, re-nested as a `tool_use` block.
+/// - Anthropic (`output_config.format`): the envelope is the structured output text;
+///   re-nest it as a `text` content block, mirroring a non-streaming body.
 ///
-/// A truncated stream (a dropped connection mid-body) surfaces here as a parse error —
-/// the same failure shape a truncated non-streaming body would have produced.
+/// A truncated stream (a dropped connection mid-body) surfaces downstream in
+/// `parse_response` as a parse error — the text isn't valid JSON — the same failure
+/// shape a truncated non-streaming body would have produced.
 fn reconstruct_response(provider: Provider, envelope: &str) -> Result<Value> {
     match provider {
         Provider::OpenAi => Ok(json!({
             "choices": [ { "message": { "role": "assistant", "content": envelope } } ]
         })),
-        Provider::Anthropic => {
-            let input: Value =
-                serde_json::from_str(envelope).context("parsing streamed Anthropic tool input")?;
-            Ok(json!({
-                "content": [ { "type": "tool_use", "name": TOOL_NAME, "input": input } ]
-            }))
-        }
+        Provider::Anthropic => Ok(json!({
+            "content": [ { "type": "text", "text": envelope } ]
+        })),
     }
 }
 
@@ -1195,7 +1304,9 @@ impl MainAgent for ModelMainAgent {
         // Empty on the offline/stub path, so the block is simply omitted.
         user.push_str(&format_analyst_reviews(&input.analyst_reviews));
         let body = match provider {
-            Provider::Anthropic => build_anthropic_request(model_id, SYSTEM_PROMPT, &user, &schema),
+            Provider::Anthropic => {
+                build_anthropic_request(self.config.model, SYSTEM_PROMPT, &user, &schema)
+            }
             Provider::OpenAi => build_openai_request(model_id, SYSTEM_PROMPT, &user, &schema),
         };
         let raw = self.call(provider, &body)?;
@@ -1264,20 +1375,41 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_request_forces_the_tool_and_caches_system() {
+    fn anthropic_request_uses_output_config_format_thinking_and_caches_system() {
         let body = build_anthropic_request(
-            "claude-opus-4-8",
+            AgentModel::ClaudeOpus,
             SYSTEM_PROMPT,
             USER_PROMPT,
             &response_envelope_schema(),
         );
         assert_eq!(body["model"], "claude-opus-4-8");
-        assert_eq!(body["tool_choice"]["type"], "tool");
-        assert_eq!(body["tool_choice"]["name"], TOOL_NAME);
-        assert_eq!(body["tools"][0]["name"], TOOL_NAME);
-        assert_eq!(body["tools"][0]["strict"], true);
+        // The forced tool is gone — a forced tool_choice is incompatible with thinking.
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_choice").is_none());
+        // Structured output now rides on output_config.format (a json_schema).
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+        assert!(body["output_config"]["format"]["schema"]["properties"].is_object());
+        // Thinking is on; opus uses adaptive with a summarized display so thoughts stream.
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["messages"][0]["content"], USER_PROMPT);
+    }
+
+    #[test]
+    fn anthropic_thinking_is_model_gated() {
+        // opus / sonnet: adaptive + summarized display (budget_tokens is rejected there).
+        for m in [AgentModel::ClaudeOpus, AgentModel::ClaudeSonnet] {
+            let t = anthropic_thinking(m);
+            assert_eq!(t["type"], "adaptive", "{m:?}");
+            assert_eq!(t["display"], "summarized", "{m:?}");
+        }
+        // haiku: budget-bounded extended thinking (no adaptive/effort), under the cap.
+        let h = anthropic_thinking(AgentModel::ClaudeHaiku);
+        assert_eq!(h["type"], "enabled");
+        let budget = h["budget_tokens"].as_u64().unwrap() as u32;
+        assert_eq!(budget, HAIKU_THINKING_BUDGET_TOKENS);
+        assert!(budget < ANTHROPIC_MAX_TOKENS);
     }
 
     #[test]
@@ -1686,13 +1818,15 @@ instructions"));
     }
 
     #[test]
-    fn parses_anthropic_tool_use_into_output() {
+    fn parses_anthropic_text_output_into_output() {
+        // output_config.format returns the envelope as a `text` block; a leading
+        // `thinking` block (extended thinking on) is skipped by the extractor.
         let raw = json!({
             "content": [
-                { "type": "text", "text": "preamble that should be ignored" },
-                { "type": "tool_use", "id": "toolu_1", "name": TOOL_NAME, "input": valid_envelope() }
+                { "type": "thinking", "thinking": "weighing the data" },
+                { "type": "text", "text": serde_json::to_string(&valid_envelope()).unwrap() }
             ],
-            "stop_reason": "tool_use"
+            "stop_reason": "end_turn"
         });
         let out = parse_response(
             Provider::Anthropic,
@@ -1826,11 +1960,12 @@ instructions"));
     }
 
     #[test]
-    fn rejects_anthropic_response_without_tool_call() {
-        let raw = json!({ "content": [ { "type": "text", "text": "no tool call here" } ] });
+    fn rejects_anthropic_response_without_text_output() {
+        // A response with only a thinking block (no text output) is a parse failure.
+        let raw = json!({ "content": [ { "type": "thinking", "thinking": "..." } ] });
         let err = parse_response(Provider::Anthropic, &raw, "r".into(), "t".into()).unwrap_err();
         assert!(
-            err.to_string().contains(TOOL_NAME),
+            err.to_string().contains("no text output block"),
             "unexpected error: {err}"
         );
     }
@@ -1844,7 +1979,7 @@ instructions"));
     #[test]
     fn both_request_arms_enable_streaming() {
         let a = build_anthropic_request(
-            "claude-opus-4-8",
+            AgentModel::ClaudeOpus,
             SYSTEM_PROMPT,
             USER_PROMPT,
             &response_envelope_schema(),
@@ -1860,29 +1995,62 @@ instructions"));
     }
 
     #[test]
-    fn stream_delta_reads_each_provider_fragment_and_ignores_the_rest() {
-        // OpenAI: the content delta is the fragment; a role-only delta is not.
+    fn request_arms_carry_provider_specific_token_caps() {
+        // The OpenAI arm keeps its prior cap; only the Anthropic arm gets the thinking
+        // headroom, so Phase 1 doesn't silently expand the (unchanged) OpenAI path.
+        let a = build_anthropic_request(
+            AgentModel::ClaudeOpus,
+            SYSTEM_PROMPT,
+            USER_PROMPT,
+            &response_envelope_schema(),
+        );
+        let o = build_openai_request("gpt-5", SYSTEM_PROMPT, USER_PROMPT, &response_envelope_schema());
+        assert_eq!(a["max_tokens"], ANTHROPIC_MAX_TOKENS);
+        assert_eq!(o["max_completion_tokens"], OPENAI_MAX_TOKENS);
+        assert_ne!(ANTHROPIC_MAX_TOKENS, OPENAI_MAX_TOKENS);
+    }
+
+    #[test]
+    fn stream_delta_routes_fragments_by_channel_and_ignores_the_rest() {
+        // OpenAI: the content delta is an Output fragment; a role-only delta is not.
         let oai = json!({ "choices": [ { "delta": { "content": "# He" } } ] });
-        assert_eq!(stream_delta(Provider::OpenAi, &oai), Some("# He"));
+        assert_eq!(
+            stream_delta(Provider::OpenAi, &oai),
+            Some((StreamChannel::Output, "# He"))
+        );
         let oai_role = json!({ "choices": [ { "delta": { "role": "assistant" } } ] });
         assert_eq!(stream_delta(Provider::OpenAi, &oai_role), None);
 
-        // Anthropic: only an input_json_delta carries envelope text.
-        let ant = json!({
+        // Anthropic (output_config.format + thinking): a text_delta is the Output (the
+        // structured report JSON); a thinking_delta is the Thinking channel.
+        let text = json!({
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": { "type": "text_delta", "text": "{\"mark" }
+        });
+        assert_eq!(
+            stream_delta(Provider::Anthropic, &text),
+            Some((StreamChannel::Output, "{\"mark"))
+        );
+        let thinking = json!({
             "type": "content_block_delta",
             "index": 0,
-            "delta": { "type": "input_json_delta", "partial_json": "{\"mark" }
+            "delta": { "type": "thinking_delta", "thinking": "Weighing the bull case" }
         });
-        assert_eq!(stream_delta(Provider::Anthropic, &ant), Some("{\"mark"));
+        assert_eq!(
+            stream_delta(Provider::Anthropic, &thinking),
+            Some((StreamChannel::Thinking, "Weighing the bull case"))
+        );
         assert_eq!(
             stream_delta(Provider::Anthropic, &json!({ "type": "ping" })),
             None
         );
-        let text_delta = json!({
+        // The old forced-tool input_json_delta no longer carries main-agent output.
+        let input_json = json!({
             "type": "content_block_delta",
-            "delta": { "type": "text_delta", "text": "ignored preamble" }
+            "delta": { "type": "input_json_delta", "partial_json": "{\"mark" }
         });
-        assert_eq!(stream_delta(Provider::Anthropic, &text_delta), None);
+        assert_eq!(stream_delta(Provider::Anthropic, &input_json), None);
     }
 
     #[test]
@@ -1989,9 +2157,12 @@ instructions"));
         .unwrap();
         assert!(!out.markdown.is_empty());
 
-        // A truncated stream is a typed parse error, not a panic (Anthropic arm parses
-        // the tool input eagerly).
-        assert!(reconstruct_response(Provider::Anthropic, "{\"markdown\":\"unterminated").is_err());
+        // A truncated stream is no longer caught at reconstruct (it just wraps the text
+        // block); it surfaces as a typed parse error in `parse_response` — the same
+        // failure shape a truncated non-streaming body would produce.
+        let truncated =
+            reconstruct_response(Provider::Anthropic, "{\"markdown\":\"unterminated").unwrap();
+        assert!(parse_response(Provider::Anthropic, &truncated, "r".into(), "t".into()).is_err());
     }
 
     /// A non-empty input so a live model has real material to summarise. The empty
@@ -2103,6 +2274,32 @@ instructions"));
             streamed, out.markdown,
             "streamed tokens did not reconstruct the report markdown"
         );
+
+        // The streamed-thoughts side-channel: an Anthropic model with thinking on
+        // (opus / sonnet adaptive+summarized, haiku enabled) must emit AgentThinking
+        // events. OpenAI (Phase-1 unchanged) emits none, so the assert is gated on the
+        // configured provider. Haiku may surface less than opus/sonnet but should be
+        // non-empty; if it isn't, that's the live-verify flag, not a code bug.
+        let thinking: String = rec
+            .messages()
+            .iter()
+            .filter_map(|m| match &m.event {
+                ProgressEvent::AgentThinking { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        let is_anthropic = std::env::var("MARKET_SIGNAL_MAIN_AGENT_MODEL")
+            .ok()
+            .and_then(|l| AgentModel::from_config_label(&l).ok())
+            .map(|m| m.provider() == Provider::Anthropic)
+            .unwrap_or(false);
+        if is_anthropic {
+            assert!(
+                !thinking.is_empty(),
+                "no AgentThinking events from the Anthropic stream (needs display:summarized; \
+                 haiku may surface less)"
+            );
+        }
     }
 
     // --- Analytical skills library (docs/analyst-skills.md) ---
