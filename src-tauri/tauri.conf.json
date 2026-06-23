@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "Market Signal",
-        "width": 800,
-        "height": 600,
-        "minWidth": 720,
-        "minHeight": 480,
+        "width": 1180,
+        "height": 760,
+        "minWidth": 900,
+        "minHeight": 600,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true
       }
