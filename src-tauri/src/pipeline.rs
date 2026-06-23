@@ -23,6 +23,7 @@ use crate::data_sources::{
 use crate::document_parser::{self, ParsedResearchDoc};
 use crate::embedding::Embedder;
 use crate::headline_filter::HeadlineFilter;
+use crate::market_clock::MarketClock;
 use crate::model_agent::MainAgentConfig;
 use crate::news::{self, NewsSource};
 use crate::progress::RunContext;
@@ -268,6 +269,18 @@ pub fn generate_report(
     // threaded to the news gather, the analysts, and the main agent below.
     let cadence = compute_cadence(&paths.db_path, as_of);
 
+    // The time-of-day sibling of cadence: where `as_of` falls relative to US equity
+    // regular trading hours (open / pre-open / closed / weekend), in market (US/Eastern)
+    // time. Threaded into the main agent so it narrates the day in the right tense — a
+    // live intraday move while the session is open vs a completed session once closed —
+    // rather than reading a mid-session run as a finished day.
+    let market_clock = MarketClock::from_utc(as_of);
+
+    // The run's current date in market (Eastern) time — the recency anchor handed to the
+    // news-selection stages so "current / prior day" is measured against a real date rather
+    // than guessed from publish dates. Derived from the same `market_clock`.
+    let report_date = market_clock.report_date();
+
     // Step 3: baseline market data is gathered before agent reasoning and is not
     // optional (`docs/report-workflow.md §Step 3`). Each adapter records what it
     // couldn't resolve in `baseline.gaps` instead of failing; the coverage gate then
@@ -337,6 +350,7 @@ pub fn generate_report(
         &baseline,
         deltas.as_ref(),
         cadence,
+        report_date.as_deref(),
         &recent_reports,
         &inbox_docs,
         embedder,
@@ -386,6 +400,8 @@ pub fn generate_report(
         deltas,
         // The run cadence (independent of `deltas`) — the main agent's posture steer.
         cadence,
+        // The market-session state at `as_of` — the tense steer (live intraday vs closed).
+        market_clock,
         research: Some(research_packet),
         // Step 4 → Step 5: the pre-research pull steers the main agent's audit.
         audit_memory,
@@ -709,6 +725,10 @@ fn assemble_research_packet(
     baseline: &BaselineMarketData,
     deltas: Option<&BaselineDeltas>,
     cadence: cadence::ReportCadence,
+    // The run's current date (`YYYY-MM-DD`, market/Eastern), the recency anchor for the
+    // news-selection stages (filter + router) so "current / prior day" is measured against
+    // a real date. `None` only off the live path (no `as_of`); a live run always supplies it.
+    report_date: Option<&str>,
     recent_reports: &[ReportSummary],
     inbox_docs: &[ParsedResearchDoc],
     embedder: &dyn Embedder,
@@ -735,7 +755,7 @@ fn assemble_research_packet(
     let clusters = if headlines.is_empty() || ctx.is_cancelled() {
         Vec::new()
     } else {
-        match research.filter.filter(headlines) {
+        match research.filter.filter(headlines, report_date) {
             Ok(clusters) => clusters,
             Err(e) => {
                 eprintln!("research: headline filter degraded to empty: {e:#}");
@@ -783,6 +803,8 @@ fn assemble_research_packet(
                 .iter()
                 .map(ParsedResearchDoc::router_excerpt)
                 .collect(),
+            // The same recency anchor the filter got, so routing weighs freshness too.
+            report_date: report_date.map(str::to_string),
         }) {
             Ok(plan) => plan,
             Err(e) => {
@@ -1695,7 +1717,11 @@ mod tests {
     /// A filter that panics if called — proves the filter is skipped on an empty gather.
     struct PanicFilter;
     impl HeadlineFilter for PanicFilter {
-        fn filter(&self, _: Vec<RawHeadline>) -> anyhow::Result<Vec<HeadlineCluster>> {
+        fn filter(
+            &self,
+            _: Vec<RawHeadline>,
+            _: Option<&str>,
+        ) -> anyhow::Result<Vec<HeadlineCluster>> {
             panic!("filter must not be called when there are no headlines")
         }
     }
@@ -1703,7 +1729,11 @@ mod tests {
     /// A filter that always errors, to drive the filter fail-soft arm.
     struct FailingFilter;
     impl HeadlineFilter for FailingFilter {
-        fn filter(&self, _: Vec<RawHeadline>) -> anyhow::Result<Vec<HeadlineCluster>> {
+        fn filter(
+            &self,
+            _: Vec<RawHeadline>,
+            _: Option<&str>,
+        ) -> anyhow::Result<Vec<HeadlineCluster>> {
             anyhow::bail!("filter down")
         }
     }
@@ -1733,6 +1763,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             crate::cadence::ReportCadence::from_elapsed(None),
+            None,
             &[],
             &[],
             &StubEmbedder,
@@ -2178,6 +2209,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             crate::cadence::ReportCadence::from_elapsed(None),
+            None,
             &recent,
             &[],
             &StubEmbedder,
@@ -2208,6 +2240,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             crate::cadence::ReportCadence::from_elapsed(None),
+            None,
             &recent,
             &[],
             &StubEmbedder,
@@ -2540,6 +2573,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             crate::cadence::ReportCadence::from_elapsed(None),
+            None,
             &recent,
             &[],
             &PanicEmbedder,
@@ -2615,6 +2649,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             crate::cadence::ReportCadence::from_elapsed(None),
+            None,
             &[],
             &[],
             &crate::embedding::StubEmbedder,

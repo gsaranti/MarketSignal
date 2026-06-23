@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::baseline_delta::BaselineDeltas;
 use crate::cadence::ReportCadence;
 use crate::data_sources::BaselineMarketData;
+use crate::market_clock::MarketClock;
 use crate::research_packet::ResearchPacket;
 
 /// The market's risk stance (`docs/storage.md`). Serializes to the canonical
@@ -135,6 +136,17 @@ pub struct MainAgentInput {
     /// structural refresh), and it is meaningful even when `deltas` is absent. `Default`
     /// is the first-report cadence.
     pub cadence: ReportCadence,
+    /// The market-session state at the moment this run's baseline was gathered
+    /// (`market_clock::MarketClock`): whether the US equity market was open, not yet open,
+    /// closed for the day, or closed for the weekend, plus the wall-clock time in
+    /// US/Eastern (the market's timezone). Computed by the application layer from the
+    /// baseline `as_of` instant — the time-of-day sibling of `cadence` (elapsed interval).
+    /// It tells the main agent the tense to narrate the day's moves in: live/intraday while
+    /// the session is open (the change so far today vs the prior close, still provisional)
+    /// versus a completed session once closed — closing the gap where an open-market run
+    /// read as a finished day. `Default` carries no session context (the offline/stub
+    /// path), in which case the prompt omits the block.
+    pub market_clock: MarketClock,
     /// The Step-11 condensed research packet (`research_packet`): the filtered news
     /// clusters and bounded deep-research evidence the application layer assembled from
     /// the research half. `None` on the offline/stub path (no research stages run) — the

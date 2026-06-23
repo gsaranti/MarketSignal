@@ -131,7 +131,11 @@ struct DemoHeadlineFilter {
 }
 
 impl HeadlineFilter for DemoHeadlineFilter {
-    fn filter(&self, headlines: Vec<RawHeadline>) -> anyhow::Result<Vec<HeadlineCluster>> {
+    fn filter(
+        &self,
+        headlines: Vec<RawHeadline>,
+        report_date: Option<&str>,
+    ) -> anyhow::Result<Vec<HeadlineCluster>> {
         self.ctx
             .request_started("OPENAI", "filter", "headline-filter", "Headline filtering");
         paced(&self.ctx, 350);
@@ -143,7 +147,7 @@ impl HeadlineFilter for DemoHeadlineFilter {
             "ok",
             None,
         );
-        StubHeadlineFilter.filter(headlines)
+        StubHeadlineFilter.filter(headlines, report_date)
     }
 }
 
