@@ -23,6 +23,7 @@ use crate::data_sources::{
 use crate::document_parser::{self, ParsedResearchDoc};
 use crate::embedding::Embedder;
 use crate::headline_filter::HeadlineFilter;
+use crate::market_clock::MarketClock;
 use crate::model_agent::MainAgentConfig;
 use crate::news::{self, NewsSource};
 use crate::progress::RunContext;
@@ -268,6 +269,13 @@ pub fn generate_report(
     // threaded to the news gather, the analysts, and the main agent below.
     let cadence = compute_cadence(&paths.db_path, as_of);
 
+    // The time-of-day sibling of cadence: where `as_of` falls relative to US equity
+    // regular trading hours (open / pre-open / closed / weekend), in market (US/Eastern)
+    // time. Threaded into the main agent so it narrates the day in the right tense — a
+    // live intraday move while the session is open vs a completed session once closed —
+    // rather than reading a mid-session run as a finished day.
+    let market_clock = MarketClock::from_utc(as_of);
+
     // Step 3: baseline market data is gathered before agent reasoning and is not
     // optional (`docs/report-workflow.md §Step 3`). Each adapter records what it
     // couldn't resolve in `baseline.gaps` instead of failing; the coverage gate then
@@ -386,6 +394,8 @@ pub fn generate_report(
         deltas,
         // The run cadence (independent of `deltas`) — the main agent's posture steer.
         cadence,
+        // The market-session state at `as_of` — the tense steer (live intraday vs closed).
+        market_clock,
         research: Some(research_packet),
         // Step 4 → Step 5: the pre-research pull steers the main agent's audit.
         audit_memory,
