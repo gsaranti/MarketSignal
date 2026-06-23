@@ -20,8 +20,10 @@ Before committing or marking a slice done, run the full set — not a subset
     via type-stripping (no build step). Currently the pure `src/renderChart.ts`.
   - **Vue SFC component tests** — `tests/**/*.spec.ts` via Vitest (config in
     `vitest.config.ts`: `@vitejs/plugin-vue` + happy-dom + `@vue/test-utils`),
-    which mounts real components and asserts behavior/accessibility. Currently
-    `tests/components/ResearchDocuments.spec.ts`. Spec files run through esbuild
+    which mounts real components and asserts behavior/accessibility. Currently the
+    specs under `tests/components/` (App, JobStatusPanel, JobTrackerView,
+    LatestReportView, PersistentWarningArea, RecentReportsSidebar, ResearchDocuments,
+    Settings), with shared mock helpers in `tests/helpers/`. Spec files run through esbuild
     type-stripping, so they're a runtime/behavioral floor, not a type gate
     (tsconfig `include` is `src/**`; specs aren't in the `vue-tsc` pass).
 
