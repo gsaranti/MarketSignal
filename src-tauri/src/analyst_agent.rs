@@ -4,20 +4,26 @@
 //! Each analyst is one [`Posture`] behind the [`AnalystAgent`] trait: the same
 //! condensed research packet in, a structured [`AnalystOutput`] out. The adapter is
 //! **dual-provider** like the main agent (the analyst model is user-selectable, so it
-//! may be OpenAI or Anthropic), but **non-streaming** like the fixed internal stages
-//! (`research_router` / `headline_filter`) — a review is small, so a single response
-//! is returned and parsed whole. The blocking HTTP call keeps the trait synchronous;
+//! may be OpenAI or Anthropic). The **Anthropic arm streams** so its extended-thinking
+//! summary reaches the run tracker live (thoughts only — the structured review body is
+//! accumulated silently and parsed whole, never streamed); the **OpenAI arm stays
+//! non-streaming** this phase (its Responses-API migration, which would surface its
+//! reasoning, is a later phase). The blocking HTTP call keeps the trait synchronous;
 //! the three analysts run concurrently at the application-layer seam (`pipeline`),
-//! offloaded via `spawn_blocking` at the Tauri command.
+//! offloaded via `spawn_blocking` at the Tauri command, so each streams its own
+//! posture-tagged reasoning into the tracker.
 //!
-//! The provider request/transport plumbing mirrors `model_agent`: this stage reuses
-//! its public response extractors ([`extract_anthropic_tool_input`] /
-//! [`extract_openai_envelope`]) and provider/model resolution ([`Provider`],
-//! [`MainAgentConfig`]), supplying its own posture-specific system prompt and review
-//! schema. Unlike the gated *data* adapters it carries no `with_base_url` mock seam —
-//! it follows the model-adapter house pattern: unit tests for the pure request/parse
-//! pieces plus an `#[ignore]`d live smoke.
+//! The provider request/transport plumbing mirrors `model_agent`: this stage reuses its
+//! shared SSE reader ([`stream_structured_response`]) and response extractors
+//! ([`extract_anthropic_text_output`] / [`extract_openai_responses_output`]), the per-model
+//! reasoning capability gate ([`thinking_config`]), and provider/model
+//! resolution ([`Provider`], [`AgentModel`], [`MainAgentConfig`]), supplying its own
+//! posture-specific system prompt and review schema. Unlike the gated *data* adapters it
+//! carries no `with_base_url` mock
+//! seam — it follows the model-adapter house pattern: unit tests for the pure
+//! request/parse pieces plus an `#[ignore]`d live smoke.
 
+use std::io::BufReader;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,8 +34,9 @@ use serde_json::{json, Value};
 use crate::agent::{AnalystAgent, AnalystOutput, Confidence, Posture};
 use crate::cadence::ReportCadence;
 use crate::model_agent::{
-    extract_anthropic_tool_input, extract_openai_envelope, MainAgentConfig, Provider,
-    ANTHROPIC_VERSION,
+    extract_anthropic_text_output, extract_openai_responses_output, stream_structured_response,
+    thinking_config, AgentModel, MainAgentConfig, Provider, StreamRole, ANTHROPIC_TIMEOUT_SECS,
+    ANTHROPIC_VERSION, OPENAI_TIMEOUT_SECS,
 };
 use crate::progress::RunContext;
 use crate::research_packet::ResearchPacket;
@@ -38,21 +45,26 @@ use crate::skills;
 /// Provider endpoints — the analyst stage calls the provider directly, like the
 /// other model adapters.
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
-const OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
+const OPENAI_URL: &str = "https://api.openai.com/v1/responses";
 
-/// A review is a summary plus a few short lists, so this ceiling is ample. Matched
-/// to the main agent's 8192: the analyst prompt now carries the full 16-lens skill
-/// library and a thorough review's lists run long, so 8192 (up from 4096) leaves
-/// generous headroom against truncation. NB the live analyst-parse failure that
-/// prompted the bump turned out *not* to be truncation — `stop_reason` was
-/// `tool_use`, and the real cause was Anthropic returning array fields as
-/// JSON-encoded strings, now handled by [`ReviewEnvelope`]'s `string_or_seq`
-/// deserializer. The larger ceiling stays as defensible headroom regardless.
-const MAX_TOKENS: u32 = 8192;
+/// Output ceiling for one Anthropic analyst generation. With extended thinking on, the
+/// reasoning *and* the review body both draw from `max_tokens`, so the cap must cover
+/// both — raised above the OpenAI arm's review-only ceiling for that headroom (still well
+/// below the main agent's 24k, since a review is far smaller than a full report). The call
+/// streams (`stream: true`), so a high cap risks no HTTP timeout the way a non-streaming
+/// body would. App-layer tunable, calibrated against live runs.
+const ANTHROPIC_ANALYST_MAX_TOKENS: u32 = 16_000;
 
-/// The single tool the Anthropic arm forces, and the json_schema name on the OpenAI
-/// arm. Both feed the same [`ReviewEnvelope`].
-const TOOL_NAME: &str = "emit_analyst_review";
+/// Output ceiling (`max_output_tokens`) for one OpenAI analyst generation. With reasoning on
+/// (Responses API), the model's reasoning tokens count against `max_output_tokens` alongside
+/// the review body, so the cap covers both — matched to the Anthropic analyst headroom (a
+/// review is far smaller than a full report, so this stays below the main agent's 24k). The
+/// call streams (`stream: true`), so a high cap risks no HTTP timeout the way a non-streaming
+/// body would. App-layer tunable, calibrated against live runs.
+const OPENAI_MAX_TOKENS: u32 = 16_000;
+
+/// The json_schema name on the OpenAI strict-output arm.
+const OPENAI_SCHEMA_NAME: &str = "analyst_review";
 
 /// The tracker `group` for the analyst stage's per-call request rows.
 const REQUEST_GROUP: &str = "analyst";
@@ -192,44 +204,76 @@ fn review_schema() -> Value {
     })
 }
 
-/// Anthropic Messages request: a non-streaming forced-tool call whose `input_schema`
-/// is the review envelope (mirrors `research_router::build_request`).
-fn build_anthropic_request(model_id: &str, system: &str, user: &str) -> Value {
-    json!({
-        "model": model_id,
-        "max_tokens": MAX_TOKENS,
-        "stream": false,
+/// Anthropic Messages request for one analyst: structured output rides on
+/// `output_config.format` (a json_schema) rather than a forced `tool_choice`, because a
+/// forced tool is incompatible with extended thinking — the same swap the main agent
+/// made. The `thinking` block (from [`thinking_config`], passed in) turns reasoning on
+/// per-model and makes its summary stream as `thinking_delta` events; it is omitted
+/// entirely when `thinking` is `None` (a non-reasoning model). The call streams
+/// (`stream: true`) so those thoughts reach the tracker live, while the structured review
+/// body is accumulated silently (thoughts-only — see [`ModelAnalystAgent::call`]). The
+/// router keeps the forced-tool shape; this change is scoped to the analyst arm.
+fn build_anthropic_request(
+    model: AgentModel,
+    system: &str,
+    user: &str,
+    thinking: Option<Value>,
+) -> Value {
+    let mut req = json!({
+        "model": model.model_id(),
+        "max_tokens": ANTHROPIC_ANALYST_MAX_TOKENS,
+        "stream": true,
         "system": [
             { "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }
         ],
-        "tools": [
-            {
-                "name": TOOL_NAME,
-                "description": "Emit this analyst's structured review of the current market.",
-                "strict": true,
-                "input_schema": review_schema()
-            }
-        ],
-        "tool_choice": { "type": "tool", "name": TOOL_NAME },
+        "output_config": {
+            "format": { "type": "json_schema", "schema": review_schema() }
+        },
         "messages": [ { "role": "user", "content": user } ]
-    })
+    });
+    if let Some(thinking) = thinking {
+        req["thinking"] = thinking;
+    }
+    req
 }
 
-/// OpenAI Chat Completions request: non-streaming strict json_schema (mirrors
-/// `headline_filter::build_request`).
-fn build_openai_request(model_id: &str, system: &str, user: &str) -> Value {
-    json!({
-        "model": model_id,
-        "max_completion_tokens": MAX_TOKENS,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": { "name": "analyst_review", "strict": true, "schema": review_schema() }
+/// OpenAI Responses-API request: strict json_schema structured output on `text.format`
+/// (the Responses shape — `type`/`name`/`strict`/`schema` flattened) plus streamed reasoning
+/// summaries (from [`thinking_config`], passed in), the same swap the main agent made so the
+/// OpenAI arm can surface its reasoning; the `reasoning` block is omitted entirely when
+/// `reasoning` is `None` (a non-reasoning model). The call streams (`stream: true`) so those
+/// thoughts reach the tracker live, while the structured review body is accumulated silently
+/// (thoughts-only — see [`ModelAnalystAgent::call`]). `store: false` keeps the local-first
+/// no-retention posture — the Responses API defaults `store` to `true` (30-day server-side
+/// retention of the prompt), so the migration opts out to preserve the prior Chat Completions
+/// behavior (same rationale as the main agent's request). (The fixed-internal Chat Completions
+/// stages keep their own request shape; this change is scoped to the analyst arm.)
+fn build_openai_request(
+    model: AgentModel,
+    system: &str,
+    user: &str,
+    reasoning: Option<Value>,
+) -> Value {
+    let mut req = json!({
+        "model": model.model_id(),
+        "max_output_tokens": OPENAI_MAX_TOKENS,
+        "stream": true,
+        "store": false,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": OPENAI_SCHEMA_NAME,
+                "strict": true,
+                "schema": review_schema()
+            }
         },
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user }
-        ]
-    })
+        "instructions": system,
+        "input": user
+    });
+    if let Some(reasoning) = reasoning {
+        req["reasoning"] = reasoning;
+    }
+    req
 }
 
 /// Build the user message: the standing instruction, the condensed research packet
@@ -298,8 +342,11 @@ pub struct ModelAnalystAgent {
 
 impl ModelAnalystAgent {
     pub fn new(posture: Posture, config: MainAgentConfig) -> Result<Self> {
+        // A generous client-level backstop; the real, provider-specific ceilings are set
+        // per request in `call` (Anthropic gets thinking headroom, OpenAI keeps its prior
+        // 120s). Sized to the larger of the two so it never undercuts a per-request value.
         let http = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(ANTHROPIC_TIMEOUT_SECS))
             .build()
             .context("building the analyst HTTP client")?;
         Ok(Self {
@@ -328,36 +375,57 @@ impl ModelAnalystAgent {
     }
 
     fn call(&self, provider: Provider, body: &Value) -> Result<Value> {
-        let request = match provider {
-            Provider::Anthropic => self
-                .http
-                .post(ANTHROPIC_URL)
-                .header("x-api-key", &self.config.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION),
-            Provider::OpenAi => self.http.post(OPENAI_URL).bearer_auth(&self.config.api_key),
+        // Provider-specific total timeout (a per-request override of the client backstop):
+        // the Anthropic arm gets thinking headroom; the OpenAI arm keeps its prior ceiling.
+        let (request, timeout) = match provider {
+            Provider::Anthropic => (
+                self.http
+                    .post(ANTHROPIC_URL)
+                    .header("x-api-key", &self.config.api_key)
+                    .header("anthropic-version", ANTHROPIC_VERSION),
+                Duration::from_secs(ANTHROPIC_TIMEOUT_SECS),
+            ),
+            Provider::OpenAi => (
+                self.http.post(OPENAI_URL).bearer_auth(&self.config.api_key),
+                Duration::from_secs(OPENAI_TIMEOUT_SECS),
+            ),
         };
         let resp = request
+            .timeout(timeout)
             .json(body)
             .send()
             .context("sending analyst request")?;
         let status = resp.status();
-        let text = resp.text().context("reading analyst response body")?;
         if !status.is_success() {
+            // A rejected request answers with a normal (non-SSE) error body.
+            let text = resp.text().unwrap_or_default();
             bail!("analyst model returned {status}: {text}");
         }
-        serde_json::from_str(&text).context("parsing analyst response JSON")
+        // Both arms stream (Anthropic: `output_config.format` + thinking; OpenAI: Responses
+        // API reasoning summaries): the shared SSE reader accumulates the review envelope
+        // while streaming this analyst's reasoning to the tracker, tagged by posture —
+        // thoughts only, the review body never streams. It returns a value shaped like a
+        // non-streaming body for the provider's extractor.
+        stream_structured_response(
+            BufReader::new(resp),
+            provider,
+            &self.progress,
+            StreamRole::Analyst(self.posture.as_str()),
+        )
     }
 }
 
 impl AnalystAgent for ModelAnalystAgent {
     fn review(&self, packet: &ResearchPacket, cadence: ReportCadence) -> Result<AnalystOutput> {
         let provider = self.config.model.provider();
-        let model_id = self.config.model.model_id();
         let system = system_prompt(self.posture);
         let user = build_user_prompt(packet, cadence);
+        let reasoning = thinking_config(self.config.model);
         let body = match provider {
-            Provider::Anthropic => build_anthropic_request(model_id, &system, &user),
-            Provider::OpenAi => build_openai_request(model_id, &system, &user),
+            Provider::Anthropic => {
+                build_anthropic_request(self.config.model, &system, &user, reasoning)
+            }
+            Provider::OpenAi => build_openai_request(self.config.model, &system, &user, reasoning),
         };
 
         // One tracker row for this analyst's review call.
@@ -371,20 +439,17 @@ impl AnalystAgent for ModelAnalystAgent {
         let result = (|| -> Result<AnalystOutput> {
             let raw = self.call(provider, &body)?;
             let value = match provider {
-                Provider::Anthropic => extract_anthropic_tool_input(&raw, TOOL_NAME)?,
-                Provider::OpenAi => extract_openai_envelope(&raw)?,
+                Provider::Anthropic => extract_anthropic_text_output(&raw)?,
+                Provider::OpenAi => extract_openai_responses_output(&raw)?,
             };
             let env: ReviewEnvelope = serde_json::from_value(value.clone())
                 .map_err(|e| {
-                    // Diagnostic: a parse failure here can be either Sonnet schema
-                    // non-adherence (Anthropic input_schema is guidance, not enforced)
-                    // or a `max_tokens` truncation — both surface identically. Dump the
-                    // raw extracted value + the provider's stop/finish reason so a live
-                    // run reveals which. Side-effect only; the error/contract is unchanged.
-                    let stop = match provider {
-                        Provider::Anthropic => raw.get("stop_reason").cloned(),
-                        Provider::OpenAi => raw.pointer("/choices/0/finish_reason").cloned(),
-                    };
+                    // Diagnostic: a parse failure here can be either schema non-adherence
+                    // or a token-cap truncation — both surface identically. Dump the raw
+                    // extracted value so a live run reveals which. Side-effect only; the
+                    // error/contract is unchanged. Both arms now stream + reconstruct, so the
+                    // value carries no stop/finish field — a truncation shows up directly as
+                    // invalid JSON in the snippet below, with no provider stop reason to read.
                     // Bound the dump: the extracted value can echo private research /
                     // inbox content, so log only a leading snippet — enough to see the
                     // shape of a malformed response without spilling the whole review
@@ -397,10 +462,9 @@ impl AnalystAgent for ModelAnalystAgent {
                         ""
                     };
                     eprintln!(
-                        "analyst review parse failed [{:?} {}]: {e}; stop_reason={:?}; raw_value(<=500 chars)={snippet}{suffix}",
+                        "analyst review parse failed [{:?} {}]: {e}; raw_value(<=500 chars)={snippet}{suffix}",
                         self.posture,
                         provider.display_name(),
-                        stop
                     );
                     anyhow::Error::new(e)
                 })
@@ -517,25 +581,66 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_request_forces_the_tool_and_is_not_streamed() {
-        let body = build_anthropic_request("claude-opus-4-8", &system_prompt(Posture::Bull), "u");
+    fn anthropic_request_uses_output_config_format_thinking_and_streams() {
+        let body = build_anthropic_request(
+            AgentModel::ClaudeOpus,
+            &system_prompt(Posture::Bull),
+            "u",
+            thinking_config(AgentModel::ClaudeOpus),
+        );
         assert_eq!(body["model"], "claude-opus-4-8");
-        assert_eq!(body["stream"], false);
-        assert_eq!(body["tool_choice"]["name"], TOOL_NAME);
-        assert_eq!(body["tools"][0]["name"], TOOL_NAME);
-        assert_eq!(body["tools"][0]["strict"], true);
+        // Streams so the thinking summary reaches the tracker live.
+        assert_eq!(body["stream"], true);
+        // The forced tool is gone — a forced tool_choice is incompatible with thinking.
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_choice").is_none());
+        // Structured output rides on output_config.format (a json_schema).
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+        assert!(body["output_config"]["format"]["schema"]["properties"].is_object());
+        // Thinking is on; opus uses adaptive with a summarized display so thoughts stream.
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
     }
 
     #[test]
-    fn openai_request_uses_strict_json_schema() {
-        let body = build_openai_request("gpt-5", &system_prompt(Posture::Bear), "u");
-        assert_eq!(body["model"], "gpt-5");
-        assert_eq!(body["response_format"]["type"], "json_schema");
-        assert_eq!(
-            body["response_format"]["json_schema"]["name"],
-            "analyst_review"
+    fn openai_request_uses_responses_api_strict_json_schema_and_reasoning() {
+        let body = build_openai_request(
+            AgentModel::Gpt5,
+            &system_prompt(Posture::Bear),
+            "u",
+            thinking_config(AgentModel::Gpt5),
         );
-        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(body["model"], "gpt-5");
+        // Streams so the reasoning summary reaches the tracker live.
+        assert_eq!(body["stream"], true);
+        // Structured output rides on the Responses-API `text.format` (flattened), not Chat
+        // Completions' `response_format.json_schema`.
+        assert!(body.get("response_format").is_none());
+        assert_eq!(body["text"]["format"]["type"], "json_schema");
+        assert_eq!(body["text"]["format"]["name"], "analyst_review");
+        assert_eq!(body["text"]["format"]["strict"], true);
+        // Reasoning on, with streamed summaries.
+        assert_eq!(body["reasoning"]["summary"], "auto");
+        // No server-side retention (Responses defaults `store` to true) — keeps the
+        // local-first no-retention posture.
+        assert_eq!(body["store"], false);
+    }
+
+    #[test]
+    fn analyst_requests_omit_the_reasoning_block_when_the_gate_returns_none() {
+        // A non-reasoning model (the gate returns None) must produce a request with no
+        // `thinking`/`reasoning` key — never an unsupported block. Exercised at the builder
+        // layer because every model offered today reasons.
+        let a = build_anthropic_request(AgentModel::ClaudeOpus, &system_prompt(Posture::Bull), "u", None);
+        assert!(a.get("thinking").is_none());
+        assert_eq!(a["output_config"]["format"]["type"], "json_schema");
+        assert_eq!(a["stream"], true);
+        let o = build_openai_request(AgentModel::Gpt5, &system_prompt(Posture::Bear), "u", None);
+        assert!(o.get("reasoning").is_none());
+        assert_eq!(o["text"]["format"]["type"], "json_schema");
+        assert_eq!(o["store"], false);
+        assert_eq!(o["stream"], true);
     }
 
     #[test]
@@ -653,6 +758,140 @@ mod tests {
         };
         let out = envelope_to_output(Posture::Balanced, env).unwrap();
         assert!(out.key_points.is_empty());
+    }
+
+    #[test]
+    fn anthropic_stream_is_thoughts_only_and_tagged_by_posture() {
+        // The analyst Anthropic path, exercised offline through the shared SSE reader with
+        // a synthetic stream: text_deltas carry the review envelope (accumulated silently),
+        // thinking_deltas carry the reasoning. Asserts the analyst contract — reasoning
+        // streams tagged by posture, the review body never streams (no AgentToken) — and
+        // that the reconstructed value extracts + validates into an AnalystOutput.
+        use crate::progress::{ProgressEvent, RecordingReporter};
+        use std::io::Cursor;
+        use std::sync::atomic::AtomicBool;
+
+        let envelope = json!({
+            "summary": "A constructive but stress-tested read.",
+            "key_points": ["breadth is broadening", "credit spreads calm"],
+            "risks": ["a hot core PCE print"],
+            "opportunities": ["rate-sensitive rotation"],
+            "confidence": "medium"
+        });
+        let env = serde_json::to_string(&envelope).unwrap();
+        let (head, tail) = env.split_at(env.len() / 2);
+        let escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        let sse = format!(
+            "data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"thinking_delta\",\"thinking\":\"is the rally\"}}}}\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"thinking_delta\",\"thinking\":\" real?\"}}}}\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{}\"}}}}\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{}\"}}}}\n\
+             data: [DONE]\n",
+            escape(head),
+            escape(tail),
+        );
+
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("analyst-unit", rec.clone(), Arc::new(AtomicBool::new(false)));
+        let value = stream_structured_response(
+            BufReader::new(Cursor::new(sse)),
+            Provider::Anthropic,
+            &ctx,
+            StreamRole::Analyst(Posture::Bull.as_str()),
+        )
+        .unwrap();
+
+        // The reconstructed value parses back into a valid review.
+        let extracted = extract_anthropic_text_output(&value).unwrap();
+        let parsed: ReviewEnvelope = serde_json::from_value(extracted).unwrap();
+        let out = envelope_to_output(Posture::Bull, parsed).unwrap();
+        assert_eq!(out.posture, Posture::Bull);
+        assert_eq!(out.key_points.len(), 2);
+
+        // Thoughts-only: the review body must NOT stream as report tokens, and the
+        // reasoning must stream tagged with this analyst's posture.
+        let msgs = rec.messages();
+        assert!(
+            !msgs.iter().any(|m| matches!(m.event, ProgressEvent::AgentToken { .. })),
+            "the analyst review body leaked into the report-token channel"
+        );
+        let thoughts: String = msgs
+            .iter()
+            .filter_map(|m| match &m.event {
+                ProgressEvent::AnalystThinking { posture, delta } if posture == "bull" => {
+                    Some(delta.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thoughts, "is the rally real?");
+    }
+
+    #[test]
+    fn openai_stream_is_thoughts_only_and_tagged_by_posture() {
+        // The analyst OpenAI Responses path through the same shared SSE reader: output_text
+        // deltas carry the review envelope (accumulated silently), reasoning_summary_text
+        // deltas carry the reasoning. Same analyst contract as the Anthropic arm — reasoning
+        // streams tagged by posture, the review body never streams (no AgentToken) — and the
+        // reconstructed value extracts + validates into an AnalystOutput.
+        use crate::progress::{ProgressEvent, RecordingReporter};
+        use std::io::Cursor;
+        use std::sync::atomic::AtomicBool;
+
+        let envelope = json!({
+            "summary": "A constructive but stress-tested read.",
+            "key_points": ["breadth is broadening", "credit spreads calm"],
+            "risks": ["a hot core PCE print"],
+            "opportunities": ["rate-sensitive rotation"],
+            "confidence": "medium"
+        });
+        let env = serde_json::to_string(&envelope).unwrap();
+        let (head, tail) = env.split_at(env.len() / 2);
+        let escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        let sse = format!(
+            "data: {{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"is the rally\"}}\n\
+             data: {{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\" real?\"}}\n\
+             data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{}\"}}\n\
+             data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{}\"}}\n\
+             data: [DONE]\n",
+            escape(head),
+            escape(tail),
+        );
+
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("analyst-unit-oai", rec.clone(), Arc::new(AtomicBool::new(false)));
+        let value = stream_structured_response(
+            BufReader::new(Cursor::new(sse)),
+            Provider::OpenAi,
+            &ctx,
+            StreamRole::Analyst(Posture::Bull.as_str()),
+        )
+        .unwrap();
+
+        // The reconstructed value parses back into a valid review.
+        let extracted = extract_openai_responses_output(&value).unwrap();
+        let parsed: ReviewEnvelope = serde_json::from_value(extracted).unwrap();
+        let out = envelope_to_output(Posture::Bull, parsed).unwrap();
+        assert_eq!(out.posture, Posture::Bull);
+        assert_eq!(out.key_points.len(), 2);
+
+        // Thoughts-only: the review body must NOT stream as report tokens, and the
+        // reasoning must stream tagged with this analyst's posture.
+        let msgs = rec.messages();
+        assert!(
+            !msgs.iter().any(|m| matches!(m.event, ProgressEvent::AgentToken { .. })),
+            "the analyst review body leaked into the report-token channel"
+        );
+        let thoughts: String = msgs
+            .iter()
+            .filter_map(|m| match &m.event {
+                ProgressEvent::AnalystThinking { posture, delta } if posture == "bull" => {
+                    Some(delta.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thoughts, "is the rally real?");
     }
 
     #[test]

@@ -30,6 +30,17 @@ job's progress as it happens:
 - **The main agent's report, streamed live.** As the main agent writes the
   report, its text streams into the tracker as it is produced, rather than
   appearing only once the report is finished.
+- **The main agent's reasoning, streamed live.** When the selected model
+  reasons before answering (extended thinking), a summary of that reasoning
+  streams into the tracker as a quieter, subordinate stream shown above the
+  report text — a view into how the thesis is being weighed as it forms. Models
+  that do not surface their reasoning simply show none; nothing breaks and no
+  error is raised.
+- **Each analyst's reasoning, streamed live.** While the three analysts (Bull /
+  Bear / Balanced) run concurrently, each one's reasoning streams into its own
+  labeled pane under the analyst step — the same quieter, subordinate stream as
+  the main agent's. Only the reasoning streams here, not the analyst's review
+  itself; an analyst whose model does not surface reasoning simply shows none.
 
 The tracker is a live view of one run. Its contents are kept for the current
 application session and reflect the **latest run only**; they are not persisted
@@ -40,8 +51,9 @@ across restarts.
 The user may cancel a running job at any point from the tracker.
 
 Cancellation is cooperative: the application stops the run at the next safe
-checkpoint — between steps, between data requests, and while the main agent is
-streaming — rather than interrupting a request already in flight. In practice the
+checkpoint — between steps, between data requests, and while an agent is
+streaming (the main agent or any of the three analysts) — rather than
+interrupting a request already in flight. In practice the
 run stops within a request or two of the cancel.
 
 A cancelled run:

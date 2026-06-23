@@ -79,6 +79,29 @@ function reqTone(status: string): ReqTone {
   return "fail";
 }
 
+// The three analysts in their canonical order, with display labels for the
+// reasoning-pane captions. Keyed by the posture the backend tags each chunk with.
+const ANALYST_ORDER = ["bull", "bear", "balanced"] as const;
+const ANALYST_LABELS: Record<string, string> = {
+  bull: "Bull",
+  bear: "Bear",
+  balanced: "Balanced",
+};
+// The non-empty analyst reasoning panes for a step, in canonical order; an
+// unrecognized posture (forward-compat) still renders, labeled by its raw key.
+function analystPanes(thinking: Record<string, string> | undefined): { posture: string; label: string; text: string }[] {
+  if (!thinking) return [];
+  const known = ANALYST_ORDER.filter((p) => thinking[p]);
+  const extra = Object.keys(thinking).filter(
+    (p) => thinking[p] && !ANALYST_ORDER.includes(p as (typeof ANALYST_ORDER)[number])
+  );
+  return [...known, ...extra].map((posture) => ({
+    posture,
+    label: ANALYST_LABELS[posture] ?? posture,
+    text: thinking[posture],
+  }));
+}
+
 // Auto-follow the stream: keep the view pinned to the newest content while the
 // user is at the bottom, but never yank them back if they've scrolled up to read.
 const scroller = ref<HTMLElement | null>(null);
@@ -94,7 +117,10 @@ function onScroll() {
 // step count), so the watcher fires on any new content without deep-watching.
 const contentSignature = computed(() => {
   let n = props.trace.steps.length;
-  for (const s of props.trace.steps) n += s.requests.length + s.agentText.length;
+  for (const s of props.trace.steps) {
+    n += s.requests.length + s.agentText.length + s.agentThinking.length;
+    for (const k in s.analystThinking) n += s.analystThinking[k].length;
+  }
   if (props.trace.terminal) n += 1;
   return n;
 });
@@ -211,6 +237,26 @@ watch(contentSignature, async () => {
               </span>
             </li>
           </ul>
+
+          <!-- Each analyst's streamed reasoning (thoughts only — the review body never
+               streams), one pane per analyst that surfaces thinking, labeled by posture.
+               Absent for analyst models that don't surface thinking. -->
+          <div
+            v-for="pane in analystPanes(step.analystThinking)"
+            :key="pane.posture"
+            class="agent-thinking"
+          >
+            <span class="agent-thinking-label">{{ pane.label }} · Reasoning</span>
+            <pre class="agent-thinking-body">{{ pane.text }}</pre>
+          </div>
+
+          <!-- The main agent's streamed reasoning (extended thinking), shown above
+               its report text as a quieter, subordinate stream. Absent for models
+               that don't surface thinking — the block simply doesn't render. -->
+          <div v-if="step.agentThinking" class="agent-thinking">
+            <span class="agent-thinking-label">Reasoning</span>
+            <pre class="agent-thinking-body">{{ step.agentThinking }}</pre>
+          </div>
 
           <!-- The main agent's report text, streamed live (decoded Markdown). -->
           <pre v-if="step.agentText" class="agent-stream">{{ step.agentText }}</pre>
@@ -459,6 +505,40 @@ watch(contentSignature, async () => {
   height: 6px;
   border-radius: var(--radius-sm);
   background: var(--accent);
+}
+
+/* The main agent's streamed reasoning — a subordinate stream, set apart from the
+   report-text console below so the two never read as one. DESIGN-SYSTEM EXTENSION
+   (per CLAUDE.md §5, same family as this file's tracker note): the report stream is
+   the mono inset-well; the reasoning is the system's quiet serif-italic "aside" voice
+   on the same paper-edge surface, in --ink-3 and a softer hairline so it reads as
+   secondary to the deliverable. A caption label names it. Static, like the rest of
+   the tracker (no shimmer/motion), so reduced-motion needs no special handling. */
+.agent-thinking {
+  margin: var(--s-4) 0 0 0;
+}
+.agent-thinking-label {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: var(--s-2);
+}
+.agent-thinking-body {
+  margin: 0;
+  padding: var(--s-4) var(--s-5);
+  background: var(--paper-edge);
+  border: 1px solid var(--hairline-soft);
+  border-radius: var(--radius);
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: var(--t-ui-sm);
+  line-height: var(--lh-ui);
+  color: var(--ink-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* The main agent's streamed report text — the system's inset-well code block

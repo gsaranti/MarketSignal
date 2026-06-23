@@ -73,6 +73,17 @@ pub enum ProgressEvent {
     /// A coalesced chunk of the main agent's streamed output (decoded report
     /// text), appended to the tracker's live console as the model writes.
     AgentToken { delta: String },
+    /// A coalesced chunk of the main agent's streamed reasoning (extended-thinking
+    /// summary), shown as a quieter, subordinate stream above its report text. Emitted
+    /// only by models that surface thinking (the Anthropic arm); a non-thinking model
+    /// simply never sends it, so the tracker shows no reasoning rather than an error.
+    AgentThinking { delta: String },
+    /// A coalesced chunk of one analyst's streamed reasoning, tagged by `posture`
+    /// (`bull` / `bear` / `balanced`) so the tracker routes each of the three
+    /// concurrently-running analysts to its own reasoning pane. The analyst stage
+    /// streams **thoughts only** — the structured review body never streams — and, like
+    /// [`Self::AgentThinking`], a non-thinking analyst model simply never sends it.
+    AnalystThinking { posture: String, delta: String },
     /// The run reached a terminal state. `status` ∈ {`successful`, `failed`,
     /// `cancelled`}; `report_id` is set only on success.
     RunFinished {
@@ -245,6 +256,19 @@ impl RunContext {
         });
     }
 
+    pub fn agent_thinking(&self, delta: impl Into<String>) {
+        self.emit(ProgressEvent::AgentThinking {
+            delta: delta.into(),
+        });
+    }
+
+    pub fn analyst_thinking(&self, posture: impl Into<String>, delta: impl Into<String>) {
+        self.emit(ProgressEvent::AnalystThinking {
+            posture: posture.into(),
+            delta: delta.into(),
+        });
+    }
+
     pub fn run_finished(
         &self,
         status: impl Into<String>,
@@ -325,6 +349,40 @@ mod tests {
         assert_eq!(v["series_id"], "DGS10");
         assert_eq!(v["name"], "10-Year Treasury");
         assert_eq!(v["status"], "ok");
+    }
+
+    #[test]
+    fn agent_thinking_serializes_as_a_kebab_kind_with_a_delta() {
+        // The reasoning channel rides the same envelope as AgentToken, tagged
+        // `agent-thinking` so the frontend routes it to the thinking pane.
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("run-2", rec.clone(), Arc::new(AtomicBool::new(false)));
+        ctx.agent_thinking("Weighing the bull case");
+
+        let msgs = rec.messages();
+        assert_eq!(msgs.len(), 1);
+        let v = serde_json::to_value(&msgs[0]).unwrap();
+        assert_eq!(v["kind"], "agent-thinking");
+        assert_eq!(v["delta"], "Weighing the bull case");
+        assert_eq!(v["run_id"], "run-2");
+    }
+
+    #[test]
+    fn analyst_thinking_serializes_with_a_posture_tag() {
+        // The analyst reasoning channel carries a `posture` so the frontend routes the
+        // three concurrent analysts to distinct panes; otherwise the same envelope as
+        // `agent-thinking`.
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("run-3", rec.clone(), Arc::new(AtomicBool::new(false)));
+        ctx.analyst_thinking("bear", "The curve is lying about the cycle");
+
+        let msgs = rec.messages();
+        assert_eq!(msgs.len(), 1);
+        let v = serde_json::to_value(&msgs[0]).unwrap();
+        assert_eq!(v["kind"], "analyst-thinking");
+        assert_eq!(v["posture"], "bear");
+        assert_eq!(v["delta"], "The curve is lying about the cycle");
+        assert_eq!(v["run_id"], "run-3");
     }
 
     #[test]

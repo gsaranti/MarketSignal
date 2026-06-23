@@ -18,7 +18,7 @@ The main agent is responsible for:
 - planning market data and research needs
 - surfacing unresolved thesis questions and research needs that inform research routing (the executable research plan is produced by the fixed routing model)
 - consuming curated data returned by the application layer (including the baseline market scan and the change view of how it moved since the previous report)
-- creating the condensed research packet
+- reasoning over the condensed research packet the application layer assembles (the packet is built deterministically by the app layer, not the agent — see [report-workflow.md §Step 11](report-workflow.md#step-11-build-condensed-research-packet))
 - using relevant memory retrieved by the application layer
 - auditing prior report accuracy using report context and market evidence
 - maintaining evolving long-term market theses
@@ -67,7 +67,7 @@ For how the unified-voice constraint maps to the report's section layout (includ
 
 ## Analyst Agents
 
-Three analyst agents run after the main agent creates the condensed research packet:
+Three analyst agents run after the application layer assembles the condensed research packet:
 - Bull Analyst
 - Bear Analyst
 - Balanced Analyst

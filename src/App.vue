@@ -80,7 +80,16 @@ const GATE_STEP_LABEL = "Credentials & configuration";
 function ensureStep(trace: RunTrace, key: string, label: string): TrackerStep {
   let step = trace.steps.find((s) => s.key === key);
   if (!step) {
-    step = { key, label, status: "running", detail: null, requests: [], agentText: "" };
+    step = {
+      key,
+      label,
+      status: "running",
+      detail: null,
+      requests: [],
+      agentText: "",
+      agentThinking: "",
+      analystThinking: {},
+    };
     trace.steps.push(step);
   }
   return step;
@@ -99,6 +108,9 @@ function ensureStep(trace: RunTrace, key: string, label: string): TrackerStep {
 const RESEARCH_REQUEST_GROUPS = new Set(["news", "filter", "routing", "research"]);
 function requestStep(trace: RunTrace, group: string): TrackerStep {
   if (RESEARCH_REQUEST_GROUPS.has(group)) return ensureStep(trace, "research", "Research");
+  // The three analysts' per-call rows belong with their reasoning panes under the
+  // "analysts" step, not the baseline fallback below.
+  if (group === "analyst") return ensureStep(trace, "analysts", "Running the analyst agents");
   if (group === "memory") {
     const running = [...trace.steps].reverse().find((s) => s.status === "running");
     return running ?? ensureStep(trace, "persist", "Saving the report");
@@ -121,6 +133,8 @@ function handleProgress(msg: ProgressMessage) {
           detail: null,
           requests: [],
           agentText: "",
+          agentThinking: "",
+          analystThinking: {},
         },
       ],
       terminal: null,
@@ -188,6 +202,17 @@ function handleProgress(msg: ProgressMessage) {
     case "agent-token":
       ensureStep(trace, "agent", "Main agent").agentText += msg.delta ?? "";
       break;
+    case "agent-thinking":
+      ensureStep(trace, "agent", "Main agent").agentThinking += msg.delta ?? "";
+      break;
+    case "analyst-thinking": {
+      // Route each analyst's reasoning to its own pane under the "analysts" step, keyed
+      // by posture so the three concurrent streams stay separate.
+      const step = ensureStep(trace, "analysts", "Running the analyst agents");
+      const posture = msg.posture ?? "";
+      step.analystThinking[posture] = (step.analystThinking[posture] ?? "") + (msg.delta ?? "");
+      break;
+    }
     case "run-finished": {
       trace.terminal = { status: msg.status ?? "", detail: msg.detail ?? null };
       runActive.value = false;
