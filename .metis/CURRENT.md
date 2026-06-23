@@ -31,9 +31,6 @@ UI/report/tracker change — prefer it over spending FMP/Tavily quota or model t
   ([[manual-pivot-cadence-windows]]).
 - **opus-main leaning** — accumulating; the worked-examples prompt is an optional carry
   ([[live-config-opus-main-leaning]]).
-- **`CLAUDE.md` test inventory is stale** — it names only `ResearchDocuments.spec.ts`,
-  but 8 component specs exist (App, JobStatusPanel, JobTrackerView, LatestReportView,
-  PersistentWarningArea, RecentReportsSidebar, ResearchDocuments, Settings). Doc nit.
 
 ## Where to start
 
@@ -42,5 +39,4 @@ closes Cadence Run B (watch the delta + memory-recall paths). Verify any UI/repo
 cost-free with `npm run tauri:demo`. Settled this session (don't re-litigate): design-kit
 deviations stay in memory/code/PRs — no repo deviations file — so an external reviewer
 (Codex) re-flagging them against the kit is **known-accepted, not a new defect**
-([[design-kit-deviations]]). Optional small items: the worked-examples prompt, the
-`CLAUDE.md` spec-list fix.
+([[design-kit-deviations]]). Optional small item: the worked-examples prompt.
