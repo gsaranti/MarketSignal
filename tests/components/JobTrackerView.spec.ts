@@ -167,6 +167,41 @@ test("the streamed reasoning renders only where present, labeled and above the r
   expect(html.indexOf("agent-thinking")).toBeLessThan(html.indexOf("agent-stream"));
 });
 
+test("each analyst's reasoning renders as its own labeled pane, in canonical order", () => {
+  // The "analysts" step carries one reasoning stream per posture (thoughts only); the
+  // tracker renders one labeled pane each, ordered bull → bear → balanced. A posture
+  // with no thoughts (here: none missing) simply wouldn't render.
+  const trace: RunTrace = deepFreeze({
+    runId: "run-1",
+    label: "Weekly Market Report",
+    terminal: null,
+    steps: [
+      {
+        key: "analysts",
+        label: "Running the analyst agents",
+        status: "running",
+        detail: null,
+        agentText: "",
+        agentThinking: "",
+        analystThinking: {
+          balanced: "Adjudicating the two strongest claims.",
+          bull: "Is the rally real, or just a few names?",
+          bear: "What breaks first under stress?",
+        },
+        requests: [],
+      },
+    ],
+  });
+  const wrapper = mount(JobTrackerView, {
+    props: { trace, active: true, cancelRequested: false },
+  });
+  const labels = wrapper.findAll(".agent-thinking-label").map((l) => l.text());
+  expect(labels).toEqual(["Bull · Reasoning", "Bear · Reasoning", "Balanced · Reasoning"]);
+  const bodies = wrapper.findAll(".agent-thinking-body").map((b) => b.text());
+  expect(bodies[0]).toContain("Is the rally real");
+  expect(bodies[2]).toContain("Adjudicating the two strongest");
+});
+
 test("a run with no steps yet shows the Starting edge state", () => {
   const empty = deepFreeze({ runId: "run-1", label: "Weekly Market Report", terminal: null, steps: [] });
   const wrapper = mount(JobTrackerView, {

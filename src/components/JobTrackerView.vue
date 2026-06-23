@@ -79,6 +79,29 @@ function reqTone(status: string): ReqTone {
   return "fail";
 }
 
+// The three analysts in their canonical order, with display labels for the
+// reasoning-pane captions. Keyed by the posture the backend tags each chunk with.
+const ANALYST_ORDER = ["bull", "bear", "balanced"] as const;
+const ANALYST_LABELS: Record<string, string> = {
+  bull: "Bull",
+  bear: "Bear",
+  balanced: "Balanced",
+};
+// The non-empty analyst reasoning panes for a step, in canonical order; an
+// unrecognized posture (forward-compat) still renders, labeled by its raw key.
+function analystPanes(thinking: Record<string, string> | undefined): { posture: string; label: string; text: string }[] {
+  if (!thinking) return [];
+  const known = ANALYST_ORDER.filter((p) => thinking[p]);
+  const extra = Object.keys(thinking).filter(
+    (p) => thinking[p] && !ANALYST_ORDER.includes(p as (typeof ANALYST_ORDER)[number])
+  );
+  return [...known, ...extra].map((posture) => ({
+    posture,
+    label: ANALYST_LABELS[posture] ?? posture,
+    text: thinking[posture],
+  }));
+}
+
 // Auto-follow the stream: keep the view pinned to the newest content while the
 // user is at the bottom, but never yank them back if they've scrolled up to read.
 const scroller = ref<HTMLElement | null>(null);
@@ -94,8 +117,10 @@ function onScroll() {
 // step count), so the watcher fires on any new content without deep-watching.
 const contentSignature = computed(() => {
   let n = props.trace.steps.length;
-  for (const s of props.trace.steps)
+  for (const s of props.trace.steps) {
     n += s.requests.length + s.agentText.length + s.agentThinking.length;
+    for (const k in s.analystThinking) n += s.analystThinking[k].length;
+  }
   if (props.trace.terminal) n += 1;
   return n;
 });
@@ -212,6 +237,18 @@ watch(contentSignature, async () => {
               </span>
             </li>
           </ul>
+
+          <!-- Each analyst's streamed reasoning (thoughts only — the review body never
+               streams), one pane per analyst that surfaces thinking, labeled by posture.
+               Absent for analyst models that don't surface thinking. -->
+          <div
+            v-for="pane in analystPanes(step.analystThinking)"
+            :key="pane.posture"
+            class="agent-thinking"
+          >
+            <span class="agent-thinking-label">{{ pane.label }} · Reasoning</span>
+            <pre class="agent-thinking-body">{{ pane.text }}</pre>
+          </div>
 
           <!-- The main agent's streamed reasoning (extended thinking), shown above
                its report text as a quieter, subordinate stream. Absent for models

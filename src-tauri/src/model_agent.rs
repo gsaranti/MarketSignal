@@ -172,12 +172,13 @@ const OPENAI_MAX_TOKENS: u32 = 8_192;
 /// Must stay strictly below [`ANTHROPIC_MAX_TOKENS`]. A tunable, calibrated against live runs.
 const HAIKU_THINKING_BUDGET_TOKENS: u32 = 8_192;
 
-/// Per-request total HTTP timeout, by provider, applied in [`ModelMainAgent::call`].
-/// The Anthropic arm's extended thinking front-loads latency before the report streams,
-/// so it gets more headroom; the OpenAI arm keeps its prior 120s ceiling (Phase 1 leaves
-/// the OpenAI path unchanged). These override the client-level backstop per request.
-const ANTHROPIC_TIMEOUT_SECS: u64 = 300;
-const OPENAI_TIMEOUT_SECS: u64 = 120;
+/// Per-request total HTTP timeout, by provider, applied in [`ModelMainAgent::call`]
+/// and reused by the analyst arm (`analyst_agent`). The Anthropic arm's extended
+/// thinking front-loads latency before the body streams, so it gets more headroom; the
+/// OpenAI arm keeps its prior 120s ceiling. These override the client-level backstop
+/// per request.
+pub(crate) const ANTHROPIC_TIMEOUT_SECS: u64 = 300;
+pub(crate) const OPENAI_TIMEOUT_SECS: u64 = 120;
 
 const SYSTEM_PROMPT: &str = "You are the Head Market Analyst for Market Signal, a \
 market-research publication. You write a single, cohesive market report in one unified \
@@ -701,8 +702,9 @@ fn response_envelope_schema() -> Value {
 /// budget-bounded extended thinking. This is the Anthropic half of the future
 /// capability gate. The OpenAI models never reach this — they route to the unchanged
 /// Chat Completions arm, never `build_anthropic_request` — so their match arm asserts
-/// the invariant rather than returning an unused config.
-fn anthropic_thinking(model: AgentModel) -> Value {
+/// the invariant rather than returning an unused config. Shared with the analyst arm
+/// (`analyst_agent`), which gates its Anthropic thinking the same way.
+pub(crate) fn anthropic_thinking(model: AgentModel) -> Value {
     match model {
         AgentModel::ClaudeOpus | AgentModel::ClaudeSonnet => {
             json!({ "type": "adaptive", "display": "summarized" })
@@ -781,9 +783,11 @@ pub(crate) fn extract_anthropic_tool_input(raw: &Value, tool_name: &str) -> Resu
 /// response: the first `text` content block's text, parsed as the envelope JSON. With
 /// thinking on, the response also carries `thinking` blocks — those are skipped, so the
 /// envelope is read from the `text` block alone. This is the main-agent counterpart to
-/// the forced-tool `extract_anthropic_tool_input`, which the router and analyst stages
-/// still use; the two extractors keep the two request shapes independent.
-fn extract_anthropic_text_output(raw: &Value) -> Result<Value> {
+/// the forced-tool `extract_anthropic_tool_input`, which the router still uses; the two
+/// extractors keep the two request shapes independent. Shared with the analyst arm
+/// (`analyst_agent`), which moved to the same `output_config.format` shape so its
+/// Anthropic call can stream thinking.
+pub(crate) fn extract_anthropic_text_output(raw: &Value) -> Result<Value> {
     let text = raw
         .get("content")
         .and_then(Value::as_array)
@@ -947,63 +951,14 @@ impl ModelMainAgent {
             bail!("model provider returned {status}: {text}");
         }
 
-        // Accumulate the structured envelope from the SSE deltas while streaming the
-        // decoded `markdown` field to the tracker. The Anthropic arm also carries a
-        // second channel — the model's `thinking_delta` reasoning — which streams to the
-        // tracker's thinking pane without ever entering the envelope. Both channels'
-        // emits are coalesced to bound the event count over a long report.
-        let mut envelope = String::new();
-        let mut extractor = MarkdownStreamExtractor::default();
-        let mut pending = String::new();
-        let mut thinking_pending = String::new();
-        let reader = BufReader::new(resp);
-        for line in reader.lines() {
-            // Cancel checkpoint mid-stream: stop reading so a cancel requested during
-            // generation lands promptly. The partial envelope then fails to parse,
-            // which `run_job` classifies as Cancelled (the shared flag is set).
-            if self.progress.is_cancelled() {
-                break;
-            }
-            let line = line.context("reading streamed model response")?;
-            // SSE: only `data:` lines carry payload; `event:`/comment/blank lines and
-            // the terminal `[DONE]` sentinel are skipped.
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            if data.is_empty() || data == "[DONE]" {
-                continue;
-            }
-            // Tolerate any non-JSON keep-alive line rather than failing the stream.
-            let Ok(event) = serde_json::from_str::<Value>(data) else {
-                continue;
-            };
-            match stream_delta(provider, &event) {
-                Some((StreamChannel::Output, fragment)) => {
-                    envelope.push_str(fragment);
-                    pending.push_str(&extractor.update(&envelope));
-                    if pending.chars().count() >= TOKEN_FLUSH_CHARS {
-                        self.progress.agent_token(std::mem::take(&mut pending));
-                    }
-                }
-                Some((StreamChannel::Thinking, fragment)) => {
-                    thinking_pending.push_str(fragment);
-                    if thinking_pending.chars().count() >= TOKEN_FLUSH_CHARS {
-                        self.progress
-                            .agent_thinking(std::mem::take(&mut thinking_pending));
-                    }
-                }
-                None => {}
-            }
-        }
-        if !pending.is_empty() {
-            self.progress.agent_token(pending);
-        }
-        if !thinking_pending.is_empty() {
-            self.progress.agent_thinking(thinking_pending);
-        }
-
-        reconstruct_response(provider, &envelope)
+        // Stream the body via the shared SSE reader: the main agent surfaces both the
+        // decoded report text and the reasoning summary to the tracker (`StreamRole::Main`).
+        stream_structured_response(
+            BufReader::new(resp),
+            provider,
+            &self.progress,
+            StreamRole::Main,
+        )
     }
 }
 
@@ -1011,6 +966,101 @@ impl ModelMainAgent {
 /// emitting a progress event, so a long report streams as a few hundred events rather
 /// than one per model token.
 const TOKEN_FLUSH_CHARS: usize = 24;
+
+/// The agent driving a structured-output stream — which controls how each SSE channel
+/// is surfaced to the tracker. Both roles accumulate the structured-output text into the
+/// envelope (the source of truth for the final parse); they differ in what they *stream*:
+/// - [`StreamRole::Main`] streams the decoded report text (`agent_token`) **and** the
+///   reasoning summary (`agent_thinking`) — the full main-agent tracker view.
+/// - [`StreamRole::Analyst`] streams the reasoning summary only, tagged by posture
+///   (`analyst_thinking`); the structured review body is accumulated silently
+///   (thoughts-only), so a review never spills into the tracker console.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum StreamRole<'a> {
+    Main,
+    Analyst(&'a str),
+}
+
+/// Read a provider SSE structured-output stream to completion, accumulating the
+/// structured envelope while streaming the live channels its `role` selects, then
+/// reconstruct the `Value` the caller's parser expects ([`reconstruct_response`]).
+/// Shared by the main agent and the Anthropic analyst arm so the two streaming paths —
+/// cancel checkpoint, channel routing, coalescing — never drift.
+///
+/// Takes `impl BufRead` rather than the `reqwest::Response` directly so the whole loop
+/// is unit-testable offline with a synthetic SSE byte stream; the caller does the send
+/// and status check, then hands in `BufReader::new(resp)`. The envelope accumulation is
+/// the source of truth for the parsed result: the live emits are a pure side-channel to
+/// the progress reporter, so a decoder bug can only affect what the tracker shows.
+pub(crate) fn stream_structured_response(
+    reader: impl BufRead,
+    provider: Provider,
+    progress: &RunContext,
+    role: StreamRole<'_>,
+) -> Result<Value> {
+    let mut envelope = String::new();
+    let mut extractor = MarkdownStreamExtractor::default();
+    let mut pending = String::new();
+    let mut thinking_pending = String::new();
+    for line in reader.lines() {
+        // Cancel checkpoint mid-stream: stop reading so a cancel requested during
+        // generation lands promptly. The partial envelope then fails to parse, which
+        // `run_job` classifies as Cancelled (the shared flag is set).
+        if progress.is_cancelled() {
+            break;
+        }
+        let line = line.context("reading streamed model response")?;
+        // SSE: only `data:` lines carry payload; `event:`/comment/blank lines and the
+        // terminal `[DONE]` sentinel are skipped.
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        // Tolerate any non-JSON keep-alive line rather than failing the stream.
+        let Ok(event) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        match stream_delta(provider, &event) {
+            Some((StreamChannel::Output, fragment)) => {
+                envelope.push_str(fragment);
+                // Only the main agent streams the report body; the analyst accumulates it
+                // silently (thoughts-only), so its review never reaches the tracker console.
+                if let StreamRole::Main = role {
+                    pending.push_str(&extractor.update(&envelope));
+                    if pending.chars().count() >= TOKEN_FLUSH_CHARS {
+                        progress.agent_token(std::mem::take(&mut pending));
+                    }
+                }
+            }
+            Some((StreamChannel::Thinking, fragment)) => {
+                thinking_pending.push_str(fragment);
+                if thinking_pending.chars().count() >= TOKEN_FLUSH_CHARS {
+                    emit_thinking(progress, role, std::mem::take(&mut thinking_pending));
+                }
+            }
+            None => {}
+        }
+    }
+    if !pending.is_empty() {
+        progress.agent_token(pending);
+    }
+    if !thinking_pending.is_empty() {
+        emit_thinking(progress, role, thinking_pending);
+    }
+    reconstruct_response(provider, &envelope)
+}
+
+/// Route a coalesced reasoning chunk to the channel the role selects: the untagged
+/// main-agent thinking pane, or the posture-tagged analyst pane.
+fn emit_thinking(progress: &RunContext, role: StreamRole<'_>, delta: String) {
+    match role {
+        StreamRole::Main => progress.agent_thinking(delta),
+        StreamRole::Analyst(posture) => progress.analyst_thinking(posture, delta),
+    }
+}
 
 /// Which tracker channel a streamed fragment feeds: the structured-output text the
 /// envelope is accumulated from, or the model's reasoning (the Anthropic thinking
@@ -2163,6 +2213,61 @@ instructions"));
         let truncated =
             reconstruct_response(Provider::Anthropic, "{\"markdown\":\"unterminated").unwrap();
         assert!(parse_response(Provider::Anthropic, &truncated, "r".into(), "t".into()).is_err());
+    }
+
+    #[test]
+    fn stream_structured_response_main_role_drives_both_channels_offline() {
+        // The shared SSE loop, exercised offline with a synthetic Anthropic stream so the
+        // refactor out of `call` is proven without a live wire. Main role: text_deltas
+        // accumulate the envelope (and stream as agent_token), thinking_deltas stream as
+        // agent_thinking, and the reconstructed value parses cleanly.
+        use crate::progress::{ProgressEvent, RecordingReporter};
+        use std::io::Cursor;
+        use std::sync::atomic::AtomicBool;
+
+        let env = serde_json::to_string(&valid_envelope()).unwrap();
+        let (head, tail) = env.split_at(env.len() / 2);
+        let escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        let sse = format!(
+            "data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"thinking_delta\",\"thinking\":\"weigh\"}}}}\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"thinking_delta\",\"thinking\":\"ing it\"}}}}\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{}\"}}}}\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{}\"}}}}\n\
+             data: [DONE]\n",
+            escape(head),
+            escape(tail),
+        );
+
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("stream-unit", rec.clone(), Arc::new(AtomicBool::new(false)));
+        let value = stream_structured_response(
+            BufReader::new(Cursor::new(sse)),
+            Provider::Anthropic,
+            &ctx,
+            StreamRole::Main,
+        )
+        .unwrap();
+
+        // The reconstructed value parses through the unchanged parse path.
+        let out = parse_response(Provider::Anthropic, &value, "rid".into(), "2026-06-02T00:00:00Z".into())
+            .unwrap();
+        assert!(!out.markdown.is_empty());
+
+        // Main role streams both channels: agent_token rebuilds the decoded report text,
+        // agent_thinking carries the reasoning summary.
+        let collect = |pick: fn(&ProgressEvent) -> Option<&str>| -> String {
+            rec.messages().iter().filter_map(|m| pick(&m.event)).collect()
+        };
+        let tokens = collect(|e| match e {
+            ProgressEvent::AgentToken { delta } => Some(delta.as_str()),
+            _ => None,
+        });
+        let thoughts = collect(|e| match e {
+            ProgressEvent::AgentThinking { delta } => Some(delta.as_str()),
+            _ => None,
+        });
+        assert_eq!(tokens, out.markdown);
+        assert_eq!(thoughts, "weighing it");
     }
 
     /// A non-empty input so a live model has real material to summarise. The empty

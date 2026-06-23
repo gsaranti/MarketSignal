@@ -36,6 +36,11 @@ job's progress as it happens:
   report text — a view into how the thesis is being weighed as it forms. Models
   that do not surface their reasoning simply show none; nothing breaks and no
   error is raised.
+- **Each analyst's reasoning, streamed live.** While the three analysts (Bull /
+  Bear / Balanced) run concurrently, each one's reasoning streams into its own
+  labeled pane under the analyst step — the same quieter, subordinate stream as
+  the main agent's. Only the reasoning streams here, not the analyst's review
+  itself; an analyst whose model does not surface reasoning simply shows none.
 
 The tracker is a live view of one run. Its contents are kept for the current
 application session and reflect the **latest run only**; they are not persisted

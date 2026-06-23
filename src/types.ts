@@ -184,6 +184,7 @@ export type ProgressKind =
   | "request-finished"
   | "agent-token"
   | "agent-thinking"
+  | "analyst-thinking"
   | "run-finished";
 
 export interface ProgressMessage {
@@ -203,9 +204,12 @@ export interface ProgressMessage {
   group?: string;
   series_id?: string;
   name?: string;
-  // agent-token / agent-thinking: a coalesced chunk of the streamed report text or
-  // the agent's streamed reasoning, respectively.
+  // agent-token / agent-thinking / analyst-thinking: a coalesced chunk of the streamed
+  // report text, the main agent's reasoning, or one analyst's reasoning, respectively.
   delta?: string;
+  // analyst-thinking: which analyst the reasoning chunk belongs to (bull / bear /
+  // balanced), so the tracker routes the three concurrent analysts to distinct panes.
+  posture?: string;
   // run-finished: the new report's id, on success only.
   report_id?: string | null;
 }
@@ -228,6 +232,9 @@ export type StepStatus = "pending" | "running" | "ok" | "failed" | "cancelled";
 // per-series rows; `agentText` accumulates the main-agent step's streamed report;
 // `agentThinking` accumulates its streamed reasoning (extended-thinking summary),
 // shown as a quieter stream above the report. Empty for non-thinking models.
+// `analystThinking` maps each analyst posture (bull / bear / balanced) to its streamed
+// reasoning, accumulated under the "analysts" step — one pane per analyst that surfaces
+// thinking; empty for non-thinking analyst models.
 export interface TrackerStep {
   key: string;
   label: string;
@@ -236,6 +243,7 @@ export interface TrackerStep {
   requests: TrackerRequest[];
   agentText: string;
   agentThinking: string;
+  analystThinking: Record<string, string>;
 }
 
 // The assembled trace for one run, built in App.vue from the event stream and
