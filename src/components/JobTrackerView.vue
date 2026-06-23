@@ -12,6 +12,15 @@ import type { RunTrace, StepStatus } from "../types";
 // requests), the caption/eyebrow scale, sans chrome, and the oxblood accent only
 // on interactive states + the running marker. No fills beyond the inset-well
 // token, no shadows, no shimmer, no celebratory motion. Flagged per CLAUDE.md §5.
+//
+// LIVENESS BREATHE (user-approved extension, 2026-06-23): the *active* indicators —
+// the running step marker and the in-flight request dot — carry a slow opacity
+// breathe so the run reads as alive (not frozen) while a single long step holds the
+// footer's determinate fill steady. This deliberately overrides the system's
+// "no idle motion" stance for these two elements only; it is distinct from the
+// rejected patterns (it is one slow opacity oscillation on the *current* item, not
+// skeleton shimmer, a spinner, or completion celebration) and is gated by
+// prefers-reduced-motion. Approved as an intentional departure.
 const props = defineProps<{
   trace: RunTrace;
   // Whether the run is still in flight (drives Cancel vs Dismiss + the live region).
@@ -498,13 +507,33 @@ watch(contentSignature, async () => {
 }
 
 /* In-flight indicator: a small accent square, matching the step running marker and
-   the system's "accent marks the active item" convention. Static — the rows
-   streaming in are the activity signal (no shimmer, per the design system). */
+   the system's "accent marks the active item" convention. Carries the liveness
+   breathe (see the file header note) so an in-flight request reads as active even
+   during a long single call; reduced-motion users get it static. */
 .req-dot {
   width: 6px;
   height: 6px;
   border-radius: var(--radius-sm);
   background: var(--accent);
+}
+
+/* The shared liveness breathe — a single slow opacity oscillation on the active
+   indicators only. Gated so reduced-motion users see a steady (full-opacity) marker
+   and no animation at all. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes ms-breathe {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+  .step-marker[data-status="running"]::before,
+  .req-dot {
+    animation: ms-breathe 1.6s ease-in-out infinite;
+  }
 }
 
 /* The main agent's streamed reasoning — a subordinate stream, set apart from the

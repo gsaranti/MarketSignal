@@ -262,43 +262,27 @@ const charsDroppedValue = computed(() => {
   <main class="settings-pane">
     <div class="toolbar">
       <div class="toolbar-label">Settings</div>
+      <!-- Appearance toggle is hosted in the toolbar (a utility/chrome control),
+           deliberately apart from the gated config form below — so it reads as
+           instant-applying chrome, not a field governed by the form's Save. Always
+           rendered with the toolbar, so it works even if settings fail to load. -->
+      <div class="toolbar-appearance">
+        <span id="appearance-label" class="toolbar-appearance-label">Dark surface</span>
+        <button
+          type="button"
+          class="switch"
+          role="switch"
+          :aria-checked="dark"
+          aria-labelledby="appearance-label"
+          @click="toggleDark"
+        >
+          <span class="switch-knob" :class="{ 'switch-knob--on': dark }"></span>
+        </button>
+      </div>
     </div>
 
     <div class="settings-scroll">
       <div class="settings-body">
-        <!-- Appearance: the design kit's "Dark surface" switch. Applies + persists
-             instantly (App.vue / theme.ts), independent of the config form's
-             token-gated Save and of its load state — so it renders even if
-             settings fail to load. Leads the surface (directly under the toolbar
-             seam), so it drops the section rule + top padding. -->
-        <section
-          class="settings-section settings-section--lead"
-          aria-labelledby="sec-appearance"
-        >
-          <h3 id="sec-appearance" class="section-eyebrow">Appearance</h3>
-          <div class="control-row">
-            <div class="control-text">
-              <div class="control-label">Dark surface</div>
-              <div class="control-hint">Warm graphite, never pure black.</div>
-            </div>
-            <button
-              type="button"
-              class="switch"
-              role="switch"
-              :aria-checked="dark"
-              :aria-label="
-                dark ? 'Switch to light surface' : 'Switch to dark surface'
-              "
-              @click="toggleDark"
-            >
-              <span
-                class="switch-knob"
-                :class="{ 'switch-knob--on': dark }"
-              ></span>
-            </button>
-          </div>
-        </section>
-
         <p
           v-if="loading && !settings"
           class="settings-status"
@@ -313,7 +297,12 @@ const charsDroppedValue = computed(() => {
         </div>
 
         <form v-else-if="settings" class="settings-form" @submit.prevent="onSave">
-          <section class="settings-section" aria-labelledby="sec-models">
+          <!-- First section under the toolbar now that Appearance moved up: take the
+               lead treatment (no top rule / top padding) so it sits flush at the seam. -->
+          <section
+            class="settings-section settings-section--lead"
+            aria-labelledby="sec-models"
+          >
             <h3 id="sec-models" class="section-eyebrow">Agent models</h3>
             <p class="section-note">All four must be set before a report can run.</p>
             <div v-for="field in agentFields" :key="field.key" class="field">
@@ -514,6 +503,11 @@ const charsDroppedValue = computed(() => {
   text-transform: uppercase;
   font-weight: 600;
   color: var(--ink);
+  /* Yield to the appearance toggle on a narrow pane rather than pushing it off. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-scroll {
@@ -656,6 +650,9 @@ const charsDroppedValue = computed(() => {
   gap: var(--s-5);
   padding-top: var(--s-3);
   border-top: var(--border);
+  /* Match the section rhythm below the button so the next section's top rule
+     (e.g. Document truncations) doesn't hug the Save button's bottom edge. */
+  margin-bottom: var(--s-7);
 }
 
 .save-status {
@@ -672,31 +669,21 @@ const charsDroppedValue = computed(() => {
   color: var(--ink-3);
 }
 
-/* Toggle control row — label/hint on the left, switch on the right. */
-.control-row {
+/* Appearance toggle hosted in the toolbar — a compact label + the kit switch,
+   right-aligned opposite the surface title. flex-shrink:0 so it never collapses;
+   the title truncates first on a narrow pane (see .toolbar-label). */
+.toolbar-appearance {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--s-5);
+  gap: var(--s-3);
 }
 
-.control-text {
-  min-width: 0;
-}
-
-.control-label {
+.toolbar-appearance-label {
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
-  font-weight: 500;
-  color: var(--ink);
-}
-
-.control-hint {
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-size: var(--t-caption);
   color: var(--ink-2);
-  line-height: var(--lh-ui);
+  white-space: nowrap;
 }
 
 /* Boxy switch (design kit Settings.jsx Toggle): 44×22, 1px ink edge, 2px radius,

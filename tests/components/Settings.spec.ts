@@ -71,9 +71,9 @@ test("submitting with no edits does not emit save (nothing dirty)", async () => 
   expect(wrapper.emitted("save")).toBeUndefined();
 });
 
-test("the appearance toggle emits set-dark with the flipped value", async () => {
+test("the appearance toggle (in the toolbar) emits set-dark with the flipped value", async () => {
   const wrapper = makeWrapper({ dark: false });
-  await wrapper.find('section[aria-labelledby="sec-appearance"] button').trigger("click");
+  await wrapper.find('.toolbar button[role="switch"]').trigger("click");
   expect(wrapper.emitted("set-dark")).toEqual([[true]]);
 });
 

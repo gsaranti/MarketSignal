@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import type { JobStatus } from "../types";
 
 // Job status (docs/scheduling.md §Job Status Visibility). Reports run history
@@ -15,6 +15,11 @@ const props = defineProps<{
   // A run is in flight right now (event-driven, immediate — independent of the
   // periodically-refreshed job status).
   runActive: boolean;
+  // Determinate run progress (how far through the fixed pipeline), driving the
+  // status row's 1px fill and "step N of T" caption. Null when no run is in flight.
+  progress: { fraction: number; stepNumber: number; total: number; label: string } | null;
+  // Wall-clock start of the in-flight run (epoch ms) for the live elapsed timer.
+  runStartedAt: number | null;
   // A latest-run trace exists in this session (terminal or not), so the tracker is
   // reopenable.
   hasRunLog: boolean;
@@ -39,6 +44,55 @@ const visible = computed(
     props.hasRunLog
 );
 
+// The determinate fill width, clamped to [0, 100]%. The width *advancing* is the
+// status row's primary motion — a confirmed state change as each step completes.
+const progressPct = computed(() => {
+  const f = props.progress?.fraction ?? 0;
+  return `${Math.round(Math.max(0, Math.min(1, f)) * 100)}%`;
+});
+
+// Live elapsed timer — a ticking mono clock that proves the run isn't frozen even
+// while a single long step (e.g. the up-to-30-min research window) holds the fill
+// steady. It's honest data changing, not a decorative sweep, so it stays on-system.
+// A 1s tick runs only while a run is in flight; `aria-hidden` keeps it from spamming
+// the polite live region (screen readers get the label + step caption instead).
+const now = ref(Date.now());
+let timerId: ReturnType<typeof setInterval> | null = null;
+function startTimer() {
+  if (timerId !== null) return;
+  now.value = Date.now();
+  timerId = setInterval(() => {
+    now.value = Date.now();
+  }, 1000);
+}
+function stopTimer() {
+  if (timerId !== null) {
+    clearInterval(timerId);
+    timerId = null;
+  }
+}
+watch(
+  isRunning,
+  (running) => {
+    if (running) startTimer();
+    else stopTimer();
+  },
+  { immediate: true }
+);
+onUnmounted(stopTimer);
+
+const elapsedLabel = computed(() => {
+  if (props.runStartedAt === null) return null;
+  const secs = Math.max(0, Math.floor((now.value - props.runStartedAt) / 1000));
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    return `${h}:${String(m % 60).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${m}:${String(s).padStart(2, "0")}`;
+});
+
 // The backend persists UTC; render in the viewer's local time. Fall back to the
 // raw string if unparseable.
 function formatLocal(iso: string): string {
@@ -58,8 +112,18 @@ function formatLocal(iso: string): string {
   <footer v-if="visible" class="job-panel">
     <div class="job-status" aria-live="polite">
       <div v-if="isRunning" class="job-running">
-        <span class="job-running-label">Generating report…</span>
-        <span class="job-running-bar" aria-hidden="true"></span>
+        <div class="job-running-row">
+          <span class="job-running-label">Generating report…</span>
+          <span class="job-running-track" aria-hidden="true">
+            <span class="job-running-fill" :style="{ width: progressPct }"></span>
+          </span>
+          <span v-if="elapsedLabel" class="job-running-time" aria-hidden="true">{{
+            elapsedLabel
+          }}</span>
+        </div>
+        <p v-if="progress" class="job-running-caption">
+          Step {{ progress.stepNumber }} of {{ progress.total }} · {{ progress.label }}
+        </p>
       </div>
       <p v-else-if="error" class="job-error">
         Couldn't read job status — {{ error }}
@@ -154,17 +218,22 @@ function formatLocal(iso: string): string {
   flex: 1;
 }
 
-/* Long-running-job indicator — text plus a single steady 1px rule (the design
-   kit's status row: "a steady, undecorated status row — text and a single 1px
-   progress indicator"). Deliberately motionless: the design system caps motion
-   at state-change confirmations and rejects loading shimmer, so liveness is
-   carried by the "Generating report…" label and the run tracker's per-step rows,
-   not by an animated sweep. */
+/* Long-running-job indicator — the design kit's long-job status row
+   (components-status.html): a label, a 1px track carrying a determinate --ink fill,
+   a mono elapsed time, and a "step N of T" caption below. The fill's width tracks
+   real step completion, so its advance is a confirmed state change (the kit's motion
+   tier), never a decorative sweep — staying on-system while finally moving. */
 .job-running {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin: 0;
+}
+
+.job-running-row {
   display: flex;
   align-items: center;
   gap: var(--s-4);
-  margin: 0;
 }
 
 .job-running-label {
@@ -175,10 +244,48 @@ function formatLocal(iso: string): string {
   white-space: nowrap;
 }
 
-.job-running-bar {
+.job-running-track {
+  position: relative;
   flex: 1;
   height: 1px;
-  background: var(--hairline);
+  background: var(--hairline-soft);
+  overflow: hidden;
+}
+.job-running-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--ink);
+}
+/* The width change is a state-change confirmation (the kit's 120ms tier). Reduced-
+   motion users get an instant jump to the new width — the progress still shows,
+   just without the tween. */
+@media (prefers-reduced-motion: no-preference) {
+  .job-running-fill {
+    transition: width 120ms ease-out;
+  }
+}
+
+/* Mono tabular so the ticking digits don't reflow the row each second. */
+.job-running-time {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-caption);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.job-running-caption {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .job-error {
