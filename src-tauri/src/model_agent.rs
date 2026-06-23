@@ -246,7 +246,10 @@ and strategy reads in valuation, not momentum alone.
 
 When present, the prompt also carries the current news and deep research, condensed by the \
 application layer. `news clusters` are the most market-significant stories, each a topic \
-with a relevance score and its member headlines. `deep-research evidence` is the bounded \
+with a relevance score and its member headlines; each headline carries its publish date, so \
+separate what is genuinely new this period — especially same-day developments — from the \
+standing backdrop, and weight the freshest material when you judge what is moving markets now \
+versus what is already priced. `deep-research evidence` is the bounded \
 follow-up investigation into the topics that mattered most — each item a topic with its \
 findings and their sources, plus the request/stop accounting for the research phase. Use these \
 to explain *why* the data moved and to source the Key Market Drivers, the thesis, and the \

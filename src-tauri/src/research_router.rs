@@ -101,6 +101,11 @@ pub struct RouterInput {
     /// topics, so it gets the head, not the full condensed text the packet
     /// carries. Empty when the inbox was empty or every file failed.
     pub inbox_documents: Vec<String>,
+    /// The run's current date (`YYYY-MM-DD`, market/Eastern time), when known — the recency
+    /// anchor so routing can weigh "current / prior day" freshness against a real date rather
+    /// than guessing from the clusters' publish dates. `None` off the live path (an empty
+    /// short-circuit run or a bare unit test); the prompt then omits the date line.
+    pub report_date: Option<String>,
 }
 
 /// The research-routing stage. One method: turn the inputs into a bounded plan.
@@ -162,7 +167,11 @@ Given the current baseline market data, the change since the previous report, th
 news clusters, summaries of recent prior reports, and any recalled long-term memory, decide \
 which topics deserve deeper investigation for this report. Favor topics where the data moved \
 materially, where second-order implications matter, or where a known upcoming event could move \
-markets. When prior-report summaries are provided, weigh thesis continuity: favor topics that \
+markets. The clusters carry publish dates and the report's current date is provided: balance \
+materiality with freshness — a genuinely new development, especially from the current or prior \
+day relative to that date, deserves a place in the plan and should not be dropped for an older \
+topic that is merely more heavily covered. When prior-report \
+summaries are provided, weigh thesis continuity: favor topics that \
 answer a prior report's unresolved questions or test its key risks and forward outlook themes \
 against the current data. When long-term memory fragments are provided — prior report summaries \
 and durable learnings recalled against the current market picture — use them to steer \
@@ -320,6 +329,10 @@ fn format_headline(h: &RawHeadline) -> String {
 /// section.
 fn build_user_prompt(input: &RouterInput) -> String {
     let mut prompt = USER_INSTRUCTION.to_string();
+
+    if let Some(date) = &input.report_date {
+        prompt.push_str(&format!("\n\nReport date (today, US/Eastern): {date}"));
+    }
 
     if input.baseline != BaselineMarketData::default() {
         if let Ok(json) = serde_json::to_string_pretty(&input.baseline) {
@@ -812,6 +825,27 @@ mod tests {
     }
 
     #[test]
+    fn build_request_carries_report_date_anchor_and_omits_it_when_absent() {
+        // With a report date, routing sees "today" and can weigh freshness against a real
+        // anchor (the P1 fix); without one, the line is omitted, never rendered blank.
+        let with = build_user_prompt(&RouterInput {
+            clusters: vec![cluster("t", 0.5)],
+            report_date: Some("2026-06-23".into()),
+            ..Default::default()
+        });
+        assert!(
+            with.contains("Report date (today, US/Eastern): 2026-06-23"),
+            "{with}"
+        );
+
+        let bare = build_user_prompt(&RouterInput {
+            clusters: vec![cluster("t", 0.5)],
+            ..Default::default()
+        });
+        assert!(!bare.contains("Report date"), "{bare}");
+    }
+
+    #[test]
     #[ignore = "hits live Tavily + GDELT + OpenAI + Anthropic; set TAVILY_API_KEY + OPENAI_API_KEY + ANTHROPIC_API_KEY"]
     fn research_routing_smoke() {
         use crate::headline_filter::{HeadlineFilter, ModelHeadlineFilter};
@@ -827,7 +861,7 @@ mod tests {
 
         let clusters = ModelHeadlineFilter::from_env()
             .expect("OPENAI_API_KEY set")
-            .filter(deduped)
+            .filter(deduped, None)
             .expect("filter headlines");
         assert!(
             !clusters.is_empty(),

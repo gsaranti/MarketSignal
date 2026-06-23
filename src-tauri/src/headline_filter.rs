@@ -60,7 +60,15 @@ pub struct HeadlineCluster {
 /// the blocking model HTTP call inside the real adapter is offloaded via
 /// `spawn_blocking` at the Tauri command seam.
 pub trait HeadlineFilter {
-    fn filter(&self, headlines: Vec<RawHeadline>) -> anyhow::Result<Vec<HeadlineCluster>>;
+    /// `report_date` is the run's current date (`YYYY-MM-DD`, market/Eastern time) when
+    /// known — the recency anchor so the filter can judge "current / prior day" against a
+    /// real date rather than guessing from the publish dates it sees. `None` on the
+    /// offline/stub path, where the prompt simply omits the date line.
+    fn filter(
+        &self,
+        headlines: Vec<RawHeadline>,
+        report_date: Option<&str>,
+    ) -> anyhow::Result<Vec<HeadlineCluster>>;
 }
 
 /// Deterministic offline stand-in for the real model filter. Groups the input
@@ -71,7 +79,11 @@ pub trait HeadlineFilter {
 pub struct StubHeadlineFilter;
 
 impl HeadlineFilter for StubHeadlineFilter {
-    fn filter(&self, headlines: Vec<RawHeadline>) -> anyhow::Result<Vec<HeadlineCluster>> {
+    fn filter(
+        &self,
+        headlines: Vec<RawHeadline>,
+        _report_date: Option<&str>,
+    ) -> anyhow::Result<Vec<HeadlineCluster>> {
         if headlines.is_empty() {
             return Ok(Vec::new());
         }
@@ -118,6 +130,12 @@ important stories for a market report. You are given a numbered list of headline
 drop headlines that are off-topic, low-signal, or duplicates of others; then group the remaining \
 important ones into at most 10 major market-relevant topics. Keep at most about 40 of the most \
 relevant headlines in total across all clusters, and assign each headline to at most one topic. \
+Each headline shows its source and, when known, its publish date, and the report's current date \
+is given above the headlines — judge recency against that date. Judge a topic's market \
+importance first, but balance importance with freshness: ensure genuinely recent developments — \
+especially from the current and prior day relative to the report date — are represented among the \
+topics rather than crowded out by older stories that are merely more heavily covered, and when \
+two candidate topics matter similarly, prefer the fresher one. \
 For each topic return: a short topic label, a one-to-two-sentence summary of what its headlines \
 say, a relevance score from 0.0 to 1.0 for the topic's market significance, and the indices of the \
 headlines that belong to it (the numbers in brackets). Return at most 10 clusters — fewer if fewer \
@@ -177,21 +195,31 @@ fn cluster_schema() -> Value {
     })
 }
 
-/// Render the headlines as a numbered list the model references by index.
+/// Render the headlines as a numbered list the model references by index. Each line
+/// carries the publish date when known, so the filter can weigh freshness (see
+/// [`SYSTEM_PROMPT`]) and not just importance; a dateless headline omits it gracefully.
 fn format_headlines(headlines: &[RawHeadline]) -> String {
     headlines
         .iter()
         .enumerate()
-        .map(|(i, h)| format!("[{i}] ({}) {}", h.source, h.title))
+        .map(|(i, h)| match &h.published {
+            Some(date) => format!("[{i}] ({}, {}) {}", h.source, date, h.title),
+            None => format!("[{i}] ({}) {}", h.source, h.title),
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 /// Build the GPT-5 mini request: a strict json_schema call whose user message is
-/// the standing instruction plus the numbered headlines.
-fn build_request(headlines: &[RawHeadline]) -> Value {
+/// the standing instruction, the run's current date when known (the recency anchor),
+/// plus the numbered headlines.
+fn build_request(headlines: &[RawHeadline], report_date: Option<&str>) -> Value {
+    let date_line = match report_date {
+        Some(d) => format!("Report date (today, US/Eastern): {d}\n\n"),
+        None => String::new(),
+    };
     let user = format!(
-        "{USER_INSTRUCTION}\n\nHeadlines:\n{}",
+        "{USER_INSTRUCTION}\n\n{date_line}Headlines:\n{}",
         format_headlines(headlines)
     );
     json!({
@@ -333,7 +361,11 @@ impl ModelHeadlineFilter {
 }
 
 impl HeadlineFilter for ModelHeadlineFilter {
-    fn filter(&self, headlines: Vec<RawHeadline>) -> Result<Vec<HeadlineCluster>> {
+    fn filter(
+        &self,
+        headlines: Vec<RawHeadline>,
+        report_date: Option<&str>,
+    ) -> Result<Vec<HeadlineCluster>> {
         // No headlines, no call — an empty gather has nothing to cluster, and no row.
         if headlines.is_empty() {
             return Ok(Vec::new());
@@ -342,7 +374,7 @@ impl HeadlineFilter for ModelHeadlineFilter {
         self.progress
             .request_started("OpenAI", "filter", "headline-filter", "Headline filtering");
         let result = (|| -> Result<Vec<HeadlineCluster>> {
-            let raw = self.call(&build_request(&headlines))?;
+            let raw = self.call(&build_request(&headlines, report_date))?;
             let value = extract_openai_envelope(&raw)?;
             let env: ClusterEnvelope = serde_json::from_value(value)
                 .context("headline-filter response did not match the schema")?;
@@ -392,7 +424,7 @@ mod tests {
             headline("Chips rally"),
             headline("Jobs report beats"),
         ];
-        let clusters = StubHeadlineFilter.filter(raw).unwrap();
+        let clusters = StubHeadlineFilter.filter(raw, None).unwrap();
         assert_eq!(clusters.len(), 2);
         assert!(clusters.len() <= MAX_CLUSTERS);
         // Every input headline lands in exactly one cluster.
@@ -403,7 +435,48 @@ mod tests {
 
     #[test]
     fn stub_on_empty_input_yields_no_clusters() {
-        assert!(StubHeadlineFilter.filter(Vec::new()).unwrap().is_empty());
+        assert!(StubHeadlineFilter.filter(Vec::new(), None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn format_headlines_carries_publish_date_when_known() {
+        // The filter needs the date to balance freshness against importance; a dated
+        // headline renders it inline, an undated one degrades to source-only.
+        let dated = RawHeadline {
+            published: Some("2026-06-23".into()),
+            ..headline("Same-day selloff")
+        };
+        let undated = headline("Older explainer");
+        let rendered = format_headlines(&[dated, undated]);
+        assert!(
+            rendered.contains("[0] (example.com, 2026-06-23) Same-day selloff"),
+            "dated headline shows its date: {rendered}"
+        );
+        assert!(
+            rendered.contains("[1] (example.com) Older explainer"),
+            "undated headline omits the date gracefully: {rendered}"
+        );
+    }
+
+    #[test]
+    fn build_request_carries_report_date_anchor_and_omits_it_when_absent() {
+        // With a report date, the user message states "today" so the model can judge
+        // "current / prior day" against a real anchor (the P1 fix), not guess from the
+        // spread of publish dates; without one, the line is omitted, never rendered blank.
+        let raw = vec![headline("Same-day selloff")];
+        let with = build_request(&raw, Some("2026-06-23"));
+        let user_with = with["messages"][1]["content"].as_str().unwrap();
+        assert!(
+            user_with.contains("Report date (today, US/Eastern): 2026-06-23"),
+            "carries the recency anchor: {user_with}"
+        );
+
+        let without = build_request(&raw, None);
+        let user_without = without["messages"][1]["content"].as_str().unwrap();
+        assert!(
+            !user_without.contains("Report date"),
+            "no anchor line when the date is unknown: {user_without}"
+        );
     }
 
     #[test]
@@ -411,7 +484,7 @@ mod tests {
         // The double must not hand downstream code more headlines than the live
         // stage's bounded output would.
         let raw: Vec<RawHeadline> = (0..100).map(|i| headline(&format!("h{i}"))).collect();
-        let clusters = StubHeadlineFilter.filter(raw).unwrap();
+        let clusters = StubHeadlineFilter.filter(raw, None).unwrap();
         let total: usize = clusters.iter().map(|c| c.headlines.len()).sum();
         assert_eq!(total, MAX_RETAINED_HEADLINES);
         assert!(clusters.len() <= MAX_CLUSTERS);
@@ -432,7 +505,7 @@ mod tests {
 
     #[test]
     fn build_request_targets_gpt5_mini_with_strict_schema_and_indexed_headlines() {
-        let body = build_request(&[headline("Fed holds rates")]);
+        let body = build_request(&[headline("Fed holds rates")], None);
         assert_eq!(body["model"], "gpt-5-mini");
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(
@@ -607,7 +680,7 @@ mod tests {
     fn filter_on_empty_input_returns_no_clusters_without_a_call() {
         // A dummy key is fine: empty input short-circuits before any network call.
         let filter = ModelHeadlineFilter::new("sk-test".into()).unwrap();
-        assert!(filter.filter(Vec::new()).unwrap().is_empty());
+        assert!(filter.filter(Vec::new(), None).unwrap().is_empty());
     }
 
     #[test]
@@ -624,7 +697,7 @@ mod tests {
         assert!(!deduped.is_empty(), "expected headlines to filter");
 
         let filter = ModelHeadlineFilter::from_env().expect("OPENAI_API_KEY set");
-        let clusters = filter.filter(deduped.clone()).expect("filter headlines");
+        let clusters = filter.filter(deduped.clone(), None).expect("filter headlines");
 
         assert!(
             !clusters.is_empty(),

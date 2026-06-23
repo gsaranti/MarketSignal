@@ -276,6 +276,11 @@ pub fn generate_report(
     // rather than reading a mid-session run as a finished day.
     let market_clock = MarketClock::from_utc(as_of);
 
+    // The run's current date in market (Eastern) time — the recency anchor handed to the
+    // news-selection stages so "current / prior day" is measured against a real date rather
+    // than guessed from publish dates. Derived from the same `market_clock`.
+    let report_date = market_clock.report_date();
+
     // Step 3: baseline market data is gathered before agent reasoning and is not
     // optional (`docs/report-workflow.md §Step 3`). Each adapter records what it
     // couldn't resolve in `baseline.gaps` instead of failing; the coverage gate then
@@ -345,6 +350,7 @@ pub fn generate_report(
         &baseline,
         deltas.as_ref(),
         cadence,
+        report_date.as_deref(),
         &recent_reports,
         &inbox_docs,
         embedder,
@@ -719,6 +725,10 @@ fn assemble_research_packet(
     baseline: &BaselineMarketData,
     deltas: Option<&BaselineDeltas>,
     cadence: cadence::ReportCadence,
+    // The run's current date (`YYYY-MM-DD`, market/Eastern), the recency anchor for the
+    // news-selection stages (filter + router) so "current / prior day" is measured against
+    // a real date. `None` only off the live path (no `as_of`); a live run always supplies it.
+    report_date: Option<&str>,
     recent_reports: &[ReportSummary],
     inbox_docs: &[ParsedResearchDoc],
     embedder: &dyn Embedder,
@@ -745,7 +755,7 @@ fn assemble_research_packet(
     let clusters = if headlines.is_empty() || ctx.is_cancelled() {
         Vec::new()
     } else {
-        match research.filter.filter(headlines) {
+        match research.filter.filter(headlines, report_date) {
             Ok(clusters) => clusters,
             Err(e) => {
                 eprintln!("research: headline filter degraded to empty: {e:#}");
@@ -793,6 +803,8 @@ fn assemble_research_packet(
                 .iter()
                 .map(ParsedResearchDoc::router_excerpt)
                 .collect(),
+            // The same recency anchor the filter got, so routing weighs freshness too.
+            report_date: report_date.map(str::to_string),
         }) {
             Ok(plan) => plan,
             Err(e) => {
@@ -1705,7 +1717,11 @@ mod tests {
     /// A filter that panics if called — proves the filter is skipped on an empty gather.
     struct PanicFilter;
     impl HeadlineFilter for PanicFilter {
-        fn filter(&self, _: Vec<RawHeadline>) -> anyhow::Result<Vec<HeadlineCluster>> {
+        fn filter(
+            &self,
+            _: Vec<RawHeadline>,
+            _: Option<&str>,
+        ) -> anyhow::Result<Vec<HeadlineCluster>> {
             panic!("filter must not be called when there are no headlines")
         }
     }
@@ -1713,7 +1729,11 @@ mod tests {
     /// A filter that always errors, to drive the filter fail-soft arm.
     struct FailingFilter;
     impl HeadlineFilter for FailingFilter {
-        fn filter(&self, _: Vec<RawHeadline>) -> anyhow::Result<Vec<HeadlineCluster>> {
+        fn filter(
+            &self,
+            _: Vec<RawHeadline>,
+            _: Option<&str>,
+        ) -> anyhow::Result<Vec<HeadlineCluster>> {
             anyhow::bail!("filter down")
         }
     }
@@ -1743,6 +1763,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             crate::cadence::ReportCadence::from_elapsed(None),
+            None,
             &[],
             &[],
             &StubEmbedder,
@@ -2188,6 +2209,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             crate::cadence::ReportCadence::from_elapsed(None),
+            None,
             &recent,
             &[],
             &StubEmbedder,
@@ -2218,6 +2240,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             crate::cadence::ReportCadence::from_elapsed(None),
+            None,
             &recent,
             &[],
             &StubEmbedder,
@@ -2550,6 +2573,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             crate::cadence::ReportCadence::from_elapsed(None),
+            None,
             &recent,
             &[],
             &PanicEmbedder,
@@ -2625,6 +2649,7 @@ mod tests {
             &BaselineMarketData::default(),
             None,
             crate::cadence::ReportCadence::from_elapsed(None),
+            None,
             &[],
             &[],
             &crate::embedding::StubEmbedder,
