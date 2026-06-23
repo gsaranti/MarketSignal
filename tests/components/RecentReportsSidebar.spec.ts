@@ -10,14 +10,15 @@ import { test, expect } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
 import RecentReportsSidebar from "../../src/components/RecentReportsSidebar.vue";
 import { deepFreeze } from "../helpers/freeze";
-import { localDate } from "../../src/format";
+import { localDateTime } from "../../src/format";
 import type { ReportSummary } from "../../src/types";
 
-function summary(id: string, createdAt: string): ReportSummary {
+function summary(id: string, createdAt: string, title = "Sample headline"): ReportSummary {
   return {
     report_id: id,
     report_type: "weekly_market",
     created_at: createdAt,
+    title,
     risk_posture: "mixed",
     market_cycle: "late-cycle",
     thesis_stance: "uncertain",
@@ -30,8 +31,8 @@ function summary(id: string, createdAt: string): ReportSummary {
 
 // Two reports, newest first — read-only across wrappers, so freeze them.
 const reports: ReportSummary[] = deepFreeze([
-  summary("11111111-aaaa-4bbb-8ccc-000000000001", "2026-06-08T13:00:00Z"),
-  summary("22222222-aaaa-4bbb-8ccc-000000000002", "2026-06-01T13:00:00Z"),
+  summary("11111111-aaaa-4bbb-8ccc-000000000001", "2026-06-08T13:00:00Z", "Rotation, not rupture"),
+  summary("22222222-aaaa-4bbb-8ccc-000000000002", "2026-06-01T13:00:00Z", "Credit cracks widen"),
 ]);
 
 const baseProps = deepFreeze({
@@ -59,10 +60,18 @@ test("renders one report row per report, dated locally with a short id", () => {
   const wrapper = makeWrapper();
   const rows = wrapper.findAll(".sidebar-list .report-row");
   expect(rows).toHaveLength(2);
-  expect(rows[0].find(".row-title").text()).toBe("Market Signal Report");
+  // The row is labeled by the agent's per-issue headline, not the product name.
+  expect(rows[0].find(".row-title").text()).toBe("Rotation, not rupture");
   expect(rows[0].find(".row-meta").text()).toBe(
-    `${localDate(reports[0].created_at)} · #11111111`
+    `${localDateTime(reports[0].created_at)} · #11111111`
   );
+});
+
+test("falls back to the product name when a report has no title (legacy row)", () => {
+  const legacy = summary("33333333-aaaa-4bbb-8ccc-000000000003", "2026-05-25T13:00:00Z", "");
+  const wrapper = makeWrapper({ reports: [legacy] });
+  const rows = wrapper.findAll(".sidebar-list .report-row");
+  expect(rows[0].find(".row-title").text()).toBe("Market Signal Report");
 });
 
 test("marks the selected row current (class + aria-current) only on the report view", () => {

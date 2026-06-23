@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import Icon from "./Icon.vue";
-import { localDate } from "../format";
+import { localDateTime } from "../format";
 import type { AppView, ReportSummary } from "../types";
 
 defineProps<{
@@ -20,14 +20,21 @@ defineEmits<{
   (e: "select", reportId: string): void;
 }>();
 
-// The row's report date in local time, matching the report toolbar's dateline
-// and the export filenames (see ../format).
-function shortDate(iso: string): string {
-  return localDate(iso);
+// The row's report date and time in local time, matching the report toolbar's
+// dateline — the time is included so two reports generated on the same day are
+// distinguishable (the export filename stays date-only; see ../format).
+function shortStamp(iso: string): string {
+  return localDateTime(iso);
 }
 
 function shortId(id: string): string {
   return id.slice(0, 8);
+}
+
+// The row's label: the agent's per-issue headline, falling back to the product
+// name for reports persisted before titles existed (an empty title).
+function rowTitle(r: ReportSummary): string {
+  return r.title?.trim() || "Market Signal Report";
 }
 </script>
 
@@ -54,9 +61,9 @@ function shortId(id: string): string {
           @click="$emit('select', r.report_id)"
         >
           <div class="row-main">
-            <div class="row-title">Market Signal Report</div>
+            <div class="row-title">{{ rowTitle(r) }}</div>
             <div class="row-meta">
-              {{ shortDate(r.created_at) }} · #{{ shortId(r.report_id) }}
+              {{ shortStamp(r.created_at) }} · #{{ shortId(r.report_id) }}
             </div>
           </div>
         </button>
@@ -198,6 +205,16 @@ function shortId(id: string): string {
   font-size: var(--t-ui-sm);
   font-weight: 600;
   color: var(--ink);
+  /* The title is now an agent-written, variable-length headline. Clamp it to two
+     lines with an ellipsis so a long one can't blow up the row height, and break
+     a long unbroken token rather than overflow the column (frontend-craft overflow
+     handling; no new tokens). */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .row-meta {

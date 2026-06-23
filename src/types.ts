@@ -9,6 +9,10 @@ export interface ReportSummary {
   report_id: string;
   report_type: string;
   created_at: string;
+  // The agent-written per-issue headline, shown as the report's label in the
+  // sidebar. Empty for reports persisted before this field existed; the UI falls
+  // back to the product name "Market Signal Report" in that case.
+  title: string;
   risk_posture: string;
   market_cycle: string;
   thesis_stance: string;
