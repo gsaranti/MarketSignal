@@ -82,7 +82,9 @@ watch(
 onUnmounted(stopTimer);
 
 const elapsedLabel = computed(() => {
-  if (props.runStartedAt === null) return null;
+  // `== null` (not `===`) so a missing/undefined value is treated as "no start time"
+  // and the timer is hidden, rather than computing against NaN.
+  if (props.runStartedAt == null) return null;
   const secs = Math.max(0, Math.floor((now.value - props.runStartedAt) / 1000));
   const m = Math.floor(secs / 60);
   const s = secs % 60;

@@ -95,9 +95,9 @@ const PIPELINE_STEP_KEYS = [
 
 // Determinate run progress for the footer status row (the design kit's long-job
 // component: a 1px fill whose width tracks real step completion, plus a "step N of T"
-// caption). The fraction is how far through the fixed pipeline the run has reached;
-// it advances on each step boundary and is honest (never a faked sweep). Null unless
-// a run is in flight.
+// caption). The fill credits completed steps fully and the in-flight step a half
+// step, so it advances as each step begins yet never reads 100% until the run
+// actually finishes. Honest — never a faked sweep. Null unless a run is in flight.
 const runProgress = computed<{
   fraction: number;
   stepNumber: number;
@@ -107,20 +107,24 @@ const runProgress = computed<{
   const trace = runTrace.value;
   if (!trace || !runActive.value) return null;
   const total = PIPELINE_STEP_KEYS.length;
-  let reached = 0; // 1-based index of the furthest canonical step touched
+  let completed = 0; // count of canonical steps in a terminal state (steps finish in order)
   let running: { idx: number; label: string } | null = null;
   let lastTouched: { idx: number; label: string } | null = null;
   for (let i = 0; i < PIPELINE_STEP_KEYS.length; i++) {
     const step = trace.steps.find((s) => s.key === PIPELINE_STEP_KEYS[i]);
     if (!step || step.status === "pending") continue;
-    reached = i + 1;
     lastTouched = { idx: i + 1, label: step.label };
     if (step.status === "running") running = { idx: i + 1, label: step.label };
+    else completed = i + 1;
   }
   const current = running ?? lastTouched;
   if (!current) return null;
+  // The in-flight step counts as a half step — credit for being underway, not for
+  // finishing — so a running final "Saving the report" tops out below 100%; the bar
+  // fills completely only when the run actually completes.
+  const fraction = (completed + (running ? 0.5 : 0)) / total;
   return {
-    fraction: reached / total,
+    fraction,
     stepNumber: current.idx,
     total,
     label: current.label,

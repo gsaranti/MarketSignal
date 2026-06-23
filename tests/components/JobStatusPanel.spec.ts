@@ -31,6 +31,8 @@ const baseProps = deepFreeze({
   blocked: false,
   generating: false,
   runActive: false,
+  progress: null as { fraction: number; stepNumber: number; total: number; label: string } | null,
+  runStartedAt: null as number | null,
   hasRunLog: false,
   viewingTracker: false,
 });
@@ -55,6 +57,53 @@ test("a live run shows the running indicator and hides both the facts and Genera
   const viaStatus = makeWrapper({ runActive: false, status: status({ is_running: true }) });
   expect(viaStatus.find(".job-running").exists()).toBe(true);
   expect(viaStatus.find(".btn-generate").exists()).toBe(false);
+});
+
+test("the determinate fill width tracks progress.fraction and clamps to [0, 100]%", () => {
+  const fill = (fraction: number) =>
+    makeWrapper({
+      runActive: true,
+      progress: { fraction, stepNumber: 5, total: 8, label: "Gathering and condensing research" },
+    })
+      .find(".job-running-fill")
+      .attributes("style") ?? "";
+
+  expect(fill(0)).toContain("width: 0%");
+  expect(fill(0.5)).toContain("width: 50%");
+  expect(fill(1)).toContain("width: 100%");
+  // Out-of-range fractions are clamped, never < 0% or > 100%.
+  expect(fill(1.4)).toContain("width: 100%");
+  expect(fill(-0.3)).toContain("width: 0%");
+});
+
+test("the caption reports the step number, total, and label; absent without progress", () => {
+  const withProgress = makeWrapper({
+    runActive: true,
+    progress: { fraction: 0.5, stepNumber: 5, total: 8, label: "Gathering and condensing research" },
+  });
+  expect(withProgress.find(".job-running-caption").text()).toBe(
+    "Step 5 of 8 · Gathering and condensing research"
+  );
+
+  // A live run with no progress object yet shows the running block but no caption.
+  const noProgress = makeWrapper({ runActive: true });
+  expect(noProgress.find(".job-running").exists()).toBe(true);
+  expect(noProgress.find(".job-running-caption").exists()).toBe(false);
+});
+
+test("the elapsed timer renders m:ss from runStartedAt, and is hidden when it's unset", () => {
+  // ~65s ago -> "1:05" (allow ±1s for the tick between mount and assert).
+  const timed = makeWrapper({ runActive: true, runStartedAt: Date.now() - 65_000 });
+  expect(timed.find(".job-running-time").text()).toMatch(/^1:0[45]$/);
+
+  // No start time -> no timer (the `== null` guard: never a NaN:NaN readout, even if
+  // the prop is undefined rather than null).
+  expect(makeWrapper({ runActive: true }).find(".job-running-time").exists()).toBe(false);
+  expect(
+    makeWrapper({ runActive: true, runStartedAt: undefined as unknown as number | null })
+      .find(".job-running-time")
+      .exists()
+  ).toBe(false);
 });
 
 test("a config-check error replaces the facts with the error line", () => {

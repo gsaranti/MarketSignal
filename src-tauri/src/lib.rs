@@ -36,6 +36,20 @@ pub mod vector_memory;
 #[cfg(feature = "demo-run")]
 mod demo;
 
+/// Whether the demo run path is active: the `demo-run` feature is compiled in AND
+/// `MARKET_SIGNAL_DEMO` is set to a truthy value (`1` / `true`, case-insensitive). A
+/// bare, empty, or `0` value reads as off, so the var can be exported `=0` without
+/// silently enabling stub reports.
+#[cfg(feature = "demo-run")]
+fn demo_run_enabled() -> bool {
+    std::env::var("MARKET_SIGNAL_DEMO")
+        .map(|v| {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -112,7 +126,7 @@ fn check_configuration(app: tauri::AppHandle) -> ValidationReport {
     // enabled with no keys configured (the demo run path bypasses the gate anyway).
     // Compiled out of any normal/release build with the rest of demo mode.
     #[cfg(feature = "demo-run")]
-    if std::env::var("MARKET_SIGNAL_DEMO").is_ok() {
+    if demo_run_enabled() {
         return ValidationReport {
             categories: Vec::new(),
             is_blocked: false,
@@ -252,7 +266,7 @@ async fn generate_report_manual(
     // entire branch is compiled out of a normal/release build, leaving the live
     // body below byte-for-byte unchanged.
     #[cfg(feature = "demo-run")]
-    if std::env::var("MARKET_SIGNAL_DEMO").is_ok() {
+    if demo_run_enabled() {
         return generate_report_demo(app, guard, cancel).await;
     }
 
