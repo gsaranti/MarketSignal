@@ -24,6 +24,7 @@ function makeReport(markdown: string, createdAt = "2026-06-08T13:00:00Z"): Gener
       report_id: "abcdef12-3456-4789-8abc-def012345678",
       report_type: "weekly_market",
       created_at: createdAt,
+      title: "Rotation, not rupture",
       risk_posture: "risk-on",
       market_cycle: "late-cycle",
       thesis_stance: "bullish",
@@ -111,7 +112,9 @@ test("a valid ```chart fence renders as an inline SVG figure; a malformed one fa
 test("the toolbar label reflects the loaded issue, and the Latest tag is gated on isLatest", () => {
   const report = makeReport("# Body");
   const latest = makeWrapper({ report, isLatest: true });
-  expect(latest.find(".toolbar-label").text()).toBe(
+  // The label is the issue headline; the date-time + short id ride in the meta.
+  expect(latest.find(".toolbar-label").text()).toBe("Rotation, not rupture");
+  expect(latest.find(".toolbar-meta").text()).toBe(
     `${localDateTime(report.summary.created_at)} · #abcdef12`
   );
   expect(latest.find(".toolbar-tag").exists()).toBe(true);

@@ -385,12 +385,22 @@ impl AnalystAgent for ModelAnalystAgent {
                         Provider::Anthropic => raw.get("stop_reason").cloned(),
                         Provider::OpenAi => raw.pointer("/choices/0/finish_reason").cloned(),
                     };
+                    // Bound the dump: the extracted value can echo private research /
+                    // inbox content, so log only a leading snippet — enough to see the
+                    // shape of a malformed response without spilling the whole review
+                    // (or a large body) to stderr.
+                    let rendered = value.to_string();
+                    let snippet: String = rendered.chars().take(500).collect();
+                    let suffix = if snippet.len() < rendered.len() {
+                        " …(truncated)"
+                    } else {
+                        ""
+                    };
                     eprintln!(
-                        "analyst review parse failed [{:?} {}]: {e}; stop_reason={:?}; raw_value={}",
+                        "analyst review parse failed [{:?} {}]: {e}; stop_reason={:?}; raw_value(<=500 chars)={snippet}{suffix}",
                         self.posture,
                         provider.display_name(),
-                        stop,
-                        value
+                        stop
                     );
                     anyhow::Error::new(e)
                 })

@@ -62,13 +62,21 @@ const renderedHtml = computed(() =>
   props.report ? md.render(props.report.markdown) : ""
 );
 
-// The toolbar reflects which issue is shown: the selected report's date and
-// short id, rather than a static label. Falls back to "Latest report" when no
-// report is loaded.
+// The toolbar reflects which issue is shown: its per-issue headline (the agent's
+// `title`), so the open report reads the same as its sidebar row. Falls back to the
+// product name for a legacy report with no title, and to "Latest report" when none
+// is loaded.
 const toolbarLabel = computed(() =>
   props.report
-    ? `${localDateTime(props.report.summary.created_at)} · #${props.report.report_id.slice(0, 8)}`
+    ? props.report.summary.title?.trim() || "Market Signal Report"
     : "Latest report"
+);
+// The date-time + short id ride alongside the headline as a quiet caption,
+// mirroring the sidebar row's title + meta split.
+const toolbarMeta = computed(() =>
+  props.report
+    ? `${localDateTime(props.report.summary.created_at)} · #${props.report.report_id.slice(0, 8)}`
+    : ""
 );
 
 // Export is only meaningful when a report is actually on screen — not while an
@@ -108,6 +116,7 @@ async function exportPdf() {
     <div class="toolbar">
       <div class="toolbar-heading">
         <span class="toolbar-label">{{ toolbarLabel }}</span>
+        <span v-if="report" class="toolbar-meta">{{ toolbarMeta }}</span>
         <span v-if="report && isLatest" class="toolbar-tag">Latest</span>
       </div>
       <div class="toolbar-actions">
@@ -194,18 +203,29 @@ async function exportPdf() {
   min-width: 0;
 }
 
-/* Surface title: stronger than the section eyebrows it sits above — 13px ink
-   semibold (a deliberate step up from the 11px caption used for sub-headings). */
+/* Surface title — the issue headline: 13px ink semibold, sentence case (matches
+   the sidebar row-title so the open report and its sidebar entry read the same;
+   deliberately not the uppercase caption treatment used for the meta/eyebrows). */
 .toolbar-label {
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
-  letter-spacing: var(--track-caption);
-  text-transform: uppercase;
   font-weight: 600;
   color: var(--ink);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The date-time + short id beside the headline: the same quiet caption as the
+   "Latest" tag and the sidebar row-meta, so it recedes behind the title. */
+.toolbar-meta {
+  flex-shrink: 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  color: var(--ink-3);
 }
 
 /* "Latest" tag: a quiet caption next to the dateline, marking the newest issue
