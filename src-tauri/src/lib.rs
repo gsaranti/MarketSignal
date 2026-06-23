@@ -142,16 +142,53 @@ fn dismiss_warning(
     jobs::dismiss_warning_category(&conn, kind, &id).map_err(|e| e.to_string())
 }
 
+/// Environment override for the on-disk data directory. A non-empty value wins
+/// over the OS app-data location *and* the debug-build split below — the explicit
+/// isolation hook for tests, automation, and the live-run harness (otherwise the
+/// store is keyed only by the bundle identifier, so every build of the same id
+/// shares one directory and isolating it means physically moving the real one).
+const DATA_DIR_ENV: &str = "MARKET_SIGNAL_DATA_DIR";
+
+/// Resolve the base data directory from three layered sources, so a `tauri dev`
+/// session never shares the production store:
+/// 1. an explicit [`DATA_DIR_ENV`] override (non-empty, trimmed) wins outright;
+/// 2. otherwise the OS app-data dir, nested under a `dev/` subdirectory for
+///    **debug** builds (`tauri dev`) so development data is sandboxed;
+/// 3. **release** builds (`tauri build`) use the OS app-data dir as-is — the real
+///    production store, untouched.
+///
+/// Pure (no Tauri `AppHandle`) so the layering is unit-tested directly.
+fn resolve_data_dir(app_data_dir: PathBuf, env_override: Option<String>, debug: bool) -> PathBuf {
+    if let Some(p) = env_override {
+        let trimmed = p.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    if debug {
+        app_data_dir.join("dev")
+    } else {
+        app_data_dir
+    }
+}
+
 /// The on-disk layout for a run — the SQLite database, the reports directory,
 /// and the research inbox/archive, all under the app data directory
 /// (`ReportPaths::under` owns the names). One source for the path layout, shared
 /// by the manual command and the research-folder helpers so they can never drift
-/// apart.
+/// apart. The base dir comes from [`resolve_data_dir`], so a `tauri dev` (debug)
+/// session is sandboxed under a `dev/` subdir away from the production store, and
+/// `MARKET_SIGNAL_DATA_DIR` can override either.
 fn report_paths(app: &tauri::AppHandle) -> Result<ReportPaths, String> {
-    let data_dir = app
+    let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("resolving app data directory: {e}"))?;
+    let data_dir = resolve_data_dir(
+        app_data_dir,
+        std::env::var(DATA_DIR_ENV).ok(),
+        cfg!(debug_assertions),
+    );
     Ok(ReportPaths::under(&data_dir))
 }
 
@@ -594,4 +631,62 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_build_uses_app_data_dir_as_is() {
+        let base = PathBuf::from("/data/app");
+        assert_eq!(resolve_data_dir(base.clone(), None, false), base);
+    }
+
+    #[test]
+    fn debug_build_nests_under_dev_subdir() {
+        let base = PathBuf::from("/data/app");
+        assert_eq!(
+            resolve_data_dir(base, None, true),
+            PathBuf::from("/data/app/dev"),
+        );
+    }
+
+    #[test]
+    fn env_override_wins_over_both_debug_and_release() {
+        let base = PathBuf::from("/data/app");
+        let over = Some("/tmp/scratch".to_string());
+        assert_eq!(
+            resolve_data_dir(base.clone(), over.clone(), true),
+            PathBuf::from("/tmp/scratch"),
+        );
+        assert_eq!(
+            resolve_data_dir(base, over, false),
+            PathBuf::from("/tmp/scratch"),
+        );
+    }
+
+    #[test]
+    fn blank_env_override_falls_through_to_build_split() {
+        let base = PathBuf::from("/data/app");
+        // empty string -> debug split applies
+        assert_eq!(
+            resolve_data_dir(base.clone(), Some(String::new()), true),
+            PathBuf::from("/data/app/dev"),
+        );
+        // whitespace-only -> release passes through unchanged
+        assert_eq!(
+            resolve_data_dir(base.clone(), Some("   ".to_string()), false),
+            base,
+        );
+    }
+
+    #[test]
+    fn env_override_is_trimmed() {
+        let base = PathBuf::from("/data/app");
+        assert_eq!(
+            resolve_data_dir(base, Some("  /tmp/scratch \n".to_string()), false),
+            PathBuf::from("/tmp/scratch"),
+        );
+    }
 }
