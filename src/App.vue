@@ -36,7 +36,7 @@ import { readDark, writeDark } from "./theme";
 // not routes (see AppView in types.ts).
 const view = ref<AppView>("report");
 
-// App version for the titlebar masthead ("Desk · v0.1.0"); falls back to "Desk"
+// App version for the titlebar masthead ("Desk · v1.0.0"); falls back to "Desk"
 // if the version can't be read.
 const appVersion = ref("");
 const versionLabel = computed(() =>
