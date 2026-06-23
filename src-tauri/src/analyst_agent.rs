@@ -16,7 +16,7 @@
 //! The provider request/transport plumbing mirrors `model_agent`: this stage reuses its
 //! shared SSE reader ([`stream_structured_response`]) and response extractors
 //! ([`extract_anthropic_text_output`] / [`extract_openai_responses_output`]), the per-model
-//! reasoning gates ([`anthropic_thinking`] / [`openai_reasoning`]), and provider/model
+//! reasoning capability gate ([`thinking_config`]), and provider/model
 //! resolution ([`Provider`], [`AgentModel`], [`MainAgentConfig`]), supplying its own
 //! posture-specific system prompt and review schema. Unlike the gated *data* adapters it
 //! carries no `with_base_url` mock
@@ -34,9 +34,9 @@ use serde_json::{json, Value};
 use crate::agent::{AnalystAgent, AnalystOutput, Confidence, Posture};
 use crate::cadence::ReportCadence;
 use crate::model_agent::{
-    anthropic_thinking, extract_anthropic_text_output, extract_openai_responses_output,
-    openai_reasoning, stream_structured_response, AgentModel, MainAgentConfig, Provider,
-    StreamRole, ANTHROPIC_TIMEOUT_SECS, ANTHROPIC_VERSION, OPENAI_TIMEOUT_SECS,
+    extract_anthropic_text_output, extract_openai_responses_output, stream_structured_response,
+    thinking_config, AgentModel, MainAgentConfig, Provider, StreamRole, ANTHROPIC_TIMEOUT_SECS,
+    ANTHROPIC_VERSION, OPENAI_TIMEOUT_SECS,
 };
 use crate::progress::RunContext;
 use crate::research_packet::ResearchPacket;
@@ -207,17 +207,22 @@ fn review_schema() -> Value {
 /// Anthropic Messages request for one analyst: structured output rides on
 /// `output_config.format` (a json_schema) rather than a forced `tool_choice`, because a
 /// forced tool is incompatible with extended thinking — the same swap the main agent
-/// made. The `thinking` block ([`anthropic_thinking`]) turns reasoning on per-model and
-/// makes its summary stream as `thinking_delta` events; the call streams (`stream: true`)
-/// so those thoughts reach the tracker live, while the structured review body is
-/// accumulated silently (thoughts-only — see [`ModelAnalystAgent::call`]). The router
-/// keeps the forced-tool shape; this change is scoped to the analyst arm.
-fn build_anthropic_request(model: AgentModel, system: &str, user: &str) -> Value {
-    json!({
+/// made. The `thinking` block (from [`thinking_config`], passed in) turns reasoning on
+/// per-model and makes its summary stream as `thinking_delta` events; it is omitted
+/// entirely when `thinking` is `None` (a non-reasoning model). The call streams
+/// (`stream: true`) so those thoughts reach the tracker live, while the structured review
+/// body is accumulated silently (thoughts-only — see [`ModelAnalystAgent::call`]). The
+/// router keeps the forced-tool shape; this change is scoped to the analyst arm.
+fn build_anthropic_request(
+    model: AgentModel,
+    system: &str,
+    user: &str,
+    thinking: Option<Value>,
+) -> Value {
+    let mut req = json!({
         "model": model.model_id(),
         "max_tokens": ANTHROPIC_ANALYST_MAX_TOKENS,
         "stream": true,
-        "thinking": anthropic_thinking(model),
         "system": [
             { "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }
         ],
@@ -225,26 +230,35 @@ fn build_anthropic_request(model: AgentModel, system: &str, user: &str) -> Value
             "format": { "type": "json_schema", "schema": review_schema() }
         },
         "messages": [ { "role": "user", "content": user } ]
-    })
+    });
+    if let Some(thinking) = thinking {
+        req["thinking"] = thinking;
+    }
+    req
 }
 
 /// OpenAI Responses-API request: strict json_schema structured output on `text.format`
 /// (the Responses shape — `type`/`name`/`strict`/`schema` flattened) plus streamed reasoning
-/// summaries ([`openai_reasoning`]), the same swap the main agent made so the OpenAI arm can
-/// surface its reasoning. The call streams (`stream: true`) so those thoughts reach the
-/// tracker live, while the structured review body is accumulated silently (thoughts-only —
-/// see [`ModelAnalystAgent::call`]). `store: false` keeps the local-first no-retention posture
-/// — the Responses API defaults `store` to `true` (30-day server-side retention of the
-/// prompt), so the migration opts out to preserve the prior Chat Completions behavior (same
-/// rationale as the main agent's request). (The fixed-internal Chat Completions stages keep
-/// their own request shape; this change is scoped to the analyst arm.)
-fn build_openai_request(model: AgentModel, system: &str, user: &str) -> Value {
-    json!({
+/// summaries (from [`thinking_config`], passed in), the same swap the main agent made so the
+/// OpenAI arm can surface its reasoning; the `reasoning` block is omitted entirely when
+/// `reasoning` is `None` (a non-reasoning model). The call streams (`stream: true`) so those
+/// thoughts reach the tracker live, while the structured review body is accumulated silently
+/// (thoughts-only — see [`ModelAnalystAgent::call`]). `store: false` keeps the local-first
+/// no-retention posture — the Responses API defaults `store` to `true` (30-day server-side
+/// retention of the prompt), so the migration opts out to preserve the prior Chat Completions
+/// behavior (same rationale as the main agent's request). (The fixed-internal Chat Completions
+/// stages keep their own request shape; this change is scoped to the analyst arm.)
+fn build_openai_request(
+    model: AgentModel,
+    system: &str,
+    user: &str,
+    reasoning: Option<Value>,
+) -> Value {
+    let mut req = json!({
         "model": model.model_id(),
         "max_output_tokens": OPENAI_MAX_TOKENS,
         "stream": true,
         "store": false,
-        "reasoning": openai_reasoning(model),
         "text": {
             "format": {
                 "type": "json_schema",
@@ -255,7 +269,11 @@ fn build_openai_request(model: AgentModel, system: &str, user: &str) -> Value {
         },
         "instructions": system,
         "input": user
-    })
+    });
+    if let Some(reasoning) = reasoning {
+        req["reasoning"] = reasoning;
+    }
+    req
 }
 
 /// Build the user message: the standing instruction, the condensed research packet
@@ -402,9 +420,12 @@ impl AnalystAgent for ModelAnalystAgent {
         let provider = self.config.model.provider();
         let system = system_prompt(self.posture);
         let user = build_user_prompt(packet, cadence);
+        let reasoning = thinking_config(self.config.model);
         let body = match provider {
-            Provider::Anthropic => build_anthropic_request(self.config.model, &system, &user),
-            Provider::OpenAi => build_openai_request(self.config.model, &system, &user),
+            Provider::Anthropic => {
+                build_anthropic_request(self.config.model, &system, &user, reasoning)
+            }
+            Provider::OpenAi => build_openai_request(self.config.model, &system, &user, reasoning),
         };
 
         // One tracker row for this analyst's review call.
@@ -561,8 +582,12 @@ mod tests {
 
     #[test]
     fn anthropic_request_uses_output_config_format_thinking_and_streams() {
-        let body =
-            build_anthropic_request(AgentModel::ClaudeOpus, &system_prompt(Posture::Bull), "u");
+        let body = build_anthropic_request(
+            AgentModel::ClaudeOpus,
+            &system_prompt(Posture::Bull),
+            "u",
+            thinking_config(AgentModel::ClaudeOpus),
+        );
         assert_eq!(body["model"], "claude-opus-4-8");
         // Streams so the thinking summary reaches the tracker live.
         assert_eq!(body["stream"], true);
@@ -580,7 +605,12 @@ mod tests {
 
     #[test]
     fn openai_request_uses_responses_api_strict_json_schema_and_reasoning() {
-        let body = build_openai_request(AgentModel::Gpt5, &system_prompt(Posture::Bear), "u");
+        let body = build_openai_request(
+            AgentModel::Gpt5,
+            &system_prompt(Posture::Bear),
+            "u",
+            thinking_config(AgentModel::Gpt5),
+        );
         assert_eq!(body["model"], "gpt-5");
         // Streams so the reasoning summary reaches the tracker live.
         assert_eq!(body["stream"], true);
@@ -595,6 +625,22 @@ mod tests {
         // No server-side retention (Responses defaults `store` to true) — keeps the
         // local-first no-retention posture.
         assert_eq!(body["store"], false);
+    }
+
+    #[test]
+    fn analyst_requests_omit_the_reasoning_block_when_the_gate_returns_none() {
+        // A non-reasoning model (the gate returns None) must produce a request with no
+        // `thinking`/`reasoning` key — never an unsupported block. Exercised at the builder
+        // layer because every model offered today reasons.
+        let a = build_anthropic_request(AgentModel::ClaudeOpus, &system_prompt(Posture::Bull), "u", None);
+        assert!(a.get("thinking").is_none());
+        assert_eq!(a["output_config"]["format"]["type"], "json_schema");
+        assert_eq!(a["stream"], true);
+        let o = build_openai_request(AgentModel::Gpt5, &system_prompt(Posture::Bear), "u", None);
+        assert!(o.get("reasoning").is_none());
+        assert_eq!(o["text"]["format"]["type"], "json_schema");
+        assert_eq!(o["store"], false);
+        assert_eq!(o["stream"], true);
     }
 
     #[test]

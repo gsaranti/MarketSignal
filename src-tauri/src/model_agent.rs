@@ -695,20 +695,35 @@ fn response_envelope_schema() -> Value {
     })
 }
 
-/// The per-model Anthropic thinking configuration. Extended thinking is the
-/// highest-value quality lever for the Step-16 synthesis, and its summary streams to
-/// the run tracker as `thinking_delta` SSE events. The shape is model-gated:
-/// `claude-opus-4-8` / `claude-sonnet-4-6` take **adaptive** thinking (`budget_tokens`
-/// 400s on opus-4-8 and is deprecated on sonnet-4-6), with `display: "summarized"` so
-/// the streamed thoughts carry readable text rather than the default omitted (empty)
-/// blocks; `claude-haiku-4-5` has no adaptive/effort mode, so it uses the older
-/// budget-bounded extended thinking. This is the Anthropic half of the future
-/// capability gate. The OpenAI models never reach this — they route to the unchanged
-/// Chat Completions arm, never `build_anthropic_request` — so their match arm asserts
-/// the invariant rather than returning an unused config. Shared with the analyst arm
-/// (`analyst_agent`), which gates its Anthropic thinking the same way.
-pub(crate) fn anthropic_thinking(model: AgentModel) -> Value {
-    match model {
+/// The per-model reasoning configuration block, or `None` for a model that does not
+/// support streamed reasoning. This is the single capability gate that unifies the
+/// formerly separate Anthropic-`thinking` and OpenAI-`reasoning` configs: it returns the
+/// **inner** config the request builder inserts under the provider's own request key
+/// (`thinking` for the Anthropic Messages API, `reasoning` for the OpenAI Responses API),
+/// and the builder omits that key entirely when this returns `None` — so a non-reasoning
+/// model cleanly streams no thoughts rather than sending an unsupported parameter or
+/// erroring. Extended thinking is the highest-value quality lever for the Step-16
+/// synthesis, and its summary streams to the run tracker (`thinking_delta` for Anthropic,
+/// `response.reasoning_summary_text.delta` for OpenAI).
+///
+/// The shape is model-gated. `claude-opus-4-8` / `claude-sonnet-4-6` take **adaptive**
+/// thinking with `display: "summarized"` so the streamed thoughts carry readable text
+/// rather than the default omitted (empty) blocks; `claude-haiku-4-5` has no
+/// adaptive/effort mode, so it uses the older budget-bounded extended thinking
+/// (`HAIKU_THINKING_BUDGET_TOKENS`). `gpt-5` / `gpt-5-mini` take `effort: "medium"` (the
+/// default reasoning depth) and `summary: "auto"` (the richest streamed summary). Every
+/// model the app offers today reasons, so the `None` arm is reserved forward-looking
+/// robustness — the match is over all current variants, none of which returns `None`, and
+/// adding a non-reasoning model would force a new arm here rather than silently sending it
+/// an unsupported block. Shared with the analyst arm (`analyst_agent`), which gates the
+/// same way; the builder-level `None` behaviour (key omitted) is covered by tests.
+///
+/// Caveat (live, not a code path): OpenAI reasoning summaries require organization
+/// verification to be returned; an unverified org yields an empty summary (an empty
+/// thoughts pane), never an error — so a blank pane in dev is the verification signal,
+/// not a bug.
+pub(crate) fn thinking_config(model: AgentModel) -> Option<Value> {
+    Some(match model {
         AgentModel::ClaudeOpus | AgentModel::ClaudeSonnet => {
             json!({ "type": "adaptive", "display": "summarized" })
         }
@@ -716,49 +731,33 @@ pub(crate) fn anthropic_thinking(model: AgentModel) -> Value {
             json!({ "type": "enabled", "budget_tokens": HAIKU_THINKING_BUDGET_TOKENS })
         }
         AgentModel::Gpt5 | AgentModel::Gpt5Mini => {
-            unreachable!("anthropic_thinking called for an OpenAI model: {model:?}")
-        }
-    }
-}
-
-/// OpenAI Responses-API `reasoning` config for the agent OpenAI models (`gpt-5`,
-/// `gpt-5-mini`). `summary: "auto"` requests streamed reasoning *summaries* — the richest
-/// the model supports — which arrive as `response.reasoning_summary_text.delta` events;
-/// `effort: "medium"` is the model's default reasoning depth. This is the OpenAI half of
-/// the future capability gate: both selectable OpenAI models reason, so this is sent
-/// unconditionally, and the Anthropic models never reach it (they route to
-/// `build_anthropic_request`), so their arm asserts the invariant rather than returning an
-/// unused config — mirroring [`anthropic_thinking`]. Shared with the analyst arm.
-///
-/// Caveat (live, not a code path): reasoning summaries require organization verification to
-/// be returned; an unverified org yields an empty summary (an empty thoughts pane), never
-/// an error — so a blank pane in dev is the verification signal, not a bug.
-pub(crate) fn openai_reasoning(model: AgentModel) -> Value {
-    match model {
-        AgentModel::Gpt5 | AgentModel::Gpt5Mini => {
             json!({ "effort": "medium", "summary": "auto" })
         }
-        AgentModel::ClaudeOpus | AgentModel::ClaudeSonnet | AgentModel::ClaudeHaiku => {
-            unreachable!("openai_reasoning called for an Anthropic model: {model:?}")
-        }
-    }
+    })
 }
 
 /// Anthropic Messages API request for the main agent. Structured output rides on
 /// `output_config.format` (a json_schema) rather than a forced `tool_choice`, because
 /// a forced tool is incompatible with extended thinking — this swap is the unblocker
-/// for the thinking work. The `thinking` block ([`anthropic_thinking`]) turns reasoning
-/// on per-model and makes its summary stream as `thinking_delta` events. `cache_control`
-/// on the system block is correct placement for when the condensed packet grows the
-/// prefix past Opus's ~4096-token cache minimum; below that it is a no-op, not an error.
-/// (The router and analyst stages keep the forced-tool shape — see
-/// `extract_anthropic_tool_input` — so this change is scoped to the main agent.)
-fn build_anthropic_request(model: AgentModel, system: &str, user: &str, schema: &Value) -> Value {
-    json!({
+/// for the thinking work. The `thinking` block (from [`thinking_config`], passed in) turns
+/// reasoning on per-model and makes its summary stream as `thinking_delta` events; it is
+/// omitted entirely when `thinking` is `None` (a non-reasoning model), so the request never
+/// carries an unsupported block. `cache_control` on the system block is correct placement
+/// for when the condensed packet grows the prefix past Opus's ~4096-token cache minimum;
+/// below that it is a no-op, not an error. (The router and analyst stages keep the
+/// forced-tool shape — see `extract_anthropic_tool_input` — so this change is scoped to the
+/// main agent.)
+fn build_anthropic_request(
+    model: AgentModel,
+    system: &str,
+    user: &str,
+    schema: &Value,
+    thinking: Option<Value>,
+) -> Value {
+    let mut req = json!({
         "model": model.model_id(),
         "max_tokens": ANTHROPIC_MAX_TOKENS,
         "stream": true,
-        "thinking": anthropic_thinking(model),
         "system": [
             { "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }
         ],
@@ -766,28 +765,39 @@ fn build_anthropic_request(model: AgentModel, system: &str, user: &str, schema: 
             "format": { "type": "json_schema", "schema": schema }
         },
         "messages": [ { "role": "user", "content": user } ]
-    })
+    });
+    if let Some(thinking) = thinking {
+        req["thinking"] = thinking;
+    }
+    req
 }
 
 /// OpenAI Responses-API request with strict json_schema structured output and streamed
 /// reasoning summaries. Structured output rides on `text.format` (the Responses-API shape —
 /// `type`/`name`/`strict`/`schema` flattened as siblings) rather than Chat Completions'
 /// `response_format.json_schema` nesting; the system prompt is the top-level `instructions`
-/// and the user prompt is `input`. `reasoning` ([`openai_reasoning`]) turns reasoning on and
-/// streams its summary. `store: false` keeps the local-first no-retention posture: unlike
-/// Chat Completions, the Responses API defaults `store` to `true` (30-day server-side
-/// retention of the prompt — which carries private research, inbox docs, and prior reports),
-/// so the migration opts out to preserve the prior behavior; we never reuse a stored response
-/// (every call is single-shot, no `previous_response_id`). (The fixed-internal OpenAI stages —
+/// and the user prompt is `input`. The `reasoning` block (from [`thinking_config`], passed
+/// in) turns reasoning on and streams its summary; it is omitted entirely when `reasoning`
+/// is `None` (a non-reasoning model), so the request never carries an unsupported block.
+/// `store: false` keeps the local-first no-retention posture: unlike Chat Completions, the
+/// Responses API defaults `store` to `true` (30-day server-side retention of the prompt —
+/// which carries private research, inbox docs, and prior reports), so the migration opts out
+/// to preserve the prior behavior; we never reuse a stored response (every call is
+/// single-shot, no `previous_response_id`). (The fixed-internal OpenAI stages —
 /// `headline_filter` — keep Chat Completions and [`extract_openai_envelope`], so this change
 /// is scoped to the agent arm.)
-fn build_openai_request(model: AgentModel, system: &str, user: &str, schema: &Value) -> Value {
-    json!({
+fn build_openai_request(
+    model: AgentModel,
+    system: &str,
+    user: &str,
+    schema: &Value,
+    reasoning: Option<Value>,
+) -> Value {
+    let mut req = json!({
         "model": model.model_id(),
         "max_output_tokens": OPENAI_MAX_TOKENS,
         "stream": true,
         "store": false,
-        "reasoning": openai_reasoning(model),
         "text": {
             "format": {
                 "type": "json_schema",
@@ -798,7 +808,11 @@ fn build_openai_request(model: AgentModel, system: &str, user: &str, schema: &Va
         },
         "instructions": system,
         "input": user
-    })
+    });
+    if let Some(reasoning) = reasoning {
+        req["reasoning"] = reasoning;
+    }
+    req
 }
 
 /// Pull a forced tool's `input` out of an Anthropic response: the first
@@ -1498,12 +1512,13 @@ impl MainAgent for ModelMainAgent {
         // Steps 12–15 → Step 16: append the analyst reviews the synthesis reasons over.
         // Empty on the offline/stub path, so the block is simply omitted.
         user.push_str(&format_analyst_reviews(&input.analyst_reviews));
+        let reasoning = thinking_config(self.config.model);
         let body = match provider {
             Provider::Anthropic => {
-                build_anthropic_request(self.config.model, SYSTEM_PROMPT, &user, &schema)
+                build_anthropic_request(self.config.model, SYSTEM_PROMPT, &user, &schema, reasoning)
             }
             Provider::OpenAi => {
-                build_openai_request(self.config.model, SYSTEM_PROMPT, &user, &schema)
+                build_openai_request(self.config.model, SYSTEM_PROMPT, &user, &schema, reasoning)
             }
         };
         let raw = self.call(provider, &body)?;
@@ -1590,6 +1605,7 @@ mod tests {
             SYSTEM_PROMPT,
             USER_PROMPT,
             &response_envelope_schema(),
+            thinking_config(AgentModel::ClaudeOpus),
         );
         assert_eq!(body["model"], "claude-opus-4-8");
         // The forced tool is gone — a forced tool_choice is incompatible with thinking.
@@ -1606,19 +1622,25 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_thinking_is_model_gated() {
+    fn thinking_config_is_model_gated() {
         // opus / sonnet: adaptive + summarized display (budget_tokens is rejected there).
         for m in [AgentModel::ClaudeOpus, AgentModel::ClaudeSonnet] {
-            let t = anthropic_thinking(m);
+            let t = thinking_config(m).expect("a reasoning model returns a config");
             assert_eq!(t["type"], "adaptive", "{m:?}");
             assert_eq!(t["display"], "summarized", "{m:?}");
         }
         // haiku: budget-bounded extended thinking (no adaptive/effort), under the cap.
-        let h = anthropic_thinking(AgentModel::ClaudeHaiku);
+        let h = thinking_config(AgentModel::ClaudeHaiku).expect("haiku reasons");
         assert_eq!(h["type"], "enabled");
         let budget = h["budget_tokens"].as_u64().unwrap() as u32;
         assert_eq!(budget, HAIKU_THINKING_BUDGET_TOKENS);
         assert!(budget < ANTHROPIC_MAX_TOKENS);
+        // gpt-5 / gpt-5-mini: medium-effort reasoning with streamed auto summaries.
+        for m in [AgentModel::Gpt5, AgentModel::Gpt5Mini] {
+            let r = thinking_config(m).expect("an OpenAI agent model reasons");
+            assert_eq!(r["effort"], "medium", "{m:?}");
+            assert_eq!(r["summary"], "auto", "{m:?}");
+        }
     }
 
     #[test]
@@ -1628,6 +1650,7 @@ mod tests {
             SYSTEM_PROMPT,
             USER_PROMPT,
             &response_envelope_schema(),
+            thinking_config(AgentModel::Gpt5),
         );
         assert_eq!(body["model"], "gpt-5");
         // Structured output rides on the Responses-API `text.format` (flattened), not Chat
@@ -1646,6 +1669,40 @@ mod tests {
         // System → instructions, user → input.
         assert_eq!(body["instructions"], SYSTEM_PROMPT);
         assert_eq!(body["input"], USER_PROMPT);
+    }
+
+    #[test]
+    fn anthropic_request_omits_thinking_block_when_gate_returns_none() {
+        // A non-reasoning model (the gate returns None) must produce a request with no
+        // `thinking` key at all — never an unsupported/empty block. Exercised here at the
+        // builder layer because every model offered today reasons.
+        let body = build_anthropic_request(
+            AgentModel::ClaudeOpus,
+            SYSTEM_PROMPT,
+            USER_PROMPT,
+            &response_envelope_schema(),
+            None,
+        );
+        assert!(body.get("thinking").is_none());
+        // The rest of the request is unchanged — structured output still rides on the schema.
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+        assert_eq!(body["stream"], true);
+    }
+
+    #[test]
+    fn openai_request_omits_reasoning_block_when_gate_returns_none() {
+        let body = build_openai_request(
+            AgentModel::Gpt5,
+            SYSTEM_PROMPT,
+            USER_PROMPT,
+            &response_envelope_schema(),
+            None,
+        );
+        assert!(body.get("reasoning").is_none());
+        // The rest of the request is unchanged.
+        assert_eq!(body["text"]["format"]["type"], "json_schema");
+        assert_eq!(body["store"], false);
+        assert_eq!(body["stream"], true);
     }
 
     fn sample_review(posture: crate::agent::Posture) -> AnalystOutput {
@@ -2204,6 +2261,7 @@ instructions"));
             SYSTEM_PROMPT,
             USER_PROMPT,
             &response_envelope_schema(),
+            thinking_config(AgentModel::ClaudeOpus),
         );
         assert_eq!(a["stream"], true);
         let o = build_openai_request(
@@ -2211,6 +2269,7 @@ instructions"));
             SYSTEM_PROMPT,
             USER_PROMPT,
             &response_envelope_schema(),
+            thinking_config(AgentModel::Gpt5),
         );
         assert_eq!(o["stream"], true);
     }
@@ -2225,12 +2284,14 @@ instructions"));
             SYSTEM_PROMPT,
             USER_PROMPT,
             &response_envelope_schema(),
+            thinking_config(AgentModel::ClaudeOpus),
         );
         let o = build_openai_request(
             AgentModel::Gpt5,
             SYSTEM_PROMPT,
             USER_PROMPT,
             &response_envelope_schema(),
+            thinking_config(AgentModel::Gpt5),
         );
         assert_eq!(a["max_tokens"], ANTHROPIC_MAX_TOKENS);
         assert_eq!(o["max_output_tokens"], OPENAI_MAX_TOKENS);
