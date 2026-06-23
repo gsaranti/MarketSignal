@@ -31,6 +31,11 @@ pub mod tavily;
 mod test_http;
 pub mod vector_memory;
 
+// Dev-only demo mode. Compiled out entirely unless the `demo-run` feature is on
+// (it is not in `default`, so `tauri build` never includes it). See `demo.rs`.
+#[cfg(feature = "demo-run")]
+mod demo;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -103,6 +108,17 @@ fn cancel_run(cancel: tauri::State<'_, CancelFlag>) {
 /// if the database can't be read, the authoritative config warnings still show.
 #[tauri::command]
 fn check_configuration(app: tauri::AppHandle) -> ValidationReport {
+    // Demo mode: report a clean, unblocked gate so the live "Generate now" button is
+    // enabled with no keys configured (the demo run path bypasses the gate anyway).
+    // Compiled out of any normal/release build with the rest of demo mode.
+    #[cfg(feature = "demo-run")]
+    if std::env::var("MARKET_SIGNAL_DEMO").is_ok() {
+        return ValidationReport {
+            categories: Vec::new(),
+            is_blocked: false,
+        };
+    }
+
     // Open the app DB (best-effort) so config reads from the saved Settings store
     // with an env fallback per field. `open_app_db` creates the data dir and runs
     // the idempotent `init_schema`, tolerating a pre-existing slice-1 DB. If the
@@ -231,6 +247,15 @@ async fn generate_report_manual(
     guard: tauri::State<'_, RunGuard>,
     cancel: tauri::State<'_, CancelFlag>,
 ) -> Result<GeneratedReport, String> {
+    // Dev-only demo path (feature `demo-run` + MARKET_SIGNAL_DEMO): run the real
+    // pipeline against paced, streaming stubs — no keys, no network, no gate. The
+    // entire branch is compiled out of a normal/release build, leaving the live
+    // body below byte-for-byte unchanged.
+    #[cfg(feature = "demo-run")]
+    if std::env::var("MARKET_SIGNAL_DEMO").is_ok() {
+        return generate_report_demo(app, guard, cancel).await;
+    }
+
     // Execution gate: refuse a blocked run before doing any work. The config is
     // read from the saved Settings store (env fallback) on a connection opened and
     // dropped here, before the await below — a `rusqlite::Connection` is not `Send`
@@ -320,6 +345,52 @@ async fn generate_report_manual(
         // The tracker shows the cancelled terminal state from the `run-finished` event;
         // the command still resolves to `Err` so the frontend's generate() settles
         // (its catch suppresses the failure banner when the user asked to cancel).
+        JobOutcome::Cancelled(reason) => Err(reason),
+    }
+}
+
+/// Dev-only demo run (feature `demo-run`). Reuses the real run plumbing — the same
+/// `report_paths`, `live_run_context` (Tauri-event reporter), `RunGuard`, and
+/// `jobs::run_job` — but injects the paced, streaming demo stages from `demo.rs`
+/// instead of the live adapters, and skips the key/credential gate. Everything
+/// downstream (step events, persistence to the dev data dir, the terminal
+/// `run-finished`) is identical to a real run, so the tracker and report rendering
+/// are exercised faithfully with no I/O. Mirrors `generate_report_manual`'s
+/// spawn-blocking + outcome handling.
+#[cfg(feature = "demo-run")]
+async fn generate_report_demo(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, RunGuard>,
+    cancel: tauri::State<'_, CancelFlag>,
+) -> Result<GeneratedReport, String> {
+    let paths = report_paths(&app)?;
+    let guard = guard.inner().clone();
+    let ctx = live_run_context(&app, cancel.inner().0.clone());
+
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let agent = demo::main_agent(ctx.clone());
+        let data = demo::market_data(ctx.clone());
+        let research = demo::research_stages(ctx.clone());
+        let analysts = demo::analyst_stages(ctx.clone());
+        run_job(
+            &agent,
+            &data,
+            &research,
+            &analysts,
+            &embedding::StubEmbedder,
+            &paths,
+            &guard,
+            &ctx,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("report generation task failed: {e}"))??;
+
+    match outcome {
+        JobOutcome::Successful(report) => Ok(*report),
+        JobOutcome::Failed(msg) => Err(msg),
+        JobOutcome::Skipped(reason) => Err(reason),
         JobOutcome::Cancelled(reason) => Err(reason),
     }
 }
