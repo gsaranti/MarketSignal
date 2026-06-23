@@ -152,7 +152,16 @@ pre-mount to avoid a first-paint flash.
   and the analysts. Skills are **forcing-function-only**: each lens's verdict
   disciplines the report/review prose but is never parsed back or persisted (the
   report prose is the output; a rare keep-worthy verdict exits via a
-  `durable_learning`). Analyst reviews are ephemeral — never persisted.
+  `durable_learning`). Analyst reviews are ephemeral — never persisted. The main
+  agent's editorial posture is **conviction-first**: the thesis commits to a
+  directional base case — the most-probable path and the reasons for it — and weights
+  the alternatives around it rather than presenting co-equal either/or branches, so the
+  report reads as a *call* rather than a summary of the packet. A `mixed` / `uncertain`
+  `thesis_stance` is the earned exception (genuinely two-sided, or evidence too degraded
+  for a directional read), not a safe default; the base case carries forward across
+  reports and pivots only when the evidence has materially changed
+  (`docs/thesis-continuity.md`) — the conviction and the rare-pivot doctrine are the
+  same stance, not opposites.
 - **`frontend` (Vue 3)** — Latest Report View, the **Run Tracker** (live
   per-step/per-request progress with streamed agent output), Recent Reports
   Sidebar, Research Documents, the Persistent Warning Area, and Settings

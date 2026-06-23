@@ -2,41 +2,48 @@
 
 ## What happened
 
-Shipped four PRs to `main` (now `76e0757`), all verified:
-- **Run-tracker progress + liveness** (#38): restored the design kit's determinate
-  footer fill + a "Step N of 8" caption + a live elapsed timer; added a
-  reduced-motion-gated opacity breathe on the active step marker + in-flight request
-  dot ([[design-kit-deviations]] #7).
-- **Settings** (#38): fixed the section rule that hugged the Save button; moved the
-  Dark-surface toggle into the toolbar so the instant control reads apart from the
-  Save-gated form (deviation #8).
-- **Demo-run mode** (#39): a `demo-run` Cargo feature that runs the *real* pipeline
-  against paced streaming stubs — no keys/network/cost, excluded from `tauri build`.
-  GUI-verified end-to-end; documented in `BUILD.md` + the README ([[demo-run-mode]]).
-- **Codex review fixes** (#40): the progress fill now credits the in-flight step a
-  *half* step (no premature 100% on "Saving the report"); demo mode requires a truthy
-  `MARKET_SIGNAL_DEMO`; fixed an elapsed-timer NaN guard + added `JobStatusPanel`
-  progress/timer tests.
+Reviewed the **first production report** (2026-06-23, generated mid-session ~9am PDT)
+and found three weaknesses → shipped **PR #41** (squash-merged to `main` as `c3ca28d`),
+one commit per slice, each independently compiling:
+
+- **Market-session awareness** — new pure `market_clock` module (the time-of-day sibling
+  of `cadence`; adds the `chrono-tz` dep) classifies the run's `as_of` against NYSE hours
+  (Open / PreOpen / AfterClose / Weekend, DST-correct) and feeds the main agent a **tense
+  steer** (live/intraday while open vs a completed session). Fixes reports narrating an
+  open session as finished ("closed green").
+- **Thesis conviction** — `SYSTEM_PROMPT` + `report-structure.md` now require committing
+  to a **directional base case**, weighting alternatives around it (not co-equal branches),
+  with mixed/uncertain as the earned exception, not a hedge default.
+- **News freshness balance** — the Step-7 filter now *sees publish dates* + a dual mandate
+  (importance first, but ensure recent stories are represented); router echoes it; main
+  agent separates "new this period" from the standing backdrop. Folds in **Codex P1**:
+  threads the ET report date (from `market_clock`) into filter+router as the recency anchor.
+
+Codex review: P1 fixed; **P2 deferred** (holiday/early-close mislabel — documented v1 cut).
+Verified: 441 backend tests + clippy clean.
 
 ## Current state
 
-`main` at **`76e0757`**, tree clean, nothing owed. The installed production app stays
-in daily use (untouched). **`npm run tauri:demo`** is the cost-free way to verify any
-UI/report/tracker change — prefer it over spending FMP/Tavily quota or model tokens.
+`main` at **`c3ca28d`**, tree clean, nothing owed. All three changes are **prompt-quality
++ a tense steer and are LIVE-UNVALIDATED** — demo mode stubs the agents, so it can't
+exercise the prompts. The installed production app predates #41, so a live check needs a
+rebuild off `c3ca28d` (or a live dev run), not the current installed v0.1.0
+([[release-build-install]]).
 
 ## Open questions
 
-- **Cadence Run B** — baseline delta-engine + vector-memory recall still need a *real*
-  2nd report to exercise live; the demo run uses stubs and doesn't close it
-  ([[manual-pivot-cadence-windows]]).
+- **Cadence Run B** — a real 2nd report now validates **three** things at once: the
+  delta-engine + vector-memory recall (still unexercised live) *and* the new conviction +
+  freshness prompt changes ([[manual-pivot-cadence-windows]]).
+- **Market holidays / early closes** — `market_clock` mislabels them "open until 4pm"
+  (documented v1 limitation); a clean follow-up if it bites (needs an NYSE calendar).
 - **opus-main leaning** — accumulating; the worked-examples prompt is an optional carry
   ([[live-config-opus-main-leaning]]).
 
 ## Where to start
 
-No code owed — next session likely reacts to live usage; the user's **2nd real report**
-closes Cadence Run B (watch the delta + memory-recall paths). Verify any UI/report polish
-cost-free with `npm run tauri:demo`. Settled this session (don't re-litigate): design-kit
-deviations stay in memory/code/PRs — no repo deviations file — so an external reviewer
-(Codex) re-flagging them against the kit is **known-accepted, not a new defect**
-([[design-kit-deviations]]). Optional small item: the worked-examples prompt.
+React to the user's next real report. When they run a 2nd report **from a build that
+includes #41**, read it against the three goals — correct session tense, a *firm base-case*
+thesis (not hedged), and a fresh-vs-important news balance — which simultaneously closes
+Cadence Run B (watch the delta + memory-recall paths). To exercise it live the app must be
+rebuilt off `c3ca28d` ([[release-build-install]]); demo mode won't show the prompt effects.
