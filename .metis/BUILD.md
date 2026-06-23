@@ -233,3 +233,12 @@ runner via TypeScript type-stripping (no build step), and Vue **SFC component
 tests** (`tests/**/*.spec.ts`) on **Vitest** (`@vitejs/plugin-vue` + happy-dom +
 `@vue/test-utils`), mounting real components to assert behavior and accessibility
 against the design system.
+
+The same trait spine powers a **dev-only demo-run mode** (`src-tauri/src/demo.rs`,
+behind a `demo-run` Cargo feature): hitting "Generate now" drives the *real*
+`run_job` pipeline through the live GUI against paced, streaming stand-ins that
+emit per-request rows and stream tokens/thinking, then delegate to the offline
+stubs for return data — so the run tracker and report rendering are exercised
+end-to-end with no network, keys, or cost. The feature is not in `default` and so
+is compiled out of `tauri build`; it's the cost-free way to verify UI/report
+changes (`npm run tauri:demo`).

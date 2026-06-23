@@ -2,18 +2,42 @@
 
 ## What happened
 
-Ran the deferred **batched live-verification + calibration pass on `main` — all green** — then **built + installed the first real release (v0.1.0)** for daily use. Verification: two cheap adapter smokes + one full GUI run (MAIN=`claude-opus`, analysts=`gpt-5`). Every deferred wire flag resolved — Anthropic `output_config.format` needs **no `name`**, haiku-4-5 streams non-empty thinking, OpenAI Responses `text.format`/`store:false`/`max_output_tokens` all accepted; SSE→markdown exact for both providers. **OpenAI org IS verification-approved** — gpt-5 analyst reasoning panes populated live (not empty); opus main reasoning pane populated. Calibration read **strongly positive** even cold-start (opus+thinking: explicit conviction calibration, multi-condition falsifiable triggers, clean lens integration). GDELT 429→fail-soft (expected). Then `npm run tauri build` → `/Applications/Market Signal.app` (ad-hoc signed, quarantine cleared); fresh-started the production store (21 old test reports backed up to `…BACKUP-2026-06-23`) and **pre-seeded `app_settings`** (opus-main/gpt-5-analysts + 5 keys) → gate green on first launch, verified.
+Three changes shipped + squash-merged to `main` this session, all live-verified:
+- **Run-tracker footer** (PR #38, `a899efc`): restored the design kit's *determinate*
+  progress fill (it had regressed to a flat, never-moving hairline) + a "Step N of 8"
+  caption + a live mono elapsed timer; added a reduced-motion-gated opacity **breathe**
+  on the active step marker + in-flight request dot — a user-approved override of the
+  system's "no idle motion" rule ([[design-kit-deviations]] #7).
+- **Settings** (same PR): fixed the section rule that hugged the Save button (gave
+  `.settings-actions` the section margin rhythm); **moved the Dark-surface toggle into
+  the toolbar** so the instant-applying control reads apart from the Save-gated form
+  (deviation #8); promoted Agent models to the lead section.
+- **Demo-run mode** (PR #39, `ac81c50`): a `demo-run` Cargo feature that runs the *real*
+  pipeline against paced streaming stubs with **no keys/network/cost** (excluded from
+  `tauri build`). Driven a GUI run end-to-end to verify ([[demo-run-mode]]). This also
+  confirmed the per-posture Bull/Bear/Balanced reasoning panes render correctly.
 
 ## Current state
 
-**App is built, installed, configured, and live for daily use** (running; no code changed this session, tree clean, nothing owed). Operational fact for any future build: the **installed app reads config+keys from SQLite `app_settings`, NOT env** — env only drives `tauri dev` ([[release-build-install]]). Rebuilding+reinstalling preserves config/reports/memory (data dir keyed by bundle id) — no re-seed on upgrade. The user's **first real report is not yet run** — left to them to fire (it becomes day-1 of live thesis continuity); the full generate path is already proven by the verification run.
+Both PRs merged; `main` at **`ac81c50`**; tree clean, nothing owed. The installed
+production app stays in daily use (untouched). **`npm run tauri:demo`** is now the
+cost-free way to verify any UI / report / tracker change — prefer it over spending
+FMP/Tavily quota or model tokens.
 
 ## Open questions
 
-- **Cadence Run B** stays open — the baseline delta-engine + vector-memory recall are still live-unexercised (cold-start had neither); they self-exercise on the user's **2nd real report**. Deferred ([[manual-pivot-cadence-windows]]).
-- **Per-posture analyst panes** (Bull/Bear/Balanced headers) unconfirmed — the fast analyst phase was caught mid-scroll; eyeball on a future run. Reasoning streaming itself is confirmed.
-- **opus-main leaning** now has two strong runs (firming, not a clean A/B) — keep accumulating ([[live-config-opus-main-leaning]]). Optional carry: the **worked-examples prompt enhancement**.
+- **Cadence Run B** stays open — the baseline delta-engine + vector-memory recall still
+  need a *real* 2nd report to exercise live; the demo run uses stubs and does not close
+  this ([[manual-pivot-cadence-windows]]).
+- **opus-main leaning** — two strong runs, still accumulating; optional carry is the
+  worked-examples prompt enhancement ([[live-config-opus-main-leaning]]).
+- Minor doc nit: `CLAUDE.md`'s verification section names only `ResearchDocuments.spec.ts`,
+  but `Settings.spec.ts` exists too — flagged, not yet fixed.
 
 ## Where to start
 
-No code owed — the app is in real use, so next session likely **reacts to live usage**. When the user fires their **2nd real report**, the cadence delta + memory-recall paths finally exercise live (Run B closes itself) — watch those + eyeball the per-posture reasoning panes. Otherwise small polish: the worked-examples prompt. Build/install method (Gatekeeper + re-seed caveat) is in [[release-build-install]].
+No code owed — next session likely reacts to live usage. When the user fires their **2nd
+real report**, the cadence delta + memory-recall paths finally exercise live (Run B closes
+itself) — watch those. For any UI/report/tracker polish, drive it cost-free with
+`npm run tauri:demo` ([[demo-run-mode]]) rather than a real run. Optional small items: the
+worked-examples prompt, and the `CLAUDE.md` spec-list doc nit.
