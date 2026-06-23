@@ -105,13 +105,9 @@ The primary market thesis synthesized by the Head Market Analyst after evaluatin
 
 This section represents the unified voice of the system rather than separate Bull/Bear/Balanced outputs.
 
-The thesis may:
-- lean bullish,
-- lean bearish,
-- remain mixed,
-- or heavily emphasize uncertainty depending on current market conditions.
+The thesis commits to a directional base case — the single most-probable path for the market from here, with the core reasons for it — and leads with it. The main alternatives are weighted as scenarios around that base case (which is more likely, and why), not presented as co-equal either/or branches, and a hard call is not deferred wholesale to a coming data release: the thesis states how it leans into that release and what would move it off the base case. By default the base case carries the prior thesis forward, pivoting only when the evidence has materially changed (see Thesis Continuity) — a firm view held across reports until it is falsified, rather than a fresh hedge each run.
 
-If conditions are unusually uncertain or bifurcated, the thesis may explicitly discuss multiple plausible market paths and the signals that would support each outcome.
+A mixed or uncertain stance is the exception, not a safe default. It is warranted only when the evidence is genuinely bimodal, or too degraded or conflicting to support a directional read; even then the thesis names which way it leans and the specific development (level, event, or data) that would resolve the ambiguity.
 
 ## Retrospective Audit
 
@@ -147,6 +143,8 @@ The application does not provide direct buy/sell instructions or trade execution
 ## Forward Outlook
 
 Key themes, risks, opportunities, and developments likely to influence markets over the coming weeks and months.
+
+The Forward Outlook carries the base case forward into the period ahead with conviction. Each theme, risk, or opportunity names the specific trigger, level, or event that would confirm or refute it and says which way it is expected to resolve, rather than listing co-equal possibilities.
 
 This section may discuss:
 - evolving macroeconomic conditions
