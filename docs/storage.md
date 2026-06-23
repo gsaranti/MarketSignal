@@ -68,7 +68,7 @@ The main agent selects the label that best fits each axis when synthesizing the 
 
 ### Report Summary Metadata Schema
 
-The structured report summary metadata is a JSON object the main agent populates when writing the final report.
+The structured report summary metadata is a JSON object stored with each report. The application stamps the identity fields (`report_id`, `report_type`, `created_at`); the main agent authors the remaining fields when writing the final report.
 
 Required fields:
 - `report_id` — UUID for the report.

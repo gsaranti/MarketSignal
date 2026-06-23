@@ -31,7 +31,7 @@ PDF exports preserve:
 
 ## Export Naming
 
-Exported files use the report date and report title in the filename.
+Exported files are named with the report date and a fixed `market-signal-report` basename.
 
 Example:
 ```text

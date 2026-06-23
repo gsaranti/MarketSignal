@@ -205,8 +205,7 @@ For what is stored in vector memory and the retention rules around it, see [stor
 
 With the baseline scan and change view already gathered ([Step 3](#step-3-gather-baseline-market-data)) and relevant memory recalled ([Step 4](#step-4-retrieve-vector-memory-pre-research)), the application supplies prior report context together with the current measured market state to the main agent. The main agent then evaluates a bounded set of prior Market Signal reports against what actually occurred — grounding the audit in the current measured baseline rather than prose recollection alone.
 
-The change view measures only the most recent interval — the move since the immediately previous report (see [storage.md §Baseline Snapshots](storage.md#baseline-snapshots)) — so reports earlier in the audit window are judged against the current measured baseline levels, not a per-report delta. (The snapshot store retains enough history to diff the current scan against each audited report's snapshot, so per-report measured deltas across the whole window are a possible future enrichment rather than a present guarantee.)
-
+The change view measures only the most recent interval — the move since the immediately previous report (see [storage.md §Baseline Snapshots](storage.md#baseline-snapshots)) — so reports earlier in the audit window are judged against the current measured baseline levels, not a per-report delta.
 The audit window should usually include the previous 2–6 Market Signal reports, depending on relevance and context limits.
 
 The retrospective audit process may evaluate:
@@ -230,7 +229,7 @@ The retrospective audit system behaves similarly to how professional research fi
 
 ## Step 6: Check Research Inbox
 
-**Type:** Computed (deterministic document parsing; local file reads). No model call — the reserved GPT-5-mini extraction stage is not built (inbox parsing ships deterministic; see [agents.md §Data Extraction](agents.md#data-extraction)).
+**Type:** Computed (deterministic document parsing; local file reads). No model call — inbox parsing is deterministic (see [agents.md §Data Extraction](agents.md#data-extraction)).
 
 The application checks `/research-inbox` at the start of the report job.
 

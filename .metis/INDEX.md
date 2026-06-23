@@ -16,7 +16,7 @@
 - Bull / Bear / Balanced postures — agents.md §Bull Analyst, §Bear Analyst, §Balanced Analyst
 - Fixed internal models (non-configurable) — agents.md §Fixed Internal Models
   - Headline Filtering = OpenAI GPT-5 mini — agents.md §Headline Filtering; report-workflow.md §Step 7
-  - Data Extraction — reserved, no model stage runs (inbox parsing is deterministic; GPT-5 mini is the named conditional follow-on) — agents.md §Data Extraction
+  - Data Extraction — no model stage runs (inbox parsing is deterministic) — agents.md §Data Extraction
   - Research Routing = Anthropic Claude Sonnet — agents.md §Research Routing; report-workflow.md §Step 8
   - Embeddings = OpenAI text-embedding-3-large — storage.md §Embeddings
 - User-configurable agent models — configuration.md §Agent Model Configuration
