@@ -6,7 +6,7 @@
 
 ## Current state
 
-PR #37 (Phases 1–4) is **complete and offline-verified — ready to merge on offline verification** (no live run gates the merge, by standing decision). No code owed on the thinking/streaming build. `docs/run-tracking.md §What the Tracker Shows` already documents the runtime contract (a model that surfaces no reasoning shows none, never errors) for both main + analysts — no docs/ edit was needed.
+PR #37 (Phases 1–4) is **complete and offline-verified — ready to merge on offline verification** (no live run gates the merge, by standing decision). No code owed on the thinking/streaming build. Docs reconciled to as-built this session: `docs/run-tracking.md` already documented the streamed-reasoning contract (a model that surfaces no reasoning shows none, never errors; cancellation now noted for analyst streams too), and a doc audit corrected `docs/report-workflow.md` — the analyst + main-agent `Returns` (forced-tool → `json_schema` output format on Anthropic), analysts now stream reasoning, and the main-agent reasoning side-stream. A Codex doc-review then caught a separate, pre-existing contradiction (not Phase 0–4 work): `agents.md` assigned "creating the condensed research packet" to the main agent (two spots) while `report-workflow.md §Step 11` correctly assigns it to the app layer — the long-standing BUILD.md-tracked Step-11 deviation. Now reconciled: both `agents.md` mentions corrected to the app-layer assembler, and BUILD.md's Step-11 note reframed from "deviates from the docs" to "docs reconciled to as-built." The whole docs corpus is now internally consistent on packet ownership.
 
 ## Open questions
 

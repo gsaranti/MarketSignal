@@ -51,8 +51,9 @@ across restarts.
 The user may cancel a running job at any point from the tracker.
 
 Cancellation is cooperative: the application stops the run at the next safe
-checkpoint — between steps, between data requests, and while the main agent is
-streaming — rather than interrupting a request already in flight. In practice the
+checkpoint — between steps, between data requests, and while an agent is
+streaming (the main agent or any of the three analysts) — rather than
+interrupting a request already in flight. In practice the
 run stops within a request or two of the cancel.
 
 A cancelled run:
