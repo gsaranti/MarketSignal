@@ -37,6 +37,16 @@ Build a production bundle:
 npm run tauri build
 ```
 
+### Demo mode (no API keys)
+
+To exercise the full report flow without any API keys, network calls, or cost:
+
+```bash
+npm run tauri:demo
+```
+
+Clicking **Generate now** drives the real report pipeline against built-in stubs — streaming the run tracker and rendering a complete (stub) report. It's a dev-only `demo-run` Cargo feature, excluded from production builds (`npm run tauri build`), and is the intended way to work on the run tracker, report rendering, and other UI without spending data-provider or model quota.
+
 ## Development
 
 Run the checks before committing a change:
