@@ -2,48 +2,44 @@
 
 ## What happened
 
-Reviewed the **first production report** (2026-06-23, generated mid-session ~9am PDT)
-and found three weaknesses → shipped **PR #41** (squash-merged to `main` as `c3ca28d`),
-one commit per slice, each independently compiling:
+Shipped **v1.0.0** — the first stable release. Bumped the version 0.1.0→1.0.0 across
+all five anchors (`tauri.conf.json` runtime source-of-truth, `package.json` + `Cargo.toml`
++ both lockfiles; plus the App.vue masthead comment) → commit **`f336bcd`** on `main`,
+annotated tag **`v1.0.0`**, both pushed. Full verify green (cargo test + clippy, npm build
++ 40 pure / 91 Vitest). Built the release bundle and **installed it to `/Applications`**
+(replaced the 0.1.0, quarantine cleared) — so the daily driver is now v1.0.0 and **no
+longer predates #41**.
 
-- **Market-session awareness** — new pure `market_clock` module (the time-of-day sibling
-  of `cadence`; adds the `chrono-tz` dep) classifies the run's `as_of` against NYSE hours
-  (Open / PreOpen / AfterClose / Weekend, DST-correct) and feeds the main agent a **tense
-  steer** (live/intraday while open vs a completed session). Fixes reports narrating an
-  open session as finished ("closed green").
-- **Thesis conviction** — `SYSTEM_PROMPT` + `report-structure.md` now require committing
-  to a **directional base case**, weighting alternatives around it (not co-equal branches),
-  with mixed/uncertain as the earned exception, not a hedge default.
-- **News freshness balance** — the Step-7 filter now *sees publish dates* + a dual mandate
-  (importance first, but ensure recent stories are represented); router echoes it; main
-  agent separates "new this period" from the standing backdrop. Folds in **Codex P1**:
-  threads the ET report date (from `market_clock`) into filter+router as the recency anchor.
-
-Codex review: P1 fixed; **P2 deferred** (holiday/early-close mislabel — documented v1 cut).
-Verified: 441 backend tests + clippy clean.
+**Clean-slated production data** before the build (user's call): emptied the report-derived
+tables (`reports`, `baseline_snapshots`, `vector_memory` incl. learnings, `job_runs`) and
+deleted the one morning report `.md`, but **kept `app_settings`** (5 keys + 4 model picks)
+so no re-seed. Deleted the old `…BACKUP-2026-06-23` (22 pre-launch reports —
+**unrecoverable**); left `dev/` alone. Method + nuances in [[release-build-install]]. This
+**reset the continuity chain to zero**.
 
 ## Current state
 
-`main` at **`c3ca28d`**, tree clean, nothing owed. All three changes are **prompt-quality
-+ a tense steer and are LIVE-UNVALIDATED** — demo mode stubs the agents, so it can't
-exercise the prompts. The installed production app predates #41, so a live check needs a
-rebuild off `c3ca28d` (or a live dev run), not the current installed v0.1.0
-([[release-build-install]]).
+`main` at **`f336bcd`** / tag `v1.0.0`, tree clean, nothing owed. v1.0.0 is installed and
+reads the cleaned production DB with keys/models intact; **report history is empty** (next
+report = #1). The #41 prompt changes (session tense, conviction, news freshness) are now
+**installed and ready but still LIVE-UNVALIDATED** — the prior "rebuild off `c3ca28d` first"
+blocker is cleared; only an actual report exercises them.
 
 ## Open questions
 
-- **Cadence Run B** — a real 2nd report now validates **three** things at once: the
-  delta-engine + vector-memory recall (still unexercised live) *and* the new conviction +
-  freshness prompt changes ([[manual-pivot-cadence-windows]]).
-- **Market holidays / early closes** — `market_clock` mislabels them "open until 4pm"
-  (documented v1 limitation); a clean follow-up if it bites (needs an NYSE calendar).
+- **Cadence Run B** — clearing the DB reset continuity, so this now needs **two** fresh
+  reports: #1 validates session-tense + conviction + freshness (the #41 goals); the report
+  *after* #1 validates the delta-engine + vector-memory recall (delta/recall is now #2-vs-#1,
+  no longer against the old report) ([[manual-pivot-cadence-windows]]).
+- **Market holidays / early closes** — `market_clock` still mislabels them "open until 4pm"
+  (documented v1 cut; needs an NYSE calendar).
 - **opus-main leaning** — accumulating; the worked-examples prompt is an optional carry
   ([[live-config-opus-main-leaning]]).
 
 ## Where to start
 
-React to the user's next real report. When they run a 2nd report **from a build that
-includes #41**, read it against the three goals — correct session tense, a *firm base-case*
-thesis (not hedged), and a fresh-vs-important news balance — which simultaneously closes
-Cadence Run B (watch the delta + memory-recall paths). To exercise it live the app must be
-rebuilt off `c3ca28d` ([[release-build-install]]); demo mode won't show the prompt effects.
+Generate the **first v1.0.0 report** from the installed app — no rebuild needed (it reads
+keys from `app_settings`). Read it against the three #41 goals: correct session tense, a
+*firm base-case* thesis (not hedged), and a fresh-vs-important news balance. A second report
+after it closes Cadence Run B (watch the delta + memory-recall paths now rebuilding from a
+clean chain).
