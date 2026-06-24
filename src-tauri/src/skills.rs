@@ -144,7 +144,9 @@ that most limits the comparison.",
         description: "Analyzes investor psychology, market positioning, and sentiment conditions.",
         body: "Positioning & Sentiment. Read investor psychology, positioning, and sentiment. Use \
 the gathered tells — the volatility term structure (VIX against the 3-month VXV, and VXN for the \
-Nasdaq), the equity-breadth movers and most-actives, sector dispersion, and consumer sentiment — \
+Nasdaq), the equity-breadth movers and most-actives, sector dispersion, consumer sentiment, and the \
+CFTC futures positioning (speculator net on the index, rate, FX, and commodity bellwethers, with the \
+asset-manager-vs-leveraged-money split flagging where real money and fast money diverge) — \
 alongside the positioning and flow color in the research packet to judge whether the market is \
 fearful or greedy, complacent or capitulating, and where trades look crowded. Watch for euphoria, \
 or for excessive pessimism that sets up an asymmetric reaction. Carry this as a contrarian check on your central read — not a \

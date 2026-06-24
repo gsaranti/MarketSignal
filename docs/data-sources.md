@@ -71,6 +71,23 @@ Responsibilities:
 
 The application uses BLS data for inflation and labor-market analysis.
 
+### CFTC (Commitments of Traders)
+Docs - https://publicreporting.cftc.gov/ (Socrata Open Data API)
+
+The CFTC's weekly Commitments of Traders report supplies the one signal the price, valuation, macro, and credit groups can't: how crowded or extended the *speculative* cohort is in the market's bellwether futures. It is the application's positioning input, accessed through the CFTC public-reporting Socrata API, which is **keyless** — like BLS, it needs no credential and sits outside the execution gate.
+
+Two report formats are read and normalized into a single speculator-net view per contract:
+- **Traders in Financial Futures** (dataset `gpe5-46if`) — for the equity-index, rates, and FX contracts. Its leveraged-money ("fast money") and asset-manager ("real money") split is the signal: the two cohorts often diverge (real money net long while leveraged money presses shorts).
+- **Disaggregated** (dataset `72hh-3qpy`) — for the commodity contracts. Managed money is the speculator proxy; there is no asset-manager cohort, so the real-money line is omitted.
+
+Curated bellwether contracts, pinned by CFTC contract code (never free-text — names collide across micro / consolidated variants):
+- equity index: E-Mini S&P 500, Nasdaq-100
+- rates: 10-Year and 2-Year U.S. Treasury Notes
+- FX: U.S. Dollar Index
+- commodities: Gold, WTI Crude Oil, Copper
+
+Each row carries the speculator net (long − short), its week-over-week change, the speculator long as a percent of open interest, and — for financial futures — the asset-manager net and its change. The data is weekly: a Tuesday snapshot released the following Friday, so a report always reads the prior week's positioning, and each row carries its snapshot date so the model reads it as-of. A bounded freshness guard drops a row older than three weeks (a stalled feed) to a gap rather than presenting it as current. The group is fail-soft and additive — a flaky contract or a whole-API outage degrades to a recorded gap rather than failing the run, and it carries no coverage floor. Because COT already carries its own native week-over-week change and follows a fixed weekly cadence, the positioning group is exempt from the report-over-report baseline change view.
+
 ## News and Research
 
 ### Tavily

@@ -109,7 +109,7 @@ This recent context helps the main agent understand how the broader market thesi
 
 ## Step 3: Gather Baseline Market Data
 
-**Type:** API retrieval (FMP / FRED / BLS) + Computed (the coverage floor and the baseline change view). No model call.
+**Type:** API retrieval (FMP / FRED / BLS / CFTC) + Computed (the coverage floor and the baseline change view). No model call.
 
 The application gathers required baseline market data before agent reasoning begins.
 
@@ -153,6 +153,11 @@ Valuation and finer rotation (per exchange — NASDAQ growth + NYSE value):
 - sector valuation (per-sector aggregate P/E)
 - strongest and weakest industries (average move, joined with aggregate P/E)
 - US equity-risk-premium
+
+Market positioning (CFTC Commitments of Traders, weekly snapshot):
+- speculator net (leveraged money / managed money) on the bellwether index, rate, FX, and commodity futures
+- asset-manager ("real money") net on the financial futures, where it diverges from fast money
+- week-over-week position changes and crowding (percent of open interest)
 
 News categories:
 - politics

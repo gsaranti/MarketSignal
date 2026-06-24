@@ -64,6 +64,7 @@ const BASELINE_ROWS: &[(&str, &str)] = &[
     ("FRED", "Treasury yields & the curve"),
     ("FRED", "Gross Domestic Product"),
     ("BLS", "Labor series (CPI, unemployment, payrolls, wages)"),
+    ("CFTC", "Commitments of Traders positioning"),
 ];
 
 pub struct DemoMarketDataSource {
