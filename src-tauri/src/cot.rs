@@ -641,4 +641,47 @@ mod tests {
             targets[5]
         );
     }
+
+    #[test]
+    #[ignore = "hits the live CFTC COT API (keyless)"]
+    fn cot_baseline_smoke() {
+        let src = CotDataSource::new().expect("build COT source");
+        let data = src
+            .baseline_scan(ReportCadence::default())
+            .expect("live COT scan");
+
+        // Dump the resolved positioning so a maintainer can eyeball it (run with
+        // `-- --ignored --nocapture`); the offline tests only check fixture shapes, so this
+        // is where a renamed / delisted contract code or a changed trader-category field
+        // name surfaces, the way `fred_baseline_smoke` catches a removed FRED series.
+        eprintln!("cot_positioning ({}):", data.cot_positioning.len());
+        for p in &data.cot_positioning {
+            eprintln!(
+                "  {:<28} code={:<8} {} OI={:>11} spec_net={:>11} real_money_net={:?}",
+                p.contract,
+                p.contract_code,
+                p.report_date,
+                p.open_interest,
+                p.spec_net,
+                p.real_money_net
+            );
+        }
+        for g in &data.gaps {
+            eprintln!("  GAP {} {} — {}", g.series_id, g.series_name, g.reason.as_str());
+        }
+
+        // Every tracked contract must resolve — a renamed / delisted code or a changed
+        // field name would silently thin the group, so fail the smoke loudly rather than
+        // letting the baseline quietly shrink.
+        assert_eq!(
+            data.cot_positioning.len(),
+            CONTRACTS.len(),
+            "a tracked COT contract did not resolve"
+        );
+        assert!(
+            data.gaps.is_empty(),
+            "live COT scan recorded gaps: {:?}",
+            data.gaps
+        );
+    }
 }
