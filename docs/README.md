@@ -16,3 +16,8 @@
 - [report-structure.md](report-structure.md) — Canonical Markdown authoring format, the HTML-for-presentation rule, and the standard report sections.
 - [storage.md](storage.md) — SQLite and vector-memory responsibilities, retention rules, and deletion behavior.
 - [export.md](export.md) — Markdown and PDF export options, naming conventions, and behavior.
+- [local-models.md](local-models.md) — The local analysis suite's model substrate: local serving, the model roster and per-task routing, schema-constrained output, the context-memory discipline, and isolated per-job run memory.
+- [web-research.md](web-research.md) — The local suite's web tool: the SearXNG-backed search / fetch / extract loop with a Tavily fallback.
+- [schwab-integration.md](schwab-integration.md) — Portfolio holdings ingestion from Charles Schwab (OAuth, token lifecycle, positions) plus the manual-import fallback.
+- [portfolio-analysis.md](portfolio-analysis.md) — The local Portfolio Analysis job: the per-holding pipeline, grading, price targets, and portfolio roll-up.
+- [trade-opportunities.md](trade-opportunities.md) — The local Trade Opportunities job: the risk × horizon opportunity matrix and its continuity.

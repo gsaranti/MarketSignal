@@ -17,4 +17,12 @@ The application is not a trading bot. It acts as a professional market-analysis 
 - forward-looking market preparation
 - investment strategy guidance
 
-The application runs entirely on the user's machine except for external API/model requests.
+## Local Analysis Suite
+
+Alongside the cloud-generated report, the application includes a **local analysis suite** that runs on local open-weight models on the user's machine — no external model provider and no per-call model cost. It adds two on-demand features:
+- **Portfolio Analysis** grades the holdings in the user's Charles Schwab portfolio and recommends an action and price targets for each, grounded in the current report's house view (see [portfolio-analysis.md](portfolio-analysis.md)).
+- **Trade Opportunities** researches new investment ideas across a fixed risk-by-horizon matrix (see [trade-opportunities.md](trade-opportunities.md)).
+
+Both are deliberately prescriptive — they issue grades, actions, and targets — but the application remains an analysis system, not a trading bot: it never places orders. The substrate they share (local model serving, the web-research tool, and isolated per-job run memory) is described in [local-models.md](local-models.md).
+
+The report pipeline runs entirely on the user's machine except for external API/model requests; the local analysis suite makes no external model calls, reaching the network only for the web pages its research fetches.

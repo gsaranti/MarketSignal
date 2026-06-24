@@ -143,3 +143,22 @@ Each item is embedded as a single atomic unit:
 - one embedding per durable learning
 
 Report Markdown is not split into fixed-size or section-based chunks for vector memory; the report-summary metadata is the unit that enters vector memory.
+
+## Local Analysis Suite Storage
+
+The local analysis suite (see [local-models.md](local-models.md)) persists its own runs, separately from report storage. Each feature stores its run history in the SQLite database:
+
+- **Portfolio Analysis** — per run, the per-holding verdicts (grade and sub-scores, action, horizon outlook, price targets, financial-analysis summary, and the continuity diff) and the portfolio roll-up. The most recent pull of holdings is also stored so the portfolio is viewable without re-fetching (see [schwab-integration.md](schwab-integration.md)).
+- **Trade Opportunities** — per run, the 3×3 matrix of opportunities (each with its thesis, catalyst, horizon, risk tier, conviction, entry consideration, and carry-forward status).
+
+Each feature retains its most recent N runs, pruned independently of the 30-report report-retention window and of each other (the same additive-history pattern as baseline snapshots).
+
+### Local Vector Memory
+
+Both features use vector memory for run-to-run continuity, through the same `vector_memory` table and module as the report. Three rules keep the spaces separate:
+
+- **Per-job partitions.** The report, Portfolio Analysis, and Trade Opportunities each write and read **only their own** memory kind; no job retrieves another's learnings. Holding-grading calibration and opportunity-discovery context are job-specific, so cross-job recall would be noise.
+- **A distinct embedder.** The local features embed with a local model (see [local-models.md §The model roster and per-task routing](local-models.md#the-model-roster-and-per-task-routing)), not OpenAI `text-embedding-3-large`. The report's vectors are therefore a different dimensionality and cannot be compared against the local ones; the two local features share an embedder, so their isolation is enforced by partition, not dimensionality.
+- **Own retention.** A feature's memory rows follow that feature's run retention, independent of the 30-report cascade.
+
+The store stays exact cosine search in Rust, unchanged (see [§Vector Memory](#vector-memory)).

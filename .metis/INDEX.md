@@ -110,3 +110,21 @@
 - PDF via Tauri webview print-to-PDF — export.md §PDF Export
 - Export naming convention — export.md §Export Naming
 - Export does not re-run workflow — export.md §Export Behavior
+
+## Local analysis suite
+- Local analysis suite overview (local-only, two prescriptive features) — overview.md §Local Analysis Suite; local-models.md
+- Local model substrate (Ollama-on-MLX serving, roster, per-task routing) — local-models.md §Serving runtime, §The model roster and per-task routing
+- Local-model adapter seam (flexible endpoint/model_id client, distinct from the cloud AgentModel enum) — local-models.md §The local-model adapter seam
+- Schema-constrained output (grammar-constrained JSON) — local-models.md §Schema-constrained output
+- Context-memory discipline (distilled hand-offs, retrieve-don't-dump) — local-models.md §Context-memory discipline
+- Per-job isolated vector memory (three partitions) — local-models.md §Run history and continuity; storage.md §Local Vector Memory
+- Web research tool (SearXNG-primary, Tavily fallback, fetch/extract) — web-research.md
+- Charles Schwab integration (OAuth loopback, 30-min/7-day token lifecycle, positions, account hashing) — schwab-integration.md
+- Manual holdings import (CSV/paste fallback) — schwab-integration.md §Manual import fallback
+- Portfolio Analysis job (per-holding pipeline, grade, action, targets, roll-up) — portfolio-analysis.md
+- Holding verdict schema (grade + sub-scores, action ladder, horizon, targets, what-changed) — portfolio-analysis.md §The holding verdict
+- Trade Opportunities job (3×3 risk×horizon matrix) — trade-opportunities.md
+- Opportunity schema (thesis, catalyst, conviction, carry-forward status) — trade-opportunities.md §The opportunity
+- Local analysis suite configuration (daemon, roster, SearXNG, Schwab; gates local jobs only) — configuration.md §Local Analysis Suite Configuration
+- Local analysis suite storage + per-feature retention — storage.md §Local Analysis Suite Storage
+- Local suite pages (Portfolio, Trade Opportunities) — interface.md §Main Layout

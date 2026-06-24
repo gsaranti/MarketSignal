@@ -23,6 +23,14 @@ Market Signal
 │   ├── Research Inbox
 │   └── Research Archive
 │
+├── Portfolio (local analysis suite)
+│   ├── Holdings (manual pull / CSV import)
+│   ├── Per-holding verdicts (grade, action, price targets, outlook)
+│   └── Portfolio roll-up
+│
+├── Trade Opportunities (local analysis suite)
+│   └── Risk × horizon matrix (high/med/low × short/mid/long)
+│
 ├── Persistent Warning Area
 │   ├── Missing agent configuration
 │   ├── Missing API tokens
@@ -33,7 +41,10 @@ Market Signal
     ├── Agent model configuration
     ├── API token configuration
     ├── External data provider credentials
-    └── Report generation
+    ├── Report generation
+    ├── Local analysis models (daemon endpoint + roster)
+    ├── Web research (SearXNG endpoint)
+    └── Charles Schwab connection
 ```
 
 The operational behavior of each panel is defined in the relevant concern files:
@@ -43,6 +54,9 @@ The operational behavior of each panel is defined in the relevant concern files:
 - Research Documents (Inbox / Archive) — see [research-documents.md](research-documents.md).
 - Persistent Warning Area triggers — see [scheduling.md](scheduling.md) and [configuration.md](configuration.md). De-duplication behavior is described below.
 - Settings — see [configuration.md](configuration.md) and [scheduling.md](scheduling.md).
+- Portfolio — see [portfolio-analysis.md](portfolio-analysis.md) and [schwab-integration.md](schwab-integration.md).
+- Trade Opportunities — see [trade-opportunities.md](trade-opportunities.md).
+- Local analysis suite substrate and its settings — see [local-models.md](local-models.md), [web-research.md](web-research.md), and [configuration.md](configuration.md). Both local jobs stream into the same Run Tracker as a report run ([run-tracking.md](run-tracking.md)).
 
 ## Persistent Warning Area
 

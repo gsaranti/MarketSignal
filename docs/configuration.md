@@ -7,8 +7,9 @@ The Settings section includes:
 - API token configuration
 - external data provider credentials
 - report generation controls
+- local analysis suite configuration
 
-The report generation controls are described in [scheduling.md](scheduling.md). This file covers model selection, API tokens, and external data provider credentials.
+The report generation controls are described in [scheduling.md](scheduling.md). This file covers model selection, API tokens, external data provider credentials, and the local analysis suite's own configuration.
 
 ## Agent Model Configuration
 
@@ -78,3 +79,23 @@ If a required external provider credential (the Financial Modeling Prep, FRED, o
 - the application displays a validation warning explaining which credential is missing
 
 For the data providers themselves and what each is used for, see [data-sources.md](data-sources.md).
+
+## Local Analysis Suite Configuration
+
+The local analysis suite (Portfolio Analysis and Trade Opportunities) is configured separately from the report, and its settings gate the **local jobs only** — they are independent of the report's execution gate, so a machine set up for one need not be set up for the other.
+
+### Local Models
+
+The suite calls a local model daemon over an OpenAI-compatible HTTP endpoint. Settings hold:
+- the **daemon endpoint** (the local Ollama URL)
+- the **model roster** — the model ids for the reasoner, the fast tier, and the embedder (see [local-models.md](local-models.md) for the recommended defaults)
+
+A local job is blocked unless the daemon is reachable and the configured roster is present.
+
+### Web Research
+
+The suite's web-research tool uses a local SearXNG instance, with the existing Tavily credential as a fallback (see [web-research.md](web-research.md)). Settings hold the **SearXNG endpoint**; no key is required for the local instance, and the Tavily fallback reuses the credential already configured above.
+
+### Charles Schwab Connection
+
+Portfolio Analysis sources holdings from Charles Schwab via OAuth (see [schwab-integration.md](schwab-integration.md)). Settings hold the developer **app key and secret** and manage the **connection state** (connect / re-authenticate). Because the OAuth refresh token expires every 7 days, the connection surfaces a re-authentication prompt when it lapses. Holdings can also be supplied by manual import, so a Schwab connection is not strictly required to run Portfolio Analysis.

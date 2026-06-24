@@ -133,8 +133,22 @@ The application uses GDELT to strengthen geopolitical and macro event awareness.
 
 GDELT's single combined query sizes its `timespan` lookback to the **elapsed interval since the previous report** (rounded up to whole days, clamped to a floor and a one-month cap), rather than a fixed week — keeping the geopolitical feed matched to the on-demand cadence. The first report (no prior interval) uses a one-week default. This changes only the window width, not the request count: it stays a single bounded query, so GDELT's burst rate limit is unaffected.
 
+## Local Analysis Suite Sources
+
+These sources serve the local analysis suite ([local-models.md](local-models.md)), not the Market Signal Report.
+
+### Charles Schwab (Trader API)
+Docs - https://developer.schwab.com/
+
+Charles Schwab is the source of the user's **portfolio holdings** for Portfolio Analysis — positions with quantity, cost basis, market value, and instrument identity, read through the Schwab Trader API over OAuth. It is holdings-only: Schwab's fundamentals are thin, so company financials continue to come from FMP. Authentication, token lifecycle, account hashing, and the manual-import fallback are described in [schwab-integration.md](schwab-integration.md).
+
+### SearXNG (local web search)
+Docs - https://docs.searxng.org/
+
+SearXNG is the local suite's **web-search backend** — a self-hosted, keyless metasearch instance queried over its JSON API on the loopback interface, fanning queries out to general engines. It is the primary search source for the suite's research loop, with the existing Tavily integration as a fallback. The search / fetch / extract tool built on it is described in [web-research.md](web-research.md).
+
 ## LLM Providers
 - [OpenAI](https://platform.openai.com/docs)
 - [Anthropic](https://platform.claude.com/docs)
 
-The specific models exposed by these providers, the user-configurable model selections for each agent, and the API-token requirements are covered in [configuration.md](configuration.md). The non-configurable models used by fixed internal pipeline stages are covered in [agents.md](agents.md).
+The specific models exposed by these providers, the user-configurable model selections for each agent, and the API-token requirements are covered in [configuration.md](configuration.md). The non-configurable models used by fixed internal pipeline stages are covered in [agents.md](agents.md). The local analysis suite uses local open-weight models served on-device instead of these providers — see [local-models.md](local-models.md).
