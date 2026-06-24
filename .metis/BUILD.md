@@ -172,7 +172,12 @@ pre-mount to avoid a first-paint flash.
   Sidebar, Research Documents, the Persistent Warning Area, and Settings
   (`docs/interface.md`). Markdown→HTML rendering uses **markdown-it** (JS), so
   HTML generation lives on the webview side, rendered on demand for display and
-  PDF export and **never persisted** — agents never see HTML. Embedded charts
+  PDF export and **never persisted** — agents never see HTML. PDF export uses the
+  webview's native print-to-PDF, where the page margin comes from the report
+  article's **padding**, not `@page`: a non-zero `@page` margin makes WebKit
+  silently drop content that spills onto an added page, so `@page` stays 0 (the
+  cost — interior pages get no top/bottom margin — is a WebKit limitation, not a
+  choice). Embedded charts
   ride the same seam: the agent emits a fenced `chart` JSON block as part of its
   Markdown and `src/renderChart.ts` is the authoritative validator that renders
   it to restrained inline SVG (line/bar/area), falling back to the raw code
