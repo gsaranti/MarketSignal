@@ -96,6 +96,10 @@ A local job is blocked unless the daemon is reachable and the configured roster 
 
 The suite's web-research tool uses a local SearXNG instance, with the existing Tavily credential as a fallback (see [web-research.md](web-research.md)). Settings hold the **SearXNG endpoint**; no key is required for the local instance, and the Tavily fallback reuses the credential already configured above.
 
+### Price Data
+
+The suite's price and fundamentals load is spread across free providers to stay under FMP's daily cap (see [data-sources.md](data-sources.md)). **SEC EDGAR** and **Stooq** are keyless and need no configuration; **Finnhub** uses a free API key held in Settings (optional — without it, quotes fall back to FMP).
+
 ### Charles Schwab Connection
 
 Portfolio Analysis sources holdings from Charles Schwab via OAuth (see [schwab-integration.md](schwab-integration.md)). Settings hold the developer **app key and secret** and manage the **connection state** (connect / re-authenticate); the app secret and the OAuth tokens are kept in the **macOS Keychain**, not the SQLite settings store, since they are bearer credentials to the brokerage account. Because the OAuth refresh token expires every 7 days, the connection surfaces a re-authentication prompt when it lapses. Holdings can also be supplied by manual import, so a Schwab connection is not strictly required to run Portfolio Analysis.

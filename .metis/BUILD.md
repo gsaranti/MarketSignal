@@ -317,7 +317,11 @@ The load-bearing decisions:
   sub-scores, risk-tier assignment, valuation/quality/momentum/risk metrics, and
   scenario price targets (methodology exposed) — are computed by a Rust
   financial-analysis engine over **FMP plus keyless SEC EDGAR** (10-K/Q/8-K +
-  XBRL company facts); the model interprets, never invents numbers. An **evidence
+  XBRL company facts); the model interprets, never invents numbers. High-volume
+  price/OHLCV is dispersed to **keyless Stooq** (deep history) and **Finnhub**
+  (quotes) to keep the report and both local jobs under FMP's ~250/day free cap,
+  with FMP kept for its low-volume niche (movers, earnings calendar, screener,
+  sector/industry P/E). An **evidence
   floor** returns `insufficient-evidence` (not a low-conviction guess) when data
   is missing/stale/conflicting. Long per-holding jobs **checkpoint and resume**,
   and early runs are treated as **shadow/calibration** before outputs are trusted.

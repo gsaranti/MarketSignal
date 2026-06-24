@@ -133,3 +133,4 @@
 - Evidence floor (insufficient-evidence abstention) — portfolio-analysis.md §Evidence floor
 - Deterministic risk-tier assignment — trade-opportunities.md §The opportunity space
 - Per-holding checkpoint/resume + research caching — portfolio-analysis.md §Failure posture
+- Free-tier data dispersal (SEC/Stooq/Finnhub offload FMP; FMP keeps niche aggregates) — data-sources.md §Local Analysis Suite Sources

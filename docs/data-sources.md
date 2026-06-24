@@ -135,7 +135,7 @@ GDELT's single combined query sizes its `timespan` lookback to the **elapsed int
 
 ## Local Analysis Suite Sources
 
-These sources serve the local analysis suite ([local-models.md](local-models.md)), not the Market Signal Report. The suite also reuses **FMP** (documented above) — as the candidate-screening source for Trade Opportunities (movers, valuation extremes, earnings signals) and for the company financials behind Portfolio Analysis.
+These sources serve the local analysis suite ([local-models.md](local-models.md)), not the Market Signal Report. Because FMP's free tier (~250 requests/day) is now shared by the report and both local jobs, the suite **disperses high-volume data across additional free providers** to stay under that cap: company fundamentals from **SEC EDGAR** (keyless), historical prices from **Stooq** (keyless), and real-time quotes from **Finnhub** — leaving **FMP** for the low-volume niche endpoints only it serves free (movers, the earnings calendar, the screener, and the sector / industry aggregate P/E). All sit behind the same data-source seam and fail-soft posture as the report's adapters.
 
 ### Charles Schwab (Trader API)
 Docs - https://developer.schwab.com/
@@ -146,6 +146,16 @@ Charles Schwab is the source of the user's **portfolio holdings** for Portfolio 
 Docs - https://www.sec.gov/edgar/sec-api-documentation
 
 SEC EDGAR is the **authoritative source for company filings and fundamentals** behind Portfolio Analysis (and candidate validation in Trade Opportunities): 10-K / 10-Q / 8-K submissions and the XBRL **company-facts** API for normalized financial-statement data. It is **keyless** (like BLS and CFTC), requiring only a declared User-Agent with contact info per the SEC's fair-access policy, and is rate-limited to ~10 requests/second. SEC supplies the raw statement data the deterministic financial-analysis engine ([portfolio-analysis.md](portfolio-analysis.md)) computes over; FMP remains for convenient normalized metrics and market-data signals. Authoritative filings reduce the suite's dependence on web-search summaries for the numbers that drive grades and targets.
+
+### Stooq
+Docs - https://stooq.com/db/h/
+
+Stooq is the suite's **historical price source** — keyless, with no documented rate cap, serving 20–30+ years of daily OHLCV per symbol via a simple CSV endpoint (plus bulk database downloads). It carries the highest-volume per-holding price need — the inputs to momentum, volatility, and price-target scenarios — keeping that load entirely off FMP. Like GDELT it is best-effort and fail-soft: an informal source with no SLA and occasional symbol-mapping gaps (US tickers take a `.us` suffix), so a missing series degrades to a gap rather than failing the run, and the adapter self-throttles to stay polite.
+
+### Finnhub
+Docs - https://finnhub.io/docs/api
+
+Finnhub supplies **real-time equity quotes** on its free tier (60 requests/minute, no daily cap, free API key). It covers the current-price reads the analysis needs without spending FMP's daily budget; absent a key, quotes fall back to FMP (a low-volume call). Finnhub's historical candles moved to its paid tier, so deep history stays on Stooq, and **Twelve Data** (free key, 800 requests/day) is a noted fallback if intraday OHLCV is ever needed.
 
 ### SearXNG (local web search)
 Docs - https://docs.searxng.org/
