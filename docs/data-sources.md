@@ -140,7 +140,7 @@ These sources serve the local analysis suite ([local-models.md](local-models.md)
 ### Charles Schwab (Trader API)
 Docs - https://developer.schwab.com/
 
-Charles Schwab is the source of the user's **portfolio holdings** for Portfolio Analysis — positions with quantity, cost basis, market value, and instrument identity, read through the Schwab Trader API over OAuth. It is holdings-only: Schwab's fundamentals are thin, so company financials come from FMP and SEC EDGAR (below). Authentication, token lifecycle, account hashing, and the manual-import fallback are described in [schwab-integration.md](schwab-integration.md).
+Charles Schwab is the source of the user's **portfolio holdings** *and* **equity option chains** for the local suite — positions (quantity, cost basis, market value, instrument identity) via the accounts endpoint, and live option chains via the same OAuth's market-data endpoint (`/marketdata/v1/chains`, returning per-contract volume, open interest, implied volatility, and greeks). It is not a fundamentals source — Schwab's fundamentals are thin, so company financials come from FMP and SEC EDGAR (below). From the chains the suite computes a deterministic **options-activity signal** — put/call ratio (by volume and open interest) plus an IV/skew read (a rough activity proxy, not positioning truth — see [schwab-integration.md](schwab-integration.md)). A connected Schwab account is **required to run either local job**; authentication, token lifecycle, account hashing, and the manual-import supplement are described in [schwab-integration.md](schwab-integration.md).
 
 ### SEC EDGAR
 Docs - https://www.sec.gov/edgar/sec-api-documentation
@@ -156,6 +156,11 @@ Stooq is the suite's **historical price source** — keyless, with no documented
 Docs - https://finnhub.io/docs/api
 
 Finnhub supplies **real-time equity quotes** on its free tier (60 requests/minute, no daily cap, free API key). It covers the current-price reads the analysis needs without spending FMP's daily budget; absent a key, quotes fall back to FMP (a low-volume call). Finnhub's historical candles moved to its paid tier, so deep history stays on Stooq, and **Twelve Data** (free key, 800 requests/day) is a noted fallback if intraday OHLCV is ever needed.
+
+### CBOE
+Docs - https://www.cboe.com/us/options/market_statistics/daily/
+
+CBOE provides a free, keyless daily **put/call ratio for its own exchange's flow** (total, equity, index) — a Cboe **venue-level** options-sentiment backdrop (not consolidated all-market data, which is a separate paid dataset), distinct from the per-stock put/call the suite computes from Schwab chains. It is an optional broad-market context signal read from Cboe's daily statistics, fail-soft and venue-level only (no per-symbol breakdown), so it informs the macro sentiment read rather than any single verdict.
 
 ### SearXNG (local web search)
 Docs - https://docs.searxng.org/

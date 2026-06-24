@@ -1,6 +1,6 @@
 # Charles Schwab Integration
 
-Portfolio Analysis ([portfolio-analysis.md](portfolio-analysis.md)) sources the user's holdings from their Charles Schwab brokerage account via the **Schwab Trader API**, with a **manual import** fallback. Holdings are fetched **only on explicit user action** — the app never polls or auto-refreshes.
+The local suite sources the user's holdings — and equity option chains — from their Charles Schwab brokerage account via the **Schwab Trader API**. **A connected Schwab account is required to run either local job** (see [§A connected Schwab account is required](#a-connected-schwab-account-is-required)); manual import is a supplement, not a substitute. Data is fetched **only on explicit user action** — the app never polls or auto-refreshes.
 
 ## Manual pull, never automatic
 
@@ -15,20 +15,26 @@ Access uses Schwab's three-legged **OAuth 2.0 authorization-code** flow. The use
 - **Access token: 30 minutes**, refreshed automatically by the app as needed.
 - **Refresh token: 7 days, and it cannot be extended.** When it expires, the only recovery is to repeat the interactive browser login.
 
-The unavoidable consequence is a **weekly re-login** — designed for rather than hidden: the app prompts for re-authentication once the refresh token has lapsed, and the manual-import path (below) keeps the feature usable in the meantime. The app secret and the OAuth tokens are stored in the **macOS Keychain** — not the SQLite settings store used for less-sensitive API keys — because they are bearer credentials to the user's brokerage account (see [configuration.md §Charles Schwab Connection](configuration.md#charles-schwab-connection)); they are never displayed.
+The unavoidable consequence is a **weekly re-login** — designed for rather than hidden: the app prompts for re-authentication once the refresh token has lapsed, and **because a connected account is required, both local jobs are blocked until the user re-authenticates** (the accepted cost of sourcing holdings and option chains from Schwab). The app secret and the OAuth tokens are stored in the **macOS Keychain** — not the SQLite settings store used for less-sensitive API keys — because they are bearer credentials to the user's brokerage account (see [configuration.md §Charles Schwab Connection](configuration.md#charles-schwab-connection)); they are never displayed.
 
 ## What is pulled
 
 Holdings come from the account positions endpoint (`GET /trader/v1/accounts/{accountHash}?fields=positions`). Schwab identifies accounts by a **hashed account number**, not the plaintext one, so the app first resolves the plaintext→hash mapping and uses the hash for all account calls. Each position yields the fields the analysis needs: instrument identity (symbol, CUSIP, asset type), quantity, average cost (cost basis), market value, and profit/loss.
 
+**Option chains** come from the same OAuth's market-data endpoint (`GET /marketdata/v1/chains`) — free on the individual Trader API, no extra subscription. Each contract returns volume, open interest, implied volatility, and greeks, from which the suite computes a deterministic **options-activity signal** per stock: the put/call ratio (by volume and by open interest) and an IV/skew read (see [portfolio-analysis.md](portfolio-analysis.md), [trade-opportunities.md](trade-opportunities.md)). This is a rough **activity proxy, not positioning truth** — volume and open interest don't reveal whether contracts were bought or sold, opened or closed, or used to hedge, and deep-in-the-money exercise flow can distort the ratio — so it is interpreted with that caveat and kept separate from the grade sub-scores until calibration proves it. "Deterministic" means a canonical, documented method (expiration window, delta / moneyness bands, a liquidity floor, zero-bid exclusion; IV-skew as a matched-tenor 25-delta risk reversal) whose exact parameters are fixed at implementation. Chains are fetched **fresh at job start** (not piggybacked on the holdings pull), carry an as-of / market-state timestamp, are **rejected if stale** (mirroring the report's COT freshness guard), and the request is bounded by expiration and strike range to cap volume. Schwab serves no options history; persisted snapshots (for trend) follow the suite's run retention ([storage.md](storage.md)).
+
 ## Fundamentals stay with FMP
 
-Schwab's fundamentals are thin summary ratios with an undocumented, unstable shape, and there is no financial-statement (income / balance-sheet / cash-flow) endpoint. So **Schwab is the source of truth for holdings only**; the deeper company financials a holding's analysis needs come from **FMP and SEC EDGAR** ([data-sources.md](data-sources.md)). Schwab says *what you own and at what cost*; FMP and SEC say *how the company is doing*.
+Schwab's fundamentals are thin summary ratios with an undocumented, unstable shape, and there is no financial-statement (income / balance-sheet / cash-flow) endpoint. So **Schwab is the source of truth for holdings and option chains, not fundamentals**; the deeper company financials a holding's analysis needs come from **FMP and SEC EDGAR** ([data-sources.md](data-sources.md)). Schwab says *what you own, at what cost, and how active its options market is*; FMP and SEC say *how the company is doing*.
 
-## Manual import fallback
+## Manual import (supplement)
 
-Holdings can also be entered **manually — by pasting or importing a CSV** of symbols, quantities, and cost bases. Both ingestion paths populate the same internal holdings model behind one trait, so the analysis pipeline is agnostic to where holdings came from. Manual import covers three real cases: the few-day window while a new Schwab developer app awaits approval, any lapse of the 7-day refresh token before re-login, and use without linking a brokerage account at all.
+Holdings can also be entered **manually — by pasting or importing a CSV** of symbols, quantities, and cost bases, populating the same internal holdings model behind one trait. Because a connected Schwab account is **required** to run either job (below), manual import is a **supplement, not a substitute**: it adds positions Schwab doesn't report (for example, holdings at another brokerage) so the portfolio view can be complete. It does not bypass the Schwab-connection gate, and manually-added equities still draw their options-activity signal from Schwab chains where the symbol is listed.
+
+## A connected Schwab account is required
+
+A valid Schwab connection is a hard precondition for **both** local jobs — Portfolio Analysis and Trade Opportunities. Both gate on it: Portfolio Analysis because holdings come from Schwab, and Trade Opportunities because its per-candidate options-activity signal does. If Schwab is not connected — never linked, or the 7-day refresh token has lapsed — both jobs are **blocked** with a re-authentication prompt, not run in a degraded mode (see [portfolio-analysis.md](portfolio-analysis.md), [trade-opportunities.md](trade-opportunities.md), [interface.md](interface.md)). Manual-import holdings do not satisfy this gate.
 
 ## Failure posture
 
-A failed or unauthorized pull leaves the last good holdings intact — it never clears or corrupts stored positions. Holdings availability from *either* source is the precondition the Portfolio Analysis job gates on; with no holdings, the job does not run (see [portfolio-analysis.md](portfolio-analysis.md)).
+A failed or unauthorized pull leaves the last good holdings intact — it never clears or corrupts stored positions. A stock's per-stock options signal degrades to a gap only when Schwab returns no chain for that symbol (e.g. a name with no listed options), never as a whole-job failure.

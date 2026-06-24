@@ -134,3 +134,7 @@
 - Deterministic risk-tier assignment — trade-opportunities.md §The opportunity space
 - Per-holding checkpoint/resume + research caching — portfolio-analysis.md §Failure posture
 - Free-tier data dispersal (SEC/Stooq/Finnhub offload FMP; FMP keeps niche aggregates) — data-sources.md §Local Analysis Suite Sources
+- Research loop & intra-loop context management (agenda → iterate → condense-as-you-go) — web-research.md §The research loop and context management
+- Research agenda (fundamentals + market narrative/sentiment + forward opportunity/thematic fit) — portfolio-analysis.md; trade-opportunities.md
+- Options-activity signal (per-stock put/call vol+OI & IV/skew from Schwab chains, an activity proxy not positioning truth; CBOE venue-level backdrop) — schwab-integration.md; data-sources.md §CBOE; portfolio-analysis.md
+- Schwab connection required for both local jobs (hard execution-gate precondition) — schwab-integration.md §A connected Schwab account is required

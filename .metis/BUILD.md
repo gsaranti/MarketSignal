@@ -293,19 +293,24 @@ The load-bearing decisions:
   boundary. Model-chosen fetches are SSRF-guarded (no private/loopback hosts,
   bounded size/redirects, untrusted content) and every finding keeps its source
   URL + timestamp.
-- **Holdings ingestion.** Schwab Trader API via an OAuth loopback (30-min access
-  / 7-day refresh → a weekly re-login), with a manual CSV/paste fallback; FMP
-  stays the source for real financials. The app secret and OAuth tokens live in
-  the macOS Keychain, and non-equity positions (options, bonds, cash) are marked
-  not-rated rather than force-graded. Schwab developer-app approval (a few days)
-  is the external long pole.
+- **Holdings & options ingestion.** Schwab Trader API via an OAuth loopback
+  (30-min access / 7-day refresh → a weekly re-login); it supplies holdings *and*
+  live option chains, from which a deterministic put/call + IV/skew signal is
+  computed — an activity proxy, not positioning truth, kept out of grade
+  sub-scores until calibrated (CBOE gives a Cboe venue-level put/call backdrop). **A connected Schwab
+  account is required to run either local job** — manual CSV/paste import only
+  supplements holdings and does not clear the gate, so both jobs block at each
+  re-auth. FMP/SEC stay the financial sources; tokens live in the macOS Keychain;
+  non-equity positions (options, bonds, cash) are marked not-rated. Schwab
+  developer-app approval (a few days) is the external long pole.
 - **Reuses the spine.** Each feature is a new Tauri command + job under a
   **single global run slot** (report + both local jobs are mutually exclusive,
   matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
   and the `vector_memory` / `Embedder` modules; local-job gate failures get their
   own warning categories. The cloud report is unchanged. Build order: substrate →
-  a **narrow single-equity Portfolio slice** (manual holdings + FMP + SEC, local
-  models — validate quality/runtime) → full Portfolio (Schwab OAuth, funds) →
+  a **narrow single-equity Portfolio slice** built against a **fixture Schwab
+  source** (stub holdings + option chain) + FMP + SEC, local models — validate
+  quality/runtime offline → wire live Schwab OAuth → full Portfolio (funds) →
   Opportunities.
 - **Personalized & screened.** Portfolio grading/actions are personalized by a
   configured investor profile (risk tolerance, horizon, tax, cash). Trade

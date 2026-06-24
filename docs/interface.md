@@ -72,7 +72,7 @@ Each warning category may have at most one unresolved warning at a time. If a wa
 
 Dismissing a warning permanently removes it. A subsequent event in the same category produces a fresh warning.
 
-The local analysis suite adds its own warning categories, both following the same one-warning-per-category de-duplication: **local models unavailable** (daemon unreachable or roster missing), which *blocks* the local jobs, and **Schwab connection** (not connected or re-authentication required), which is a *non-blocking* notice — Portfolio Analysis gates only on holdings being available, so it still runs on manually imported holdings when Schwab is disconnected. Detailed per-state UI for the local pages (stale holdings, expired OAuth, partial results, not-rated assets, empty matrix cells) follows the project's frontend-craft state requirements.
+The local analysis suite adds its own warning categories, both following the same one-warning-per-category de-duplication and both **blocking** the local jobs: **local models unavailable** (daemon unreachable or roster missing) and **Schwab connection** (not connected or re-authentication required) — a connected Schwab account is a hard precondition for both jobs, since holdings and the options-activity signal come from it, so manual-import holdings do not clear this gate. Detailed per-state UI for the local pages (stale holdings, expired OAuth, partial results, not-rated assets, empty matrix cells) follows the project's frontend-craft state requirements.
 
 Operational triggers for each category live in their canonical homes:
 - Missing agent configuration and missing API tokens — see [configuration.md](configuration.md).

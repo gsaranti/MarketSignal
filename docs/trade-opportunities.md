@@ -1,6 +1,6 @@
 # Trade Opportunities
 
-Trade Opportunities is a **local, on-demand job** that surfaces investment ideas through deep web research, organized across a fixed risk-by-horizon matrix and grounded in the current Market Signal house view. Like Portfolio Analysis it runs entirely on local models (see [local-models.md](local-models.md)) and is **prescriptive and firm**; unlike it, it is **not tied to current holdings** — its purpose is to discover new opportunities.
+Trade Opportunities is a **local, on-demand job** that surfaces investment ideas through deep web research, organized across a fixed risk-by-horizon matrix and grounded in the current Market Signal house view. Like Portfolio Analysis it runs entirely on local models (see [local-models.md](local-models.md)) and is **prescriptive and firm**; unlike it, it is **not tied to current holdings** — its purpose is to discover new opportunities. It still **requires a connected Schwab account**, whose option chains supply the per-candidate options-activity signal (see [schwab-integration.md](schwab-integration.md)).
 
 ## Triggering
 
@@ -12,11 +12,11 @@ Output is organized as a **3×3 matrix**: three **risk tiers** (high / medium / 
 
 ## The pipeline
 
-1. **Framing (deterministic + the 35B fast model).** The app assembles the house-view context — loaded deterministically as the latest report's Thesis, Investment Strategy, and Forward Outlook plus recent summaries (not vector-searched — see [local-models.md §Context-memory discipline](local-models.md#context-memory-discipline)) — together with the **prior run's opportunity set** (vector-retrieved from this job's own partition) and, optionally, the current holdings list for cross-reference. Research directions are set per matrix cell.
+1. **Framing (deterministic + the 35B fast model).** The app assembles the house-view context — loaded deterministically as the latest report's Thesis, Investment Strategy, and Forward Outlook plus recent summaries (not vector-searched — see [local-models.md §Context-memory discipline](local-models.md#context-memory-discipline)) — together with the **prior run's opportunity set** (vector-retrieved from this job's own partition). Research directions are set per matrix cell. Current holdings are deliberately **not** part of framing (see [§Holdings cross-reference](#holdings-cross-reference)), so discovery and selection stay independent of the account.
 2. **Candidate generation.** SearXNG is not a market screener, so candidates come from two deterministic feeders: **FMP signals** (the movers, valuation extremes, and earnings the app already gathers — [data-sources.md](data-sources.md); a broader market-cap / liquidity universe would add FMP's screener endpoint, whose tier and per-run call budget are an implementation detail to settle) and **names surfaced by research**. The combined set is deduped, sanity-filtered for tradability, and tagged with the data used to rank it.
-3. **Deep research** — the 122B reasoner in thinking mode plus the web tool ([web-research.md](web-research.md)), bounded per candidate and fail-soft.
-4. **Distillation** — the 35B model condenses findings to candidate summaries.
-5. **Selection and authoring** — each candidate's metrics and **risk tier are computed deterministically** (the same financial-analysis engine Portfolio Analysis uses — see [portfolio-analysis.md](portfolio-analysis.md)); the 122B reasoner then interprets those, selects, and writes up the opportunities for each cell. **A cell may return no opportunity** when nothing qualifies — empty cells are honest, not failures, and the matrix never pads itself to fill them.
+3. **Deep research** — the 122B reasoner (thinking mode) plus the web tool, running the bounded research loop per candidate ([web-research.md](web-research.md)), fail-soft. The agenda builds the opportunity case: the thesis and its catalyst, and the bull / bear; **the driving narrative and market sentiment** — how much the setup rides emotion about *what might come* versus present fundamentals, and how durable that story is; **forward opportunity and thematic tailwinds** — the future opportunity set and how the candidate maps onto dominant market themes (e.g. a photonics name riding the AI-buildout narrative); and how it corroborates its deterministically-assigned risk tier and horizon.
+4. **Distillation** — the 35B model consolidates the loop's findings into candidate summaries.
+5. **Selection and authoring** — each candidate's metrics, **risk tier, and options-activity signal** (put/call + IV/skew from Schwab chains) are computed deterministically (the same financial-analysis engine Portfolio Analysis uses — see [portfolio-analysis.md](portfolio-analysis.md)); the 122B reasoner then interprets those, selects, and writes up the opportunities for each cell. **A cell may return no opportunity** when nothing qualifies — empty cells are honest, not failures, and the matrix never pads itself to fill them.
 6. **Continuity check.** Prior opportunities are carried forward with an updated status; additions and removals must be justified by what changed (see [thesis-continuity.md](thesis-continuity.md)).
 
 ## The opportunity
@@ -36,7 +36,7 @@ The fixed risk/horizon/status vocabularies keep the matrix stable and the list e
 
 ## Holdings cross-reference
 
-The job optionally flags opportunities that **overlap the user's current holdings**, so the two features cohere (an idea you already own is surfaced as such). This reads only the **holdings list** — shared input data — and never the Portfolio Analysis memory partition, so the memory-isolation rule (below) is preserved.
+After selection, a **deterministic post-step** flags any opportunity that overlaps the user's current holdings (owned / not-owned), so the two features cohere — an idea you already hold is surfaced as such. Crucially this runs *after* candidate discovery and selection, so holdings never influence which opportunities are found or chosen; it reads only the holdings list, never the Portfolio Analysis memory partition. Trade Opportunities therefore stays genuinely independent of the account.
 
 ## Continuity and isolation
 
@@ -48,4 +48,4 @@ Each run persists its matrix of opportunities together with an **audit record** 
 
 ## Failure posture
 
-The execution gate requires the local model daemon and roster ([local-models.md](local-models.md)); web research within a run is fail-soft, while a hard model or persistence failure fails the run ([scheduling.md](scheduling.md)).
+The execution gate requires the local model daemon and roster ([local-models.md](local-models.md)) **and a connected Schwab account** (for the options-activity signal — see [schwab-integration.md](schwab-integration.md)); a missing or lapsed connection blocks the job. Web research within a run is fail-soft, while a hard model or persistence failure fails the run ([scheduling.md](scheduling.md)).

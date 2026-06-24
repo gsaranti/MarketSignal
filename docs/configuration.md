@@ -98,11 +98,11 @@ The suite's web-research tool uses a local SearXNG instance, with the existing T
 
 ### Price Data
 
-The suite's price and fundamentals load is spread across free providers to stay under FMP's daily cap (see [data-sources.md](data-sources.md)). **SEC EDGAR** and **Stooq** are keyless and need no configuration; **Finnhub** uses a free API key held in Settings (optional — without it, quotes fall back to FMP).
+The suite's price and fundamentals load is spread across free providers to stay under FMP's daily cap (see [data-sources.md](data-sources.md)). **SEC EDGAR** and **Stooq** are keyless and need no configuration; **Finnhub** uses a free API key held in Settings (optional — without it, quotes fall back to FMP). Per-stock **option chains** come from the Schwab connection (below), and **CBOE**'s venue-level put/call backdrop is keyless — neither needs separate configuration.
 
 ### Charles Schwab Connection
 
-Portfolio Analysis sources holdings from Charles Schwab via OAuth (see [schwab-integration.md](schwab-integration.md)). Settings hold the developer **app key and secret** and manage the **connection state** (connect / re-authenticate); the app secret and the OAuth tokens are kept in the **macOS Keychain**, not the SQLite settings store, since they are bearer credentials to the brokerage account. Because the OAuth refresh token expires every 7 days, the connection surfaces a re-authentication prompt when it lapses. Holdings can also be supplied by manual import, so a Schwab connection is not strictly required to run Portfolio Analysis.
+Both local jobs source data from Charles Schwab via OAuth — Portfolio Analysis its holdings, and both jobs the options-activity signal from option chains (see [schwab-integration.md](schwab-integration.md)). Settings hold the developer **app key and secret** and manage the **connection state** (connect / re-authenticate); the app secret and the OAuth tokens are kept in the **macOS Keychain**, not the SQLite settings store, since they are bearer credentials to the brokerage account. **A connected Schwab account is required to run either local job** — it is part of the local-job execution gate, alongside the model daemon and roster. Because the OAuth refresh token expires every 7 days, both jobs are blocked with a re-authentication prompt when it lapses. Manual import can supplement holdings but does not satisfy the connection gate.
 
 ### Investor Profile
 
