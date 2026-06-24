@@ -980,12 +980,28 @@ body {
     background: var(--paper) !important;
   }
 
-  /* Let the column use the printable page width; the page margins come from the
-     print panel (wry on macOS doesn't fully honor CSS @page margins). */
+  /* Print margins. We deliberately do NOT use @page margins: WebKit's
+     print-to-PDF path drops content when an @page margin shrinks a page's
+     capacity enough to need another page — it fails to create that page and
+     silently discards the overflow (verified in demo: a 2cm @page margin ate a
+     report's trailing table + Sources). So @page stays at 0 and the margins
+     come from the report article's padding, which paginates normally and never
+     drops content. The trade-off WebKit forces here: padding gives reliable
+     left/right margins on every page and a top margin on the first page, but
+     interior pages run to the top/bottom edge (no per-page vertical margin is
+     possible without @page). Horizontal is the readability-critical axis and
+     the one this fixes. The 2cm value is --print-page-margin in the design
+     system. */
+  @page {
+    margin: 0;
+  }
+
   .report-article {
     max-width: none !important;
     margin: 0 !important;
-    padding: 0 !important;
+    /* left/right on every page + top on page 1; no bottom padding — it would
+       overflow into a blank trailing page. */
+    padding: var(--print-page-margin, 2cm) var(--print-page-margin, 2cm) 0 !important;
   }
 }
 </style>
