@@ -2,47 +2,57 @@
 
 ## What happened
 
-**Built, installed, and tagged v1.1.1 — closing the deferred release task; the PDF
-margin fix is now live in the daily app.** Full verification gate green (cargo test +
-clippy `--all-targets --all-features`; `npm run build` + 131 unit tests). `npm run tauri
-build` produced the 1.1.1 `.app`/`.dmg` (ad-hoc signed), installed over v1.1.0 in
-`/Applications` (same bundle id, quarantine cleared via `xattr -cr`). Cut the **annotated
-`v1.1.1` tag on release-tip `e1d0406`** — *not* the trailing `metis:` handoff commit, per
-the release-tip convention (v1.1.0 was likewise tagged on its release commit `38d0824`,
-not its handoff) — and pushed to origin. **Verified no production data was touched:** the
-install only wrote `/Applications`; the root data dir (`com.georgesarantinos.market-signal`)
-is unchanged — DB + report `.md` mtimes predate the install, contents intact (1 report,
-1 baseline snapshot, 1 summary + 2 durable learnings, 9 `app_settings`), no stray
-WAL/journal files ([[release-build-install]]).
+**Spec'd the next major feature set — the local analysis suite: two on-demand,
+local-model-only features, Portfolio Analysis and Trade Opportunities.**
+Researched the pieces (Schwab API, local models for an M5 Max, local serving,
+free data APIs, options data) and wrote the design into the corpus: **5 new docs**
+(`local-models`, `web-research`, `schwab-integration`, `portfolio-analysis`,
+`trade-opportunities`) + ~8 touched + `BUILD.md`/`INDEX.md`. Hardened across
+**3 Codex review rounds**. **Four commits to main** (`790fb5b`→`351279a`), all
+pushed. **No code yet** — docs are the spec, written as-built; BUILD.md's trailing
+section carries the *planned* status.
+
+Load-bearing calls locked (so they aren't re-litigated): local-only **Qwen3.5
+roster** via **Ollama-on-MLX**; a **deterministic finance engine** (Rust computes
+metrics / sub-scores / risk-tiers / scenario targets, the model *interprets* —
+never invents numbers); data = **Schwab** (holdings + option chains, **required to
+run either job**) + **SEC EDGAR** + **Stooq** + **Finnhub** + FMP-free-niche, with a
+**SearXNG** web tool; **per-job isolated** vector memory; a full **investor
+profile**; options put/call + IV/skew as an **activity proxy** (kept out of grades
+until calibrated). FMP stays on the free tier.
 
 ## Current state
 
-`main` at **`50d6598`** (the v1.1.1 metis-handoff commit), in sync with origin; tree clean
-except this `CURRENT.md` edit. The **daily app is now v1.1.1**; the `v1.1.1` tag sits on
-`e1d0406` (one commit behind HEAD, by convention). Data dir preserved at the root path
-(config/keys/reports/memory carried over — gate stays green, zero clicks). Report **#1** is
-in the store, so report **#2** is the first non-clean-slate run. Nothing in flight.
+Spec phase complete and committed; `main` at **`351279a`**, in sync with origin,
+tree clean. **No implementation started.** The cloud Market Signal Report (daily
+app **v1.1.1**) is unchanged. Next thread is the build, via `/metis-plan-task`.
+Build order: **substrate** (Ollama supervision + a flexible `local_model.rs`
+adapter, decoupled from the closed `AgentModel` enum) → a **narrow single-equity
+Portfolio slice against a fixture Schwab source** (stub holdings + chains, offline)
+→ full Portfolio (live OAuth, funds) → Opportunities.
 
 ## Open questions
 
-- **Cadence Run B** — report #2 closes the delta-engine + vector-memory-recall check
-  (first run with a prior snapshot + summary embedding) ([[manual-pivot-cadence-windows]]).
-- **Curve-number consistency** — report #1's header "2Y/10Y both +5bp to 4.24%/4.51%"
-  (27bp, flat) vs thesis "10y-2y +7bp to +0.34". Sanity-check yield levels vs the 2s10s
-  claim on future reports; recurs → tighten the main-agent prompt
-  ([[report-curve-number-consistency]]).
-- **PDF vertical margins** — interior pages touch top/bottom (WebKit `@page` ceiling,
-  accepted). Do NOT reintroduce `@page` margins (drops content).
-- **COT calibration** — weighting of positioning extremes deferred to live runs
-  ([[skills-forcing-function-only]]).
-- **Market holidays / early closes** — `market_clock` still mislabels them "open until
-  4pm" (v1 cut; needs an NYSE calendar).
-- **opus-main leaning** — accumulating; optional worked-examples carry
-  ([[live-config-opus-main-leaning]]).
+- **Plan-time parameters (do at `/metis-plan-task`)** — *pin in the docs:* N/X
+  (run retention, reports-as-context), horizon lengths, default investor profile.
+  *Keep calibratable* (method documented, numbers shadow-tuned, like COT
+  weighting): grade-weight formula, risk-tier thresholds, options-methodology params.
+- **Register the Schwab developer app** — multi-day approval is the external long
+  pole; the hard gate means manual import can't substitute for real-data runs.
+- **Cadence Run B** (carried) — report #2 still un-run: first run with a prior
+  snapshot + summary embedding; validates the delta engine + memory recall. On it,
+  sanity-check yield levels vs the 2s10s claim and the COT read
+  ([[manual-pivot-cadence-windows]], [[report-curve-number-consistency]]).
+- **Standing report-side nits** (carried) — COT extreme-weighting calibration
+  ([[skills-forcing-function-only]]); `market_clock` mislabels market holidays /
+  early closes (needs an NYSE calendar); opus-main leaning accumulating
+  ([[live-config-opus-main-leaning]]); do NOT reintroduce PDF `@page` margins.
 
 ## Where to start
 
-**Cadence Run B** — generate report **#2** on the now-live v1.1.1 build: the first run with
-a prior snapshot + summary embedding, validating the delta engine + research-informed
-vector-memory recall. On the resulting report, sanity-check the yield levels against the
-2s10s claim (the curve-number nit) and eyeball the COT positioning read.
+**`/metis-plan-task` to slice Phase 1 of the local analysis suite — the substrate
+first** (Ollama-on-MLX supervision + the flexible `local_model.rs` adapter), since
+everything builds on it; settle the durable plan-time parameters there. Kick off
+**Schwab developer-app registration in parallel** (long approval lead). **Cadence
+Run B** (report #2) remains an independent, quick alternative if you'd rather
+validate the live build first.
