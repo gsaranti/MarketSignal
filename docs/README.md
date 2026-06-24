@@ -7,7 +7,7 @@
 - [configuration.md](configuration.md) — Settings the user must complete: agent model selection, API tokens, external data provider credentials, and the validation rules that gate job execution.
 - [scheduling.md](scheduling.md) — Job execution semantics for on-demand report generation: job states, offline behavior, concurrency protection, status visibility, and error handling.
 - [run-tracking.md](run-tracking.md) — The live run tracker shown while a job runs: per-step and per-request progress, streamed agent output, the run-not-a-report rule, and job cancellation.
-- [data-sources.md](data-sources.md) — External data and model providers: Financial Modeling Prep, FRED, BLS, Tavily, GDELT, and LLM providers.
+- [data-sources.md](data-sources.md) — External data and model providers: Financial Modeling Prep, FRED, BLS, CFTC, Tavily, GDELT, and LLM providers.
 - [research-documents.md](research-documents.md) — The `/research-inbox` and `/research-archive` workflow for user-supplied documents.
 - [agents.md](agents.md) — Agent pipeline architecture: the main agent, the three analyst agents, and the non-configurable fixed internal models.
 - [report-workflow.md](report-workflow.md) — The 18-step Market Signal Report job flow from validation through HTML generation.

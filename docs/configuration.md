@@ -71,7 +71,7 @@ The **Financial Modeling Prep**, **FRED**, and **Tavily** credentials are all re
 - **Financial Modeling Prep** is the primary financial-data source and provides the equity-market portion of the baseline market-data scan — indices, volatility (VIX), gold, and sector performance (see [report-workflow.md §Step 3](report-workflow.md#step-3-gather-baseline-market-data)) — which is not optional, so a missing FMP credential blocks execution.
 - **FRED** supplies the macro and commodity portion of the same baseline scan — the dollar index, oil, natural gas, and the 2Y/10Y Treasury yields — which is likewise not optional, so a missing FRED credential blocks execution. FRED requires a free API key on every request.
 
-BLS and GDELT are also accessed through public APIs but need no Settings credential: **BLS** works keyless (an optional free key raises its rate limits), and **GDELT** needs no key.
+BLS, GDELT, and CFTC are also accessed through public APIs but need no Settings credential: **BLS** works keyless (an optional free key raises its rate limits), **GDELT** needs no key, and **CFTC** (the Commitments-of-Traders positioning source) is reached through the keyless Socrata public-reporting API.
 
 If a required external provider credential (the Financial Modeling Prep, FRED, or Tavily credential) is missing:
 - report generation is disabled
