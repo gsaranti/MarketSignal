@@ -95,15 +95,17 @@ field (full schema in `docs/storage.md §Report Summary Metadata Schema`).
 The **Step-3 baseline scan** produces an in-memory `BaselineMarketData` packet —
 indices, internals, sectors, macro/labor levels, the release calendar,
 multi-horizon index performance, equity-breadth movers and earnings, and the
-valuation/rotation groups (sector and industry P/E, market risk premium) — plus
-a **`gaps` missing-data manifest**. Partial failures degrade rather than abort:
+valuation/rotation groups (sector and industry P/E, market risk premium), and
+**CFTC futures positioning** (Commitments-of-Traders speculator nets on the
+bellwether contracts) — plus a **`gaps` missing-data manifest**. Partial failures degrade rather than abort:
 an adapter records each series it can't resolve as a tagged `DataGap` that rides
 into the prompt, so the model reasons over what's absent rather than inferring
 it. The **single coverage floor** lives in the app layer (`enforce_coverage`),
 the one point a too-thin baseline fails the run. Each run's baseline persists to
 a `baseline_snapshots` table; the next run reads the latest prior snapshot and
 computes a deterministic, **cadence-honest per-report change view** — level
-deltas over the level-bearing groups, anchored on the *actual* elapsed interval
+deltas over the level-bearing groups (positioning excluded — it carries its own
+native week-over-week change), anchored on the *actual* elapsed interval
 since the prior snapshot, never an assumed week — that rides into the prompt
 alongside the live baseline.
 
@@ -129,7 +131,7 @@ pre-mount to avoid a first-paint flash.
   validation/gating, warning-state management, baseline-snapshot persistence and
   the deterministic per-report delta computation, and the `progress`
   run-observability + cancellation seam. This is where determinism lives.
-- **`adapters` (Rust)** — `data_sources` (FMP/FRED/BLS REST via `reqwest`;
+- **`adapters` (Rust)** — `data_sources` (FMP/FRED/BLS/CFTC REST via `reqwest`;
   Tavily + GDELT + FMP Articles for news) and `models` (OpenAI + Anthropic
   HTTP); the full series catalog is in `docs/data-sources.md`. Provider tiering
   is live-verified and load-bearing: FMP's free tier gates the dollar index,
@@ -138,7 +140,10 @@ pre-mount to avoid a first-paint flash.
   consensus free — consensus reaches the report through the agents' research
   synthesis instead). Data honesty is a consistent stance: a stale FRED
   observation or an out-of-band FMP P/E aggregate **drops to a gap / `None`**
-  rather than feeding a fabricated level into the baseline. Gated adapters share
+  rather than feeding a fabricated level into the baseline. The newest source,
+  **CFTC** (keyless, like BLS), adds **Commitments-of-Traders positioning** — the
+  one signal the price / valuation / macro / credit groups can't give (how crowded
+  the speculative cohort is), as a fail-soft, additive group. Gated adapters share
   a bounded, `Retry-After`-aware retry/backoff; GDELT is excluded — its
   escalating IP lockout makes retrying harmful, so it stays single-shot
   fail-soft. **Fixed internal models** are non-configurable and distinct from the
