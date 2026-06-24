@@ -1591,11 +1591,12 @@ impl MarketDataSource for FmpDataSource {
             sector_pe,
             industries,
             market_risk_premium,
-            // FRED owns the macro levels and the economic-release calendar, and BLS the
-            // labor levels; FMP contributes none of them.
+            // FRED owns the macro levels and the economic-release calendar, BLS the
+            // labor levels, and CFTC the COT positioning; FMP contributes none of them.
             macro_levels: Vec::new(),
             labor_levels: Vec::new(),
             calendar: Vec::new(),
+            cot_positioning: Vec::new(),
             gaps,
         })
     }

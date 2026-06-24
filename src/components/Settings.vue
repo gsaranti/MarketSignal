@@ -369,7 +369,7 @@ const charsDroppedValue = computed(() => {
             <h3 id="sec-creds" class="section-eyebrow">Data provider credentials</h3>
             <p class="section-note">
               Financial Modeling Prep, FRED, and Tavily are all required to run a
-              job. FRED needs a free API key; BLS and GDELT need no credential.
+              job. FRED needs a free API key; BLS, GDELT, and CFTC need no credential.
             </p>
             <div v-for="field in credentialFields" :key="field.key" class="field">
               <label class="label" :for="`cred-${field.key}`">{{ field.label }}</label>

@@ -1316,6 +1316,7 @@ fn group_present_count(data: &BaselineMarketData, group: GroupKind) -> usize {
         GroupKind::SectorPe => data.sector_pe.len(),
         GroupKind::Industries => data.industries.len(),
         GroupKind::MarketRiskPremium => data.market_risk_premium.len(),
+        GroupKind::CotPositioning => data.cot_positioning.len(),
     }
 }
 

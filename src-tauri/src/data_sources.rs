@@ -240,6 +240,46 @@ pub struct MarketRiskPremium {
     pub total_equity_risk_premium: f64,
 }
 
+/// One tracked futures contract's Commitments-of-Traders positioning, normalized across
+/// the CFTC report formats into a single speculator-net view (`docs/data-sources.md
+/// §CFTC`). The **speculator** line maps to leveraged money (financial futures) or managed
+/// money (commodities) — the fast-money / trend-following cohort whose crowding is the
+/// signal; `real_money_*` carries the asset-manager line for financial futures only (the
+/// long-horizon cohort it often diverges from). Net is `long − short` contracts (positive
+/// = net long). The `*_weekly_change` fields are the COT report's own
+/// Tuesday-over-Tuesday move — COT is weekly and lagged ~3 days — distinct from the
+/// report-over-report baseline delta engine, which this group is exempt from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CotPositioning {
+    /// Display name, e.g. `"E-Mini S&P 500"`.
+    pub contract: String,
+    /// CFTC contract market code, e.g. `"13874A"` — the stable pin / join key.
+    pub contract_code: String,
+    /// Asset-class bucket: `"equity-index"` | `"rates"` | `"fx"` | `"commodity"`.
+    pub asset_class: String,
+    /// The Tuesday the snapshot reports (`YYYY-MM-DD`) — the data's as-of, so the model
+    /// reads positioning against the right week rather than today.
+    pub report_date: String,
+    /// Total open interest (all reportable + non-reportable), the base the nets size against.
+    pub open_interest: f64,
+    /// Speculator net position (`long − short`): leveraged money (financial) / managed
+    /// money (commodity). Positive = net long, negative = net short.
+    pub spec_net: f64,
+    /// The speculator net's week-over-week change in contracts, when the report carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_net_weekly_change: Option<f64>,
+    /// Speculator long as a percent of open interest — a crowding gauge — when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_pct_oi_long: Option<f64>,
+    /// Asset-manager ("real money") net — financial futures only; `None` for commodities
+    /// (the disaggregated report has no asset-manager cohort).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub real_money_net: Option<f64>,
+    /// The asset-manager net's week-over-week change, when present (financial futures only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub real_money_net_weekly_change: Option<f64>,
+}
+
 /// Which Step-3 baseline group a [`DataGap`] belongs to. Serializes to a stable kebab
 /// label so the model reading the manifest sees the same group names the data groups
 /// carry, and the coverage gate (`pipeline::enforce_coverage`) can match on it.
@@ -258,6 +298,7 @@ pub enum GroupKind {
     SectorPe,
     Industries,
     MarketRiskPremium,
+    CotPositioning,
 }
 
 impl GroupKind {
@@ -278,6 +319,7 @@ impl GroupKind {
             GroupKind::SectorPe => "sector-pe",
             GroupKind::Industries => "industries",
             GroupKind::MarketRiskPremium => "market-risk-premium",
+            GroupKind::CotPositioning => "cot-positioning",
         }
     }
 }
@@ -448,6 +490,13 @@ pub struct BaselineMarketData {
     /// Empty is valid; additive and non-floor, soft-degrading rather than failing the run.
     #[serde(default)]
     pub market_risk_premium: Vec<MarketRiskPremium>,
+    /// Step-3 positioning: Commitments-of-Traders speculator net (+ asset-manager line for
+    /// financial futures) on the curated bellwether contracts (CFTC's keyless public-reporting
+    /// API). The one signal the price / valuation / macro / credit groups can't give — how
+    /// crowded the speculative cohort is. Empty is valid; additive and non-floor like
+    /// `movers` / `earnings`, soft-degrading rather than failing the run.
+    #[serde(default)]
+    pub cot_positioning: Vec<CotPositioning>,
     /// Step-3 missing-data manifest: the series / releases a provider failed to resolve
     /// this run (`DataGap`), each tagged with its group and reason. Populated by the
     /// adapters as they degrade instead of failing, merged across providers by the
@@ -629,6 +678,32 @@ impl MarketDataSource for StubMarketDataSource {
                 country_risk_premium: 0.0,
                 total_equity_risk_premium: 4.46,
             }],
+            cot_positioning: vec![
+                CotPositioning {
+                    contract: "E-Mini S&P 500".into(),
+                    contract_code: "13874A".into(),
+                    asset_class: "equity-index".into(),
+                    report_date: "2026-06-16".into(),
+                    open_interest: 2_579_920.0,
+                    spec_net: -515_520.0,
+                    spec_net_weekly_change: Some(-63_934.0),
+                    spec_pct_oi_long: Some(6.1),
+                    real_money_net: Some(984_009.0),
+                    real_money_net_weekly_change: Some(-1_500.0),
+                },
+                CotPositioning {
+                    contract: "Gold".into(),
+                    contract_code: "088691".into(),
+                    asset_class: "commodity".into(),
+                    report_date: "2026-06-16".into(),
+                    open_interest: 500_000.0,
+                    spec_net: 200_000.0,
+                    spec_net_weekly_change: Some(4_000.0),
+                    spec_pct_oi_long: Some(50.0),
+                    real_money_net: None,
+                    real_money_net_weekly_change: None,
+                },
+            ],
             gaps: Vec::new(),
         })
     }
@@ -675,6 +750,7 @@ impl<P: MarketDataSource, S: MarketDataSource> MarketDataSource
         merged.sector_pe.extend(extra.sector_pe);
         merged.industries.extend(extra.industries);
         merged.market_risk_premium.extend(extra.market_risk_premium);
+        merged.cot_positioning.extend(extra.cot_positioning);
         merged.gaps.extend(extra.gaps);
         Ok(merged)
     }
@@ -817,6 +893,7 @@ mod tests {
         assert!(!data.sector_pe.is_empty());
         assert!(!data.industries.is_empty());
         assert!(!data.market_risk_premium.is_empty());
+        assert!(!data.cot_positioning.is_empty());
 
         // The whole packet — including the gaps manifest — serializes and parses back
         // unchanged: the contract the agent input and the model prompt both lean on.

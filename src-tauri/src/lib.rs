@@ -5,6 +5,7 @@ pub mod bls;
 pub mod cadence;
 pub mod config;
 pub mod connection_test;
+pub mod cot;
 pub mod data_sources;
 pub mod document_parser;
 pub mod embedding;
@@ -60,6 +61,7 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use bls::BlsDataSource;
+use cot::CotDataSource;
 use config::{AppConfig, ValidationReport};
 use data_sources::CompositeMarketDataSource;
 use embedding::OpenAiEmbedder;
@@ -319,10 +321,10 @@ async fn generate_report_manual(
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         // The baseline scan is FMP (indices / VIX / gold / sectors) + FRED (yields,
-        // dollar index, oil, gas, macro levels) + BLS (labor levels) merged behind one
-        // trait (`docs/report-workflow.md §Step 3`). BLS is keyless (not in the
-        // execution gate); it nests as the outer secondary so its labor_levels group
-        // folds into the FMP+FRED baseline.
+        // dollar index, oil, gas, macro levels) + BLS (labor levels) + CFTC (COT
+        // positioning) merged behind one trait (`docs/report-workflow.md §Step 3`). BLS
+        // and CFTC are keyless (not in the execution gate); they nest as outer secondaries
+        // so their labor_levels / cot_positioning groups fold into the FMP+FRED baseline.
         let fmp = FmpDataSource::new(fmp_key.clone())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
@@ -332,7 +334,13 @@ async fn generate_report_manual(
         let bls = BlsDataSource::new()
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        let data = CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls);
+        let cot = CotDataSource::new()
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let data = CompositeMarketDataSource::new(
+            CompositeMarketDataSource::new(CompositeMarketDataSource::new(fmp, fred), bls),
+            cot,
+        );
         let research =
             ResearchStages::live(tavily_key, fmp_key, openai_key.clone(), anthropic_key, &ctx)
                 .map_err(|e| e.to_string())?;
