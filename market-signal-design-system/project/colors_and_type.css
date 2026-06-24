@@ -106,6 +106,13 @@
   /* --- Reading column ---------------------------------------------------- */
   --measure: 64ch;       /* 64–72 characters wide */
   --measure-wide: 72ch;
+
+  /* --- Print page (reports → PDF) ---------------------------------------- */
+  /* Canonical print margin, consumed as the report article's print padding
+     (left/right on every page, plus a first-page top). 2cm on US Letter ≈ a
+     17.5cm measure, consonant with the reading column above. See the Print
+     section below for why @page margins can't be used here. */
+  --print-page-margin: 2cm;
 }
 
 /* Dark mode — graphite, not pure black; same desaturated accent, lifted. */
@@ -631,6 +638,15 @@ a.chrome-link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .dir-flat::before { content: "·"; margin-right: 4px; color: var(--ink-3); }
 
 /* ---- Print + selection ---- */
+/* Paged-media (print → PDF) surface. The system previously defined no print
+   surface; this records it. Reports get a --print-page-margin (2cm) margin on
+   the left and right of every page, plus a top margin on the first page —
+   applied as padding on the report article, NOT via @page. @page margins are
+   unusable here: WebKit's print-to-PDF path drops overflow content when an
+   @page margin shrinks page capacity enough to require another page (it fails
+   to create the page). The cost of the padding workaround is that interior
+   pages have no top/bottom margin; horizontal is the axis this guarantees. The
+   consuming app implements this in its @media print stylesheet. */
 ::selection { background: var(--accent); color: var(--paper); }
 
 /* ---- Reset normalizations the system relies on ---- */

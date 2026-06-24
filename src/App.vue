@@ -980,51 +980,28 @@ body {
     background: var(--paper) !important;
   }
 
-  /* Page margins on every printed page. @page is the only mechanism that can
-     margin the interior pages of a multi-page report — block padding reaches
-     only the first and last page — so we own the margins here rather than
-     leaning on the print panel's margin control, which supplies none on this
-     path and lets the report run to the paper edge. WKWebView honors a uniform
-     @page margin on the print-to-PDF path. */
+  /* Print margins. We deliberately do NOT use @page margins: WebKit's
+     print-to-PDF path drops content when an @page margin shrinks a page's
+     capacity enough to need another page — it fails to create that page and
+     silently discards the overflow (verified in demo: a 2cm @page margin ate a
+     report's trailing table + Sources). So @page stays at 0 and the margins
+     come from the report article's padding, which paginates normally and never
+     drops content. The trade-off WebKit forces here: padding gives reliable
+     left/right margins on every page and a top margin on the first page, but
+     interior pages run to the top/bottom edge (no per-page vertical margin is
+     possible without @page). Horizontal is the readability-critical axis and
+     the one this fixes. The 2cm value is --print-page-margin in the design
+     system. */
   @page {
-    margin: 2cm;
+    margin: 0;
   }
 
   .report-article {
     max-width: none !important;
     margin: 0 !important;
-    padding: 0 !important;
-  }
-
-  /* Pagination hygiene for multi-page reports: don't split a chart figure, a
-     table, or a table row across a page break, and keep a heading with the
-     content it introduces (no heading stranded at a page foot). orphans/widows
-     trim single lines stranded alone at a page edge. Report tables are small by
-     format (Index Picture, Watchlist), so keeping each whole is safe; a row-level
-     guard still covers any future long table. Both legacy page-break-* and modern
-     break-* are set for WebKit print coverage. Extends the print-surface
-     extension above — the design package defines no print surface. */
-  .report-article h1,
-  .report-article h2,
-  .report-article h3,
-  .report-article h4 {
-    page-break-after: avoid;
-    break-after: avoid;
-    page-break-inside: avoid;
-    break-inside: avoid;
-  }
-
-  .report-article .chart-figure,
-  .report-article .prose-table-wrap,
-  .report-article tr {
-    page-break-inside: avoid;
-    break-inside: avoid;
-  }
-
-  .report-article p,
-  .report-article li {
-    orphans: 3;
-    widows: 3;
+    /* left/right on every page + top on page 1; no bottom padding — it would
+       overflow into a blank trailing page. */
+    padding: var(--print-page-margin, 2cm) var(--print-page-margin, 2cm) 0 !important;
   }
 }
 </style>
