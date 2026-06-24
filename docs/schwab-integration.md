@@ -15,7 +15,7 @@ Access uses Schwab's three-legged **OAuth 2.0 authorization-code** flow. The use
 - **Access token: 30 minutes**, refreshed automatically by the app as needed.
 - **Refresh token: 7 days, and it cannot be extended.** When it expires, the only recovery is to repeat the interactive browser login.
 
-The unavoidable consequence is a **weekly re-login** — designed for rather than hidden: the app prompts for re-authentication once the refresh token has lapsed, and the manual-import path (below) keeps the feature usable in the meantime. Tokens are stored locally with the app's other credentials (see [configuration.md](configuration.md)) and are never displayed.
+The unavoidable consequence is a **weekly re-login** — designed for rather than hidden: the app prompts for re-authentication once the refresh token has lapsed, and the manual-import path (below) keeps the feature usable in the meantime. The app secret and the OAuth tokens are stored in the **macOS Keychain** — not the SQLite settings store used for less-sensitive API keys — because they are bearer credentials to the user's brokerage account (see [configuration.md §Charles Schwab Connection](configuration.md#charles-schwab-connection)); they are never displayed.
 
 ## What is pulled
 
@@ -23,7 +23,7 @@ Holdings come from the account positions endpoint (`GET /trader/v1/accounts/{acc
 
 ## Fundamentals stay with FMP
 
-Schwab's fundamentals are thin summary ratios with an undocumented, unstable shape, and there is no financial-statement (income / balance-sheet / cash-flow) endpoint. So **Schwab is the source of truth for holdings only**; the deeper company financials a holding's analysis needs come from **FMP**, which the app already integrates ([data-sources.md](data-sources.md)). The two are complementary: Schwab says *what you own and at what cost*; FMP says *how the company is doing*.
+Schwab's fundamentals are thin summary ratios with an undocumented, unstable shape, and there is no financial-statement (income / balance-sheet / cash-flow) endpoint. So **Schwab is the source of truth for holdings only**; the deeper company financials a holding's analysis needs come from **FMP and SEC EDGAR** ([data-sources.md](data-sources.md)). Schwab says *what you own and at what cost*; FMP and SEC say *how the company is doing*.
 
 ## Manual import fallback
 

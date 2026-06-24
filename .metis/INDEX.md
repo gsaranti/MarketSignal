@@ -128,3 +128,8 @@
 - Local analysis suite configuration (daemon, roster, SearXNG, Schwab; gates local jobs only) — configuration.md §Local Analysis Suite Configuration
 - Local analysis suite storage + per-feature retention — storage.md §Local Analysis Suite Storage
 - Local suite pages (Portfolio, Trade Opportunities) — interface.md §Main Layout
+- Deterministic financial-analysis engine (Rust computes metrics/sub-scores/risk tiers/targets; model interprets) — local-models.md §Context-memory discipline; portfolio-analysis.md
+- SEC EDGAR primary source (keyless filings + XBRL company facts) — data-sources.md §SEC EDGAR
+- Evidence floor (insufficient-evidence abstention) — portfolio-analysis.md §Evidence floor
+- Deterministic risk-tier assignment — trade-opportunities.md §The opportunity space
+- Per-holding checkpoint/resume + research caching — portfolio-analysis.md §Failure posture

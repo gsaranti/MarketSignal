@@ -98,4 +98,8 @@ The suite's web-research tool uses a local SearXNG instance, with the existing T
 
 ### Charles Schwab Connection
 
-Portfolio Analysis sources holdings from Charles Schwab via OAuth (see [schwab-integration.md](schwab-integration.md)). Settings hold the developer **app key and secret** and manage the **connection state** (connect / re-authenticate). Because the OAuth refresh token expires every 7 days, the connection surfaces a re-authentication prompt when it lapses. Holdings can also be supplied by manual import, so a Schwab connection is not strictly required to run Portfolio Analysis.
+Portfolio Analysis sources holdings from Charles Schwab via OAuth (see [schwab-integration.md](schwab-integration.md)). Settings hold the developer **app key and secret** and manage the **connection state** (connect / re-authenticate); the app secret and the OAuth tokens are kept in the **macOS Keychain**, not the SQLite settings store, since they are bearer credentials to the brokerage account. Because the OAuth refresh token expires every 7 days, the connection surfaces a re-authentication prompt when it lapses. Holdings can also be supplied by manual import, so a Schwab connection is not strictly required to run Portfolio Analysis.
+
+### Investor Profile
+
+Portfolio Analysis is personalized by an **investor profile** the user configures: risk tolerance, time horizon, tax sensitivity, and available cash / buying power. The profile feeds grading, the action ladder, and the portfolio cash/deployment stance (see [portfolio-analysis.md](portfolio-analysis.md)) — for example, *add aggressively* is offered only when buying power supports it. Absent a profile, the suite falls back to a stated default posture.

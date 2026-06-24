@@ -135,12 +135,17 @@ GDELT's single combined query sizes its `timespan` lookback to the **elapsed int
 
 ## Local Analysis Suite Sources
 
-These sources serve the local analysis suite ([local-models.md](local-models.md)), not the Market Signal Report.
+These sources serve the local analysis suite ([local-models.md](local-models.md)), not the Market Signal Report. The suite also reuses **FMP** (documented above) — as the candidate-screening source for Trade Opportunities (movers, valuation extremes, earnings signals) and for the company financials behind Portfolio Analysis.
 
 ### Charles Schwab (Trader API)
 Docs - https://developer.schwab.com/
 
-Charles Schwab is the source of the user's **portfolio holdings** for Portfolio Analysis — positions with quantity, cost basis, market value, and instrument identity, read through the Schwab Trader API over OAuth. It is holdings-only: Schwab's fundamentals are thin, so company financials continue to come from FMP. Authentication, token lifecycle, account hashing, and the manual-import fallback are described in [schwab-integration.md](schwab-integration.md).
+Charles Schwab is the source of the user's **portfolio holdings** for Portfolio Analysis — positions with quantity, cost basis, market value, and instrument identity, read through the Schwab Trader API over OAuth. It is holdings-only: Schwab's fundamentals are thin, so company financials come from FMP and SEC EDGAR (below). Authentication, token lifecycle, account hashing, and the manual-import fallback are described in [schwab-integration.md](schwab-integration.md).
+
+### SEC EDGAR
+Docs - https://www.sec.gov/edgar/sec-api-documentation
+
+SEC EDGAR is the **authoritative source for company filings and fundamentals** behind Portfolio Analysis (and candidate validation in Trade Opportunities): 10-K / 10-Q / 8-K submissions and the XBRL **company-facts** API for normalized financial-statement data. It is **keyless** (like BLS and CFTC), requiring only a declared User-Agent with contact info per the SEC's fair-access policy, and is rate-limited to ~10 requests/second. SEC supplies the raw statement data the deterministic financial-analysis engine ([portfolio-analysis.md](portfolio-analysis.md)) computes over; FMP remains for convenient normalized metrics and market-data signals. Authoritative filings reduce the suite's dependence on web-search summaries for the numbers that drive grades and targets.
 
 ### SearXNG (local web search)
 Docs - https://docs.searxng.org/

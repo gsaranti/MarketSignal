@@ -6,34 +6,50 @@ It is deliberately **prescriptive** — it issues buy/trim/hold/sell-style actio
 
 ## Triggering
 
-The job is manual and runs in two user-controlled steps: **pull holdings**, then **run analysis**. Only one heavy local job runs at a time (Portfolio Analysis and Trade Opportunities share a single execution slot). While it runs it streams into the run tracker with **per-holding progress**, the same observability seam the report uses ([run-tracking.md](run-tracking.md)).
+The job is manual and runs in two user-controlled steps: **pull holdings**, then **run analysis**. Only one run happens at a time across the whole app — a single global run slot serializes the report and both local jobs (see [local-models.md §Failure posture](local-models.md#failure-posture)). While it runs it streams into the run tracker with **per-holding progress**, the same observability seam the report uses ([run-tracking.md](run-tracking.md)).
+
+## Asset eligibility
+
+A Schwab portfolio holds more than equities — ETFs, mutual funds, options, fixed income, and cash. The equity-centric pipeline (FMP fundamentals, company financials) applies cleanly only to individual stocks, and in reduced form to funds. Each position is classified by asset type before analysis:
+
+- **Stocks** — the full pipeline and verdict.
+- **ETFs / funds** — a reduced verdict (no single-company financials; graded on strategy/holdings, valuation, and the house view).
+- **Options, fixed income, cash, and unsupported types** — marked **not rated**, with a short reason, and excluded from grading. Cash and buying power still feed the investor profile and the portfolio roll-up.
+
+A not-rated position never receives a fabricated grade; the eligibility decision is explicit and shown in the UI.
+
+## Evidence floor
+
+Eligibility decides whether a position *can* be graded; the evidence floor decides whether it *should* be. An eligible holding with missing financial statements, stale prices, too few quality sources, or conflicting identity data returns **`insufficient-evidence`** — an explicit abstention — rather than a low-conviction grade. "Firm" means committing when the evidence supports it, not manufacturing a verdict when it doesn't — the per-holding analog of the report's Step-3 coverage floor.
 
 ## The per-holding pipeline
 
 Each holding is processed through a chain of distilled, schema-validated hand-offs (see [local-models.md §Context-memory discipline](local-models.md#context-memory-discipline)):
 
-1. **Dossier assembly (deterministic, application layer).** The app builds the holding's evidence packet: the position itself (quantity, cost basis, market value, P/L); FMP fundamentals and financial statements; price history; the latest report's **Thesis, Investment Strategy, and Forward Outlook** sections (full prose) plus its summary metadata (`thesis_stance`, `forward_outlook_themes`, `key_risks`); vector-retrieved excerpts relevant to *this holding* from prior reports and from this job's own prior runs; and the **prior run's verdict for this holding**.
-2. **Bounded web research** — the 122B reasoner in thinking mode plus the web tool ([web-research.md](web-research.md)). The model researches the company and its setup, request- and time-bounded, fail-soft.
-3. **Distillation** — the 35B fast model condenses the research into a compact findings object, so the analysis stage reasons over evidence rather than over the research transcript.
-4. **Analysis and grading** — the 122B reasoner in thinking mode produces the verdict over the dossier and findings.
-5. **Continuity check.** The verdict is compared to the prior run's; any change in grade, action, or target must be justified by what materially changed. Output is firm and does not swing run-to-run absent hard supporting data (see [thesis-continuity.md](thesis-continuity.md)).
+1. **Dossier assembly (deterministic, application layer).** The app builds the holding's evidence packet: the position itself (quantity, cost basis, market value, P/L); company financials from **FMP and SEC EDGAR** (10-K/Q/8-K + XBRL company facts — see [data-sources.md](data-sources.md)); price history; the **investor profile** (risk tolerance, time horizon, tax sensitivity, and available cash / buying power — see [configuration.md](configuration.md)); the Market Signal house view, loaded deterministically as the latest report's **Thesis, Investment Strategy, and Forward Outlook** sections plus recent report summaries (`thesis_stance`, `forward_outlook_themes`, `key_risks`); vector-retrieved continuity from **this job's own prior runs** for this holding; and the **prior run's verdict for this holding**. Report context is loaded directly, not vector-searched (see [local-models.md §Context-memory discipline](local-models.md#context-memory-discipline)).
+2. **Deterministic financial analysis (application layer).** A Rust financial-analysis engine computes the quantitative picture from the FMP/SEC data: margins, growth, leverage, free cash flow, valuation multiples, momentum, and volatility, plus the **quality / valuation / momentum / risk sub-scores** and scenario-based **end-of-month and end-of-year price targets**, each with its methodology and assumptions recorded. These computed values — not the model — are the source of every number in the verdict (see [local-models.md §Context-memory discipline](local-models.md#context-memory-discipline)).
+3. **Bounded web research** — the 122B reasoner in thinking mode plus the web tool ([web-research.md](web-research.md)). The model researches the company and its setup, request- and time-bounded, fail-soft.
+4. **Distillation** — the 35B fast model condenses the research into a compact findings object, so the interpretation stage reasons over evidence rather than over the research transcript.
+5. **Interpretation and grading** — the 122B reasoner in thinking mode interprets the computed analysis and the distilled research into the verdict: it sets the grade and action and explains the reasoning, but reads its numbers (sub-scores, metrics, targets) from the deterministic engine rather than inventing them.
+6. **Continuity check.** The verdict is compared to the prior run's; any change in grade, action, or target must be justified by what materially changed. Output is firm and does not swing run-to-run absent hard supporting data (see [thesis-continuity.md](thesis-continuity.md)).
 
 ## The holding verdict
 
 Each holding's output is a structured, schema-validated record:
 
-- **Composite grade** (A–F) with transparent sub-scores — **quality**, **valuation**, **momentum**, and **risk** — so the letter is explainable, not a black box.
-- **Action**, on a fixed ladder: **sell all → trim → hold → add → add aggressively**.
+- **Composite grade** (A–F) over the engine's deterministically-computed sub-scores — **quality**, **valuation**, **momentum**, and **risk** — so the letter rolls up from real metrics, not a model's gestalt.
+- **Action**, on a fixed ladder: **sell all → trim → hold → add → add aggressively**, made concrete with a **target portfolio-weight range and an estimated share/dollar adjustment** (bounded by concentration limits, available cash, and tax sensitivity from the investor profile). No orders are ever placed.
+- **Conviction** — the verdict's confidence, lowered when evidence is thin or degraded (and below the evidence floor it abstains entirely — see [§Evidence floor](#evidence-floor)).
 - **Horizon outlook** — separate short-, mid-, and long-term reads.
-- **Price targets** — end-of-month and end-of-year, each a firm base case with a tight range.
+- **Price targets** — end-of-month and end-of-year, computed by the financial-analysis engine as scenario outputs with their **methodology and assumptions exposed**; the model selects and justifies the base case rather than inventing the number.
 - **Financial analysis** — a concise read of the company's financial health.
 - **What changed** — the continuity diff against the prior run (or "new holding").
 
-The fixed action ladder and grade vocabulary are load-bearing: like the report's fixed regime labels ([storage.md](storage.md)), they keep verdicts comparable across runs and prevent the model from retreating into hedged, non-comparable language.
+The fixed action ladder and grade vocabulary are load-bearing: like the report's fixed regime labels ([storage.md](storage.md)), they keep verdicts comparable across runs and prevent the model from retreating into hedged, non-comparable language. The grade is intrinsic to the holding; the **action** additionally reflects the investor profile (horizon, risk tolerance, tax sensitivity) and available cash — for example, *add aggressively* is offered only when buying power supports it.
 
 ## Portfolio roll-up
 
-After the per-holding pass, a synthesis stage (122B) produces a **portfolio-level view**: concentration and sector/factor exposure, overall risk posture, and a cash stance — read against the report's house view. This is where the job answers "what does the portfolio as a whole look like, and how does it sit relative to the current market thesis," beyond the sum of individual holdings.
+After the per-holding pass, a synthesis stage (122B) produces a **portfolio-level view**: concentration and sector/factor exposure, overall risk posture, and a cash/deployment stance — read against both the report's house view and the investor profile. This is where the job answers "what does the portfolio as a whole look like, and how does it sit relative to the current market thesis," beyond the sum of individual holdings.
 
 ## Continuity and isolation
 
@@ -41,8 +57,8 @@ The job retains its most recent N runs. The prior run feeds the next (continuity
 
 ## Storage and display
 
-Each run persists its per-holding verdicts and the portfolio roll-up; retention keeps the last N runs (parallel to report retention — [storage.md](storage.md)). The **Portfolio page** renders each holding's verdict — grade and sub-scores, action, outlook, targets, financials, and the what-changed line — alongside the portfolio roll-up (see [interface.md](interface.md)).
+Each run persists its per-holding verdicts and the portfolio roll-up, together with an **audit record** that makes the run traceable and reviewable: the holdings snapshot it ran against, the report(s) and sources it used (with retrieval timestamps), the distilled findings and the **computed financial metrics and price-target methodology** behind each verdict, the model ids and quantizations, the prompt/schema version, and any degraded-input flags. (Source URLs, timestamps, and the distilled findings make a verdict's basis inspectable; full page snapshots are not stored, so a run is traceable rather than bit-for-bit reproducible.) Retention keeps the last N runs (parallel to report retention — [storage.md](storage.md)). The **Portfolio page** renders each holding's verdict — grade and sub-scores, conviction, action, outlook, targets, financials, and the what-changed line — alongside the portfolio roll-up, and shows not-rated positions with their reason (see [interface.md](interface.md)).
 
 ## Failure posture
 
-The execution gate requires the local model daemon and roster ([local-models.md](local-models.md)) and available holdings ([schwab-integration.md](schwab-integration.md)); without them the job is blocked. Within a run, web research is fail-soft (thinner evidence, lower conviction), while a hard model or persistence failure fails the run, recorded like any other job ([scheduling.md](scheduling.md)).
+The execution gate requires the local model daemon and roster ([local-models.md](local-models.md)) and available holdings ([schwab-integration.md](schwab-integration.md)); without them the job is blocked. Because holdings are independent, the job **checkpoints per holding** — each holding's completed stages persist, so a cancellation or a single model failure resumes the unfinished holdings rather than restarting the (potentially hours-long) run, and recent research is cached within a freshness window. Within a run, web research is fail-soft (thinner evidence, lower conviction), while a hard model or persistence failure fails the run, recorded like any other job ([scheduling.md](scheduling.md)).

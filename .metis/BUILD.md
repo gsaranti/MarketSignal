@@ -1,9 +1,10 @@
 # BUILD — Market Signal
 
-*As-built architecture brief for the completed app. Describes the load-bearing
-decisions and their rationale — the durable shape future work builds on — not
-the construction history (commit-by-commit detail lives in git; per-feature
-specifics live in `docs/`).*
+*Architecture brief for the app: the load-bearing decisions and their rationale —
+the durable shape future work builds on — not the construction history
+(commit-by-commit detail lives in git; per-feature specifics live in `docs/`).
+The body is as-built; the trailing section tracks planned work not yet
+implemented.*
 
 ## What it is
 
@@ -281,21 +282,45 @@ The load-bearing decisions:
   in two modes, not two brains. A **new flexible local-model adapter**
   (`{endpoint, model_id, …}`) is added rather than extending the closed cloud
   `AgentModel` enum.
-- **Per-job isolation.** Each feature stores its own runs (last-N retention) and
-  its own vector-memory partition; no job reads another's learnings. The report
-  is also isolated by embedder dimensionality.
+- **Per-job isolation (learnings only).** Each feature stores its own runs
+  (last-N retention) and its own vector-memory partition; no job reads another's
+  *learnings*. The Market Signal Report stays a read-only shared input, loaded
+  deterministically (not vector-searched). The report is additionally isolated by
+  embedder dimensionality.
 - **A cost-free web tool.** Self-hosted, keyless SearXNG for search plus a Rust
   fetch/readability-extract layer, with the existing Tavily as fallback; the
   orchestrator runs the tool, the model only requests it — holding the pure-stage
-  boundary.
+  boundary. Model-chosen fetches are SSRF-guarded (no private/loopback hosts,
+  bounded size/redirects, untrusted content) and every finding keeps its source
+  URL + timestamp.
 - **Holdings ingestion.** Schwab Trader API via an OAuth loopback (30-min access
   / 7-day refresh → a weekly re-login), with a manual CSV/paste fallback; FMP
-  stays the source for real financials. Schwab developer-app approval (a few
-  days) is the external long pole.
-- **Reuses the spine.** Each feature is a new Tauri command + job sharing one
-  heavy-local-job execution slot, the `progress`/run-tracker seam, and the
-  `vector_memory` / `Embedder` modules. The cloud report is unchanged. Build
-  order: substrate → Portfolio → Opportunities.
+  stays the source for real financials. The app secret and OAuth tokens live in
+  the macOS Keychain, and non-equity positions (options, bonds, cash) are marked
+  not-rated rather than force-graded. Schwab developer-app approval (a few days)
+  is the external long pole.
+- **Reuses the spine.** Each feature is a new Tauri command + job under a
+  **single global run slot** (report + both local jobs are mutually exclusive,
+  matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
+  and the `vector_memory` / `Embedder` modules; local-job gate failures get their
+  own warning categories. The cloud report is unchanged. Build order: substrate →
+  a **narrow single-equity Portfolio slice** (manual holdings + FMP + SEC, local
+  models — validate quality/runtime) → full Portfolio (Schwab OAuth, funds) →
+  Opportunities.
+- **Personalized & screened.** Portfolio grading/actions are personalized by a
+  configured investor profile (risk tolerance, horizon, tax, cash). Trade
+  Opportunities generates candidates from an FMP screen + research-surfaced names
+  (SearXNG is not a screener), and a cell may return nothing. Model residency
+  (122B + 35B + embedder) is gated on an on-device benchmark, with eviction /
+  hot-swap fallback.
+- **Deterministic finance, primary-source evidence.** Quantitative outputs —
+  sub-scores, risk-tier assignment, valuation/quality/momentum/risk metrics, and
+  scenario price targets (methodology exposed) — are computed by a Rust
+  financial-analysis engine over **FMP plus keyless SEC EDGAR** (10-K/Q/8-K +
+  XBRL company facts); the model interprets, never invents numbers. An **evidence
+  floor** returns `insufficient-evidence` (not a low-conviction guess) when data
+  is missing/stale/conflicting. Long per-holding jobs **checkpoint and resume**,
+  and early runs are treated as **shadow/calibration** before outputs are trusted.
 
 Both features are deliberately **prescriptive** (grades, actions, targets) — a
 departure from the report's no-buy/sell stance — applying the report's house view

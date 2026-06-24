@@ -25,4 +25,4 @@ Alongside the cloud-generated report, the application includes a **local analysi
 
 Both are deliberately prescriptive — they issue grades, actions, and targets — but the application remains an analysis system, not a trading bot: it never places orders. The substrate they share (local model serving, the web-research tool, and isolated per-job run memory) is described in [local-models.md](local-models.md).
 
-The report pipeline runs entirely on the user's machine except for external API/model requests; the local analysis suite makes no external model calls, reaching the network only for the web pages its research fetches.
+The report pipeline runs entirely on the user's machine except for external API/model requests; the local analysis suite makes **no external model calls** (its models run on-device), but it still reaches the network for the data its analysis needs — Charles Schwab for holdings, FMP for financials, and the web (via SearXNG and page fetches) for research.

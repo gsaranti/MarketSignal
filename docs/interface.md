@@ -44,6 +44,7 @@ Market Signal
     ├── Report generation
     ├── Local analysis models (daemon endpoint + roster)
     ├── Web research (SearXNG endpoint)
+    ├── Investor profile (risk tolerance, horizon, tax, cash)
     └── Charles Schwab connection
 ```
 
@@ -69,6 +70,8 @@ The Persistent Warning Area surfaces:
 Each warning category may have at most one unresolved warning at a time. If a warning already exists in a category and has not been dismissed or resolved, additional events in that category do not create duplicate warnings.
 
 Dismissing a warning permanently removes it. A subsequent event in the same category produces a fresh warning.
+
+The local analysis suite adds its own warning categories, both following the same one-warning-per-category de-duplication: **local models unavailable** (daemon unreachable or roster missing), which *blocks* the local jobs, and **Schwab connection** (not connected or re-authentication required), which is a *non-blocking* notice — Portfolio Analysis gates only on holdings being available, so it still runs on manually imported holdings when Schwab is disconnected. Detailed per-state UI for the local pages (stale holdings, expired OAuth, partial results, not-rated assets, empty matrix cells) follows the project's frontend-craft state requirements.
 
 Operational triggers for each category live in their canonical homes:
 - Missing agent configuration and missing API tokens — see [configuration.md](configuration.md).
