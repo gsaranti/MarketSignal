@@ -980,12 +980,51 @@ body {
     background: var(--paper) !important;
   }
 
-  /* Let the column use the printable page width; the page margins come from the
-     print panel (wry on macOS doesn't fully honor CSS @page margins). */
+  /* Page margins on every printed page. @page is the only mechanism that can
+     margin the interior pages of a multi-page report — block padding reaches
+     only the first and last page — so we own the margins here rather than
+     leaning on the print panel's margin control, which supplies none on this
+     path and lets the report run to the paper edge. WKWebView honors a uniform
+     @page margin on the print-to-PDF path. */
+  @page {
+    margin: 2cm;
+  }
+
   .report-article {
     max-width: none !important;
     margin: 0 !important;
     padding: 0 !important;
+  }
+
+  /* Pagination hygiene for multi-page reports: don't split a chart figure, a
+     table, or a table row across a page break, and keep a heading with the
+     content it introduces (no heading stranded at a page foot). orphans/widows
+     trim single lines stranded alone at a page edge. Report tables are small by
+     format (Index Picture, Watchlist), so keeping each whole is safe; a row-level
+     guard still covers any future long table. Both legacy page-break-* and modern
+     break-* are set for WebKit print coverage. Extends the print-surface
+     extension above — the design package defines no print surface. */
+  .report-article h1,
+  .report-article h2,
+  .report-article h3,
+  .report-article h4 {
+    page-break-after: avoid;
+    break-after: avoid;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .report-article .chart-figure,
+  .report-article .prose-table-wrap,
+  .report-article tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .report-article p,
+  .report-article li {
+    orphans: 3;
+    widows: 3;
   }
 }
 </style>
