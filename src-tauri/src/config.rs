@@ -44,6 +44,15 @@ pub const KEY_FMP_API_KEY: &str = "fmp_api_key";
 pub const KEY_FRED_API_KEY: &str = "fred_api_key";
 pub const KEY_TAVILY_API_KEY: &str = "tavily_api_key";
 
+/// Local analysis suite settings (`docs/configuration.md §Local Analysis Suite
+/// Configuration`, `docs/local-models.md`). These gate the **local jobs only** and
+/// are deliberately absent from `validate` — the cloud-report gate is independent, so
+/// a machine set up for one need not be set up for the other.
+pub const KEY_LOCAL_DAEMON_ENDPOINT: &str = "local_daemon_endpoint";
+pub const KEY_LOCAL_REASONER_MODEL: &str = "local_reasoner_model";
+pub const KEY_LOCAL_FAST_MODEL: &str = "local_fast_model";
+pub const KEY_LOCAL_EMBEDDER_MODEL: &str = "local_embedder_model";
+
 /// The four de-duplicating Persistent Warning Area categories (walk Q4,
 /// `docs/interface.md §Persistent Warning Area`). The three configuration
 /// categories are produced by `validate`; the one job category (`FailedJob`) is
@@ -55,6 +64,11 @@ pub enum WarningKind {
     ApiTokens,
     ProviderCredentials,
     FailedJob,
+    /// The local analysis suite's own gate gap (daemon unreachable, roster
+    /// incomplete, or local config not yet set). Produced by `local_model::local_gate`,
+    /// never by `validate`; modeled here so the warning structure stays whole and the
+    /// frontend can render it identically (`docs/local-models.md §Failure posture`).
+    LocalModels,
 }
 
 impl WarningKind {
@@ -67,6 +81,7 @@ impl WarningKind {
             WarningKind::AgentConfiguration
                 | WarningKind::ApiTokens
                 | WarningKind::ProviderCredentials
+                | WarningKind::LocalModels
         )
     }
 }
@@ -111,11 +126,19 @@ pub struct AppConfig {
     pub fmp_api_key: Option<String>,
     pub fred_api_key: Option<String>,
     pub tavily_api_key: Option<String>,
+    /// Local analysis suite config (`docs/local-models.md`). Read by
+    /// `local_model::{endpoint_from_config, roster_from_config, local_gate}`; not part
+    /// of the cloud `validate` gate.
+    pub local_daemon_endpoint: Option<String>,
+    pub local_reasoner_model: Option<String>,
+    pub local_fast_model: Option<String>,
+    pub local_embedder_model: Option<String>,
 }
 
 /// A set-and-non-blank value, or `None`. An env var set to "" is effectively
-/// unset for gate purposes, so it must not pass validation.
-fn present(opt: &Option<String>) -> Option<&str> {
+/// unset for gate purposes, so it must not pass validation. `pub(crate)` so the
+/// local-suite gate (`local_model`) reuses the same blank-is-unset rule.
+pub(crate) fn present(opt: &Option<String>) -> Option<&str> {
     opt.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
@@ -134,6 +157,10 @@ impl AppConfig {
             fmp_api_key: get("FMP_API_KEY"),
             fred_api_key: get("FRED_API_KEY"),
             tavily_api_key: get("TAVILY_API_KEY"),
+            local_daemon_endpoint: get("MARKET_SIGNAL_LOCAL_DAEMON_ENDPOINT"),
+            local_reasoner_model: get("MARKET_SIGNAL_LOCAL_REASONER_MODEL"),
+            local_fast_model: get("MARKET_SIGNAL_LOCAL_FAST_MODEL"),
+            local_embedder_model: get("MARKET_SIGNAL_LOCAL_EMBEDDER_MODEL"),
         }
     }
 
@@ -158,6 +185,10 @@ impl AppConfig {
             fmp_api_key: saved(KEY_FMP_API_KEY, env.fmp_api_key),
             fred_api_key: saved(KEY_FRED_API_KEY, env.fred_api_key),
             tavily_api_key: saved(KEY_TAVILY_API_KEY, env.tavily_api_key),
+            local_daemon_endpoint: saved(KEY_LOCAL_DAEMON_ENDPOINT, env.local_daemon_endpoint),
+            local_reasoner_model: saved(KEY_LOCAL_REASONER_MODEL, env.local_reasoner_model),
+            local_fast_model: saved(KEY_LOCAL_FAST_MODEL, env.local_fast_model),
+            local_embedder_model: saved(KEY_LOCAL_EMBEDDER_MODEL, env.local_embedder_model),
         }
     }
 
@@ -291,8 +322,9 @@ struct AgentSlot<'a> {
 /// a clean configuration yields an empty `categories` and `is_blocked == false`.
 /// Join names into a readable Oxford-comma list: "A", "A and B", "A, B, and C".
 /// Keeps each warning category to one scannable sentence instead of one row per
-/// missing item.
-fn join_list(items: &[&str]) -> String {
+/// missing item. `pub(crate)` so the local-suite gate (`local_model`) renders its
+/// items the same way.
+pub(crate) fn join_list(items: &[&str]) -> String {
     match items {
         [] => String::new(),
         [a] => (*a).to_string(),
@@ -439,6 +471,9 @@ mod tests {
             fmp_api_key: Some("fmp-key".into()),
             fred_api_key: Some("fred-key".into()),
             tavily_api_key: Some("tavily-key".into()),
+            // Local-suite fields are not part of the cloud gate, so the all-green
+            // cloud baseline leaves them unset.
+            ..AppConfig::default()
         }
     }
 
@@ -475,6 +510,30 @@ mod tests {
         let cfg = AppConfig::load(&conn);
         assert_eq!(cfg.main_agent_model.as_deref(), Some(""));
         assert!(present(&cfg.main_agent_model).is_none());
+    }
+
+    #[test]
+    fn load_reads_local_suite_settings_and_validate_ignores_them() {
+        // The local-suite settings round-trip through the same K/V store...
+        let conn = mem();
+        storage::set_setting(&conn, KEY_LOCAL_DAEMON_ENDPOINT, "http://localhost:11434").unwrap();
+        storage::set_setting(&conn, KEY_LOCAL_REASONER_MODEL, "qwen3.5:122b").unwrap();
+        let cfg = AppConfig::load(&conn);
+        assert_eq!(
+            cfg.local_daemon_endpoint.as_deref(),
+            Some("http://localhost:11434")
+        );
+        assert_eq!(cfg.local_reasoner_model.as_deref(), Some("qwen3.5:122b"));
+        // ...but they are not part of the cloud gate: with only local keys set, the
+        // cloud gate still blocks on its own (agents/tokens/creds) and never emits a
+        // LocalModels category — that lives in `local_model::local_gate`.
+        let report = validate(&cfg);
+        assert!(report.is_blocked);
+        assert!(category(&report, WarningKind::AgentConfiguration).is_some());
+        assert!(!report
+            .categories
+            .iter()
+            .any(|c| c.kind == WarningKind::LocalModels));
     }
 
     #[test]

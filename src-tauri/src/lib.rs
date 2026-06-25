@@ -16,6 +16,7 @@ pub mod gdelt;
 pub mod headline_filter;
 pub mod http_retry;
 pub mod jobs;
+pub mod local_model;
 pub mod market_clock;
 pub mod model_agent;
 pub mod news;
@@ -579,6 +580,35 @@ async fn test_connection(
         .map_err(|e| format!("connection test task failed: {e}"))
 }
 
+/// Probe the local-model daemon for the Settings "Test connection" control (the local
+/// analysis suite's parallel to `test_connection`). Reads the *saved* local config
+/// (endpoint + roster, env fallback per field); an unconfigured endpoint returns a
+/// not-configured result with no network call. The blocking probe (`/api/tags`) goes
+/// through `spawn_blocking` — `reqwest::blocking` would panic on the async runtime
+/// thread, the same seam `generate_report_manual` uses. Read-only: it never starts a
+/// job and does not touch the cloud-report gate.
+#[tauri::command]
+async fn test_local_daemon(app: tauri::AppHandle) -> Result<local_model::LocalDaemonStatus, String> {
+    // Read the saved config on a short-lived connection dropped before the await — a
+    // `rusqlite::Connection` is not `Send` and must never cross an await point.
+    let (endpoint, roster) = {
+        let conn = open_app_db(&app)?;
+        let cfg = AppConfig::load(&conn);
+        (
+            local_model::endpoint_from_config(&cfg),
+            local_model::roster_from_config(&cfg),
+        )
+    };
+
+    let Some(endpoint) = endpoint else {
+        return Ok(local_model::LocalDaemonStatus::not_configured());
+    };
+
+    tauri::async_runtime::spawn_blocking(move || local_model::daemon_status(&endpoint, &roster))
+        .await
+        .map_err(|e| format!("local daemon test task failed: {e}"))
+}
+
 /// List the user-supplied documents currently in the research inbox
 /// (`docs/research-documents.md`). A fresh install with no inbox folder yet lists
 /// as empty rather than erroring; the frontend renders the empty state. The last
@@ -715,6 +745,7 @@ pub fn run() {
             get_settings,
             save_settings,
             test_connection,
+            test_local_daemon,
             list_research_inbox,
             delete_research_document,
             reveal_research_inbox,

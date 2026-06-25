@@ -170,6 +170,119 @@ impl Embedder for OpenAiEmbedder {
     }
 }
 
+/// Ollama's native embeddings endpoint, joined onto the configured daemon base. The
+/// local suite reuses this `Embedder` trait so `vector_memory` storage / retrieval is
+/// unchanged — only the vector space differs (`docs/local-models.md §The local-model
+/// adapter seam`).
+const OLLAMA_EMBED_PATH: &str = "/api/embed";
+
+/// Build the Ollama `/api/embed` request body: the roster's embedder model + one input.
+fn build_local_request(model: &str, text: &str) -> Value {
+    json!({ "model": model, "input": text })
+}
+
+/// Pull the vector out of Ollama's `/api/embed` response envelope (`embeddings[0]`,
+/// since `input` was a single string). Pure, so the contract is unit-testable without a
+/// live daemon. A missing field or a non-numeric component is a typed error rather than
+/// a silent partial vector, mirroring [`parse_embedding_response`].
+fn parse_local_embedding_response(value: &Value) -> Result<Vec<f32>> {
+    let embedding = value
+        .pointer("/embeddings/0")
+        .and_then(Value::as_array)
+        .context("local embedding response missing embeddings[0]")?;
+    embedding
+        .iter()
+        .map(|v| {
+            v.as_f64()
+                .map(|f| f as f32)
+                .context("local embedding response carried a non-numeric component")
+        })
+        .collect()
+}
+
+/// Local embedder behind the `Embedder` trait: the roster's embedding model served by
+/// the same Ollama daemon as the chat models (`docs/local-models.md`). Distinct from
+/// [`OpenAiEmbedder`] only in endpoint and wire shape; both ride the application
+/// layer's `spawn_blocking` seam.
+pub struct LocalEmbedder {
+    base_url: String,
+    model: String,
+    http: reqwest::blocking::Client,
+    /// Run context for the tracker row each embed call emits; a no-op by default
+    /// (tests / offline), the live one attached via [`LocalEmbedder::with_context`].
+    progress: Arc<RunContext>,
+}
+
+impl LocalEmbedder {
+    /// Build the embedder for one daemon endpoint + embedding model id. A trailing
+    /// slash on the endpoint is trimmed so the joined path doesn't double up.
+    pub fn new(endpoint: impl Into<String>, model: impl Into<String>) -> Result<Self> {
+        let http = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .context("building the local embedding HTTP client")?;
+        Ok(Self {
+            // Reuse the local-suite endpoint normalizer so the daemon host and the
+            // documented `…/api` base both resolve to one origin (no `/api/api/embed`).
+            base_url: crate::local_model::normalize_endpoint(&endpoint.into()),
+            model: model.into(),
+            http,
+            progress: RunContext::noop(),
+        })
+    }
+
+    /// Attach a live run context so each embed call streams a request row to the tracker.
+    pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
+        self.progress = ctx;
+        self
+    }
+
+    fn call(&self, body: &Value) -> Result<Value> {
+        let resp = self
+            .http
+            .post(format!("{}{OLLAMA_EMBED_PATH}", self.base_url))
+            .json(body)
+            .send()
+            .context("sending local embedding request")?;
+        let status = resp.status();
+        let text = resp.text().context("reading local embedding response body")?;
+        if !status.is_success() {
+            bail!("local embedding model returned {status}: {text}");
+        }
+        serde_json::from_str(&text).context("parsing local embedding response JSON")
+    }
+}
+
+impl Embedder for LocalEmbedder {
+    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        self.progress
+            .request_started("Local", "memory", "embedding", "Memory embedding");
+        let result = (|| -> Result<Vec<f32>> {
+            let raw = self.call(&build_local_request(&self.model, text))?;
+            parse_local_embedding_response(&raw)
+        })();
+        match &result {
+            Ok(_) => self.progress.request_finished(
+                "Local",
+                "memory",
+                "embedding",
+                "Memory embedding",
+                "ok",
+                None,
+            ),
+            Err(e) => self.progress.request_finished(
+                "Local",
+                "memory",
+                "embedding",
+                "Memory embedding",
+                "failed",
+                Some(e.to_string()),
+            ),
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +327,64 @@ mod tests {
         let raw = json!({ "data": [ { "embedding": [0.25, "oops"] } ] });
         let err = parse_embedding_response(&raw).unwrap_err();
         assert!(err.to_string().contains("non-numeric"), "{err}");
+    }
+
+    #[test]
+    fn build_local_request_targets_the_roster_model_with_the_input() {
+        let body = build_local_request("qwen3-embedding:4b", "the summary text");
+        assert_eq!(body["model"], "qwen3-embedding:4b");
+        assert_eq!(body["input"], "the summary text");
+    }
+
+    #[test]
+    fn parse_local_embedding_response_extracts_the_vector() {
+        let raw = json!({ "embeddings": [[0.25, -0.5, 1.0]] });
+        assert_eq!(
+            parse_local_embedding_response(&raw).unwrap(),
+            vec![0.25, -0.5, 1.0]
+        );
+    }
+
+    #[test]
+    fn parse_local_embedding_response_errors_on_a_missing_vector() {
+        let err = parse_local_embedding_response(&json!({ "embeddings": [] })).unwrap_err();
+        assert!(err.to_string().contains("embeddings[0]"), "{err}");
+    }
+
+    #[test]
+    fn parse_local_embedding_response_errors_on_a_non_numeric_component() {
+        let raw = json!({ "embeddings": [[0.25, "oops"]] });
+        let err = parse_local_embedding_response(&raw).unwrap_err();
+        assert!(err.to_string().contains("non-numeric"), "{err}");
+    }
+
+    #[test]
+    fn local_embedder_round_trips_a_200_into_a_vector() {
+        use crate::test_http::{Canned, MockHttp};
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"embeddings":[[0.1,0.2,0.3]]}"#,
+        }]);
+        let embedder = LocalEmbedder::new(&server.base_url, "qwen3-embedding:4b").unwrap();
+        let v = embedder.embed("risk posture: mixed").unwrap();
+        assert_eq!(v, vec![0.1, 0.2, 0.3]);
+        assert_eq!(server.request_paths(), vec!["/api/embed".to_string()]);
+    }
+
+    #[test]
+    fn local_embedder_does_not_double_api_when_endpoint_includes_it() {
+        use crate::test_http::{Canned, MockHttp};
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"embeddings":[[0.1]]}"#,
+        }]);
+        // The user entered the documented `…/api` base form.
+        let endpoint = format!("{}api", server.base_url);
+        let embedder = LocalEmbedder::new(&endpoint, "qwen3-embedding:4b").unwrap();
+        embedder.embed("x").unwrap();
+        assert_eq!(server.request_paths(), vec!["/api/embed".to_string()]);
     }
 
     #[test]
