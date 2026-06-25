@@ -31,7 +31,7 @@ use crate::research_executor::{execute_research, select_branch_policy, SearchBac
 use crate::research_packet::{build_condensed_packet, ResearchPacket};
 use crate::research_router::{ResearchPlan, ResearchRouter, RouterInput};
 use crate::storage::{self, ReportRecord};
-use crate::vector_memory::{self, MemoryKind};
+use crate::vector_memory::{self, MemoryKind, MemoryNamespace};
 
 /// Filesystem locations a run reads and writes. Injected so tests can point at
 /// temporary directories; the Tauri command resolves these from the app data
@@ -542,6 +542,7 @@ pub fn generate_report(
                     if let Err(e) = vector_memory::insert_memory(
                         &conn,
                         MemoryKind::Summary,
+                        MemoryNamespace::Report,
                         Some(&summary.report_id),
                         &memory_text,
                         &embedding,
@@ -1185,11 +1186,11 @@ fn retrieve_memory(
         db_path,
         &format!("research {label} memory retrieval"),
         |conn| {
-            if vector_memory::count_memory(conn)? == 0 {
+            if vector_memory::count_memory(conn, MemoryNamespace::Report)? == 0 {
                 return Ok(Vec::new());
             }
             let embedding = embedder.embed(bounded_query(query, MEMORY_QUERY_MAX_BYTES))?;
-            let hits = vector_memory::search_memory(conn, &embedding, None, MEMORY_TOP_K)?;
+            let hits = vector_memory::search_memory(conn, &embedding, None, MemoryNamespace::Report, MEMORY_TOP_K)?;
             Ok(hits
                 .iter()
                 .map(vector_memory::MemoryHit::prompt_fragment)
@@ -1249,7 +1250,7 @@ fn persist_durable_learnings(
         // Drop a near-restatement of a learning the store already holds. Fails
         // open: a scan error treats the learning as novel and keeps it, so dedup
         // can only ever drop a redundant row, never lose a real one.
-        match vector_memory::nearest_learning_similarity(conn, &embedding) {
+        match vector_memory::nearest_learning_similarity(conn, MemoryNamespace::Report, &embedding) {
             Ok(Some(sim)) if sim >= LEARNING_DEDUP_THRESHOLD => {
                 eprintln!(
                     "vector-memory: report {report_id} dropping near-duplicate learning (sim {sim:.3})"
@@ -1264,6 +1265,7 @@ fn persist_durable_learnings(
         if let Err(e) = vector_memory::insert_memory(
             conn,
             MemoryKind::Learning,
+            MemoryNamespace::Report,
             Some(report_id),
             learning,
             &embedding,
@@ -1975,6 +1977,7 @@ mod tests {
         vector_memory::insert_memory(
             &conn,
             vector_memory::MemoryKind::Learning,
+            MemoryNamespace::Report,
             None,
             "Breadth divergences preceded the pullback.",
             &embedding,
@@ -2362,6 +2365,7 @@ mod tests {
         vector_memory::insert_memory(
             &conn,
             MemoryKind::Summary,
+            MemoryNamespace::Report,
             Some("old-00"),
             "summary for old-00",
             &[0.1, 0.2],

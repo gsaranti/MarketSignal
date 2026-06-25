@@ -1560,6 +1560,152 @@ impl FmpDataSource {
         );
         out
     }
+
+    /// Per-company financials for the local Portfolio Analysis job
+    /// (`docs/portfolio-analysis.md`, `docs/data-sources.md §Local Analysis Suite
+    /// Sources`). Distinct from the baseline market scan: this pulls one equity's
+    /// quote (price / market cap / shares) and recent EOD price history — the FMP
+    /// half of a holding's evidence packet. Each endpoint is fail-soft: a 402 (premium
+    /// gate), a transport error, or a malformed body records a tagged gap on the
+    /// returned [`CompanyFinancials`] rather than failing, and the dossier fills the
+    /// statement lines (revenue, margins, equity) from keyless SEC EDGAR. The
+    /// valuation multiples are left for the dossier to derive from market cap + SEC
+    /// facts ("compute, don't guess"). One tracker row per actual call.
+    pub fn fetch_company_financials(
+        &self,
+        symbol: &str,
+    ) -> crate::portfolio::engine::CompanyFinancials {
+        use crate::portfolio::engine::CompanyFinancials;
+        let mut fin = CompanyFinancials {
+            symbol: symbol.to_string(),
+            ..CompanyFinancials::default()
+        };
+
+        // Cancel checkpoint before the first request, mirroring `fetch_quotes`: a cancel
+        // already requested skips the network entirely (no request, so no tracker row).
+        if self.progress.is_cancelled() {
+            fin.gaps.push("company financials skipped (run cancelled)".to_string());
+            return fin;
+        }
+
+        // 1) Quote: current price, market cap, shares outstanding.
+        self.progress
+            .request_started("FMP", "company-quote", symbol, "Company quote");
+        let quote_disp = match self.get(FMP_QUOTE_PATH, &[("symbol", symbol)]) {
+            Ok((status, body)) => interpret_response(status, &body),
+            Err(_) => Disposition::Gap(GapReason::Unavailable),
+        };
+        match quote_disp {
+            Disposition::Value(value) => match company_quote_from_value(&value) {
+                Some(q) => {
+                    fin.current_price = q.price;
+                    fin.market_cap = q.market_cap;
+                    fin.shares_outstanding = q.shares_outstanding;
+                    if q.price.is_none() {
+                        fin.gaps.push("FMP quote carried no price".to_string());
+                    }
+                }
+                None => fin.gaps.push("FMP quote was malformed".to_string()),
+            },
+            Disposition::Gap(reason) => fin
+                .gaps
+                .push(format!("FMP quote unavailable ({})", reason.as_str())),
+        }
+        self.progress.request_finished(
+            "FMP",
+            "company-quote",
+            symbol,
+            "Company quote",
+            if fin.current_price.is_some() { "ok" } else { "empty" },
+            None,
+        );
+
+        // 2) EOD price history for momentum + volatility.
+        // Cancel checkpoint between the two requests: a cancel after the quote skips the
+        // EOD call rather than spending it.
+        if self.progress.is_cancelled() {
+            fin.gaps.push("price history skipped (run cancelled)".to_string());
+            return fin;
+        }
+        let to = Utc::now().date_naive();
+        let from = to - Duration::days(COMPANY_EOD_LOOKBACK_DAYS);
+        self.progress
+            .request_started("FMP", "company-eod", symbol, "Company price history");
+        let eod_disp = match self.get(
+            FMP_EOD_PATH,
+            &[
+                ("symbol", symbol),
+                ("from", from.format("%Y-%m-%d").to_string().as_str()),
+                ("to", to.format("%Y-%m-%d").to_string().as_str()),
+            ],
+        ) {
+            Ok((status, body)) => interpret_response(status, &body),
+            Err(_) => Disposition::Gap(GapReason::Unavailable),
+        };
+        match eod_disp {
+            Disposition::Value(value) => match eod_prices_from_value(&value) {
+                Ok(history) if !history.is_empty() => fin.price_history = history,
+                Ok(_) => fin.gaps.push("FMP price history was empty".to_string()),
+                Err(_) => fin.gaps.push("FMP price history was malformed".to_string()),
+            },
+            Disposition::Gap(reason) => fin
+                .gaps
+                .push(format!("FMP price history unavailable ({})", reason.as_str())),
+        }
+        self.progress.request_finished(
+            "FMP",
+            "company-eod",
+            symbol,
+            "Company price history",
+            if fin.price_history.is_empty() { "empty" } else { "ok" },
+            None,
+        );
+
+        fin
+    }
+}
+
+/// How many days of EOD history the per-company pull requests — long enough for a
+/// meaningful momentum and volatility read, short enough to stay one light call.
+const COMPANY_EOD_LOOKBACK_DAYS: i64 = 180;
+
+/// The fields the per-company quote contributes, pulled from FMP's `/quote` body.
+struct CompanyQuote {
+    price: Option<f64>,
+    market_cap: Option<f64>,
+    shares_outstanding: Option<f64>,
+}
+
+/// Shape an FMP `/quote` array body into a [`CompanyQuote`]. `None` only when the body
+/// is not the expected non-empty array; individual missing fields stay `None`. Pure,
+/// so the contract is unit-testable offline.
+fn company_quote_from_value(value: &Value) -> Option<CompanyQuote> {
+    let first = value.as_array()?.first()?;
+    Some(CompanyQuote {
+        price: first.get("price").and_then(Value::as_f64),
+        market_cap: first.get("marketCap").and_then(Value::as_f64),
+        shares_outstanding: first.get("sharesOutstanding").and_then(Value::as_f64),
+    })
+}
+
+/// Shape an FMP `/historical-price-eod/light` array body into chronological (oldest
+/// first) closing prices. A non-array body is a contract error; rows are sorted by
+/// date ascending so the engine's first/last read is a real start/end. Pure.
+fn eod_prices_from_value(value: &Value) -> Result<Vec<f64>> {
+    let rows = value
+        .as_array()
+        .context("FMP EOD response did not match the expected array shape")?;
+    let mut dated: Vec<(&str, f64)> = Vec::with_capacity(rows.len());
+    for row in rows {
+        if let (Some(date), Some(price)) = (
+            row.get("date").and_then(Value::as_str),
+            row.get("price").and_then(Value::as_f64),
+        ) {
+            dated.push((date, price));
+        }
+    }
+    dated.sort_by(|a, b| a.0.cmp(b.0));
+    Ok(dated.into_iter().map(|(_, p)| p).collect())
 }
 
 impl MarketDataSource for FmpDataSource {
@@ -1707,6 +1853,82 @@ mod tests {
         FmpDataSource::new("test-key".to_string())
             .expect("build adapter")
             .with_base_url(base_url)
+    }
+
+    #[test]
+    fn company_quote_and_eod_parse_into_financials() {
+        // The per-company pull makes two calls — quote then EOD — so the mock scripts
+        // two replies. Quote carries price/market cap/shares; EOD is returned out of
+        // order and must come back chronological so the engine's first/last is honest.
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","name":"Apple","price":195.0,"marketCap":3.0e12,"sharesOutstanding":1.5e10}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","date":"2026-06-10","price":195.0,"volume":1},
+                          {"symbol":"AAPL","date":"2026-06-03","price":180.0,"volume":1}]"#,
+            },
+        ]);
+        let fin = test_source(&server.base_url).fetch_company_financials("AAPL");
+        assert_eq!(fin.symbol, "AAPL");
+        assert_eq!(fin.current_price, Some(195.0));
+        assert_eq!(fin.market_cap, Some(3.0e12));
+        assert_eq!(fin.shares_outstanding, Some(1.5e10));
+        // Chronological: the older 180 first, the newer 195 last.
+        assert_eq!(fin.price_history, vec![180.0, 195.0]);
+        assert!(fin.gaps.is_empty(), "a clean pull records no gap: {:?}", fin.gaps);
+        assert_eq!(server.request_paths(), vec!["/quote", "/historical-price-eod/light"]);
+    }
+
+    #[test]
+    fn company_financials_degrade_to_gaps_on_premium_and_transport_failures() {
+        // Quote 402 (premium gate) then EOD malformed body: both degrade to gaps, never
+        // a fabricated level, and the engine grades over what SEC supplies instead.
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 402,
+                headers: vec![],
+                body: "Payment Required",
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"unexpected":true}"#,
+            },
+        ]);
+        let fin = test_source(&server.base_url).fetch_company_financials("AAPL");
+        assert!(fin.current_price.is_none());
+        assert!(fin.price_history.is_empty());
+        assert_eq!(fin.gaps.len(), 2, "two failed pulls, two gaps: {:?}", fin.gaps);
+    }
+
+    #[test]
+    fn company_financials_skip_the_network_when_already_cancelled() {
+        use crate::progress::{NoopReporter, RunContext};
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        // An empty script: if the adapter made a request, the connect would hang/fail —
+        // but a cancelled run must make none.
+        let server = MockHttp::serve(vec![]);
+        let ctx = RunContext::new(
+            "run",
+            Arc::new(NoopReporter),
+            Arc::new(AtomicBool::new(true)), // already cancelled
+        );
+        let fin = test_source(&server.base_url)
+            .with_context(ctx)
+            .fetch_company_financials("AAPL");
+        assert_eq!(server.attempts(), 0, "a cancelled run makes no request");
+        assert!(fin.current_price.is_none());
+        assert!(
+            fin.gaps.iter().any(|g| g.contains("cancelled")),
+            "the skip is recorded as a gap: {:?}",
+            fin.gaps
+        );
     }
 
     #[test]
