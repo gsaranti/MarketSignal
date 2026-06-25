@@ -263,25 +263,32 @@ end-to-end with no network, keys, or cost. The feature is not in `default` and s
 is compiled out of `tauri build`; it's the cost-free way to verify UI/report
 changes (`npm run tauri:demo`).
 
-## Local analysis suite (planned — not yet built)
+## Local analysis suite (substrate built; features planned)
 
-A second capability set is specified but **not yet implemented**: two on-demand,
-**local-model-only** features — **Portfolio Analysis** (grades the user's Charles
-Schwab holdings and recommends actions + price targets) and **Trade
-Opportunities** (researches new ideas across a 3×3 risk×horizon matrix). Full
-design lives in `docs/local-models.md`, `web-research.md`,
-`schwab-integration.md`, `portfolio-analysis.md`, and `trade-opportunities.md`.
-The load-bearing decisions:
+A second capability set: two on-demand, **local-model-only** features —
+**Portfolio Analysis** (grades the user's Charles Schwab holdings and recommends
+actions + price targets) and **Trade Opportunities** (researches new ideas across a
+3×3 risk×horizon matrix). The **shared substrate is built and merged** (PR #44);
+**neither feature is implemented yet**. Full design lives in `docs/local-models.md`,
+`web-research.md`, `schwab-integration.md`, `portfolio-analysis.md`, and
+`trade-opportunities.md`. The load-bearing decisions (the first is as-built; the
+rest remain planned):
 
-- **A local-only model layer, distinct from the cloud report.** Served by one
-  app-supervised Ollama-on-MLX daemon (OpenAI-compatible HTTP, reached through
-  the same `reqwest::blocking` / `spawn_blocking` seam the cloud agents use). The
-  roster is one frontier reasoner (Qwen3.5-122B-A10B) used in thinking vs
-  non-thinking mode, a fast tier (Qwen3.5-35B-A3B) for distillation/routing, and
-  a local embedder — two 120B models can't co-reside in 128 GB, so it's one brain
-  in two modes, not two brains. A **new flexible local-model adapter**
-  (`{endpoint, model_id, …}`) is added rather than extending the closed cloud
-  `AgentModel` enum.
+- **A local-only model layer, distinct from the cloud report (built).** A flexible
+  local-model adapter (`local_model.rs`) parameterized by `{endpoint, model_id,
+  messages, tools, format_schema, options}` calls one app-supervised Ollama daemon
+  over its native `/api/chat` (grammar-constrained `format` for schema-valid output;
+  token / reasoning streaming on the existing `progress` seam), through the same
+  `reqwest::blocking` / `spawn_blocking` seam the cloud agents use — **added rather
+  than extending the closed cloud `AgentModel` enum**, so the roster changes through
+  configuration. Daemon supervision (`health_check` + roster probe) feeds an
+  **independent local-suite gate** (its own `WarningKind::LocalModels`, separate from
+  the cloud `validate` gate), and a `LocalEmbedder` reuses the existing `Embedder`
+  trait so `vector_memory` is unchanged. The intended roster — one frontier reasoner
+  (Qwen3.5-122B-A10B, thinking vs non-thinking mode) + a fast tier (Qwen3.5-35B-A3B)
+  + a local embedder — is configurable, and 128 GB co-residency stays
+  **benchmark-gated** (one brain in two modes, not two brains): the one forward item
+  in this layer.
 - **Per-job isolation (learnings only).** Each feature stores its own runs
   (last-N retention) and its own vector-memory partition; no job reads another's
   *learnings*. The Market Signal Report stays a read-only shared input, loaded
@@ -307,11 +314,11 @@ The load-bearing decisions:
   **single global run slot** (report + both local jobs are mutually exclusive,
   matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
   and the `vector_memory` / `Embedder` modules; local-job gate failures get their
-  own warning categories. The cloud report is unchanged. Build order: substrate →
-  a **narrow single-equity Portfolio slice** built against a **fixture Schwab
-  source** (stub holdings + option chain) + FMP + SEC, local models — validate
-  quality/runtime offline → wire live Schwab OAuth → full Portfolio (funds) →
-  Opportunities.
+  own warning categories. The cloud report is unchanged. Build order: substrate
+  (**done** — PR #44) → **next: a narrow single-equity Portfolio slice** built against
+  a **fixture Schwab source** (stub holdings + option chain) + FMP + SEC, local
+  models — validate quality/runtime offline → wire live Schwab OAuth → full Portfolio
+  (funds) → Opportunities.
 - **Personalized & screened.** Portfolio grading/actions are personalized by a
   configured investor profile (risk tolerance, horizon, tax, cash). Trade
   Opportunities generates candidates from an FMP screen + research-surfaced names
