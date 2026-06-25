@@ -644,7 +644,7 @@ fn report_summary_lands_in_vector_memory() {
     // surfaces the stored summary through the store's own search.
     let query = StubEmbedder.embed("anything").unwrap();
     let hits =
-        market_signal_temp_lib::vector_memory::search_memory(&conn, &query, None, 5).unwrap();
+        market_signal_temp_lib::vector_memory::search_memory(&conn, &query, None, market_signal_temp_lib::vector_memory::MemoryNamespace::Report, 5).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(
         hits[0].report_id.as_deref(),
@@ -1296,6 +1296,7 @@ fn seed_report(
     market_signal_temp_lib::vector_memory::insert_memory(
         conn,
         market_signal_temp_lib::vector_memory::MemoryKind::Summary,
+        market_signal_temp_lib::vector_memory::MemoryNamespace::Report,
         Some(id),
         &format!("summary for {id}"),
         &[0.1, 0.2, 0.3],
@@ -1333,6 +1334,7 @@ fn retention_cascade_evicts_the_oldest_report_beyond_the_cap() {
     market_signal_temp_lib::vector_memory::insert_memory(
         &conn,
         MemoryKind::Learning,
+        market_signal_temp_lib::vector_memory::MemoryNamespace::Report,
         Some("old-00"),
         "a durable lesson",
         &[0.4, 0.5, 0.6],

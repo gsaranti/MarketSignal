@@ -106,6 +106,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS vector_memory (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             kind       TEXT NOT NULL,
+            namespace  TEXT NOT NULL DEFAULT 'report',
             report_id  TEXT,
             content    TEXT NOT NULL,
             embedding  BLOB NOT NULL,
@@ -113,6 +114,21 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+    // Additive migration for DBs created before the per-job `namespace` partition
+    // shipped (`docs/storage.md §Local Vector Memory`): `CREATE TABLE IF NOT EXISTS`
+    // above is a no-op on an existing table, so the column is added here. The NOT NULL
+    // DEFAULT 'report' backfills every existing row to the report's historical
+    // namespace in one statement — exactly where those rows belong, since the report
+    // was the only writer before the local suite. Same `PRAGMA table_info` idempotency
+    // guard as `document_parse_runs.total_original_chars` below (a duplicate `ALTER`
+    // errors). The report keeps its one-summary-per-report unique index unchanged: the
+    // local jobs do not write `summary` rows keyed by `report_id`, so it stays correct.
+    if !column_exists(conn, "vector_memory", "namespace")? {
+        conn.execute(
+            "ALTER TABLE vector_memory ADD COLUMN namespace TEXT NOT NULL DEFAULT 'report'",
+            [],
+        )?;
+    }
     // Encodes the doc's "one embedding per report summary" in the schema rather than
     // trusting the flow (the persist step runs once per report_id today, but the
     // invariant is what the retrieval slice will lean on). Partial: learnings are
@@ -195,6 +211,11 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    // The local analysis suite's own run tables (`docs/storage.md §Local Analysis
+    // Suite Storage`), kept beside the local-suite code rather than inline here so
+    // the portfolio schema travels with the module that owns it. Idempotent like the
+    // rest of `init_schema`, so any run path can call it.
+    crate::portfolio::store::init_schema(conn)?;
     Ok(())
 }
 

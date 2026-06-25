@@ -21,11 +21,14 @@ pub mod market_clock;
 pub mod model_agent;
 pub mod news;
 pub mod pipeline;
+pub mod portfolio;
 pub mod progress;
 pub mod research;
 pub mod research_executor;
 pub mod research_packet;
 pub mod research_router;
+pub mod schwab;
+pub mod sec;
 pub mod settings;
 pub mod skills;
 pub mod storage;
@@ -419,6 +422,84 @@ async fn generate_report_demo(
     }
 }
 
+/// Manually run the local Portfolio Analysis job (`docs/portfolio-analysis.md`). This
+/// slice runs against a **fixture** Schwab source (a single equity + a stub option
+/// chain) plus live FMP + keyless SEC EDGAR and the local models — offline from cloud
+/// keys and Schwab OAuth, so it validates the pipeline's quality and runtime before the
+/// live integrations land.
+///
+/// The gate is the **local-suite gate** (daemon reachable + roster present), independent
+/// of the cloud-report gate — probed inside `spawn_blocking` since the probe is a
+/// blocking call. The Schwab-connection precondition is satisfied by the fixture this
+/// slice. Like `generate_report_manual`, the blocking run (local model HTTP + FMP/SEC)
+/// goes through `spawn_blocking` and shares the single global `RunGuard`, so the report
+/// and both local jobs are mutually exclusive.
+#[tauri::command]
+async fn generate_portfolio_manual(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, RunGuard>,
+    cancel: tauri::State<'_, CancelFlag>,
+) -> Result<portfolio::PortfolioRun, String> {
+    // Read config on a short-lived connection dropped before the await (a
+    // `rusqlite::Connection` is not `Send`).
+    let cfg = {
+        let conn = open_app_db(&app)?;
+        AppConfig::load(&conn)
+    };
+    let endpoint = local_model::endpoint_from_config(&cfg)
+        .ok_or_else(|| "Local model daemon endpoint is not configured".to_string())?;
+    let roster = local_model::roster_from_config(&cfg);
+    // FMP supplies the per-company price/financials; an absent key degrades to gaps
+    // (the holding may then abstain), which is fail-soft for this slice.
+    let fmp_key = cfg.fmp_api_key.clone().unwrap_or_default();
+    let profile = portfolio::InvestorProfile::default_fixture();
+    let paths = report_paths(&app)?;
+    let guard = guard.inner().clone();
+    let ctx = live_run_context(&app, cancel.inner().0.clone());
+
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let client = local_model::LocalModelClient::new(&endpoint)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+
+        // Local-suite execution gate: probe the daemon, then gate on config + reachability
+        // + roster presence. Blocked runs refuse before any analysis work.
+        let probe = client.probe_daemon(&roster);
+        let report = local_model::local_gate(&cfg, &probe);
+        if report.is_blocked {
+            return Err(config::blocked_summary(&report));
+        }
+
+        let analyst = portfolio::pipeline::LocalAnalyst::new(
+            client,
+            roster.reasoner.clone(),
+            roster.fast.clone(),
+        );
+        let fmp = FmpDataSource::new(fmp_key)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let sec = sec::SecEdgarSource::new()
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let company = portfolio::job::LiveCompanyData { fmp, sec };
+        let holdings = schwab::FixtureHoldingsSource::new();
+
+        portfolio::job::run_portfolio_job(
+            &holdings, &company, &analyst, &profile, &paths, &guard, &ctx,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("portfolio analysis task failed: {e}"))??;
+
+    match outcome {
+        portfolio::job::PortfolioJobOutcome::Successful(run) => Ok(*run),
+        portfolio::job::PortfolioJobOutcome::Failed(msg) => Err(msg),
+        portfolio::job::PortfolioJobOutcome::Skipped(reason) => Err(reason),
+        portfolio::job::PortfolioJobOutcome::Cancelled(reason) => Err(reason),
+    }
+}
+
 /// List the most recent persisted reports for the Recent Reports sidebar
 /// (`docs/interface.md`, `docs/storage.md` — newest first, capped at the
 /// 30-report retention window). A fresh install with no reports yet lists as
@@ -735,6 +816,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             generate_report_manual,
+            generate_portfolio_manual,
             cancel_run,
             list_reports,
             load_report,
