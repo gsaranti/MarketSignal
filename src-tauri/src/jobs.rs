@@ -340,7 +340,8 @@ pub fn dismiss_warning_category(conn: &Connection, kind: WarningKind, dismiss_id
         }
         WarningKind::AgentConfiguration
         | WarningKind::ApiTokens
-        | WarningKind::ProviderCredentials => {}
+        | WarningKind::ProviderCredentials
+        | WarningKind::LocalModels => {}
     }
     Ok(())
 }
