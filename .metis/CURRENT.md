@@ -2,42 +2,45 @@
 
 ## What happened
 
-Built and merged **Phase 1 of the local analysis suite — the substrate**, via the
-full Metis loop (plan → implement → metis-review → Codex → merge). Landed
-`src-tauri/src/local_model.rs` (new): a flexible `LocalModelClient` parameterized by
-`{endpoint, model_id, messages, tools, format_schema, options}` over Ollama-native
-`/api/chat`, **decoupled from the closed cloud `AgentModel` enum**; daemon supervision
-(`health_check` / `available_models` / `probe_daemon`); the independent `local_gate`
-(reusing `ValidationReport` + a new `WarningKind::LocalModels`); and an NDJSON stream
-decoder on the existing `progress` seam. Plus local config keys/fields (deliberately
-**absent from the cloud `validate` gate**), a `LocalEmbedder` behind the existing
-`Embedder` trait (`/api/embed`), and a `test_local_daemon` spawn_blocking command.
-**Squash-merged to `main` as PR #44 (`c39a3f7`).** Codex caught two real Medium issues,
-both fixed: `normalize_endpoint` accepts both the daemon host and the documented
-`…/api` base (no `/api/api/...`); and streaming cancel/truncation now return `Err`
-(not a partial `Ok`), so a prose stage can't mistake a cut-off stream for success. The
-cloud report pipeline is unchanged.
+Built and squash-merged **Phase 2 of the local analysis suite — the narrow
+single-equity Portfolio slice** (PR #45, `367f09b`) through the full Metis loop
+(plan → implement → metis-review → Codex → merge). New `src-tauri/src/portfolio/`
+(`mod`/`engine`/`dossier`/`pipeline`/`store`/`job`), `schwab.rs` (fixture
+`HoldingsSource` + stub chain), `sec.rs` (keyless EDGAR company-facts adapter), a
+per-company FMP pull reusing the `with_base_url` wire seam, and a per-job
+**`namespace` partition** threaded through `vector_memory` (additive column,
+backfill to `report`; cloud report pipeline behaviourally unchanged). The
+load-bearing split held: the Rust **engine computes every number** (4 sub-scores →
+A–F grade that rolls up from them → scenario EOM/EOY targets w/ methodology →
+options-activity signal), the local model **only interprets** (action/conviction/
+horizon/prose); missing inputs become tagged gaps; the options signal is kept **out
+of the grade**. metis review = approve-with-nits; Codex caught three, all fixed: SEC
+fetch failures were silently erased → now a tagged degraded-input gap; the required
+`price_target_rationale` was dropped → now persisted; coarse cancellation →
+checkpointed in the job and the per-company FMP/SEC calls.
 
 ## Current state
 
-`main` at **`c39a3f7`**, tree clean, in sync with origin; the side branch is deleted.
-`cargo test` 478 pass / clippy clean. **No work in flight.** The substrate is as-built
-and **BUILD.md now reflects it** (substrate marked built; Portfolio & Opportunities
-still planned). Deferred to later phases: the local Settings UI, the Persistent Warning
-Area frontend for
-`WarningKind::LocalModels`, vector-memory job-namespace partitioning, and
-schema-mismatch retry. The local adapter is deliberately a *primitive* (it does **not**
-implement `MainAgent`/`AnalystAgent`); per-feature stages wrap it in Phase 2.
+`main` at **`367f09b`**, clean, synced with origin; feature branch deleted.
+`cargo test` 517 lib + integration green / clippy clean. **No work in flight.**
+Pinned this slice: **N=10** run retention, **X=3** house-view reports, ~1mo/1yr/3–5yr
+horizons, moderate/long/taxable default investor profile. *Calibratable (NOT pinned):*
+grade-weight formula, risk-tier thresholds, options-signal params. **Deferred to later
+slices** (all surfaced in the scope report): web research (SearXNG — stubbed behind a
+function), live Schwab OAuth (fixture this slice), the Portfolio UI page
+(backend+tests only), local-embedder vector recall (namespace column added now;
+prior-run-verdict continuity *is* wired), the 122B roll-up synthesis (deterministic
+roll-up shipped), and per-holding checkpoint/resume.
 
 ## Open questions
 
-- **Durable plan-time parameters belong to the Phase-2 plan, not the substrate**
-  (confirmed this session): pin at the Portfolio-slice `/metis-plan-task` — N/X (run
-  retention, reports-as-context), horizon lengths, default investor profile. *Keep
-  calibratable — do NOT pin:* grade-weight formula, risk-tier thresholds,
-  options-methodology params (shadow-tune against live runs, like COT weighting).
-- **Register the Schwab developer app** — multi-day approval is the external long pole;
-  the hard gate means manual import can't substitute for real-data runs.
+- **Live validation is hardware-gated** — the live `portfolio_live_smoke` (verdict
+  quality, runtime, and whether FMP per-company endpoints are premium-gated on the
+  tier) cannot run until the **M5 (128 GB)** arrives; user is on an M1. The first live
+  Portfolio run on the M5 is the retroactive acceptance check
+  ([[local-suite-hardware-gated]]).
+- **Register the Schwab developer app** (carried) — multi-day approval is the external
+  long pole; gates the live-Schwab slice's real-data runs.
 - **Cadence Run B** (carried) — report #2 still un-run: validates the delta engine +
   memory recall; sanity-check yield levels vs the 2s10s claim and the COT read
   ([[manual-pivot-cadence-windows]], [[report-curve-number-consistency]]).
@@ -48,9 +51,10 @@ implement `MainAgent`/`AnalystAgent`); per-feature stages wrap it in Phase 2.
 
 ## Where to start
 
-**`/metis-plan-task` for Phase 2 — the narrow single-equity Portfolio slice against a
-fixture Schwab source** (stub holdings + option chain, offline) + FMP + SEC + the local
-models, validating quality/runtime offline; settle the durable plan-time parameters
-there. **Kick off Schwab developer-app registration in parallel** (long approval lead).
-Cadence Run B remains an independent quick alternative if you'd rather validate the live
-build first.
+Build order's next step is **`/metis-plan-task` for the live Schwab OAuth slice** —
+swap the fixture `HoldingsSource` for the real Trader API loopback (30-min/7-day
+tokens, Keychain) behind the same trait. **Kick off Schwab developer-app registration
+first** (long approval lead; it gates real-data runs). Full Portfolio (funds + 122B
+roll-up) and Trade Opportunities follow. **Before planning, advance BUILD.md's
+local-suite build-order line** (see the pending-decision flag): substrate ✓ → narrow
+Portfolio slice ✓ → next is live Schwab.

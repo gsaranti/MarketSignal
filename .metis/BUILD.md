@@ -263,16 +263,19 @@ end-to-end with no network, keys, or cost. The feature is not in `default` and s
 is compiled out of `tauri build`; it's the cost-free way to verify UI/report
 changes (`npm run tauri:demo`).
 
-## Local analysis suite (substrate built; features planned)
+## Local analysis suite (substrate + narrow Portfolio slice built; features in progress)
 
 A second capability set: two on-demand, **local-model-only** features —
 **Portfolio Analysis** (grades the user's Charles Schwab holdings and recommends
 actions + price targets) and **Trade Opportunities** (researches new ideas across a
-3×3 risk×horizon matrix). The **shared substrate is built and merged** (PR #44);
-**neither feature is implemented yet**. Full design lives in `docs/local-models.md`,
-`web-research.md`, `schwab-integration.md`, `portfolio-analysis.md`, and
-`trade-opportunities.md`. The load-bearing decisions (the first is as-built; the
-rest remain planned):
+3×3 risk×horizon matrix). The **shared substrate is built and merged** (PR #44),
+and a **narrow single-equity Portfolio slice** ships the first per-feature pipeline
+end-to-end against a **fixture Schwab source** (offline) plus FMP + SEC + the local
+models (PR #45) — **full Portfolio (funds) and Trade Opportunities remain planned**.
+Full design lives in `docs/local-models.md`, `web-research.md`,
+`schwab-integration.md`, `portfolio-analysis.md`, and `trade-opportunities.md`. The
+load-bearing decisions (the model layer and the narrow Portfolio pipeline are
+as-built; the rest remain planned):
 
 - **A local-only model layer, distinct from the cloud report (built).** A flexible
   local-model adapter (`local_model.rs`) parameterized by `{endpoint, model_id,
@@ -315,9 +318,11 @@ rest remain planned):
   matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
   and the `vector_memory` / `Embedder` modules; local-job gate failures get their
   own warning categories. The cloud report is unchanged. Build order: substrate
-  (**done** — PR #44) → **next: a narrow single-equity Portfolio slice** built against
-  a **fixture Schwab source** (stub holdings + option chain) + FMP + SEC, local
-  models — validate quality/runtime offline → wire live Schwab OAuth → full Portfolio
+  (**done** — PR #44) → narrow single-equity Portfolio slice (**done** — PR #45:
+  fixture Schwab + FMP + SEC + local models, offline-verified; the engine computes
+  every number and the model only interprets; per-job `vector_memory` namespace
+  partition added; live verdict-quality/runtime + FMP-tier validation is
+  hardware-gated on the M5) → **next: wire live Schwab OAuth** → full Portfolio
   (funds) → Opportunities.
 - **Personalized & screened.** Portfolio grading/actions are personalized by a
   configured investor profile (risk tolerance, horizon, tax, cash). Trade
