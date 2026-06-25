@@ -114,6 +114,7 @@
 ## Local analysis suite
 - Local analysis suite overview (local-only, two prescriptive features) — overview.md §Local Analysis Suite; local-models.md
 - Local model substrate (Ollama-on-MLX serving, roster, per-task routing) — local-models.md §Serving runtime, §The model roster and per-task routing
+- Model residency default (one 122B fills research/distill/interpret by mode + embedder resident; 35B fast tier a benchmark-gated option) — local-models.md §The model roster and per-task routing
 - Local-model adapter seam (flexible endpoint/model_id client, distinct from the cloud AgentModel enum) — local-models.md §The local-model adapter seam
 - Schema-constrained output (grammar-constrained JSON) — local-models.md §Schema-constrained output
 - Context-memory discipline (distilled hand-offs, retrieve-don't-dump) — local-models.md §Context-memory discipline
@@ -123,6 +124,7 @@
 - Manual holdings import (CSV/paste fallback) — schwab-integration.md §Manual import fallback
 - Portfolio Analysis job (per-holding pipeline, grade, action, targets, roll-up) — portfolio-analysis.md
 - Holding verdict schema (grade + sub-scores, action ladder, horizon, targets, what-changed) — portfolio-analysis.md §The holding verdict
+- Holdings change tracking (deterministic prior-run-snapshot diff → per-position new/increased/decreased/unchanged delta into dossier; exited names surfaced in roll-up) — portfolio-analysis.md §Holdings change tracking
 - Trade Opportunities job (3×3 risk×horizon matrix) — trade-opportunities.md
 - Opportunity schema (thesis, catalyst, conviction, carry-forward status) — trade-opportunities.md §The opportunity
 - Local analysis suite configuration (daemon, roster, SearXNG, Schwab; gates local jobs only) — configuration.md §Local Analysis Suite Configuration
@@ -134,7 +136,7 @@
 - Deterministic risk-tier assignment — trade-opportunities.md §The opportunity space
 - Per-holding checkpoint/resume + research caching — portfolio-analysis.md §Failure posture
 - Free-tier data dispersal (SEC/Stooq/Finnhub offload FMP; FMP keeps niche aggregates) — data-sources.md §Local Analysis Suite Sources
-- Research loop & intra-loop context management (agenda → iterate → condense-as-you-go) — web-research.md §The research loop and context management
+- Research loop & intra-loop context management (per-topic agenda, depth ≤2 / ≤3 passes per topic — branches not LLM turns, per-item fetch+wall-clock budget binds first, condense-as-you-go) — web-research.md §The research loop and context management
 - Research agenda (fundamentals + market narrative/sentiment + forward opportunity/thematic fit) — portfolio-analysis.md; trade-opportunities.md
 - Options-activity signal (per-stock put/call vol+OI & IV/skew from Schwab chains, an activity proxy not positioning truth; CBOE venue-level backdrop) — schwab-integration.md; data-sources.md §CBOE; portfolio-analysis.md
 - Schwab connection required for both local jobs (hard execution-gate precondition) — schwab-integration.md §A connected Schwab account is required

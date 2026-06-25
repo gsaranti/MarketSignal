@@ -287,11 +287,15 @@ as-built; the rest remain planned):
   configuration. Daemon supervision (`health_check` + roster probe) feeds an
   **independent local-suite gate** (its own `WarningKind::LocalModels`, separate from
   the cloud `validate` gate), and a `LocalEmbedder` reuses the existing `Embedder`
-  trait so `vector_memory` is unchanged. The intended roster — one frontier reasoner
-  (Qwen3.5-122B-A10B, thinking vs non-thinking mode) + a fast tier (Qwen3.5-35B-A3B)
-  + a local embedder — is configurable, and 128 GB co-residency stays
-  **benchmark-gated** (one brain in two modes, not two brains): the one forward item
-  in this layer.
+  trait so `vector_memory` is unchanged. The roster default is **settled**: one frontier reasoner
+  (Qwen3.5-122B-A10B) **plus the embedder stay resident**, and the 122B fills *every*
+  reasoning role — research/interpretation in thinking mode, distillation in
+  non-thinking — so co-residency of a second large model is sidestepped and the
+  per-holding research↔distill interleave pays no model-swap cost. The fast tier
+  (Qwen3.5-35B-A3B) is **demoted to a benchmark-gated option**, reintroduced only if
+  distillation wall-clock is a measured bottleneck *and* a 122B+35B+embedder set
+  co-resides cleanly on-device. Roster is configurable; the roster never runs more
+  than one large reasoner.
 - **Per-job isolation (learnings only).** Each feature stores its own runs
   (last-N retention) and its own vector-memory partition; no job reads another's
   *learnings*. The Market Signal Report stays a read-only shared input, loaded
@@ -300,7 +304,12 @@ as-built; the rest remain planned):
 - **A cost-free web tool.** Self-hosted, keyless SearXNG for search plus a Rust
   fetch/readability-extract layer, with the existing Tavily as fallback; the
   orchestrator runs the tool, the model only requests it — holding the pure-stage
-  boundary. Model-chosen fetches are SSRF-guarded (no private/loopback hosts,
+  boundary. The per-item research loop is worked **one agenda topic at a time** —
+  each topic ≤3 research passes (root + ≤2 app-governed follow-ups, depth ≤2; a pass
+  is itself a bounded multi-turn tool loop) under a **per-item fetch+wall-clock budget**
+  that binds first (bounding the raw turns/fetches) and is spent in topic-priority
+  order, fail-soft on exhaustion. Model-chosen fetches are SSRF-guarded (no
+  private/loopback hosts,
   bounded size/redirects, untrusted content) and every finding keeps its source
   URL + timestamp.
 - **Holdings & options ingestion.** Schwab Trader API via an OAuth loopback
@@ -322,14 +331,17 @@ as-built; the rest remain planned):
   fixture Schwab + FMP + SEC + local models, offline-verified; the engine computes
   every number and the model only interprets; per-job `vector_memory` namespace
   partition added; live verdict-quality/runtime + FMP-tier validation is
-  hardware-gated on the M5) → **next: wire live Schwab OAuth** → full Portfolio
-  (funds) → Opportunities.
+  hardware-gated on the M5) → **next: wire live Schwab OAuth** (+ deterministic
+  holdings-snapshot diff: prior-run snapshot vs current pull → per-position
+  new/increased/decreased/unchanged delta into each dossier, exited names surfaced in
+  the roll-up) → full Portfolio (funds) → Opportunities.
 - **Personalized & screened.** Portfolio grading/actions are personalized by a
   configured investor profile (risk tolerance, horizon, tax, cash). Trade
   Opportunities generates candidates from an FMP screen + research-surfaced names
-  (SearXNG is not a screener), and a cell may return nothing. Model residency
-  (122B + 35B + embedder) is gated on an on-device benchmark, with eviction /
-  hot-swap fallback.
+  (SearXNG is not a screener), and a cell may return nothing. Model residency keeps
+  the **122B + embedder** resident (the 122B fills every reasoning role by mode); a
+  second small model (35B) is the benchmark-gated option, not a default — never two
+  large reasoners co-resident (see the model-layer bullet above).
 - **Deterministic finance, primary-source evidence.** Quantitative outputs —
   sub-scores, risk-tier assignment, valuation/quality/momentum/risk metrics, and
   scenario price targets (methodology exposed) — are computed by a Rust
