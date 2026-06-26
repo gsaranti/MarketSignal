@@ -127,6 +127,13 @@
 - Portfolio Analysis job (per-holding pipeline, grade, action, targets, roll-up) — portfolio-analysis.md
 - Holding verdict schema (grade + sub-scores, action ladder, horizon, targets, what-changed) — portfolio-analysis.md §The holding verdict
 - Holdings change tracking (deterministic prior-run-snapshot diff → per-position new/increased/decreased/unchanged delta into dossier; exited names surfaced in roll-up) — portfolio-analysis.md §Holdings change tracking
+- Portfolio Analysis workflow (end-to-end Type-tagged control flow — gate → holdings → classify → diff → shared context → per-holding loop → roll-up → persist → render; local-model-call contracts) — portfolio-workflow.md
+- Portfolio three-layer engine (grade core / conviction layer / positioning context; new signals enrich conviction/risk, never the letter grade) — portfolio-analysis.md §The per-holding pipeline; portfolio-workflow.md
+- Portfolio per-holding/per-fund endpoint surface (FMP per-symbol subset + dividends/earnings/M&A/float/profile/segments/transcripts; ETF/fund group with local look-through; FINRA short interest; run-level FRED risk-free + commodity + CFTC) — data-sources.md §Portfolio Analysis — endpoint surface
+- Fund path (reduced compute: expense drag, look-through concentration from etf/holdings, exposure, fund valuation; etf/asset-exposure is an optional per-equity cross-check, not the look-through source) — portfolio-analysis.md §Asset eligibility
+- House-view freshness gate (latest report carries its date; older than 1 week → omitted as a gap, not fed as current) — portfolio-workflow.md §Step 5
+- Post-research target refinement (typed research_forward_assumption: value/units/as-of/source/confidence/conflict; engine recomputes forward targets only, sub-scores fixed) — portfolio-analysis.md §The per-holding pipeline; portfolio-workflow.md §Step 6e
+- What-changed audit (per-value cause attribution: external input-delta vs flagged self-correction; app-layer validated so external claims must map to a moved input) — portfolio-analysis.md §The holding verdict; portfolio-workflow.md §Step 6g
 - Trade Opportunities job (3×3 risk×horizon matrix) — trade-opportunities.md
 - Trade Opportunities — what it hunts (two modes: early detection + continuation; leading-metric anchor) — trade-opportunities.md §What the job hunts
 - Opportunity archetype lens (secular-compounder/ai-infra/commodity-cyclical/disruptor/quality-compounder; selects signal weighting + valuation lens) — trade-opportunities.md §Archetype
@@ -141,12 +148,12 @@
 - SEC EDGAR primary source (keyless filings + XBRL company facts) — data-sources.md §SEC EDGAR
 - SEC EDGAR role for Trade Opportunities (authoritative cross-check for grade/target numbers + 8-K filings; positioning moved to FMP symbol-keyed; ticker→CIK a non-blocking enhancement) — data-sources.md §SEC EDGAR
 - FMP paid-tier suite signals (revision flow via estimates/grades-historical/price-targets/upgrades-downgrades + surprises; financial-scores Altman+Piotroski forensic gate; insider/13F/Senate-House positioning; screener/peers/bulk discovery; one shared FMP key upgraded to paid, report logic unchanged) — data-sources.md §Local Analysis Suite Sources
-- FINRA short interest (keyless biweekly consolidated equity short-interest file; level/trend/days-to-cover) — data-sources.md §FINRA
-- Evidence floor (insufficient-evidence abstention) — portfolio-analysis.md §Evidence floor
+- FINRA short interest (keyless biweekly consolidated equity short-interest file; level/trend/days-to-cover; serves Trade Opportunities and Portfolio held-equity risk/squeeze context) — data-sources.md §FINRA
+- Evidence floor (insufficient-evidence abstention; floor-bearing vs enriching input tiering; equity floor = statements + price, fund analog = quote/NAV/info/disclosure/coverage) — portfolio-analysis.md §Evidence floor
 - Deterministic risk-tier assignment — trade-opportunities.md §The opportunity space
 - Per-holding checkpoint/resume + research caching — portfolio-analysis.md §Failure posture
-- Free-tier data dispersal (SEC/Stooq/Finnhub offload FMP; FMP keeps niche aggregates) — data-sources.md §Local Analysis Suite Sources
-- Research loop & intra-loop context management (per-topic agenda, depth ≤2 / ≤3 passes per topic — branches not LLM turns, per-item fetch+wall-clock budget binds first, condense-as-you-go) — web-research.md §The research loop and context management
+- Suite data dispersal (SEC EDGAR cross-check + Stooq deep-history offload FMP; quotes on FMP; Finnhub dropped; dispersal is load-relief on the paid key, not free-cap avoidance) — data-sources.md §Local Analysis Suite Sources
+- Research loop & context management (per-topic agenda — each topic its own model call over a clean context; depth ≤2 / ≤3 passes per topic, branches not LLM turns; per-item fetch+wall-clock budget binds first; no in-loop re-distillation — full per-topic findings → a single distillation; append-only evidence ledger) — web-research.md §The research loop and context management
 - Research agenda (fundamentals + market narrative/sentiment + forward opportunity/thematic fit) — portfolio-analysis.md; trade-opportunities.md
 - Options-activity signal (per-stock put/call vol+OI & IV/skew from Schwab chains, an activity proxy not positioning truth; CBOE venue-level backdrop) — schwab-integration.md; data-sources.md §CBOE; portfolio-analysis.md
 - Schwab connection required for both local jobs (hard execution-gate precondition) — schwab-integration.md §A connected Schwab account is required

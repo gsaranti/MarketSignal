@@ -20,4 +20,5 @@
 - [web-research.md](web-research.md) — The local suite's web tool: the SearXNG-backed search / fetch / extract loop with a Tavily fallback.
 - [schwab-integration.md](schwab-integration.md) — Portfolio holdings ingestion from Charles Schwab (OAuth, token lifecycle, positions) plus the manual-import fallback.
 - [portfolio-analysis.md](portfolio-analysis.md) — The local Portfolio Analysis job: the per-holding pipeline, grading, price targets, and portfolio roll-up.
+- [portfolio-workflow.md](portfolio-workflow.md) — The Portfolio Analysis job's end-to-end control flow: Type-tagged steps from the gate through the per-holding loop to the roll-up, with each local-model-call contract.
 - [trade-opportunities.md](trade-opportunities.md) — The local Trade Opportunities job: the risk × horizon opportunity matrix and its continuity.

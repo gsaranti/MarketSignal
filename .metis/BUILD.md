@@ -293,7 +293,8 @@ and a **narrow single-equity Portfolio slice** ships the first per-feature pipel
 end-to-end against a **fixture Schwab source** (offline) plus FMP + SEC + the local
 models (PR #45) — **full Portfolio (funds) and Trade Opportunities remain planned**.
 Full design lives in `docs/local-models.md`, `web-research.md`,
-`schwab-integration.md`, `portfolio-analysis.md`, and `trade-opportunities.md`. The
+`schwab-integration.md`, `portfolio-analysis.md`, `portfolio-workflow.md`, and
+`trade-opportunities.md`. The
 load-bearing decisions (the model layer and the narrow Portfolio pipeline are
 as-built; the rest remain planned):
 
@@ -310,8 +311,8 @@ as-built; the rest remain planned):
   trait so `vector_memory` is unchanged. The roster default is **settled**: one frontier reasoner
   (Qwen3.5-122B-A10B) **plus the embedder stay resident**, and the 122B fills *every*
   reasoning role — research/interpretation in thinking mode, distillation in
-  non-thinking — so co-residency of a second large model is sidestepped and the
-  per-holding research↔distill interleave pays no model-swap cost. The fast tier
+  non-thinking — so co-residency of a second large model is sidestepped and a
+  holding's research passes then single distillation pay no model-swap cost. The fast tier
   (Qwen3.5-35B-A3B) is **demoted to a benchmark-gated option**, reintroduced only if
   distillation wall-clock is a measured bottleneck *and* a 122B+35B+embedder set
   co-resides cleanly on-device. Roster is configurable; the roster never runs more
@@ -376,8 +377,10 @@ as-built; the rest remain planned):
   scenario price targets (methodology exposed) — are computed by a Rust
   financial-analysis engine over **FMP plus keyless SEC EDGAR** (10-K/Q/8-K +
   XBRL company facts); the model interprets, never invents numbers. High-volume
-  price/OHLCV is dispersed to **keyless Stooq** (deep history) and **Finnhub**
-  (quotes) to keep the report and both local jobs under FMP's ~250/day free cap.
+  **price history** stays on **keyless Stooq** (multi-decade depth — the input the
+  engine's price-action confirmer and momentum/volatility reads need); live **quotes**
+  come from FMP, and the dispersal is load-relief on the **paid** shared FMP key, not
+  free-cap avoidance.
   **Trade Opportunities widens the signal set on FMP's paid tier** (the suite's one
   paid dependency; **one shared FMP key for the report + both jobs, upgraded to paid —
   the report's data-source logic is unchanged**, former free-tier gates no longer bind): fundamentals/ratios/segments, the revision
@@ -395,6 +398,18 @@ as-built; the rest remain planned):
   floor** returns `insufficient-evidence` (not a low-conviction guess) when data
   is missing/stale/conflicting. Long per-holding jobs **checkpoint and resume**,
   and early runs are treated as **shadow/calibration** before outputs are trusted.
+  Portfolio's per-holding design is now fully specified (`portfolio-workflow.md` is the
+  Type-tagged control flow): a **three-layer engine** (grade core from fundamentals +
+  price + forensics; a conviction layer of revision / narrative-vs-reality; positioning
+  context held out of the grade until calibrated), forward targets **refinable
+  post-research only via a typed, sourced `research_forward_assumption`** the engine
+  recomputes (sub-scores never move), and a **what-changed audit** attributing every
+  verdict move to a deterministic input-delta (external) or a flagged **self-correction**
+  — app-validated so it can't be faked. Funds take a reduced compute path (look-through
+  concentration from `etf/holdings`) with a fund-analog evidence floor; the house view is
+  dropped past a **one-week freshness** window. Portfolio points the paid per-symbol feed
+  at *held* names plus its own adds (segment revenue, earnings-call transcripts, FINRA
+  short interest, dividends, ETF/fund endpoints).
 
 Both features are deliberately **prescriptive** (grades, actions, targets) — a
 departure from the report's no-buy/sell stance — applying the report's house view

@@ -238,9 +238,11 @@ GDELT's single combined query sizes its `timespan` lookback to the **elapsed int
 
 ## Local Analysis Suite Sources
 
-These sources serve the local analysis suite ([local-models.md](local-models.md)), not the Market Signal Report. Because FMP's free tier (~250 requests/day) is now shared by the report and both local jobs, the suite **disperses high-volume data across additional free providers** to stay under that cap: company fundamentals from **SEC EDGAR** (keyless), historical prices from **Stooq** (keyless), and real-time quotes from **Finnhub** — leaving **FMP** for the low-volume niche endpoints only it serves free (movers, the earnings calendar, the screener, and the sector / industry aggregate P/E). All sit behind the same data-source seam and fail-soft posture as the report's adapters.
+These sources serve the local analysis suite ([local-models.md](local-models.md)), not the Market Signal Report. Even on the paid FMP key, the suite **spreads its high-volume per-holding load across keyless providers** rather than routing everything through one: company fundamentals cross-checked against **SEC EDGAR** (keyless) and deep historical prices from **Stooq** (keyless), leaving **FMP** for fundamentals breadth, the niche aggregates (movers, earnings calendar, screener, sector / industry P/E), and live **quotes** (`quote`). All sit behind the same data-source seam and fail-soft posture as the report's adapters.
 
-**Trade Opportunities** runs a wider signal set on **FMP's paid tier**. The application uses **one shared FMP credential for everything — the report and both local jobs — now upgraded to the paid tier** (the suite's one paid dependency, so the user manages a single key). The report's data-source *logic* is unchanged (its existing calls behave identically on the paid key), and the former free-tier gates simply no longer bind — so the newly-unlocked endpoints are available to enrich the report packet as a separate, opt-in enhancement (see [trade-opportunities.md §Signal inputs](trade-opportunities.md#signal-inputs)). The paid tier is the broad working & discovery feed: financial statements / ratios / revenue **segments** / owner earnings / DCF; the **revision signal** (analyst estimates snapshotted for velocity, the `grades-historical` rating-distribution time series, price-target trend, upgrades / downgrades, earnings surprises); **`financial-scores` — Altman Z + Piotroski** for the forensic gate; **positioning** (insider buys / sells + statistics, 13F institutional, and **Senate / House congressional trading** — all symbol-keyed); and the **screener / peers / industry-classification** plus **bulk** endpoints (scores / surprises / ratings / ratios across the whole universe) that power the discovery funnel without a per-symbol rate cap. **Short interest** comes keyless from FINRA (FMP has no short-interest endpoint); **cyclical commodity prices** from FRED (daily energy + monthly IMF metals — copper, aluminum, nickel, iron ore, uranium) and Stooq futures. **SEC EDGAR is retained as the authoritative primary-source cross-check** for the numbers that drive grades / targets, which makes **ticker→CIK resolution a non-blocking enhancement** rather than a prerequisite (the FMP feeds are symbol-keyed). DRAM/NAND ASPs and supply-discipline signals have no structured feed and ride the research loop ([web-research.md](web-research.md)).
+**Both local jobs run on FMP's paid tier** — Trade Opportunities most heavily (it also screens the universe), Portfolio Analysis across a per-holding subset. The application uses **one shared FMP credential for everything — the report and both local jobs — now upgraded to the paid tier** (the suite's one paid dependency, so the user manages a single key). The report's data-source *logic* is unchanged (its existing calls behave identically on the paid key), and the former free-tier gates simply no longer bind — so the newly-unlocked endpoints are available to enrich the report packet as a separate, opt-in enhancement (see [trade-opportunities.md §Signal inputs](trade-opportunities.md#signal-inputs)). The paid tier is the broad working & discovery feed: financial statements / ratios / revenue **segments** (product + geographic) / **earnings-call transcripts** / owner earnings / DCF; the **revision signal** (analyst estimates snapshotted for velocity, the `grades-historical` rating-distribution time series, price-target trend, upgrades / downgrades, earnings surprises); **`financial-scores` — Altman Z + Piotroski** for the forensic gate; **positioning** (insider buys / sells + statistics, 13F institutional, and **Senate / House congressional trading** — all symbol-keyed); and the **screener / peers / industry-classification** plus **bulk** endpoints (scores / surprises / ratings / ratios across the whole universe) that power the discovery funnel without a per-symbol rate cap. The **per-symbol** signals here — fundamentals, the revision signal, `financial-scores`, positioning, and peers — are shared by **Portfolio Analysis** (grading held positions) and **Trade Opportunities** (validating candidates); the **screener / bulk / industry-classification** discovery layer is **Trade Opportunities only**, since Portfolio Analysis grades a known holdings list and never screens the universe. **Short interest** comes keyless from FINRA (FMP has no short-interest endpoint); **cyclical commodity prices** from FRED (daily energy + monthly IMF metals — copper, aluminum, nickel, iron ore, uranium) and Stooq futures. **SEC EDGAR is retained as the authoritative primary-source cross-check** for the numbers that drive grades / targets, which makes **ticker→CIK resolution a non-blocking enhancement** rather than a prerequisite (the FMP feeds are symbol-keyed). DRAM/NAND ASPs and supply-discipline signals have no structured feed and ride the research loop ([web-research.md](web-research.md)).
+
+**Portfolio Analysis** reads a per-holding / per-fund subset of that FMP surface (it grades a known holdings list, so it never touches the discovery layer) plus run-level macro inputs; analyst opinions it pulls — price targets, grade distributions, FMP's ratings snapshot — ride in as *evidence the model weighs, never as inputs to the engine's computed grade*. Its full endpoint surface, by source, is tabulated under [§Portfolio Analysis — endpoint surface](#portfolio-analysis--endpoint-surface) below.
 
 ### Charles Schwab (Trader API)
 Docs - https://developer.schwab.com/
@@ -257,17 +259,12 @@ For Trade Opportunities, EDGAR is the **authoritative cross-check** behind the F
 ### FINRA (short interest)
 Docs - https://www.finra.org/finra-data/browse-catalog/equity-short-interest
 
-FINRA publishes the **consolidated Equity Short Interest** file — keyless, biweekly (mid- and end-of-month settlement, disseminated ~7–8 business days later), covering exchange-listed and OTC equities since 2021. Each record carries current and prior short interest plus average daily volume, giving short-interest level, trend, and days-to-cover directly — the squeeze-fuel / crowded-bear signal for Trade Opportunities. It is best-effort and fail-soft like the suite's other additive feeds.
+FINRA publishes the **consolidated Equity Short Interest** file — keyless, biweekly (mid- and end-of-month settlement, disseminated ~7–8 business days later), covering exchange-listed and OTC equities since 2021. Each record carries current and prior short interest plus average daily volume, giving short-interest level, trend, and days-to-cover directly — the squeeze-fuel / crowded-bear signal for Trade Opportunities **and a risk / squeeze-context input for Portfolio Analysis's held equities** (informing trims and adds; the biweekly file is fetched once per run and looked up per holding). It is best-effort and fail-soft like the suite's other additive feeds.
 
 ### Stooq
 Docs - https://stooq.com/db/h/
 
-Stooq is the suite's **historical price source** — keyless, with no documented rate cap, serving 20–30+ years of daily OHLCV per symbol via a simple CSV endpoint (plus bulk database downloads). It carries the highest-volume per-holding price need — the inputs to momentum, volatility, and price-target scenarios — keeping that load entirely off FMP. Like GDELT it is best-effort and fail-soft: an informal source with no SLA and occasional symbol-mapping gaps (US tickers take a `.us` suffix), so a missing series degrades to a gap rather than failing the run, and the adapter self-throttles to stay polite.
-
-### Finnhub
-Docs - https://finnhub.io/docs/api
-
-Finnhub supplies **real-time equity quotes** on its free tier (60 requests/minute, no daily cap, free API key). It covers the current-price reads the analysis needs without spending FMP's daily budget; absent a key, quotes fall back to FMP (a low-volume call). Finnhub's historical candles moved to its paid tier, so deep history stays on Stooq, and **Twelve Data** (free key, 800 requests/day) is a noted fallback if intraday OHLCV is ever needed.
+Stooq is the suite's **deep historical price source** — keyless, with no documented rate cap, serving 20–30+ years of daily OHLCV per symbol via a simple CSV endpoint (plus bulk database downloads). Its value holds **independent of FMP's tier**: the multi-decade depth is what the engine's **price-action confirmer** (multi-year base-breakout / long relative-strength) and the momentum / volatility / price-target computations need, and serving that highest-volume per-holding read keylessly keeps the bulk price load off the shared FMP key regardless of cap. Like GDELT it is best-effort and fail-soft: an informal source with no SLA and occasional symbol-mapping gaps (US tickers take a `.us` suffix), so a missing series degrades to a gap rather than failing the run, and the adapter self-throttles to stay polite.
 
 ### CBOE
 Docs - https://www.cboe.com/us/options/market_statistics/daily/
@@ -278,6 +275,73 @@ CBOE provides a free, keyless daily **put/call ratio for its own exchange's flow
 Docs - https://docs.searxng.org/
 
 SearXNG is the local suite's **web-search backend** — a self-hosted, keyless metasearch instance queried over its JSON API on the loopback interface, fanning queries out to general engines. It is the primary search source for the suite's research loop, with the existing Tavily integration as a fallback. The search / fetch / extract tool built on it is described in [web-research.md](web-research.md).
+
+### Portfolio Analysis — endpoint surface
+
+Every endpoint Portfolio Analysis ([portfolio-analysis.md](portfolio-analysis.md)) calls, by source, paralleling the report's per-source tables above. **Cardinality** is the load-bearing axis — it sets the per-run call budget: **per-holding** and **per-fund** calls scale with portfolio size (the budget driver), while **run-level** calls fire once and are shared across all holdings. All FMP paths are on the `https://financialmodelingprep.com/stable` base and run on the shared paid key.
+
+**FMP**
+
+| Endpoint path | Cardinality | Portfolio Analysis use |
+| --- | --- | --- |
+| `profile` | per-holding | sector / industry / **beta** / description — classification + risk input |
+| `income-statement`, `balance-sheet-statement`, `cash-flow-statement` (+ `…-ttm`) | per-holding | core financial statements — engine fundamentals |
+| `key-metrics`, `ratios` (+ `…-ttm`) | per-holding | valuation / quality / leverage / margin ratios |
+| `financial-scores` | per-holding | Altman Z + Piotroski → risk / quality forensic input |
+| `owner-earnings` | per-holding | owner earnings (cash to shareholders) for valuation |
+| `enterprise-values` | per-holding | enterprise value for EV multiples |
+| `discounted-cash-flow` | per-holding | DCF valuation cross-check |
+| `analyst-estimates` | per-holding | forward revenue / EPS consensus → engine **revision-velocity** read |
+| `price-target-consensus`, `price-target-summary` | per-holding | street price-target level + trend — *evidence, not an engine input* |
+| `grades`, `grades-historical`, `grades-consensus` | per-holding | `grades-historical` distribution → engine **rating-drift** read; rating actions + current consensus ride as *evidence* |
+| `ratings-snapshot`, `ratings-historical` | per-holding | FMP's own composite rating — opinion cross-check only |
+| `dividends` | per-holding | yield, frequency, schedule — income / total-return grading |
+| `earnings` | per-holding | next earnings date + EPS / revenue estimate (catalyst); actual-vs-estimate surprise history |
+| `insider-trading/search`, `insider-trading/statistics` | per-holding | insider buys / sells + aggregate statistics |
+| `institutional-ownership/symbol-positions-summary` | per-holding | 13F institutional ownership |
+| `senate-trades`, `house-trades` | per-holding | congressional trading in the name |
+| `stock-peers` | per-holding | peer set for relative valuation |
+| `shares-float` | per-holding | free float / liquidity → risk input |
+| `mergers-acquisitions-search` | per-holding | whether the held name is acquirer or target (catalyst) |
+| `revenue-product-segmentation`, `revenue-geographic-segmentation` | per-holding | revenue by product / geography — business mix, thematic exposure, what-changed attribution |
+| `earning-call-transcript`, `earning-call-transcript-dates` | per-holding | management commentary — guidance / margins / demand / capex (grounds the research lane) |
+| `quote` | per-holding | live quote (current price) |
+| `etf/info` | per-fund | expense ratio, AUM, NAV, asset class, mandate |
+| `etf/holdings` | per-fund | constituents + weights — look-through, concentration |
+| `etf/sector-weightings`, `etf/country-weightings` | per-fund | sector / country exposure |
+| `etf/asset-exposure` | per-equity (optional) | reverse lookup — which ETFs hold a directly-held name; a cross-check only, *not* the look-through source (look-through concentration is computed locally from `etf/holdings`) |
+| `funds/disclosure-holders-latest`, `funds/disclosure`, `funds/disclosure-dates` | per-fund | mutual-fund holdings disclosures |
+
+**FRED** — base `https://api.stlouisfed.org/fred`, `/series/observations` (the `series_id` doubles as the quote symbol).
+
+| Series ID | Series | Cardinality | Portfolio Analysis use |
+| --- | --- | --- | --- |
+| `DGS10` | 10-Year Treasury Yield | run-level | risk-free rate → valuation-engine discounting |
+| `DGS2` | 2-Year Treasury Yield | run-level | risk-free rate (short end) |
+| `DCOILWTICO` | WTI Crude Oil | run-level | commodity context for energy-linked holdings |
+| `DHHNGSP` | Henry Hub Natural Gas | run-level | commodity context for energy-linked holdings |
+
+Materials-linked holdings reuse the suite's broader FRED commodity set (monthly IMF metals incl. copper, aluminum, nickel, iron ore, uranium — IDs catalogued with the suite commodity feed, see [trade-opportunities.md §Signal inputs](trade-opportunities.md#signal-inputs)); gold is FMP `GCUSD`.
+
+**CFTC** — Socrata, base `https://publicreporting.cftc.gov/resource/<dataset>.json`. The same keyless pull the report makes; Portfolio Analysis maps a fund holding onto an already-gathered contract.
+
+| Dataset | Contracts | Cardinality | Portfolio Analysis use |
+| --- | --- | --- | --- |
+| `gpe5-46if` (Traders in Financial Futures) | E-mini S&P 500, Nasdaq-100, 10Y / 2Y Treasuries, USD Index | run-level | underlying positioning for an equity-index / rates / FX **fund** holding |
+| `72hh-3qpy` (Disaggregated) | Gold, WTI Crude, Copper | run-level | underlying positioning for a commodity **fund** holding |
+
+A fund whose underlying isn't among these contracts fail-softs to no positioning read.
+
+**Schwab / SEC EDGAR / Stooq / FINRA** — the account and keyless sources (full endpoint detail in their sections above).
+
+| Source · endpoint | Cardinality | Portfolio Analysis use |
+| --- | --- | --- |
+| Schwab · accounts / positions | run-level | holdings — quantity, cost basis, market value, instrument identity |
+| Schwab · `/marketdata/v1/chains` | per-holding (optionable equity) | option chains → options-activity signal (put/call, IV/skew) |
+| SEC EDGAR · submissions (10-K / 10-Q / 8-K) | per-holding | filings — authoritative cross-check + 8-K events |
+| SEC EDGAR · company-facts (XBRL) | per-holding | normalized statement data the engine computes over |
+| Stooq · daily OHLCV CSV | per-holding | deep price history → momentum / volatility / price-target scenarios |
+| FINRA · consolidated short-interest file | per-holding lookup (file fetched once / run) | short-interest level / trend / days-to-cover → risk / squeeze context |
 
 ## LLM Providers
 - [OpenAI](https://platform.openai.com/docs)

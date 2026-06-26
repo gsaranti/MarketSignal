@@ -98,7 +98,7 @@ The suite's web-research tool uses a local SearXNG instance, with the existing T
 
 ### Price Data
 
-The suite's price and fundamentals load is spread across free providers to stay under FMP's daily cap (see [data-sources.md](data-sources.md)). **SEC EDGAR** and **Stooq** are keyless and need no configuration; **Finnhub** uses a free API key held in Settings (optional — without it, quotes fall back to FMP). Per-stock **option chains** come from the Schwab connection (below), and **CBOE**'s venue-level put/call backdrop is keyless — neither needs separate configuration.
+The suite's price and fundamentals load is spread across keyless providers (see [data-sources.md](data-sources.md)). **SEC EDGAR** and **Stooq** are keyless and need no configuration; live **quotes** come from the shared FMP key. Per-stock **option chains** come from the Schwab connection (below), and **CBOE**'s venue-level put/call backdrop is keyless — neither needs separate configuration.
 
 ### Charles Schwab Connection
 
