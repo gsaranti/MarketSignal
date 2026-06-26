@@ -370,14 +370,20 @@ as-built; the rest remain planned):
   entry) through a first-class **archetype** lens (secular-compounder / ai-infra /
   commodity-cyclical / disruptor / quality-compounder) that selects the signal weights +
   valuation lens, gated by a mandatory bear case, a narrative-vs-reality
-  (revisions-vs-multiple) check, and a forensic risk gate. A cell may return nothing.
+  (revisions-vs-multiple, with an operating-reality-vs-price fallback when coverage is too thin to read revisions) check, a **cross-lens contradiction check** folded into distillation+scoring (no extra model call; high-severity contradictions capped deterministically), and a forensic risk gate. A cell may return nothing.
   Its **research method is itself load-bearing** (`trade-opportunities.md §The research
   method`): worldview-first (a regime backbone reused from the house view + a forward
-  thematic map), then five lenses — quant composite, value-creation, macro-thematic-fit,
+  thematic map, traced *economically* — margin capture / bargaining power / capacity /
+  pricing power, not mere exposure), then five lenses — quant composite, value-creation, macro-thematic-fit,
   investor-judgment, and case-study pattern — reconciled as **two tracks** (proven- vs
   emerging-economics) through one moat/management/price-asymmetry gate, with an inflecting
   **leading-metric hard gate** plus a valuation-vs-forward red-flag as the spine, and
-  breadth across **all market caps**. Model residency keeps
+  breadth across **all market caps** (protected at the discovery funnel's waist by
+  deliberate diversity quotas — cap / feeder / archetype / theme). Each run also computes
+  deterministic **outcome labels** on prior picks (return vs sector/market, drawdown,
+  leading-metric continuation, a decision-tree failure mode) as durable learnings, feeding
+  a forward-staged archetype-weight/gate **calibration** (early runs stay shadow/calibration).
+  Model residency keeps
   the **122B + embedder** resident (the 122B fills every reasoning role by mode); a
   second small model (35B) is the benchmark-gated option, not a default — never two
   large reasoners co-resident (see the model-layer bullet above).

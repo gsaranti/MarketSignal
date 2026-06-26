@@ -444,6 +444,7 @@ Gold / silver remain FMP `GCUSD` / `SIUSD`; daily-cadence metals (copper futures
 | SEC EDGAR · company-facts (XBRL) | per-candidate | normalized statement data the engine cross-checks against |
 | Stooq · daily OHLCV CSV (equities) | per-candidate | deep price history → price-action confirmer (relative strength / base breakout), momentum / volatility, scenario targets |
 | Stooq · daily OHLCV CSV (futures, incl. copper) | run-level | daily commodity-price turn for the cyclical sleeve (complements the monthly IMF series) |
+| Stooq · daily OHLCV CSV (sector / market benchmark indices) | run-level (outcome learning) | sector- and market-relative forward-return benchmark for the Step-7 deterministic outcome labels ([trade-opportunities.md §Outcome learning](trade-opportunities.md#outcome-learning-calibration)) |
 | FINRA · consolidated short-interest file | discovery (file fetched once / run) + per-candidate lookup | short-interest extremes screen — a **bearish-by-default** factor, a *conditional* squeeze candidate only with an inflecting metric + catalyst + breaking bear case (discovery); level / trend / days-to-cover per candidate |
 | CBOE · daily put/call statistics | run-level | venue-level options-sentiment backdrop (broad-market context, not a per-name signal) |
 | GDELT · DOC · FMP · `fmp-articles` | discovery | keyless news feeders for the top-down theme & event scan (ignition points → exposed industries) — reuse the report's keyless adapters; no new credential |
