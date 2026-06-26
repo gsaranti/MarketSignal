@@ -28,11 +28,37 @@ Responsibilities:
 - sector valuation (per-sector aggregate P/E, by exchange — NASDAQ + NYSE)
 - finer industry rotation (per-industry average move + aggregate P/E, by exchange)
 - market risk premium (US equity-risk-premium)
+- historical sector / industry P/E *and* performance (paid tier; trailing-window P/E percentile + cumulative-return trend vs own history — planned report enrichment, see below)
+- IPO calendar + M&A deal flow (paid tier; issuance / deal-making froth as a risk-appetite read — planned report enrichment, see below)
 - FMP Articles — in-house, ticker-tagged market commentary (free tier; feeds the Step-7 news funnel — see News and Research below)
-- economic calendar (premium tier only — see below)
+- economic calendar — analyst consensus + realized surprise + Fed/FOMC event dates (paid tier; planned report enrichment, see below)
 - stock / general news feeds (premium tier only — see below)
 
-The application calls Financial Modeling Prep directly for the equity-market portion of the baseline market-data scan ([report-workflow.md §Step 3](report-workflow.md#step-3-gather-baseline-market-data)) — indices, volatility, gold and silver, and sector performance; each index's multi-horizon performance (weekly, month-to-date, year-to-date, and 52-week-range position) derived from FMP's free historical end-of-day prices (verified live: the indices and the VIX return on the free tier); the **market movers** (biggest gainers / losers / most-active names, filtered to major-exchange names above a price floor, with leveraged / inverse ETFs excluded, capped per list); the free **earnings calendar** (the recently reported and upcoming large-cap reporters, on FMP's ~1-month free window, filtered by revenue estimate — the recently-reported lookback is sized to the report cadence, so a monthly run sees the whole interval's reporters rather than just the last week, while the upcoming window stays fixed); and the free **valuation + finer-rotation** snapshots — per-**sector P/E** (a valuation read alongside sector performance), the strongest and weakest **industries** (FMP reports ~130 per exchange, capped to the extremes; each industry's average move joined with its aggregate P/E where available), and the US **equity-risk-premium** (from FMP's per-country market-risk-premium dataset, a near-static annual constant). The mover lists carry no sector, no instrument type, and no index membership on the free tier, so the agent infers a mover's sector from its ticker (and treats any fund row that slips the name filter as a flow signal, not a company), and the earnings calendar is filtered by revenue magnitude rather than index membership. The sector / industry snapshots and the market-risk-premium are all on FMP's free tier (verified live); the per-sector and per-industry snapshots are date-keyed (the adapter walks back to the most recent trading day with data, like sector performance), and the industry valuation is a join of the industry-performance and industry-P/E snapshots by industry name. **These valuation snapshots are exchange-specific** (verified live: a no-`exchange` call defaults to NASDAQ only; NYSE and AMEX are also free), so the adapter pins and gathers **both NASDAQ (growth / tech-tilted) and NYSE (broader / value)** for each, tags every row with its exchange, applies the industry cap per exchange, and joins performance to P/E within a single exchange — the model reads these cross-sectionally (rich vs cheap, and growth-board vs value-board) rather than as a whole-market multiple. The scan's dollar-index, oil, natural-gas, and Treasury-yield series come from FRED (below). (Gold is on FMP's free tier via `GCUSD`; FRED's former free gold benchmark series were discontinued, so gold stays on FMP.) The **economic-release calendar** is likewise gated behind FMP premium (verified live: the `economic-calendar` endpoint returns HTTP 402 on the free tier), so the Step-3 calendar's release schedule comes from FRED's free release-dates endpoint (below) rather than FMP. FMP's third-party **news feeds** (`news/general-latest`, `news/stock-latest`, symbol-scoped `news/stock`, `news/press-releases-latest`) are all premium too (verified live: HTTP 402 on the free tier); the one news surface on the free tier is **FMP Articles** (`fmp-articles`, verified live: HTTP 200 with `page`/`limit` paging honored) — FMP's in-house, ticker-tagged market commentary — which feeds the Step-7 news funnel as a best-effort supplementary source (see News and Research below).
+**Endpoints used by the report** — all on the `https://financialmodelingprep.com/stable` base. The free-tier paths are wired today; the paid-tier paths are the **planned report enrichment** specified below (not yet wired).
+
+| Endpoint path | Tier | Report use |
+| --- | --- | --- |
+| `/quote` | free | per-symbol quotes — indices, VIX, gold (`GCUSD`), silver (`SIUSD`); also the connection test |
+| `/historical-price-eod/light` | free | end-of-day price history → multi-horizon index performance (weekly / MTD / YTD / 52-week range) |
+| `/sector-performance-snapshot` | free | per-sector performance (point-in-time, date-keyed) |
+| `/sector-pe-snapshot` | free | per-sector aggregate P/E (point-in-time, by exchange) |
+| `/industry-performance-snapshot` | free | per-industry performance (point-in-time, by exchange) |
+| `/industry-pe-snapshot` | free | per-industry aggregate P/E (point-in-time, by exchange) |
+| `/biggest-gainers` | free | market movers — biggest gainers |
+| `/biggest-losers` | free | market movers — biggest losers |
+| `/most-actives` | free | market movers — most active (NB plural; singular `most-active` 404s) |
+| `/earnings-calendar` | free | large-cap earnings (recent + upcoming window) |
+| `/market-risk-premium` | free | US equity-risk-premium (Damodaran per-country dataset, US row) |
+| `/fmp-articles` | free | FMP in-house, ticker-tagged commentary → Step-7 news funnel |
+| `/economic-calendar` | paid | release consensus + realized surprise + Fed/FOMC dates, layered onto FRED's schedule |
+| `/historical-sector-pe` | paid | trailing-window sector P/E → percentile + band |
+| `/historical-industry-pe` | paid | trailing-window industry P/E → percentile + band |
+| `/historical-sector-performance` | paid | sector daily `averageChange` → trailing cumulative return |
+| `/historical-industry-performance` | paid | industry daily `averageChange` → trailing cumulative return |
+| `/ipos-calendar` | paid | recently priced + upcoming scheduled IPOs → issuance-froth count |
+| `/mergers-acquisitions-latest` | paid | recently announced M&A deals → deal-froth count |
+
+The application calls Financial Modeling Prep directly for the equity-market portion of the baseline market-data scan ([report-workflow.md §Step 3](report-workflow.md#step-3-gather-baseline-market-data)) — indices, volatility, gold and silver, and sector performance; each index's multi-horizon performance (weekly, month-to-date, year-to-date, and 52-week-range position) derived from FMP's free historical end-of-day prices (verified live: the indices and the VIX return on the free tier); the **market movers** (biggest gainers / losers / most-active names, filtered to major-exchange names above a price floor, with leveraged / inverse ETFs excluded, capped per list); the free **earnings calendar** (the recently reported and upcoming large-cap reporters, on FMP's ~1-month free window, filtered by revenue estimate — the recently-reported lookback is sized to the report cadence, so a monthly run sees the whole interval's reporters rather than just the last week, while the upcoming window stays fixed); and the free **valuation + finer-rotation** snapshots — per-**sector P/E** (a valuation read alongside sector performance), the strongest and weakest **industries** (FMP reports ~130 per exchange, capped to the extremes; each industry's average move joined with its aggregate P/E where available), and the US **equity-risk-premium** (from FMP's per-country market-risk-premium dataset, a near-static annual constant). The mover lists carry no sector, no instrument type, and no index membership on the free tier, so the agent infers a mover's sector from its ticker (and treats any fund row that slips the name filter as a flow signal, not a company), and the earnings calendar is filtered by revenue magnitude rather than index membership. The sector / industry snapshots and the market-risk-premium are all on FMP's free tier (verified live); the per-sector and per-industry snapshots are date-keyed (the adapter walks back to the most recent trading day with data, like sector performance), and the industry valuation is a join of the industry-performance and industry-P/E snapshots by industry name. **These valuation snapshots are exchange-specific** (verified live: a no-`exchange` call defaults to NASDAQ only; NYSE and AMEX are also free), so the adapter pins and gathers **both NASDAQ (growth / tech-tilted) and NYSE (broader / value)** for each, tags every row with its exchange, applies the industry cap per exchange, and joins performance to P/E within a single exchange — the model reads these cross-sectionally (rich vs cheap, and growth-board vs value-board) rather than as a whole-market multiple. (On the paid tier this point-in-time read gains a trailing-window time dimension — current multiple *and* current return vs each group's own history — see **Planned report enrichment** below.) The scan's dollar-index, oil, natural-gas, and Treasury-yield series come from FRED (below). (Gold is on FMP's free tier via `GCUSD`; FRED's former free gold benchmark series were discontinued, so gold stays on FMP.) The **economic-release calendar**'s release schedule comes from FRED's free release-dates endpoint (below) rather than FMP, whose `economic-calendar` is premium-gated (verified live: HTTP 402 on the free tier); on the paid tier that endpoint becomes available to *layer analyst consensus, realized surprise, and Fed/FOMC dates onto* FRED's schedule (see **Planned report enrichment** below). FMP's third-party **news feeds** (`news/general-latest`, `news/stock-latest`, symbol-scoped `news/stock`, `news/press-releases-latest`) are all premium too (verified live: HTTP 402 on the free tier); the one news surface on the free tier is **FMP Articles** (`fmp-articles`, verified live: HTTP 200 with `page`/`limit` paging honored) — FMP's in-house, ticker-tagged market commentary — which feeds the Step-7 news funnel as a best-effort supplementary source (see News and Research below).
 
 ### FRED (Federal Reserve Economic Data)
 Docs - https://fred.stlouisfed.org/docs/api/fred/
@@ -56,7 +82,69 @@ Responsibilities:
 - forward-looking expectations (Atlanta Fed GDPNow real-GDP nowcast; Cleveland Fed expected inflation)
 - economic-release calendar (release schedule)
 
-The application uses FRED for macroeconomic analysis and long-term market-regime evaluation, and for the market-internal series — the dollar index, oil, and natural gas — that sit outside Financial Modeling Prep's free-tier coverage. It also supplies the risk- and cycle-oriented series that anchor the report's risk-posture and market-cycle reads: credit spreads (the aggregate high-yield and investment-grade OAS plus the BBB and single-B buckets for credit-quality dispersion), the equity volatility term structure (the S&P 3-month VIX, paired with the FMP VIX for a backwardation read, and Nasdaq-100 volatility), the 10y–3m and 10y–2y curve spreads, the Chicago Fed financial-conditions indices (NFCI, ANFCI) and the St. Louis stress index (STLFSI4), weekly initial and continued jobless claims, the Fed balance sheet, and the 30-year mortgage rate. (FRED's documented limit is 120 requests/minute with no daily cap; each run's ~40-request scan sits far under it.) It additionally supplies two **forward-looking expectation gauges** in the macro-levels group — the Atlanta Fed **GDPNow** current-quarter real-GDP nowcast (an annualized growth rate, a forward complement to the actual GDP print) and the Cleveland Fed **1-year expected-inflation** series (a model-based read alongside the market-implied breakevens). It also supplies the Step-3 **economic-release calendar** — the recent and upcoming US release schedule (CPI, PCE, jobs, GDP, …) via FRED's free release-dates API — since FMP's economic-calendar endpoint is premium-gated. (Like the earnings calendar, the recent-releases lookback is sized to the report cadence — a monthly run keeps the whole interval's releases — while the upcoming-schedule window stays fixed.) (FOMC meetings are excluded from the calendar — FRED has no scheduled-date series for them; the Fed's policy stance is carried by the Fed-funds target-range series instead.) FRED provides release dates (and the underlying series values, gathered separately), but not analyst-consensus estimates — the calendar carries release names and dates only. The "expected" consensus value is left to the agents' research-phase synthesis, where it bears on the thesis, rather than a market-data feed.
+**Endpoints + series** — base `https://api.stlouisfed.org/fred`. Two endpoints: `/series/observations` (latest level of each series below — the `series_id` doubles as the quote symbol) and `/release/dates` (the economic-release calendar schedule). The report's FRED series, by Step-3 baseline group:
+
+*Market internals — daily, market-priced (the level is the signal):*
+
+| Series ID | Series | Unit |
+| --- | --- | --- |
+| `DGS2` | 2-Year Treasury Yield | percent |
+| `DGS10` | 10-Year Treasury Yield | percent |
+| `DTWEXBGS` | US Dollar Index (Broad) | index (Jan 2006=100) |
+| `DCOILWTICO` | WTI Crude Oil | USD / barrel |
+| `DHHNGSP` | Henry Hub Natural Gas | USD / MMBtu |
+| `BAMLH0A0HYM2` | US High-Yield Corporate OAS | percent |
+| `BAMLC0A0CM` | US Investment-Grade Corporate OAS | percent |
+| `BAMLH0A2HYB` | US High-Yield B OAS | percent |
+| `BAMLC0A4CBBB` | US Corporate BBB OAS | percent |
+| `T10Y3M` | 10Y − 3M Treasury spread | percent |
+| `T10Y2Y` | 10Y − 2Y Treasury spread | percent |
+| `VXVCLS` | CBOE S&P 500 3-Month Volatility (VXV) | index points |
+| `VXNCLS` | CBOE Nasdaq-100 Volatility (VXN) | index points |
+
+*Macro levels — mixed daily / monthly / quarterly:*
+
+| Series ID | Series | Unit |
+| --- | --- | --- |
+| `DFEDTARU` / `DFEDTARL` | Fed Funds Target Range — upper / lower | percent |
+| `T5YIE` / `T10YIE` | 5- / 10-Year Breakeven Inflation | percent |
+| `EXPINF1YR` | Cleveland Fed 1-Year Expected Inflation | percent |
+| `UMCSENT` | U. Michigan Consumer Sentiment | index (1966Q1=100) |
+| `PCEPI` | PCE Price Index | index (2017=100) |
+| `PPIFIS` | Producer Price Index (Final Demand) | index (Nov 2009=100) |
+| `RSAFS` | Advance Retail Sales (Retail & Food Services) | millions USD |
+| `JTSJOL` | Job Openings — Total Nonfarm (JOLTS) | thousands |
+| `GDPC1` | Real GDP (growth annualized) | billions chained 2017 USD |
+| `GDPNOW` | Atlanta Fed GDPNow nowcast (annualized) | percent |
+| `NFCI` / `ANFCI` | Chicago Fed (Adjusted) National Financial Conditions | index (0 = average) |
+| `STLFSI4` | St. Louis Fed Financial Stress Index | index (0 = normal) |
+| `ICSA` / `CCSA` | Initial / Continued Jobless Claims | persons |
+| `WALCL` | Fed Total Assets (balance sheet) | millions USD |
+| `MORTGAGE30US` | 30-Year Fixed Mortgage Rate | percent |
+
+The application uses FRED for macroeconomic analysis and long-term market-regime evaluation, and for the market-internal series — the dollar index, oil, and natural gas — that sit outside Financial Modeling Prep's free-tier coverage. It also supplies the risk- and cycle-oriented series that anchor the report's risk-posture and market-cycle reads: credit spreads (the aggregate high-yield and investment-grade OAS plus the BBB and single-B buckets for credit-quality dispersion), the equity volatility term structure (the S&P 3-month VIX, paired with the FMP VIX for a backwardation read, and Nasdaq-100 volatility), the 10y–3m and 10y–2y curve spreads, the Chicago Fed financial-conditions indices (NFCI, ANFCI) and the St. Louis stress index (STLFSI4), weekly initial and continued jobless claims, the Fed balance sheet, and the 30-year mortgage rate. (FRED's documented limit is 120 requests/minute with no daily cap; each run's ~40-request scan sits far under it.) It additionally supplies two **forward-looking expectation gauges** in the macro-levels group — the Atlanta Fed **GDPNow** current-quarter real-GDP nowcast (an annualized growth rate, a forward complement to the actual GDP print) and the Cleveland Fed **1-year expected-inflation** series (a model-based read alongside the market-implied breakevens). It also supplies the Step-3 **economic-release calendar** — the recent and upcoming US release schedule (CPI, PCE, jobs, GDP, …) via FRED's free release-dates API — since FMP's economic-calendar endpoint is premium-gated. (Like the earnings calendar, the recent-releases lookback is sized to the report cadence — a monthly run keeps the whole interval's releases — while the upcoming-schedule window stays fixed.) (FRED has no scheduled-date series for FOMC meetings, so the FRED calendar excludes them — the planned FMP enrichment supplies Fed / FOMC event dates; the Fed-funds target-range series continues to carry the policy *stance*.) FRED provides release dates (and the underlying series values, gathered separately) but not analyst-consensus estimates, so the FRED-sourced calendar carries release names and dates only. Consensus and realized surprise are a **planned paid-tier enrichment** layered on from FMP (see **Planned report enrichment** below); where FMP carries no estimate for a release, the "expected" value falls back to the agents' research-phase synthesis as it does today.
+
+### Planned report enrichment (paid FMP tier)
+
+Upgrading the shared FMP credential to the paid tier (the one paid dependency the local analysis suite already requires — see *Local Analysis Suite Sources* below) unlocks three report-side baseline enrichments. Each is an **opt-in addition to the existing scan, not a replacement**: the report's current data-source logic is unchanged, each enrichment soft-degrades to today's behavior on any failure, and all are paid-gated, so they are live-verified together with the suite's paid-key checkpoint.
+
+**Economic-calendar consensus + surprise.** FRED stays the release-schedule backbone; FMP's paid `economic-calendar` (`?country=US&from=&to=`, fields `event` / `date` / `impact` / `previous` / `estimate` / `actual`) layers on two things the FRED schedule can't carry. (1) For the report's tracked market-moving releases, the engine joins FMP's `estimate` / `actual` onto the matching FRED release through a **curated release→event map** — FRED release names ("Employment Situation") and FMP event names ("Non Farm Payrolls") don't string-match, and one release fans out to several FMP events — then computes a deterministic **beat / miss / in-line** tag and an actual-vs-estimate **% gap**: the engine derives, the model interprets. (2) FMP-only **Fed / FOMC events** (filtered to Medium/High `impact`), which FRED has no scheduled-date series for, are appended as a distinct event class, closing the documented FOMC-date gap. Fail-soft throughout: an unmapped release, a `null` estimate, or an FMP outage leaves that release at **names + dates only** (today's behavior) — never a fabricated consensus.
+
+**Historical sector / industry valuation + performance.** Today the sector/industry P/E *and* performance are both point-in-time, read only cross-sectionally (which group is rich vs cheap, strong vs weak *right now*). Four paid endpoints — `historical-sector-pe` / `historical-industry-pe` and `historical-sector-performance` / `historical-industry-performance`, each keyed by sector/industry + `exchange`, with `from` / `to` — add a **time dimension** over a fixed trailing ~1 year, fetched for all 11 sectors × both exchanges and for the **extreme industries the snapshot already surfaces** (not all ~130). The two series are shaped differently, so the engine derives a different read from each:
+- the P/E endpoints return a `pe` **level**, so the engine takes its **percentile within the trailing window + a min / median / max band** — rich/cheap against its own history;
+- the performance endpoints return a daily **`averageChange`** (that date's average constituent move), *not* a price level, so the engine **accumulates the daily changes into a trailing cumulative return** — the rising / falling read — rather than percentiling the raw daily moves (a percentile of `averageChange` would say "today's move was unusual," not "the group is up over the window").
+
+Both are compact derived numbers, not the raw series. Paired, they let the model read a re-rating *with* its price context: a group cheap against its own P/E history *and* up over the trailing window (a re-rating turn) reads differently from one cheap *and still down* (a possible value trap) — the distinction a single snapshot can't support.
+
+**IPO / M&A froth.** The report has no primary-market feed today, so it can't see the issuance / deal-making pace that runs hot late-cycle and freezes under stress. Two paid endpoints add it — `ipos-calendar` (`?from=&to=`, recently priced + upcoming scheduled offerings) and `mergers-acquisitions-latest` (`?page=&limit=`, recently announced deals) — which the engine reduces to a compact **activity read**: the recent-window IPO count plus the upcoming-scheduled count, and the recent-window M&A deal count — each paired with the **prior equivalent-window count** so the engine carries a native rising / cooling **trend** (the way CFTC positioning carries its own week-over-week change while staying out of the level-delta engine — the model is handed only the current packet plus the computed change view, never prior raw packets, so the trend can't come from the delta engine and must be self-contained) — plus a bounded list of the largest / most notable names (and aggregate proceeds / deal value where the feed carries it) for color. Like the earnings and economic-release calendars, the recent window is sized to the report cadence (a monthly run sees the month's froth, not a week's) while the upcoming-IPO window stays fixed. The model reads the pace *and its trend* as a risk-appetite / late-cycle tell — a surge or accelerating pace feeding the risk-on / late-cycle read, a freeze the risk-off / stress read. Fail-soft and non-floor: a failed gather degrades to no froth signal, never a failed run.
+
+All three enrichments follow the same three structural rules so they neither bloat storage nor disturb the report-to-report change view:
+
+- **Persist the derived read, not the raw history.** Only the compact derived numbers — the calendar's estimate / actual / surprise tag, the P/E percentile + band, the performance trailing cumulative return, and the froth recent + prior-window counts with the bounded notable-name list — ride into the packet and the persisted baseline snapshot; the raw ~250-point P/E and performance series and the full IPO / deal lists are transient fetch input, discarded once the derived reads are computed.
+- **New fields carry `#[serde(default)]`.** The enrichments add fields to `BaselineMarketData` and its member structs — `EconomicRelease` (calendar consensus/surprise), `SectorPe` and `IndustrySnapshot` (valuation-history context), `SectorPerformance` and `IndustrySnapshot` (performance-history context) — plus a new issuance-activity group; each must default so an *older* snapshot — serialized before the field existed — still deserializes (to empty / `None`), keeping the prior-vs-current comparison backward-compatible. (The prior-snapshot decode is already fail-soft regardless — see [report-workflow.md §Step 3](report-workflow.md#step-3-gather-baseline-market-data).)
+- **All stay out of the level-delta engine.** The surprise is a native actual-vs-consensus value, the P/E percentile + band and the performance trailing cumulative return are trailing-window structural reads, and the IPO / M&A counts are set-valued activity tallies — none is an inter-report level change — so, like CFTC positioning and the existing movers / earnings / calendar groups, none joins the diffed level groups; the existing point-in-time `sector_pe` level-diff is untouched (it reads only the current `pe`), and the `sectors` performance group stays excluded from the diff exactly as it is today.
+
+The prompt-side changes these require are specified in [report-workflow.md §Step 16](report-workflow.md#step-16-main-agent-synthesis): the data appears in every model prompt automatically via JSON serialization, but the interpretive prose must be updated in lockstep — including one existing main-agent instruction that currently tells the model to *ignore* multiple-expansion-over-time, which the P/E history now supports.
 
 ### BLS (Bureau of Labor Statistics)
 Docs - https://www.bls.gov/developers/
@@ -69,12 +157,23 @@ Responsibilities:
 - wage data
 - labor-market statistics
 
+**Endpoint + series** — base `https://api.bls.gov/publicAPI/v2`, single endpoint `/timeseries/data/` (series IDs posted in the request body; the `series_id` doubles as the quote symbol):
+
+| Series ID | Series | Unit |
+| --- | --- | --- |
+| `CUUR0000SA0` | Consumer Price Index (CPI-U, All Items, NSA) | index (1982-84=100) |
+| `LNS14000000` | Unemployment Rate (U-3) | percent |
+| `CES0000000001` | Total Nonfarm Payrolls | thousands of persons |
+| `CES0500000003` | Average Hourly Earnings, Total Private | USD per hour |
+
 The application uses BLS data for inflation and labor-market analysis.
 
 ### CFTC (Commitments of Traders)
 Docs - https://publicreporting.cftc.gov/ (Socrata Open Data API)
 
 The CFTC's weekly Commitments of Traders report supplies the one signal the price, valuation, macro, and credit groups can't: how crowded or extended the *speculative* cohort is in the market's bellwether futures. It is the application's positioning input, accessed through the CFTC public-reporting Socrata API, which is **keyless** — like BLS, it needs no credential and sits outside the execution gate.
+
+**Endpoint** — each report is a Socrata resource at `https://publicreporting.cftc.gov/resource/<dataset-id>.json`, one call per dataset (the two dataset IDs below).
 
 Two report formats are read and normalized into a single speculator-net view per contract:
 - **Traders in Financial Futures** (dataset `gpe5-46if`) — for the equity-index, rates, and FX contracts. Its leveraged-money ("fast money") and asset-manager ("real money") split is the signal: the two cohorts often diverge (real money net long while leveraged money presses shorts).
@@ -103,6 +202,8 @@ Responsibilities:
 
 The application uses Tavily as the primary research and news-ingestion system.
 
+**Endpoint** — `https://api.tavily.com/search` (the Search API; `/usage` backs the connection test).
+
 Because reports are generated on demand (no fixed cadence — see [scheduling.md §Generating a Report](scheduling.md#generating-a-report)), the Step-7 news sweep sizes Tavily's recency bound to the **elapsed interval since the previous report**: it sends a `start_date` of today minus the elapsed days (clamped to a floor and a one-month cap), so a daily run isn't fed a stale week and a monthly run isn't starved of coverage. (`start_date`/`end_date` are the documented Tavily Search recency parameters; the former `days` field is no longer part of the API.) The first report (no prior interval) omits the bound and takes Tavily's own default. The Step-9 research executor's plan queries carry no recency bound — they target a topic, not a time slice.
 
 ### FMP Articles
@@ -130,6 +231,8 @@ Responsibilities:
 - large-scale news trend identification
 
 The application uses GDELT to strengthen geopolitical and macro event awareness.
+
+**Endpoint** — `https://api.gdeltproject.org/api/v2/doc/doc` (the DOC 2.0 API; a single combined query per run).
 
 GDELT's single combined query sizes its `timespan` lookback to the **elapsed interval since the previous report** (rounded up to whole days, clamped to a floor and a one-month cap), rather than a fixed week — keeping the geopolitical feed matched to the on-demand cadence. The first report (no prior interval) uses a one-week default. This changes only the window width, not the request count: it stays a single bounded query, so GDELT's burst rate limit is unaffected.
 

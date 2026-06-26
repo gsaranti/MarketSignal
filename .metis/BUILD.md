@@ -110,6 +110,22 @@ native week-over-week change), anchored on the *actual* elapsed interval
 since the prior snapshot, never an assumed week — that rides into the prompt
 alongside the live baseline.
 
+**Planned (paid-FMP report enrichment, spec'd not built).** Upgrading the shared
+FMP key to paid unlocks three additive baseline signals (`docs/data-sources.md
+§Planned report enrichment`): economic-calendar **consensus + realized surprise**
+(layered onto FRED's release schedule via a curated release→event map, fail-soft
+to today's names+dates), **historical sector/industry valuation + performance**
+(trailing-window P/E percentile + band, plus a cumulative-return trend accumulated
+from the performance endpoint's daily `averageChange`), and **IPO/M&A froth**
+(issuance/deal pace + a native recent-vs-prior trend, the way positioning carries
+its own change — a new baseline group, so the Step-3 group count moves 12→13). All three hold the spine: the engine derives every
+number, only the compact derived read persists (raw series discarded), new fields
+carry `#[serde(default)]`, and none joins the level-delta engine (set-valued /
+trailing-window, like positioning). The only existing logic that changes is the
+**calendar builder** (FRED-only → FRED+FMP join, fail-soft) and one **main-agent
+prompt** instruction that currently forbids over-time valuation reads (must be
+revised). Live-verified on the paid-key checkpoint.
+
 **Retention** is deliberately asymmetric and must be honored in deletion code:
 only the most recent **30 reports** are kept (deleting one cascades its Markdown,
 metadata, and vector *summary* row together — there is no HTML leg, since HTML is
@@ -137,9 +153,10 @@ pre-mount to avoid a first-paint flash.
   HTTP); the full series catalog is in `docs/data-sources.md`. Provider tiering
   is live-verified and load-bearing: FMP's free tier gates the dollar index,
   oil, gas, and the economic calendar behind premium, so those moved to FRED,
-  and the calendar carries **names + dates only** (no API serves US analyst
-  consensus free — consensus reaches the report through the agents' research
-  synthesis instead). Data honesty is a consistent stance: a stale FRED
+  and the calendar carries **names + dates only** today (no API serves US analyst
+  consensus *free*, so consensus reaches the report through the agents' research
+  synthesis — which the planned paid-FMP enrichment above narrows to a fallback
+  where FMP carries no estimate). Data honesty is a consistent stance: a stale FRED
   observation or an out-of-band FMP P/E aggregate **drops to a gap / `None`**
   rather than feeding a fabricated level into the baseline. The newest source,
   **CFTC** (keyless, like BLS), adds **Commitments-of-Traders positioning** — the

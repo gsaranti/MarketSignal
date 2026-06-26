@@ -58,12 +58,14 @@
 - Vector memory retrieval — pre-research (steers audit + routing) §Step 4; post-research (research-informed) §Step 10 — report-workflow.md
 
 ## Data sources
-- Financial Modeling Prep (primary financial-data source) — data-sources.md §Financial Modeling Prep
-- FRED — data-sources.md §FRED
-- BLS — data-sources.md §BLS
-- Tavily (primary research/news ingestion) — data-sources.md §Tavily
-- GDELT (geopolitical/event monitoring) — data-sources.md §GDELT
+- Financial Modeling Prep (primary financial-data source; report endpoint→path table — 12 free wired + 7 planned paid, all on `/stable`) — data-sources.md §Financial Modeling Prep
+- FRED (+ 32-series ID table by baseline group; `/series/observations` + `/release/dates`) — data-sources.md §FRED
+- BLS (+ 4-series ID table; `/timeseries/data/`) — data-sources.md §BLS
+- CFTC (Commitments-of-Traders positioning; keyless Socrata datasets `gpe5-46if` / `72hh-3qpy`) — data-sources.md §CFTC
+- Tavily (primary research/news ingestion; `/search` endpoint) — data-sources.md §Tavily
+- GDELT (geopolitical/event monitoring; DOC 2.0 endpoint) — data-sources.md §GDELT
 - LLM providers (OpenAI, Anthropic) — data-sources.md §LLM Providers
+- Planned report enrichment (paid FMP — economic-calendar consensus+surprise layered on FRED schedule; historical sector/industry valuation percentile+band + performance cumulative-return trend; IPO/M&A froth; all engine-derived, persist-derived-not-raw, `#[serde(default)]`, out of the level-delta engine) — data-sources.md §Planned report enrichment; report-workflow.md §Step 3, §Step 16
 
 ## Research documents
 - /research-inbox and /research-archive — research-documents.md; interface.md (Research Documents)
