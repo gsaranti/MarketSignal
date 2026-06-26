@@ -124,7 +124,10 @@ carry `#[serde(default)]`, and none joins the level-delta engine (set-valued /
 trailing-window, like positioning). The only existing logic that changes is the
 **calendar builder** (FRED-only → FRED+FMP join, fail-soft) and one **main-agent
 prompt** instruction that currently forbids over-time valuation reads (must be
-revised). Live-verified on the paid-key checkpoint.
+revised). Live-verified on the paid-key checkpoint. **True index breadth** — the
+fourth enrichment candidate — was evaluated and **ruled out**: FMP exposes
+constituent *lists* but no breadth metric, so a real breadth read would need a
+heavy per-constituent price fan-out; the movers group stays the breadth proxy.
 
 **Retention** is deliberately asymmetric and must be honored in deletion code:
 only the most recent **30 reports** are kept (deleting one cascades its Markdown,
