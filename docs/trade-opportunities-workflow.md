@@ -43,7 +43,7 @@ The job is a **funnel**: broad, cheap discovery narrows to a small candidate set
 | 5f | Deterministic target refinement | Computed (engine) | — |
 | 5g | Scoring & gating (the opportunity record) | Local-model call (thinking) | Qwen3.5-122B · thinking |
 | 5h | Deterministic risk-tier, gate validation & checkpoint | Computed | — |
-| 6 | Selection & matrix assembly (per cell) | Local-model call | Qwen3.5-122B |
+| 6 | Matrix assembly & completeness validation (per cell) | Local-model call (rank + dedup) + Computed (validate) | Qwen3.5-122B |
 | 7 | Continuity check, outcome labels & carry-forward | Computed | — |
 | 8 | Holdings cross-reference | Computed | — |
 | 9 | Persist run & audit + memory embeddings | Computed (persist) + Local-model (embedding) | Qwen3-Embedding-4B · fixed |
@@ -111,7 +111,7 @@ The loop is bounded exactly as the per-candidate one: **per-topic depth ≤2 (�
 
 The two feeders' outputs are **deduped** into one candidate list, **sanity-filtered for tradability** (exchange listing, a liquidity / price floor, an instrument-type filter — funds and non-equities drop out, since the job hunts operating businesses by archetype), and each surviving name is **tagged with every signal that surfaced it** (which screen, which theme, the positioning flag).
 
-The narrowed set is bounded by a **research budget** — a ceiling on how many names get the expensive per-candidate validation in one run — and the budget exists for **compute, not quality**: deep per-candidate web research runs on a local reasoner, so a single run cannot validate the whole universe ([trade-opportunities.md §The pipeline](trade-opportunities.md#the-pipeline)). Two properties follow, and both matter: the budget is **generous and user-configurable** (Settings → Trade Opportunities discovery breadth — [configuration.md §Local Analysis Suite Configuration](configuration.md#local-analysis-suite-configuration)); and it is **never a quality verdict** — nothing is validated at this point, so a name that doesn't make the cut is **recorded and carried forward to the next run** (rising as its signals strengthen), never rejected.
+The narrowed set is bounded by a **research budget** — a ceiling on how many names get the expensive per-candidate validation in one run — and the budget exists for **compute, not quality**: deep per-candidate web research runs on a local reasoner, so a single run cannot validate the whole universe ([trade-opportunities.md §The pipeline](trade-opportunities.md#the-pipeline)). Two properties follow, and both matter: the budget is **generous and user-configurable** (Settings → Trade Opportunities discovery breadth — [configuration.md §Local Analysis Suite Configuration](configuration.md#local-analysis-suite-configuration)); and it is **never a quality verdict** — nothing is validated at this point, so a name that doesn't make the cut is **not rejected, only deferred**: discovery is **stateless and re-runs from scratch every run** (Step 3 re-scans the universe), so a still-promising name **re-surfaces on the next run's sweep** as its signals persist or strengthen. This is distinct from the *validated* carry-forward — the persisted opportunity matrix reloaded at Step 2 for the Step-7 continuity check; the **un-validated longlist is not persisted**, it is simply re-derived, so there is no backlog store to keep in sync.
 
 Within that budget the slots are filled **not by a flat top-N by composite score** — a pure score rank collapses the funnel onto whatever is loudest (mega-cap momentum, the most-covered AI names, one crowded macro theme) and throws away the breadth that is the job's edge ([trade-opportunities.md §The research method](trade-opportunities.md#the-research-method)) — but **under deliberate diversity guardrails**, each a floor-and-ceiling rather than a single ranking:
 - **market-cap band** — a **floor for mid- and small-cap** slots so the mega-cap tail can't fill the slate (the enabler the worldview prizes is frequently sub-large-cap), and a **ceiling on mega-cap** names;
@@ -119,7 +119,7 @@ Within that budget the slots are filled **not by a flat top-N by composite score
 - **archetype** — each of the five archetypes gets representation up to a cap, so a single archetype (today, ai-infra) can't monopolize the set;
 - **sector / theme** — a per-sector and per-theme ceiling so one crowded macro theme (AI, GLP-1) can't dominate discovery.
 
-Within each axis's floor and ceiling the names are still ranked by **signal strength × house-view fit**; the guardrails shape the *composition* of the narrowed set, never relax the per-name bar, and a candidate displaced by a quota is **likewise carried forward**, not dropped. The result is the narrowed candidate set the expensive per-name loop runs over — the funnel's waist, kept deliberately broad. None of this caps the *output*: the budget bounds only how many names get **researched** this run; how many **validated** opportunities reach the matrix is set by the gates alone (Step 6).
+Within each axis's floor and ceiling the names are still ranked by **signal strength × house-view fit**; the guardrails shape the *composition* of the narrowed set, never relax the per-name bar, and a candidate displaced by a quota is **likewise only deferred** (re-derived on the next run's sweep), not dropped. The result is the narrowed candidate set the expensive per-name loop runs over — the funnel's waist, kept deliberately broad. None of this caps the *output*: the budget bounds only how many names get **researched** this run; how many **validated** opportunities reach the matrix is set by the gates alone (Step 6).
 
 ## Step 5: Per-Candidate Validation Loop
 
@@ -224,17 +224,21 @@ This step is an **app-layer validator and tier-assigner**, not just a recorder:
 - a candidate that abstained as `insufficient-evidence` (below the **archetype-aware evidence floor** — missing the floor-bearing price + validated leading metric, or statements-or-substitute per archetype, or carrying stale / conflicting data — see [trade-opportunities.md §Evidence floor](trade-opportunities.md#evidence-floor)) is held out of the matrix rather than promoted as a low-conviction guess;
 - the surviving candidate is **checkpointed** so the run can resume here.
 
-## Step 6: Selection & Matrix Assembly
+## Step 6: Matrix Assembly & Completeness Validation
 
-**Type:** Local-model call (122B) — synthesis across the gated candidate set, per cell.
+**Type:** Local-model call (122B — ranking + dedup proposal) + Computed (app-layer completeness validation). The risk tier and horizon are already deterministic (Step 5h), so each survivor's **cell is predetermined** — Step 6 does **not** choose *which* opportunities appear, only their **order within a cell** and which near-duplicates **collapse**. Because removing the per-cell output cap makes "every gate-clearer appears" a hard guarantee, completeness is enforced by the **app layer, not the model's good behavior** (the same app-validator stance as Step 5h and Step 7): every Step 5h survivor must appear in its assigned cell, **or** be explicitly collapsed into a named peer with a recorded dedup reason. A survivor that is neither present nor accounted-for is a **validation failure**, so the model cannot quietly drop a name the way an output quota once could.
 
-#### Local-model call — Per-cell selection (Qwen3.5-122B)
+#### Local-model call — Per-cell ranking & dedup proposal (Qwen3.5-122B)
 
 **Model.** The resident 122B reasoner; schema-constrained output.
 
-**Prompt — input.** All gated opportunity records from Step 5 with their assigned cells; the house view and investor profile; and, for context, the count of candidates competing for each cell.
+**Prompt — input.** All gated opportunity records from Step 5 with their **deterministically-assigned cells**; the house view and investor profile; and, for context, the count of candidates competing for each cell.
 
-**Returns.** The schema-validated **3×3 matrix** — for each of the nine risk × horizon cells, **every** opportunity that cleared the gate (Step 5h), **ranked by conviction** and **deduped** against competing names (near-identical peers collapse to the best-expressed one), applying the cross-candidate base-rate discipline so a cell holds only genuinely distinct, anchored ideas. There is **no per-cell output cap** — the **gates set the count, not a quota**, so a cell holds as many or as few validated ideas as actually qualify. **A cell may return no opportunity** when nothing qualifies — empty cells are honest, not failures, and the matrix never pads itself to fill them ([trade-opportunities.md §The pipeline](trade-opportunities.md#the-pipeline)); equally, a cell that genuinely earned many anchored ideas is never trimmed to a fixed number. The model selects and ranks within the deterministically-assigned cells; it cannot move a candidate to a different tier or horizon.
+**Returns.** Per cell, a **conviction ranking** of that cell's gated survivors, plus any **dedup-collapse proposals** — each naming the merged-away candidate, the peer it collapses into, and the reason (near-identical thesis / shared leading metric / shared catalyst). The model **cannot drop or hide a survivor** and **cannot move one to a different tier or horizon** (both deterministic) — it only **orders** and **proposes merges**.
+
+#### Computed — Completeness validation & matrix assembly
+
+**Type:** Computed (app layer). No model. The app assembles the final **3×3 matrix** from the deterministic cell assignments and the model's ranking, applying each accepted dedup collapse (recorded in the audit with its reason — [trade-opportunities.md §Storage and display](trade-opportunities.md#storage-and-display)). It then **validates completeness**: every Step 5h survivor is either listed in its cell or recorded as a collapsed peer — a survivor absent from both **fails the run's matrix validation** rather than vanishing silently. There is **no per-cell output cap**: the gates set a cell's count, not a quota, so a cell holds as many or as few validated ideas as qualify. **A cell may be empty** when nothing qualified — honest, not a failure — and the matrix never pads itself to fill them ([trade-opportunities.md §The pipeline](trade-opportunities.md#the-pipeline)); equally, a rich cell that genuinely earned many anchored ideas is never trimmed to a fixed number.
 
 ## Step 7: Continuity Check & Carry-Forward
 
