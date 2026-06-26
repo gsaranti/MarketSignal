@@ -334,11 +334,20 @@ as-built; the rest remain planned):
   hardware-gated on the M5) → **next: wire live Schwab OAuth** (+ deterministic
   holdings-snapshot diff: prior-run snapshot vs current pull → per-position
   new/increased/decreased/unchanged delta into each dossier, exited names surfaced in
-  the roll-up) → full Portfolio (funds) → Opportunities.
+  the roll-up) → full Portfolio (funds) → Opportunities (archetype-aware two-mode
+  discovery on FMP's paid tier; ticker→CIK now an optional cross-check, not a blocker).
 - **Personalized & screened.** Portfolio grading/actions are personalized by a
   configured investor profile (risk tolerance, horizon, tax, cash). Trade
-  Opportunities generates candidates from an FMP screen + research-surfaced names
-  (SearXNG is not a screener), and a cell may return nothing. Model residency keeps
+  Opportunities **discovers** candidates by running research (a funnel: top-down
+  theme/event scans + bottom-up screens — estimate-revisions, surprises,
+  commodity-price turns, keyless positioning — *find* names; per-candidate validation
+  scores them), hunting in two modes (**early** = a leading operating metric inflecting
+  before price/earnings/multiple; **continuation** = demand-visibility licensing a late
+  entry) through a first-class **archetype** lens (secular-compounder / ai-infra /
+  commodity-cyclical / disruptor / quality-compounder) that selects the signal weights +
+  valuation lens, gated by a mandatory bear case, a narrative-vs-reality
+  (revisions-vs-multiple) check, and a forensic risk gate. A cell may return nothing.
+  Model residency keeps
   the **122B + embedder** resident (the 122B fills every reasoning role by mode); a
   second small model (35B) is the benchmark-gated option, not a default — never two
   large reasoners co-resident (see the model-layer bullet above).
@@ -348,8 +357,18 @@ as-built; the rest remain planned):
   financial-analysis engine over **FMP plus keyless SEC EDGAR** (10-K/Q/8-K +
   XBRL company facts); the model interprets, never invents numbers. High-volume
   price/OHLCV is dispersed to **keyless Stooq** (deep history) and **Finnhub**
-  (quotes) to keep the report and both local jobs under FMP's ~250/day free cap,
-  with FMP kept for its low-volume niche (movers, earnings calendar, screener,
+  (quotes) to keep the report and both local jobs under FMP's ~250/day free cap.
+  **Trade Opportunities widens the signal set on FMP's paid tier** (the suite's one
+  paid dependency; **one shared FMP key for the report + both jobs, upgraded to paid —
+  the report's data-source logic is unchanged**, former free-tier gates no longer bind): fundamentals/ratios/segments, the revision
+  signal (estimates + `grades-historical` + price-targets + upgrades/downgrades +
+  surprises), **`financial-scores` (Altman Z + Piotroski) for the forensic gate**,
+  symbol-keyed **positioning** (insider, 13F, **congressional**), and screener/peers/**bulk**
+  endpoints driving the discovery funnel. **Short interest** keyless on FINRA; commodity
+  prices on FRED+Stooq; **SEC EDGAR retained as authoritative cross-check** (so ticker→CIK
+  is a non-blocking enhancement, not a prerequisite). DRAM/NAND ASPs + supply discipline
+  have no feed and ride the research loop.
+  With FMP kept for its low-volume niche (movers, earnings calendar, screener,
   sector/industry P/E). An **evidence
   floor** returns `insufficient-evidence` (not a low-conviction guess) when data
   is missing/stale/conflicting. Long per-holding jobs **checkpoint and resume**,

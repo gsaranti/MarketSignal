@@ -126,12 +126,20 @@
 - Holding verdict schema (grade + sub-scores, action ladder, horizon, targets, what-changed) — portfolio-analysis.md §The holding verdict
 - Holdings change tracking (deterministic prior-run-snapshot diff → per-position new/increased/decreased/unchanged delta into dossier; exited names surfaced in roll-up) — portfolio-analysis.md §Holdings change tracking
 - Trade Opportunities job (3×3 risk×horizon matrix) — trade-opportunities.md
-- Opportunity schema (thesis, catalyst, conviction, carry-forward status) — trade-opportunities.md §The opportunity
+- Trade Opportunities — what it hunts (two modes: early detection + continuation; leading-metric anchor) — trade-opportunities.md §What the job hunts
+- Opportunity archetype lens (secular-compounder/ai-infra/commodity-cyclical/disruptor/quality-compounder; selects signal weighting + valuation lens) — trade-opportunities.md §Archetype
+- Research-driven candidate discovery (top-down theme/event scan + bottom-up screens + keyless positioning scans; research generates candidates) — trade-opportunities.md §The pipeline
+- Narrative-vs-reality ratio + forensic risk gate + base-rate conjunction discipline — trade-opportunities.md §The pipeline
+- Trade Opportunities signal inputs (FMP paid-tier working/discovery feed: fundamentals/segments, revision signal, financial-scores forensic gate, symbol-keyed positioning incl. congressional, bulk-screener funnel; FINRA short interest; FRED/Stooq commodity prices; SEC EDGAR authoritative cross-check; web-research lane for ASPs/supply-discipline; ticker→CIK optional; report data-source logic unchanged) — trade-opportunities.md §Signal inputs; data-sources.md §Local Analysis Suite Sources
+- Opportunity schema (archetype, detection mode, leading metric, thesis, catalyst, conviction, narrative-vs-reality, bear case, carry-forward status) — trade-opportunities.md §The opportunity
 - Local analysis suite configuration (daemon, roster, SearXNG, Schwab; gates local jobs only) — configuration.md §Local Analysis Suite Configuration
 - Local analysis suite storage + per-feature retention — storage.md §Local Analysis Suite Storage
 - Local suite pages (Portfolio, Trade Opportunities) — interface.md §Main Layout
 - Deterministic financial-analysis engine (Rust computes metrics/sub-scores/risk tiers/targets; model interprets) — local-models.md §Context-memory discipline; portfolio-analysis.md
 - SEC EDGAR primary source (keyless filings + XBRL company facts) — data-sources.md §SEC EDGAR
+- SEC EDGAR role for Trade Opportunities (authoritative cross-check for grade/target numbers + 8-K filings; positioning moved to FMP symbol-keyed; ticker→CIK a non-blocking enhancement) — data-sources.md §SEC EDGAR
+- FMP paid-tier suite signals (revision flow via estimates/grades-historical/price-targets/upgrades-downgrades + surprises; financial-scores Altman+Piotroski forensic gate; insider/13F/Senate-House positioning; screener/peers/bulk discovery; one shared FMP key upgraded to paid, report logic unchanged) — data-sources.md §Local Analysis Suite Sources
+- FINRA short interest (keyless biweekly consolidated equity short-interest file; level/trend/days-to-cover) — data-sources.md §FINRA
 - Evidence floor (insufficient-evidence abstention) — portfolio-analysis.md §Evidence floor
 - Deterministic risk-tier assignment — trade-opportunities.md §The opportunity space
 - Per-holding checkpoint/resume + research caching — portfolio-analysis.md §Failure posture
