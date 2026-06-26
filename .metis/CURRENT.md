@@ -2,59 +2,20 @@
 
 ## What happened
 
-Built and squash-merged **Phase 2 of the local analysis suite — the narrow
-single-equity Portfolio slice** (PR #45, `367f09b`) through the full Metis loop
-(plan → implement → metis-review → Codex → merge). New `src-tauri/src/portfolio/`
-(`mod`/`engine`/`dossier`/`pipeline`/`store`/`job`), `schwab.rs` (fixture
-`HoldingsSource` + stub chain), `sec.rs` (keyless EDGAR company-facts adapter), a
-per-company FMP pull reusing the `with_base_url` wire seam, and a per-job
-**`namespace` partition** threaded through `vector_memory` (additive column,
-backfill to `report`; cloud report pipeline behaviourally unchanged). The
-load-bearing split held: the Rust **engine computes every number** (4 sub-scores →
-A–F grade that rolls up from them → scenario EOM/EOY targets w/ methodology →
-options-activity signal), the local model **only interprets** (action/conviction/
-horizon/prose); missing inputs become tagged gaps; the options signal is kept **out
-of the grade**. metis review = approve-with-nits; Codex caught three, all fixed: SEC
-fetch failures were silently erased → now a tagged degraded-input gap; the required
-`price_target_rationale` was dropped → now persisted; coarse cancellation →
-checkpointed in the job and the per-company FMP/SEC calls.
+A **documentation/design session (no code)** reviewing the two local-suite jobs and folding decisions into the docs. **Portfolio Analysis:** added deterministic **holdings change-tracking** (prior-run-snapshot diff → per-position new/increased/decreased/unchanged, plus exited names in the roll-up); **per-topic bounded research** (≤3 passes/topic, depth ≤2, a per-holding fetch+wall-clock budget that binds first); and **one-brain model residency** (the 122B fills research/distill/interpret by mode + embedder resident; 35B demoted to a benchmark-gated option). **Trade Opportunities:** full **reframe** — a two-mode hunt (early detection + continuation), **archetype** as a first-class lens (5 archetypes select signal weighting + valuation lens), **research *generates* candidates** (fixes the candidate-before-research gap), the narrative-vs-reality ratio, base-rate conjunction + mandatory bear case, a forensic gate, and an engine-computed price-action confirmer. Grounded in 5-agent historical-winner research + a data-gap probe + a discovery pass over the full FMP catalog (`references/fmp-api.md`, gitignored). **Data plan:** one shared FMP key upgraded to **paid** (fundamentals/estimates/revision-flow/`financial-scores` Altman+Piotroski/symbol-keyed positioning incl. congressional/bulk-screener), FINRA short interest, FRED/Stooq commodities, SEC EDGAR cross-check — FMP **bulk** dissolves the rate cap, symbol-keying dissolves the ticker→CIK prerequisite. Codex-reviewed the Portfolio decisions (4 findings, all fixed).
 
 ## Current state
 
-`main` at **`367f09b`**, clean, synced with origin; feature branch deleted.
-`cargo test` 517 lib + integration green / clippy clean. **No work in flight.**
-Pinned this slice: **N=10** run retention, **X=3** house-view reports, ~1mo/1yr/3–5yr
-horizons, moderate/long/taxable default investor profile. *Calibratable (NOT pinned):*
-grade-weight formula, risk-tier thresholds, options-signal params. **Deferred to later
-slices** (all surfaced in the scope report): web research (SearXNG — stubbed behind a
-function), live Schwab OAuth (fixture this slice), the Portfolio UI page
-(backend+tests only), local-embedder vector recall (namespace column added now;
-prior-run-verdict continuity *is* wired), the 122B roll-up synthesis (deterministic
-roll-up shipped), and per-holding checkpoint/resume.
+All design-only, on branch **`docs/local-suite-portfolio-design-decisions` = PR #46** (3 commits: `4f6792d` portfolio decisions, `3f13a84` TO reframe + data plan, `accc832` price-action overlay), pushed, **open, NOT merged**; `main` unchanged at `367f09b`. Working tree clean. Touched: `docs/trade-opportunities.md` (rewrite), `portfolio-analysis.md`, `local-models.md`, `web-research.md`, `data-sources.md`, + `.metis/BUILD.md` & `INDEX.md` — all reflect the new design **on the branch, not yet on main**. **Standing direction set** ([[job-doc-deepening-initiative]]): the next few sessions are a deliberate **job-doc deepening sweep** (the jobs are the app's core). The **report data-packet enrichment** (FMP-paid: economic-calendar consensus+surprise, historical sector/industry P/E trend, IPO/M&A froth, true index breadth) is **parked for a sweep session** — non-hardware-gated, runnable now. Report data-source *logic* untouched.
 
 ## Open questions
 
-- **Live validation is hardware-gated** — the live `portfolio_live_smoke` (verdict
-  quality, runtime, and whether FMP per-company endpoints are premium-gated on the
-  tier) cannot run until the **M5 (128 GB)** arrives; user is on an M1. The first live
-  Portfolio run on the M5 is the retroactive acceptance check
-  ([[local-suite-hardware-gated]]).
-- **Register the Schwab developer app** (carried) — multi-day approval is the external
-  long pole; gates the live-Schwab slice's real-data runs.
-- **Cadence Run B** (carried) — report #2 still un-run: validates the delta engine +
-  memory recall; sanity-check yield levels vs the 2s10s claim and the COT read
-  ([[manual-pivot-cadence-windows]], [[report-curve-number-consistency]]).
-- **Standing report-side nits** (carried) — COT extreme-weighting calibration;
-  `market_clock` mislabels holidays / early closes (needs an NYSE calendar); opus-main
-  leaning accumulating ([[live-config-opus-main-leaning]]); do NOT reintroduce PDF
-  `@page` margins.
+- **PR #46 scope/merge** — title still reads "portfolio design decisions" but it now also carries the TO reframe + data plan; update title/description and merge when ready.
+- **Live validation hardware-gated** on the M5 (carried) — verdict quality + runtime; first live run is the acceptance check ([[local-suite-hardware-gated]]).
+- **Register the Schwab developer app** (carried) — long external approval; gates live-Schwab real-data runs.
+- **Cadence Run B** (carried) — report #2 un-run: delta engine + memory recall; sanity-check yields vs the 2s10s claim + COT ([[manual-pivot-cadence-windows]], [[report-curve-number-consistency]]).
+- **Standing report-side nits** (carried) — COT extreme-weighting; `market_clock` holidays/early-closes; opus-main leaning ([[live-config-opus-main-leaning]]); do NOT reintroduce PDF `@page` margins.
 
 ## Where to start
 
-Build order's next step is **`/metis-plan-task` for the live Schwab OAuth slice** —
-swap the fixture `HoldingsSource` for the real Trader API loopback (30-min/7-day
-tokens, Keychain) behind the same trait. **Kick off Schwab developer-app registration
-first** (long approval lead; it gates real-data runs). Full Portfolio (funds + 122B
-roll-up) and Trade Opportunities follow. **Before planning, advance BUILD.md's
-local-suite build-order line** (see the pending-decision flag): substrate ✓ → narrow
-Portfolio slice ✓ → next is live Schwab.
+Continue the **job-doc deepening sweep** ([[job-doc-deepening-initiative]]). The runnable, non-gated pickup is the **Market Signal Report data-packet enrichment** (parked above — start with Tier-1: economic-calendar consensus+surprise + historical sector/industry P/E), spec'd as its own slice; or keep pressure-testing the Portfolio / Trade Opportunities specs (grade-weights, risk-tier thresholds, archetype rules, funnel budgets — all calibratable-not-pinned). **Merge PR #46** (and fix its title) when ready. Implementation build order unchanged: live-Schwab → full-Portfolio (funds) → Opportunities.
