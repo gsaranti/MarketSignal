@@ -366,8 +366,10 @@ as-built; the rest remain planned):
   symbol-keyed **positioning** (insider, 13F, **congressional**), and screener/peers/**bulk**
   endpoints driving the discovery funnel. **Short interest** keyless on FINRA; commodity
   prices on FRED+Stooq; **SEC EDGAR retained as authoritative cross-check** (so ticker→CIK
-  is a non-blocking enhancement, not a prerequisite). DRAM/NAND ASPs + supply discipline
-  have no feed and ride the research loop.
+  is a non-blocking enhancement, not a prerequisite). An **engine-computed price-action
+  confirmer** (relative strength / multi-year base breakout from Stooq history) adjusts
+  conviction — a confirmer, not a trigger. DRAM/NAND ASPs + supply discipline have no feed
+  and ride the research loop.
   With FMP kept for its low-volume niche (movers, earnings calendar, screener,
   sector/industry P/E). An **evidence
   floor** returns `insufficient-evidence` (not a low-conviction guess) when data
