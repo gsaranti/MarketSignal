@@ -106,4 +106,14 @@ Both local jobs source data from Charles Schwab via OAuth — Portfolio Analysis
 
 ### Investor Profile
 
-Portfolio Analysis is personalized by an **investor profile** the user configures: risk tolerance, time horizon, tax sensitivity, and available cash / buying power. The profile feeds grading, the action ladder, and the portfolio cash/deployment stance (see [portfolio-analysis.md](portfolio-analysis.md)) — for example, *add aggressively* is offered only when buying power supports it. Absent a profile, the suite falls back to a stated default posture.
+Both local jobs are personalized by an **investor profile**: risk tolerance, time horizon, objective, tax sensitivity, and cash posture. It shapes Portfolio Analysis's grading emphasis, action ladder, and cash/deployment stance, and Trade Opportunities' entry framing and conviction emphasis (see [portfolio-analysis.md](portfolio-analysis.md), [trade-opportunities.md](trade-opportunities.md)). The profile never changes *which* holdings grade well or *which* opportunities qualify — those are engine and research outputs — only how the prescription is framed for this investor.
+
+**For now the profile is a fixed default preset, not user-configured** (a configurable profile is deferred). The default posture:
+
+- **horizon — long-term.** The job favors durable multi-quarter / multi-year theses over short-term trades.
+- **objective — maximize profit.** Total return is the goal; no income or capital-preservation mandate is imposed.
+- **risk tolerance — medium-to-high.** Higher-risk cells and archetypes (disruptors, commodity cyclicals, smaller caps) are in scope, gated by the engine's forensic/risk discipline rather than by a conservative cap.
+- **cash — always available.** Buying power is treated as **unconstrained**: the user may hold cash in accounts the app can't see, so *add aggressively* and full-size entries are **never** gated on observed Schwab cash. (Concentration and risk limits still apply; only the cash constraint is lifted.)
+- **tax sensitivity — none.** No tax-lot or holding-period adjustment is applied to actions.
+
+These defaults are the stated posture the suite runs against until a configurable profile exists.

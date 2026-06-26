@@ -357,8 +357,11 @@ as-built; the rest remain planned):
   new/increased/decreased/unchanged delta into each dossier, exited names surfaced in
   the roll-up) → full Portfolio (funds) → Opportunities (archetype-aware two-mode
   discovery on FMP's paid tier; ticker→CIK now an optional cross-check, not a blocker).
-- **Personalized & screened.** Portfolio grading/actions are personalized by a
-  configured investor profile (risk tolerance, horizon, tax, cash). Trade
+- **Personalized & screened.** Both local jobs are personalized by an investor
+  profile that is, **for now, a fixed default preset** (long-term horizon, profit-max
+  objective, medium-to-high risk, cash treated as always available, no tax adjustment;
+  user configuration deferred) — it frames the prescription, never which holdings or
+  opportunities qualify. Trade
   Opportunities **discovers** candidates by running research (a funnel: top-down
   theme/event scans + bottom-up screens — estimate-revisions, surprises,
   commodity-price turns, keyless positioning — *find* names; per-candidate validation
@@ -368,7 +371,13 @@ as-built; the rest remain planned):
   commodity-cyclical / disruptor / quality-compounder) that selects the signal weights +
   valuation lens, gated by a mandatory bear case, a narrative-vs-reality
   (revisions-vs-multiple) check, and a forensic risk gate. A cell may return nothing.
-  Model residency keeps
+  Its **research method is itself load-bearing** (`trade-opportunities.md §The research
+  method`): worldview-first (a regime backbone reused from the house view + a forward
+  thematic map), then five lenses — quant composite, value-creation, macro-thematic-fit,
+  investor-judgment, and case-study pattern — reconciled as **two tracks** (proven- vs
+  emerging-economics) through one moat/management/price-asymmetry gate, with an inflecting
+  **leading-metric hard gate** plus a valuation-vs-forward red-flag as the spine, and
+  breadth across **all market caps**. Model residency keeps
   the **122B + embedder** resident (the 122B fills every reasoning role by mode); a
   second small model (35B) is the benchmark-gated option, not a default — never two
   large reasoners co-resident (see the model-layer bullet above).

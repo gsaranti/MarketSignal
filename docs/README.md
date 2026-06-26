@@ -22,3 +22,4 @@
 - [portfolio-analysis.md](portfolio-analysis.md) — The local Portfolio Analysis job: the per-holding pipeline, grading, price targets, and portfolio roll-up.
 - [portfolio-workflow.md](portfolio-workflow.md) — The Portfolio Analysis job's end-to-end control flow: Type-tagged steps from the gate through the per-holding loop to the roll-up, with each local-model-call contract.
 - [trade-opportunities.md](trade-opportunities.md) — The local Trade Opportunities job: the risk × horizon opportunity matrix and its continuity.
+- [trade-opportunities-workflow.md](trade-opportunities-workflow.md) — The Trade Opportunities job's end-to-end control flow: Type-tagged steps from the gate through the discovery funnel and per-candidate validation loop to per-cell selection, with each local-model-call contract.
