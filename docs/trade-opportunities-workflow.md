@@ -211,7 +211,7 @@ The reasoner interprets the computed analysis and the distilled research into th
 This step is an **app-layer validator and tier-assigner**, not just a recorder:
 - the **risk tier** (high / medium / low) and the **horizon** (short / mid / long) are assigned **deterministically by rule** from the engine's measurable inputs (profitability, market cap, liquidity, volatility, leverage, drawdown, event exposure — archetype-informed), so the model's conviction never sets the cell ([trade-opportunities.md §The opportunity space](trade-opportunities.md#the-opportunity-space)). Tier + horizon → the matrix cell;
 - the **forensic / risk gate** is enforced in the app, not left to the model: a candidate tripping the forensic flags (Step 5c), or whose move is mostly multiple-expansion (a `hype` narrative-vs-reality read with no leading-metric anchor), is **capped or excluded** rather than promoted — a hard rule the model's enthusiasm can't override;
-- a candidate that abstained as `insufficient-evidence` (below the evidence floor — missing the floor-bearing statements + price, or stale / conflicting data) is held out of the matrix rather than promoted as a low-conviction guess;
+- a candidate that abstained as `insufficient-evidence` (below the **archetype-aware evidence floor** — missing the floor-bearing price + validated leading metric, or statements-or-substitute per archetype, or carrying stale / conflicting data — see [trade-opportunities.md §Evidence floor](trade-opportunities.md#evidence-floor)) is held out of the matrix rather than promoted as a low-conviction guess;
 - the surviving candidate is **checkpointed** so the run can resume here.
 
 ## Step 6: Selection & Matrix Assembly
