@@ -299,7 +299,7 @@ as-built; the rest remain planned):
   (Qwen3.5-122B-A10B) **plus the embedder stay resident**, and the 122B fills *every*
   reasoning role — research/interpretation in thinking mode, distillation in
   non-thinking — so co-residency of a second large model is sidestepped and a
-  holding's research passes then single distillation pay no model-swap cost. The fast tier
+  holding's research passes then distillation (single or hierarchical) pay no model-swap cost. The fast tier
   (Qwen3.5-35B-A3B) is **demoted to a benchmark-gated option**, reintroduced only if
   distillation wall-clock is a measured bottleneck *and* a 122B+35B+embedder set
   co-resides cleanly on-device. Roster is configurable; the roster never runs more
@@ -319,7 +319,17 @@ as-built; the rest remain planned):
   order, fail-soft on exhaustion. Model-chosen fetches are SSRF-guarded (no
   private/loopback hosts,
   bounded size/redirects, untrusted content) and every finding keeps its source
-  URL + timestamp.
+  URL + timestamp. Per-item research consolidates with one shared **distillation
+  primitive** — *distill one complete topic-tree → structured object* — a single
+  pass by default, **map-reduce** (tier-1 per topic-tree → reduce) when it would
+  overflow the consolidation call's input budget (orchestrator-chosen
+  deterministically by evidence-ledger size; tier-1 always sees *complete*
+  findings, never in-loop summaries; TO's cross-lens contradiction check rides the
+  reduce, the first place the lenses meet). In TO discovery a **heavy route**
+  (budget overflow / >K hypotheses / >1 substantial side — event-impact sides
+  auto-count when populated) sub-distills along its seam too, but its route-level
+  reduce still emits **many distinct cards** — the **cross-route merge stays the
+  deterministic Step 4**, never a model collapse.
 - **Holdings & options ingestion.** Schwab Trader API via an OAuth loopback
   (30-min access / 7-day refresh → a weekly re-login); it supplies holdings *and*
   live option chains, from which a deterministic put/call + IV/skew signal is
@@ -376,7 +386,11 @@ as-built; the rest remain planned):
   thesis ledger** persisted per holding (standing thesis, bear/base/bull monitor, typed
   falsifiers, add/trim/sell triggers — the Portfolio analog of TO's opportunity graph)
   evaluated deterministically each run, rewritten by interpretation, validated by the
-  continuity check. The **what-changed audit** splits to match (intrinsic half validated at
+  continuity check. A **third-party technology event** that threatens a holding is a
+  first-class qualitative falsifier class on the ledger, sized by a typed
+  `technology_read` from a **conditional per-holding research topic** (the held-name
+  form of TO's event-impact lens — separating a panic drop from a genuine impairment,
+  and overstated-benefit euphoria on the upside). The **what-changed audit** splits to match (intrinsic half validated at
   6g, action half at 7b; each maps to a real input-delta/aggregate or downgrades to a flagged
   self-correction). Funds take a reduced path (exposure tilt from ETF weightings; constituent
   holdings off-plan → N-PORT/dropped, a future **issuer-holdings adapter** planned;
@@ -395,7 +409,12 @@ as-built; the rest remain planned):
   through one moat/management/price gate, an inflecting **leading-metric hard gate**; all-cap
   breadth is protected **structurally** by stratified diversity quotas (no bulk pre-scoring).
   Deterministic **outcome labels** on prior picks feed a forward-staged **calibration**. GDELT
-  dropped; discovery is **SearXNG-only**.
+  dropped; discovery is **SearXNG-only**. A new **event-impact / value-chain repricing route**
+  (materiality-gated, dormant otherwise) treats a discrete tech/product/standard announcement as a
+  **two-sided** trigger — beneficiaries, panic-vs-real feared-losers, latent (un-moved) names — each
+  carrying a sized typed `technology_read` (substitute/complement/mix-shift + exposed revenue/profit
+  pool) on the hypothesis card, plus a symmetric feared-loser adversarial pass; still one signal
+  among many, subject to the leading-metric + validation gates like any candidate.
 
 Both features are deliberately **prescriptive** (grades, actions, targets) — a
 departure from the report's no-buy/sell stance — applying the report's house view
