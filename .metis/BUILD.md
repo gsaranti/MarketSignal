@@ -408,7 +408,14 @@ as-built; the rest remain planned):
   worldview-first regime+thematic map traced economically, five lenses reconciled as two tracks
   through one moat/management/price gate, an inflecting **leading-metric hard gate**; all-cap
   breadth is protected **structurally** by stratified diversity quotas (no bulk pre-scoring).
-  Deterministic **outcome labels** on prior picks feed a forward-staged **calibration**. GDELT
+  Deterministic **outcome labels** on prior picks feed a forward-staged **calibration**,
+  computed as **one engine primitive, two reads**: fixed **matured-window labels** (1/3/6/12mo
+  return vs sector/market, drawdown, metric-continuation, failure mode) for calibration, plus a
+  **continuous since-flagged read** (running return vs sector/market + drawdown from the
+  first-surfaced price, live from an idea's first *subsequent* run, stateless off the
+  carry-forward identity) rendered **inline in the matrix** and fed to the **Step-5g re-score of
+  a carried-forward name as reflexivity-disciplined context** (an unconfirmed gain caps
+  conviction, never a momentum boost). GDELT
   dropped; discovery is **SearXNG-only**. A new **event-impact / value-chain repricing route**
   (materiality-gated, dormant otherwise) treats a discrete tech/product/standard announcement as a
   **two-sided** trigger — beneficiaries, panic-vs-real feared-losers, latent (un-moved) names — each
