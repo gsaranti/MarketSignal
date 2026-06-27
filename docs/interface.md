@@ -25,7 +25,7 @@ Market Signal
 │
 ├── Portfolio (local analysis suite)
 │   ├── Holdings (manual pull / CSV import)
-│   ├── Per-holding verdicts (intrinsic verdict + portfolio action + thesis monitor)
+│   ├── Per-holding verdicts (standing thesis + intrinsic verdict + portfolio action + thesis monitor)
 │   └── Portfolio roll-up & construction
 │
 ├── Trade Opportunities (local analysis suite)
@@ -72,7 +72,7 @@ Each warning category may have at most one unresolved warning at a time. If a wa
 
 Dismissing a warning permanently removes it. A subsequent event in the same category produces a fresh warning.
 
-The local analysis suite adds its own warning categories, both following the same one-warning-per-category de-duplication and both **blocking** the local jobs: **local models unavailable** (daemon unreachable or roster missing) and **Schwab connection** (not connected or re-authentication required) — a connected Schwab account is a hard precondition for both jobs, since holdings and the options-activity signal come from it, so manual-import holdings do not clear this gate. Detailed per-state UI for the local pages (stale holdings, expired OAuth, partial results, not-rated assets, empty matrix cells) follows the project's frontend-craft state requirements. The Portfolio page must present each holding's **intrinsic verdict and final portfolio action as distinct but linked**, with the action's portfolio-context rationale visible (see [portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict)), so a deliberate pairing like *A-grade / trim* reads as intentional rather than contradictory.
+The local analysis suite adds its own warning categories, both following the same one-warning-per-category de-duplication and both **blocking** the local jobs: **local models unavailable** (daemon unreachable or roster missing) and **Schwab connection** (not connected or re-authentication required) — a connected Schwab account is a hard precondition for both jobs, since holdings and the options-activity signal come from it, so manual-import holdings do not clear this gate. Detailed per-state UI for the local pages (stale holdings, expired OAuth, partial results, not-rated assets, empty matrix cells) follows the project's frontend-craft state requirements. The Portfolio page must present each holding's **intrinsic verdict and final portfolio action as distinct but linked**, with the action's portfolio-context rationale visible (see [portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict)), so a deliberate pairing like *A-grade / trim* reads as intentional rather than contradictory. Each holding card is **anchored by the thesis ledger's current standing thesis** — the *why we hold this view*, rendered from the ledger ([portfolio-analysis.md §The position thesis ledger](portfolio-analysis.md#the-position-thesis-ledger)), not a separately authored summary — so the grade, action, monitor, and what-changed line read as evidence supporting a stated thesis (the held-position analog of each Trade Opportunity leading with its directional thesis).
 
 Operational triggers for each category live in their canonical homes:
 - Missing agent configuration and missing API tokens — see [configuration.md](configuration.md).
