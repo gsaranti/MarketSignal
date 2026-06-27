@@ -381,8 +381,15 @@ as-built; the rest remain planned):
   aggregates — concentration, exposure, overlap, cash, material not-rated risk — → **7b**
   reconciliation), resolving the Step-6→7 feedback path so "A-grade business, trim because
   oversized" is expressible; **(2) an action-sizing spine** has the engine **bound the
-  feasible action set** (grade, conviction, upside/downside, weight, concentration, overlap,
-  cash, tax) and the model choose within — model proposes, app constrains; **(3) a position
+  feasible action set** (grade, conviction, upside/downside, a **capital-efficiency /
+  dead-money read** — forward base case vs a risk-free+premium hurdle — weight,
+  concentration, overlap, cash, tax) and the model choose within — model proposes, app
+  constrains; the dead-money read **overrides the disposition reflex** — a holding whose
+  forward case can't clear the hurdle leans to **exit, some or all**, with the *generic*
+  **possible tax benefit** of realizing a loss + **redeployment optionality** of freed cash
+  as counterweights (high-level — no harvest/wash-sale/account-type modeling, replacement-name
+  picks stay TO's isolated job — guarded so the loss never moves the grade and the lean fires
+  only once forward prospects are judged poor); **(3) a position
   thesis ledger** persisted per holding (standing thesis, bear/base/bull monitor, typed
   falsifiers, add/trim/sell triggers — the Portfolio analog of TO's opportunity graph)
   evaluated deterministically each run, rewritten by interpretation, validated by the

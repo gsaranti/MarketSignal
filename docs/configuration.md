@@ -114,7 +114,7 @@ Both local jobs are personalized by an **investor profile**: risk tolerance, tim
 - **objective — maximize profit.** Total return is the goal; no income or capital-preservation mandate is imposed.
 - **risk tolerance — medium-to-high.** Higher-risk cells and archetypes (disruptors, commodity cyclicals, smaller caps) are in scope, gated by the engine's forensic/risk discipline rather than by a conservative cap.
 - **cash — always available.** Buying power is treated as **unconstrained**: the user may hold cash in accounts the app can't see, so *add aggressively* and full-size entries are **never** gated on observed Schwab cash. (Concentration and risk limits still apply; only the cash constraint is lifted.)
-- **tax sensitivity — none.** No tax-lot or holding-period adjustment is applied to actions.
+- **tax sensitivity — no precise modeling.** No tax-lot, holding-period, account-type, or marginal-rate calculation is applied to actions — the job never computes a tax harvest. It does treat the **possible tax benefit of realizing a loss** as one *generic, qualitative* counterweight once a position's forward prospects have already been judged poor, weighed beside the redeployment value of freed cash ([portfolio-analysis.md §Portfolio action](portfolio-analysis.md#portfolio-action)); it is framed as *possible* precisely because account type and rate are unmodeled, so the user judges their own specifics.
 
 These defaults are the stated posture the suite runs against until a configurable profile exists.
 
