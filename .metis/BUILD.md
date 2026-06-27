@@ -110,24 +110,19 @@ native week-over-week change), anchored on the *actual* elapsed interval
 since the prior snapshot, never an assumed week — that rides into the prompt
 alongside the live baseline.
 
-**Planned (paid-FMP report enrichment, spec'd not built).** Upgrading the shared
-FMP key to paid unlocks three additive baseline signals (`docs/data-sources.md
-§Planned report enrichment`): economic-calendar **consensus + realized surprise**
-(layered onto FRED's release schedule via a curated release→event map, fail-soft
-to today's names+dates), **historical sector/industry valuation + performance**
-(trailing-window P/E percentile + band, plus a cumulative-return trend accumulated
-from the performance endpoint's daily `averageChange`), and **IPO/M&A froth**
-(issuance/deal pace + a native recent-vs-prior trend, the way positioning carries
-its own change — a new baseline group, so the Step-3 group count moves 12→13). All three hold the spine: the engine derives every
-number, only the compact derived read persists (raw series discarded), new fields
-carry `#[serde(default)]`, and none joins the level-delta engine (set-valued /
-trailing-window, like positioning). The only existing logic that changes is the
-**calendar builder** (FRED-only → FRED+FMP join, fail-soft) and one **main-agent
-prompt** instruction that currently forbids over-time valuation reads (must be
-revised). Live-verified on the paid-key checkpoint. **True index breadth** — the
-fourth enrichment candidate — was evaluated and **ruled out**: FMP exposes
-constituent *lists* but no breadth metric, so a real breadth read would need a
-heavy per-constituent price fan-out; the movers group stays the breadth proxy.
+**Planned (paid-FMP report enrichment, spec'd not built).** The paid FMP key
+unlocks three additive baseline signals (`docs/data-sources.md §Planned report
+enrichment`): economic-calendar **consensus + surprise** (layered onto FRED's
+schedule, fail-soft to names+dates), **historical sector/industry valuation +
+performance** (trailing-window P/E percentile/band + a cumulative-return trend),
+and **IPO/M&A froth** (a new baseline group → Step-3 count 12→13). All hold the
+spine: the engine derives every number, only the compact derived read persists
+(`#[serde(default)]`), and none joins the level-delta engine (set-valued /
+trailing-window, like positioning). The only changes are the **calendar builder**
+(FRED → FRED+FMP join) and one **main-agent prompt** instruction forbidding
+over-time valuation reads (must be revised). **True index breadth** was ruled
+out — FMP exposes constituent lists but no breadth metric, so the movers group
+stays the proxy.
 
 **Retention** is deliberately asymmetric and must be honored in deletion code:
 only the most recent **30 reports** are kept (deleting one cascades its Markdown,
@@ -252,36 +247,28 @@ contract is in `docs/run-tracking.md`.
 
 ## Testing approach
 
-The spine makes the pipeline testable offline: because agents and data adapters
-are traits, the orchestrator runs end-to-end against deterministic stubs and
-fixture packets with no live keys. Coverage spans the bounded executor's three
-limits; the 30-report retention cascade *and* durable-learning survival;
-near-duplicate learning dedup; the validation-gate pass/block matrix; the Step-3
-coverage-floor matrix; the failed-vs-skipped-vs-cancelled state transitions;
-fail-soft inbox parsing; the baseline delta engine and its cadence-honest
-elapsed pass-through; and the analyst layer's fail-hard contract (a single
-failing analyst aborts the run with no report persisted). The `progress` seam
-stays out of every other test via a no-op `RunContext`; its own logic — the
-resumable streamed-token decoder and the SSE delta/envelope reconstruction for
-both provider dialects and both stream roles — is unit-tested against fixtures.
-Each gated adapter carries a test-only base-URL injection seam so a localhost
-mock exercises the full URL-build → retry → parse → domain-output wire path
-offline, where a live key was previously the only coverage; live-provider smokes
-are `#[ignore]`d. The **frontend unit gate is two runners under `npm test`**,
-split by file extension: pure modules (`tests/**/*.test.ts`) on Node's built-in
-runner via TypeScript type-stripping (no build step), and Vue **SFC component
-tests** (`tests/**/*.spec.ts`) on **Vitest** (`@vitejs/plugin-vue` + happy-dom +
-`@vue/test-utils`), mounting real components to assert behavior and accessibility
-against the design system.
+The spine makes the pipeline testable offline: agents and adapters are traits, so
+the orchestrator runs end-to-end against deterministic stubs and fixture packets
+with no live keys. Coverage spans the executor's three limits, the 30-report
+retention cascade + durable-learning survival, learning dedup, the validation-gate
+and Step-3 coverage-floor matrices, the failed/skipped/cancelled transitions,
+fail-soft inbox parsing, the cadence-honest baseline delta engine, and the analyst
+layer's fail-hard contract. The `progress` seam stays out of other tests via a
+no-op `RunContext`; its own logic (the resumable streamed-token decoder + SSE
+reconstruction for both provider dialects and stream roles) is fixture-tested. Each
+gated adapter has a test-only base-URL seam so a localhost mock exercises the full
+URL-build → retry → parse → output path offline; live smokes are `#[ignore]`d. The
+**frontend gate is two runners under `npm test`**: pure modules (`tests/**/*.test.ts`)
+on Node's runner via type-stripping, and Vue **SFC tests** (`tests/**/*.spec.ts`) on
+**Vitest** (happy-dom + `@vue/test-utils`), mounting real components for behavior +
+accessibility.
 
 The same trait spine powers a **dev-only demo-run mode** (`src-tauri/src/demo.rs`,
-behind a `demo-run` Cargo feature): hitting "Generate now" drives the *real*
-`run_job` pipeline through the live GUI against paced, streaming stand-ins that
-emit per-request rows and stream tokens/thinking, then delegate to the offline
-stubs for return data — so the run tracker and report rendering are exercised
-end-to-end with no network, keys, or cost. The feature is not in `default` and so
-is compiled out of `tauri build`; it's the cost-free way to verify UI/report
-changes (`npm run tauri:demo`).
+behind a `demo-run` Cargo feature, out of `default`/`tauri build`): "Generate now"
+drives the *real* `run_job` pipeline through the live GUI against paced streaming
+stand-ins (per-request rows, token/thinking streaming) that delegate to the offline
+stubs — exercising the run tracker and report rendering end-to-end with no network,
+keys, or cost (`npm run tauri:demo`).
 
 ## Local analysis suite (substrate + narrow Portfolio slice built; features in progress)
 
@@ -355,92 +342,60 @@ as-built; the rest remain planned):
   hardware-gated on the M5) → **next: wire live Schwab OAuth** (+ deterministic
   holdings-snapshot diff: prior-run snapshot vs current pull → per-position
   new/increased/decreased/unchanged delta into each dossier, exited names surfaced in
-  the roll-up) → full Portfolio (funds) → Opportunities (archetype-aware two-mode
-  discovery on FMP's paid tier; ticker→CIK now an optional cross-check, not a blocker).
-- **Personalized & screened.** Both local jobs are personalized by an investor
-  profile that is, **for now, a fixed default preset** (long-term horizon, profit-max
-  objective, medium-to-high risk, cash treated as always available, no tax adjustment;
-  user configuration deferred) — it frames the prescription, never which holdings or
-  opportunities qualify. Trade
-  Opportunities **discovers** candidates through three feeders — **model-led hypothesis
-  research** (the edge: a route planner → **hypothesis cards** tracing value-chain
-  *economics* → adversarial passes → a **hypothesis score** that gates promotion *before*
-  any ticker), cheap **bottom-up structured feeders** (the screener *stratifies* the
-  universe, having no fundamental field; plus event/positioning feeds), and a
-  **carried-forward watchlist** (the persisted opportunity graph below) — then validates
-  per-name, computing the multi-factor composite **per-candidate** (FMP's `*-bulk`
-  universe-scoring endpoints are off-plan). It hunts in two modes (**early** = a leading operating metric inflecting
-  before price/earnings/multiple; **continuation** = demand-visibility licensing a late
-  entry) through a first-class **archetype** lens (secular-compounder / ai-infra /
-  commodity-cyclical / disruptor / quality-compounder) that selects the signal weights +
-  valuation lens, gated by a mandatory bear case, a narrative-vs-reality
-  (revisions-vs-multiple, with an operating-reality-vs-price fallback when coverage is too thin to read revisions) check, a **cross-lens contradiction check** folded into distillation+scoring (no extra model call; high-severity contradictions capped deterministically), and a forensic risk gate. A cell may return nothing.
-  Its **research method is itself load-bearing** (`trade-opportunities.md §The research
-  method`): worldview-first (a regime backbone reused from the house view + a forward
-  thematic map, traced *economically* — margin capture / bargaining power / capacity /
-  pricing power, not mere exposure), then five lenses — quant composite, value-creation, macro-thematic-fit,
-  investor-judgment, and case-study pattern — reconciled as **two tracks** (proven- vs
-  emerging-economics) through one moat/management/price-asymmetry gate, with an inflecting
-  **leading-metric hard gate** plus a valuation-vs-forward red-flag as the spine, and
-  breadth across **all market caps** — now protected **structurally**, by stratified
-  diversity quotas at the funnel waist (cap / feeder / archetype / theme), since the universe
-  can't be bulk-pre-scored. Each run also computes
-  deterministic **outcome labels** on prior picks (return vs sector/market, drawdown,
-  leading-metric continuation, a decision-tree failure mode) as durable learnings, feeding
-  a forward-staged archetype-weight/gate **calibration** (early runs stay shadow/calibration).
-  Discovery is **stateful**: a persisted **opportunity graph** carries worthy-but-unpicked
-  names forward as a **watchlist** (app-enforced bar — named leading metric + mechanism +
-  falsifier + hypothesis score; metric re-checked by cost class each run; bounded by a
-  retention cap + carry-horizon), so a deferred name that quietly compounds isn't lost to
-  chance re-surfacing — replacing the earlier stateless re-discovery. GDELT is dropped;
-  discovery search is keyless **SearXNG only** (no Tavily).
-  Model residency keeps
-  the **122B + embedder** resident (the 122B fills every reasoning role by mode); a
-  second small model (35B) is the benchmark-gated option, not a default — never two
-  large reasoners co-resident (see the model-layer bullet above).
-- **Deterministic finance, primary-source evidence.** Quantitative outputs —
-  sub-scores, risk-tier assignment, valuation/quality/momentum/risk metrics, and
-  scenario price targets (methodology exposed) — are computed by a Rust
-  financial-analysis engine over **FMP plus keyless SEC EDGAR** (10-K/Q/8-K +
-  XBRL company facts); the model interprets, never invents numbers. High-volume
-  **price history** stays on **keyless Stooq** (multi-decade depth — the input the
-  engine's price-action confirmer and momentum/volatility reads need); live **quotes**
-  come from FMP, and the dispersal is load-relief on the **paid** shared FMP key, not
-  free-cap avoidance.
-  **Trade Opportunities widens the signal set on FMP's paid tier** (the suite's one
-  paid dependency; **one shared FMP key for the report + both jobs, upgraded to paid —
-  the report's data-source logic is unchanged**, former free-tier gates no longer bind): fundamentals/ratios/segments, the revision
-  signal (estimates + `grades-historical` + price-targets + upgrades/downgrades +
-  surprises), **`financial-scores` (Altman Z + Piotroski) for the forensic gate**,
-  symbol-keyed **positioning** (insider, **congressional**, activist 13D/G), and the
-  screener/peers/industry-classification discovery layer. A **paid-plan tier audit**
-  (`data-sources.md`) found the `*-bulk` endpoints, earnings-call transcripts, 13F institutional,
-  fund-holdings, and press-release feeds **off-plan** — so the screener only *stratifies* (no
-  fundamental field), the composite is per-candidate, and those signals fall back to SEC
-  EDGAR / `sec-filings-8k` / the web-research loop. **Short interest** keyless on FINRA; commodity
-  prices on FRED+Stooq; **SEC EDGAR retained as authoritative cross-check** (so ticker→CIK
-  is a non-blocking enhancement, not a prerequisite). An **engine-computed price-action
-  confirmer** (relative strength / multi-year base breakout from Stooq history) adjusts
-  conviction — a confirmer, not a trigger. DRAM/NAND ASPs + supply discipline have no feed
-  and ride the research loop.
-  With FMP kept for its low-volume niche (movers, earnings calendar, screener,
-  sector/industry P/E). An **evidence
-  floor** returns `insufficient-evidence` (not a low-conviction guess) when data
-  is missing/stale/conflicting. Long per-holding jobs **checkpoint and resume**,
-  and early runs are treated as **shadow/calibration** before outputs are trusted.
-  Portfolio's per-holding design is now fully specified (`portfolio-workflow.md` is the
-  Type-tagged control flow): a **three-layer engine** (grade core from fundamentals +
-  price + forensics; a conviction layer of revision / narrative-vs-reality; positioning
-  context held out of the grade until calibrated), forward targets **refinable
-  post-research only via a typed, sourced `research_forward_assumption`** the engine
-  recomputes (sub-scores never move), and a **what-changed audit** attributing every
-  verdict move to a deterministic input-delta (external) or a flagged **self-correction**
-  — app-validated so it can't be faked. Funds take a reduced compute path — **exposure tilt
-  from ETF sector/country weightings** (constituent `etf/holdings` and mutual-fund disclosures
-  are off-plan → SEC N-PORT or dropped) with a fund-analog evidence floor; the house view is
-  dropped past a **one-week freshness** window. Portfolio points the paid per-symbol feed
-  at *held* names plus its own adds (segment revenue, FINRA
-  short interest, dividends, ETF weightings; earnings-call transcripts are off-plan → web).
+  the roll-up) → full Portfolio (funds) → Opportunities. Both jobs are personalized
+  by a **fixed default investor-profile preset** (long-term, profit-max, medium-high
+  risk, cash always available, no tax adjustment; user config deferred) that frames
+  the prescription, never which holdings or ideas qualify.
+- **Deterministic finance, primary-source evidence.** Sub-scores, risk tiers,
+  metrics, and scenario targets (methodology exposed) are computed by a shared Rust
+  engine over **FMP + keyless SEC EDGAR** (10-K/Q/8-K + XBRL); the model interprets,
+  never invents numbers. Deep **price history** is keyless **Stooq** (the input the
+  price-action confirmer and momentum/volatility reads need), **quotes** are FMP —
+  dispersal is load-relief on the **paid** key. **One shared FMP key, upgraded to paid;
+  the report's data-source logic is unchanged.** A **paid-plan tier audit**
+  (`data-sources.md`) found `*-bulk`, transcripts, 13F-institutional, fund-holdings, and
+  press-releases **off-plan** → fallbacks to SEC EDGAR / `sec-filings-8k` / the web loop /
+  N-PORT. **FINRA** carries short interest; **SEC EDGAR** is the authoritative cross-check
+  (ticker→CIK non-blocking). An **evidence floor** returns `insufficient-evidence` over a
+  low-conviction guess; long jobs **checkpoint/resume**; early runs are **shadow/calibration**.
+- **Portfolio decision-discipline (designed).** The per-holding design is fully
+  specified (`portfolio-workflow.md` is the Type-tagged control flow): a **three-layer
+  engine** (grade core from fundamentals+price+forensics; a conviction layer of
+  revision/narrative-vs-reality; positioning held out of the grade until calibrated),
+  with forward targets refinable **post-research only** via a typed, sourced
+  `research_forward_assumption` the engine recomputes (sub-scores never move). Three
+  pillars take the job past grade-then-summarize: **(1) intrinsic verdict vs. portfolio
+  action are separated** — the per-holding loop emits the intrinsic verdict (grade,
+  conviction, targets + a *standalone action lean*), and a post-roll-up construction
+  stage sets the final action+sizing with the whole book in view (**Step 7a** deterministic
+  aggregates — concentration, exposure, overlap, cash, material not-rated risk — → **7b**
+  reconciliation), resolving the Step-6→7 feedback path so "A-grade business, trim because
+  oversized" is expressible; **(2) an action-sizing spine** has the engine **bound the
+  feasible action set** (grade, conviction, upside/downside, weight, concentration, overlap,
+  cash, tax) and the model choose within — model proposes, app constrains; **(3) a position
+  thesis ledger** persisted per holding (standing thesis, bear/base/bull monitor, typed
+  falsifiers, add/trim/sell triggers — the Portfolio analog of TO's opportunity graph)
+  evaluated deterministically each run, rewritten by interpretation, validated by the
+  continuity check. The **what-changed audit** splits to match (intrinsic half validated at
+  6g, action half at 7b; each maps to a real input-delta/aggregate or downgrades to a flagged
+  self-correction). Funds take a reduced path (exposure tilt from ETF weightings; constituent
+  holdings off-plan → N-PORT/dropped, a future **issuer-holdings adapter** planned;
+  fund-flavored ledger) and drop the house view past a **one-week freshness** window.
+- **Trade Opportunities (designed).** Discovers candidates through three feeders —
+  **model-led hypothesis research** (the edge: route planner → **hypothesis cards** tracing
+  value-chain *economics* → a **hypothesis score** gating promotion *before* any ticker),
+  **bottom-up structured feeders** (the screener *stratifies* — no fundamental field — plus
+  event/positioning), and a **carried-forward watchlist** (a persisted **opportunity graph**
+  reversing earlier stateless re-discovery) — then validates per-name with a **per-candidate**
+  composite (`*-bulk` off-plan). Two modes (**early**/**continuation**) × a first-class
+  **archetype** lens (5 archetypes set signal weights + valuation lens), gated by a mandatory
+  bear case, narrative-vs-reality, a cross-lens contradiction check (folded into distill+score),
+  and a forensic gate. The **research method is load-bearing** (`trade-opportunities.md`):
+  worldview-first regime+thematic map traced economically, five lenses reconciled as two tracks
+  through one moat/management/price gate, an inflecting **leading-metric hard gate**; all-cap
+  breadth is protected **structurally** by stratified diversity quotas (no bulk pre-scoring).
+  Deterministic **outcome labels** on prior picks feed a forward-staged **calibration**. GDELT
+  dropped; discovery is **SearXNG-only**.
 
 Both features are deliberately **prescriptive** (grades, actions, targets) — a
 departure from the report's no-buy/sell stance — applying the report's house view

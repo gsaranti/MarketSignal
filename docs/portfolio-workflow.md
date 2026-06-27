@@ -7,8 +7,8 @@ The Portfolio Analysis job:
 - classifies each position by asset type and diffs it against the prior run
 - computes a deterministic financial picture for every gradable holding
 - researches each holding on the open web with a local reasoner
-- grades each holding (A–F) and recommends an action + price targets
-- synthesizes a portfolio-level roll-up against the Market Signal house view
+- grades each holding (A–F) with price targets and a standalone action lean — the intrinsic verdict
+- reconciles those into final per-holding actions and a whole-book roll-up against the Market Signal house view
 
 It runs **on demand only**, in two user-controlled steps — **pull holdings**, then **run analysis** — entirely on local models, with **no cost at the model layer**. A **single global run slot** serializes it against the report and Trade Opportunities (only one runs at a time). For job states, the global run slot, cancellation, and error handling, see [scheduling.md](scheduling.md) and [run-tracking.md](run-tracking.md); for the failure posture (per-holding checkpoint/resume, fail-soft research), see [portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture).
 
@@ -35,9 +35,10 @@ Two load-bearing architectural rules frame the whole table, the same ones the re
 | 6c | Bounded web research | Local-model call (thinking) + API retrieval (web tool), looped | Qwen3.5-122B · thinking |
 | 6d | Distillation | Local-model call (non-thinking) | Qwen3.5-122B · non-thinking (35B optional) |
 | 6e | Deterministic target refinement | Computed (engine) | — |
-| 6f | Interpretation & grading | Local-model call (thinking) | Qwen3.5-122B · thinking |
-| 6g | Continuity check & checkpoint | Computed | — |
-| 7 | Portfolio roll-up | Local-model call | Qwen3.5-122B |
+| 6f | Interpretation & grading — intrinsic verdict + ledger rewrite | Local-model call (thinking) | Qwen3.5-122B · thinking |
+| 6g | Continuity check, ledger validation & checkpoint | Computed | — |
+| 7a | Whole-book aggregates & sizing-spine inputs | Computed (engine) | — |
+| 7b | Portfolio construction — final actions + roll-up | Local-model call | Qwen3.5-122B |
 | 8 | Persist run & audit + memory embeddings | Computed (persist) + Local-model (embedding) | Qwen3-Embedding-4B · fixed |
 | 9 | Render Portfolio page & update UI | Computed (frontend) | — |
 
@@ -94,7 +95,7 @@ Each **gradable** holding (stock or fund, from Step 3) is processed through the 
 
 **Type:** API retrieval (FMP / SEC EDGAR / Stooq / FINRA) + Local-model call (embedding, for continuity retrieval) + Computed (assemble the packet).
 
-The application builds the holding's evidence packet deterministically: the position + its Step-4 delta; the **equity** per-symbol surface (FMP fundamentals + revenue segments + analyst/revision signals + FINRA short interest, joined with SEC EDGAR as the authoritative cross-check; **13F institutional, earnings-call transcripts, and per-symbol M&A are off-plan** → SEC EDGAR / the web-research loop / `mergers-acquisitions-latest`+8-K — [data-sources.md §FMP — current paid-plan tier audit](data-sources.md#fmp--current-paid-plan-tier-audit)) or, for a fund, the **reduced ETF surface** (`etf/info` + sector/country weightings; constituent `etf/holdings` and mutual-fund `funds/disclosure*` off-plan); price history (Stooq) and a live quote (FMP `quote`); the prior run's verdict for this holding; the Step-5 shared context; and vector-retrieved continuity from **this job's own prior runs** for this holding. The full input list and every endpoint is in [portfolio-analysis.md](portfolio-analysis.md#the-per-holding-pipeline) and [data-sources.md](data-sources.md#portfolio-analysis--endpoint-surface).
+The application builds the holding's evidence packet deterministically: the position + its Step-4 delta; the **equity** per-symbol surface (FMP fundamentals + revenue segments + analyst/revision signals + FINRA short interest, joined with SEC EDGAR as the authoritative cross-check; **13F institutional, earnings-call transcripts, and per-symbol M&A are off-plan** → SEC EDGAR / the web-research loop / `mergers-acquisitions-latest`+8-K — [data-sources.md §FMP — current paid-plan tier audit](data-sources.md#fmp--current-paid-plan-tier-audit)) or, for a fund, the **reduced ETF surface** (`etf/info` + sector/country weightings; constituent `etf/holdings` and mutual-fund `funds/disclosure*` off-plan); price history (Stooq) and a live quote (FMP `quote`); the prior run's verdict **and thesis ledger** for this holding ([portfolio-analysis.md §The position thesis ledger](portfolio-analysis.md#the-position-thesis-ledger)); the Step-5 shared context; and vector-retrieved continuity from **this job's own prior runs** for this holding. The full input list and every endpoint is in [portfolio-analysis.md](portfolio-analysis.md#the-per-holding-pipeline) and [data-sources.md](data-sources.md#portfolio-analysis--endpoint-surface).
 
 #### Local-model call — Vector continuity retrieval (Qwen3-Embedding-4B, fixed)
 
@@ -108,7 +109,7 @@ The application builds the holding's evidence packet deterministically: the posi
 
 **Type:** Computed (the financial-analysis engine, shared with Trade Opportunities). No model.
 
-The engine computes the holding's quantitative picture in three layers — **(a)** the grade core (fundamentals + revenue segments + price + forensic flags → the quality / valuation / momentum / risk sub-scores and the scenario price targets, discounted off the run-level risk-free rate); **(b)** a conviction layer (revision velocity, rating drift, earnings surprise → the narrative-vs-reality ratio, kept *out* of the sub-scores); **(c)** positioning context (insider net, congressional, **FINRA short interest**, and the **options-activity signal** computed from the Step-2 chains — held out of the sub-scores until calibration; FMP 13F is off-plan → EDGAR/omit). The forward targets are a **provisional scenario menu** at this point. The full layer breakdown is in [portfolio-analysis.md](portfolio-analysis.md#the-per-holding-pipeline) Step 2. For a **fund**, this step runs the reduced computation instead (expense drag, **exposure tilt** from sector/country weightings, fund-level valuation → a reduced sub-score set; constituent concentration only if SEC N-PORT supplies it, else omitted — `etf/holdings` off-plan). The engine also computes a deterministic **input delta** — this run's metrics, sub-scores, positioning, and price against the prior run's stored values (from the audit record), together with the Step-4 position delta and the Step-5 house-view age / change — the evidence the continuity audit (6f / 6g) attributes verdict moves to.
+The engine computes the holding's quantitative picture in three layers — **(a)** the grade core (fundamentals + revenue segments + price + forensic flags → the quality / valuation / momentum / risk sub-scores and the scenario price targets, discounted off the run-level risk-free rate); **(b)** a conviction layer (revision velocity, rating drift, earnings surprise → the narrative-vs-reality ratio, kept *out* of the sub-scores); **(c)** positioning context (insider net, congressional, **FINRA short interest**, and the **options-activity signal** computed from the Step-2 chains — held out of the sub-scores until calibration; FMP 13F is off-plan → EDGAR/omit). The forward targets are a **provisional scenario menu** at this point. The full layer breakdown is in [portfolio-analysis.md](portfolio-analysis.md#the-per-holding-pipeline) Step 2. For a **fund**, this step runs the reduced computation instead (expense drag, **exposure tilt** from sector/country weightings, fund-level valuation → a reduced sub-score set; constituent concentration only if SEC N-PORT supplies it, else omitted — `etf/holdings` off-plan). The engine also computes a deterministic **input delta** — this run's metrics, sub-scores, positioning, and price against the prior run's stored values (from the audit record), together with the Step-4 position delta and the Step-5 house-view age / change — the evidence the continuity audit (6f / 6g) attributes verdict moves to. As part of the input delta, the engine also evaluates the prior thesis ledger's **quantitative** falsifiers and triggers — which conditions crossed this run — for interpretation to read ([portfolio-analysis.md §The position thesis ledger](portfolio-analysis.md#the-position-thesis-ledger)).
 
 ### Step 6c: Bounded Web Research
 
@@ -148,45 +149,55 @@ If distillation produced a typed **`research_forward_assumption`** (Step 6d — 
 
 **Type:** Local-model call (122B, thinking). The verdict-writing call.
 
-The reasoner interprets the computed analysis and the distilled research into the holding verdict: it sets the grade and action, selects and justifies the base-case target, and explains the reasoning — but reads every number from the engine rather than inventing it.
+The reasoner interprets the computed analysis and the distilled research into the holding's **intrinsic verdict**: it sets the grade, conviction, and horizon, selects and justifies the base-case target, and commits to a **standalone action lean** — but reads every number from the engine rather than inventing it, and rewrites the **thesis ledger** (revised thesis, re-weighted monitor, re-set falsifiers/triggers — reading the engine's quantitative crossings from 6b and judging the qualitative conditions from research). The *final* portfolio action and target weight are set in Step 7b with the whole book in view; this stage produces the intrinsic read the construction stage reconciles.
 
 #### Local-model call — Interpretation & grading (Qwen3.5-122B, thinking)
 
 **Model.** The resident 122B in thinking mode; schema-constrained output.
 
-**Prompt — input.** The engine's computed analysis (sub-scores, the refined scenario targets with exposed methodology, the narrative-vs-reality and forensic reads, the positioning/options signal as context); the distilled research findings; the house view and investor profile; the prior run's verdict; and the position delta. The **absolute street opinions** (consensus target level, current rating consensus, FMP's ratings snapshot) are presented as *evidence to weigh against the engine's own read*, not as numbers to adopt.
+**Prompt — input.** The engine's computed analysis (sub-scores, the refined scenario targets with exposed methodology, the narrative-vs-reality and forensic reads, the positioning/options signal as context); the distilled research findings; the house view and investor profile; the prior run's verdict **and thesis ledger** (with the engine's quantitative falsifier/trigger crossings from 6b); and the position delta. The **absolute street opinions** (consensus target level, current rating consensus, FMP's ratings snapshot) are presented as *evidence to weigh against the engine's own read*, not as numbers to adopt.
 
-**Returns.** The schema-validated **holding verdict** — composite grade (A–F) over the four sub-scores; action on the fixed ladder (sell all → trim → hold → add → add aggressively) with a target weight + share/dollar adjustment; conviction (shaped by narrative-vs-reality; abstaining as `insufficient-evidence` below the evidence floor); short/mid/long horizon outlook; the selected EoM/EoY targets; a financial-health read; and the **what-changed audit** — every moved value (grade, sub-score, action, conviction, target, horizon) shown old → new with its cause **attributed** to an *external* change (market data / company information / research-narrative, each tied to the engine's input delta or a research finding) or to a **labeled self-correction** where the inputs did not move. The input delta is the deterministic check that a move called "external" maps to an input that actually moved. Full schema in [portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict).
+**Returns.** The schema-validated **intrinsic verdict** — composite grade (A–F) over the four sub-scores; conviction (shaped by narrative-vs-reality; abstaining as `insufficient-evidence` below the evidence floor); short/mid/long horizon outlook; the selected EoM/EoY targets; a **standalone action lean** on the fixed ladder (sell all → trim → hold → add → add aggressively) *before* portfolio context; and a financial-health read — plus the **rewritten thesis ledger** (thesis, bear/base/bull monitor, falsifiers, triggers) and the **intrinsic half of the what-changed audit**: every moved intrinsic value (grade, sub-score, conviction, target, horizon, a re-weighted scenario, a tripped falsifier / fired trigger) shown old → new with its cause **attributed** to an *external* change (market data / company information / research-narrative, each tied to the engine's input delta or a research finding) or to a **labeled self-correction** where the inputs did not move. The final action, target weight, and the **action half** of the what-changed audit are produced in Step 7b, where the whole-book context exists. Full schema in [portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict).
 
 ### Step 6g: Continuity Check and Checkpoint
 
 **Type:** Computed (app layer). No model.
 
-This step is an **app-layer validator**, not just a recorder. Every move the 6f audit labels **external** must resolve to a concrete entry in the engine's input delta, a source-backed research finding, or the logged `research_forward_assumption`; an attribution that resolves to nothing is **downgraded to self-correction** (or fails schema validation), so the model cannot launder a no-new-facts swing as "the market changed." The validated **what-changed audit** is recorded against the prior run; output stays firm and does not swing run-to-run absent hard supporting data ([thesis-continuity.md](thesis-continuity.md)). The completed holding is **checkpointed** so the run can resume here.
+This step is an **app-layer validator**, not just a recorder. Every move the 6f audit labels **external** must resolve to a concrete entry in the engine's input delta, a source-backed research finding, or the logged `research_forward_assumption`; an attribution that resolves to nothing is **downgraded to self-correction** (or fails schema validation), so the model cannot launder a no-new-facts swing as "the market changed." The same rule validates the **thesis-ledger rewrite**: every falsifier marked tripped and every trigger marked fired must map to a 6b quantitative crossing or a source-backed finding, or it is rejected. The validated **intrinsic what-changed audit** and the rewritten ledger are recorded against the prior run — the **action half** of the audit is validated later, in Step 7b, where the portfolio context it cites exists; output stays firm and does not swing run-to-run absent hard supporting data ([thesis-continuity.md](thesis-continuity.md)). The completed holding is **checkpointed** so the run can resume here.
 
-## Step 7: Portfolio Roll-Up
+## Step 7: Portfolio Roll-Up and Construction
 
-**Type:** Local-model call (122B) — synthesis over the completed per-holding pass.
+The per-holding loop produced each holding's **intrinsic** verdict and standalone action lean; this step takes the whole book in view — the two things the loop structurally cannot do, because it decides each holding before any other's verdict exists ([portfolio-analysis.md §Portfolio roll-up and construction](portfolio-analysis.md#portfolio-roll-up-and-construction)). It runs in two parts.
 
-#### Local-model call — Portfolio roll-up (Qwen3.5-122B)
+### Step 7a: Whole-Book Aggregates and Sizing-Spine Inputs
+
+**Type:** Computed (the engine). No model.
+
+The engine computes the deterministic whole-book picture: concentration and sector / factor exposure (**fund exposure folded in at the sector / country level** — single-name look-through is off-plan with `etf/holdings`, so direct-plus-fund overlap aggregates at the exposure level unless SEC N-PORT supplies constituents), correlation / overlap clusters, the cash / buying-power position, and **the risk / exposure contribution of any material not-rated positions** (fixed-income duration / credit weight, options notional / delta — graded nowhere but real exposure); and, per holding, the **action-sizing spine inputs** — existing weight, concentration headroom against the profile's limits, overlap contribution, the upside/downside the targets imply against price, risk tier, and tax. These **bound the feasible action set** the next part chooses within ([portfolio-analysis.md §The holding verdict](portfolio-analysis.md#the-holding-verdict)).
+
+### Step 7b: Portfolio Construction
+
+**Type:** Local-model call (122B) — synthesis over the completed per-holding pass and the Step-7a aggregates.
+
+#### Local-model call — Portfolio construction (Qwen3.5-122B)
 
 **Model.** The resident 122B reasoner; schema-constrained output.
 
-**Prompt — input.** All per-holding verdicts; the engine-computed portfolio aggregates (concentration and sector/factor exposure, **with fund exposure folded in at the sector/country level** — single-name look-through is off-plan with `etf/holdings`, so direct-plus-fund overlap aggregates at the exposure level unless SEC N-PORT supplies constituents); the **exited** names from the Step-4 diff; the house view; and the investor profile.
+**Prompt — input.** All per-holding **intrinsic** verdicts and standalone action leans; the Step-7a whole-book aggregates and per-holding sizing-spine inputs (with the feasible action set the engine bounded); the **exited** names from the Step-4 diff; the house view; and the investor profile.
 
-**Returns.** The schema-validated **portfolio-level view** — concentration and sector/factor exposure, overall risk posture, a cash/deployment stance, and positions closed since the last run — read against both the house view and the profile ([portfolio-analysis.md §Portfolio roll-up](portfolio-analysis.md#portfolio-roll-up)).
+**Returns.** Each holding's **final action** (fixed ladder) and **target-weight range / share-dollar adjustment**, reconciled from its intrinsic lean against the aggregates and bounded by the sizing spine — plus the **action half of the what-changed audit** (a changed action / weight attributed to a moved intrinsic verdict *or* a moved portfolio context) and the schema-validated **portfolio-level view**: concentration and sector/factor exposure, overall risk posture, a cash / deployment stance (what to trim to fund which adds), and positions closed since the last run — read against both the house view and the profile. The action-half attributions are **app-validated** the same way 6g validates the intrinsic half: a "became oversized" or "freed cash" claim must map to a real Step-7a aggregate, not a model assertion ([portfolio-analysis.md §Portfolio roll-up and construction](portfolio-analysis.md#portfolio-roll-up-and-construction)).
 
 ## Step 8: Persist Run and Audit, with Memory Embeddings
 
 **Type:** Computed (persist the verdicts, roll-up, holdings snapshot, and audit record) + Local-model call (embeddings for continuity).
 
-The application persists the run: each holding's verdict, the roll-up, the **holdings snapshot it ran against** (the next run diffs against this), and an **audit record** that makes the run traceable — the report(s) and sources used with retrieval timestamps, the distilled findings, the computed metrics and the derived reads, the **input delta and the what-changed attribution**, the price-target methodology including its discount-rate assumption and any research-sourced forward assumption (with source), the model ids and quantizations, the prompt/schema version, and degraded-input flags. Retention keeps the last N runs ([storage.md](storage.md)).
+The application persists the run: each holding's verdict, the per-holding **thesis ledger** (carried forward to seed the next run's continuity check), the roll-up, the **holdings snapshot it ran against** (the next run diffs against this), and an **audit record** that makes the run traceable — the report(s) and sources used with retrieval timestamps, the distilled findings, the computed metrics and the derived reads, the **input delta and the what-changed attribution**, the price-target methodology including its discount-rate assumption and any research-sourced forward assumption (with source), the model ids and quantizations, the prompt/schema version, and degraded-input flags. Retention keeps the last N runs ([storage.md](storage.md)).
 
 #### Local-model call — Run-result embeddings (Qwen3-Embedding-4B, fixed)
 
 **Model.** The fixed local embedder — vectorization only.
 
-**Prompt (input text).** Each holding's verdict summary, embedded individually.
+**Prompt (input text).** Each holding's verdict embedded individually — a text that captures the **standing thesis** (the ledger's thesis, key drivers, and scenario lean), the **intrinsic read** (grade and conviction), and the **final portfolio action**, so cross-run semantic recall surfaces the substance of prior analysis rather than a bare grade.
 
 **Returns.** Vectors stored in the **Portfolio Analysis** memory partition (the job namespace), so a later run of this job can semantically recall the relevant prior analysis for a holding ([local-models.md §Run history and continuity](local-models.md#run-history-and-continuity)). Best-effort: a failed embedding costs the memory row, never the persisted run.
 
@@ -194,4 +205,4 @@ The application persists the run: each holding's verdict, the roll-up, the **hol
 
 **Type:** Computed (frontend). No model.
 
-The **Portfolio page** renders each holding's verdict — grade and sub-scores, conviction, action, outlook, targets, financials, and the what-changed line — alongside the portfolio roll-up, and shows not-rated positions with their reason ([interface.md](interface.md)). While the job ran, the run tracker replaced the page (latest-run-only); on completion the page shows the persisted results. A **run is never a report**: a row appears only on persisted success, so a cancel or failure removes nothing ([run-tracking.md](run-tracking.md)).
+The **Portfolio page** renders each holding's verdict — the **intrinsic** read (grade and sub-scores, conviction, outlook, targets, the bear/base/bull monitor) beside the **portfolio action** (action, target weight, sizing rationale), with financials and the what-changed line — alongside the portfolio roll-up, and shows not-rated positions with their reason ([interface.md](interface.md)). While the job ran, the run tracker replaced the page (latest-run-only); on completion the page shows the persisted results. A **run is never a report**: a row appears only on persisted success, so a cancel or failure removes nothing ([run-tracking.md](run-tracking.md)).
