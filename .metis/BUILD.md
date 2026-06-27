@@ -319,7 +319,11 @@ as-built; the rest remain planned):
   order, fail-soft on exhaustion. Model-chosen fetches are SSRF-guarded (no
   private/loopback hosts,
   bounded size/redirects, untrusted content) and every finding keeps its source
-  URL + timestamp. Per-item research consolidates with one shared **distillation
+  URL + timestamp. The web tool can additionally reach the user's own
+  paywalled subscriptions through an optional, health-tested **Connected
+  Sources** surface (in-app login → Keychain session, on the Schwab
+  credential rails) that is **never part of the execution gate**. Per-item
+  research consolidates with one shared **distillation
   primitive** — *distill one complete topic-tree → structured object* — a single
   pass by default, **map-reduce** (tier-1 per topic-tree → reduce) when it would
   overflow the consolidation call's input budget (orchestrator-chosen

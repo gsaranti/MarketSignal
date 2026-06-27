@@ -94,7 +94,11 @@ A local job is blocked unless the daemon is reachable and the configured roster 
 
 ### Web Research
 
-The suite's web-research tool uses a local SearXNG instance, with the existing Tavily credential as a fallback (see [web-research.md](web-research.md)). Settings hold the **SearXNG endpoint**; no key is required for the local instance, and the Tavily fallback reuses the credential already configured above.
+The suite's web-research tool uses a local SearXNG instance, with the existing Tavily credential as a fallback (see [web-research.md](web-research.md)). Settings hold the **SearXNG endpoint**; no key is required for the local instance, and the Tavily fallback reuses the credential already configured above. Settings also expose **source-registry overrides** — pinning a domain's evidence tier or adding it to the deny list over the suite's default source heuristics ([data-sources.md §Source registry and evidence tiers](data-sources.md#source-registry-and-evidence-tiers)); the registry is a thin override, so most domains need no entry.
+
+### Connected Sources (subscriptions)
+
+An **optional** feature for connecting the user's own paid subscriptions (WSJ, FT, The Economist, Morningstar, specialist research) so the web-research loop can reach paywalled content the public web can't ([web-research.md §Connected sources](web-research.md#connected-sources-authenticated-fetch)). Settings list each connected source with its **health state** (`connected` / `connected_but_thin` / `expired` / `unsupported`) and a connect / re-login control; the domain-scoped session material lives in the **macOS Keychain**, like the Schwab credentials, never in the SQLite settings store. **Connected Sources is never part of the execution gate** — a local job runs with none connected; a lapsed (`expired`) source is surfaced for re-login and treated as absent until refreshed, never blocking a run.
 
 ### Price Data
 

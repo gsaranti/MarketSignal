@@ -43,6 +43,52 @@ Because the model chooses what to fetch, fetching is treated as an untrusted ope
 - **Untrusted content.** Fetched page text is data, not instructions: it is inserted into the prompt as quoted evidence and never interpreted as a directive, so a page carrying injected instructions cannot redirect the analysis.
 - **Provenance.** Every research finding carries its **source URL and retrieval timestamp**, so a verdict or opportunity can be traced to what it was based on and when — feeding the run's audit record (see [portfolio-analysis.md](portfolio-analysis.md), [storage.md](storage.md)).
 
+## Source quality and evidence weighting
+
+The web loop reaches an unbounded set of domains, so the suite weighs *where evidence comes from*, not only *what it says*. This is the **engine-computes / model-interprets** spine applied to sourcing: the **app computes objective source signals** and the **model interprets content with those signals in view**, against the per-domain metadata in [data-sources.md §Source registry and evidence tiers](data-sources.md#source-registry-and-evidence-tiers).
+
+**The load-bearing rule: source quality informs, it never gates.** A low-tier or thinly-sourced finding **lowers conviction**; it does **not** remove a candidate or claim from consideration. This governs the **evidence tiers (0–5)** — a low tier weights down, never excludes; the **one exception is the explicit `deny` policy**, which drops junk that isn't evidence at all (SEO mills, AI-generated quote pages, PR-spam) at search-filter and fetch-gate ([data-sources.md §Source registry and evidence tiers](data-sources.md#source-registry-and-evidence-tiers)) — excluding a non-source isn't gating *on quality*, it is keeping spam out of the evidence base (**tiers grade, `deny` excludes, nothing between is gated**). This is deliberate and protects the job's edge — Trade Opportunities' whole value is surfacing **under-covered, early-inflection names no structured feed carries** ([trade-opportunities.md §The pipeline](trade-opportunities.md#the-pipeline)), and those names live in Tier-3/4 coverage by definition; gating discovery on source tier would systematically suppress exactly what the job hunts. The discipline mirrors the suite's existing stance — positioning held out of the grade until calibrated, the since-flagged read kept cap-only — quality is a **conviction input, never a survival gate**.
+
+**The evidence annotation, split by who can know it.** Each fetched document is annotated, and the split is strict:
+- **App-computed (deterministic):** `sourceTier` (from the registry / default heuristic), `extractionQuality` (0–1, how much real article body the readability pass recovered vs a thin paywall / JS stub), `recencyScore` (0–1, against the source's `freshnessSlaDays`), `primarySourceBonus`, and a paywall / JS-stub flag.
+- **Model-derived (judgment):** `claimSpecificity`, `contradictionFlag`, and which claim IDs a document supports — these are reasoning, so they stay model-side and are never dressed up as app-computed.
+
+The model sees the app's source-quality judgment **alongside** the text and weighs evidence accordingly — a Tier-0 filing outweighs a Tier-4 blog on a reported number, while a Tier-3 specialist outweighs a Tier-2 generalist on its own vertical (the `evidenceKinds` match).
+
+**Lane policy.** The same source is treated differently by lane:
+- **Discovery** — **soft preference**, never a hard floor: breadth is the point, so a promising lead from a low-tier source is still pursued, only weighted down.
+- **Per-candidate / per-holding validation** — **stricter weighting**: a name's verdict should rest on higher-tier corroboration, and a claim resting only on Tier-4/5 sources is flagged low-confidence (still surfaced, with the gap recorded — informing, not gating).
+- **Portfolio** leans to primary filings, company IR, transcripts, and material-event reporting; **Trade Opportunities** leans to specialist and value-chain sources. These are the per-route source strategies of [trade-opportunities-workflow.md §Step 3b](trade-opportunities-workflow.md#step-3b-model-led-hypothesis-research), now expressed through the registry's `evidenceKinds`.
+
+**Source-diversity / syndication caps.** Five outlets reprinting one Reuters wire are **one** independent source, not five. The loop collapses near-duplicate and same-canonical-origin hits so apparent corroboration can't be inflated by syndication — independence is counted by *origin*, not by *URL count*.
+
+**A disconfirming-fetch pass.** Beyond the existing bear case and adversarial passes ([trade-opportunities.md §The research method](trade-opportunities.md#the-research-method)), once a thesis is formed the loop spends one bounded pass searching specifically for **what would disprove it** — a disconfirming *fetch*, not just a disconfirming *prompt*. It is **spent from the existing per-item / per-route fetch + wall-clock budget, never added on top of the ceilings** ([§The research loop and context management](#the-research-loop-and-context-management)): a high-priority item *within* that budget that **fail-softs to a recorded gap (and lower conviction) when the budget is already exhausted**, so a thesis is tested against contrary evidence before it earns conviction without ever breaching the loop's hard bound.
+
+**Extraction telemetry.** The fetch layer tracks, per domain, how often it recovers full article text vs a thin paywall / JS stub (the same telemetry stance as the report's document-truncation tracking). This feeds two things: a domain's `extractionProfile` in the registry, and the **health test** that decides whether a connected subscription is actually yielding value (below) — so a source that renders poorly through a non-browser fetch is never silently trusted as if it did.
+
+## Connected sources (authenticated fetch)
+
+Much of the highest-value financial content is paywalled (WSJ, FT, The Economist, Morningstar, specialist research), and **the user's own subscription is the one way to reach it that even a paid search API can't** — Tavily can't read the user's WSJ login. **Connected Sources** is an **optional enrichment feature, never part of the execution gate**: a local job runs fine with none connected; connecting a source only deepens the evidence available.
+
+**The flow rides the Schwab credential rails** ([schwab-integration.md](schwab-integration.md)):
+1. The user adds a source (WSJ, FT, Economist, Morningstar, SemiAnalysis, …);
+2. the app opens a **dedicated in-app login window** for that domain (the user authenticates normally, including any SSO / 2FA);
+3. the app stores **only the minimum domain-scoped session material** in the **macOS Keychain** (a bearer credential, like the Schwab tokens — never in the SQLite settings store);
+4. the fetch layer then attaches that session for that domain, so an authenticated GET returns full article text instead of a paywall stub;
+5. the app runs a **source health test** and records a state.
+
+**Health-test states** — because authentication defeats the paywall but not client-side rendering, an authenticated source is only as good as its measured extraction yield:
+- **`connected`** — search finds it, fetch retrieves full text, readability recovers enough body;
+- **`connected_but_thin`** — authenticated but the content renders poorly through a non-browser fetch (JS-heavy), so it yields little; **down-ranked accordingly, not silently trusted**;
+- **`expired`** — the session lapsed; the source is surfaced for re-login (like Schwab's 7-day re-auth) and treated as absent until refreshed;
+- **`unsupported`** — the domain can't be made to yield through this fetch path at all.
+
+The state conditions the registry's `tier` / `lanePolicy` for that domain: a `connected_but_thin` source does not rank as a full Tier-2/3 source just because it is paid.
+
+**Spend guidance** (which subscriptions earn their keep — the same *pay-for-information-not-analysis* logic): **The Economist** for the macro / regime worldview; **Morningstar** when the portfolio holds funds / ETFs or for moat / fair-value context; **one or two vertical sources matched to actual exposure** (SemiAnalysis for semis / AI-infra, STAT / Endpoints for biotech, Platts / Argus / Wood Mackenzie for energy / materials); **FT or WSJ** if already subscribed — not assumed the highest marginal edge over primary data plus Reuters / AP-style factual reporting. A subscription is only worth its rank where the **health test shows real extraction yield**.
+
+Authenticated fetch holds the same safety posture as the rest of the loop ([§Safety and provenance](#safety-and-provenance)): SSRF guards still apply, fetched content is still data-not-instructions, and every finding still carries its source URL + timestamp. The one honest caveat is operational and outside the app's control — automated access to a subscription can run against a publisher's terms and sessions can be invalidated server-side, so Connected Sources is **best-effort enrichment**, never a guaranteed source.
+
 ## Failure posture
 
 Web research is **fail-soft**. A failed search, a timed-out fetch, or an empty result degrades the evidence for the item under study; it does not fail the run. The model proceeds with whatever evidence landed, and the thinner evidence is reflected in the analysis (for example, lower conviction), consistent with the suite's honest-degradation stance (see [local-models.md §Failure posture](local-models.md#failure-posture)).
