@@ -44,7 +44,7 @@ Market Signal
     ├── Report generation
     ├── Local analysis models (daemon endpoint + roster)
     ├── Web research (SearXNG endpoint)
-    ├── Investor profile (risk tolerance, horizon, tax, cash)
+    ├── Investor profile (risk tolerance, horizon, objective, tax, cash)
     ├── Charles Schwab connection
     └── Trade Opportunities discovery breadth (candidate research budget)
 ```

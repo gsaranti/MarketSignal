@@ -505,7 +505,7 @@ These were **premium-gated on the free tier** (HTTP 402 — see the report's not
 | --- | --- | --- |
 | `news/general-latest` | discovery | macro / market news feed → ignition-point input to the top-down theme scan |
 | `news/stock-latest` | discovery | ticker-tagged stock-news feed → dislocation / story surfacing for the theme scan |
-| `mergers-acquisitions-latest` | discovery | market-wide M&A feed → takeover-target / deal-flow candidates (per-symbol `mergers-acquisitions-search` is the per-candidate follow-up) |
+| `mergers-acquisitions-latest` | discovery | market-wide M&A feed → takeover-target / deal-flow candidates (the per-symbol `mergers-acquisitions-search` follow-up is **off-plan** → per-candidate M&A rides this market-wide feed + `sec-filings-8k`) |
 | `sec-filings-8k` | discovery (optional) | market-wide 8-K material-event feed → fresh-catalyst scan |
 
 **FMP — per-candidate validation (the narrowed set; shared per-symbol surface with Portfolio Analysis)**
@@ -526,15 +526,15 @@ These were **premium-gated on the free tier** (HTTP 402 — see the report's not
 | `price-target-consensus`, `price-target-summary` | per-candidate | street target level + trend — *evidence, not an engine input* |
 | `ratings-snapshot`, `ratings-historical` | per-candidate | FMP composite rating — opinion cross-check only |
 | `earnings` | per-candidate | next earnings date (catalyst) + actual-vs-estimate surprise / SUE history |
-| `earning-call-transcript`, `earning-call-transcript-dates`, `earnings-transcript-list` | per-candidate | management commentary — backlog / book-to-bill / guidance / supply-discipline language (grounds the research lane) |
-| `news/stock` (Search Stock News), `news/press-releases` (Search Press Releases) | per-candidate | symbol-scoped **structured news** + primary-source disclosures → seeds the narrative / sentiment and catalyst reads (then deep-read via the web tool) |
+| `earning-call-transcript`, `earning-call-transcript-dates`, `earnings-transcript-list` | per-candidate | **off-plan** → web-research loop: management commentary — backlog / book-to-bill / guidance / supply-discipline language (grounds the research lane) |
+| `news/stock` (Search Stock News), `news/press-releases` (Search Press Releases) | per-candidate | symbol-scoped **structured news** (`news/stock`, available) — **`news/press-releases` off-plan** → `sec-filings-8k` + web loop; seeds the narrative / sentiment and catalyst reads (then deep-read via the web tool) |
 | `insider-trading/search`, `insider-trading/statistics` | per-candidate | insider buy clusters + aggregate statistics |
-| `institutional-ownership/symbol-positions-summary`, `institutional-ownership/extract-analytics/holder` | per-candidate | 13F institutional flow — `extract-analytics/holder` adds the **holder-level** read (per-institution share / weight Δ, `isNew` / `isSoldOut`, avg price paid), the richer smart-money signal; the summary is the rollup |
+| `institutional-ownership/symbol-positions-summary`, `institutional-ownership/extract-analytics/holder` | per-candidate | **off-plan** → SEC EDGAR 13F (coarse) or omitted: the summary is the institutional-flow rollup; `extract-analytics/holder`'s **holder-level** read (per-institution share / weight Δ, `isNew` / `isSoldOut`, avg price paid) has **no fallback** and is dropped. Held out of the grade until calibrated regardless. |
 | `acquisition-of-beneficial-ownership` | per-candidate | SC 13D / 13G beneficial-ownership filings → **activist / large-stake accumulation** catalyst |
 | `senate-trades`, `house-trades` | per-candidate | congressional buys in the name |
 | `shares-float` | per-candidate | free float / liquidity → deterministic risk-tier + squeeze input |
 | `historical-employee-count`, `key-executives` | per-candidate (optional) | workforce trend (hiring / revenue-per-employee) + leadership roster → operating-efficiency & management read for the investor-judgment lens |
-| `mergers-acquisitions-search` | per-candidate | whether the name is acquirer or target (catalyst) |
+| `mergers-acquisitions-search` | per-candidate | **off-plan** → market-wide `mergers-acquisitions-latest` + `sec-filings-8k`: whether the name is acquirer or target (catalyst) |
 | `quote` | per-candidate | live quote (current price) |
 
 **FRED** — base `https://api.stlouisfed.org/fred`, `/series/observations` (the `series_id` doubles as the quote symbol). Fired once per run as shared context; the commodity set also seeds the commodity-cyclical discovery sleeve (a price turn surfaces names).

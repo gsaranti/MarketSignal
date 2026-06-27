@@ -115,7 +115,7 @@ unlocks three additive baseline signals (`docs/data-sources.md §Planned report
 enrichment`): economic-calendar **consensus + surprise** (layered onto FRED's
 schedule, fail-soft to names+dates), **historical sector/industry valuation +
 performance** (trailing-window P/E percentile/band + a cumulative-return trend),
-and **IPO/M&A froth** (a new baseline group → Step-3 count 12→13). All hold the
+and **IPO/M&A froth** (a new baseline group → Step-3 count 13→14). All hold the
 spine: the engine derives every number, only the compact derived read persists
 (`#[serde(default)]`), and none joins the level-delta engine (set-valued /
 trailing-window, like positioning). The only changes are the **calendar builder**
@@ -401,7 +401,8 @@ as-built; the rest remain planned):
   6g, action half at 7b; each maps to a real input-delta/aggregate or downgrades to a flagged
   self-correction). Funds take a reduced path (exposure tilt from ETF weightings; constituent
   holdings off-plan → N-PORT/dropped, a future **issuer-holdings adapter** planned;
-  fund-flavored ledger) and drop the house view past a **one-week freshness** window.
+  fund-flavored ledger). The **house view is freshness-gated for every holding** —
+  older than one week, it is dropped as a gap rather than fed stale.
 - **Trade Opportunities (designed).** Discovers candidates through three feeders —
   **model-led hypothesis research** (the edge: route planner → **hypothesis cards** tracing
   value-chain *economics* → a **hypothesis score** gating promotion *before* any ticker),

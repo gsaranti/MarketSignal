@@ -1,14 +1,16 @@
 # Job Execution
 
-The application generates Market Signal reports on demand, running the workflow
-directly on the user's machine. There is no automatic scheduler — a report is
-produced only when the user starts one. The user chooses the cadence: a report
-can be generated as often or as rarely as wanted (for example after a notable
-market development), and the analysis always frames the picture relative to the
-previous report rather than assuming a fixed interval.
+The application runs its work as **on-demand jobs** — the Market Signal Report
+plus the two local-suite jobs, Portfolio Analysis and Trade Opportunities —
+directly on the user's machine. There is no automatic scheduler; a job runs only
+when the user starts one. The user chooses the cadence (for example, generating a
+report after a notable market development), and each job frames its picture
+relative to its own previous run rather than assuming a fixed interval.
 
-Jobs are responsible for:
-- generating Market Signal reports
+The on-demand jobs are:
+- the **Market Signal Report** — the macro / market thesis (detailed below)
+- **Portfolio Analysis** — grading the user's holdings
+- **Trade Opportunities** — discovering new ideas
 
 ## The Market Signal Report Job
 
@@ -30,31 +32,36 @@ The end-to-end steps that run inside this job are defined in
 
 ## Job States
 
-A report job ends in one of these states:
+A job ends in one of these states:
 
-- **Successful** — the workflow completed and produced a report.
+- **Successful** — the workflow completed and produced its result (a report, or a Portfolio / Trade Opportunities run).
 - **Failed** — execution started but could not complete because required
   services, APIs, or model providers were unavailable, or because of API limits,
   token exhaustion, malformed responses, or model execution errors. See
   [Offline Behavior](#offline-behavior) and [Error Handling](#error-handling).
-- **Skipped** — a second execution was rejected because another report-generation
-  workflow was already running. See
+- **Skipped** — a second execution was rejected because another job was already
+  running (the single global run slot). See
   [Concurrent Job Protection](#concurrent-job-protection).
 - **Cancelled** — the user stopped a running execution from the run tracker
-  before it completed. A cancelled run produces no report and, unlike a failed
+  before it completed. A cancelled run produces no result and, unlike a failed
   run, raises no warning. See [run-tracking.md §Cancellation](run-tracking.md#cancellation).
 
-There is no *Missed* state: because reports are user-initiated rather than
-scheduled, a report is never "due" while unattended, so there is nothing to miss.
+There is no *Missed* state: because these jobs are user-initiated rather than
+scheduled, a job is never "due" while unattended, so there is nothing to miss.
+
+The two local-suite jobs are started from their own controls and gated
+separately, but share the lifecycle above (states, the global run slot, offline
+behavior, error handling); their end-to-end pipelines are specified in
+[portfolio-workflow.md](portfolio-workflow.md) and
+[trade-opportunities-workflow.md](trade-opportunities-workflow.md).
 
 ## Application Runtime
 
-Report generation runs only while the user has the application open and has
-started a job; there is no background processing. The application is an ordinary
-windowed app — closing the window quits it, and nothing runs when it is not open.
-A job that is in flight when the user quits is simply ended (it leaves no report,
-consistent with the run-is-not-a-report rule in
-[run-tracking.md](run-tracking.md)).
+A job runs only while the user has the application open and has started one;
+there is no background processing. The application is an ordinary windowed app —
+closing the window quits it, and nothing runs when it is not open. A job in
+flight when the user quits is simply ended (it leaves no result, consistent with
+the run-is-not-a-report rule in [run-tracking.md](run-tracking.md)).
 
 ## Offline Behavior
 
@@ -69,18 +76,22 @@ The application:
 - stores the failure state
 - displays a warning inside the Persistent Warning Area
 
-Network reachability is not checked before a run begins — a report is always
+Network reachability is not checked before a run begins — a job is always
 attempted, and an unreachable provider surfaces as a Failed job (with an
 immediate error to the user, since a run is always user-initiated) rather than a
-pre-run gate. The execution gate checks credential *presence*, not connectivity
-(see [configuration.md](configuration.md)).
+pre-run gate. Each job's execution gate checks credential *presence*, not
+connectivity (the report's gate is in [configuration.md](configuration.md); the
+local jobs' in [local-models.md](local-models.md) and [schwab-integration.md](schwab-integration.md)).
 
 ## Concurrent Job Protection
 
-Only one report-generation workflow may run at a time.
+Only one job may run at a time across the whole application. The Market Signal
+Report and the two local-suite jobs (Portfolio Analysis, Trade Opportunities)
+share a **single global run slot**, so they are mutually exclusive — matching the
+latest-run-only run tracker ([run-tracking.md](run-tracking.md)).
 
-If a report job is currently running and another execution is attempted, the
-second execution is skipped.
+If a job is currently running and another execution is attempted, the second
+execution is skipped.
 
 The application logs the skipped execution.
 
