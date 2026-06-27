@@ -242,7 +242,7 @@ Docs - https://www.sec.gov/edgar/sec-api-documentation
 
 SEC EDGAR is the **authoritative source for company filings and fundamentals** behind Portfolio Analysis (and candidate validation in Trade Opportunities): 10-K / 10-Q / 8-K submissions and the XBRL **company-facts** API for normalized financial-statement data. It is **keyless** (like BLS and CFTC), requiring only a declared User-Agent with contact info per the SEC's fair-access policy, and is rate-limited to ~10 requests/second. SEC supplies the raw statement data the deterministic financial-analysis engine ([portfolio-analysis.md](portfolio-analysis.md)) computes over; FMP remains for convenient normalized metrics and market-data signals. Authoritative filings reduce the suite's dependence on web-search summaries for the numbers that drive grades and targets.
 
-For Trade Opportunities, EDGAR is the **authoritative cross-check** behind the FMP working feed — the final grade / target numbers are reconciled against EDGAR filings and XBRL (compute-don't-guess), and 8-K filings remain a primary source. Positioning signals (insider, 13F, congressional) are sourced from FMP's structured, **symbol-keyed** endpoints rather than parsed from EDGAR's CIK-keyed filings, so **ticker→CIK resolution** (SEC's `company_tickers.json`; today only a hardcoded handful resolve) is a **non-blocking enhancement** — needed only to extend the SEC cross-check to arbitrary names — not a hard prerequisite.
+For Trade Opportunities, EDGAR is the **authoritative cross-check** behind the FMP working feed — the final grade / target numbers are reconciled against EDGAR filings and XBRL (compute-don't-guess), and 8-K filings remain a primary source. The symbol-keyed **insider and congressional** positioning signals come from FMP's structured endpoints rather than EDGAR's CIK-keyed filings, so **ticker→CIK resolution** (SEC's `company_tickers.json`; today only a hardcoded handful resolve) is a **non-blocking enhancement** — needed only to extend the SEC cross-check to arbitrary names — not a hard prerequisite. **Institutional 13F** is the exception: it is off-plan on the current FMP plan ([§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit)), and because EDGAR 13F is filer-keyed, a per-name read is only coarse and optional (often omitted) rather than a clean symbol-keyed call.
 
 ### FINRA (short interest)
 Docs - https://www.finra.org/finra-data/browse-catalog/equity-short-interest
@@ -404,14 +404,14 @@ Even on the paid FMP key, the suite **spreads its high-volume per-holding load a
 
 ### Portfolio Analysis — endpoint surface
 
-Every endpoint Portfolio Analysis ([portfolio-analysis.md](portfolio-analysis.md)) calls, by source, paralleling the report's per-source tables above. **Cardinality** is the load-bearing axis — it sets the per-run call budget: **per-holding** and **per-fund** calls scale with portfolio size (the budget driver), while **run-level** calls fire once and are shared across all holdings. All FMP paths are on the `https://financialmodelingprep.com/stable` base and run on the shared paid key.
+Every endpoint Portfolio Analysis ([portfolio-analysis.md](portfolio-analysis.md)) calls (including the conditional fallback paths, tagged *optional*), by source, paralleling the report's per-source tables above. **Cardinality** is the load-bearing axis — it sets the per-run call budget: **per-holding** and **per-fund** calls scale with portfolio size (the budget driver), while **run-level** calls fire once and are shared across all holdings. All FMP paths are on the `https://financialmodelingprep.com/stable` base and run on the shared paid key.
 
-**FMP** — *plan status per endpoint: see [§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit). On the current plan, transcripts, 13F institutional ownership, per-symbol M&A, and the ETF/mutual-fund holdings endpoints (`etf/holdings`, `etf/asset-exposure`, `funds/disclosure-*`) are blocked — the fund path degrades accordingly.*
+**FMP** — the per-holding / per-fund endpoints Portfolio Analysis calls on the current plan. *Plan-tier status — and the off-plan endpoints these official paths replaced, with their fallbacks — is recorded once in [§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit). Equity grading is fully covered; the fund path degrades, since constituent look-through is off-plan (SEC N-PORT optional, else dropped).*
 
 | Endpoint path | Cardinality | Portfolio Analysis use |
 | --- | --- | --- |
 | `profile` | per-holding | sector / industry / **beta** / description — classification + risk input |
-| `income-statement`, `balance-sheet-statement`, `cash-flow-statement` (+ `…-ttm`) | per-holding | core financial statements — engine fundamentals |
+| `income-statement` (+ `-ttm`), `balance-sheet-statement`, `cash-flow-statement` | per-holding | core financial statements — engine fundamentals (balance-sheet / cash-flow TTM derived from the 4 quarterly statements, not a separate call) |
 | `key-metrics`, `ratios` (+ `…-ttm`) | per-holding | valuation / quality / leverage / margin ratios |
 | `financial-scores` | per-holding | Altman Z + Piotroski → risk / quality forensic input |
 | `owner-earnings` | per-holding | owner earnings (cash to shareholders) for valuation |
@@ -424,19 +424,14 @@ Every endpoint Portfolio Analysis ([portfolio-analysis.md](portfolio-analysis.md
 | `dividends` | per-holding | yield, frequency, schedule — income / total-return grading |
 | `earnings` | per-holding | next earnings date + EPS / revenue estimate (catalyst); actual-vs-estimate surprise history |
 | `insider-trading/search`, `insider-trading/statistics` | per-holding | insider buys / sells + aggregate statistics |
-| `institutional-ownership/symbol-positions-summary` | per-holding | **off-plan** → SEC EDGAR 13F or omitted (positioning context, already held out of the grade) |
 | `senate-trades`, `house-trades` | per-holding | congressional trading in the name |
 | `stock-peers` | per-holding | peer set for relative valuation |
 | `shares-float` | per-holding | free float / liquidity → risk input |
-| `mergers-acquisitions-search` | per-holding | **off-plan** → market-wide `mergers-acquisitions-latest` + 8-K (acquirer/target catalyst) |
+| `mergers-acquisitions-latest` | run-level | market-wide M&A feed + 8-K (SEC EDGAR) → acquirer / target catalyst, matched per holding |
 | `revenue-product-segmentation`, `revenue-geographic-segmentation` | per-holding | revenue by product / geography — business mix, thematic exposure, what-changed attribution |
-| `earning-call-transcript`, `earning-call-transcript-dates` | per-holding | **off-plan** → web-research loop (management commentary — guidance / margins / demand / capex) |
 | `quote` | per-holding | live quote (current price) |
 | `etf/info` | per-fund | expense ratio, AUM, NAV, asset class, mandate |
-| `etf/holdings` | per-fund | **off-plan** → exposure tilt from sector/country weightings; constituent concentration via SEC N-PORT (optional) |
-| `etf/sector-weightings`, `etf/country-weightings` | per-fund | sector / country exposure |
-| `etf/asset-exposure` | per-equity (optional) | **off-plan** → dropped (was an optional reverse "which ETFs hold this name" cross-check, not the look-through source) |
-| `funds/disclosure-holders-latest`, `funds/disclosure`, `funds/disclosure-dates` | per-fund | **off-plan** → SEC N-PORT or degrade to NAV + profile + house-view (mutual-fund holdings) |
+| `etf/sector-weightings`, `etf/country-weightings` | per-fund | sector / country exposure → fund exposure tilt (the constituent look-through proxy) |
 
 **FRED** — base `https://api.stlouisfed.org/fred`, `/series/observations` (the `series_id` doubles as the quote symbol).
 
@@ -458,7 +453,7 @@ Materials-linked holdings reuse the suite's broader FRED commodity set (monthly 
 
 A fund whose underlying isn't among these contracts fail-softs to no positioning read.
 
-**Schwab / SEC EDGAR / Stooq / FINRA** — the account and keyless sources (full endpoint detail in their catalog entries under [The data sources](#the-data-sources)).
+**Schwab / SEC EDGAR / Stooq / FINRA / CBOE / web** — the account, keyless, sentiment, and research sources (full endpoint detail in their catalog entries under [The data sources](#the-data-sources) and in [web-research.md](web-research.md)).
 
 | Source · endpoint | Cardinality | Portfolio Analysis use |
 | --- | --- | --- |
@@ -466,8 +461,12 @@ A fund whose underlying isn't among these contracts fail-softs to no positioning
 | Schwab · `/marketdata/v1/chains` | per-holding (optionable equity) | option chains → options-activity signal (put/call, IV/skew) |
 | SEC EDGAR · submissions (10-K / 10-Q / 8-K) | per-holding | filings — authoritative cross-check + 8-K events |
 | SEC EDGAR · company-facts (XBRL) | per-holding | normalized statement data the engine computes over |
+| SEC EDGAR · 13F filings | run-level (optional) | coarse institutional-ownership backdrop — EDGAR 13F is filer-keyed (not symbol-keyed), so a per-name read is approximate and **often omitted**; held out of the grade until calibrated |
+| SEC EDGAR · N-PORT filings | per-fund (optional enrichment) | fund constituent holdings for concentration / look-through (heavy, ~60-day lag); else the fund degrades to NAV + profile + Schwab position data |
 | Stooq · daily OHLCV CSV | per-holding | deep price history → momentum / volatility / price-target scenarios |
 | FINRA · consolidated short-interest file | per-holding lookup (file fetched once / run) | short-interest level / trend / days-to-cover → risk / squeeze context |
+| CBOE · daily put/call statistics | run-level | venue-level options-sentiment backdrop (broad-market context, not a per-name signal) |
+| Web tool — keyless SearXNG | per-holding (research lane) | management commentary from earnings-call transcripts (IR / aggregator sites) + the per-holding research lane for signals with no structured feed ([web-research.md](web-research.md)) |
 
 ### Trade Opportunities — endpoint surface
 
@@ -477,7 +476,7 @@ Every endpoint Trade Opportunities ([trade-opportunities.md](trade-opportunities
 - **per-candidate** — scales with the **narrowed candidate set** and is the **budget driver**: the same per-symbol FMP / SEC / Stooq surface Portfolio Analysis spends per *holding*, here spent per *candidate*. The funnel exists to keep this set small.
 - **run-level** — fires **once** and is shared across all candidates: the macro / positioning / sentiment context, and the holdings list for the Step-8 cross-reference.
 
-All FMP paths are on the `https://financialmodelingprep.com/stable` base and run on the shared paid key. The **per-candidate** per-symbol rows are the same surface tabulated under [§Portfolio Analysis — endpoint surface](#portfolio-analysis--endpoint-surface) (fundamentals, the revision signal, positioning, segments, transcripts) — repeated here with their Trade-Opportunities use, re-tagged to candidate cardinality, and **minus the ETF / mutual-fund group** (the job hunts operating businesses by archetype, not funds) — **plus the discovery layer Portfolio Analysis never touches** (screener / peers / industry-classification, the structured news / event feeds, and a handful of richer per-candidate signals — growth, activist-stake filings). The `*-bulk` endpoints and holder-level 13F named in earlier drafts are **off-plan** ([§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit)).
+All FMP paths are on the `https://financialmodelingprep.com/stable` base and run on the shared paid key. The **per-candidate** per-symbol rows are the same surface tabulated under [§Portfolio Analysis — endpoint surface](#portfolio-analysis--endpoint-surface) (fundamentals, the revision signal, positioning, segments) — repeated here with their Trade-Opportunities use, re-tagged to candidate cardinality, and **minus the ETF / mutual-fund group** (the job hunts operating businesses by archetype, not funds) — **plus the discovery layer Portfolio Analysis never touches** (screener / peers / industry-classification, the structured news / event feeds, and a handful of richer per-candidate signals — growth, activist-stake filings).
 
 *Plan status per endpoint: see [§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit). On the current plan **every `*-bulk` endpoint is blocked**, so the universe-wide pre-scoring this layer assumed is gone — the discovery funnel is **redesigned** around `company-screener` + per-symbol scoring on a narrowed longlist, plus the model-led hypothesis-research lane (see [trade-opportunities.md](trade-opportunities.md)). The screener / taxonomy / movers / news-event / insider-latest feeders below all survive.*
 
@@ -499,23 +498,23 @@ The `*-bulk` universe-scoring endpoints this layer once leaned on are **off-plan
 
 These were **premium-gated on the free tier** (HTTP 402 — see the report's note that FMP's `news/*` feeds are premium) and become available on the suite's **paid** key. They are a **structured surfacing layer** — ticker-tagged, dated headlines + snippets + source URLs — that *complements*, and does not replace, the keyless SearXNG web-research loop ([web-research.md](web-research.md)): the feed surfaces the headline, the web tool deep-reads the article URL. They reuse the FMP credential, so they add no new dependency. The report's own news funnel (FMP Articles) is unchanged; these are suite-only feeders.
 
-*Plan status: **`news/press-releases-latest` is off-plan** ([§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit)) — primary-source disclosures come from `sec-filings-8k` + the web loop. `news/general-latest`, `news/stock-latest`, `mergers-acquisitions-latest`, and `sec-filings-8k` are available.*
+*Plan status: see [§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit); the feeds below are available on the suite's paid key. Primary-source disclosure catalysts come from `sec-filings-8k` + the web loop.*
 
 | Endpoint path | Cardinality | Trade Opportunities use |
 | --- | --- | --- |
 | `news/general-latest` | discovery | macro / market news feed → ignition-point input to the top-down theme scan |
 | `news/stock-latest` | discovery | ticker-tagged stock-news feed → dislocation / story surfacing for the theme scan |
-| `mergers-acquisitions-latest` | discovery | market-wide M&A feed → takeover-target / deal-flow candidates (the per-symbol `mergers-acquisitions-search` follow-up is **off-plan** → per-candidate M&A rides this market-wide feed + `sec-filings-8k`) |
+| `mergers-acquisitions-latest` | discovery + per-candidate | market-wide M&A feed → takeover-target / deal-flow candidates (discovery); also the per-candidate M&A catalyst read — whether a name is acquirer or target, matched per candidate + `sec-filings-8k` |
 | `sec-filings-8k` | discovery (optional) | market-wide 8-K material-event feed → fresh-catalyst scan |
 
 **FMP — per-candidate validation (the narrowed set; shared per-symbol surface with Portfolio Analysis)**
 
-*Plan status per endpoint: see [§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit). On the current plan the **transcript** endpoints (`earning-call-transcript*`), **13F** institutional ownership (`institutional-ownership/*`), **`mergers-acquisitions-search`**, and **`news/press-releases`** are blocked — covered by the web-research loop / SEC EDGAR / `sec-filings-8k` fallbacks recorded in the audit; the statement, scores, growth, revision, insider/activist/congressional, peers, float, segmentation, and quote endpoints are available (US-exchange / annual-period constraints noted there).*
+*These are the available per-symbol paths Trade Opportunities validates a candidate over. Plan-tier status, the off-plan per-symbol signals these rows omit, and the web-research-loop / SEC EDGAR / `sec-filings-8k` fallbacks that cover them are recorded in [§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit) — as are the US-exchange / annual-period constraints.*
 
 | Endpoint path | Cardinality | Trade Opportunities use |
 | --- | --- | --- |
 | `profile` | per-candidate | sector / industry / **beta** / description — archetype features + risk input |
-| `income-statement`, `balance-sheet-statement`, `cash-flow-statement` (+ `…-ttm`) | per-candidate | core statements — engine fundamentals + forensic divergences |
+| `income-statement` (+ `-ttm`), `balance-sheet-statement`, `cash-flow-statement` | per-candidate | core statements — engine fundamentals + forensic divergences (balance-sheet / cash-flow TTM derived from the 4 quarterly statements, not a separate call) |
 | `key-metrics`, `ratios` (+ `…-ttm`) | per-candidate | valuation / quality / leverage / margin ratios (archetype-weighted) |
 | `financial-scores` | per-candidate | Altman Z + Piotroski → forensic gate |
 | `owner-earnings`, `enterprise-values`, `discounted-cash-flow` | per-candidate | owner-earnings yield, EV multiples, DCF cross-check — archetype valuation lens |
@@ -526,15 +525,12 @@ These were **premium-gated on the free tier** (HTTP 402 — see the report's not
 | `price-target-consensus`, `price-target-summary` | per-candidate | street target level + trend — *evidence, not an engine input* |
 | `ratings-snapshot`, `ratings-historical` | per-candidate | FMP composite rating — opinion cross-check only |
 | `earnings` | per-candidate | next earnings date (catalyst) + actual-vs-estimate surprise / SUE history |
-| `earning-call-transcript`, `earning-call-transcript-dates`, `earnings-transcript-list` | per-candidate | **off-plan** → web-research loop: management commentary — backlog / book-to-bill / guidance / supply-discipline language (grounds the research lane) |
-| `news/stock` (Search Stock News), `news/press-releases` (Search Press Releases) | per-candidate | symbol-scoped **structured news** (`news/stock`, available) — **`news/press-releases` off-plan** → `sec-filings-8k` + web loop; seeds the narrative / sentiment and catalyst reads (then deep-read via the web tool) |
+| `news/stock` (Search Stock News) | per-candidate | symbol-scoped **structured news** → seeds the narrative / sentiment and catalyst reads, then deep-read via the web tool |
 | `insider-trading/search`, `insider-trading/statistics` | per-candidate | insider buy clusters + aggregate statistics |
-| `institutional-ownership/symbol-positions-summary`, `institutional-ownership/extract-analytics/holder` | per-candidate | **off-plan** → SEC EDGAR 13F (coarse) or omitted: the summary is the institutional-flow rollup; `extract-analytics/holder`'s **holder-level** read (per-institution share / weight Δ, `isNew` / `isSoldOut`, avg price paid) has **no fallback** and is dropped. Held out of the grade until calibrated regardless. |
 | `acquisition-of-beneficial-ownership` | per-candidate | SC 13D / 13G beneficial-ownership filings → **activist / large-stake accumulation** catalyst |
 | `senate-trades`, `house-trades` | per-candidate | congressional buys in the name |
 | `shares-float` | per-candidate | free float / liquidity → deterministic risk-tier + squeeze input |
 | `historical-employee-count`, `key-executives` | per-candidate (optional) | workforce trend (hiring / revenue-per-employee) + leadership roster → operating-efficiency & management read for the investor-judgment lens |
-| `mergers-acquisitions-search` | per-candidate | **off-plan** → market-wide `mergers-acquisitions-latest` + `sec-filings-8k`: whether the name is acquirer or target (catalyst) |
 | `quote` | per-candidate | live quote (current price) |
 
 **FRED** — base `https://api.stlouisfed.org/fred`, `/series/observations` (the `series_id` doubles as the quote symbol). Fired once per run as shared context; the commodity set also seeds the commodity-cyclical discovery sleeve (a price turn surfaces names).
@@ -568,10 +564,11 @@ Gold / silver remain FMP `GCUSD` / `SIUSD`; daily-cadence metals (copper futures
 | Schwab · `/marketdata/v1/chains` | per-candidate (optionable equity) | option chains → options-activity signal (put/call, IV/skew) |
 | SEC EDGAR · submissions (10-K / 10-Q / 8-K) | per-candidate | filings — authoritative cross-check + 8-K events (ticker→CIK a non-blocking enhancement) |
 | SEC EDGAR · company-facts (XBRL) | per-candidate | normalized statement data the engine cross-checks against |
+| SEC EDGAR · 13F filings | run-level (optional) | coarse institutional-flow backdrop — EDGAR 13F is filer-keyed (not symbol-keyed), so a per-name read is approximate and **often omitted**; held out of the grade until calibrated (holder-level deltas have no source and are dropped) |
 | Stooq · daily OHLCV CSV (equities) | per-candidate | deep price history → price-action confirmer (relative strength / base breakout), momentum / volatility, scenario targets |
 | Stooq · daily OHLCV CSV (futures, incl. copper) | run-level | daily commodity-price turn for the cyclical sleeve (complements the monthly IMF series) |
 | Stooq · daily OHLCV CSV (sector / market benchmark indices) | run-level (outcome learning) | sector- and market-relative forward-return benchmark for the Step-7 deterministic outcome labels and each carried-forward idea's continuous since-flagged read ([trade-opportunities.md §Outcome learning](trade-opportunities.md#outcome-learning-calibration)) |
 | FINRA · consolidated short-interest file | discovery (file fetched once / run) + per-candidate lookup | short-interest extremes screen — a **bearish-by-default** factor, a *conditional* squeeze candidate only with an inflecting metric + catalyst + breaking bear case (discovery); level / trend / days-to-cover per candidate |
 | CBOE · daily put/call statistics | run-level | venue-level options-sentiment backdrop (broad-market context, not a per-name signal) |
 | FMP · `fmp-articles` | discovery | keyless in-house, ticker-tagged commentary feeding the top-down theme & event scan (ignition points → exposed industries) — reuses the report's keyless adapter; no new credential. **GDELT is dropped** — its escalating rate-limit / IP-lockout makes it unreliable (the same reason the report job doesn't trust it) |
-| Web tool — **keyless SearXNG** | discovery (theme→names research loop) + per-candidate (validation loop) | the keyless local search / fetch / extract loop the orchestrator runs on a model's behalf — the theme/news search that lets the model **reason its way to names**, and the per-candidate research lane (signals with no structured feed: DRAM/NAND ASPs, supply discipline, moat/management scuttlebutt). **Discovery runs on SearXNG only — no Tavily, no GDELT** (a discovery feeder that's down fail-softs to fewer candidates); Tavily remains only the *per-candidate* web loop's degraded fallback when SearXNG is down ([web-research.md](web-research.md)), never a discovery dependency |
+| Web tool — **keyless SearXNG** | discovery (theme→names research loop) + per-candidate (validation loop) | the keyless local search / fetch / extract loop the orchestrator runs on a model's behalf — the theme/news search that lets the model **reason its way to names**, and the per-candidate research lane (signals with no structured feed: DRAM/NAND ASPs, supply discipline, moat/management scuttlebutt, and management commentary from earnings-call transcripts). **Discovery runs on SearXNG only — no Tavily, no GDELT** (a discovery feeder that's down fail-softs to fewer candidates); Tavily remains only the *per-candidate* web loop's degraded fallback when SearXNG is down ([web-research.md](web-research.md)), never a discovery dependency |
