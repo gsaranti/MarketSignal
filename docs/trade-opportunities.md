@@ -158,7 +158,7 @@ The fixed archetype / risk / horizon / status vocabularies keep the matrix stabl
 
 ## Signal inputs
 
-The job's signals are tiered by how they're sourced, mapping onto the engine / research split (full catalog in [data-sources.md](data-sources.md)). **The Market Signal Report's data-source logic is unaffected** — these are additive, suite-only feeds. **All FMP requests (the report and both local jobs) use one shared credential, now upgraded to the paid tier**; the report's existing calls behave identically on it (see [data-sources.md §Local Analysis Suite Sources](data-sources.md#local-analysis-suite-sources)).
+The job's signals are tiered by how they're sourced, mapping onto the engine / research split (full catalog in [data-sources.md](data-sources.md)). **The Market Signal Report's data-source logic is unaffected** — these are additive, suite-only feeds. **All FMP requests (the report and both local jobs) use one shared credential, now upgraded to the paid tier**; the report's existing calls behave identically on it (see [data-sources.md §Local analysis suite — shared sourcing](data-sources.md#local-analysis-suite--shared-sourcing)).
 
 - **Already built** — commodity positioning (CFTC COT) and per-stock options activity (Schwab chains).
 - **FMP paid tier — the broad working & discovery feed (deterministic engine):**
