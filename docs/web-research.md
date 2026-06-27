@@ -29,6 +29,8 @@ Search returns links; the tool then **fetches the top results and extracts reada
 
 When the local SearXNG instance is unreachable or returns nothing (for example, the user hasn't started it), the tool **falls back to Tavily**, the LLM-optimized search API the app already integrates for the report's research ([data-sources.md](data-sources.md)). Tavily's free tier is metered, so it is the degraded path, not the default — it keeps a local job useful when the local search backend is down rather than serving as the primary source.
 
+**One exception — the Trade Opportunities *discovery* lane runs on SearXNG only** (no Tavily fallback): candidate-finding research is breadth-seeking and best-effort, so if SearXNG is down it **fail-softs to fewer candidates** rather than spending the metered Tavily budget on a non-essential sweep ([trade-opportunities-workflow.md §Step 3b](trade-opportunities-workflow.md#step-3b-model-led-hypothesis-research)). The Tavily fallback still applies to the **per-candidate validation** loop, where a name's research should complete.
+
 ## Safety and provenance
 
 Because the model chooses what to fetch, fetching is treated as an untrusted operation:

@@ -362,10 +362,14 @@ as-built; the rest remain planned):
   objective, medium-to-high risk, cash treated as always available, no tax adjustment;
   user configuration deferred) — it frames the prescription, never which holdings or
   opportunities qualify. Trade
-  Opportunities **discovers** candidates by running research (a funnel: top-down
-  theme/event scans + bottom-up screens — estimate-revisions, surprises,
-  commodity-price turns, keyless positioning — *find* names; per-candidate validation
-  scores them), hunting in two modes (**early** = a leading operating metric inflecting
+  Opportunities **discovers** candidates through three feeders — **model-led hypothesis
+  research** (the edge: a route planner → **hypothesis cards** tracing value-chain
+  *economics* → adversarial passes → a **hypothesis score** that gates promotion *before*
+  any ticker), cheap **bottom-up structured feeders** (the screener *stratifies* the
+  universe, having no fundamental field; plus event/positioning feeds), and a
+  **carried-forward watchlist** (the persisted opportunity graph below) — then validates
+  per-name, computing the multi-factor composite **per-candidate** (FMP's `*-bulk`
+  universe-scoring endpoints are off-plan). It hunts in two modes (**early** = a leading operating metric inflecting
   before price/earnings/multiple; **continuation** = demand-visibility licensing a late
   entry) through a first-class **archetype** lens (secular-compounder / ai-infra /
   commodity-cyclical / disruptor / quality-compounder) that selects the signal weights +
@@ -378,11 +382,18 @@ as-built; the rest remain planned):
   investor-judgment, and case-study pattern — reconciled as **two tracks** (proven- vs
   emerging-economics) through one moat/management/price-asymmetry gate, with an inflecting
   **leading-metric hard gate** plus a valuation-vs-forward red-flag as the spine, and
-  breadth across **all market caps** (protected at the discovery funnel's waist by
-  deliberate diversity quotas — cap / feeder / archetype / theme). Each run also computes
+  breadth across **all market caps** — now protected **structurally**, by stratified
+  diversity quotas at the funnel waist (cap / feeder / archetype / theme), since the universe
+  can't be bulk-pre-scored. Each run also computes
   deterministic **outcome labels** on prior picks (return vs sector/market, drawdown,
   leading-metric continuation, a decision-tree failure mode) as durable learnings, feeding
   a forward-staged archetype-weight/gate **calibration** (early runs stay shadow/calibration).
+  Discovery is **stateful**: a persisted **opportunity graph** carries worthy-but-unpicked
+  names forward as a **watchlist** (app-enforced bar — named leading metric + mechanism +
+  falsifier + hypothesis score; metric re-checked by cost class each run; bounded by a
+  retention cap + carry-horizon), so a deferred name that quietly compounds isn't lost to
+  chance re-surfacing — replacing the earlier stateless re-discovery. GDELT is dropped;
+  discovery search is keyless **SearXNG only** (no Tavily).
   Model residency keeps
   the **122B + embedder** resident (the 122B fills every reasoning role by mode); a
   second small model (35B) is the benchmark-gated option, not a default — never two
@@ -401,8 +412,12 @@ as-built; the rest remain planned):
   the report's data-source logic is unchanged**, former free-tier gates no longer bind): fundamentals/ratios/segments, the revision
   signal (estimates + `grades-historical` + price-targets + upgrades/downgrades +
   surprises), **`financial-scores` (Altman Z + Piotroski) for the forensic gate**,
-  symbol-keyed **positioning** (insider, 13F, **congressional**), and screener/peers/**bulk**
-  endpoints driving the discovery funnel. **Short interest** keyless on FINRA; commodity
+  symbol-keyed **positioning** (insider, **congressional**, activist 13D/G), and the
+  screener/peers/industry-classification discovery layer. A **paid-plan tier audit**
+  (`data-sources.md`) found the `*-bulk` endpoints, earnings-call transcripts, 13F institutional,
+  fund-holdings, and press-release feeds **off-plan** — so the screener only *stratifies* (no
+  fundamental field), the composite is per-candidate, and those signals fall back to SEC
+  EDGAR / `sec-filings-8k` / the web-research loop. **Short interest** keyless on FINRA; commodity
   prices on FRED+Stooq; **SEC EDGAR retained as authoritative cross-check** (so ticker→CIK
   is a non-blocking enhancement, not a prerequisite). An **engine-computed price-action
   confirmer** (relative strength / multi-year base breakout from Stooq history) adjusts
@@ -420,11 +435,12 @@ as-built; the rest remain planned):
   post-research only via a typed, sourced `research_forward_assumption`** the engine
   recomputes (sub-scores never move), and a **what-changed audit** attributing every
   verdict move to a deterministic input-delta (external) or a flagged **self-correction**
-  — app-validated so it can't be faked. Funds take a reduced compute path (look-through
-  concentration from `etf/holdings`) with a fund-analog evidence floor; the house view is
+  — app-validated so it can't be faked. Funds take a reduced compute path — **exposure tilt
+  from ETF sector/country weightings** (constituent `etf/holdings` and mutual-fund disclosures
+  are off-plan → SEC N-PORT or dropped) with a fund-analog evidence floor; the house view is
   dropped past a **one-week freshness** window. Portfolio points the paid per-symbol feed
-  at *held* names plus its own adds (segment revenue, earnings-call transcripts, FINRA
-  short interest, dividends, ETF/fund endpoints).
+  at *held* names plus its own adds (segment revenue, FINRA
+  short interest, dividends, ETF weightings; earnings-call transcripts are off-plan → web).
 
 Both features are deliberately **prescriptive** (grades, actions, targets) — a
 departure from the report's no-buy/sell stance — applying the report's house view
