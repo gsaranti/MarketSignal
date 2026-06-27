@@ -44,9 +44,9 @@ Market Signal
     ├── Report generation
     ├── Local analysis models (daemon endpoint + roster)
     ├── Web research (SearXNG endpoint)
-    ├── Data providers (Finnhub key — optional)
     ├── Investor profile (risk tolerance, horizon, tax, cash)
-    └── Charles Schwab connection
+    ├── Charles Schwab connection
+    └── Trade Opportunities discovery breadth (candidate research budget)
 ```
 
 The operational behavior of each panel is defined in the relevant concern files:

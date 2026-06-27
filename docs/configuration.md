@@ -98,7 +98,7 @@ The suite's web-research tool uses a local SearXNG instance, with the existing T
 
 ### Price Data
 
-The suite's price and fundamentals load is spread across free providers to stay under FMP's daily cap (see [data-sources.md](data-sources.md)). **SEC EDGAR** and **Stooq** are keyless and need no configuration; **Finnhub** uses a free API key held in Settings (optional — without it, quotes fall back to FMP). Per-stock **option chains** come from the Schwab connection (below), and **CBOE**'s venue-level put/call backdrop is keyless — neither needs separate configuration.
+The suite's price and fundamentals load is spread across keyless providers (see [data-sources.md](data-sources.md)). **SEC EDGAR** and **Stooq** are keyless and need no configuration; live **quotes** come from the shared FMP key. Per-stock **option chains** come from the Schwab connection (below), and **CBOE**'s venue-level put/call backdrop is keyless — neither needs separate configuration.
 
 ### Charles Schwab Connection
 
@@ -106,4 +106,24 @@ Both local jobs source data from Charles Schwab via OAuth — Portfolio Analysis
 
 ### Investor Profile
 
-Portfolio Analysis is personalized by an **investor profile** the user configures: risk tolerance, time horizon, tax sensitivity, and available cash / buying power. The profile feeds grading, the action ladder, and the portfolio cash/deployment stance (see [portfolio-analysis.md](portfolio-analysis.md)) — for example, *add aggressively* is offered only when buying power supports it. Absent a profile, the suite falls back to a stated default posture.
+Both local jobs are personalized by an **investor profile**: risk tolerance, time horizon, objective, tax sensitivity, and cash posture. It shapes Portfolio Analysis's grading emphasis, action ladder, and cash/deployment stance, and Trade Opportunities' entry framing and conviction emphasis (see [portfolio-analysis.md](portfolio-analysis.md), [trade-opportunities.md](trade-opportunities.md)). The profile never changes *which* holdings grade well or *which* opportunities qualify — those are engine and research outputs — only how the prescription is framed for this investor.
+
+**For now the profile is a fixed default preset, not user-configured** (a configurable profile is deferred). The default posture:
+
+- **horizon — long-term.** The job favors durable multi-quarter / multi-year theses over short-term trades.
+- **objective — maximize profit.** Total return is the goal; no income or capital-preservation mandate is imposed.
+- **risk tolerance — medium-to-high.** Higher-risk cells and archetypes (disruptors, commodity cyclicals, smaller caps) are in scope, gated by the engine's forensic/risk discipline rather than by a conservative cap.
+- **cash — always available.** Buying power is treated as **unconstrained**: the user may hold cash in accounts the app can't see, so *add aggressively* and full-size entries are **never** gated on observed Schwab cash. (Concentration and risk limits still apply; only the cash constraint is lifted.)
+- **tax sensitivity — none.** No tax-lot or holding-period adjustment is applied to actions.
+
+These defaults are the stated posture the suite runs against until a configurable profile exists.
+
+### Trade Opportunities — Discovery Breadth
+
+Trade Opportunities is a discovery funnel: it screens the whole universe, then spends expensive per-candidate validation (deep local-model research plus per-symbol data) only on a narrowed set ([trade-opportunities-workflow.md §Step 4](trade-opportunities-workflow.md#step-4-candidate-consolidation)). Because that per-candidate work runs on a local reasoner, one run cannot validate every surfaced name — so a **research budget** caps how many candidates get the full treatment per run. Settings expose this budget as a **discovery-breadth control**: a generous default, raised for a more exhaustive (longer) run or lowered for a faster one.
+
+This is a **compute budget, not a quality cap**. At the point it applies nothing has been validated yet, so a name that doesn't fit the budget is **not rejected, only deferred** — and a genuinely worthy deferral (a real hypothesis + an identified leading metric) is **remembered**: written to the persisted **opportunity graph** as a watchlist node and re-checked every later run with its leading metric monitored, so a deferred name that quietly compounds is caught rather than lost to chance ([trade-opportunities.md §Discovery memory](trade-opportunities.md#discovery-memory-the-opportunity-graph)). (Only the *validated* opportunity matrix and this discovery graph carry forward through storage; a name not even worth watchlisting carries no state and is simply re-derivable by a later sweep.) The budget is always spent under the **diversity guardrails** (market-cap band / feeder / archetype / sector-theme), so a wider or narrower setting still can't collapse the funnel onto mega-cap momentum or one crowded theme. Crucially, the **final matrix has no output cap**: every candidate that clears the validation gates is listed, ranked by conviction ([trade-opportunities.md §The opportunity space](trade-opportunities.md#the-opportunity-space)) — the budget bounds only what gets *researched* per run, never how many *good, validated* ideas are shown.
+
+Two **discovery-memory** settings bound that watchlist so it can't grow without limit: a **watchlist retention cap** (the maximum number of carried-forward worthy-but-unpicked names kept in active monitoring) and a **carry horizon** (the maximum number of runs a hypothesis is monitored without its leading metric confirming before it is retired). Both have generous defaults; retired nodes leave active monitoring but stay in run history for outcome-learning ([trade-opportunities.md §Discovery memory](trade-opportunities.md#discovery-memory-the-opportunity-graph)).
+
+Portfolio Analysis has no equivalent setting: it grades a known holdings list and never screens the universe.

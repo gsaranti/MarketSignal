@@ -110,6 +110,25 @@ native week-over-week change), anchored on the *actual* elapsed interval
 since the prior snapshot, never an assumed week — that rides into the prompt
 alongside the live baseline.
 
+**Planned (paid-FMP report enrichment, spec'd not built).** Upgrading the shared
+FMP key to paid unlocks three additive baseline signals (`docs/data-sources.md
+§Planned report enrichment`): economic-calendar **consensus + realized surprise**
+(layered onto FRED's release schedule via a curated release→event map, fail-soft
+to today's names+dates), **historical sector/industry valuation + performance**
+(trailing-window P/E percentile + band, plus a cumulative-return trend accumulated
+from the performance endpoint's daily `averageChange`), and **IPO/M&A froth**
+(issuance/deal pace + a native recent-vs-prior trend, the way positioning carries
+its own change — a new baseline group, so the Step-3 group count moves 12→13). All three hold the spine: the engine derives every
+number, only the compact derived read persists (raw series discarded), new fields
+carry `#[serde(default)]`, and none joins the level-delta engine (set-valued /
+trailing-window, like positioning). The only existing logic that changes is the
+**calendar builder** (FRED-only → FRED+FMP join, fail-soft) and one **main-agent
+prompt** instruction that currently forbids over-time valuation reads (must be
+revised). Live-verified on the paid-key checkpoint. **True index breadth** — the
+fourth enrichment candidate — was evaluated and **ruled out**: FMP exposes
+constituent *lists* but no breadth metric, so a real breadth read would need a
+heavy per-constituent price fan-out; the movers group stays the breadth proxy.
+
 **Retention** is deliberately asymmetric and must be honored in deletion code:
 only the most recent **30 reports** are kept (deleting one cascades its Markdown,
 metadata, and vector *summary* row together — there is no HTML leg, since HTML is
@@ -137,9 +156,10 @@ pre-mount to avoid a first-paint flash.
   HTTP); the full series catalog is in `docs/data-sources.md`. Provider tiering
   is live-verified and load-bearing: FMP's free tier gates the dollar index,
   oil, gas, and the economic calendar behind premium, so those moved to FRED,
-  and the calendar carries **names + dates only** (no API serves US analyst
-  consensus free — consensus reaches the report through the agents' research
-  synthesis instead). Data honesty is a consistent stance: a stale FRED
+  and the calendar carries **names + dates only** today (no API serves US analyst
+  consensus *free*, so consensus reaches the report through the agents' research
+  synthesis — which the planned paid-FMP enrichment above narrows to a fallback
+  where FMP carries no estimate). Data honesty is a consistent stance: a stale FRED
   observation or an out-of-band FMP P/E aggregate **drops to a gap / `None`**
   rather than feeding a fabricated level into the baseline. The newest source,
   **CFTC** (keyless, like BLS), adds **Commitments-of-Traders positioning** — the
@@ -273,7 +293,8 @@ and a **narrow single-equity Portfolio slice** ships the first per-feature pipel
 end-to-end against a **fixture Schwab source** (offline) plus FMP + SEC + the local
 models (PR #45) — **full Portfolio (funds) and Trade Opportunities remain planned**.
 Full design lives in `docs/local-models.md`, `web-research.md`,
-`schwab-integration.md`, `portfolio-analysis.md`, and `trade-opportunities.md`. The
+`schwab-integration.md`, `portfolio-analysis.md`, `portfolio-workflow.md`, and
+`trade-opportunities.md`. The
 load-bearing decisions (the model layer and the narrow Portfolio pipeline are
 as-built; the rest remain planned):
 
@@ -287,11 +308,15 @@ as-built; the rest remain planned):
   configuration. Daemon supervision (`health_check` + roster probe) feeds an
   **independent local-suite gate** (its own `WarningKind::LocalModels`, separate from
   the cloud `validate` gate), and a `LocalEmbedder` reuses the existing `Embedder`
-  trait so `vector_memory` is unchanged. The intended roster — one frontier reasoner
-  (Qwen3.5-122B-A10B, thinking vs non-thinking mode) + a fast tier (Qwen3.5-35B-A3B)
-  + a local embedder — is configurable, and 128 GB co-residency stays
-  **benchmark-gated** (one brain in two modes, not two brains): the one forward item
-  in this layer.
+  trait so `vector_memory` is unchanged. The roster default is **settled**: one frontier reasoner
+  (Qwen3.5-122B-A10B) **plus the embedder stay resident**, and the 122B fills *every*
+  reasoning role — research/interpretation in thinking mode, distillation in
+  non-thinking — so co-residency of a second large model is sidestepped and a
+  holding's research passes then single distillation pay no model-swap cost. The fast tier
+  (Qwen3.5-35B-A3B) is **demoted to a benchmark-gated option**, reintroduced only if
+  distillation wall-clock is a measured bottleneck *and* a 122B+35B+embedder set
+  co-resides cleanly on-device. Roster is configurable; the roster never runs more
+  than one large reasoner.
 - **Per-job isolation (learnings only).** Each feature stores its own runs
   (last-N retention) and its own vector-memory partition; no job reads another's
   *learnings*. The Market Signal Report stays a read-only shared input, loaded
@@ -300,7 +325,12 @@ as-built; the rest remain planned):
 - **A cost-free web tool.** Self-hosted, keyless SearXNG for search plus a Rust
   fetch/readability-extract layer, with the existing Tavily as fallback; the
   orchestrator runs the tool, the model only requests it — holding the pure-stage
-  boundary. Model-chosen fetches are SSRF-guarded (no private/loopback hosts,
+  boundary. The per-item research loop is worked **one agenda topic at a time** —
+  each topic ≤3 research passes (root + ≤2 app-governed follow-ups, depth ≤2; a pass
+  is itself a bounded multi-turn tool loop) under a **per-item fetch+wall-clock budget**
+  that binds first (bounding the raw turns/fetches) and is spent in topic-priority
+  order, fail-soft on exhaustion. Model-chosen fetches are SSRF-guarded (no
+  private/loopback hosts,
   bounded size/redirects, untrusted content) and every finding keeps its source
   URL + timestamp.
 - **Holdings & options ingestion.** Schwab Trader API via an OAuth loopback
@@ -322,26 +352,95 @@ as-built; the rest remain planned):
   fixture Schwab + FMP + SEC + local models, offline-verified; the engine computes
   every number and the model only interprets; per-job `vector_memory` namespace
   partition added; live verdict-quality/runtime + FMP-tier validation is
-  hardware-gated on the M5) → **next: wire live Schwab OAuth** → full Portfolio
-  (funds) → Opportunities.
-- **Personalized & screened.** Portfolio grading/actions are personalized by a
-  configured investor profile (risk tolerance, horizon, tax, cash). Trade
-  Opportunities generates candidates from an FMP screen + research-surfaced names
-  (SearXNG is not a screener), and a cell may return nothing. Model residency
-  (122B + 35B + embedder) is gated on an on-device benchmark, with eviction /
-  hot-swap fallback.
+  hardware-gated on the M5) → **next: wire live Schwab OAuth** (+ deterministic
+  holdings-snapshot diff: prior-run snapshot vs current pull → per-position
+  new/increased/decreased/unchanged delta into each dossier, exited names surfaced in
+  the roll-up) → full Portfolio (funds) → Opportunities (archetype-aware two-mode
+  discovery on FMP's paid tier; ticker→CIK now an optional cross-check, not a blocker).
+- **Personalized & screened.** Both local jobs are personalized by an investor
+  profile that is, **for now, a fixed default preset** (long-term horizon, profit-max
+  objective, medium-to-high risk, cash treated as always available, no tax adjustment;
+  user configuration deferred) — it frames the prescription, never which holdings or
+  opportunities qualify. Trade
+  Opportunities **discovers** candidates through three feeders — **model-led hypothesis
+  research** (the edge: a route planner → **hypothesis cards** tracing value-chain
+  *economics* → adversarial passes → a **hypothesis score** that gates promotion *before*
+  any ticker), cheap **bottom-up structured feeders** (the screener *stratifies* the
+  universe, having no fundamental field; plus event/positioning feeds), and a
+  **carried-forward watchlist** (the persisted opportunity graph below) — then validates
+  per-name, computing the multi-factor composite **per-candidate** (FMP's `*-bulk`
+  universe-scoring endpoints are off-plan). It hunts in two modes (**early** = a leading operating metric inflecting
+  before price/earnings/multiple; **continuation** = demand-visibility licensing a late
+  entry) through a first-class **archetype** lens (secular-compounder / ai-infra /
+  commodity-cyclical / disruptor / quality-compounder) that selects the signal weights +
+  valuation lens, gated by a mandatory bear case, a narrative-vs-reality
+  (revisions-vs-multiple, with an operating-reality-vs-price fallback when coverage is too thin to read revisions) check, a **cross-lens contradiction check** folded into distillation+scoring (no extra model call; high-severity contradictions capped deterministically), and a forensic risk gate. A cell may return nothing.
+  Its **research method is itself load-bearing** (`trade-opportunities.md §The research
+  method`): worldview-first (a regime backbone reused from the house view + a forward
+  thematic map, traced *economically* — margin capture / bargaining power / capacity /
+  pricing power, not mere exposure), then five lenses — quant composite, value-creation, macro-thematic-fit,
+  investor-judgment, and case-study pattern — reconciled as **two tracks** (proven- vs
+  emerging-economics) through one moat/management/price-asymmetry gate, with an inflecting
+  **leading-metric hard gate** plus a valuation-vs-forward red-flag as the spine, and
+  breadth across **all market caps** — now protected **structurally**, by stratified
+  diversity quotas at the funnel waist (cap / feeder / archetype / theme), since the universe
+  can't be bulk-pre-scored. Each run also computes
+  deterministic **outcome labels** on prior picks (return vs sector/market, drawdown,
+  leading-metric continuation, a decision-tree failure mode) as durable learnings, feeding
+  a forward-staged archetype-weight/gate **calibration** (early runs stay shadow/calibration).
+  Discovery is **stateful**: a persisted **opportunity graph** carries worthy-but-unpicked
+  names forward as a **watchlist** (app-enforced bar — named leading metric + mechanism +
+  falsifier + hypothesis score; metric re-checked by cost class each run; bounded by a
+  retention cap + carry-horizon), so a deferred name that quietly compounds isn't lost to
+  chance re-surfacing — replacing the earlier stateless re-discovery. GDELT is dropped;
+  discovery search is keyless **SearXNG only** (no Tavily).
+  Model residency keeps
+  the **122B + embedder** resident (the 122B fills every reasoning role by mode); a
+  second small model (35B) is the benchmark-gated option, not a default — never two
+  large reasoners co-resident (see the model-layer bullet above).
 - **Deterministic finance, primary-source evidence.** Quantitative outputs —
   sub-scores, risk-tier assignment, valuation/quality/momentum/risk metrics, and
   scenario price targets (methodology exposed) — are computed by a Rust
   financial-analysis engine over **FMP plus keyless SEC EDGAR** (10-K/Q/8-K +
   XBRL company facts); the model interprets, never invents numbers. High-volume
-  price/OHLCV is dispersed to **keyless Stooq** (deep history) and **Finnhub**
-  (quotes) to keep the report and both local jobs under FMP's ~250/day free cap,
-  with FMP kept for its low-volume niche (movers, earnings calendar, screener,
+  **price history** stays on **keyless Stooq** (multi-decade depth — the input the
+  engine's price-action confirmer and momentum/volatility reads need); live **quotes**
+  come from FMP, and the dispersal is load-relief on the **paid** shared FMP key, not
+  free-cap avoidance.
+  **Trade Opportunities widens the signal set on FMP's paid tier** (the suite's one
+  paid dependency; **one shared FMP key for the report + both jobs, upgraded to paid —
+  the report's data-source logic is unchanged**, former free-tier gates no longer bind): fundamentals/ratios/segments, the revision
+  signal (estimates + `grades-historical` + price-targets + upgrades/downgrades +
+  surprises), **`financial-scores` (Altman Z + Piotroski) for the forensic gate**,
+  symbol-keyed **positioning** (insider, **congressional**, activist 13D/G), and the
+  screener/peers/industry-classification discovery layer. A **paid-plan tier audit**
+  (`data-sources.md`) found the `*-bulk` endpoints, earnings-call transcripts, 13F institutional,
+  fund-holdings, and press-release feeds **off-plan** — so the screener only *stratifies* (no
+  fundamental field), the composite is per-candidate, and those signals fall back to SEC
+  EDGAR / `sec-filings-8k` / the web-research loop. **Short interest** keyless on FINRA; commodity
+  prices on FRED+Stooq; **SEC EDGAR retained as authoritative cross-check** (so ticker→CIK
+  is a non-blocking enhancement, not a prerequisite). An **engine-computed price-action
+  confirmer** (relative strength / multi-year base breakout from Stooq history) adjusts
+  conviction — a confirmer, not a trigger. DRAM/NAND ASPs + supply discipline have no feed
+  and ride the research loop.
+  With FMP kept for its low-volume niche (movers, earnings calendar, screener,
   sector/industry P/E). An **evidence
   floor** returns `insufficient-evidence` (not a low-conviction guess) when data
   is missing/stale/conflicting. Long per-holding jobs **checkpoint and resume**,
   and early runs are treated as **shadow/calibration** before outputs are trusted.
+  Portfolio's per-holding design is now fully specified (`portfolio-workflow.md` is the
+  Type-tagged control flow): a **three-layer engine** (grade core from fundamentals +
+  price + forensics; a conviction layer of revision / narrative-vs-reality; positioning
+  context held out of the grade until calibrated), forward targets **refinable
+  post-research only via a typed, sourced `research_forward_assumption`** the engine
+  recomputes (sub-scores never move), and a **what-changed audit** attributing every
+  verdict move to a deterministic input-delta (external) or a flagged **self-correction**
+  — app-validated so it can't be faked. Funds take a reduced compute path — **exposure tilt
+  from ETF sector/country weightings** (constituent `etf/holdings` and mutual-fund disclosures
+  are off-plan → SEC N-PORT or dropped) with a fund-analog evidence floor; the house view is
+  dropped past a **one-week freshness** window. Portfolio points the paid per-symbol feed
+  at *held* names plus its own adds (segment revenue, FINRA
+  short interest, dividends, ETF weightings; earnings-call transcripts are off-plan → web).
 
 Both features are deliberately **prescriptive** (grades, actions, targets) — a
 departure from the report's no-buy/sell stance — applying the report's house view
