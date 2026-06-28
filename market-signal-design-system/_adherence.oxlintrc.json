@@ -1,0 +1,239 @@
+{
+  "plugins": [
+    "react",
+    "import"
+  ],
+  "rules": {
+    "react/forbid-elements": [
+      "warn",
+      {
+        "forbid": []
+      }
+    ],
+    "no-restricted-imports": [
+      "warn",
+      {
+        "patterns": [
+          {
+            "group": [
+              "components/**",
+              "ui_kits/market_signal_desktop/**"
+            ],
+            "message": "Import design-system components from 'index.js', not component internals."
+          }
+        ]
+      }
+    ],
+    "no-restricted-syntax": [
+      "warn",
+      {
+        "selector": "Literal[value=/#[0-9a-fA-F]{3,8}\\b/]",
+        "message": "Raw hex color — use a design-system color token via var()."
+      },
+      {
+        "selector": "Literal[value=/\\b\\d+px\\b/]",
+        "message": "Raw px value — use a design-system spacing token via var()."
+      },
+      {
+        "selector": "Literal[value=/font-family\\s*:\\s*(?!['\\\"]?(?:Source Serif 4|Public Sans|IBM Plex Mono))/i]",
+        "message": "Font not provided by the design system. Available: Source Serif 4, Public Sans, IBM Plex Mono."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='DirectionalValue'] > JSXAttribute > JSXIdentifier[name!=/^(?:dir|children|size|style|key|ref|className|style|children)$/]",
+        "message": "<DirectionalValue> doesn't accept that prop. Declared props: dir, children, size, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='DirectionalValue'] > JSXAttribute[name.name='dir'] > Literal[value!=/^(?:up|down|flat)$/]",
+        "message": "<DirectionalValue> dir must be one of 'up' | 'down' | 'flat'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='GradeChip'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|size|style|key|ref|className|style|children)$/]",
+        "message": "<GradeChip> doesn't accept that prop. Declared props: value, size, style."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='GradeChip'] > JSXAttribute[name.name='size'] > Literal[value!=/^(?:sm|md|lg)$/]",
+        "message": "<GradeChip> size must be one of 'sm' | 'md' | 'lg'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='KeyFigureItem'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|value|sans|key|ref|className|style|children)$/]",
+        "message": "<KeyFigureItem> doesn't accept that prop. Declared props: label, value, sans."
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": [
+        "**/index.js"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    }
+  ],
+  "x-omelette": {
+    "components": {
+      "DirectionalValue": {
+        "replaces": []
+      },
+      "GradeChip": {
+        "replaces": []
+      },
+      "KeyFigureItem": {
+        "replaces": []
+      }
+    },
+    "tokens": [
+      "--accent",
+      "--accent-press",
+      "--accent-soft",
+      "--ana-down",
+      "--ana-down-fill",
+      "--ana-flat",
+      "--ana-flat-fill",
+      "--ana-mid",
+      "--ana-up",
+      "--ana-up-fill",
+      "--border",
+      "--border-accent",
+      "--border-soft",
+      "--dur-arrive",
+      "--dur-fast",
+      "--ease",
+      "--font-mono",
+      "--font-sans",
+      "--font-serif",
+      "--grade-a-bg",
+      "--grade-a-tx",
+      "--grade-b-bg",
+      "--grade-b-tx",
+      "--grade-c-bg",
+      "--grade-c-tx",
+      "--grade-d-bg",
+      "--grade-d-tx",
+      "--grade-f-bg",
+      "--grade-f-tx",
+      "--hairline",
+      "--hairline-soft",
+      "--ink",
+      "--ink-2",
+      "--ink-3",
+      "--lh-display",
+      "--lh-prose",
+      "--lh-ui",
+      "--measure",
+      "--measure-wide",
+      "--paper",
+      "--paper-edge",
+      "--paper-soft",
+      "--radius",
+      "--radius-sm",
+      "--s-1",
+      "--s-10",
+      "--s-11",
+      "--s-12",
+      "--s-2",
+      "--s-3",
+      "--s-4",
+      "--s-5",
+      "--s-6",
+      "--s-7",
+      "--s-8",
+      "--s-9",
+      "--signal-down",
+      "--signal-up",
+      "--t-body",
+      "--t-caption",
+      "--t-display",
+      "--t-display-2",
+      "--t-h1",
+      "--t-h2",
+      "--t-h3",
+      "--t-prose-sm",
+      "--t-ui",
+      "--t-ui-sm",
+      "--track-caption",
+      "--track-display",
+      "--track-prose",
+      "--track-ui"
+    ],
+    "tokenKinds": {
+      "--paper": "color",
+      "--paper-soft": "color",
+      "--paper-edge": "color",
+      "--ink": "color",
+      "--ink-2": "color",
+      "--ink-3": "color",
+      "--hairline": "color",
+      "--hairline-soft": "color",
+      "--accent": "color",
+      "--accent-press": "color",
+      "--accent-soft": "color",
+      "--signal-up": "color",
+      "--signal-down": "color",
+      "--ana-up": "color",
+      "--ana-down": "color",
+      "--ana-flat": "color",
+      "--ana-mid": "color",
+      "--ana-up-fill": "color",
+      "--ana-down-fill": "color",
+      "--ana-flat-fill": "color",
+      "--grade-a-tx": "color",
+      "--grade-a-bg": "color",
+      "--grade-b-tx": "color",
+      "--grade-b-bg": "color",
+      "--grade-c-tx": "color",
+      "--grade-c-bg": "color",
+      "--grade-d-tx": "color",
+      "--grade-d-bg": "color",
+      "--grade-f-tx": "color",
+      "--grade-f-bg": "color",
+      "--font-serif": "font",
+      "--font-sans": "font",
+      "--font-mono": "font",
+      "--t-display": "spacing",
+      "--t-display-2": "spacing",
+      "--t-h1": "spacing",
+      "--t-h2": "spacing",
+      "--t-h3": "spacing",
+      "--t-body": "spacing",
+      "--t-prose-sm": "spacing",
+      "--t-ui": "spacing",
+      "--t-ui-sm": "spacing",
+      "--t-caption": "spacing",
+      "--lh-display": "other",
+      "--lh-prose": "other",
+      "--lh-ui": "other",
+      "--track-prose": "spacing",
+      "--track-display": "spacing",
+      "--track-ui": "spacing",
+      "--track-caption": "spacing",
+      "--s-1": "spacing",
+      "--s-2": "spacing",
+      "--s-3": "spacing",
+      "--s-4": "spacing",
+      "--s-5": "spacing",
+      "--s-6": "spacing",
+      "--s-7": "spacing",
+      "--s-8": "spacing",
+      "--s-9": "spacing",
+      "--s-10": "spacing",
+      "--s-11": "spacing",
+      "--s-12": "spacing",
+      "--radius": "radius",
+      "--radius-sm": "radius",
+      "--border": "color",
+      "--border-soft": "color",
+      "--border-accent": "color",
+      "--dur-fast": "other",
+      "--dur-arrive": "other",
+      "--ease": "other",
+      "--measure": "spacing",
+      "--measure-wide": "spacing"
+    },
+    "fontFamilies": [
+      "IBM Plex Mono",
+      "Public Sans",
+      "Source Serif 4"
+    ]
+  }
+}

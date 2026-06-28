@@ -200,7 +200,12 @@ pre-mount to avoid a first-paint flash.
   block on anything malformed. The `chart` block is the *only* way a chart enters
   a report — the app layer never injects one — keeping faith with the
   agents-emit-Markdown / frontend-renders spine. All UI is built against the
-  design system in `market-signal-design-system/`.
+  design system in `market-signal-design-system/`, which defines **two
+  registers** — the report's **reading register** (serif, monochrome, unchanged)
+  and a denser, instrument-grade **analytical register** (mono-tabular numerics +
+  a scoped, desaturated directional/grade palette, analytical-surfaces only) that
+  the local-suite surfaces (Portfolio, Trade Opportunities) adopt as they are
+  built; shared chrome bridges the two.
 
 ## Runtime, observability & failure posture
 

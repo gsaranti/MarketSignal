@@ -35,7 +35,7 @@ A report's Markdown may embed a small chart — a fenced code block tagged `char
 
 Rendering is **fail-soft**: a malformed or unrenderable block falls back to its raw code block and never breaks the surrounding report. The `chart` block is the only way a chart enters a report — the agent emits it as part of its Markdown; the application layer never injects one.
 
-The agent-facing JSON shape and the authoring rules the agent is given (series count, one `emphasis`, `categories`) live in the main-agent prompt (`src-tauri/src/model_agent.rs`); the renderer `src/renderChart.ts` is the authoritative validator and the source of truth for what renders versus falls back — it enforces some bounds the prompt does not state (e.g. the per-series point-count limits). Chart styling extends the design system's chart register (`market-signal-design-system/project/colors_and_type.css`, `.prose .chart-*`). These remain the sources of truth — this note records the convention, not its schema.
+The agent-facing JSON shape and the authoring rules the agent is given (series count, one `emphasis`, `categories`) live in the main-agent prompt (`src-tauri/src/model_agent.rs`); the renderer `src/renderChart.ts` is the authoritative validator and the source of truth for what renders versus falls back — it enforces some bounds the prompt does not state (e.g. the per-series point-count limits). Chart styling extends the design system's chart register (`market-signal-design-system/colors_and_type.css`, `.prose .chart-*`). These remain the sources of truth — this note records the convention, not its schema.
 
 ## Standard Report Structure
 

@@ -8,7 +8,11 @@ from the directional language in the brief (no codebase was provided).
 | View | File | Notes |
 | --- | --- | --- |
 | Latest Report | `LatestReport.jsx` | The loosest surface. One readable column, 8px baseline, serif body, hairline-ruled watchlist, retrospective callout, three-voice stress test, restrained yield chart. |
-| Recent Reports sidebar | `Sidebar.jsx` | Dense rows, hairline separators, current item has a 2px accent leading edge. |
+| Portfolio Analysis | `Portfolio.jsx` | *Analytical register.* Two-step trigger (Pull holdings → Run analysis), key-figure strip, controlled-rich holding cards (full / reduced ETF / not-rated / insufficient-evidence variants, thesis-anchored with graceful overflow), and a whole-book roll-up & construction panel. |
+| Trade Opportunities | `TradeOpportunities.jsx` | *Analytical register.* The 3×3 risk×horizon matrix, opportunity cards (directional thesis, prominent leading metric, since-flagged sparkline, honest empty cells), shadow banner, calibration scorecard. |
+| Analytical primitives | `Analytical.jsx` | Shared: directional value token, grade chip/scale, conviction meter, key-figure strip, restrained sparkline, methodology + reveal disclosures, card shell. |
+| Run tracker | `RunTracker.jsx` | The one leaveable run tracker (not a modal). Per-step / per-holding / per-cell progress, streamed output, cancel; the job lives in the footer and keeps going when you leave. |
+| Recent Reports sidebar | `Sidebar.jsx` | The **shared-history** sidebar. Dense rows, hairline separators, 2px accent leading edge on the current item. Content swaps per feature: report issues / Portfolio runs / TO runs. |
 | Research Inbox | `ResearchInbox.jsx` | User-supplied PDFs and notes. Dense single-column list. |
 | Settings | `Settings.jsx` | The tightest surface. Single-column form, label above field, no decorative grouping cards. |
 | Persistent warning area | `WarningBar.jsx` | Always-visible row. No icon, no color flag — the words are the alert. |

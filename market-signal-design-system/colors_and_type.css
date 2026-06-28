@@ -10,17 +10,9 @@
      - IBM Plex Mono    (optional, for very dense numeric tables)
    ========================================================================== */
 
-/* Fonts are self-hosted locally by the consuming app (see src/main.ts, which
-   imports the @fontsource weight files) to honor Market Signal's local-first
-   constraint. The previous remote Google Fonts @import was removed because it
-   fetched typefaces over the network on every launch. */
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 :root {
-  /* Tells the webview to render native chrome (scrollbars, text selection, form
-     controls) for the light surface — without this it follows the OS appearance
-     and can mismatch the app's theme. Paired with `color-scheme: dark` below. */
-  color-scheme: light;
-
   /* --- Colors ------------------------------------------------------------- */
 
   /* Surfaces — warm uncoated stock */
@@ -47,6 +39,35 @@
   --signal-up:    var(--ink);
   --signal-down:  var(--ink);
 
+  /* --- Analytical register palette ---------------------------------------
+     CONFINED to Portfolio + Trade Opportunities. Never in the report, never
+     in generic chrome. A small DESATURATED palette, unified: the SAME tokens
+     serve directional (up/down/flat), the grade scale (A->F), and conviction.
+     Desaturated to match oxblood's restraint -- it must never read as a
+     trading-app green. All values WCAG AA on their surface (notes below). */
+
+  /* Directional pair + neutral mid (the spine). On --paper:
+     up 6.35:1 · down 9.47:1 · flat 4.93:1 — all AA as text. */
+  --ana-up:      #2E6049;   /* muted pine green — gains / above / top grades */
+  --ana-down:    #6E2230;   /* oxblood (= --accent) — losses / below / low grades */
+  --ana-flat:    #6F6657;   /* neutral warm mid — unchanged / middle grades */
+  --ana-mid:     #6F6657;   /* alias: the neutral spine tone */
+
+  /* Faint directional fills — for the rare small tint behind a value/cell.
+     Just-perceptible against paper; pair with the text tokens above. */
+  --ana-up-fill:   #E2E9DC;
+  --ana-down-fill: #EFDCDA;
+  --ana-flat-fill: #ECE6D5;
+
+  /* Grade scale — five discrete tonal steps across the unified palette
+     (green -> olive -> neutral -> brick -> oxblood). Each `-tx` is AA on its
+     `-bg` tint (5.3–8.2:1 light). Chips are hairline/flat, never glossy. */
+  --grade-a-tx: #2E6049;  --grade-a-bg: #E2E9DC;   /* A — 5.86:1 */
+  --grade-b-tx: #46662F;  --grade-b-bg: #E7E8D7;   /* B — 5.28:1 */
+  --grade-c-tx: #6F6657;  --grade-c-bg: #ECE6D5;   /* C — 4.54:1 */
+  --grade-d-tx: #8A4232;  --grade-d-bg: #EEE0D4;   /* D — 5.59:1 */
+  --grade-f-tx: #6E2230;  --grade-f-bg: #EFDCDA;   /* F — 8.23:1 */
+
   /* --- Type --------------------------------------------------------------- */
 
   --font-serif:   "Source Serif 4", "Source Serif Pro", Georgia, "Times New Roman", serif;
@@ -65,9 +86,9 @@
   --t-ui-sm:     13px;
   --t-caption:   11px;   /* the only place uppercase is allowed */
 
-  --lh-display: 1.18;
-  --lh-prose:   1.55;
-  --lh-ui:      1.4;
+  --lh-display: 1.18; /* @kind other */
+  --lh-prose:   1.55; /* @kind other */
+  --lh-ui:      1.4;  /* @kind other */
 
   /* Tracking — tight at body, neutral at UI, opened only at 11px caption */
   --track-prose:    -0.006em;
@@ -99,9 +120,9 @@
   --border-accent: 2px solid var(--accent);
 
   /* --- Motion ------------------------------------------------------------ */
-  --dur-fast:   120ms;  /* state changes */
-  --dur-arrive: 200ms;  /* a new report arriving in the sidebar */
-  --ease:       cubic-bezier(0.4, 0.0, 0.2, 1);
+  --dur-fast:   120ms; /* @kind other */ /* state changes */
+  --dur-arrive: 200ms; /* @kind other */ /* a new report arriving in the sidebar */
+  --ease:       cubic-bezier(0.4, 0.0, 0.2, 1); /* @kind other */
 
   /* --- Reading column ---------------------------------------------------- */
   --measure: 64ch;       /* 64–72 characters wide */
@@ -118,8 +139,6 @@
 /* Dark mode — graphite, not pure black; same desaturated accent, lifted. */
 :root[data-theme="dark"],
 .theme-dark {
-  color-scheme: dark;        /* native chrome matches the dark surface */
-
   --paper:        #1B1814;
   --paper-soft:   #252119;
   --paper-edge:   #2E281E;
@@ -135,6 +154,27 @@
   --accent-press: #C77384;
   --accent-soft:  #8F4452;
   --accent-text:  #CE8090;   /* lifted oxblood for accent TEXT only — clears WCAG AA (4.5:1) on dark surfaces; fills/rings keep --accent */
+
+  /* Analytical register — lifted for graphite. Desaturated, never neon.
+     On --paper-dk: up 6.50:1 · down 3.78:1 · flat 5.62:1. The down/oxblood
+     tone matches the system's existing --accent-dk and meets AA at the
+     bold/large sizes the analytical register uses for grades and deltas. */
+  --ana-up:      #6FA98A;   /* lifted sage */
+  --ana-down:    #B0596A;   /* oxblood-dk (= --accent) */
+  --ana-flat:    #9C9078;   /* lifted neutral warm mid */
+  --ana-mid:     #9C9078;
+
+  --ana-up-fill:   #23302A;
+  --ana-down-fill: #2E1F20;
+  --ana-flat-fill: #252119;
+
+  /* Grade scale — dark. `-tx` AA on `-bg` (5.0–5.8:1; F is 3.36:1, AA at the
+     bold/large grade-chip size). */
+  --grade-a-tx: #6FA98A;  --grade-a-bg: #23302A;
+  --grade-b-tx: #93AE73;  --grade-b-bg: #272D20;
+  --grade-c-tx: #A89A82;  --grade-c-bg: #252119;
+  --grade-d-tx: #CB8A6F;  --grade-d-bg: #2E241E;
+  --grade-f-tx: #B0596A;  --grade-f-bg: #2E1F20;
 }
 
 /* =============================================================================
@@ -527,17 +567,6 @@ html, body {
 }
 .btn-ghost:hover  { color: var(--ink); background: var(--paper-soft); }
 
-/* Disabled — every variant drops out of emphasis into a muted, inert control:
-   an inset-well fill, low-contrast ink, hairline edge, not-allowed cursor. On
-   the macOS WebKit target a disabled button receives no hover, so the variant
-   hover rules above never fight this one. */
-.btn:disabled {
-  cursor: not-allowed;
-  background: var(--paper-edge);
-  color: var(--ink-3);
-  border-color: var(--hairline);
-}
-
 .btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -638,17 +667,182 @@ a.chrome-link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .dir-flat::before { content: "·"; margin-right: 4px; color: var(--ink-3); }
 
 /* ---- Print + selection ---- */
-/* Paged-media (print → PDF) surface. The system previously defined no print
-   surface; this records it. Reports get a --print-page-margin (2cm) margin on
-   the left and right of every page, plus a top margin on the first page —
-   applied as padding on the report article, NOT via @page. @page margins are
-   unusable here: WebKit's print-to-PDF path drops overflow content when an
-   @page margin shrinks page capacity enough to require another page (it fails
-   to create the page). The cost of the padding workaround is that interior
-   pages have no top/bottom margin; horizontal is the axis this guarantees. The
-   consuming app implements this in its @media print stylesheet. */
 ::selection { background: var(--accent); color: var(--paper); }
 
 /* ---- Reset normalizations the system relies on ---- */
 * { box-sizing: border-box; }
 button, input, textarea, select { font: inherit; color: inherit; }
+
+/* =============================================================================
+   Analytical register — Portfolio Analysis & Trade Opportunities only
+   -----------------------------------------------------------------------------
+   Denser than the report. Mono numerics first-class. Hairline data grids,
+   tracked-caps labels, the desaturated palette above. Still flat with
+   hairlines: no shadow, no pill, no radius > 2px, no celebratory framing.
+   These classes never apply to the report (it stays monochrome + serif).
+   ========================================================================== */
+
+/* Tracked-caps column / section header — 11px, +0.05em, Public Sans. */
+.ana-head {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* Mono tabular figure — the analytical register's default numeric face. */
+.ana-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum", "lnum";
+  letter-spacing: -0.01em;
+}
+
+/* Ticker — mono, lightly tracked, reads instrument-grade. */
+.ana-ticker {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+
+/* ---- Directional value token (4b) — sign + weight + chevron + hue ---- */
+.dir {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.dir::before { font-weight: 500; }
+.dir.up    { color: var(--ana-up); }
+.dir.up::before   { content: "▴"; }
+.dir.down  { color: var(--ana-down); }
+.dir.down::before { content: "▾"; }
+.dir.flat  { color: var(--ana-flat); }
+.dir.flat::before { content: "·"; }
+
+/* ---- Grade chip (4d) — hairline/flat, never a glossy badge ---- */
+.grade {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+}
+.grade.a { color: var(--grade-a-tx); background: var(--grade-a-bg); }
+.grade.b { color: var(--grade-b-tx); background: var(--grade-b-bg); }
+.grade.c { color: var(--grade-c-tx); background: var(--grade-c-bg); }
+.grade.d { color: var(--grade-d-tx); background: var(--grade-d-bg); }
+.grade.f { color: var(--grade-f-tx); background: var(--grade-f-bg); }
+
+/* ---- Key-figure strip (5.1) — hairline-delimited label-over-value row ---- */
+.keyfig {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+.keyfig > .kf {
+  padding: 10px 14px;
+  border-left: 1px solid var(--hairline-soft);
+}
+.keyfig > .kf:first-child { border-left: 0; }
+.kf .kf-label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 5px;
+  white-space: nowrap;
+}
+.kf .kf-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-size: 16px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+/* ---- Dense data grid (5.3) — the most "terminal" surface ---- */
+.ana-grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+}
+.ana-grid th {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  text-align: left;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--hairline);
+  white-space: nowrap;
+}
+.ana-grid th.num, .ana-grid td.num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.ana-grid td {
+  font-size: 12px;
+  color: var(--ink);
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.ana-grid tr:last-child td { border-bottom: 0; }
+.ana-grid th.sortable { cursor: pointer; }
+.ana-grid th.sortable::after { content: " ▾"; color: var(--ink-3); opacity: 0.5; }
+.ana-grid th.sorted-desc::after { content: " ▾"; opacity: 1; }
+.ana-grid th.sorted-asc::after  { content: " ▴"; opacity: 1; }
+
+/* ---- Controlled-rich data / holding card (4c) — flat hairline rectangle ---- */
+.ana-card {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+}
+
+/* ---- Conviction meter (5.7) — flat hairline scale, no fill theatrics ---- */
+.conviction {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+.conviction i {
+  width: 14px;
+  height: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 1px;
+  background: transparent;
+  display: block;
+}
+.conviction i.on { background: var(--ink-2); border-color: var(--ink-2); }
+
+/* ---- Methodology affordance (5.6) — restrained reveal, not a tooltip toy ---- */
+.methodology {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  border-bottom: 1px dotted var(--hairline);
+  cursor: help;
+}

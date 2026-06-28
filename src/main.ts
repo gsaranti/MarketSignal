@@ -15,7 +15,7 @@ import "@fontsource/public-sans/latin-600.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
 
-import "../market-signal-design-system/project/colors_and_type.css";
+import "../market-signal-design-system/colors_and_type.css";
 
 import { applyTheme, readDark } from "./theme";
 
