@@ -517,6 +517,22 @@ html, body {
   color: var(--ink-3);
 }
 
+/* ---- Two documented chrome extensions (decisions, not drift) ----
+   1. SURFACE TITLE. A pane's STATIC name (the `.toolbar-label` in Settings, Research
+      Documents, and the warning-band head) is a SANCTIONED step up from the 11px
+      caption: 13px (--t-ui-sm), 600, ink, UPPERCASE + --track-caption. It deliberately
+      opens caps + tracking one size band above the 11px caption rule so a fixed pane
+      name outranks the sub-heading captions beneath it. The exception is a title that
+      is really CONTENT, not a chrome label: the Latest Report pane shows the issue's
+      own headline (and the run tracker its live step headline) — those stay SENTENCE
+      case (the report headline also matches its sidebar row-title). Caps is for the
+      fixed pane name only.
+   2. ALERT-SIGNAL ACCENT ICON. Icons otherwise take the text color, never the
+      accent (README §e). The one scoped exception: a failure / warning STATUS icon
+      (the warning-band chevron, the failed/cancelled run-tracker marker) may carry
+      --accent-text, matching the approved accent-header alert treatment, so the
+      stopped/alert state reads at a glance. Not for decorative or affordance icons. */
+
 /* Tabular numerals everywhere figures appear in columns */
 .tabular, .num {
   font-variant-numeric: tabular-nums lining-nums;
@@ -549,23 +565,36 @@ html, body {
   color: var(--paper);
   border-color: var(--ink);
 }
-.btn-primary:hover  { background: #2B241B; border-color: #2B241B; }
-.btn-primary:active { background: #100C08; border-color: #100C08; }
+.btn-primary:hover:not(:disabled)  { background: #2B241B; border-color: #2B241B; }
+.btn-primary:active:not(:disabled) { background: #100C08; border-color: #100C08; }
 
 .btn-secondary {
   background: transparent;
   color: var(--ink);
   border: 1px solid var(--ink);
 }
-.btn-secondary:hover  { background: var(--paper-soft); }
-.btn-secondary:active { background: var(--paper-edge); }
+.btn-secondary:hover:not(:disabled)  { background: var(--paper-soft); }
+.btn-secondary:active:not(:disabled) { background: var(--paper-edge); }
 
 .btn-ghost {
   background: transparent;
   color: var(--ink-2);
   border: 1px solid transparent;
 }
-.btn-ghost:hover  { color: var(--ink); background: var(--paper-soft); }
+.btn-ghost:hover:not(:disabled)  { color: var(--ink); background: var(--paper-soft); }
+
+/* Disabled — a package EXTENSION (the brief defined no disabled state). Holds the
+   flat/hairline posture: muted ink on a hairline outline, with the variant fill
+   dropped so a disabled control reads as inert rather than active. Every .btn
+   :hover/:active above is guarded with :not(:disabled) so a disabled button never
+   darkens or shifts. Disabled text is contrast-exempt (WCAG) but --ink-3 still
+   reads. */
+.btn:disabled {
+  color: var(--ink-3);
+  background: transparent;
+  border-color: var(--hairline);
+  cursor: default;
+}
 
 .btn:focus-visible {
   outline: 2px solid var(--accent);
@@ -668,6 +697,21 @@ a.chrome-link:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 /* ---- Print + selection ---- */
 ::selection { background: var(--accent); color: var(--paper); }
+
+/* ---- Reduced motion — honor the OS setting app-wide ----
+   The system's motion is already restrained (120ms confirmations, a 200ms report
+   arrival); this neutralizes transitions and one-shot/looping animations for users
+   who ask for less. The run tracker's approved liveness-breathe already sits inside
+   @media (prefers-reduced-motion: no-preference), so it is consistently disabled
+   here too. A global guard, so a component need not re-declare it. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 
 /* ---- Reset normalizations the system relies on ---- */
 * { box-sizing: border-box; }

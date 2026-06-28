@@ -133,7 +133,9 @@ test("nav items mark the active view and emit navigate with its key", async () =
   const wrapper = makeWrapper({ view: "inbox" });
   const inbox = navItemByLabel(wrapper, "Research Inbox");
   expect(inbox.classes()).toContain("is-active");
-  expect(inbox.attributes("aria-current")).toBe("true");
+  // Nav items are view navigation, so aria-current="page" (report rows, which are
+  // items-in-a-set, keep "true").
+  expect(inbox.attributes("aria-current")).toBe("page");
   expect(navItemByLabel(wrapper, "Settings").attributes("aria-current")).toBeUndefined();
 
   await navItemByLabel(wrapper, "Settings").trigger("click");

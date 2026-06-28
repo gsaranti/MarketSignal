@@ -265,7 +265,7 @@ function formatLocal(iso: string): string {
    just without the tween. */
 @media (prefers-reduced-motion: no-preference) {
   .job-running-fill {
-    transition: width 120ms ease-out;
+    transition: width var(--dur-fast) var(--ease);
   }
 }
 
@@ -279,11 +279,13 @@ function formatLocal(iso: string): string {
   white-space: nowrap;
 }
 
+/* Mixed-case running status ("Step N of T · {label}"), so neutral UI tracking —
+   --track-caption is opened only for 11px UPPERCASE captions, not running prose. */
 .job-running-caption {
   margin: 0;
   font-family: var(--font-sans);
   font-size: var(--t-caption);
-  letter-spacing: var(--track-caption);
+  letter-spacing: var(--track-ui);
   color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;

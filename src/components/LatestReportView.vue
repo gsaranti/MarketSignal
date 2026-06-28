@@ -134,6 +134,7 @@ async function exportPdf() {
           type="button"
           class="btn btn-secondary"
           :disabled="!canExport || exportingMarkdown"
+          :aria-busy="exportingMarkdown"
           :title="exportingMarkdown ? 'Saving…' : 'Save this report as a Markdown file'"
           @click="emit('export-markdown')"
         >
@@ -149,7 +150,7 @@ async function exportPdf() {
       Couldn't export: {{ exportError }}
     </p>
 
-    <div class="report-scroll">
+    <div class="report-scroll" role="region" aria-label="Report" tabindex="0">
       <div v-if="error" class="report-error" role="alert">
         <div class="report-error-label">Generation failed</div>
         <p class="report-error-detail">{{ error }}</p>
@@ -265,6 +266,13 @@ async function exportPdf() {
 .report-scroll {
   flex: 1;
   overflow-y: auto;
+}
+
+/* Keyboard-scrollable: tabbable so arrow keys scroll a long report that has no
+   in-flow focusable content. Inset ring so it isn't clipped by the scroll edge. */
+.report-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .report-article {

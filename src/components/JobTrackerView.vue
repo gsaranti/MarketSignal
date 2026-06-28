@@ -147,8 +147,11 @@ watch(contentSignature, async () => {
     <!-- Seam matches the report toolbar (height/padding/divider) so the view
          swap is invisible at the boundary. -->
     <div class="toolbar">
-      <div class="toolbar-heading">
-        <span class="toolbar-label" aria-live="polite">{{ headline }}</span>
+      <!-- aria-live on the heading (not just the label) so the terminal outcome
+           tag, which is inserted on completion, is announced alongside the
+           headline change — a screen-reader user hears whether the run passed. -->
+      <div class="toolbar-heading" aria-live="polite">
+        <span class="toolbar-label">{{ headline }}</span>
         <span
           v-if="terminal"
           class="toolbar-tag"
@@ -208,6 +211,11 @@ watch(contentSignature, async () => {
             <span class="step-label">{{ step.label }}</span>
             <span v-if="stepStatusText(step.status)" class="step-status">{{
               stepStatusText(step.status)
+            }}</span>
+            <!-- ok / pending carry their state through the (aria-hidden) marker
+                 only; give a screen reader the word so done ≠ not-yet-started. -->
+            <span v-else class="sr-only">{{
+              step.status === "ok" ? "Completed" : "Not started"
             }}</span>
           </div>
 
@@ -306,16 +314,32 @@ watch(contentSignature, async () => {
   min-width: 0;
 }
 
+/* The headline is dynamic content (a live step label, then "Run log"), not a fixed
+   pane name, so sentence case at neutral tracking — caps + --track-caption are
+   reserved for static surface titles (see the surface-title note in
+   colors_and_type.css). Matches LatestReportView's sentence-case toolbar-label. */
 .toolbar-label {
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
-  letter-spacing: var(--track-caption);
-  text-transform: uppercase;
   font-weight: 600;
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Visually-hidden text for screen readers — conveys a step's done/pending state
+   that the (aria-hidden) marker otherwise shows only visually. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .toolbar-tag {

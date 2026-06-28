@@ -70,11 +70,14 @@ function formatItems(items: string[]): string {
 </script>
 
 <template>
+  <!-- The live-region wrapper is ALWAYS mounted so the first warning (absent →
+       present) is announced — a live region must pre-exist in the DOM for inserted
+       content to be read. The band itself toggles with v-if inside it. -->
+  <div class="warning-live" aria-live="polite">
   <section
     v-if="visible"
     class="warning-area"
     aria-label="Needs attention"
-    aria-live="polite"
   >
     <button
       type="button"
@@ -119,6 +122,7 @@ function formatItems(items: string[]): string {
       </li>
     </ul>
   </section>
+  </div>
 </template>
 
 <style scoped>
@@ -157,7 +161,17 @@ function formatItems(items: string[]): string {
 
 .warning-toggle:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: 1px;
+}
+
+/* Hover affordance on the full-width disclosure header — a quiet deepen of the
+   accent head so pointer users see the whole row is interactive (cursor:pointer
+   alone isn't a visible state). The head is already --accent-text at rest, so the
+   hover deliberately uses --accent-press — the one deeper-oxblood step — as text
+   (no "darker accent-text" token exists); it AA-clears on the band in both themes.
+   The chevron stroke is set via its color prop. */
+.warning-toggle:hover .warning-head {
+  color: var(--accent-press);
 }
 
 /* Accent header is the alert signal — no saturated red, just the system's
@@ -273,14 +287,17 @@ function formatItems(items: string[]): string {
   transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 
+/* Hover keeps the glyph legible: the dismiss reveals its accent (destructive)
+   tone on a faint paper tone, instead of the former oxblood-on-oxblood fill that
+   made the close icon nearly vanish at the moment of interaction. */
 .warning-dismiss:hover {
   color: var(--accent-text);
-  background: var(--accent-soft);
+  background: var(--paper-soft);
 }
 
 .warning-dismiss:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: 1px;
 }
 
 @media (prefers-reduced-motion: reduce) {

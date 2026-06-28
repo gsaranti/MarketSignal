@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, nextTick } from "vue";
 import Icon, { type IconName } from "./Icon.vue";
 import type { ResearchDocument } from "../types";
 
@@ -52,6 +52,33 @@ const emit = defineEmits<{
 // reversible, keyboard-operable, and it keeps the destructive action off a
 // single click.
 const confirmingName = ref<string | null>(null);
+
+// Focus management for the inline two-step. Opening the confirm moves focus onto
+// the Cancel button so keyboard/SR focus isn't dropped to <body> and the new
+// controls are announced; cancelling returns focus to that row's Delete trigger.
+// Both controls are recreated across the v-if swap, so they're tracked by function
+// refs (the Delete triggers keyed by document name).
+const cancelButton = ref<HTMLButtonElement | null>(null);
+function setCancelButton(el: unknown) {
+  cancelButton.value = el ? (el as HTMLButtonElement) : null;
+}
+const deleteTriggers = new Map<string, HTMLButtonElement>();
+function setDeleteTrigger(name: string, el: unknown) {
+  if (el) deleteTriggers.set(name, el as HTMLButtonElement);
+  else deleteTriggers.delete(name);
+}
+
+async function startConfirm(name: string) {
+  confirmingName.value = name;
+  await nextTick();
+  cancelButton.value?.focus();
+}
+
+async function cancelConfirm(name: string) {
+  confirmingName.value = null;
+  await nextTick();
+  deleteTriggers.get(name)?.focus();
+}
 
 function confirmDelete(name: string) {
   confirmingName.value = null;
@@ -160,9 +187,10 @@ function formatDate(iso: string | null): string {
           <div class="docs-row-actions">
             <template v-if="confirmingName === doc.name">
               <button
+                :ref="setCancelButton"
                 type="button"
                 class="row-action"
-                @click="confirmingName = null"
+                @click="cancelConfirm(doc.name)"
               >
                 Cancel
               </button>
@@ -179,11 +207,12 @@ function formatDate(iso: string | null): string {
                  flagged (the reason text is otherwise only in row reading order). -->
             <button
               v-else
+              :ref="(el) => setDeleteTrigger(doc.name, el)"
               type="button"
               class="row-action"
               :aria-label="`Delete ${doc.name}`"
               :aria-describedby="doc.parse_error ? `parse-error-${index}` : undefined"
-              @click="confirmingName = doc.name"
+              @click="startConfirm(doc.name)"
             >
               Delete
             </button>
@@ -362,6 +391,7 @@ function formatDate(iso: string | null): string {
 
 .docs-row-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--s-3);
   font-family: var(--font-sans);

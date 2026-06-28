@@ -398,14 +398,24 @@ const charsDroppedValue = computed(() => {
           </div>
 
           <div class="settings-actions">
-            <button type="submit" class="btn btn-primary" :disabled="!canSave">
+            <button
+              type="submit"
+              class="btn btn-primary"
+              :disabled="!canSave"
+              :aria-describedby="needsTokens ? 'save-needs-tokens' : undefined"
+            >
               {{ saving ? "Saving…" : "Save" }}
             </button>
             <span v-if="showSaved" class="save-status" role="status">
               <Icon name="check" :size="13" color="var(--ink-2)" />
               Saved
             </span>
-            <span v-else-if="needsTokens" class="save-status save-status--hint">
+            <span
+              v-else-if="needsTokens"
+              id="save-needs-tokens"
+              class="save-status save-status--hint"
+              role="status"
+            >
               Add both API tokens to save.
             </span>
           </div>
@@ -752,10 +762,15 @@ const charsDroppedValue = computed(() => {
   gap: var(--s-5);
 }
 
+/* Label idiom matches the sibling .trunc-formats-label so the diagnostics block
+   reads as one system (was 13px sentence-case, an in-block inconsistency). */
 .trunc-row dt {
   font-family: var(--font-sans);
-  font-size: var(--t-ui-sm);
-  color: var(--ink-2);
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-3);
 }
 
 .trunc-row dd {

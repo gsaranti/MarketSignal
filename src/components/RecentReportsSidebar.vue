@@ -100,7 +100,7 @@ function rowTitle(r: ReportSummary): string {
         type="button"
         class="nav-item"
         :class="{ 'is-active': view === 'inbox' }"
-        :aria-current="view === 'inbox' ? 'true' : undefined"
+        :aria-current="view === 'inbox' ? 'page' : undefined"
         @click="$emit('navigate', 'inbox')"
       >
         <Icon name="inbox" :size="14" color="var(--ink-2)" />
@@ -111,7 +111,7 @@ function rowTitle(r: ReportSummary): string {
         type="button"
         class="nav-item"
         :class="{ 'is-active': view === 'archive' }"
-        :aria-current="view === 'archive' ? 'true' : undefined"
+        :aria-current="view === 'archive' ? 'page' : undefined"
         @click="$emit('navigate', 'archive')"
       >
         <Icon name="archive" :size="14" color="var(--ink-2)" />
@@ -122,7 +122,7 @@ function rowTitle(r: ReportSummary): string {
         type="button"
         class="nav-item"
         :class="{ 'is-active': view === 'settings' }"
-        :aria-current="view === 'settings' ? 'true' : undefined"
+        :aria-current="view === 'settings' ? 'page' : undefined"
         @click="$emit('navigate', 'settings')"
       >
         <Icon name="settings" :size="14" color="var(--ink-2)" />
@@ -222,6 +222,9 @@ function rowTitle(r: ReportSummary): string {
   font-size: var(--t-caption);
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
+  /* The stamp + short-id are figures that stack down the column; tabular/lining
+     numerals keep digits aligned row-to-row and steady on selection. */
+  font-variant-numeric: tabular-nums lining-nums;
   color: var(--ink-3);
   margin-top: var(--s-1);
 }
