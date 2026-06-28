@@ -2,24 +2,22 @@
 
 ## What happened
 
-Resolved two standing design questions in the docs corpus — both docs-only, both propagated to `INDEX.md`.
+Two docs-only commits to `main`, both Codex-clean — the local-suite **web-research layer**.
 
-**1. TO 5g bounded-positive — decided cap-only by design.** A metric-*confirmed* since-flagged gain earns **no** positive nudge: the confirming leading metric is already scored directly through the engine's leading-metric series + quant composite (Step 5c), so crediting the since-flagged gain on top would **double-count the metric and re-admit price as a conviction input** — the reflexive momentum-chasing the read exists to police. The since-flagged read can hold or lower conviction, never raise it. Written into `trade-opportunities-workflow.md` §5g, `trade-opportunities.md` §Outcome learning, `INDEX.md` L159.
+**1. Seed-lineage provenance** (`f080b3c`). Structured-feed seeds (FMP news / articles, macro calendar) that orient a research loop are recorded as **leads, never evidence-ledger claims**; two captures — a deterministic `surfaced_by` back-pointer on a deep-read claim, and a bounded model-attributed `seeded_by` **validated against the route's fed seed-ID set** (unknown refs dropped + logged, so lineage can't be fabricated).
 
-**2. Portfolio holding card renders the thesis ledger's current standing thesis** as the card's anchor — a **render decision, not a new verdict field** (a new field would duplicate/desync the ledger thesis; keeping it ledger-sourced preserves one continuity-validated source of truth, no drift). Mirrors TO leading each idea with its `directional thesis`. **Decided the rendered thesis stays full / non-concise** — Codex's suggested `current_thesis` conciseness constraint was declined by intent, and the "one-paragraph" wording was trimmed from the docs to match. Written into `portfolio-analysis.md` §Storage and display, `interface.md` (Portfolio page requirements + layout tree), `INDEX.md` L132.
-
-Confirmed **BUILD.md needs no change** — both changes sit below its architecture-brief altitude and the existing text is accurate and uncontradicted (verified L392–396, L425–426).
+**2. Source-quality research layer** (`1b31bfa`). The Source Registry (per-domain `tier` 0–5/`deny` + `evidenceKinds` + lanePolicy + freshnessSla + extractionProfile + paywall, a *thin override over heuristic defaults*, not a whitelist); the deterministic evidence-annotation seam split **app-computed** (sourceTier/extractionQuality/recency/primarySourceBonus/paywall-stub) vs **model-derived** (claimSpecificity/contradiction/supportsClaimIds); the load-bearing rule **quality informs conviction, never gates discovery** (tiers grade; only the categorical `deny` excludes); cheap fast-follows (extraction telemetry, source-diversity/wire-syndication caps, deny list, a budget-bound + fail-soft disconfirming-fetch pass); and **Connected Sources** (optional subscription enrichment — webview login → Keychain session → authenticated fetch → health-test states, yield-gated, **never on the execution gate**, on the Schwab credential rails). One BUILD.md clause added for Connected Sources; INDEX.md kept current.
 
 ## Current state
 
-Content **committed to `main` at `204843d`** (`.metis/INDEX.md` + the four docs) — Codex round clean, docs-only. This handoff (`CURRENT.md`) lands in the trailing metis session-end commit; both pushed to `origin/main`. Nothing in flight; the job-doc deepening initiative is at a coherent resting point.
+Nothing in flight; working tree clean, both commits pushed. The research layer is at a coherent resting point. The **"defer-to-M5-calibration" tier was deliberately NOT documented** (user will re-raise): the evidence-quality scoring *combining formula* (the dimensions are defined — tier/recency/extractionQuality/primarySourceBonus — but how they fold into one conviction adjustment is intentionally open), claim-quorum *thresholds*, and **Tavily-as-calibrator**. The whole local suite stays **M5-hardware-gated** for live validation (extraction yield, SearXNG recall, the Connected-Sources fetch path are exactly what the M5 must exercise first).
 
 ## Open questions
 
-- **TO 5g bounded-positive — RESOLVED** this session (cap-only by design); removed from the live list.
-- **Portfolio holding-card overflow** (new, implementation-time UI note): the full / non-concise standing thesis is the rendered card anchor, so the card must handle a long thesis with graceful overflow (clamp-with-expand / scroll per the design system + frontend-craft) when the Portfolio UI is built. Data/schema unaffected.
-- The standing design/implementation backlog carries forward **unchanged and intentionally not re-enumerated here** (per this session's instruction — to be picked up later): implementation-time schemas, paid-FMP report enrichment, cross-job isolation, the 35B second-model residency benchmark, BUILD.md compression, and the carried local-suite/build + report-side items from prior handoffs.
+- **Research-layer M5-calibration tier — parked by intent, not forgotten:** the evidence-quality *combining formula*, claim-quorum *thresholds*, Tavily-as-calibrator. Re-raise when wanted. **User preference: no new Tavily** in this feature — the existing per-candidate-validation Tavily fallback stays untouched; don't re-propose a Tavily calibrator.
+- **Portfolio holding-card overflow** (implementation-time UI, carried forward): the full / non-concise standing thesis is the card anchor, so the card must handle a long thesis with graceful overflow when the Portfolio UI is built.
+- The **standing design/implementation backlog carries forward unchanged and intentionally not re-enumerated** (per prior handoffs): implementation-time schemas, paid-FMP report enrichment, cross-job isolation, the 35B second-model residency benchmark, BUILD.md compression, and the carried local-suite/build + report-side items — all gated on M5 / paid-FMP.
 
 ## Where to start
 
-This session's docs change is landed (`204843d`), Codex-clean, and pushed — nothing to follow up there. The standing backlog above is open to pick up; the implementation items remain gated on their gates (M5, paid-FMP).
+Research-layer docs are landed (`f080b3c`, `1b31bfa`), Codex-clean, and pushed — nothing to follow up there. Open to pick up: continue the job-doc deepening initiative, or re-raise the parked M5-calibration tier if you want the evidence-quality formula / quorum thresholds specced. All implementation work remains gated on M5 hardware / paid-FMP.
