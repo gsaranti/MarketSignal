@@ -292,15 +292,25 @@ as-built; the rest remain planned):
 
 - **A local-only model layer, distinct from the cloud report (built).** A flexible
   local-model adapter (`local_model.rs`) parameterized by `{endpoint, model_id,
-  messages, tools, format_schema, options}` calls one app-supervised Ollama daemon
-  over its native `/api/chat` (grammar-constrained `format` for schema-valid output;
-  token / reasoning streaming on the existing `progress` seam), through the same
-  `reqwest::blocking` / `spawn_blocking` seam the cloud agents use — **added rather
-  than extending the closed cloud `AgentModel` enum**, so the roster changes through
-  configuration. Daemon supervision (`health_check` + roster probe) feeds an
+  messages, tools, format_schema, options}` calls one **user-installed,
+  app-supervised** Ollama daemon over its native `/api/chat` (grammar-constrained
+  `format` for schema-valid output; token / reasoning streaming on the existing
+  `progress` seam), through the same `reqwest::blocking` / `spawn_blocking` seam the
+  cloud agents use — **added rather than extending the closed cloud `AgentModel`
+  enum**, so the roster changes through configuration. The app **bundles neither the
+  daemon nor the models** (the 122B is tens of GB and `ollama pull` already owns that
+  step best); it makes setup turnkey *around* a user-installed Ollama — guided install
+  + in-app pull with progress on the `progress` seam, and it may `ollama serve` a
+  stopped daemon. Daemon supervision (`health_check` + roster probe) feeds an
   **independent local-suite gate** (its own `WarningKind::LocalModels`, separate from
-  the cloud `validate` gate), and a `LocalEmbedder` reuses the existing `Embedder`
-  trait so `vector_memory` is unchanged. The roster default is **settled**: one frontier reasoner
+  the cloud `validate` gate) that holds the report's **presence-not-connectivity**
+  posture: *presence* of config (endpoint + roster ids) gates **proactively** — unset
+  → the local Run buttons lock plus a persistent warning — while *connectivity*
+  (daemon reachable, models pulled) is checked only at the **run-gate** and on a manual
+  Test Connection, **never at startup**, so a config-set-but-daemon-down state is blind
+  on re-open until Run/test (the deliberate cost of no startup probe) and a connectivity
+  failure is an **inline run-gate block**, not a persistent warning. A `LocalEmbedder`
+  reuses the existing `Embedder` trait so `vector_memory` is unchanged. The roster default is **settled**: one frontier reasoner
   (Qwen3.5-122B-A10B) **plus the embedder stay resident**, and the 122B fills *every*
   reasoning role — research/interpretation in thinking mode, distillation in
   non-thinking — so co-residency of a second large model is sidestepped and a
@@ -317,7 +327,24 @@ as-built; the rest remain planned):
 - **A cost-free web tool.** Self-hosted, keyless SearXNG for search plus a Rust
   fetch/readability-extract layer, with the existing Tavily as fallback; the
   orchestrator runs the tool, the model only requests it — holding the pure-stage
-  boundary. The per-item research loop is worked **one agenda topic at a time** —
+  boundary. Like Ollama, **SearXNG isn't bundled** — the app *ships configuration, not
+  the server*: a **pinned `docker-compose.yml`** whose `settings.yml` bakes in the two
+  load-bearing settings (JSON output on, bot-limiter off) so first-run setup is one
+  command (OrbStack recommended over Docker Desktop on Apple Silicon). Vendoring a
+  Python runtime would inflate the binary and the macOS signing surface, so
+  app-bundling is **dominated** — a Rust-native metasearch would be the clean path if
+  search were ever owned end-to-end, and Brave's API stays a documented contingency,
+  not the default (it already contributes keyless results *inside* SearXNG). The
+  **fetch is a plain GET with a realistic browser-like header set** (cheap
+  bot-prevention on the default path); pages returning thin text (paywall / client-side
+  JS) trip a **selective rendered-retrieval tier** that reuses the **already-embedded
+  Tauri webview** — not a bundled Playwright/Selenium or a Python scraper sidecar (same
+  flat-footprint stance) — gated on extraction telemetry so rendering stays
+  **measured, never blanket** (an external headless browser is a spike-gated fallback).
+  SearXNG sits **off the execution gate**: unreachable or misconfigured, it degrades —
+  fall back to Tavily, or, for the SearXNG-only TO discovery lane, fewer candidates —
+  behind a **pre-run consent modal** (a live probe, Proceed/Cancel), never a blocking
+  warning. The per-item research loop is worked **one agenda topic at a time** —
   each topic ≤3 research passes (root + ≤2 app-governed follow-ups, depth ≤2; a pass
   is itself a bounded multi-turn tool loop) under a **per-item fetch+wall-clock budget**
   that binds first (bounding the raw turns/fetches) and is spent in topic-priority
