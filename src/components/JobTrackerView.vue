@@ -369,6 +369,14 @@ watch(contentSignature, async () => {
   flex: 1;
   overflow-y: auto;
   padding: var(--s-7) var(--s-8) var(--s-10);
+  /* Positioning context for the per-step `.sr-only` spans. They are
+     `position: absolute`; without a positioned ancestor their containing block
+     is <html>, so each is laid out at its static position deep inside this tall
+     list and — though 1px and clipped — extends the *document* scrollHeight,
+     producing a second, page-level scrollbar alongside this region's own. Making
+     the scroll container the containing block keeps them within it (which clips),
+     so only this region scrolls. */
+  position: relative;
 }
 /* Keyboard focus on the scroll region itself (it's tabbable so it can be
    scrolled by keyboard) — a quiet inset ring, not the button outline. */
