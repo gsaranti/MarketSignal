@@ -470,7 +470,17 @@ as-built; the rest remain planned):
   first-surfaced price, live from an idea's first *subsequent* run, stateless off the
   carry-forward identity) rendered **inline in the matrix** and fed to the **Step-5g re-score of
   a carried-forward name as reflexivity-disciplined context** (an unconfirmed gain caps
-  conviction, never a momentum boost). GDELT
+  conviction, never a momentum boost). The **opportunity lifecycle splits re-evaluation by
+  cost**: every live pick gets an **every-run deterministic upside re-derivation** (engine-only,
+  off the discovery budget — re-derives targets + re-runs the entry gate, freshening the quant
+  read and able to **fail it → archive**), while **deep research re-runs only on re-surfacing**
+  through discovery (so the model-authored half — thesis, conviction, bear case — and the price
+  prediction's research layer freeze between deep passes; the upside gate is the **sole archival
+  decision**, judging the post-decay target). There is **no "target met" exit** (`played-out`
+  retired); the lone exit, `failed-reevaluation`, moves a pick to a **price-tracked archive**
+  (last 100 tombstones — frozen retrospective record + live since-flagged return vs sector/market,
+  **no forward prediction**), re-entry a **fresh** opportunity (anti-reflexive — the archive never
+  self-promotes). GDELT
   dropped; discovery is **SearXNG-only**. A new **event-impact / value-chain repricing route**
   (materiality-gated, dormant otherwise) treats a discrete tech/product/standard announcement as a
   **two-sided** trigger — beneficiaries, panic-vs-real feared-losers, latent (un-moved) names — each

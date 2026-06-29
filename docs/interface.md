@@ -29,7 +29,8 @@ Market Signal
 │   └── Portfolio roll-up & construction
 │
 ├── Trade Opportunities (local analysis suite)
-│   └── Risk × horizon matrix (high/med/low × short/mid/long; each card: thesis · price prediction · conviction · leading metric)
+│   ├── Risk × horizon matrix (high/med/low × short/mid/long; each card: thesis · price prediction · conviction · leading metric · since-flagged return · became-an-opportunity & last-deep-research dates)
+│   └── Archived opportunities (departed picks, price-tracked; each: frozen thesis · since-flagged return vs sector/market · became-an-opportunity & departure dates — no forward prediction)
 │
 ├── Persistent Warning Area
 │   ├── Missing agent configuration
