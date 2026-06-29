@@ -35,7 +35,9 @@ Market Signal
 │   ├── Missing agent configuration
 │   ├── Missing API tokens
 │   ├── Missing provider credentials
-│   └── Failed jobs
+│   ├── Failed jobs
+│   ├── Local models not configured   (local suite)
+│   └── Schwab connection              (local suite)
 │
 └── Settings
     ├── Agent model configuration
@@ -44,7 +46,8 @@ Market Signal
     ├── Report generation
     ├── Local analysis models (daemon endpoint + roster + connection status)
     ├── Web research (SearXNG endpoint + connection status)
-    ├── Investor profile (risk tolerance, horizon, objective, tax, cash)
+    ├── Connected sources (optional paywalled-subscription logins + per-source health)
+    ├── Investor profile (read-only preset — risk tolerance, horizon, objective, tax, cash)
     ├── Charles Schwab connection
     └── Trade Opportunities discovery breadth (candidate research budget)
 ```
