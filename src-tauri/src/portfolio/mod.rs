@@ -66,14 +66,18 @@ pub struct InvestorProfile {
     /// Whether holdings sit in a taxable account (so realized gains carry a tax
     /// cost the action sizing should weigh) versus tax-advantaged.
     pub tax_sensitive: bool,
-    /// Cash / buying power available for new purchases, in account currency. Bounds
-    /// whether an `add` / `add aggressively` is even offered.
-    pub available_cash: f64,
+    /// Cash / buying power available for new purchases, in account currency.
+    /// `Some(cap)` bounds a buy in `engine::size_action`; **`None` means cash is
+    /// unconstrained** — the fixed preset's stance (the user may hold cash the app can't
+    /// see), so adds are not gated on observed Schwab cash
+    /// (`docs/configuration.md` §Investor Profile).
+    pub available_cash: Option<f64>,
 }
 
 impl InvestorProfile {
     /// The default fixture profile this slice runs against: moderate risk tolerance,
-    /// a long-term horizon, taxable/tax-aware, with a modest cash buffer. The real
+    /// a long-term horizon, taxable/tax-aware, and **cash treated as unconstrained**
+    /// (the preset's stance — the user may hold cash the app can't see). The real
     /// per-user profile is configured in a later Settings slice; this stands in so the
     /// action sizing has a profile to read.
     pub fn default_fixture() -> Self {
@@ -81,7 +85,9 @@ impl InvestorProfile {
             risk_tolerance: RiskTolerance::Moderate,
             horizon: ProfileHorizon::LongTerm,
             tax_sensitive: true,
-            available_cash: 10_000.0,
+            // Unconstrained cash — adds are not gated on observed Schwab cash
+            // (`docs/configuration.md` §Investor Profile).
+            available_cash: None,
         }
     }
 }

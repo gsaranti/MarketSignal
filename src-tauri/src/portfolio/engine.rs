@@ -23,8 +23,11 @@ use crate::schwab::{OptionChain, OptionKind, Position};
 
 // ---- Calibration surface (NOT pinned — shadow-tune against live runs) ---------
 
-/// Composite-grade weights over the four sub-scores. Sum need not be 1.0 — the
-/// composite renormalizes over whichever sub-scores were computable.
+/// Composite-grade weights over the four sub-scores. `grade_from_subscores` divides
+/// by their sum, so they need not total 1.0. A sub-score that could not be computed is
+/// imputed to the neutral midpoint (50) by `analyze` before the roll-up, so a missing
+/// input pulls the composite toward neutral rather than being dropped — an
+/// impute-to-neutral, not a renormalization over the present sub-scores.
 const W_QUALITY: f64 = 0.30;
 const W_VALUATION: f64 = 0.25;
 const W_MOMENTUM: f64 = 0.20;
@@ -145,7 +148,8 @@ pub fn analyze(fin: &CompanyFinancials) -> EngineVerdict {
     }
 
     // A missing sub-score takes the neutral midpoint (50) so the composite stays
-    // defined; the grade then renormalizes implicitly through the fixed weights. The
+    // defined; dividing by the full fixed weight sum keeps it on the same 0–100 scale
+    // (an impute-to-neutral, not a renormalization over the present sub-scores). The
     // count gate above guarantees at least two are real, so this never grades on all
     // defaults.
     let sub_scores = SubScores {
@@ -390,7 +394,8 @@ pub fn options_signal(chain: &OptionChain) -> OptionsSignal {
 /// (`docs/portfolio-analysis.md` §The holding verdict). Each rung maps to a target
 /// portfolio-weight band relative to the position's current weight; the share/dollar
 /// delta reaches the band's midpoint. An `add`/`add aggressively` is bounded by the
-/// profile's available cash. Calibratable: the per-rung band steps are an open
+/// profile's available cash when it sets a finite cap; `None` cash is unconstrained
+/// (the fixed preset's stance). Calibratable: the per-rung band steps are an open
 /// parameter, not pinned. No orders are placed.
 pub fn size_action(
     action: Action,
@@ -423,9 +428,12 @@ pub fn size_action(
         Some(price) if account_total > 0.0 && price > 0.0 => {
             let target_value = target_mid * account_total;
             let mut dollar_delta = target_value - position.market_value;
-            // A buy is capped by available cash (you can't add what you can't fund).
+            // A buy is bounded by the profile's cash cap when set; `None` means cash is
+            // unconstrained (the fixed preset's stance — the user may hold cash the app
+            // can't see), so adds are not gated on observed Schwab cash
+            // (`docs/configuration.md` §Investor Profile). INFINITY ⇒ no cap.
             if dollar_delta > 0.0 {
-                dollar_delta = dollar_delta.min(profile.available_cash);
+                dollar_delta = dollar_delta.min(profile.available_cash.unwrap_or(f64::INFINITY));
             }
             (Some(dollar_delta), Some(dollar_delta / price))
         }
@@ -589,12 +597,44 @@ mod tests {
             current_price: Some(195.0),
         };
         let mut profile = InvestorProfile::default_fixture();
-        profile.available_cash = 1_000.0; // tight cash
+        profile.available_cash = Some(1_000.0); // tight cash
         let sizing = size_action(Action::AddAggressively, &position, &profile, 29_500.0);
         // The dollar delta to add is capped by the $1,000 cash on hand.
         assert!(sizing.est_dollar_delta.unwrap() <= 1_000.0 + 1e-6);
         // The target band never steers a single name above the 25% concentration cap.
         assert!(sizing.target_weight_high <= 0.25 + 1e-9);
+    }
+
+    #[test]
+    fn size_action_unconstrained_cash_does_not_cap_a_buy() {
+        // A small position with lots of headroom, so add-aggressively wants to buy.
+        let position = Position {
+            symbol: "AAPL".into(),
+            description: "Apple".into(),
+            asset_class: AssetClass::Stock,
+            quantity: 10.0,
+            cost_basis: 900.0,
+            market_value: 1_000.0,
+            current_price: Some(100.0),
+        };
+        let account_total = 100_000.0;
+        // The fixed preset (available_cash: None) treats cash as unconstrained — the buy
+        // is sized to the concentration-bounded band, not clamped by observed cash.
+        let unconstrained = size_action(
+            Action::AddAggressively,
+            &position,
+            &InvestorProfile::default_fixture(),
+            account_total,
+        );
+        // A tight finite cap clamps the very same buy far smaller.
+        let mut tight = InvestorProfile::default_fixture();
+        tight.available_cash = Some(500.0);
+        let capped = size_action(Action::AddAggressively, &position, &tight, account_total);
+        assert!(
+            unconstrained.est_dollar_delta.unwrap() > capped.est_dollar_delta.unwrap(),
+            "unconstrained cash must not clamp the buy the way a finite cap does"
+        );
+        assert!(capped.est_dollar_delta.unwrap() <= 500.0 + 1e-6);
     }
 
     #[test]

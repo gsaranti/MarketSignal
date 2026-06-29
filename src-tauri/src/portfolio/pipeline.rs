@@ -261,8 +261,14 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     }
 
     p.push_str(&format!(
-        "\nINVESTOR PROFILE: risk tolerance {:?}, horizon {:?}, taxable {}, cash {:.0}\n",
-        d.profile.risk_tolerance, d.profile.horizon, d.profile.tax_sensitive, d.profile.available_cash
+        "\nINVESTOR PROFILE: risk tolerance {:?}, horizon {:?}, taxable {}, cash {}\n",
+        d.profile.risk_tolerance,
+        d.profile.horizon,
+        d.profile.tax_sensitive,
+        d.profile
+            .available_cash
+            .map(|c| format!("{c:.0}"))
+            .unwrap_or_else(|| "unconstrained".to_string()),
     ));
 
     p.push_str("\nHORIZONS for the outlook: ");
