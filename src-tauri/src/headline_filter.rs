@@ -112,18 +112,27 @@ impl HeadlineFilter for StubHeadlineFilter {
     }
 }
 
-/// OpenAI Chat Completions endpoint — the fixed internal stages call OpenAI
-/// directly (the user-selectable agent models live behind `model_agent`).
-const OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
+/// OpenAI Chat Completions origin + path — the fixed internal stages call OpenAI
+/// directly (the user-selectable agent models live behind `model_agent`). Split into
+/// origin + path (like the gated adapters) so a test can redirect the origin at a
+/// localhost mock via [`ModelHeadlineFilter::with_base_url`] while still exercising the
+/// path the adapter builds.
+const OPENAI_BASE: &str = "https://api.openai.com";
+const OPENAI_CHAT_PATH: &str = "/v1/chat/completions";
 
 /// The fixed internal model for headline filtering (`docs/agents.md §Headline
 /// Filtering`) — non-configurable, distinct from the user-selectable agent models.
 const HEADLINE_FILTER_MODEL: &str = "gpt-5-mini";
 
-/// The cluster output is small (≤10 topics, each a label + short summary + a few
-/// indices), so a modest ceiling is ample and keeps the response inside the HTTP
-/// timeout.
-const MAX_TOKENS: u32 = 4096;
+/// The cluster output itself is small (≤10 topics, each a label + short summary + a few
+/// indices), but `gpt-5-mini` is a reasoning model that spends reasoning tokens against
+/// this same `max_completion_tokens` budget *before* it emits the structured output. Set
+/// too tight, a heavy reasoning pass can exhaust the budget so the response comes back
+/// `finish_reason: "length"` with empty content and the parse fails — an intermittent,
+/// retry-proof failure distinct from a transient HTTP error. 8192 leaves reasoning
+/// headroom over the small output (mirroring the agent stages' reasoning-headroom sizing)
+/// while staying well inside the HTTP timeout.
+const MAX_TOKENS: u32 = 8192;
 
 const SYSTEM_PROMPT: &str = "You filter a large set of market-news headlines down to the most \
 important stories for a market report. You are given a numbered list of headlines. First \
@@ -308,6 +317,9 @@ fn envelope_to_clusters(env: ClusterEnvelope, headlines: &[RawHeadline]) -> Vec<
 pub struct ModelHeadlineFilter {
     api_key: String,
     http: reqwest::blocking::Client,
+    /// OpenAI origin, defaulted to [`OPENAI_BASE`]; only a test redirects it at a
+    /// localhost mock via [`ModelHeadlineFilter::with_base_url`].
+    base_url: String,
     /// Run context for the single tracker row the filter call emits. Defaults to a
     /// no-op (tests / offline smokes); the live command attaches the real one via
     /// [`ModelHeadlineFilter::with_context`].
@@ -323,6 +335,7 @@ impl ModelHeadlineFilter {
         Ok(Self {
             api_key,
             http,
+            base_url: OPENAI_BASE.to_string(),
             progress: RunContext::noop(),
         })
     }
@@ -334,6 +347,15 @@ impl ModelHeadlineFilter {
         self
     }
 
+    /// Redirect the adapter at an alternate API origin (a localhost mock) so the wire
+    /// path — including the shared retry/backoff — runs offline. Test-only; a trailing
+    /// slash is trimmed so the joined path's leading slash doesn't double up.
+    #[cfg(test)]
+    fn with_base_url(mut self, base_url: &str) -> Self {
+        self.base_url = base_url.trim_end_matches('/').to_string();
+        self
+    }
+
     /// Resolve the adapter from the environment, for the live smoke and any caller
     /// that bypasses the gate. Uses the OpenAI key — the fixed internal stages are
     /// always OpenAI (`config::openai_key`).
@@ -341,19 +363,19 @@ impl ModelHeadlineFilter {
         Self::new(crate::config::AppConfig::from_env().openai_key()?)
     }
 
+    /// POST the request through the shared bounded retry/backoff, matching every other
+    /// gated call in the report pipeline (FMP / FRED / BLS / CFTC / Tavily). The clustering
+    /// call has no server-side side effect — like Tavily's search POST — so retrying a
+    /// transient 429 / 5xx / dropped-connection is safe, and it rides out the intermittent
+    /// OpenAI failures that would otherwise wipe this run's news clustering (the pipeline
+    /// degrades a failed filter to empty clusters). A non-2xx that survives the retries
+    /// stays fatal here.
     fn call(&self, body: &Value) -> Result<Value> {
-        let resp = self
-            .http
-            .post(OPENAI_URL)
-            .bearer_auth(&self.api_key)
-            .json(body)
-            .send()
-            .context("sending headline-filter request")?;
-        let status = resp.status();
-        let text = resp
-            .text()
-            .context("reading headline-filter response body")?;
-        if !status.is_success() {
+        let url = format!("{}{OPENAI_CHAT_PATH}", self.base_url);
+        let (status, text) = crate::http_retry::send_with_retry("headline-filter", || {
+            self.http.post(&url).bearer_auth(&self.api_key).json(body)
+        })?;
+        if !(200..300).contains(&status) {
             bail!("headline-filter model returned {status}: {text}");
         }
         serde_json::from_str(&text).context("parsing headline-filter response JSON")
@@ -681,6 +703,70 @@ mod tests {
         // A dummy key is fine: empty input short-circuits before any network call.
         let filter = ModelHeadlineFilter::new("sk-test".into()).unwrap();
         assert!(filter.filter(Vec::new(), None).unwrap().is_empty());
+    }
+
+    /// A well-formed OpenAI Chat Completions reply whose `content` is the strict-schema
+    /// cluster envelope (itself a JSON string), one cluster claiming headline `[0]`.
+    #[cfg(test)]
+    const OK_RESPONSE_BODY: &str = r#"{"choices":[{"finish_reason":"stop","message":{"content":"{\"clusters\":[{\"topic\":\"Macro\",\"summary\":\"s\",\"relevance\":0.9,\"headline_indices\":[0]}]}"}}]}"#;
+
+    #[test]
+    fn call_retries_a_transient_429_then_parses_the_envelope() {
+        use crate::test_http::{Canned, MockHttp};
+        // The intermittent failure the user reported: a transient OpenAI 429 on the first
+        // attempt, then a clean 200. The shared retry must ride it out and reach the parse
+        // rather than failing the call (which the pipeline would degrade to empty clusters,
+        // silently dropping this run's news). It must also build the right path.
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 429,
+                headers: vec![("Retry-After", "0")],
+                body: "rate limited",
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: OK_RESPONSE_BODY,
+            },
+        ]);
+        let filter = ModelHeadlineFilter::new("sk-test".into())
+            .unwrap()
+            .with_base_url(&server.base_url);
+        let clusters = filter
+            .filter(vec![headline("Fed holds rates")], None)
+            .expect("retry rides out the 429 and parses the envelope");
+        assert_eq!(server.attempts(), 2, "the 429 was retried exactly once");
+        assert_eq!(
+            server.request_targets()[0],
+            "/v1/chat/completions",
+            "the adapter built the Chat Completions path"
+        );
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].topic, "Macro");
+        assert_eq!(clusters[0].headlines.len(), 1);
+    }
+
+    #[test]
+    fn call_surfaces_a_non_2xx_that_survives_the_retries() {
+        use crate::test_http::{Canned, MockHttp};
+        // A persistent 500 (every attempt fails retryably): the call exhausts its retries
+        // and surfaces the status, so the pipeline degrades this run to empty clusters with
+        // a legible cause rather than hanging.
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 500, headers: vec![], body: "boom 1" },
+            Canned::Reply { status: 500, headers: vec![], body: "boom 2" },
+            Canned::Reply { status: 500, headers: vec![], body: "boom 3" },
+        ]);
+        let filter = ModelHeadlineFilter::new("sk-test".into())
+            .unwrap()
+            .with_base_url(&server.base_url);
+        let err = filter
+            .filter(vec![headline("Fed holds rates")], None)
+            .expect_err("a persistent 500 surfaces as an error");
+        assert!(
+            err.to_string().contains("500"),
+            "the surfaced error names the status: {err}"
+        );
     }
 
     #[test]
