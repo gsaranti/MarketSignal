@@ -895,7 +895,11 @@ pub(crate) fn extract_anthropic_text_output(raw: &Value) -> Result<Value> {
         .find(|b| b.get("type").and_then(Value::as_str) == Some("text"))
         .and_then(|b| b.get("text"))
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("Anthropic response contained no text output block"))?;
+        // A refusal or a thinking-only turn leaves an empty/absent text block; treat that as
+        // "no usable output" rather than handing "" to the parser as an opaque invalid-JSON
+        // error (the streaming path catches the refusal earlier in `stream_failure`).
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| anyhow!("Anthropic response contained no usable text output block"))?;
     serde_json::from_str(text).context("Anthropic structured output was not valid JSON")
 }
 
@@ -908,7 +912,19 @@ pub(crate) fn extract_openai_envelope(raw: &Value) -> Result<Value> {
     let content = raw
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("OpenAI response missing choices[0].message.content"))?;
+        .filter(|s| !s.trim().is_empty());
+    let Some(content) = content else {
+        // A reasoning model (`gpt-5-mini`) that spends its whole `max_completion_tokens`
+        // budget on reasoning returns `finish_reason: "length"` with empty/absent content.
+        // Surface the finish_reason so that intermittent, retry-proof length-cap reads as
+        // itself rather than a bare "missing content" — the lever is the token ceiling, not
+        // another retry.
+        let finish = raw
+            .pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        bail!("OpenAI response had no usable message content (finish_reason: {finish})");
+    };
     serde_json::from_str(content).context("OpenAI message content was not valid JSON")
 }
 
@@ -1297,12 +1313,38 @@ fn stream_failure(provider: Provider, event: &Value) -> Option<String> {
                     .and_then(Value::as_str)
                     .unwrap_or("unknown error")
             )),
-            Some("message_delta")
-                if event.pointer("/delta/stop_reason").and_then(Value::as_str)
-                    == Some("max_tokens") =>
+            Some("message_delta") => match event.pointer("/delta/stop_reason").and_then(Value::as_str)
             {
-                Some("Anthropic response truncated at max_tokens".to_string())
-            }
+                // Normal completions for the `output_config.format` path: no stop_reason yet (a
+                // usage-only delta) or a clean finish. `tool_use` / `pause_turn` never reach this
+                // shared path — it has no tools and no server tools — so they aren't special-cased.
+                None | Some("end_turn") | Some("stop_sequence") => None,
+                // Output cap hit — the envelope is truncated; the lever is raising `max_tokens`.
+                Some("max_tokens") => Some("Anthropic response truncated at max_tokens".to_string()),
+                // Context window exhausted — a distinct stop reason on Claude 4.5+, not the output
+                // cap, so the lever is shrinking the prompt/packet rather than raising `max_tokens`.
+                // Also a truncation; left uncaught it fails downstream as the same opaque
+                // empty/invalid body this guard exists to make legible.
+                Some("model_context_window_exceeded") => {
+                    Some("Anthropic response truncated (context window exceeded)".to_string())
+                }
+                // A safety classifier declined (HTTP 200, `stop_reason: "refusal"`, no usable
+                // output — Opus 4.7/4.8 can do this on benign work as a false positive). Surface
+                // the `stop_details` category so the refusal reads as itself rather than falling
+                // through to a downstream "empty body" / invalid-JSON parse failure. The decline
+                // is deterministic for the prompt, so retrying the same run won't clear it.
+                Some("refusal") => {
+                    let category = event
+                        .pointer("/delta/stop_details/category")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unspecified");
+                    Some(format!("Anthropic declined the request (refusal: {category})"))
+                }
+                // Any other terminal stop on this structured-output path leaves no usable envelope;
+                // name it instead of letting it fail downstream as opaque invalid JSON, so a new
+                // stop reason stays legible rather than recurring as this same failure class.
+                Some(other) => Some(format!("Anthropic stopped early (stop_reason: {other})")),
+            },
             _ => None,
         },
     }
@@ -1607,6 +1649,33 @@ mod tests {
                 { "type": "message", "content": [ { "type": "output_text", "text": content.into() } ] }
             ]
         })
+    }
+
+    #[test]
+    fn extract_openai_envelope_reads_chat_completions_content() {
+        // The fixed Chat Completions stages (headline_filter) return the strict-schema
+        // envelope as a JSON string in choices[0].message.content.
+        let raw = json!({
+            "choices": [{ "finish_reason": "stop", "message": { "content": "{\"clusters\":[]}" } }]
+        });
+        let value = extract_openai_envelope(&raw).expect("parses the content JSON");
+        assert!(value.get("clusters").is_some());
+    }
+
+    #[test]
+    fn extract_openai_envelope_surfaces_a_length_cap_finish_reason() {
+        // `gpt-5-mini`'s reasoning can exhaust `max_completion_tokens`, returning empty
+        // content with finish_reason "length" — surfaced as itself, not a bare "missing
+        // content", so the lever (raise the token ceiling) is legible and it is not mistaken
+        // for a retryable transport blip.
+        let raw = json!({
+            "choices": [{ "finish_reason": "length", "message": { "content": "" } }]
+        });
+        let err = extract_openai_envelope(&raw).expect_err("empty content is an error");
+        assert!(
+            err.to_string().contains("length"),
+            "error names the finish_reason: {err}"
+        );
     }
 
     #[test]
@@ -2311,7 +2380,19 @@ instructions"));
         let raw = json!({ "content": [ { "type": "thinking", "thinking": "..." } ] });
         let err = parse_response(Provider::Anthropic, &raw, "r".into(), "t".into()).unwrap_err();
         assert!(
-            err.to_string().contains("no text output block"),
+            err.to_string().contains("no usable text output block"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_anthropic_response_with_empty_text_output() {
+        // A refusal/abridged turn can carry an empty text block — treated as no usable
+        // output with the same legible error, not an opaque invalid-JSON parse failure.
+        let raw = json!({ "content": [ { "type": "text", "text": "   " } ] });
+        let err = parse_response(Provider::Anthropic, &raw, "r".into(), "t".into()).unwrap_err();
+        assert!(
+            err.to_string().contains("no usable text output block"),
             "unexpected error: {err}"
         );
     }
@@ -2464,10 +2545,48 @@ instructions"));
             stream_failure(Provider::Anthropic, &truncated).as_deref(),
             Some("Anthropic response truncated at max_tokens")
         );
-        // A normal stop_reason is not a failure.
-        let end_turn =
-            json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" } });
-        assert_eq!(stream_failure(Provider::Anthropic, &end_turn), None);
+        // A safety-classifier refusal (HTTP 200, no usable output) is surfaced as itself with
+        // its category, not left to fail downstream as an opaque empty/invalid body.
+        let refusal = json!({
+            "type": "message_delta",
+            "delta": { "stop_reason": "refusal", "stop_details": { "type": "refusal", "category": "cyber" } }
+        });
+        assert_eq!(
+            stream_failure(Provider::Anthropic, &refusal).as_deref(),
+            Some("Anthropic declined the request (refusal: cyber)")
+        );
+        // A refusal with no stop_details still reads as a refusal, category unspecified.
+        let bare_refusal =
+            json!({ "type": "message_delta", "delta": { "stop_reason": "refusal" } });
+        assert_eq!(
+            stream_failure(Provider::Anthropic, &bare_refusal).as_deref(),
+            Some("Anthropic declined the request (refusal: unspecified)")
+        );
+        // Context-window exhaustion (Claude 4.5+) is a truncation, distinct from max_tokens.
+        let ctx_exceeded = json!({
+            "type": "message_delta",
+            "delta": { "stop_reason": "model_context_window_exceeded" }
+        });
+        assert_eq!(
+            stream_failure(Provider::Anthropic, &ctx_exceeded).as_deref(),
+            Some("Anthropic response truncated (context window exceeded)")
+        );
+        // Any other terminal stop is surfaced by name rather than failing opaquely downstream.
+        let novel =
+            json!({ "type": "message_delta", "delta": { "stop_reason": "some_future_reason" } });
+        assert_eq!(
+            stream_failure(Provider::Anthropic, &novel).as_deref(),
+            Some("Anthropic stopped early (stop_reason: some_future_reason)")
+        );
+        // Normal stop reasons (and a usage-only delta with no stop_reason) are not failures.
+        for delta in [
+            json!({ "stop_reason": "end_turn" }),
+            json!({ "stop_reason": "stop_sequence" }),
+            json!({ "usage": { "output_tokens": 12 } }),
+        ] {
+            let event = json!({ "type": "message_delta", "delta": delta });
+            assert_eq!(stream_failure(Provider::Anthropic, &event), None);
+        }
     }
 
     #[test]
