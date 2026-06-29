@@ -409,8 +409,19 @@ as-built; the rest remain planned):
   engine** (grade core from fundamentals+price+forensics; a conviction layer of
   revision/narrative-vs-reality; positioning held out of the grade until calibrated),
   with forward targets refinable **post-research only** via a typed, sourced
-  `research_forward_assumption` the engine recomputes (sub-scores never move). Three
-  pillars take the job past grade-then-summarize: **(1) intrinsic verdict vs. portfolio
+  `research_forward_assumption` the engine recomputes (sub-scores never move). The
+  verdict is a **four-part read** — deterministic **grade** (backward/current anchor), a
+  first-class **forward outlook** (scenario targets + horizon, *surfaced beside* the grade
+  so a weak-grade / strong-forward name — the market pricing the future — reads as such
+  rather than buried), **bidirectional conviction**, and the portfolio **action**. The
+  load-bearing refinement: research may *raise* conviction, not only cap it — but **only**
+  via a typed `validated_leading_indicator` (an *engine-unscored* countable/dated metric,
+  returned and stored as a `base`/`raise`/`final` decomposition the **app recomputes**, ≤
+  one band, app-validated per-candidate incl. debuts), **never** via price or narrative
+  (the **anti-reflexivity / no-double-count invariant**). The same model and invariant
+  govern Trade Opportunities (the raise gated to its emerging-economics archetypes), whose
+  matrix cards now surface the engine's **price prediction user-facing** (EOY ~12-mo
+  scenario target + bear/bull range). Three pillars take the job past grade-then-summarize: **(1) intrinsic verdict vs. portfolio
   action are separated** — the per-holding loop emits the intrinsic verdict (grade,
   conviction, targets + a *standalone action lean*), and a post-roll-up construction
   stage sets the final action+sizing with the whole book in view (**Step 7a** deterministic

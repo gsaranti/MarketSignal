@@ -2,52 +2,51 @@
 
 ## What happened
 
-Ran a **v2 docs open-questions audit** (4 parallel readers across the local-suite
-corpus) to confirm the requirement docs are dev-ready. Resolved all **§2 contradictions**
-— four product calls (**Connected Sources into v2**, source-registry override UI
-**deferred**, investor profile **read-only panel**, **Tavily fallback kept**), plus
-fast-tier **not gate-bearing**, buying-power / dossier-tag / warning-tree clarifications,
-TO Step-4 **provisional archetype** for the quota, and the **pattern/case-study lens
-restored** to TO Step 5d. Checked **PR #45 code**: most Portfolio engine math is already
-implemented as **calibratable placeholders**, so added **"Starting parameters
-(calibratable)"** sections to `portfolio-analysis.md` + `trade-opportunities.md` (doc-sync
-the as-built constants + draft the genuinely-open pieces). **Two Codex rounds** caught real
-code-vs-doc accuracy bugs (grade is **impute-to-50, not renormalize**; stale comments; cash
-gating) — all fixed. Resolved the cash **code-vs-preset gap** properly:
-`InvestorProfile.available_cash` → **`Option<f64>`** (`None` = unconstrained = the preset's
-stance), aligning code to BUILD.md's "cash always available." Committed as two (docs
-`13570ff`, code `3cf53f2`), pushed to `main`. `cargo test` 523 ✓ + clippy clean.
+A design conversation that became a docs change. Question: how much do research vs hard
+data move grades/verdicts in Portfolio + TO (user's observation: C/D/F-graded stocks often
+compound for years). Settled — with Codex concurrence — on a **four-part verdict model**: a
+deterministic **grade** (backward/current anchor, hard-data only), a **first-class forward
+outlook** surfaced *beside* the grade (so a weak-grade / strong-forward name reads as such,
+not buried), **bidirectional conviction**, and the portfolio **action**. The load-bearing
+change: research may now **raise** conviction (not only cap it), but **only** via a typed
+**`validated_leading_indicator`** — an *engine-unscored* (not in the deterministic
+composite) countable/dated leading metric, returned as a `base`/`raise`/`final`
+decomposition the **app recomputes**, ≤ one band, app-validated per-candidate (incl.
+debuts) — **never** via price/narrative (the **anti-reflexivity / no-double-count
+invariant**). **TO price predictions are now user-facing** on the matrix card (engine EOY
+~12-mo scenario target + bear/bull range). Iterated across **7 Codex rounds** (typed-field
+producer, double-count definition, debut-validation gap, target time-basis, conviction
+decomposition, product↔workflow consistency, a nested-bold bug, grammar) — all resolved.
 
 ## Current state
 
-On `main` @ `3cf53f2`, in sync with origin. **v2 docs are dev-ready.** §2 resolved; §1
-engine math reframed (Portfolio mostly already coded + doc-synced; open pieces drafted as
-calibration surfaces; TO starting table drafted). **BUILD.md confirmed NOT needing an
-update** — the changes sit below its as-built altitude, and the cash fix aligned code to
-the existing "cash always available" stance. Remaining open buckets are all **plan-time /
-per-slice**: §3 SQLite DDL for the not-yet-built TO tables (opportunity graph, thesis
-ledger), §4 config-knob default values, §5 keyless endpoint URLs (SEC EDGAR / Stooq /
-FINRA / CBOE / SearXNG). Build order unchanged.
+On `main` @ `4cc2284` (5 docs, +27/−17), in sync with origin. **Docs-only — no code
+touched.** This is *design* for the **not-yet-built** full Portfolio + TO: the four-part
+model, the `validated_leading_indicator` field, the base/raise/final decomposition, the
+per-candidate raise validation (Step 6g / 5h), and the user-facing TO price prediction are
+**specified, not implemented** (the narrow Portfolio slice / shared engine are unchanged).
+**`BUILD.md` updated this session** (Portfolio decision-discipline bullet) to record the
+four-part model + the bidirectional-conviction invariant. Build order unchanged.
 
 ## Open questions
 
-- The **calibration-surface pattern**: engine constants are MVP starting values flagged
-  *shadow-tune-not-pin* — live-calibrate on the M5 (carried).
-- The §1 **genuinely-open drafts** (dead-money hurdle = risk-free + 5%, action
-  feasible-set bounding, material 5% threshold, conviction-layer trips; the TO
-  risk-tier / horizon / hypothesis-score / quota / gate table) are starting values to
-  validate when each slice is built.
-- Optional **BUILD.md micro-tweak**: tighten the gate wording (`:307`) to "(endpoint +
-  *required* roster ids — reasoner + embedder)" for fast-tier-optional consistency.
-  Skippable.
-- Standing **M5-gated backlog** unchanged (web-research provisioning/gating/UI +
-  rendered-retrieval live validation, analytical-register restyle live-check, no new
-  Tavily, local-model live quality/FMP-tier checks).
+- New **conviction-raise bound** is calibratable — ≤ **one band** lift + the
+  engine-unscored leading-indicator gate; validate on the M5 with the other surfaces.
+- **Calibration-surface pattern** (carried): engine constants are MVP shadow-tune-not-pin
+  values — live-calibrate on the M5.
+- §1 **genuinely-open drafts** (dead-money hurdle, feasible-set bounding, thresholds; TO
+  risk-tier / horizon / hypothesis-score / quota / gate table) — per-slice starting values.
+- Optional **BUILD.md gate-wording micro-tweak** (`:307` → "endpoint + *required* roster
+  ids — reasoner + embedder"). Skippable.
+- Standing **M5-gated backlog** (web-research provisioning/gating/UI + rendered-retrieval,
+  analytical-register restyle live-check, no new Tavily, local-model live quality/FMP-tier).
 
 ## Where to start
 
 Begin the **live Schwab OAuth slice** (next in build order; `schwab-integration.md`
-audited clean — OAuth loopback, 30-min / 7-day tokens, Keychain, positions + option chains
-all concretely specified). **When touching any Portfolio formula, check code-vs-doc
-first** — PR #45 already implements the MVP engine math, so a doc "gap" may just be the doc
-lagging the code.
+audited clean — OAuth loopback, 30-min/7-day tokens, Keychain, positions + option chains).
+The four-part verdict model + bidirectional conviction land **later**, when full Portfolio
++ TO are built — at which point the new `validated_leading_indicator` field, the
+base/raise/final decomposition, and the per-candidate raise validation must be implemented.
+**Check code-vs-doc first** on any Portfolio formula — PR #45 already implements the MVP
+engine math.
