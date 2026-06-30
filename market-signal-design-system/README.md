@@ -298,6 +298,28 @@ fully binding.
 4. **Grade scale as a desaturated tonal scale** — A–F and conviction map
    across the unified palette as discrete, AA-validated hairline chips.
 
+### Analytical-register controls (Portfolio & Trade Opportunities only)
+
+Two controls live in the register alongside the data primitives, confined
+to the Portfolio and Trade Opportunities surfaces plus shared chrome —
+never the report's reading register or generic chrome. Both are additive,
+reuse existing tokens and glyphs, and restyle in place (no new nav model).
+
+- **Sort bar** (`.ana-sortbar` / `SortBar`) — a horizontal toolbar of
+  tracked-caps toggle triggers that reorders the Portfolio holdings
+  **card stack**. It is not a table: each trigger is a `button` with
+  `aria-pressed` for the active key, and it never carries `aria-sort`
+  (reserved for `.ana-grid` heads). The active key shows the exact ▾
+  (descending) / ▴ (ascending) glyph the grid heads and `.dir` already
+  use; inactive keys a dimmed ▾ at `th.sortable`'s reduced opacity.
+  Clicking the active key flips direction.
+- **Matrix / list view toggle** (`.ana-viewtoggle` / `ViewToggle`) — a
+  minimal two-option switch (Matrix · List) flipping the Trade
+  Opportunities surface between a card matrix and a flat list. Ghost-text
+  built on the `.btn-ghost` posture; segmented by hairlines **without a
+  capsule** (radius ≤ 2px, no pill); the active view marked via
+  `aria-pressed`. Restrained — not a tab bar.
+
 ### Spacing & baseline
 
 An **8px vertical baseline grid** governs all paragraph rhythm in the

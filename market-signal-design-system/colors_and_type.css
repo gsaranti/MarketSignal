@@ -890,3 +890,111 @@ button, input, textarea, select { font: inherit; color: inherit; }
   border-bottom: 1px dotted var(--hairline);
   cursor: help;
 }
+
+/* ---- Sort bar — card-surface control for the Portfolio holdings card stack.
+   A horizontal toolbar of toggle TRIGGERS, one per sort key, that reorders the
+   cards. It is NOT a table: each trigger is a <button> (aria-pressed marks the
+   active key); it must NEVER carry aria-sort (that is reserved for .ana-grid
+   heads). The active key shows the EXACT ▾ (desc) / ▴ (asc) glyph .ana-grid
+   th.sortable and .dir already use; inactive keys show a dimmed ▾ at the same
+   0.5 opacity th.sortable::after uses. Clicking the active key flips direction.
+   Reuses existing tokens only — no new color, no pill, radius ≤ 2px. ---- */
+.ana-sortbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.ana-sortbar > .ana-sortbar-label {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-right: 8px;
+}
+.ana-sortbar > button {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease),
+              color           var(--dur-fast) var(--ease),
+              border-color    var(--dur-fast) var(--ease);
+}
+/* Direction glyph — same vocabulary as th.sortable::after; dimmed when inactive. */
+.ana-sortbar > button::after {
+  content: "▾";
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+  opacity: 0.5;
+}
+.ana-sortbar > button:hover {
+  color: var(--ink-2);
+  background: var(--paper-soft);
+}
+.ana-sortbar > button[aria-pressed="true"] {
+  color: var(--ink);
+  background: var(--paper-soft);
+  border-color: var(--hairline);
+}
+.ana-sortbar > button[aria-pressed="true"]::after { opacity: 1; }
+.ana-sortbar > button[aria-pressed="true"][data-dir="asc"]::after  { content: "▴"; }
+.ana-sortbar > button[aria-pressed="true"][data-dir="desc"]::after { content: "▾"; }
+.ana-sortbar > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---- Matrix / list view toggle — for Trade Opportunities. A minimal
+   two-option switch flipping a surface between a card matrix and a flat list.
+   Ghost-text built on the .btn-ghost posture, tracked-caps options, the active
+   one marked via aria-pressed. Segmented WITHOUT a capsule: hairline-divided,
+   radius ≤ 2px — never a pill. Restrained, not a tab bar. Existing tokens
+   only. ---- */
+.ana-viewtoggle {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.ana-viewtoggle > button {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--hairline);
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease),
+              color           var(--dur-fast) var(--ease);
+}
+.ana-viewtoggle > button:first-child { border-left: 0; }
+.ana-viewtoggle > button:hover {
+  color: var(--ink-2);
+  background: var(--paper-soft);
+}
+.ana-viewtoggle > button[aria-pressed="true"] {
+  color: var(--ink);
+  background: var(--paper-soft);
+}
+.ana-viewtoggle > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

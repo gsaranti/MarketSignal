@@ -57,6 +57,16 @@ When building a Portfolio or Trade Opportunities surface:
   strip, controlled-rich holding card (thesis-anchored), dense data grid
   (the 3×3 matrix + tabular roll-ups), grade chip/scale, directional
   value token, conviction meter, methodology reveal.
+- **Two register-only controls** (`.ana-sortbar`, `.ana-viewtoggle`;
+  `SortBar`, `ViewToggle` in the kit): a **sort bar** of tracked-caps
+  toggle triggers that reorders the Portfolio holdings card stack (each a
+  `button` with `aria-pressed` — never `aria-sort`, which stays reserved
+  for `.ana-grid` heads; the active key carries the grid's ▾/▴ glyph and
+  flips on re-click), and a **matrix/list view toggle** for Trade
+  Opportunities (ghost-text on the `.btn-ghost` posture, segmented by
+  hairlines without a capsule, 2px radius). Both are confined to the
+  Portfolio and Trade Opportunities surfaces plus shared chrome, reuse
+  existing tokens and glyphs only, and restyle in place — no new nav.
 - **Still flat with hairlines.** No shadow, no pill, no radius > 2px, no
   celebratory framing. A "controlled-rich" data card is the *narrow*
   reopening of the dashboard-widget ban: a hairline card may now carry a

@@ -1,0 +1,89 @@
+<!-- @dsCard group="Analytical" name="Sort bar & view toggle" subtitle="Card-stack sort triggers + matrix/list switch — analytical register only" -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sort bar & view toggle</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="stylesheet" href="_card.css">
+</head>
+<body>
+<div class="card-frame">
+
+  <div class="cap" style="margin-bottom:4px;">Analytical register · 5.8 / 5.9</div>
+  <div style="font-family:var(--font-serif); font-size:15px; line-height:1.5; color:var(--ink-2); margin-bottom:28px; max-width:62ch;">
+    Two controls confined to the analytical surfaces and shared chrome. Both reuse existing tokens, glyphs and the tracked-caps label vocabulary — additive, restyle-in-place. No new nav, no pill, no dashboard-widget gestalt.
+  </div>
+
+  <!-- ADD #1 — sort bar -->
+  <div class="cap" style="margin-bottom:10px;">Sort bar · Portfolio holdings card stack</div>
+  <div class="ana-card" style="padding:12px 14px; margin-bottom:8px;">
+    <div class="ana-sortbar" id="sortbar">
+      <span class="ana-sortbar-label">Sort</span>
+      <button type="button" aria-pressed="true" data-dir="desc" aria-label="Sort by Value, descending">Value</button>
+      <button type="button" aria-pressed="false" aria-label="Sort by $ Gain">$ Gain</button>
+      <button type="button" aria-pressed="false" aria-label="Sort by % Gain">% Gain</button>
+      <button type="button" aria-pressed="false" aria-label="Sort by Cash Invested">Cash Invested</button>
+    </div>
+  </div>
+  <div class="cap-line" style="margin-bottom:28px; color:var(--ink-3); letter-spacing:0; font-style:italic;">
+    Toggle buttons (aria-pressed), never aria-sort. The active key carries the grid's ▾/▴ glyph; inactive keys a dimmed ▾. Click the active key to flip direction.
+  </div>
+
+  <!-- ADD #2 — matrix / list toggle -->
+  <div class="cap" style="margin-bottom:10px;">View toggle · Trade Opportunities</div>
+  <div class="ana-card" style="padding:12px 14px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; gap:16px;">
+    <span class="ana-head">Trade opportunities</span>
+    <div class="ana-viewtoggle" id="viewtoggle" role="group" aria-label="View">
+      <button type="button" aria-pressed="true">Matrix</button>
+      <button type="button" aria-pressed="false">List</button>
+    </div>
+  </div>
+  <div class="cap-line" style="margin-bottom:8px; color:var(--ink-3); letter-spacing:0; font-style:italic;">
+    Segmented without a capsule — hairline-divided, 2px radius. Ghost-text on the .btn-ghost posture; the active view marked, not a tab bar.
+  </div>
+
+</div>
+
+<script>
+  // Minimal wiring so the controls demonstrate honestly. The logic mirrors the
+  // SortBar / ViewToggle kit primitives in Analytical.jsx.
+  // The ▾/▴ glyph is decorative (aria-hidden), so the accessible name must carry
+  // key + direction — kept in sync here, mirroring the SortBar kit primitive.
+  function syncSortLabels() {
+    document.querySelectorAll('#sortbar > button').forEach(function (b) {
+      var key = b.textContent.trim();
+      var active = b.getAttribute('aria-pressed') === 'true';
+      var dir = b.getAttribute('data-dir');
+      b.setAttribute('aria-label',
+        'Sort by ' + key + (active ? ', ' + (dir === 'asc' ? 'ascending' : 'descending') : ''));
+    });
+  }
+  document.querySelectorAll('#sortbar > button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var pressed = btn.getAttribute('aria-pressed') === 'true';
+      if (pressed) {
+        btn.setAttribute('data-dir', btn.getAttribute('data-dir') === 'desc' ? 'asc' : 'desc');
+      } else {
+        document.querySelectorAll('#sortbar > button').forEach(function (b) {
+          b.setAttribute('aria-pressed', 'false');
+          b.removeAttribute('data-dir');
+        });
+        btn.setAttribute('aria-pressed', 'true');
+        btn.setAttribute('data-dir', 'desc');
+      }
+      syncSortLabels();
+    });
+  });
+  syncSortLabels();
+  document.querySelectorAll('#viewtoggle > button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('#viewtoggle > button').forEach(function (b) {
+        b.setAttribute('aria-pressed', 'false');
+      });
+      btn.setAttribute('aria-pressed', 'true');
+    });
+  });
+</script>
+</body>
+</html>

@@ -179,6 +179,101 @@ function Reveal({ label, children }) {
   );
 }
 
+// ---- Sort bar — card-surface control for a holdings card stack (Portfolio).
+// A row of toggle TRIGGERS, one per sort key — NOT a table, so each is a
+// <button aria-pressed> and NEVER carries aria-sort (reserved for .ana-grid
+// heads). The active key shows the EXACT ▾/▴ glyph the grid heads and Dir use;
+// inactive keys a dimmed ▾ at th.sortable's 0.5 opacity. Clicking the active
+// key flips direction. Controlled (value) or uncontrolled (defaultValue).
+// `keys`: [{ key, label }]. Sort shape: { key, dir: "asc" | "desc" }.
+function SortBar({ keys = [], value, defaultValue, onChange, label = "Sort", style }) {
+  const norm = v => (typeof v === "string" ? { key: v, dir: "desc" } : v);
+  const [internal, setInternal] = React.useState(
+    () => norm(defaultValue) || { key: keys[0] && keys[0].key, dir: "desc" }
+  );
+  const sort = value != null ? norm(value) : internal;
+  const pick = k => {
+    const next = sort.key === k
+      ? { key: k, dir: sort.dir === "desc" ? "asc" : "desc" }   // flip the active key
+      : { key: k, dir: "desc" };                                // new key opens descending
+    if (value == null) setInternal(next);
+    onChange && onChange(next);
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", ...style }}>
+      {label && (
+        <span style={{
+          fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 600,
+          letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--ink-3)",
+          marginRight: 8,
+        }}>{label}</span>
+      )}
+      {keys.map(k => {
+        const active = sort.key === k.key;
+        return (
+          <button key={k.key} type="button" aria-pressed={active}
+            aria-label={`Sort by ${k.label}${active ? `, ${sort.dir === "asc" ? "ascending" : "descending"}` : ""}`}
+            onClick={() => pick(k.key)}
+            style={{
+              display: "inline-flex", alignItems: "baseline", gap: 5,
+              fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 600,
+              letterSpacing: "0.05em", textTransform: "uppercase",
+              color: active ? "var(--ink)" : "var(--ink-3)",
+              background: active ? "var(--paper-soft)" : "transparent",
+              border: "1px solid " + (active ? "var(--hairline)" : "transparent"),
+              borderRadius: 2, padding: "5px 8px", cursor: "pointer",
+              transition: "all 120ms cubic-bezier(0.4,0.0,0.2,1)",
+            }}>
+            <span>{k.label}</span>
+            <span aria-hidden="true" style={{
+              fontFamily: "var(--font-mono)", letterSpacing: 0, opacity: active ? 1 : 0.5,
+            }}>{active ? (sort.dir === "asc" ? "▴" : "▾") : "▾"}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---- Matrix / list view toggle — Trade Opportunities. A minimal two-option
+// switch (Matrix · List). Ghost-text on the .btn-ghost posture, tracked-caps
+// options, active marked via aria-pressed. Segmented WITHOUT a capsule:
+// hairline-divided, radius ≤ 2px — never a pill, never a tab bar.
+function ViewToggle({ options, value, defaultValue, onChange, label = "View", style }) {
+  const opts = options || [
+    { key: "matrix", label: "Matrix" },
+    { key: "list",   label: "List" },
+  ];
+  const [internal, setInternal] = React.useState(defaultValue || opts[0].key);
+  const cur = value != null ? value : internal;
+  const pick = k => { if (value == null) setInternal(k); onChange && onChange(k); };
+  return (
+    <div role="group" aria-label={label} style={{
+      display: "inline-flex", border: "1px solid var(--hairline)",
+      borderRadius: 2, overflow: "hidden", ...style,
+    }}>
+      {opts.map((o, i) => {
+        const active = cur === o.key;
+        return (
+          <button key={o.key} type="button" aria-pressed={active} onClick={() => pick(o.key)}
+            style={{
+              fontFamily: "var(--font-sans)", fontSize: 11, fontWeight: 600,
+              letterSpacing: "0.05em", textTransform: "uppercase",
+              color: active ? "var(--ink)" : "var(--ink-3)",
+              background: active ? "var(--paper-soft)" : "transparent",
+              border: 0, borderLeft: i === 0 ? "0" : "1px solid var(--hairline)",
+              padding: "6px 12px", cursor: "pointer",
+              transition: "all 120ms cubic-bezier(0.4,0.0,0.2,1)",
+            }}>
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 Object.assign(window, {
   AnaHead, Dir, Grade, Conviction, KeyFigureStrip, Sparkline, Methodology, AnaCard, Reveal,
+  SortBar, ViewToggle,
 });
