@@ -470,17 +470,29 @@ as-built; the rest remain planned):
   first-surfaced price, live from an idea's first *subsequent* run, stateless off the
   carry-forward identity) rendered **inline in the matrix** and fed to the **Step-5g re-score of
   a carried-forward name as reflexivity-disciplined context** (an unconfirmed gain caps
-  conviction, never a momentum boost). The **opportunity lifecycle splits re-evaluation by
-  cost**: every live pick gets an **every-run deterministic upside re-derivation** (engine-only,
-  off the discovery budget — re-derives targets + re-runs the entry gate, freshening the quant
-  read and able to **fail it → archive**), while **deep research re-runs only on re-surfacing**
-  through discovery (so the model-authored half — thesis, conviction, bear case — and the price
-  prediction's research layer freeze between deep passes; the upside gate is the **sole archival
-  decision**, judging the post-decay target). There is **no "target met" exit** (`played-out`
-  retired); the lone exit, `failed-reevaluation`, moves a pick to a **price-tracked archive**
-  (last 100 tombstones — frozen retrospective record + live since-flagged return vs sector/market,
-  **no forward prediction**), re-entry a **fresh** opportunity (anti-reflexive — the archive never
-  self-promotes). GDELT
+  conviction, never a momentum boost). The feature runs as **two on-demand jobs sharing one
+  page**: **Discover (DTO)** — the discovery funnel + deep-research of candidates + a cheap engine
+  sweep of the carried matrix — and **Audit (ATO)** — user-selected re-evaluation forking to **Quick
+  Audit** (the cheap re-derivation) or **Deep Audit** (the full per-candidate loop). The load-bearing
+  invariant: **only a deep re-evaluation can archive; the cheap re-derivation never does** — it
+  refreshes the quant read and raises a non-destructive **attention warning** (the amber *Consider
+  Deep Audit* badge; a quiet *Research stale* >~4wk and a green *Deep-researched today* round out the
+  card), so the cheap pass runs liberally while the destructive action stays gated. DTO spends the
+  deep-research budget **new candidates first**, leftover on existing opportunities that
+  **re-surfaced** through discovery (oldest-`last_deep_researched_at` first) — run through the
+  **Step-5 loop as carried-forward candidates**, the prior record weighted by an age-banded
+  **`continuity_weight`** — while every other live pick gets the cheap sweep; **Step 7 is
+  deterministic** (reconciles + archives a deep-judged `invalidated`, never invokes the model). The
+  accepted cost: the matrix is **self-flagging, not self-cleaning** — a stale pick lingers
+  (cheap-refreshed, warning-badged) until a deep pass retires it. There is **no "target met" exit**
+  (`played-out` retired); the lone exit, `failed-reevaluation`, fires **only from a deep pass**
+  judging `invalidated`, moving a pick to a **price-tracked archive** (last 100 tombstones — frozen
+  record + live since-flagged return vs sector/market, **no forward prediction**), re-entry a
+  **fresh** opportunity (anti-reflexive — the archive never self-promotes). Displayed performance is a
+  **price-only render floor** over a keyless **Stooq daily-bar cache** (refreshed after 8 PM ET,
+  fail-soft); the live **FMP `quote`** is a job-time engine input, not a persisted price. The
+  local-suite gate stays **uniform on presence**, with one carve-out — Quick Audit, making no model
+  call, **skips the run-gate daemon-connectivity check**. GDELT
   dropped; discovery is **SearXNG-only**. A new **event-impact / value-chain repricing route**
   (materiality-gated, dormant otherwise) treats a discrete tech/product/standard announcement as a
   **two-sided** trigger — beneficiaries, panic-vs-real feared-losers, latent (un-moved) names — each
