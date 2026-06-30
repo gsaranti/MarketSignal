@@ -205,7 +205,12 @@ pre-mount to avoid a first-paint flash.
   and a denser, instrument-grade **analytical register** (mono-tabular numerics +
   a scoped, desaturated directional/grade palette, analytical-surfaces only) that
   the local-suite surfaces (Portfolio, Trade Opportunities) adopt as they are
-  built; shared chrome bridges the two.
+  built; shared chrome bridges the two. The register carries two **display-only**
+  suite controls (designed, not yet built) — a Portfolio **holdings sort bar**
+  (in-place card reorder) and a Trade Opportunities **Matrix/List view toggle**;
+  both reorder already-computed fields only (no engine/schema/workflow change),
+  and the TO **matrix stays the canonical view** while the List is an additive
+  flat ranking that preserves the load-bearing 3×3 yet sorts across all cells.
 
 ## Runtime, observability & failure posture
 
