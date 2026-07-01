@@ -1061,11 +1061,11 @@ fn read_db_fail_soft<T: Default>(
 const MAIN_AGENT_RECENT_REPORTS: u32 = 3;
 
 /// Per-report ceiling on the Markdown body carried in the Step-2 context, in chars
-/// (~3k tokens — the inbox `PER_DOC_CHAR_CAP` magnitude). A typical report rides
-/// whole; only a pathological one is head-truncated, visibly (a marker matching the
-/// inbox-doc convention the system prompt already explains). Tunable alongside the
-/// packet caps.
-const RECENT_REPORT_BODY_CAP: usize = 12_000;
+/// (~5k tokens). Sized to clear a typical full report whole, so only an unusually
+/// long one is head-truncated, visibly (a marker matching the inbox-doc convention
+/// the system prompt already explains). Applied per report, so the three-report
+/// Step-2 context can carry up to 3× this. Tunable alongside the packet caps.
+const RECENT_REPORT_BODY_CAP: usize = 20_000;
 
 /// Best-effort Step-2 recent prior-report context for the main agent: the most recent
 /// reports' structured summaries paired with their (head-truncated) Markdown bodies,

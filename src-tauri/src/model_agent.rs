@@ -162,7 +162,7 @@ const OPENAI_SCHEMA_NAME: &str = "market_signal_report";
 /// body both draw from `max_tokens`, so the cap must cover both. The call streams
 /// (`stream: true`), so a high cap risks no HTTP timeout the way a non-streaming body
 /// would. App-layer tunable, calibrated against live runs.
-const ANTHROPIC_MAX_TOKENS: u32 = 24_000;
+const ANTHROPIC_MAX_TOKENS: u32 = 32_000;
 
 /// Output ceiling (`max_output_tokens`) for one OpenAI generation. Raised from the old
 /// report-only 8192 to give reasoning headroom: on the Responses API the model's reasoning
@@ -170,7 +170,7 @@ const ANTHROPIC_MAX_TOKENS: u32 = 24_000;
 /// cover both (mirroring [`ANTHROPIC_MAX_TOKENS`]). The call streams (`stream: true`), so a
 /// high cap risks no HTTP timeout the way a non-streaming body would. App-layer tunable,
 /// calibrated against live runs.
-const OPENAI_MAX_TOKENS: u32 = 24_000;
+const OPENAI_MAX_TOKENS: u32 = 32_000;
 
 /// `budget_tokens` for haiku-4-5's extended thinking (it has no adaptive/effort mode).
 /// Must stay strictly below [`ANTHROPIC_MAX_TOKENS`]. A tunable, calibrated against live runs.
@@ -180,9 +180,12 @@ const HAIKU_THINKING_BUDGET_TOKENS: u32 = 8_192;
 /// and reused by the analyst arm (`analyst_agent`). Both arms now reason before the body
 /// streams (Anthropic extended thinking; OpenAI Responses-API reasoning), which
 /// front-loads latency before the first token, so both carry the same generous ceiling.
-/// These override the client-level backstop per request.
-pub(crate) const ANTHROPIC_TIMEOUT_SECS: u64 = 300;
-pub(crate) const OPENAI_TIMEOUT_SECS: u64 = 300;
+/// This is a *total* timeout covering the entire streamed generation (thinking + body),
+/// so it must clear the wall-clock of a full-length report near the `*_MAX_TOKENS` ceiling
+/// — raised alongside that cap so a long report can't trade a `max_tokens` truncation for
+/// an HTTP timeout. These override the client-level backstop per request.
+pub(crate) const ANTHROPIC_TIMEOUT_SECS: u64 = 600;
+pub(crate) const OPENAI_TIMEOUT_SECS: u64 = 600;
 
 const SYSTEM_PROMPT: &str = "You are the Head Market Analyst for Market Signal, a \
 market-research publication. You write a single, cohesive market report in one unified \

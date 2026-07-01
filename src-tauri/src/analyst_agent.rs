@@ -50,18 +50,18 @@ const OPENAI_URL: &str = "https://api.openai.com/v1/responses";
 /// Output ceiling for one Anthropic analyst generation. With extended thinking on, the
 /// reasoning *and* the review body both draw from `max_tokens`, so the cap must cover
 /// both — raised above the OpenAI arm's review-only ceiling for that headroom (still well
-/// below the main agent's 24k, since a review is far smaller than a full report). The call
+/// below the main agent's 32k, since a review is far smaller than a full report). The call
 /// streams (`stream: true`), so a high cap risks no HTTP timeout the way a non-streaming
 /// body would. App-layer tunable, calibrated against live runs.
-const ANTHROPIC_ANALYST_MAX_TOKENS: u32 = 16_000;
+const ANTHROPIC_ANALYST_MAX_TOKENS: u32 = 20_000;
 
 /// Output ceiling (`max_output_tokens`) for one OpenAI analyst generation. With reasoning on
 /// (Responses API), the model's reasoning tokens count against `max_output_tokens` alongside
 /// the review body, so the cap covers both — matched to the Anthropic analyst headroom (a
-/// review is far smaller than a full report, so this stays below the main agent's 24k). The
+/// review is far smaller than a full report, so this stays below the main agent's 32k). The
 /// call streams (`stream: true`), so a high cap risks no HTTP timeout the way a non-streaming
 /// body would. App-layer tunable, calibrated against live runs.
-const OPENAI_MAX_TOKENS: u32 = 16_000;
+const OPENAI_MAX_TOKENS: u32 = 20_000;
 
 /// The json_schema name on the OpenAI strict-output arm.
 const OPENAI_SCHEMA_NAME: &str = "analyst_review";
