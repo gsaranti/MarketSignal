@@ -1026,8 +1026,8 @@ pub struct ModelMainAgent {
 impl ModelMainAgent {
     pub fn new(config: MainAgentConfig) -> Result<Self> {
         // A generous client-level backstop; the real, provider-specific ceilings are set
-        // per request in `call` (Anthropic gets thinking headroom, OpenAI keeps its prior
-        // 120s). Sized to the larger of the two so it never undercuts a per-request value.
+        // per request in `call`. Sized to the configured streaming ceiling so it never
+        // undercuts a per-request value.
         let http = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(ANTHROPIC_TIMEOUT_SECS))
             .build()
@@ -1067,8 +1067,8 @@ impl ModelMainAgent {
     /// token extraction is a pure side-channel to the progress reporter, so a bug in
     /// the decoder can only affect what the tracker shows, never the parsed report.
     fn call(&self, provider: Provider, body: &Value) -> Result<Value> {
-        // Provider-specific total timeout (a per-request override of the client backstop):
-        // the Anthropic arm gets thinking headroom; the OpenAI arm keeps its prior ceiling.
+        // Provider-specific total timeout, overriding the client backstop for the full
+        // streamed generation: reasoning plus structured body.
         let (request, timeout) = match provider {
             Provider::Anthropic => (
                 self.http

@@ -4,11 +4,11 @@
 //! Each analyst is one [`Posture`] behind the [`AnalystAgent`] trait: the same
 //! condensed research packet in, a structured [`AnalystOutput`] out. The adapter is
 //! **dual-provider** like the main agent (the analyst model is user-selectable, so it
-//! may be OpenAI or Anthropic). The **Anthropic arm streams** so its extended-thinking
-//! summary reaches the run tracker live (thoughts only — the structured review body is
-//! accumulated silently and parsed whole, never streamed); the **OpenAI arm stays
-//! non-streaming** this phase (its Responses-API migration, which would surface its
-//! reasoning, is a later phase). The blocking HTTP call keeps the trait synchronous;
+//! may be OpenAI or Anthropic). **Both arms stream** so each surfaces its reasoning to the
+//! run tracker live (thoughts only — the structured review body is accumulated silently and
+//! parsed whole, never streamed): the Anthropic arm via extended-thinking summaries, the
+//! OpenAI arm via Responses-API reasoning summaries. The blocking HTTP call keeps the trait
+//! synchronous;
 //! the three analysts run concurrently at the application-layer seam (`pipeline`),
 //! offloaded via `spawn_blocking` at the Tauri command, so each streams its own
 //! posture-tagged reasoning into the tracker.
@@ -49,8 +49,8 @@ const OPENAI_URL: &str = "https://api.openai.com/v1/responses";
 
 /// Output ceiling for one Anthropic analyst generation. With extended thinking on, the
 /// reasoning *and* the review body both draw from `max_tokens`, so the cap must cover
-/// both — raised above the OpenAI arm's review-only ceiling for that headroom (still well
-/// below the main agent's 32k, since a review is far smaller than a full report). The call
+/// both. Matched to the OpenAI analyst arm for the same reasoning headroom, while staying
+/// below the main agent's 32k because a review is far smaller than a full report. The call
 /// streams (`stream: true`), so a high cap risks no HTTP timeout the way a non-streaming
 /// body would. App-layer tunable, calibrated against live runs.
 const ANTHROPIC_ANALYST_MAX_TOKENS: u32 = 20_000;
@@ -343,8 +343,8 @@ pub struct ModelAnalystAgent {
 impl ModelAnalystAgent {
     pub fn new(posture: Posture, config: MainAgentConfig) -> Result<Self> {
         // A generous client-level backstop; the real, provider-specific ceilings are set
-        // per request in `call` (Anthropic gets thinking headroom, OpenAI keeps its prior
-        // 120s). Sized to the larger of the two so it never undercuts a per-request value.
+        // per request in `call`. Sized to the configured streaming ceiling so it never
+        // undercuts a per-request value.
         let http = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(ANTHROPIC_TIMEOUT_SECS))
             .build()
@@ -375,8 +375,8 @@ impl ModelAnalystAgent {
     }
 
     fn call(&self, provider: Provider, body: &Value) -> Result<Value> {
-        // Provider-specific total timeout (a per-request override of the client backstop):
-        // the Anthropic arm gets thinking headroom; the OpenAI arm keeps its prior ceiling.
+        // Provider-specific total timeout, overriding the client backstop for the full
+        // streamed generation: reasoning plus structured body.
         let (request, timeout) = match provider {
             Provider::Anthropic => (
                 self.http
