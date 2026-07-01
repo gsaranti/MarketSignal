@@ -318,7 +318,9 @@ as-built; the rest remain planned):
   reuses the existing `Embedder` trait so `vector_memory` is unchanged. The roster default is **settled**: one frontier reasoner
   (Qwen3.5-122B-A10B) **plus the embedder stay resident**, and the 122B fills *every*
   reasoning role — research/interpretation in thinking mode, distillation in
-  non-thinking — so co-residency of a second large model is sidestepped and a
+  non-thinking (schema-constrained distillation stays thinking-enabled until Ollama
+  bug #14645 is verified fixed — see `docs/local-model-operations.md`) — so
+  co-residency of a second large model is sidestepped and a
   holding's research passes then distillation (single or hierarchical) pay no model-swap cost. The fast tier
   (Qwen3.5-35B-A3B) is **demoted to a benchmark-gated option**, reintroduced only if
   distillation wall-clock is a measured bottleneck *and* a 122B+35B+embedder set

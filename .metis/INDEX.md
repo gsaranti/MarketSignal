@@ -115,7 +115,8 @@
 
 ## Local analysis suite
 - Local analysis suite overview (local-only, two prescriptive features) — overview.md §Local Analysis Suite; local-models.md
-- Local model substrate (Ollama-on-MLX serving, roster, per-task routing) — local-models.md §Serving runtime, §The model roster and per-task routing
+- Local model substrate (Ollama serving — MLX where supported, Metal/GGUF fallback — roster, per-task routing) — local-models.md §Serving runtime, §The model roster and per-task routing
+- Local model operational reference (Qwen3.5-122B-A10B — native/effective context window, thinking mode + no `/think` soft switch, per-mode sampling, `num_ctx` + structured-output (`format`×thinking bug #14645) gotchas, MLX-where-supported serving pre-flight; research-derived / M5-gated) — local-model-operations.md; local-models.md §The model roster and per-task routing
 - Model residency default (one 122B fills research/distill/interpret by mode + embedder resident; 35B fast tier a benchmark-gated option) — local-models.md §The model roster and per-task routing
 - Local-model adapter seam (flexible endpoint/model_id client, distinct from the cloud AgentModel enum) — local-models.md §The local-model adapter seam
 - Schema-constrained output (grammar-constrained JSON) — local-models.md §Schema-constrained output
