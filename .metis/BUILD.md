@@ -325,7 +325,10 @@ as-built; the rest remain planned):
   (Qwen3.5-35B-A3B) is **demoted to a benchmark-gated option**, reintroduced only if
   distillation wall-clock is a measured bottleneck *and* a 122B+35B+embedder set
   co-resides cleanly on-device. Roster is configurable; the roster never runs more
-  than one large reasoner.
+  than one large reasoner. Its **serving path is an M5 pre-flight risk** — the 122B
+  is not yet MLX-accelerated in Ollama (it runs on the llama.cpp Metal/GGUF
+  fallback), so loading and the `format`/thinking behavior must be verified on our
+  version (`docs/local-model-operations.md`).
 - **Per-job isolation (learnings only).** Each feature stores its own runs
   (last-N retention) and its own vector-memory partition; no job reads another's
   *learnings*. The Market Signal Report stays a read-only shared input, loaded
