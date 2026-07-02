@@ -19,6 +19,7 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::{Duration, Local, NaiveDate};
 use serde_json::Value;
 
 use crate::http_retry::send_with_retry;
@@ -28,6 +29,15 @@ use crate::schwab::{Holdings, HoldingsSource, OptionChain, OptionKind, OptionQuo
 /// Schwab's API host — both the Trader (`/trader/v1`) and Market Data
 /// (`/marketdata/v1`) products live under it.
 const SCHWAB_API_BASE: &str = "https://api.schwabapi.com";
+
+/// Strikes each side of at-the-money to request, and how many days of expirations to
+/// span. Bounds the `/chains` payload so a heavily-optioned name (SPY/QQQ/TSLA) can't
+/// return a multi-thousand-contract response (`docs/schwab-integration.md §What is
+/// pulled` — "bounded by expiration and strike range to cap volume"). This is the
+/// fetch-volume bound; the precise moneyness / liquidity-floor calibration of the
+/// options-activity signal itself is fixed with that signal's implementation.
+const CHAIN_STRIKE_COUNT: u32 = 12;
+const CHAIN_WINDOW_DAYS: i64 = 60;
 
 /// Supplies a currently-valid access token for one API call. In production this
 /// closes over the OAuth client's `valid_access_token` (which refreshes as needed);
@@ -121,29 +131,39 @@ impl HoldingsSource for SchwabApiSource {
 
     fn option_chain(&self, symbol: &str) -> Result<Option<OptionChain>> {
         let token = (self.token)()?;
+        let query = chain_query(symbol, Local::now().date_naive());
         let (status, body) = self.get(
-            &format!(
-                "{}/marketdata/v1/chains?symbol={}",
-                self.base,
-                encode_query(symbol)
-            ),
+            &format!("{}/marketdata/v1/chains?{query}", self.base),
             &token,
             "schwab option chain",
         )?;
         match status {
-            // A parsed chain, or `None` when the name has no listed contracts.
-            200 => Ok(parse_chain(symbol, &body)),
+            // A parsed chain, `None` when the name has no listed contracts, or an error
+            // when the 200 body is malformed / contract-drifted (surfaced, not swallowed).
+            200 => parse_chain(symbol, &body),
             // A genuinely un-optioned or unknown symbol is a gap, not a fault.
             404 => Ok(None),
             // An auth/server fault (e.g. the token lapsing mid-job) is a real error, not
-            // "no chain": return it rather than silently blanking every symbol's signal.
-            // The Portfolio job still handles it fail-soft at the call site
-            // (`.unwrap_or(None)` — never a whole-job failure,
-            // `docs/schwab-integration.md §Failure posture`), so the source can stay
-            // honest about *why* a chain is absent without failing the run.
+            // "no chain": return it rather than silently blanking the signal. The Portfolio
+            // job handles it fail-soft — it records the fault as a gap that reaches the
+            // audit/prompt, never a whole-job failure (`docs/schwab-integration.md §Failure
+            // posture`) — so the source stays honest about *why* a chain is absent.
             other => bail!("Schwab option-chain request failed (HTTP {other})"),
         }
     }
+}
+
+/// Build the bounded `/chains` query for `symbol` as of `today`: a near-the-money strike
+/// band plus a near-dated expiration window, so the fetch can't balloon on a heavily
+/// optioned name. Pure — the date is injected — so the bounding is unit-testable.
+fn chain_query(symbol: &str, today: NaiveDate) -> String {
+    let to = today + Duration::days(CHAIN_WINDOW_DAYS);
+    format!(
+        "symbol={}&contractType=ALL&strikeCount={CHAIN_STRIKE_COUNT}&range=NTM&fromDate={}&toDate={}",
+        encode_query(symbol),
+        today.format("%Y-%m-%d"),
+        to.format("%Y-%m-%d"),
+    )
 }
 
 /// Percent-encode a symbol for a query value. Ticker symbols are alphanumeric plus a
@@ -250,15 +270,17 @@ fn map_asset_class(asset_type: Option<&str>) -> AssetClass {
 
 /// Map Schwab's `/chains` response to our [`OptionChain`], flattening the nested
 /// `callExpDateMap` / `putExpDateMap` (`date:dte → strike → [contract]`) into a flat
-/// contract list. Returns `None` when the response carries no contracts — a name with
-/// no listed options, exactly the gap the fixture and the failure posture describe.
-fn parse_chain(symbol: &str, body: &str) -> Option<OptionChain> {
-    let json: Value = serde_json::from_str(body).ok()?;
+/// contract list. `Ok(None)` when the (well-formed) response carries no contracts — a
+/// name with no listed options, exactly the gap the failure posture describes — but a
+/// **malformed / contract-drifted** body is an `Err`, not a silent no-chain, so provider
+/// API drift surfaces rather than masquerading as "no options listed".
+fn parse_chain(symbol: &str, body: &str) -> Result<Option<OptionChain>> {
+    let json: Value = serde_json::from_str(body).context("parsing Schwab option chain")?;
     let mut contracts = Vec::new();
     collect_contracts(json.get("callExpDateMap"), OptionKind::Call, &mut contracts);
     collect_contracts(json.get("putExpDateMap"), OptionKind::Put, &mut contracts);
     if contracts.is_empty() {
-        return None;
+        return Ok(None);
     }
     let underlying = json
         .get("symbol")
@@ -269,11 +291,11 @@ fn parse_chain(symbol: &str, body: &str) -> Option<OptionChain> {
         .get("underlyingPrice")
         .and_then(Value::as_f64)
         .filter(|p| *p > 0.0);
-    Some(OptionChain {
+    Ok(Some(OptionChain {
         underlying,
         underlying_price,
         contracts,
-    })
+    }))
 }
 
 /// Walk one expiration map (`{ "2026-07-17:5": { "195.0": [ {contract}, … ] } }`) into
@@ -385,7 +407,7 @@ mod tests {
             {"putCall":"PUT","strikePrice":185.0,"totalVolume":3100,"openInterest":9500,"volatility":-999.0}
           ]}}
         }"#;
-        let chain = parse_chain("AAPL", body).expect("chain present");
+        let chain = parse_chain("AAPL", body).unwrap().expect("chain present");
         assert_eq!(chain.underlying, "AAPL");
         assert_eq!(chain.underlying_price, Some(195.0));
         assert_eq!(chain.contracts.len(), 2);
@@ -398,7 +420,31 @@ mod tests {
 
     #[test]
     fn parse_chain_none_when_no_contracts() {
-        assert!(parse_chain("AAPL", r#"{"symbol":"AAPL","callExpDateMap":{},"putExpDateMap":{}}"#).is_none());
+        // A well-formed response with no listed contracts is a genuine gap.
+        assert!(
+            parse_chain("AAPL", r#"{"symbol":"AAPL","callExpDateMap":{},"putExpDateMap":{}}"#)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn parse_chain_malformed_body_is_an_error_not_a_silent_gap() {
+        // Invalid JSON (or a contract-drifted shape) surfaces as an error rather than
+        // reading as "no options listed".
+        assert!(parse_chain("AAPL", "{not json").is_err());
+    }
+
+    #[test]
+    fn chain_query_bounds_strikes_and_expiration_window() {
+        let q = chain_query("SPY", NaiveDate::from_ymd_opt(2026, 7, 2).unwrap());
+        assert!(q.contains("symbol=SPY"), "{q}");
+        assert!(q.contains("strikeCount=12"), "{q}");
+        assert!(q.contains("range=NTM"), "{q}");
+        assert!(q.contains("contractType=ALL"), "{q}");
+        assert!(q.contains("fromDate=2026-07-02"), "{q}");
+        // +60 days from 2026-07-02.
+        assert!(q.contains("toDate=2026-08-31"), "{q}");
     }
 
     #[test]
