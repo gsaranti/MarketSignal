@@ -276,6 +276,15 @@ fn map_asset_class(asset_type: Option<&str>) -> AssetClass {
 /// API drift surfaces rather than masquerading as "no options listed".
 fn parse_chain(symbol: &str, body: &str) -> Result<Option<OptionChain>> {
     let json: Value = serde_json::from_str(body).context("parsing Schwab option chain")?;
+    // A well-formed SUCCESS response always carries both expiration maps (empty objects
+    // for an un-optioned name). If neither is present, the body is a drifted/renamed
+    // shape or a non-SUCCESS status payload (e.g. `{"status":"FAILED"}`) — surface it
+    // rather than reading a structurally-wrong response as a genuine "no options" gap.
+    let has_call_map = json.get("callExpDateMap").is_some_and(Value::is_object);
+    let has_put_map = json.get("putExpDateMap").is_some_and(Value::is_object);
+    if !has_call_map && !has_put_map {
+        bail!("unexpected Schwab option-chain response shape (no expiration maps)");
+    }
     let mut contracts = Vec::new();
     collect_contracts(json.get("callExpDateMap"), OptionKind::Call, &mut contracts);
     collect_contracts(json.get("putExpDateMap"), OptionKind::Put, &mut contracts);
@@ -430,9 +439,17 @@ mod tests {
 
     #[test]
     fn parse_chain_malformed_body_is_an_error_not_a_silent_gap() {
-        // Invalid JSON (or a contract-drifted shape) surfaces as an error rather than
-        // reading as "no options listed".
+        // Invalid JSON surfaces as an error rather than reading as "no options listed".
         assert!(parse_chain("AAPL", "{not json").is_err());
+    }
+
+    #[test]
+    fn parse_chain_valid_json_without_expiration_maps_is_an_error() {
+        // A well-formed JSON body that isn't a chains payload (a FAILED status, or drifted
+        // / renamed map fields) is a drift signal, not a genuine no-options gap. Contrast
+        // with `parse_chain_none_when_no_contracts`, where the maps are present but empty.
+        assert!(parse_chain("AAPL", r#"{"symbol":"AAPL","status":"FAILED"}"#).is_err());
+        assert!(parse_chain("AAPL", r#"{"symbol":"AAPL","callMap":{},"putMap":{}}"#).is_err());
     }
 
     #[test]
