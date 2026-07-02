@@ -16,6 +16,7 @@
 //! figure. The grade is therefore a deterministic roll-up of the engine's
 //! sub-scores, not a model gestalt.
 
+pub mod diff;
 pub mod dossier;
 pub mod engine;
 pub mod job;
@@ -145,6 +146,67 @@ impl AssetClass {
             AssetClass::Other => "an unsupported position",
         }
     }
+}
+
+// ---- Holdings change tracking ------------------------------------------------
+
+/// How a current position changed versus the prior run's persisted snapshot
+/// (`docs/portfolio-analysis.md` §Holdings change tracking). Classified
+/// deterministically by the app from quantity, before any model stage — the
+/// compute-don't-guess boundary the pipeline holds. `New` covers both a genuinely new
+/// position and every position on a first run (no prior snapshot to diff against).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PositionChange {
+    New,
+    Increased,
+    Decreased,
+    /// The neutral state (no add/trim detected), and the default a run persisted
+    /// before this field existed decodes to — so a legacy verdict claims no user
+    /// action rather than fabricating one.
+    #[default]
+    Unchanged,
+}
+
+/// The prior-run comparison for one current position, carried into its dossier so the
+/// verdict reasons over what the user actually did — added to, trimmed, or left the
+/// position — rather than re-grading it in a vacuum. Prior quantity / cost basis are
+/// `None` for a `New` position (no prior counterpart).
+///
+/// Runtime-only — it rides in the (unserialized) [`dossier::HoldingDossier`], so it
+/// carries no serde derives; the structured tag that *is* persisted on the verdict is
+/// [`PositionChange`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PositionDelta {
+    pub change: PositionChange,
+    pub prior_quantity: Option<f64>,
+    pub prior_cost_basis: Option<f64>,
+}
+
+impl PositionDelta {
+    /// The delta for a position with no prior-run counterpart (a new holding, or any
+    /// holding on a first run).
+    pub fn new_position() -> Self {
+        Self {
+            change: PositionChange::New,
+            prior_quantity: None,
+            prior_cost_basis: None,
+        }
+    }
+}
+
+/// A position present in the prior run's snapshot but absent now — an exited
+/// (closed-since-last-run) position. It earns no per-holding verdict (nothing left to
+/// grade) but is surfaced in the roll-up so a sold-out name is acknowledged rather than
+/// silently vanishing from the run (`docs/portfolio-analysis.md` §Holdings change
+/// tracking).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExitedPosition {
+    pub symbol: String,
+    pub description: String,
+    pub prior_quantity: f64,
+    pub prior_cost_basis: f64,
+    pub prior_market_value: f64,
 }
 
 // ---- Verdict parts -----------------------------------------------------------
@@ -328,6 +390,13 @@ pub enum VerdictDisposition {
 pub struct HoldingVerdict {
     pub symbol: String,
     pub asset_class: AssetClass,
+    /// How the position changed since the prior run — set by the app from the
+    /// deterministic holdings diff ([`diff`]; `docs/portfolio-analysis.md` §What
+    /// changed: the what-changed line carries the position delta), never authored by
+    /// the model. `#[serde(default)]` so a run persisted before the field existed
+    /// still decodes.
+    #[serde(default)]
+    pub position_change: PositionChange,
     pub disposition: VerdictDisposition,
 }
 
@@ -346,6 +415,12 @@ pub struct PortfolioRollUp {
     pub top_position_weight: f64,
     /// Cash as a fraction of the account total.
     pub cash_weight: f64,
+    /// Positions closed since the last run (`docs/portfolio-analysis.md` §Holdings
+    /// change tracking) — graded nowhere, but acknowledged here rather than silently
+    /// dropped. Empty on a first run or when nothing was sold. `#[serde(default)]` so a
+    /// run persisted before the field existed still decodes.
+    #[serde(default)]
+    pub exited: Vec<ExitedPosition>,
     /// A short deterministic synthesis line.
     pub overview: String,
 }

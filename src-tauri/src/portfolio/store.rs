@@ -109,7 +109,7 @@ mod tests {
     use super::*;
     use crate::portfolio::{
         engine::ComputedMetrics, AssetClass, HoldingAudit, HoldingVerdict, PortfolioRollUp,
-        VerdictDisposition,
+        PositionChange, VerdictDisposition,
     };
     use crate::schwab::{Holdings, Position};
 
@@ -140,6 +140,7 @@ mod tests {
             verdicts: vec![HoldingVerdict {
                 symbol: "AAPL".into(),
                 asset_class: AssetClass::Stock,
+                position_change: PositionChange::New,
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
@@ -150,6 +151,7 @@ mod tests {
                 insufficient_evidence_count: 0,
                 top_position_weight: 0.66,
                 cash_weight: 0.34,
+                exited: vec![],
                 overview: "single fixture holding".into(),
             },
             audit: vec![HoldingAudit {

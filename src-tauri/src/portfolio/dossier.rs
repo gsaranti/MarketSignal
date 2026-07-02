@@ -17,7 +17,9 @@ use rusqlite::Connection;
 
 use crate::agent::ReportSummary;
 use crate::portfolio::engine::CompanyFinancials;
-use crate::portfolio::{HoldingVerdict, InvestorProfile, OptionsSignal, HOUSE_VIEW_RECENT_REPORTS};
+use crate::portfolio::{
+    HoldingVerdict, InvestorProfile, OptionsSignal, PositionDelta, HOUSE_VIEW_RECENT_REPORTS,
+};
 use crate::schwab::{OptionChain, Position};
 use crate::sec::CompanyFacts;
 use crate::storage;
@@ -41,6 +43,10 @@ pub struct HouseView {
 #[derive(Debug, Clone)]
 pub struct HoldingDossier {
     pub position: Position,
+    /// How this position changed since the prior run (the Step-4 holdings diff), so the
+    /// verdict reasons over what the user did with it (`docs/portfolio-analysis.md`
+    /// §Holdings change tracking).
+    pub position_delta: PositionDelta,
     pub financials: CompanyFinancials,
     pub options_signal: OptionsSignal,
     pub profile: InvestorProfile,
@@ -95,6 +101,7 @@ pub fn merge_financials(mut fmp: CompanyFinancials, sec: &CompanyFacts) -> Compa
 #[allow(clippy::too_many_arguments)]
 pub fn assemble(
     position: Position,
+    position_delta: PositionDelta,
     fmp_financials: CompanyFinancials,
     sec_facts: &CompanyFacts,
     chain: Option<&OptionChain>,
@@ -125,6 +132,7 @@ pub fn assemble(
 
     HoldingDossier {
         position,
+        position_delta,
         financials,
         options_signal,
         profile,
@@ -227,7 +235,7 @@ pub fn prior_verdict_for(conn: &Connection, symbol: &str) -> Option<HoldingVerdi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portfolio::{AssetClass, VerdictDisposition};
+    use crate::portfolio::{AssetClass, PositionChange, VerdictDisposition};
     use crate::schwab::{Holdings, Position};
 
     fn fmp_only() -> CompanyFinancials {
@@ -342,6 +350,7 @@ Watch the 2s10s and the labor prints.
         };
         let dossier = assemble(
             position,
+            PositionDelta::new_position(),
             fmp_only(),
             &sec,
             Some(&chain),
@@ -375,6 +384,7 @@ Watch the 2s10s and the labor prints.
             verdicts: vec![HoldingVerdict {
                 symbol: "AAPL".into(),
                 asset_class: AssetClass::Stock,
+                position_change: PositionChange::New,
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
@@ -385,6 +395,7 @@ Watch the 2s10s and the labor prints.
                 insufficient_evidence_count: 0,
                 top_position_weight: 0.0,
                 cash_weight: 0.0,
+                exited: vec![],
                 overview: String::new(),
             },
             audit: vec![],
