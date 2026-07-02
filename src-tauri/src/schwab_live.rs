@@ -276,10 +276,16 @@ fn map_asset_class(asset_type: Option<&str>) -> AssetClass {
 /// API drift surfaces rather than masquerading as "no options listed".
 fn parse_chain(symbol: &str, body: &str) -> Result<Option<OptionChain>> {
     let json: Value = serde_json::from_str(body).context("parsing Schwab option chain")?;
-    // A well-formed SUCCESS response always carries both expiration maps (empty objects
-    // for an un-optioned name). If neither is present, the body is a drifted/renamed
-    // shape or a non-SUCCESS status payload (e.g. `{"status":"FAILED"}`) — surface it
-    // rather than reading a structurally-wrong response as a genuine "no options" gap.
+    // A well-formed SUCCESS response carries the two expiration maps (empty objects for
+    // an un-optioned name), so treat *both* absent as a drifted/renamed shape or a
+    // non-SUCCESS status payload (e.g. `{"status":"FAILED"}`) and surface it, rather than
+    // reading a structurally-wrong response as a genuine "no options" gap.
+    //
+    // The guard is deliberately both-absent, not either-absent: the "always both maps"
+    // invariant is documented but not yet live-confirmed (the OAuth smoke is unrun), so a
+    // one-sided response is parsed for the map it does carry rather than false-erroring a
+    // real chain into a fault-gap. Tighten to require both once a live response confirms
+    // the invariant (see `parse_chain_tolerates_a_single_sided_map`).
     let has_call_map = json.get("callExpDateMap").is_some_and(Value::is_object);
     let has_put_map = json.get("putExpDateMap").is_some_and(Value::is_object);
     if !has_call_map && !has_put_map {
@@ -450,6 +456,22 @@ mod tests {
         // with `parse_chain_none_when_no_contracts`, where the maps are present but empty.
         assert!(parse_chain("AAPL", r#"{"symbol":"AAPL","status":"FAILED"}"#).is_err());
         assert!(parse_chain("AAPL", r#"{"symbol":"AAPL","callMap":{},"putMap":{}}"#).is_err());
+    }
+
+    #[test]
+    fn parse_chain_tolerates_a_single_sided_map() {
+        // Deliberately lenient: a response carrying only one expiration map is parsed for
+        // the contracts it has, not errored — the "always both maps" invariant is not yet
+        // live-confirmed, so we don't false-error a real chain (see parse_chain). This
+        // locks that choice, so a future tightening to `either-absent` is a conscious edit.
+        let body = r#"{"symbol":"AAPL","callExpDateMap":{"2026-07-17:5":{"195.0":[
+            {"putCall":"CALL","strikePrice":195.0,"totalVolume":10,"openInterest":20,"volatility":25.0}
+        ]}}}"#;
+        let chain = parse_chain("AAPL", body)
+            .unwrap()
+            .expect("a single-sided chain still parses");
+        assert_eq!(chain.contracts.len(), 1);
+        assert_eq!(chain.contracts[0].kind, OptionKind::Call);
     }
 
     #[test]
