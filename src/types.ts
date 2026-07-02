@@ -171,6 +171,38 @@ export interface CredentialUpdate {
   tavily: string | null;
 }
 
+// --- Charles Schwab connection ---------------------------------------------
+// Mirrors the Rust `schwab_oauth::{SchwabConnection, SchwabStatus}` returned by
+// the `schwab_status` command (docs/schwab-integration.md, docs/interface.md
+// §Connection status). Kept a parallel shape rather than folded into the closed
+// credential machinery above: the client_id is a non-secret identifier that
+// round-trips its value, the client secret rides the Keychain, and connection
+// state is a third axis the CredentialStatus boolean can't carry.
+
+// The connection state derived from the stored token set without a network probe:
+// never linked, a live connection, or a lapsed 7-day refresh window.
+export type SchwabConnection = "not-connected" | "connected" | "expired";
+
+export interface SchwabStatus {
+  // The developer-app client id — a non-secret identifier, so it round-trips its
+  // actual value (unlike the secret-only credentials, shown as a boolean).
+  client_id: string;
+  // Whether the client secret is present on the Keychain rail — never its value.
+  secret_configured: boolean;
+  connection: SchwabConnection;
+  // Canonical UTC RFC3339 string (or null when not connected); the UI renders it
+  // in local time for the weekly-re-login heads-up.
+  refresh_expires_at: string | null;
+}
+
+// The payload the "Charles Schwab connection" surface emits on save. The client_id
+// round-trips in full; client_secret is set only when a new value is entered
+// (null leaves the stored secret unchanged, like a CredentialUpdate field).
+export interface SchwabCredentialUpdate {
+  client_id: string;
+  client_secret: string | null;
+}
+
 // --- Live job tracker -------------------------------------------------------
 // Mirrors the Rust `progress::ProgressMessage` streamed over the "job-progress"
 // Tauri event while a run is in flight. Discriminated by `kind`; every message

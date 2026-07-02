@@ -156,12 +156,12 @@ describe("App.vue Tauri boundary", () => {
     const events = tauri.listen.mock.calls.map((c) => c[0]).sort();
     expect(events).toEqual(["job-progress"]);
 
-    // Exactly the seven refresh commands onMounted issues — sorted-equality
+    // Exactly the eight refresh commands onMounted issues — sorted-equality
     // enforces the set with no extras or duplicates (not a subset), while
     // tolerating any reordering of the onMounted calls. Proves the four-module
     // mock is complete enough to mount the real App without a throw.
-    // `truncation_stats` rides in via refreshSettings (loaded up front for the
-    // gate's config state), alongside get_settings.
+    // `truncation_stats` and `schwab_status` ride in via refreshSettings (loaded up
+    // front for the gate's config state), alongside get_settings.
     expect([...invokedCommands()].sort()).toEqual([
       "check_configuration",
       "get_settings",
@@ -169,6 +169,7 @@ describe("App.vue Tauri boundary", () => {
       "list_reports",
       "list_research_archive",
       "list_research_inbox",
+      "schwab_status",
       "truncation_stats",
     ]);
 
@@ -230,6 +231,71 @@ describe("App.vue Tauri boundary", () => {
     // prop, the spec's load-bearing read idiom.
     const settings = wrapper.findComponent(Settings);
     expect(settings.props("truncationStats")).toEqual(stats);
+
+    wrapper.unmount();
+  });
+
+  test("the loaded schwab_status reaches the Settings prop", async () => {
+    const status = {
+      client_id: "client-abc",
+      secret_configured: true,
+      connection: "connected",
+      refresh_expires_at: "2026-07-09T00:00:00+00:00",
+    };
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({ schwab_status: () => status })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
+    await flushPromises();
+
+    expect(wrapper.findComponent(Settings).props("schwabStatus")).toEqual(status);
+
+    wrapper.unmount();
+  });
+
+  test("a Settings @save-schwab emit round-trips into save_schwab_credentials (camelCase args)", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
+    await flushPromises();
+
+    const settings = wrapper.findComponent(Settings);
+    settings.vm.$emit("save-schwab", {
+      client_id: "client-abc",
+      client_secret: "dev-secret",
+    });
+    await flushPromises();
+
+    // Tauri maps JS camelCase args to the command's snake_case params.
+    expect(tauri.invoke).toHaveBeenCalledWith("save_schwab_credentials", {
+      clientId: "client-abc",
+      clientSecret: "dev-secret",
+    });
+
+    wrapper.unmount();
+  });
+
+  test("a Settings @connect-schwab emit invokes schwab_connect then re-reads schwab_status", async () => {
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
+    await flushPromises();
+    // Only count schwab_status reads that follow the connect, not the mount cascade.
+    const before = tauri.invoke.mock.calls.filter(
+      (c: unknown[]) => c[0] === "schwab_status"
+    ).length;
+
+    wrapper.findComponent(Settings).vm.$emit("connect-schwab");
+    await flushPromises();
+
+    expect(tauri.invoke).toHaveBeenCalledWith("schwab_connect");
+    const after = tauri.invoke.mock.calls.filter(
+      (c: unknown[]) => c[0] === "schwab_status"
+    ).length;
+    expect(after).toBeGreaterThan(before);
 
     wrapper.unmount();
   });

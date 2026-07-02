@@ -14,6 +14,7 @@ import type {
   JobStatus,
   ReportSummary,
   ResearchDocument,
+  SchwabStatus,
   SettingsView,
   TruncationStats,
 } from "../../src/types";
@@ -47,6 +48,15 @@ export const defaultSettings: SettingsView = {
   available_models: [],
 };
 
+// Read alongside settings (refreshSettings); a clean install has no Schwab
+// credentials and no connection.
+export const defaultSchwabStatus: SchwabStatus = {
+  client_id: "",
+  secret_configured: false,
+  connection: "not-connected",
+  refresh_expires_at: null,
+};
+
 // Loaded alongside settings when the Settings view opens; a clean install has
 // recorded no truncations.
 export const defaultTruncationStats: TruncationStats = {
@@ -77,8 +87,12 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     get_settings: () => defaultSettings,
     // Read on Settings-view entry, alongside get_settings.
     truncation_stats: () => defaultTruncationStats,
+    schwab_status: () => defaultSchwabStatus,
     // Action commands a spec may drive through a user interaction.
     save_settings: () => null,
+    save_schwab_credentials: () => null,
+    schwab_connect: () => null,
+    schwab_disconnect: () => null,
   };
 }
 

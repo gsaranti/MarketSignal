@@ -9,6 +9,8 @@ import type {
   ConnectionTestResult,
   CredentialUpdate,
   ModelOption,
+  SchwabStatus,
+  SchwabCredentialUpdate,
   TruncationStats,
 } from "../types";
 
@@ -36,12 +38,25 @@ const props = defineProps<{
   // unavailable / not yet loaded (the section is omitted); a populated all-zero
   // aggregate renders the "none recorded" empty state.
   truncationStats: TruncationStats | null;
+  // Charles Schwab connection (docs/schwab-integration.md, docs/interface.md
+  // §Connection status). `null` = not yet loaded / unavailable (the section is
+  // omitted, like diagnostics). `schwabConnecting` is true while the interactive
+  // browser login is in flight; `schwabBusy` is true when any run holds the global
+  // slot (so Connect — which takes that slot — is disabled). `schwabError` carries a
+  // connect/save failure.
+  schwabStatus: SchwabStatus | null;
+  schwabConnecting: boolean;
+  schwabBusy: boolean;
+  schwabError: string | null;
 }>();
 
 const emit = defineEmits<{
   (e: "save", payload: { models: AgentModels; credentials: CredentialUpdate }): void;
   (e: "set-dark", value: boolean): void;
   (e: "test", key: CredKey): void;
+  (e: "save-schwab", payload: SchwabCredentialUpdate): void;
+  (e: "connect-schwab"): void;
+  (e: "disconnect-schwab"): void;
 }>();
 
 type ModelKey = "main" | "bull" | "bear" | "balanced";
@@ -256,6 +271,143 @@ const charsDroppedValue = computed(() => {
   const pct = (s.total_chars_dropped / s.total_original_chars) * 100;
   return `${dropped} of ${fmtNum(s.total_original_chars)} (${pct.toFixed(1)}%)`;
 });
+
+// --- Charles Schwab connection ---------------------------------------------
+// The developer-app credentials + the connect/disconnect controls. Local, editable
+// form state mirrors the credential fields: the non-secret client_id round-trips its
+// saved value, while the secret input starts empty and is write-only (its stored
+// presence shows only as a placeholder).
+const schwabClientId = ref("");
+const schwabSecret = ref("");
+
+// (Re)seed the form whenever a fresh status arrives — on load and after a
+// save/connect/disconnect (App re-fetches). Clears the typed secret and resets the
+// dirty baseline to what was just persisted.
+watch(
+  () => props.schwabStatus,
+  (s) => {
+    if (!s) return;
+    schwabClientId.value = s.client_id;
+    schwabSecret.value = "";
+  },
+  { immediate: true }
+);
+
+// The secret placeholder mirrors the API-token idiom: a stored secret shows as saved
+// (type to replace), an absent one as "Not set".
+const schwabSecretPlaceholder = computed(() =>
+  props.schwabStatus?.secret_configured
+    ? "•••• saved — type a new value to replace"
+    : "Not set"
+);
+
+// Unsaved edits: a changed client_id, or any typed secret. Connect reads the *saved*
+// credentials, so an edit must be saved before connecting (mirrors the credential
+// "save before testing" rule).
+const schwabDirty = computed(() => {
+  const saved = props.schwabStatus?.client_id ?? "";
+  return schwabClientId.value.trim() !== saved || schwabSecret.value.trim() !== "";
+});
+
+// Saving needs a non-empty client_id and something actually changed — and is blocked
+// while a connect or run holds the slot. That guards the mid-login race: `schwab_connect`
+// captures the client_id up front but reads the secret from the Keychain later, so a save
+// during the login could pair the old id with a new secret and fail the token exchange.
+const canSaveSchwab = computed(
+  () =>
+    schwabClientId.value.trim() !== "" &&
+    schwabDirty.value &&
+    !props.schwabConnecting &&
+    !props.schwabBusy
+);
+
+// Both credentials present on the backend — the precondition for a connect attempt
+// (the loopback reads them from storage / Keychain).
+const schwabCredsConfigured = computed(
+  () =>
+    !!props.schwabStatus &&
+    props.schwabStatus.client_id.trim() !== "" &&
+    props.schwabStatus.secret_configured
+);
+
+// Connect is offered only when the saved credentials are complete, the form has no
+// unsaved edits, and no run holds the global slot (Connect takes it — see App).
+const canConnect = computed(
+  () =>
+    schwabCredsConfigured.value &&
+    !schwabDirty.value &&
+    !props.schwabConnecting &&
+    !props.schwabBusy
+);
+
+// Why Connect is unavailable, surfaced as its title (frontend-craft: never a dead
+// control with no explanation).
+const connectTitle = computed(() => {
+  if (props.schwabConnecting) return "Completing the Schwab login…";
+  if (!schwabCredsConfigured.value)
+    return "Enter and save your Schwab client ID and secret first";
+  if (schwabDirty.value) return "Save your credential changes before connecting";
+  if (props.schwabBusy) return "Another job is running — connect once it finishes";
+  return "Open the Schwab login in your browser to connect";
+});
+
+const schwabConnection = computed(
+  () => props.schwabStatus?.connection ?? "not-connected"
+);
+
+// Disconnect is shown only when a session exists (connected or lapsed); it clears the
+// tokens but keeps the saved credentials.
+const showDisconnect = computed(() => schwabConnection.value !== "not-connected");
+const canDisconnect = computed(
+  () => !props.schwabConnecting && !props.schwabBusy
+);
+
+// The connection status line — plain, declarative copy (the design system's voice),
+// with the weekly-re-login date as a heads-up when connected.
+const schwabStatusText = computed(() => {
+  switch (schwabConnection.value) {
+    case "connected": {
+      const at = props.schwabStatus?.refresh_expires_at;
+      return at
+        ? `Connected. Weekly re-login by ${localDate(at)}.`
+        : "Connected.";
+    }
+    case "expired":
+      return "Connection expired — reconnect to continue. The 7-day refresh window has lapsed.";
+    default:
+      return "Not connected.";
+  }
+});
+
+// The status line's tone class, reusing ConnectionTestRow's status vocabulary
+// (ink-2 + check for a live connection; accent-text for a lapsed one; ink-3 for the
+// neutral not-connected state) — no new tokens, no analytical palette.
+const schwabStatusClass = computed(() => {
+  switch (schwabConnection.value) {
+    case "connected":
+      return "schwab-status--ok";
+    case "expired":
+      return "schwab-status--err";
+    default:
+      return "schwab-status--pending";
+  }
+});
+
+// The connect control's label: first-time "Connect", else "Reconnect" (the weekly
+// re-login, or re-running after a lapse).
+const connectLabel = computed(() => {
+  if (props.schwabConnecting) return "Connecting…";
+  return schwabConnection.value === "not-connected" ? "Connect" : "Reconnect";
+});
+
+function onSaveSchwab() {
+  if (!canSaveSchwab.value) return;
+  emit("save-schwab", {
+    client_id: schwabClientId.value.trim(),
+    // Null (not "") leaves the stored secret untouched — the write-only field idiom.
+    client_secret: schwabSecret.value.trim() ? schwabSecret.value : null,
+  });
+}
 </script>
 
 <template>
@@ -420,6 +572,107 @@ const charsDroppedValue = computed(() => {
             </span>
           </div>
         </form>
+
+        <!-- Charles Schwab connection (docs/schwab-integration.md, docs/interface.md
+             §Connection status). Its own section outside the config form — its
+             Save/Connect/Disconnect are independent of the gated model+credential
+             Save above, and it renders on its own status channel (like diagnostics),
+             so it appears even if the cloud settings fail to load. Omitted while the
+             status is unavailable. Generic-chrome register: monochrome, no analytical
+             palette. -->
+        <section
+          v-if="schwabStatus"
+          class="settings-section"
+          aria-labelledby="sec-schwab"
+        >
+          <h3 id="sec-schwab" class="section-eyebrow">Charles Schwab connection</h3>
+          <p class="section-note">
+            Portfolio Analysis and Trade Opportunities read your holdings and option
+            chains from Schwab. Enter your developer-app client ID and secret, then
+            connect — a browser login you repeat weekly, when the 7-day session lapses.
+          </p>
+
+          <div class="field">
+            <label class="label" for="schwab-client-id">Client ID</label>
+            <input
+              id="schwab-client-id"
+              v-model="schwabClientId"
+              class="input mono"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Not set"
+            />
+          </div>
+          <div class="field">
+            <label class="label" for="schwab-client-secret">Client secret</label>
+            <input
+              id="schwab-client-secret"
+              v-model="schwabSecret"
+              class="input mono"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              :placeholder="schwabSecretPlaceholder"
+            />
+          </div>
+
+          <!-- Persistent live region (node stays mounted, text changes) so a screen
+               reader announces connection changes reliably. -->
+          <p
+            class="schwab-status"
+            :class="schwabStatusClass"
+            role="status"
+            aria-live="polite"
+          >
+            <Icon
+              v-if="schwabConnection === 'connected'"
+              name="check"
+              :size="13"
+              color="var(--ink-2)"
+            />
+            {{ schwabStatusText }}
+          </p>
+
+          <p v-if="schwabConnecting" class="schwab-hint" role="status">
+            Complete the Schwab login in your browser. A one-time certificate warning
+            for the local callback is expected — continue past it.
+          </p>
+
+          <div v-if="schwabError" class="settings-error" role="alert">
+            <div class="settings-error-label">Couldn't update Schwab</div>
+            <p class="settings-error-detail">{{ schwabError }}</p>
+          </div>
+
+          <div class="schwab-actions">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              :disabled="!canSaveSchwab"
+              @click="onSaveSchwab"
+            >
+              Save credentials
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              :disabled="!canConnect"
+              :title="connectTitle"
+              @click="emit('connect-schwab')"
+            >
+              {{ connectLabel }}
+            </button>
+            <button
+              v-if="showDisconnect"
+              type="button"
+              class="btn btn-secondary"
+              :disabled="!canDisconnect"
+              @click="emit('disconnect-schwab')"
+            >
+              Disconnect
+            </button>
+          </div>
+        </section>
 
         <!-- Diagnostics: read-only truncation telemetry (docs/agents.md §Data
              Extraction). Renders independent of the config form's load state and
@@ -677,6 +930,54 @@ const charsDroppedValue = computed(() => {
 /* Why Save is disabled — a muted hint, not an error (it's a gating affordance). */
 .save-status--hint {
   color: var(--ink-3);
+}
+
+/* Schwab connection status line — reuses ConnectionTestRow's status vocabulary
+   (no new tokens, no analytical palette; this is generic chrome): ink-3 for the
+   neutral not-connected state, ink-2 (+ check) for a live connection, accent-text
+   for a lapsed one. */
+.schwab-status {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: var(--s-2) 0 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  line-height: var(--lh-ui);
+  overflow-wrap: anywhere;
+}
+
+.schwab-status--pending {
+  color: var(--ink-3);
+}
+
+/* ink-2 (not ink-3) to clear AA at 13px, matching the Save "Saved" confirmation. */
+.schwab-status--ok {
+  color: var(--ink-2);
+}
+
+.schwab-status--err {
+  color: var(--accent-text);
+}
+
+/* The while-connecting heads-up (browser login + one-time cert warning): a quiet
+   informational line, not an error. */
+.schwab-hint {
+  margin: var(--s-3) 0 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  line-height: var(--lh-ui);
+  color: var(--ink-3);
+}
+
+/* Section-local action row — save / connect / disconnect. Unlike `.settings-actions`
+   it carries no top rule (it sits mid-section, not at the form's foot). */
+.schwab-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4);
+  margin-top: var(--s-6);
 }
 
 /* Appearance toggle hosted in the toolbar — a compact label + the kit switch,

@@ -21,8 +21,9 @@ use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use crate::config::{ValidationReport, WarningCategory, WarningKind};
 use crate::schwab_secrets::{SchwabTokens, TokenStore, SECRET_CLIENT_SECRET};
 
 /// Schwab's authorization endpoint (leg 1 — the browser login URL).
@@ -269,6 +270,102 @@ impl OauthClient {
             .store
             .tokens()?
             .is_some_and(|t| t.refresh_valid(now)))
+    }
+}
+
+/// The connection state the Settings surface renders, derived from the stored token set
+/// without a network call (`docs/interface.md §Connection status` — presence, not a live
+/// probe). Three states the UI treats distinctly: never linked, a live connection, and a
+/// lapsed 7-day refresh window that forces a fresh browser login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SchwabConnection {
+    /// No token set stored — the account has never been connected (or was disconnected).
+    NotConnected,
+    /// Tokens present and the refresh window still open — a usable connection.
+    Connected,
+    /// Tokens present but the 7-day refresh window has lapsed; only a fresh interactive
+    /// login recovers it.
+    Expired,
+}
+
+/// Classify the stored token set into a [`SchwabConnection`] at `now`. Pure — the command
+/// reads the tokens off the Keychain rail and hands them in — so the state machine is
+/// unit-testable without a store. Mirrors [`OauthClient::is_connected`]'s
+/// refresh-window rule (`Connected` iff `is_connected`), but keeps the `Expired` case
+/// distinct so the surface can prompt re-login rather than first-connect.
+pub fn connection_state(tokens: &Option<SchwabTokens>, now: DateTime<Utc>) -> SchwabConnection {
+    match tokens {
+        None => SchwabConnection::NotConnected,
+        Some(t) if t.refresh_valid(now) => SchwabConnection::Connected,
+        Some(_) => SchwabConnection::Expired,
+    }
+}
+
+/// What the Settings "Charles Schwab connection" surface renders (`docs/interface.md
+/// §Settings`). The `client_id` is a non-secret identifier, returned so the form can
+/// pre-fill it; the client *secret* and the tokens never cross this seam — only the
+/// `secret_configured` boolean and the derived connection state do, holding the rail's
+/// never-return-a-secret invariant (`crate::schwab_secrets`). `refresh_expires_at` drives
+/// the weekly-re-login heads-up.
+#[derive(Debug, Clone, Serialize)]
+pub struct SchwabStatus {
+    pub client_id: String,
+    pub secret_configured: bool,
+    pub connection: SchwabConnection,
+    pub refresh_expires_at: Option<DateTime<Utc>>,
+}
+
+impl SchwabStatus {
+    /// Assemble the status from the pieces the command reads off storage: the configured
+    /// `client_id`, whether the client secret is present on the Keychain rail, and the
+    /// stored token set (or `None`). Pure so the projection is unit-testable.
+    pub fn build(
+        client_id: String,
+        secret_configured: bool,
+        tokens: Option<SchwabTokens>,
+        now: DateTime<Utc>,
+    ) -> Self {
+        let connection = connection_state(&tokens, now);
+        let refresh_expires_at = tokens.map(|t| t.refresh_expires_at);
+        Self {
+            client_id,
+            secret_configured,
+            connection,
+            refresh_expires_at,
+        }
+    }
+}
+
+/// The message a local job returns when it is run without a connected Schwab account
+/// (`docs/schwab-integration.md §A connected Schwab account is required`). It is the
+/// [`schwab_gate`] category's item, so the run-gate block and the (future) warning band
+/// speak with one voice. Job-neutral ("this analysis") because the gate is shared by both
+/// local jobs — Portfolio Analysis today, Trade Opportunities once it lands.
+pub const SCHWAB_NOT_CONNECTED_MSG: &str =
+    "Schwab account not connected — connect your Schwab account (weekly re-login) to run this analysis.";
+
+/// The local-suite Schwab-connection gate, as a [`ValidationReport`] carrying one
+/// [`WarningKind::Schwab`] category when disconnected — the exact shape
+/// `local_model::local_gate` produces for the daemon. Pure over the connection bool, so
+/// it is both unit-testable and the single producer the run-gate and the (deferred)
+/// local-suite warning band share. Independent of the cloud-report gate
+/// (`config::validate`): a disconnected Schwab account blocks only the local jobs, never
+/// the Market Signal Report. `connected` comes from [`OauthClient::is_connected`].
+pub fn schwab_gate(connected: bool) -> ValidationReport {
+    let mut categories = Vec::new();
+    if !connected {
+        categories.push(WarningCategory {
+            kind: WarningKind::Schwab,
+            title: "Charles Schwab connection".to_string(),
+            items: vec![SCHWAB_NOT_CONNECTED_MSG.to_string()],
+            dismiss_id: None,
+        });
+    }
+    let is_blocked = categories.iter().any(|c| c.kind.is_blocking());
+    ValidationReport {
+        categories,
+        is_blocked,
     }
 }
 
@@ -522,6 +619,75 @@ mod tests {
         oauth.exchange_code(&code, now).expect("code exchange");
         let token = oauth.valid_access_token(now).expect("a usable access token");
         assert!(!token.is_empty(), "access token should be non-empty");
+    }
+
+    #[test]
+    fn connection_state_classifies_absent_live_and_lapsed_tokens() {
+        let now = Utc::now();
+        assert_eq!(connection_state(&None, now), SchwabConnection::NotConnected);
+        let live = SchwabTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            access_expires_at: now - Duration::minutes(1), // access expiry is irrelevant here
+            refresh_expires_at: now + Duration::days(2),
+        };
+        assert_eq!(
+            connection_state(&Some(live.clone()), now),
+            SchwabConnection::Connected
+        );
+        // Same tokens, evaluated past the refresh window → Expired, not NotConnected.
+        assert_eq!(
+            connection_state(&Some(live), now + Duration::days(3)),
+            SchwabConnection::Expired
+        );
+    }
+
+    #[test]
+    fn schwab_status_projects_connection_and_carries_the_refresh_expiry() {
+        let now = Utc::now();
+        // Never connected: no tokens, so no refresh expiry, and the secret flag/id pass
+        // straight through.
+        let unconnected = SchwabStatus::build("client-abc".into(), false, None, now);
+        assert_eq!(unconnected.client_id, "client-abc");
+        assert!(!unconnected.secret_configured);
+        assert_eq!(unconnected.connection, SchwabConnection::NotConnected);
+        assert_eq!(unconnected.refresh_expires_at, None);
+
+        // Connected: the refresh expiry is surfaced for the weekly-re-login heads-up.
+        let refresh_at = now + Duration::days(6);
+        let tokens = SchwabTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            access_expires_at: now + Duration::minutes(30),
+            refresh_expires_at: refresh_at,
+        };
+        let connected = SchwabStatus::build("client-abc".into(), true, Some(tokens), now);
+        assert!(connected.secret_configured);
+        assert_eq!(connected.connection, SchwabConnection::Connected);
+        assert_eq!(connected.refresh_expires_at, Some(refresh_at));
+    }
+
+    #[test]
+    fn schwab_gate_blocks_only_when_disconnected() {
+        // Connected → no category, not blocked (the local job proceeds).
+        let ok = schwab_gate(true);
+        assert!(!ok.is_blocked);
+        assert!(ok.categories.is_empty());
+
+        // Disconnected → one blocking WarningKind::Schwab category carrying the reconnect
+        // prompt. This is the producer both the run-gate block and the (deferred)
+        // local-suite warning band consume — parity with `local_gate`/LocalModels.
+        let blocked = schwab_gate(false);
+        assert!(blocked.is_blocked);
+        assert_eq!(blocked.categories.len(), 1);
+        let cat = &blocked.categories[0];
+        assert_eq!(cat.kind, WarningKind::Schwab);
+        assert!(cat.dismiss_id.is_none());
+        assert!(
+            cat.items[0].contains("connect your Schwab account"),
+            "{:?}",
+            cat.items
+        );
     }
 
     #[test]
