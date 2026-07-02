@@ -402,7 +402,8 @@ as-built; the rest remain planned):
   `MARKET_SIGNAL_SCHWAB_FIXTURE`). The app secret rides the Keychain rail with the
   tokens; the client id is a non-secret in `app_settings`. Only the interactive
   browser round-trip is unexercised (an `#[ignore]` live smoke needing real
-  credentials).
+  credentials) — now **runnable**, since PR #50 added the Settings Connect surface
+  that seeds the client id and secret.
 - **Reuses the spine.** Each feature is a new Tauri command + job under a
   **single global run slot** (report + both local jobs are mutually exclusive,
   matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
@@ -413,14 +414,22 @@ as-built; the rest remain planned):
   every number and the model only interprets; per-job `vector_memory` namespace
   partition added; live verdict-quality/runtime + FMP-tier validation is
   hardware-gated on the M5) → **live Schwab OAuth (done — PR #48**: backend adapter +
-  token lifecycle + connection-gated source selection; frontend Connect surface +
-  `WarningKind::Schwab` category deferred) → **deterministic holdings-snapshot diff
-  (done — PR #49**: prior-run snapshot vs current pull → per-position
+  token lifecycle + connection-gated source selection) → **deterministic
+  holdings-snapshot diff (done — PR #49**: prior-run snapshot vs current pull → per-position
   new/increased/decreased/unchanged delta into each dossier + exited names in the
   roll-up; classified by quantity/position-size in the app layer — shorts and net
   long↔short reversals read correctly, cost basis corroborating context — backend-only,
-  frontend render deferred) → **next: full Portfolio (funds)** or the deferred
-  **frontend Schwab Connect surface** → Opportunities. Both jobs are personalized
+  frontend render deferred) → **frontend Schwab Connect surface (done — PR #50**: the
+  credential write-paths that finally make a connection seedable — client id →
+  `app_settings`, secret → Keychain, a client-id change clearing the now-stale tokens —
+  plus `schwab_status` / `schwab_disconnect` and the Settings Connect section;
+  **`WarningKind::Schwab` is now produced + consumed at the local run-gate via a new
+  `schwab_gate`** — parallel to `local_gate`, kept **off the cloud `validate` gate** so a
+  disconnected account blocks only the local jobs, never the report; its proactive
+  warning-band render and the #49 diff render both await the not-yet-built
+  **Portfolio-page frontend**) → **next: full Portfolio (funds)** or the
+  **Portfolio-page frontend** (renders the #49 diff + surfaces the local-suite warning
+  band) → Opportunities. Both jobs are personalized
   by a **fixed default investor-profile preset** (long-term, profit-max, medium-high
   risk, cash always available, no tax adjustment; user config deferred) that frames
   the prescription, never which holdings or ideas qualify.
