@@ -2,39 +2,39 @@
 
 ## What happened
 
-The **live Schwab OAuth slice landed on `main`** (squash `a3f9e40`, PR #48; branch
-deleted). It replaces the fixture as the default holdings source behind the existing
-`HoldingsSource` trait: a real GET-only `SchwabApiSource`, three-legged OAuth on the
-self-signed HTTPS loopback `https://127.0.0.1:8182` (with a per-run `state` nonce and a
-5-min bounded capture), the 30-min/7-day token lifecycle with a typed `ReauthRequired`
-boundary, and a new `TokenStore` trait putting the app secret + tokens on the **macOS
-Keychain rail** (client id is a non-secret in `app_settings`). Source selection is
-connection-gated — live when connected, blocked otherwise, fixture only via the
-`MARKET_SIGNAL_SCHWAB_FIXTURE` escape hatch. The `/chains` fetch is bounded; chain
-faults/drift surface through the holding gap manifest rather than a silent `None`. New
-deps: keyring / rcgen / tiny_http (+ chrono serde). Reviewed clean by the metis reviewer
-and four Codex rounds; 550 tests + clippy green. **Not rebuilt/reinstalled — the installed
-app is still v1.2.1; this is main-only.**
+The **holdings-snapshot diff (Portfolio workflow Step 4) landed on `main`** — squash
+`be1da53`, PR #49; branch deleted. A new `portfolio::diff` module computes a
+deterministic **app-layer** diff of the current Schwab pull vs the prior run's persisted
+snapshot: each position tagged **new / increased / decreased / unchanged** (by *position
+size* / absolute quantity, so shorts and net long↔short reversals read right; **cost
+basis is corroborating context, not a second axis**; matched by **symbol only** —
+`Position` carries no CUSIP/lot id), and **exited** names surfaced in the roll-up.
+Threaded into `HoldingDossier` + the interpretation prompt, plus an app-set
+`position_change` tag on **every** `HoldingVerdict` (graded or not) and `exited` on
+`PortfolioRollUp` (both `#[serde(default)]`). No new storage — the snapshot already
+persists in `PortfolioRun.holdings`. Docs (`portfolio-analysis.md`,
+`portfolio-workflow.md`) reconciled to the "by quantity" rule. Reviewed clean: metis
+reviewer (approve-with-nits) + two Codex rounds — one caught a real sign-flip regression
+the `abs()` short-fix had introduced (fixed + regression-tested). Full backend gate green
+(560 tests + clippy). **Backend-only; installed app still v1.2.1.**
 
 ## Current state
 
-On `main` @ `a3f9e40`, clean tree, nothing mid-implementation. The slice's deferred
-follow-ons: (a) the **deterministic holdings-snapshot diff** into dossiers — now the
-"next" build-order step in BUILD.md; (b) the **frontend Schwab Connect surface** —
-button → `schwab_connect`, client_id/secret entry, and a `WarningKind::Schwab` warning
-category (none exist yet; the backend command + rail do, but nothing drives them and the
-client_secret can't be seeded without them). One design call locked deliberately: the
-chain drift guard errors on **both** maps absent, not either, pending live confirmation
-of Schwab's "always both maps" invariant. BUILD.md updated this session (Schwab ingestion
-bullet + build order).
+On `main` @ `be1da53`, clean tree, nothing mid-implementation. BUILD.md build-order line
+updated this session (diff **done — PR #49**; "next" advances). The still-open Schwab
+follow-on is the **frontend Schwab Connect surface** — button → `schwab_connect`,
+client_id/secret entry, a `WarningKind::Schwab` category (none exist; the backend command
++ Keychain rail do, but nothing drives them, so the client_secret can't be seeded). This
+diff shipped backend-only; the **frontend render of the change tag + exited names** is
+deferred and pairs naturally with that Connect surface.
 
 ## Open questions
 
-- **Live Schwab browser round-trip unrun** — only the interactive `#[ignore]`
+- **Live Schwab browser round-trip unrun (carried)** — only the `#[ignore]`
   `schwab_oauth_live` exercises the real three-legged flow; needs real client_id+secret
-  (M1-runnable, by the user). The one thing static review can't cover.
-- **Chain both-maps invariant unconfirmed** — tighten the drift guard to either-absent
-  once a live `/chains` response confirms both maps are always present.
+  (M1-runnable, by the user).
+- **Chain both-maps invariant unconfirmed (carried)** — tighten the drift guard to
+  either-absent once a live `/chains` response confirms both maps are always present.
 - **Long/cold-start 600s stress (carried)** — daily length proven; only a long/cold-start
   report could near 600s or truncate.
 - **local-model M5 pre-flight (carried)** — 122B load/backend, Ollama #14645, `format`
@@ -46,8 +46,8 @@ bullet + build order).
 
 ## Where to start
 
-Pick up the Portfolio build order: either the **holdings-snapshot diff** (prior-run
-snapshot vs current pull → per-position new/increased/decreased/unchanged delta into each
-dossier, exited names in the roll-up) or the **frontend Schwab Connect surface** — both
-unblocked on the M1. If you instead want the merged slice in the *running* app, a version
-bump + `npm run tauri build` ships it (currently main-only, installed app still v1.2.1).
+Pick up the Portfolio build order via `/metis-plan-task`: either **full Portfolio
+(funds)** — the reduced ETF/mutual-fund path — or the deferred **frontend Schwab Connect
+surface** (which would also render this diff's change tag + exited names). Alternatively,
+to get the accumulated main-only work (PR #48 OAuth + PR #49 diff) into the *running* app,
+a version bump + `npm run tauri build` ships it (installed app still v1.2.1).

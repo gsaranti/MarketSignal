@@ -414,10 +414,13 @@ as-built; the rest remain planned):
   partition added; live verdict-quality/runtime + FMP-tier validation is
   hardware-gated on the M5) → **live Schwab OAuth (done — PR #48**: backend adapter +
   token lifecycle + connection-gated source selection; frontend Connect surface +
-  `WarningKind::Schwab` category deferred) → **next: deterministic holdings-snapshot
-  diff** (prior-run snapshot vs current pull → per-position
-  new/increased/decreased/unchanged delta into each dossier, exited names surfaced in
-  the roll-up) → full Portfolio (funds) → Opportunities. Both jobs are personalized
+  `WarningKind::Schwab` category deferred) → **deterministic holdings-snapshot diff
+  (done — PR #49**: prior-run snapshot vs current pull → per-position
+  new/increased/decreased/unchanged delta into each dossier + exited names in the
+  roll-up; classified by quantity/position-size in the app layer — shorts and net
+  long↔short reversals read correctly, cost basis corroborating context — backend-only,
+  frontend render deferred) → **next: full Portfolio (funds)** or the deferred
+  **frontend Schwab Connect surface** → Opportunities. Both jobs are personalized
   by a **fixed default investor-profile preset** (long-term, profit-max, medium-high
   risk, cash always available, no tax adjustment; user config deferred) that frames
   the prescription, never which holdings or ideas qualify.
