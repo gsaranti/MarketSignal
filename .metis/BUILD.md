@@ -383,9 +383,19 @@ as-built; the rest remain planned):
   sub-scores until calibrated (CBOE gives a Cboe venue-level put/call backdrop). **A connected Schwab
   account is required to run either local job** — manual CSV/paste import only
   supplements holdings and does not clear the gate, so both jobs block at each
-  re-auth. FMP/SEC stay the financial sources; tokens live in the macOS Keychain;
-  non-equity positions (options, bonds, cash) are marked not-rated. Schwab
-  developer-app approval (a few days) is the external long pole.
+  re-auth. FMP/SEC stay the financial sources; OAuth access/refresh tokens live in
+  the macOS Keychain **and never enter logs or the run tracker**; non-equity
+  positions (options, bonds, cash) are marked not-rated. The Schwab surface is
+  **read-only by construction** — the adapter implements only holdings/positions/
+  option-chain `GET`s and never an order/trading endpoint. This is a code-enforced
+  guarantee, not a token scope: the Trader API bundles trading into the same
+  product with **no read-only scope**, and it exposes **no money-movement
+  (transfer/withdrawal/ACATS) endpoints at all** (money movement is a separate
+  Advisor Services API), so the read-only boundary lives in our code while the
+  worst-case blast radius of a leaked credential stays bounded to in-account
+  trades the app never issues. The developer app is **registered and live**
+  (Trader API – Individual, both `Accounts and Trading` + `Market Data` sub-products,
+  callback `https://127.0.0.1:8182`); the former approval long-pole is closed.
 - **Reuses the spine.** Each feature is a new Tauri command + job under a
   **single global run slot** (report + both local jobs are mutually exclusive,
   matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
