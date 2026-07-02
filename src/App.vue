@@ -23,6 +23,8 @@ import type {
   ReportSummary,
   ResearchDocument,
   RunTrace,
+  SchwabCredentialUpdate,
+  SchwabStatus,
   SettingsView,
   StepStatus,
   TrackerStep,
@@ -391,6 +393,21 @@ const connectionTests = ref<Record<CredentialKey, ConnectionTestResult | null>>(
 // testConnection captures the epoch at start and only writes if it still matches.
 const settingsEpoch = ref(0);
 
+// Charles Schwab connection (docs/schwab-integration.md). Its own state channels,
+// parallel to the credential machinery: `schwabStatus` is the connection view read
+// from `schwab_status` (null until loaded / on failure), `schwabConnecting` is true
+// while the interactive browser login is in flight, and `schwabError` carries a
+// save/connect failure (kept off settingsError). Loaded alongside settings.
+const schwabStatus = ref<SchwabStatus | null>(null);
+const schwabConnecting = ref(false);
+const schwabError = ref<string | null>(null);
+
+// Connecting takes the single global run slot (schwab_connect holds the RunGuard),
+// so Connect is disabled while any report/job run is in flight; the button reads this.
+const schwabBusy = computed(
+  () => generating.value || (jobStatus.value?.is_running ?? false)
+);
+
 // The gate blocks generation when configuration is incomplete. The backend is
 // the authoritative guard; this only disables the control and short-circuits.
 // Fail safe: until the first check resolves (or if it errors), treat as blocked
@@ -700,6 +717,65 @@ async function refreshSettings() {
   } catch {
     truncationStats.value = null;
   }
+  void refreshSchwabStatus();
+}
+
+// The Schwab connection view, read from local storage/Keychain (no network). Its
+// own channel — fail-soft to null (the section is then omitted, like diagnostics),
+// never disturbing the settings form.
+async function refreshSchwabStatus() {
+  try {
+    schwabStatus.value = await invoke<SchwabStatus>("schwab_status");
+  } catch {
+    schwabStatus.value = null;
+  }
+}
+
+// Persist the Schwab developer-app credentials (client_id → app_settings,
+// client_secret → Keychain), then re-read the status so the secret placeholder and
+// the connect gating reflect the save. Errors land on schwabError, apart from the
+// config form's settingsError.
+async function saveSchwabCredentials(payload: SchwabCredentialUpdate) {
+  schwabError.value = null;
+  try {
+    await invoke("save_schwab_credentials", {
+      clientId: payload.client_id,
+      clientSecret: payload.client_secret,
+    });
+  } catch (e) {
+    schwabError.value = String(e);
+    return;
+  }
+  await refreshSchwabStatus();
+}
+
+// Run the interactive OAuth connect: schwab_connect stands up the loopback, opens
+// the browser, and blocks until the login completes (or times out). Refresh the
+// status + the warning band afterward so a newly-connected account clears its gate.
+async function connectSchwab() {
+  if (schwabConnecting.value || schwabBusy.value) return;
+  schwabConnecting.value = true;
+  schwabError.value = null;
+  try {
+    await invoke("schwab_connect");
+  } catch (e) {
+    schwabError.value = String(e);
+  } finally {
+    schwabConnecting.value = false;
+  }
+  await refreshSchwabStatus();
+}
+
+// Clear the stored OAuth session (keeps the saved credentials), then refresh the
+// status so the surface returns to its not-connected state.
+async function disconnectSchwab() {
+  schwabError.value = null;
+  try {
+    await invoke("schwab_disconnect");
+  } catch (e) {
+    schwabError.value = String(e);
+  }
+  await refreshSchwabStatus();
 }
 
 // Test one saved credential against its provider. Result lands on that
@@ -907,9 +983,16 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :testing="connectionTesting"
           :test-results="connectionTests"
           :truncation-stats="truncationStats"
+          :schwab-status="schwabStatus"
+          :schwab-connecting="schwabConnecting"
+          :schwab-busy="schwabBusy"
+          :schwab-error="schwabError"
           @save="saveSettings"
           @set-dark="setDark"
           @test="testConnection"
+          @save-schwab="saveSchwabCredentials"
+          @connect-schwab="connectSchwab"
+          @disconnect-schwab="disconnectSchwab"
         />
       </div>
       <JobStatusPanel

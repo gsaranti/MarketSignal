@@ -78,6 +78,7 @@ use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
 use model_agent::ModelMainAgent;
 use pipeline::{AnalystStages, GeneratedReport, ReportPaths, ResearchStages};
 use progress::{ProgressMessage, ProgressReporter, RunContext};
+use schwab_secrets::TokenStore;
 
 /// Tauri event name carrying every [`ProgressMessage`] for the live job tracker.
 /// The frontend listens on this and accumulates the run's trace by `run_id`.
@@ -425,11 +426,6 @@ async fn generate_report_demo(
     }
 }
 
-/// The message returned when Portfolio Analysis is invoked without a connected Schwab
-/// account (`docs/schwab-integration.md §A connected Schwab account is required`).
-const SCHWAB_NOT_CONNECTED_MSG: &str =
-    "Schwab account not connected — connect your Schwab account (weekly re-login) to run Portfolio Analysis.";
-
 /// Which holdings source a local job should use this run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HoldingsChoice {
@@ -513,6 +509,102 @@ async fn schwab_connect(
     })
     .await
     .map_err(|e| format!("schwab connect task failed: {e}"))?
+}
+
+/// Persist the Schwab developer-app credentials the OAuth connection needs, split across
+/// the two stores by sensitivity (`docs/schwab-integration.md §Token lifecycle`): the
+/// non-secret `client_id` into `app_settings` (its read side is `AppConfig::load`) and the
+/// bearer `client_secret` onto the Keychain rail. The secret is written only when a fresh,
+/// non-blank value is supplied, so re-saving to update the id — or to reconnect — never
+/// wipes a stored secret the form doesn't re-display, exactly as `settings::save` treats
+/// the API keys. Pure over the two stores so the split is unit-testable off the command.
+fn persist_schwab_credentials(
+    conn: &rusqlite::Connection,
+    store: &dyn schwab_secrets::TokenStore,
+    client_id: &str,
+    client_secret: Option<&str>,
+) -> anyhow::Result<()> {
+    let client_id = client_id.trim();
+    // A changed client id makes any stored OAuth token set stale — those tokens were
+    // issued under the old developer app and can't be refreshed with the new one — so
+    // clear the session and force a reconnect, rather than let `schwab_status` report a
+    // falsely-connected account (or a later job fail confusingly on a mismatched
+    // refresh). A secret *rotation* is deliberately NOT cleared: a refresh token survives
+    // a secret change, so correcting or rotating only the secret keeps the connection.
+    let previous_client_id = storage::get_setting(conn, config::KEY_SCHWAB_CLIENT_ID)?
+        .unwrap_or_default();
+    // The id is not a secret, so (like a model slug) it is written in full — a blank value
+    // clears it — rather than left-in-place-when-empty the way the secret below is.
+    storage::set_setting(conn, config::KEY_SCHWAB_CLIENT_ID, client_id)?;
+    if previous_client_id.trim() != client_id {
+        store.delete(schwab_secrets::SECRET_TOKENS)?;
+    }
+    if let Some(secret) = client_secret {
+        // Trim both to decide "supplied" and to store: a value pasted with a stray
+        // trailing newline/space would otherwise be an unusable secret. This is
+        // deliberate paste hygiene, matching how `settings::save` stores the API keys.
+        let secret = secret.trim();
+        if !secret.is_empty() {
+            store.set(schwab_secrets::SECRET_CLIENT_SECRET, secret)?;
+        }
+    }
+    Ok(())
+}
+
+/// Save the Schwab developer-app credentials from the Settings "Charles Schwab connection"
+/// surface (`docs/interface.md §Settings`) — the write path that lets the loopback connect
+/// find its `client_id` (`app_settings`) and `client_secret` (Keychain). Sync: local
+/// SQLite + Keychain writes, no network. The secret never round-trips back; the frontend
+/// re-reads `schwab_status` afterward for the connection view.
+#[tauri::command]
+fn save_schwab_credentials(
+    app: tauri::AppHandle,
+    client_id: String,
+    client_secret: Option<String>,
+) -> Result<(), String> {
+    let conn = open_app_db(&app)?;
+    let store = schwab_secrets::KeyringTokenStore::new();
+    persist_schwab_credentials(&conn, &store, &client_id, client_secret.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// The current Schwab connection state for the Settings surface (`docs/interface.md
+/// §Connection status`): the configured `client_id`, whether the client secret is present,
+/// and the derived connection state (never-connected / connected / lapsed) with the
+/// refresh-window expiry for the weekly-re-login heads-up. Read from local storage only —
+/// no network probe, mirroring the report's presence-not-connectivity posture — and never
+/// returns the secret or a token. Sync, like `get_settings`.
+#[tauri::command]
+fn schwab_status(app: tauri::AppHandle) -> Result<schwab_oauth::SchwabStatus, String> {
+    let client_id = {
+        let conn = open_app_db(&app)?;
+        AppConfig::load(&conn).schwab_client_id.unwrap_or_default()
+    };
+    let store = schwab_secrets::KeyringTokenStore::new();
+    let secret_configured = store
+        .get(schwab_secrets::SECRET_CLIENT_SECRET)
+        .map_err(|e| e.to_string())?
+        .is_some_and(|s| !s.trim().is_empty());
+    let tokens = store.tokens().map_err(|e| e.to_string())?;
+    Ok(schwab_oauth::SchwabStatus::build(
+        client_id,
+        secret_configured,
+        tokens,
+        chrono::Utc::now(),
+    ))
+}
+
+/// Disconnect the Schwab account: clear the stored OAuth token set from the Keychain rail
+/// so the next local run blocks with a re-auth prompt. The developer-app credentials
+/// (`client_id` + `client_secret`) are deliberately kept, so a reconnect — the routine
+/// weekly re-login — needs only the browser round-trip, not re-entering the app secret.
+/// Sync: a single local Keychain delete.
+#[tauri::command]
+fn schwab_disconnect() -> Result<(), String> {
+    let store = schwab_secrets::KeyringTokenStore::new();
+    store
+        .delete(schwab_secrets::SECRET_TOKENS)
+        .map_err(|e| e.to_string())
 }
 
 /// Manually run the local Portfolio Analysis job (`docs/portfolio-analysis.md`). Holdings
@@ -601,7 +693,21 @@ async fn generate_portfolio_manual(
         let holdings: Box<dyn schwab::HoldingsSource> =
             match choose_holdings_source(fixture_escape, connected) {
                 HoldingsChoice::Fixture => Box::new(schwab::FixtureHoldingsSource::new()),
-                HoldingsChoice::NotConnected => return Err(SCHWAB_NOT_CONNECTED_MSG.to_string()),
+                HoldingsChoice::NotConnected => {
+                    // Produce + consume the WarningKind::Schwab category via the shared
+                    // gate, mirroring how `local_gate` blocks the run for LocalModels
+                    // above; the gate is also the producer the local-suite warning band
+                    // will reuse once built. Surface its item — the specific reconnect
+                    // prompt — as the run-gate error.
+                    let report = schwab_oauth::schwab_gate(false);
+                    let message = report
+                        .categories
+                        .into_iter()
+                        .flat_map(|c| c.items)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    return Err(message);
+                }
                 HoldingsChoice::Live => {
                     let oauth = oauth.expect("oauth is built on the non-fixture path");
                     let token: schwab_live::TokenProvider =
@@ -950,6 +1056,9 @@ pub fn run() {
             generate_report_manual,
             generate_portfolio_manual,
             schwab_connect,
+            save_schwab_credentials,
+            schwab_status,
+            schwab_disconnect,
             cancel_run,
             list_reports,
             load_report,
@@ -1041,6 +1150,85 @@ mod tests {
         assert_eq!(
             resolve_data_dir(base, Some("  /tmp/scratch \n".to_string()), false),
             PathBuf::from("/tmp/scratch"),
+        );
+    }
+
+    #[test]
+    fn persist_schwab_credentials_splits_the_stores_and_preserves_a_kept_secret() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        let store = schwab_secrets::InMemoryTokenStore::new();
+
+        // First save: id → app_settings, secret → the Keychain rail.
+        persist_schwab_credentials(&conn, &store, "  client-abc  ", Some("dev-secret")).unwrap();
+        assert_eq!(
+            storage::get_setting(&conn, config::KEY_SCHWAB_CLIENT_ID)
+                .unwrap()
+                .as_deref(),
+            Some("client-abc") // trimmed, and it is not a secret
+        );
+        assert_eq!(
+            store.get(schwab_secrets::SECRET_CLIENT_SECRET).unwrap().as_deref(),
+            Some("dev-secret")
+        );
+
+        // Re-save to change only the id (secret field left empty): the stored secret
+        // must survive, exactly as `settings::save` leaves an untouched API key in place.
+        persist_schwab_credentials(&conn, &store, "client-xyz", None).unwrap();
+        assert_eq!(
+            storage::get_setting(&conn, config::KEY_SCHWAB_CLIENT_ID)
+                .unwrap()
+                .as_deref(),
+            Some("client-xyz")
+        );
+        assert_eq!(
+            store.get(schwab_secrets::SECRET_CLIENT_SECRET).unwrap().as_deref(),
+            Some("dev-secret")
+        );
+        // A whitespace-only secret is likewise a no-op, not a wipe.
+        persist_schwab_credentials(&conn, &store, "client-xyz", Some("   ")).unwrap();
+        assert_eq!(
+            store.get(schwab_secrets::SECRET_CLIENT_SECRET).unwrap().as_deref(),
+            Some("dev-secret")
+        );
+    }
+
+    #[test]
+    fn persist_schwab_credentials_clears_stale_tokens_only_when_the_client_id_changes() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        let store = schwab_secrets::InMemoryTokenStore::new();
+
+        // Connect under client-abc: a live token set is stored.
+        persist_schwab_credentials(&conn, &store, "client-abc", Some("secret-1")).unwrap();
+        let now = chrono::Utc::now();
+        store
+            .set_tokens(&schwab_secrets::SchwabTokens {
+                access_token: "a".into(),
+                refresh_token: "r".into(),
+                access_expires_at: now + chrono::Duration::minutes(30),
+                refresh_expires_at: now + chrono::Duration::days(7),
+            })
+            .unwrap();
+
+        // Re-saving the SAME id while rotating the secret keeps the session — a refresh
+        // token survives a secret change, so the tokens must NOT be cleared.
+        persist_schwab_credentials(&conn, &store, "client-abc", Some("secret-2")).unwrap();
+        assert!(
+            store.tokens().unwrap().is_some(),
+            "a secret rotation must not drop the session"
+        );
+
+        // Changing the client id makes the stored tokens stale → cleared, forcing a
+        // reconnect. The secret itself is untouched by the id change.
+        persist_schwab_credentials(&conn, &store, "client-xyz", None).unwrap();
+        assert!(
+            store.tokens().unwrap().is_none(),
+            "a client-id change must clear the stale token set"
+        );
+        assert_eq!(
+            store.get(schwab_secrets::SECRET_CLIENT_SECRET).unwrap().as_deref(),
+            Some("secret-2")
         );
     }
 }

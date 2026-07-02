@@ -76,6 +76,13 @@ pub enum WarningKind {
     /// never by `validate`; modeled here so the warning structure stays whole and the
     /// frontend can render it identically (`docs/local-models.md §Failure posture`).
     LocalModels,
+    /// The local analysis suite's Schwab-connection gap: no connected account, or the
+    /// 7-day refresh token has lapsed (`docs/schwab-integration.md §A connected Schwab
+    /// account is required`). Like `LocalModels`, it gates the **local jobs only** and is
+    /// produced where the Keychain token rail is reachable, never by the cloud-report
+    /// `validate` (which is pure over `AppConfig` and cannot see the tokens); modeled here
+    /// so the warning structure stays whole.
+    Schwab,
 }
 
 impl WarningKind {
@@ -89,6 +96,7 @@ impl WarningKind {
                 | WarningKind::ApiTokens
                 | WarningKind::ProviderCredentials
                 | WarningKind::LocalModels
+                | WarningKind::Schwab
         )
     }
 }
@@ -754,5 +762,23 @@ mod tests {
     fn job_warning_kinds_are_non_blocking() {
         assert!(!WarningKind::FailedJob.is_blocking());
         assert!(WarningKind::AgentConfiguration.is_blocking());
+    }
+
+    #[test]
+    fn schwab_warning_blocks_but_never_enters_the_cloud_validate_gate() {
+        // Schwab gates the local jobs, so it blocks like the other config gaps...
+        assert!(WarningKind::Schwab.is_blocking());
+        // ...but it is a local-suite category produced where the Keychain rail is
+        // reachable, never by the cloud-report gate. `validate` is pure over `AppConfig`
+        // (no token rail), so it must never emit a Schwab category — neither for a
+        // fully-configured cloud config nor a fully-empty one — which is what keeps a
+        // disconnected Schwab account from ever blocking the Market Signal Report.
+        for cfg in [complete(), AppConfig::default()] {
+            let report = validate(&cfg);
+            assert!(!report
+                .categories
+                .iter()
+                .any(|c| c.kind == WarningKind::Schwab));
+        }
     }
 }

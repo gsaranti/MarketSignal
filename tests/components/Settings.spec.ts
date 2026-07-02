@@ -12,7 +12,8 @@ import { test, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 import Settings from "../../src/components/Settings.vue";
 import { deepFreeze } from "../helpers/freeze";
-import type { SettingsView, TruncationStats } from "../../src/types";
+import { defaultSchwabStatus } from "../helpers/tauri";
+import type { SettingsView, SchwabStatus, TruncationStats } from "../../src/types";
 
 const settingsView: SettingsView = {
   models: { main: "gpt-main", bull: "gpt-bull", bear: "gpt-bear", balanced: "gpt-bal" },
@@ -37,6 +38,13 @@ const baseProps = {
   testing: { openai: false, anthropic: false, fmp: false, fred: false, tavily: false },
   testResults: { openai: null, anthropic: null, fmp: null, fred: null, tavily: null },
   truncationStats: null as TruncationStats | null,
+  // A clean install: no Schwab credentials, no connection (the shared helper
+  // fixture, spread so deepFreeze can't freeze the shared object). Schwab tests
+  // override.
+  schwabStatus: { ...defaultSchwabStatus } as SchwabStatus | null,
+  schwabConnecting: false,
+  schwabBusy: false,
+  schwabError: null as string | null,
 };
 
 // makeWrapper spreads baseProps *shallowly*, so its nested objects (settingsView,
@@ -267,4 +275,141 @@ test("an unaligned truncation suppresses the chars ratio even with a nonzero den
   expect(values).toContain("29,000");
   expect(values).not.toContain("29,000 of 100,000 (29.0%)");
   expect(values.some((v) => v.includes("%"))).toBe(false);
+});
+
+// --- Charles Schwab connection ---------------------------------------------
+// The credential + connect/disconnect surface: rendered on its own status channel,
+// with save-before-connect gating and connection-state-driven copy and controls.
+
+function schwabSection(wrapper: ReturnType<typeof makeWrapper>) {
+  return wrapper.find('section[aria-labelledby="sec-schwab"]');
+}
+
+// The section's buttons are role-labelled by their text; find one by label.
+function schwabButton(wrapper: ReturnType<typeof makeWrapper>, label: string) {
+  return wrapper
+    .findAll('section[aria-labelledby="sec-schwab"] button')
+    .find((b) => b.text() === label);
+}
+
+const schwabConfigured: SchwabStatus = {
+  client_id: "client-abc",
+  secret_configured: true,
+  connection: "not-connected",
+  refresh_expires_at: null,
+};
+
+test("the Schwab section is omitted when status is unavailable (null)", () => {
+  const wrapper = makeWrapper({ schwabStatus: null });
+  expect(schwabSection(wrapper).exists()).toBe(false);
+});
+
+test("a clean install reads not connected and offers no Disconnect", () => {
+  const wrapper = makeWrapper();
+  expect(schwabSection(wrapper).find(".schwab-status").text()).toContain(
+    "Not connected"
+  );
+  expect(schwabButton(wrapper, "Disconnect")).toBeUndefined();
+});
+
+test("save-schwab emits the client id and the typed secret", async () => {
+  const wrapper = makeWrapper();
+  await wrapper.find("#schwab-client-id").setValue("client-abc");
+  await wrapper.find("#schwab-client-secret").setValue("dev-secret");
+  await schwabButton(wrapper, "Save credentials")!.trigger("click");
+  const saved = wrapper.emitted("save-schwab");
+  expect(saved).toHaveLength(1);
+  expect(saved![0][0]).toEqual({
+    client_id: "client-abc",
+    client_secret: "dev-secret",
+  });
+});
+
+test("save-schwab leaves the secret null when only the client id changed", async () => {
+  const wrapper = makeWrapper({ schwabStatus: schwabConfigured });
+  await wrapper.find("#schwab-client-id").setValue("client-xyz");
+  await schwabButton(wrapper, "Save credentials")!.trigger("click");
+  expect(wrapper.emitted("save-schwab")![0][0]).toEqual({
+    client_id: "client-xyz",
+    client_secret: null,
+  });
+});
+
+test("connect is disabled until both credentials are saved", () => {
+  // client id saved but no secret configured → connect blocked.
+  const wrapper = makeWrapper({
+    schwabStatus: { ...schwabConfigured, secret_configured: false },
+  });
+  expect(schwabButton(wrapper, "Connect")!.attributes("disabled")).toBeDefined();
+});
+
+test("connect emits once saved credentials are complete and unedited", async () => {
+  const wrapper = makeWrapper({ schwabStatus: schwabConfigured });
+  const connect = schwabButton(wrapper, "Connect")!;
+  expect(connect.attributes("disabled")).toBeUndefined();
+  await connect.trigger("click");
+  expect(wrapper.emitted("connect-schwab")).toHaveLength(1);
+});
+
+test("an unsaved edit re-disables connect (save before connecting)", async () => {
+  const wrapper = makeWrapper({ schwabStatus: schwabConfigured });
+  expect(
+    schwabButton(wrapper, "Connect")!.attributes("disabled")
+  ).toBeUndefined();
+  await wrapper.find("#schwab-client-secret").setValue("rotated-secret");
+  expect(schwabButton(wrapper, "Connect")!.attributes("disabled")).toBeDefined();
+});
+
+test("a busy run slot disables connect", () => {
+  const wrapper = makeWrapper({ schwabStatus: schwabConfigured, schwabBusy: true });
+  expect(schwabButton(wrapper, "Connect")!.attributes("disabled")).toBeDefined();
+});
+
+test("credential save is disabled while a connect or run is in flight", async () => {
+  // A dirty edit that would otherwise be saveable, but a connect is mid-login: saving
+  // now could swap the secret under the captured client id, so Save must be blocked.
+  const connecting = makeWrapper({
+    schwabStatus: schwabConfigured,
+    schwabConnecting: true,
+  });
+  await connecting.find("#schwab-client-secret").setValue("rotated-secret");
+  expect(
+    schwabButton(connecting, "Save credentials")!.attributes("disabled")
+  ).toBeDefined();
+
+  // Same guard while any run holds the global slot.
+  const busy = makeWrapper({ schwabStatus: schwabConfigured, schwabBusy: true });
+  await busy.find("#schwab-client-secret").setValue("rotated-secret");
+  expect(
+    schwabButton(busy, "Save credentials")!.attributes("disabled")
+  ).toBeDefined();
+});
+
+test("a connected account shows a live status, offers Reconnect, and Disconnect emits", async () => {
+  const wrapper = makeWrapper({
+    schwabStatus: {
+      client_id: "client-abc",
+      secret_configured: true,
+      connection: "connected",
+      refresh_expires_at: "2026-07-09T00:00:00+00:00",
+    },
+  });
+  expect(schwabSection(wrapper).find(".schwab-status").text()).toContain(
+    "Connected"
+  );
+  // Connect reads "Reconnect" once a session exists.
+  expect(schwabButton(wrapper, "Reconnect")).toBeTruthy();
+  const disconnect = schwabButton(wrapper, "Disconnect")!;
+  expect(disconnect).toBeTruthy();
+  await disconnect.trigger("click");
+  expect(wrapper.emitted("disconnect-schwab")).toHaveLength(1);
+});
+
+test("a lapsed session reads as expired", () => {
+  const wrapper = makeWrapper({
+    schwabStatus: { ...schwabConfigured, connection: "expired" },
+  });
+  expect(schwabSection(wrapper).find(".schwab-status").text()).toContain(
+    "expired"
+  );
 });
