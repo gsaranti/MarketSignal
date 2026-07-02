@@ -2,55 +2,52 @@
 
 ## What happened
 
-The **Schwab external long pole is gone.** The Trader API – Individual entitlement was
-approved, then the developer app **"Market Signal" was created and got immediate
-`Ready For Use`** (no multi-day wait). App Details confirm every load-bearing field: both
-`Accounts and Trading Production` **and** `Market Data Production` attached (option-chains
-won't 403), callback `https://127.0.0.1:8182` exact/no-slash, Order Limit 120, Client ID +
-Secret issued. The intermittent `127.0.0.1`-rejection gotcha did not bite. **Development is
-now UNBLOCKED.** Also worked the credential risk model with the user: Schwab has **no
-read-only scope** (the product bundles read+trade), **but no money-movement endpoints exist**
-— cash/securities cannot be transferred out via this API (money movement is a separate
-Advisor Services API); three-legged OAuth additionally gates on the user's brokerage login +
-loopback consent, so a leaked Secret alone is bounded. Verified no credentials leaked into
-the chat. Memory updated (`schwab-api-registration`, `MEMORY.md`).
+The **live Schwab OAuth slice landed on `main`** (squash `a3f9e40`, PR #48; branch
+deleted). It replaces the fixture as the default holdings source behind the existing
+`HoldingsSource` trait: a real GET-only `SchwabApiSource`, three-legged OAuth on the
+self-signed HTTPS loopback `https://127.0.0.1:8182` (with a per-run `state` nonce and a
+5-min bounded capture), the 30-min/7-day token lifecycle with a typed `ReauthRequired`
+boundary, and a new `TokenStore` trait putting the app secret + tokens on the **macOS
+Keychain rail** (client id is a non-secret in `app_settings`). Source selection is
+connection-gated — live when connected, blocked otherwise, fixture only via the
+`MARKET_SIGNAL_SCHWAB_FIXTURE` escape hatch. The `/chains` fetch is bounded; chain
+faults/drift surface through the holding gap manifest rather than a silent `None`. New
+deps: keyring / rcgen / tiny_http (+ chrono serde). Reviewed clean by the metis reviewer
+and four Codex rounds; 550 tests + clippy green. **Not rebuilt/reinstalled — the installed
+app is still v1.2.1; this is main-only.**
 
 ## Current state
 
-On `main` @ `31beaa3`, installed build v1.2.1. No code written this session — the work was
-portal registration + risk analysis. The next build step is the **live Schwab OAuth slice**
-(loopback OAuth on `https://127.0.0.1:8182` + holdings pull). It is **buildable now on the
-M1** — OAuth + holdings ingestion is Rust/network, not local-model; only the *model
-interpretation* of holdings is M5-gated. A read-only audit was offered (read
-`schwab-integration.md` + map PR #45 stubs vs the live path) but not yet run; no slice plan
-drafted.
+On `main` @ `a3f9e40`, clean tree, nothing mid-implementation. The slice's deferred
+follow-ons: (a) the **deterministic holdings-snapshot diff** into dossiers — now the
+"next" build-order step in BUILD.md; (b) the **frontend Schwab Connect surface** —
+button → `schwab_connect`, client_id/secret entry, and a `WarningKind::Schwab` warning
+category (none exist yet; the backend command + rail do, but nothing drives them and the
+client_secret can't be seeded without them). One design call locked deliberately: the
+chain drift guard errors on **both** maps absent, not either, pending live confirmation
+of Schwab's "always both maps" invariant. BUILD.md updated this session (Schwab ingestion
+bullet + build order).
 
 ## Open questions
 
-- **Long/cold-start 600s stress (carried):** daily length proven clean; a long/cold-start
-  report is the only case that could still near 600s or truncate. Revisit only if it does
-  (raise timeout, or the flagged `read_timeout` idle-timeout refactor across the 3 streaming
-  client builders).
-- **local-model runtime pre-flight (M5, carried):** does the 122B load, on which backend
-  (MLX vs Metal/GGUF `mmproj`); is #14645 fixed; does `format` constrain; set `num_ctx`;
-  measure throughput (`docs/local-model-operations.md`).
-- **M5-calibration (carried):** Stooq refresh, `continuity_weight` bands + Research-stale
-  threshold, tripwires, DTO deep-research budget, leftover-budget ordering, archive retention.
-- **Four-part verdict + bidirectional-conviction bound (carried):** lands with full
-  Portfolio + TO.
-- **§1 open drafts (carried):** dead-money hurdle, feasible-set bounding; TO risk-tier /
-  horizon / hypothesis-score / quota / gate tables.
-- **M5-gated backlog (carried):** web-research provisioning / gating / UI +
-  rendered-retrieval, analytical-register live-check, no new Tavily, FMP-tier.
+- **Live Schwab browser round-trip unrun** — only the interactive `#[ignore]`
+  `schwab_oauth_live` exercises the real three-legged flow; needs real client_id+secret
+  (M1-runnable, by the user). The one thing static review can't cover.
+- **Chain both-maps invariant unconfirmed** — tighten the drift guard to either-absent
+  once a live `/chains` response confirms both maps are always present.
+- **Long/cold-start 600s stress (carried)** — daily length proven; only a long/cold-start
+  report could near 600s or truncate.
+- **local-model M5 pre-flight (carried)** — 122B load/backend, Ollama #14645, `format`
+  constraint, `num_ctx`, throughput.
+- **M5-calibration (carried)** — Stooq refresh, `continuity_weight` bands, Research-stale
+  threshold, tripwires, DTO budget, leftover-budget ordering, archive retention.
+- **Four-part verdict + bidirectional-conviction bound; §1 open drafts; M5-gated backlog
+  (carried)** — land with full Portfolio + TO.
 
 ## Where to start
 
-Begin the **live Schwab OAuth slice.** First action: read `docs/schwab-integration.md`
-end-to-end and audit what PR #45 stubbed (fixture Schwab source) vs. what the live path needs
-— loopback HTTPS server + self-signed cert, auth-code→token exchange, Keychain token storage,
-30-min/7-day refresh. Verify code-vs-doc + PR #45's fixture-engine math first, then plan. Bake
-in two safety invariants as written design constraints: the Schwab adapter is **GET-only (no
-order/trading surface)** and **tokens never hit logs or the run tracker.** Then wire the
-deterministic holdings-snapshot diff into each dossier. (Minor deferred doc nit to fix while
-wiring: `schwab-integration.md`'s "chains free on the individual Trader API" is imprecise —
-Market Data is a separately-registered product.)
+Pick up the Portfolio build order: either the **holdings-snapshot diff** (prior-run
+snapshot vs current pull → per-position new/increased/decreased/unchanged delta into each
+dossier, exited names in the roll-up) or the **frontend Schwab Connect surface** — both
+unblocked on the M1. If you instead want the merged slice in the *running* app, a version
+bump + `npm run tauri build` ships it (currently main-only, installed app still v1.2.1).

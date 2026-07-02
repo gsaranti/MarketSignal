@@ -393,9 +393,16 @@ as-built; the rest remain planned):
   (transfer/withdrawal/ACATS) endpoints at all** (money movement is a separate
   Advisor Services API), so the read-only boundary lives in our code while the
   worst-case blast radius of a leaked credential stays bounded to in-account
-  trades the app never issues. The developer app is **registered and live**
-  (Trader API – Individual, both `Accounts and Trading` + `Market Data` sub-products,
-  callback `https://127.0.0.1:8182`); the former approval long-pole is closed.
+  trades the app never issues. The developer app is registered and live
+  (Trader API – Individual, both `Accounts and Trading` + `Market Data`, callback
+  `https://127.0.0.1:8182`), and **the live adapter is built and merged** (PR #48):
+  the OAuth loopback (self-signed HTTPS + a per-run `state` nonce + a bounded
+  capture), the token lifecycle above, and the GET-only source behind the trait,
+  chosen over the fixture by a connection gate (offline runs keep the fixture via
+  `MARKET_SIGNAL_SCHWAB_FIXTURE`). The app secret rides the Keychain rail with the
+  tokens; the client id is a non-secret in `app_settings`. Only the interactive
+  browser round-trip is unexercised (an `#[ignore]` live smoke needing real
+  credentials).
 - **Reuses the spine.** Each feature is a new Tauri command + job under a
   **single global run slot** (report + both local jobs are mutually exclusive,
   matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
@@ -405,8 +412,10 @@ as-built; the rest remain planned):
   fixture Schwab + FMP + SEC + local models, offline-verified; the engine computes
   every number and the model only interprets; per-job `vector_memory` namespace
   partition added; live verdict-quality/runtime + FMP-tier validation is
-  hardware-gated on the M5) → **next: wire live Schwab OAuth** (+ deterministic
-  holdings-snapshot diff: prior-run snapshot vs current pull → per-position
+  hardware-gated on the M5) → **live Schwab OAuth (done — PR #48**: backend adapter +
+  token lifecycle + connection-gated source selection; frontend Connect surface +
+  `WarningKind::Schwab` category deferred) → **next: deterministic holdings-snapshot
+  diff** (prior-run snapshot vs current pull → per-position
   new/increased/decreased/unchanged delta into each dossier, exited names surfaced in
   the roll-up) → full Portfolio (funds) → Opportunities. Both jobs are personalized
   by a **fixed default investor-profile preset** (long-term, profit-max, medium-high
