@@ -130,14 +130,19 @@ impl HoldingsSource for SchwabApiSource {
             &token,
             "schwab option chain",
         )?;
-        // Fail-soft: a missing or unlisted chain degrades this stock's options signal to
-        // a gap, never a whole-job failure (`docs/schwab-integration.md §Failure
-        // posture`). The holdings pull already validated the token, so a non-200 here is
-        // treated as "no chain for this symbol".
-        if status != 200 {
-            return Ok(None);
+        match status {
+            // A parsed chain, or `None` when the name has no listed contracts.
+            200 => Ok(parse_chain(symbol, &body)),
+            // A genuinely un-optioned or unknown symbol is a gap, not a fault.
+            404 => Ok(None),
+            // An auth/server fault (e.g. the token lapsing mid-job) is a real error, not
+            // "no chain": return it rather than silently blanking every symbol's signal.
+            // The Portfolio job still handles it fail-soft at the call site
+            // (`.unwrap_or(None)` — never a whole-job failure,
+            // `docs/schwab-integration.md §Failure posture`), so the source can stay
+            // honest about *why* a chain is absent without failing the run.
+            other => bail!("Schwab option-chain request failed (HTTP {other})"),
         }
-        Ok(parse_chain(symbol, &body))
     }
 }
 
@@ -394,6 +399,33 @@ mod tests {
     #[test]
     fn parse_chain_none_when_no_contracts() {
         assert!(parse_chain("AAPL", r#"{"symbol":"AAPL","callExpDateMap":{},"putExpDateMap":{}}"#).is_none());
+    }
+
+    #[test]
+    fn option_chain_404_is_a_gap_but_a_fault_is_an_error() {
+        // 404 → no listed options for this name → a gap, fail-soft.
+        let not_found = MockHttp::serve(vec![Canned::Reply {
+            status: 404,
+            headers: vec![],
+            body: "not found",
+        }]);
+        let source = SchwabApiSource::with_base_url(
+            not_found.base_url.trim_end_matches('/').to_string(),
+            static_token(),
+        );
+        assert!(source.option_chain("NOPE").unwrap().is_none());
+
+        // 401 → an auth fault surfaces as an error, not a silent "no chain".
+        let unauthorized = MockHttp::serve(vec![Canned::Reply {
+            status: 401,
+            headers: vec![],
+            body: "unauthorized",
+        }]);
+        let source = SchwabApiSource::with_base_url(
+            unauthorized.base_url.trim_end_matches('/').to_string(),
+            static_token(),
+        );
+        assert!(source.option_chain("AAPL").is_err());
     }
 
     #[test]

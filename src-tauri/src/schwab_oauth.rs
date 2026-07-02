@@ -17,6 +17,7 @@
 //! success body.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -40,6 +41,11 @@ const ACCESS_SKEW: Duration = Duration::seconds(60);
 /// Refresh-token lifetime — 7 days, and it cannot be extended
 /// (`docs/schwab-integration.md §Token lifecycle`).
 const REFRESH_LIFETIME_DAYS: i64 = 7;
+/// How long the loopback capture waits for the browser redirect before giving up, so an
+/// abandoned login can't park the capture thread (and the run slot) indefinitely.
+/// Fully-qualified `std::time::Duration` to avoid shadowing chrono's `Duration`, which
+/// the token-lifecycle math uses.
+const CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The terminal OAuth state: no stored tokens, or the refresh token has lapsed. The
 /// caller must run the interactive browser login again — there is no silent renewal.
@@ -60,12 +66,14 @@ impl std::fmt::Display for ReauthRequired {
 impl std::error::Error for ReauthRequired {}
 
 /// Build the browser authorization URL for leg 1: `response_type=code`, the
-/// developer `client_id`, and the exact registered `redirect_uri`. Pure — no I/O — so
-/// the query shape is unit-testable.
-pub fn authorize_url(client_id: &str) -> String {
+/// developer `client_id`, the exact registered `redirect_uri`, and a per-run `state`
+/// nonce the redirect must echo back (a CSRF guard). Pure — no I/O — so the query shape
+/// is unit-testable.
+pub fn authorize_url(client_id: &str, state: &str) -> String {
     let redirect = encode_component(REDIRECT_URI);
     let client = encode_component(client_id);
-    format!("{AUTHORIZE_URL}?response_type=code&client_id={client}&redirect_uri={redirect}")
+    let state = encode_component(state);
+    format!("{AUTHORIZE_URL}?response_type=code&client_id={client}&redirect_uri={redirect}&state={state}")
 }
 
 /// Minimal percent-encoding for the query components we emit (`client_id`,
@@ -102,6 +110,17 @@ pub fn parse_redirect_code(target: &str) -> Result<String> {
         .map(|(_, v)| v.into_owned())
         .filter(|c| !c.is_empty())
         .ok_or_else(|| anyhow!("OAuth redirect carried no authorization code"))
+}
+
+/// The `state` nonce echoed on the redirect, if present. The capture compares it to the
+/// nonce it issued and rejects a mismatch (a stray or forged redirect).
+fn redirect_state(target: &str) -> Option<String> {
+    let base = reqwest::Url::parse("http://127.0.0.1/").expect("static base URL is valid");
+    let parsed = base.join(target).ok()?;
+    parsed
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.into_owned())
 }
 
 /// Schwab's token-endpoint success body (the fields the lifecycle needs). Extra fields
@@ -271,17 +290,39 @@ pub fn run_loopback_capture(client_id: &str, open_browser: bool) -> Result<Strin
     let server = tiny_http::Server::https(LOOPBACK_ADDR, ssl)
         .map_err(|e| anyhow!("binding loopback OAuth server on {LOOPBACK_ADDR}: {e}"))?;
 
+    // A per-run nonce round-tripped through `state`: a redirect that doesn't echo the
+    // exact value this capture issued is not our login, and is rejected.
+    let state = uuid::Uuid::new_v4().to_string();
     if open_browser {
-        open_url(&authorize_url(client_id));
+        open_url(&authorize_url(client_id, &state));
     }
 
-    // Block for the redirect. A misdirected probe (a browser prefetch, a favicon) that
-    // carries no code is answered and ignored; the real redirect resolves the loop.
+    // Wait for the redirect, bounded by CAPTURE_TIMEOUT so an abandoned browser login
+    // can't park this thread (and the run slot) forever. A misdirected probe (a browser
+    // prefetch, a favicon) that carries no code is answered and ignored; the real
+    // redirect resolves the loop.
+    let deadline = Instant::now() + CAPTURE_TIMEOUT;
     loop {
-        let request = server.recv().context("awaiting the OAuth redirect")?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            bail!("timed out waiting for the Schwab authorization redirect");
+        }
+        let Some(request) = server
+            .recv_timeout(remaining)
+            .context("awaiting the OAuth redirect")?
+        else {
+            bail!("timed out waiting for the Schwab authorization redirect");
+        };
         let target = request.url().to_string();
         match parse_redirect_code(&target) {
             Ok(code) => {
+                // The code-bearing request must carry our exact state, or it is a forged
+                // or stale redirect, not the login we initiated.
+                if redirect_state(&target).as_deref() != Some(state.as_str()) {
+                    let _ = request
+                        .respond(tiny_http::Response::from_string("State mismatch — ignoring."));
+                    bail!("OAuth redirect state did not match the issued nonce; aborting");
+                }
                 let _ = request.respond(tiny_http::Response::from_string(CLOSE_TAB_HTML));
                 return Ok(code);
             }
@@ -319,14 +360,25 @@ mod tests {
     }
 
     #[test]
-    fn authorize_url_carries_code_flow_and_the_encoded_redirect() {
-        let url = authorize_url("client-abc@AMER.OAUTHAP");
+    fn authorize_url_carries_code_flow_encoded_redirect_and_state() {
+        let url = authorize_url("client-abc@AMER.OAUTHAP", "nonce-123");
         assert!(url.starts_with(AUTHORIZE_URL), "{url}");
         assert!(url.contains("response_type=code"), "{url}");
         // The redirect URI is percent-encoded (its ':' and '/' escaped)...
         assert!(url.contains("redirect_uri=https%3A%2F%2F127.0.0.1%3A8182"), "{url}");
         // ...and the client id's reserved characters too.
         assert!(url.contains("client_id=client-abc%40AMER.OAUTHAP"), "{url}");
+        // ...and the CSRF state nonce is carried.
+        assert!(url.contains("state=nonce-123"), "{url}");
+    }
+
+    #[test]
+    fn redirect_state_reads_the_echoed_nonce() {
+        assert_eq!(
+            redirect_state("/?code=ABC&state=nonce-123").as_deref(),
+            Some("nonce-123")
+        );
+        assert_eq!(redirect_state("/?code=ABC").as_deref(), None);
     }
 
     #[test]

@@ -478,7 +478,10 @@ fn schwab_fixture_escape() -> bool {
 /// must already be on the Keychain rail (written by the Settings connection surface —
 /// deferred); this reads it there and never logs a token.
 #[tauri::command]
-async fn schwab_connect(app: tauri::AppHandle) -> Result<(), String> {
+async fn schwab_connect(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, RunGuard>,
+) -> Result<(), String> {
     let cfg = {
         let conn = open_app_db(&app)?;
         AppConfig::load(&conn)
@@ -487,8 +490,16 @@ async fn schwab_connect(app: tauri::AppHandle) -> Result<(), String> {
     if client_id.trim().is_empty() {
         return Err("Schwab client id is not configured".to_string());
     }
+    let guard = guard.inner().clone();
 
     tauri::async_runtime::spawn_blocking(move || {
+        // Hold the single global run slot for the whole connection: the interactive
+        // login can take minutes, and letting a report/portfolio job start meanwhile
+        // (both touch the Keychain / shared state) would violate the one-workflow-at-a-
+        // time contract. The token releases on drop — success, failure, or panic.
+        let _token = guard.try_begin().ok_or_else(|| {
+            "Another job is running — connect Schwab once it finishes.".to_string()
+        })?;
         let store: Arc<dyn schwab_secrets::TokenStore> =
             Arc::new(schwab_secrets::KeyringTokenStore::new());
         let oauth =
