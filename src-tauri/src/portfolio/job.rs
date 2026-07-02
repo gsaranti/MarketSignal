@@ -19,7 +19,8 @@ use crate::portfolio::dossier::{self, HoldingDossier};
 use crate::portfolio::engine::CompanyFinancials;
 use crate::portfolio::pipeline::{analyze_holding, HoldingAnalyst};
 use crate::portfolio::{
-    store, HoldingAudit, HoldingVerdict, InvestorProfile, PortfolioRollUp, PortfolioRun,
+    diff, store, ExitedPosition, HoldingAudit, HoldingVerdict, InvestorProfile, PortfolioRollUp,
+    PortfolioRun,
 };
 use crate::progress::RunContext;
 use crate::schwab::{Holdings, HoldingsSource};
@@ -223,6 +224,13 @@ fn run_analysis(
     let holdings = holdings_source.holdings()?;
     ctx.step_finished("holdings", "ok", None);
 
+    // Deterministic holdings-change diff against the prior run's persisted snapshot
+    // (Step 4), computed in the app layer before any model stage — the
+    // compute-don't-guess boundary. Fail-soft: an unreadable prior run reads as "no
+    // prior snapshot", so every position tags `new`, exactly as a first run does.
+    let prior_holdings = store::latest_run(conn).ok().flatten().map(|r| r.holdings);
+    let holdings_diff = diff::diff_holdings(prior_holdings.as_ref(), &holdings);
+
     let house_view = dossier::load_house_view(conn, &paths.reports_dir);
 
     let mut verdicts: Vec<HoldingVerdict> = Vec::with_capacity(holdings.positions.len());
@@ -259,6 +267,7 @@ fn run_analysis(
         let prior = dossier::prior_verdict_for(conn, &position.symbol);
         let dossier: HoldingDossier = dossier::assemble(
             position.clone(),
+            holdings_diff.delta_for(&position.symbol),
             fmp_financials,
             &sec_data.facts,
             chain.as_ref(),
@@ -281,7 +290,7 @@ fn run_analysis(
         audits.push(audit);
     }
 
-    let roll_up = build_roll_up(&holdings, &verdicts);
+    let roll_up = build_roll_up(&holdings, &verdicts, &holdings_diff.exited);
     let run = PortfolioRun {
         run_id: uuid::Uuid::new_v4().to_string(),
         created_at: now_rfc3339(),
@@ -299,10 +308,15 @@ fn run_analysis(
 }
 
 /// Build the deterministic portfolio roll-up (`docs/portfolio-analysis.md` §Portfolio
-/// roll-up): verdict counts, the concentration read (largest position weight), and the
-/// cash stance. The 122B synthesis pass is a later slice; this is the deterministic
-/// summary for the single-equity slice.
-fn build_roll_up(holdings: &Holdings, verdicts: &[HoldingVerdict]) -> PortfolioRollUp {
+/// roll-up): verdict counts, the concentration read (largest position weight), the cash
+/// stance, and the positions closed since the last run (the Step-4 diff's exited
+/// names). The 122B synthesis pass is a later slice; this is the deterministic summary
+/// for the single-equity slice.
+fn build_roll_up(
+    holdings: &Holdings,
+    verdicts: &[HoldingVerdict],
+    exited: &[ExitedPosition],
+) -> PortfolioRollUp {
     use crate::portfolio::VerdictDisposition;
     let mut graded = 0;
     let mut not_rated = 0;
@@ -326,15 +340,24 @@ fn build_roll_up(holdings: &Holdings, verdicts: &[HoldingVerdict]) -> PortfolioR
     };
     let cash_weight = if total > 0.0 { holdings.cash / total } else { 0.0 };
 
+    // Acknowledge positions closed since the last run rather than letting them vanish.
+    let exited_note = if exited.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<&str> = exited.iter().map(|e| e.symbol.as_str()).collect();
+        format!(" Closed since last run: {}.", names.join(", "))
+    };
+
     PortfolioRollUp {
         graded_count: graded,
         not_rated_count: not_rated,
         insufficient_evidence_count: insufficient,
         top_position_weight,
         cash_weight,
+        exited: exited.to_vec(),
         overview: format!(
             "{graded} graded, {not_rated} not rated, {insufficient} insufficient-evidence; \
-             top position {:.0}% of the account, cash {:.0}%.",
+             top position {:.0}% of the account, cash {:.0}%.{exited_note}",
             top_position_weight * 100.0,
             cash_weight * 100.0
         ),
@@ -351,7 +374,8 @@ fn now_rfc3339() -> String {
 mod tests {
     use super::*;
     use crate::portfolio::pipeline::StubAnalyst;
-    use crate::schwab::FixtureHoldingsSource;
+    use crate::portfolio::{AssetClass, PositionChange};
+    use crate::schwab::{FixtureHoldingsSource, Position};
 
     /// A stub company-data source serving strong fixture financials offline.
     struct StubCompanyData;
@@ -404,6 +428,30 @@ mod tests {
 
     fn ctx() -> std::sync::Arc<RunContext> {
         RunContext::noop()
+    }
+
+    /// A gradeable equity position at a given quantity (cost basis derived so the
+    /// account math stays consistent; the diff classifies by quantity).
+    fn stock(symbol: &str, quantity: f64, market_value: f64) -> Position {
+        Position {
+            symbol: symbol.into(),
+            description: format!("{symbol} Inc."),
+            asset_class: AssetClass::Stock,
+            quantity,
+            cost_basis: market_value * 0.8,
+            market_value,
+            current_price: Some(market_value / quantity),
+        }
+    }
+
+    fn holdings_of(positions: Vec<Position>) -> Holdings {
+        let cash = 10_000.0;
+        let account_total = positions.iter().map(|p| p.market_value).sum::<f64>() + cash;
+        Holdings {
+            positions,
+            cash,
+            account_total,
+        }
     }
 
     #[test]
@@ -595,5 +643,63 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM portfolio_runs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn holdings_diff_tags_changes_and_surfaces_exits_across_runs() {
+        let (_dir, paths) = paths();
+        let guard = RunGuard::default();
+        let run = |source: &dyn HoldingsSource| {
+            match run_portfolio_job(
+                source,
+                &StubCompanyData,
+                &StubAnalyst,
+                &InvestorProfile::default_fixture(),
+                &paths,
+                &guard,
+                &ctx(),
+            )
+            .unwrap()
+            {
+                PortfolioJobOutcome::Successful(r) => *r,
+                other => panic!("expected success, got {other:?}"),
+            }
+        };
+
+        // Run 1: hold AAPL (100 sh) and MSFT (50 sh). First run — every position is new
+        // (no prior snapshot), and nothing has exited.
+        let first = run(&FixtureHoldingsSource::with_holdings(holdings_of(vec![
+            stock("AAPL", 100.0, 19_500.0),
+            stock("MSFT", 50.0, 20_000.0),
+        ])));
+        for v in &first.verdicts {
+            assert_eq!(v.position_change, PositionChange::New, "{} on run 1", v.symbol);
+        }
+        assert!(first.roll_up.exited.is_empty());
+
+        // Run 2: AAPL increased to 140, MSFT sold out, NVDA newly opened.
+        let second = run(&FixtureHoldingsSource::with_holdings(holdings_of(vec![
+            stock("AAPL", 140.0, 27_300.0),
+            stock("NVDA", 30.0, 30_000.0),
+        ])));
+        let change = |sym: &str| {
+            second
+                .verdicts
+                .iter()
+                .find(|v| v.symbol == sym)
+                .map(|v| v.position_change)
+        };
+        assert_eq!(change("AAPL"), Some(PositionChange::Increased));
+        assert_eq!(change("NVDA"), Some(PositionChange::New));
+        // The sold-out name earns no verdict but is surfaced in the roll-up.
+        assert_eq!(change("MSFT"), None);
+        assert_eq!(second.roll_up.exited.len(), 1);
+        assert_eq!(second.roll_up.exited[0].symbol, "MSFT");
+        assert_eq!(second.roll_up.exited[0].prior_quantity, 50.0);
+        assert!(
+            second.roll_up.overview.contains("MSFT"),
+            "the exit is noted in the overview: {}",
+            second.roll_up.overview
+        );
     }
 }

@@ -22,8 +22,8 @@ use crate::portfolio::dossier::HoldingDossier;
 use crate::portfolio::engine::{self, EngineOutput, EngineVerdict};
 use crate::portfolio::{
     interpretation_schema, Action, Conviction, GradedVerdict, HoldingAudit, HoldingVerdict,
-    HorizonOutlook, HorizonRead, Interpretation, VerdictDisposition, HORIZON_LONG, HORIZON_MID,
-    HORIZON_SHORT, PROMPT_VERSION,
+    HorizonOutlook, HorizonRead, Interpretation, PositionChange, PositionDelta, VerdictDisposition,
+    HORIZON_LONG, HORIZON_MID, HORIZON_SHORT, PROMPT_VERSION,
 };
 
 /// The condensed findings the research stage produces — the compact object the
@@ -87,6 +87,9 @@ pub fn analyze_holding(
 ) -> Result<(HoldingVerdict, HoldingAudit)> {
     let symbol = dossier.position.symbol.clone();
     let asset_class = dossier.position.asset_class;
+    // App-set from the deterministic holdings diff, never the model — carried on every
+    // verdict (graded or not) as the structured what-changed position tag.
+    let position_change = dossier.position_delta.change;
 
     let audit = |metrics| HoldingAudit {
         symbol: symbol.clone(),
@@ -102,6 +105,7 @@ pub fn analyze_holding(
         let verdict = HoldingVerdict {
             symbol: symbol.clone(),
             asset_class,
+            position_change,
             disposition: VerdictDisposition::NotRated {
                 reason: format!("{} is not graded by the equity pipeline", asset_class.label()),
             },
@@ -116,6 +120,7 @@ pub fn analyze_holding(
             let verdict = HoldingVerdict {
                 symbol: symbol.clone(),
                 asset_class,
+                position_change,
                 disposition: VerdictDisposition::InsufficientEvidence { reason },
             };
             return Ok((verdict, audit(Default::default())));
@@ -158,6 +163,7 @@ pub fn analyze_holding(
     let verdict = HoldingVerdict {
         symbol: symbol.clone(),
         asset_class,
+        position_change,
         disposition: VerdictDisposition::Graded(Box::new(graded)),
     };
     Ok((verdict, audit(engine_output.metrics.clone())))
@@ -196,6 +202,10 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         d.position.quantity,
         d.position.cost_basis,
         d.position.market_value,
+    ));
+    p.push_str(&format!(
+        "Position change since last run: {}\n",
+        describe_position_change(&d.position_delta, d.position.quantity, d.position.cost_basis)
     ));
 
     p.push_str(&format!(
@@ -287,6 +297,41 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
 
 fn opt(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.3}")).unwrap_or_else(|| "(gap)".to_string())
+}
+
+/// A one-line description of the position's change since the prior run, for the
+/// interpretation prompt — the structured delta the app computed, so the model reasons
+/// over what the user actually did with the position: both the quantity move and the
+/// cost-basis move (paid-up vs averaged-down).
+fn describe_position_change(
+    delta: &PositionDelta,
+    current_qty: f64,
+    current_cost_basis: f64,
+) -> String {
+    match delta.change {
+        PositionChange::New => "NEW (not held last run)".to_string(),
+        PositionChange::Unchanged => "unchanged".to_string(),
+        PositionChange::Increased | PositionChange::Decreased => {
+            let dir = if matches!(delta.change, PositionChange::Increased) {
+                "INCREASED"
+            } else {
+                "DECREASED"
+            };
+            let qty = match delta.prior_quantity {
+                Some(prev) => format!(" quantity {prev} → now {current_qty}"),
+                None => String::new(),
+            };
+            let basis = match delta.prior_cost_basis {
+                Some(prev) => format!(", cost basis {prev:.0} → now {current_cost_basis:.0}"),
+                None => String::new(),
+            };
+            if qty.is_empty() && basis.is_empty() {
+                dir.to_string()
+            } else {
+                format!("{dir} (prior{qty}{basis})")
+            }
+        }
+    }
 }
 
 // ---- The deterministic stub analyst (offline) --------------------------------
@@ -463,6 +508,7 @@ mod tests {
     fn dossier(asset_class: AssetClass, financials: CompanyFinancials) -> HoldingDossier {
         HoldingDossier {
             position: position(asset_class),
+            position_delta: PositionDelta::new_position(),
             financials,
             options_signal: OptionsSignal {
                 put_call_volume: Some(1.2),
@@ -482,6 +528,9 @@ mod tests {
         let (verdict, audit) =
             analyze_holding(&StubAnalyst, &dossier(AssetClass::Stock, strong_financials()), 29_500.0)
                 .unwrap();
+        // The app-set holdings-change tag rides on the verdict (the dossier's delta is
+        // a new position), independent of the model's prose what_changed.
+        assert_eq!(verdict.position_change, PositionChange::New);
         match verdict.disposition {
             VerdictDisposition::Graded(g) => {
                 // Engine numbers carried through; model judgment present.
@@ -530,6 +579,23 @@ mod tests {
             verdict.disposition,
             VerdictDisposition::InsufficientEvidence { .. }
         ));
+    }
+
+    #[test]
+    fn position_change_line_shows_quantity_and_cost_basis_moves() {
+        let increased = PositionDelta {
+            change: PositionChange::Increased,
+            prior_quantity: Some(100.0),
+            prior_cost_basis: Some(14_000.0),
+        };
+        let line = describe_position_change(&increased, 140.0, 19_500.0);
+        assert!(line.contains("INCREASED"), "{line}");
+        assert!(line.contains("100") && line.contains("140"), "quantity move: {line}");
+        assert!(line.contains("14000") && line.contains("19500"), "cost-basis move: {line}");
+        assert_eq!(
+            describe_position_change(&PositionDelta::new_position(), 10.0, 1_000.0),
+            "NEW (not held last run)"
+        );
     }
 
     #[test]

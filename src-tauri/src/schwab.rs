@@ -165,6 +165,18 @@ impl FixtureHoldingsSource {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// A fixture over an explicit holdings snapshot — for tests that need the holdings
+    /// to vary across runs (e.g. exercising the Step-4 holdings-change diff, which the
+    /// deterministic single-equity [`Default`] cannot). Reuses the default option
+    /// chain, served only for its AAPL underlying; any other symbol reports no chain,
+    /// exactly as a live source would for an un-optioned name.
+    pub fn with_holdings(holdings: Holdings) -> Self {
+        Self {
+            holdings,
+            chain: Self::default().chain,
+        }
+    }
 }
 
 impl HoldingsSource for FixtureHoldingsSource {

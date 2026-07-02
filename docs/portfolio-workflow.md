@@ -76,7 +76,7 @@ The eligibility decision is explicit and shown in the UI; a not-rated position n
 
 **Type:** Computed (app layer) — a deterministic diff before any model stage. No model.
 
-The current holdings are diffed against the **prior run's persisted snapshot** (see [portfolio-analysis.md §Holdings change tracking](portfolio-analysis.md#holdings-change-tracking)). Every current position is tagged by quantity and cost basis as **new / increased / decreased / unchanged**; a symbol present last run but absent now is **exited** (no per-holding verdict — there is nothing left to grade — but surfaced in the Step-7 roll-up as closed-since-last-run). Each holding's delta rides into its dossier so the verdict reasons over what the user actually did. The diff is the application's, not the model's.
+The current holdings are diffed against the **prior run's persisted snapshot** (see [portfolio-analysis.md §Holdings change tracking](portfolio-analysis.md#holdings-change-tracking)). Every current position is tagged **by quantity** — by position size, so a short and a net long↔short reversal read correctly, with cost basis as corroborating context rather than a second axis — as **new / increased / decreased / unchanged**; a symbol present last run but absent now is **exited** (no per-holding verdict — there is nothing left to grade — but surfaced in the Step-7 roll-up as closed-since-last-run). Each holding's delta rides into its dossier so the verdict reasons over what the user actually did. The diff is the application's, not the model's.
 
 ## Step 5: Load Shared Context
 
