@@ -242,7 +242,20 @@ fn run_analysis(
         let mut fmp_financials = company_data.financials(&position.symbol);
         let sec_data = company_data.facts(&position.symbol);
         fmp_financials.gaps.extend(sec_data.gaps);
-        let chain = holdings_source.option_chain(&position.symbol).unwrap_or(None);
+        // Fail-soft chain fetch: an auth/server fault or a malformed response degrades
+        // this holding's options signal to a gap, but — unlike a silent drop — it is
+        // recorded in the manifest so it reaches the audit and prompt rather than reading
+        // as "no options listed" (`docs/schwab-integration.md §Failure posture`). Never a
+        // whole-job failure; the error carries status/context only, never a token.
+        let chain = match holdings_source.option_chain(&position.symbol) {
+            Ok(chain) => chain,
+            Err(e) => {
+                fmp_financials
+                    .gaps
+                    .push(format!("Option chain unavailable for {}: {e}", position.symbol));
+                None
+            }
+        };
         let prior = dossier::prior_verdict_for(conn, &position.symbol);
         let dossier: HoldingDossier = dossier::assemble(
             position.clone(),

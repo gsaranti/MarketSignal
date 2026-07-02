@@ -28,6 +28,9 @@ pub mod research_executor;
 pub mod research_packet;
 pub mod research_router;
 pub mod schwab;
+pub mod schwab_live;
+pub mod schwab_oauth;
+pub mod schwab_secrets;
 pub mod sec;
 pub mod settings;
 pub mod skills;
@@ -422,18 +425,109 @@ async fn generate_report_demo(
     }
 }
 
-/// Manually run the local Portfolio Analysis job (`docs/portfolio-analysis.md`). This
-/// slice runs against a **fixture** Schwab source (a single equity + a stub option
-/// chain) plus live FMP + keyless SEC EDGAR and the local models — offline from cloud
-/// keys and Schwab OAuth, so it validates the pipeline's quality and runtime before the
-/// live integrations land.
+/// The message returned when Portfolio Analysis is invoked without a connected Schwab
+/// account (`docs/schwab-integration.md §A connected Schwab account is required`).
+const SCHWAB_NOT_CONNECTED_MSG: &str =
+    "Schwab account not connected — connect your Schwab account (weekly re-login) to run Portfolio Analysis.";
+
+/// Which holdings source a local job should use this run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoldingsChoice {
+    /// The offline fixture (the `MARKET_SIGNAL_SCHWAB_FIXTURE` escape hatch), so the
+    /// pipeline still runs with no Schwab connection for local validation.
+    Fixture,
+    /// The live Schwab Trader API source — a connected account with an open refresh
+    /// window.
+    Live,
+    /// No connection: the job is blocked with a re-authentication prompt rather than
+    /// run in a degraded mode.
+    NotConnected,
+}
+
+/// Decide the holdings source from the fixture escape hatch and the live connection
+/// state. Pure so the gate's decision table is unit-testable without a Keychain or a
+/// network. The escape hatch wins first (offline validation), then a live connection,
+/// else the job blocks.
+fn choose_holdings_source(fixture_escape: bool, connected: bool) -> HoldingsChoice {
+    if fixture_escape {
+        HoldingsChoice::Fixture
+    } else if connected {
+        HoldingsChoice::Live
+    } else {
+        HoldingsChoice::NotConnected
+    }
+}
+
+/// Whether the offline Schwab fixture escape hatch is set (`MARKET_SIGNAL_SCHWAB_FIXTURE`
+/// truthy). Lets the local jobs run against the fixture with no Schwab connection for
+/// pipeline validation, exactly as this slice did before the live source landed.
+fn schwab_fixture_escape() -> bool {
+    std::env::var("MARKET_SIGNAL_SCHWAB_FIXTURE")
+        .map(|v| {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
+/// Begin the interactive Schwab OAuth connection (`docs/schwab-integration.md
+/// §Authorization`): stand up the self-signed HTTPS loopback server, open the system
+/// browser for the brokerage login, capture the redirect's authorization code, and
+/// exchange it for the token set stored on the Keychain rail. Runs the blocking capture
+/// (a socket bind + browser round-trip) through `spawn_blocking`. The client *secret*
+/// must already be on the Keychain rail (written by the Settings connection surface —
+/// deferred); this reads it there and never logs a token.
+#[tauri::command]
+async fn schwab_connect(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, RunGuard>,
+) -> Result<(), String> {
+    let cfg = {
+        let conn = open_app_db(&app)?;
+        AppConfig::load(&conn)
+    };
+    let client_id = cfg.schwab_client_id.clone().unwrap_or_default();
+    if client_id.trim().is_empty() {
+        return Err("Schwab client id is not configured".to_string());
+    }
+    let guard = guard.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        // Hold the single global run slot for the whole connection: the interactive
+        // login can take minutes, and letting a report/portfolio job start meanwhile
+        // (both touch the Keychain / shared state) would violate the one-workflow-at-a-
+        // time contract. The token releases on drop — success, failure, or panic.
+        let _token = guard.try_begin().ok_or_else(|| {
+            "Another job is running — connect Schwab once it finishes.".to_string()
+        })?;
+        let store: Arc<dyn schwab_secrets::TokenStore> =
+            Arc::new(schwab_secrets::KeyringTokenStore::new());
+        let oauth =
+            schwab_oauth::OauthClient::new(client_id.clone(), store).map_err(|e| e.to_string())?;
+        let code =
+            schwab_oauth::run_loopback_capture(&client_id, true).map_err(|e| e.to_string())?;
+        oauth
+            .exchange_code(&code, chrono::Utc::now())
+            .map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("schwab connect task failed: {e}"))?
+}
+
+/// Manually run the local Portfolio Analysis job (`docs/portfolio-analysis.md`). Holdings
+/// come from the **live Schwab Trader API** (`schwab_live`) once the account is connected
+/// — an OAuth loopback with a 30-min/7-day token lifecycle — plus live FMP + keyless SEC
+/// EDGAR and the local models. A connected account is a hard precondition: without one the
+/// run is blocked with a re-auth prompt, not degraded. The `MARKET_SIGNAL_SCHWAB_FIXTURE`
+/// escape hatch swaps in the offline fixture so the pipeline still validates with no
+/// Schwab connection.
 ///
 /// The gate is the **local-suite gate** (daemon reachable + roster present), independent
 /// of the cloud-report gate — probed inside `spawn_blocking` since the probe is a
-/// blocking call. The Schwab-connection precondition is satisfied by the fixture this
-/// slice. Like `generate_report_manual`, the blocking run (local model HTTP + FMP/SEC)
-/// goes through `spawn_blocking` and shares the single global `RunGuard`, so the report
-/// and both local jobs are mutually exclusive.
+/// blocking call. Like `generate_report_manual`, the blocking run (Schwab + local model
+/// HTTP + FMP/SEC) goes through `spawn_blocking` and shares the single global `RunGuard`,
+/// so the report and both local jobs are mutually exclusive.
 #[tauri::command]
 async fn generate_portfolio_manual(
     app: tauri::AppHandle,
@@ -482,10 +576,48 @@ async fn generate_portfolio_manual(
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let company = portfolio::job::LiveCompanyData { fmp, sec };
-        let holdings = schwab::FixtureHoldingsSource::new();
+
+        // Source selection: the offline fixture behind the escape hatch, else the live
+        // Schwab source once connected, else a blocked run with a re-auth prompt. Only
+        // the non-fixture path touches the Keychain rail / OAuth.
+        let store: Arc<dyn schwab_secrets::TokenStore> =
+            Arc::new(schwab_secrets::KeyringTokenStore::new());
+        let fixture_escape = schwab_fixture_escape();
+        let oauth = if fixture_escape {
+            None
+        } else {
+            let client_id = cfg.schwab_client_id.clone().unwrap_or_default();
+            Some(Arc::new(
+                schwab_oauth::OauthClient::new(client_id, store.clone())
+                    .map_err(|e| e.to_string())?,
+            ))
+        };
+        let connected = match &oauth {
+            Some(o) => o
+                .is_connected(chrono::Utc::now())
+                .map_err(|e| e.to_string())?,
+            None => false,
+        };
+        let holdings: Box<dyn schwab::HoldingsSource> =
+            match choose_holdings_source(fixture_escape, connected) {
+                HoldingsChoice::Fixture => Box::new(schwab::FixtureHoldingsSource::new()),
+                HoldingsChoice::NotConnected => return Err(SCHWAB_NOT_CONNECTED_MSG.to_string()),
+                HoldingsChoice::Live => {
+                    let oauth = oauth.expect("oauth is built on the non-fixture path");
+                    let token: schwab_live::TokenProvider =
+                        Arc::new(move || oauth.valid_access_token(chrono::Utc::now()));
+                    Box::new(schwab_live::SchwabApiSource::new(token).map_err(|e| e.to_string())?)
+                }
+            };
 
         portfolio::job::run_portfolio_job(
-            &holdings, &company, &analyst, &profile, &paths, &guard, &ctx,
+            holdings.as_ref(),
+            &company,
+            &analyst,
+            &profile,
+            &paths,
+            &guard,
+            &ctx,
         )
         .map_err(|e| e.to_string())
     })
@@ -817,6 +949,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_report_manual,
             generate_portfolio_manual,
+            schwab_connect,
             cancel_run,
             list_reports,
             load_report,
@@ -848,6 +981,20 @@ mod tests {
     fn release_build_uses_app_data_dir_as_is() {
         let base = PathBuf::from("/data/app");
         assert_eq!(resolve_data_dir(base.clone(), None, false), base);
+    }
+
+    #[test]
+    fn holdings_source_choice_prefers_fixture_then_live_then_blocks() {
+        // The fixture escape hatch wins even when a live connection exists...
+        assert_eq!(choose_holdings_source(true, true), HoldingsChoice::Fixture);
+        assert_eq!(choose_holdings_source(true, false), HoldingsChoice::Fixture);
+        // ...otherwise a live connection is used...
+        assert_eq!(choose_holdings_source(false, true), HoldingsChoice::Live);
+        // ...and with neither, the job blocks for re-auth.
+        assert_eq!(
+            choose_holdings_source(false, false),
+            HoldingsChoice::NotConnected
+        );
     }
 
     #[test]
