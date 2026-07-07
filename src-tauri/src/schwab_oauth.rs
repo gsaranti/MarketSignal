@@ -24,6 +24,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{ValidationReport, WarningCategory, WarningKind};
+use crate::loopback_https::LoopbackHttpsServer;
 use crate::schwab_secrets::{SchwabTokens, TokenStore, SECRET_CLIENT_SECRET};
 
 /// Schwab's authorization endpoint (leg 1 — the browser login URL).
@@ -95,16 +96,19 @@ fn encode_component(raw: &str) -> String {
 }
 
 /// Extract the one-time authorization `code` from the loopback redirect target — the
-/// path+query tiny_http hands back, e.g. `/?code=ABC&session=XYZ`. Percent-decoding is
+/// path+query the capture server hands back, e.g. `/?code=ABC&session=XYZ`. Percent-decoding is
 /// handled by the URL parser, so a code with encoded characters round-trips intact.
 /// Pure — the live server hands its `request.url()` straight in.
 pub fn parse_redirect_code(target: &str) -> Result<String> {
     // A relative target (`/?code=...`) is resolved against a throwaway base so the
     // standard query-pair decoder applies; an absolute redirect URL parses directly.
     let base = reqwest::Url::parse("http://127.0.0.1/").expect("static base URL is valid");
+    // The target itself stays out of the error: a code-bearing but malformed redirect
+    // would otherwise put the one-time authorization code into a context string that a
+    // future caller could surface.
     let parsed = base
         .join(target)
-        .with_context(|| format!("parsing OAuth redirect target {target:?}"))?;
+        .context("parsing OAuth redirect target")?;
     parsed
         .query_pairs()
         .find(|(k, _)| k == "code")
@@ -126,12 +130,40 @@ fn redirect_state(target: &str) -> Option<String> {
 
 /// Schwab's token-endpoint success body (the fields the lifecycle needs). Extra fields
 /// (`token_type`, `scope`, `id_token`) are ignored.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
     refresh_token: String,
     /// Access-token lifetime in seconds (Schwab sends 1800).
     expires_in: i64,
+}
+
+/// Manual, redacting `Debug` — a derived one would hand any future `{:?}` site the raw
+/// token pair (see [`crate::schwab_secrets::SchwabTokens`], the same rule).
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .finish()
+    }
+}
+
+/// Cap on how much of a token-endpoint *error* body is surfaced (`post_token`). A
+/// well-formed OAuth error body (`{"error":"invalid_grant"}`) fits comfortably; the cap
+/// only bites on a misbehaving provider or intermediary.
+const ERROR_BODY_CAP_CHARS: usize = 300;
+
+/// Truncate an error body to [`ERROR_BODY_CAP_CHARS`] on a char boundary, marking the
+/// cut. Mirrors the snippet idiom `analyst_agent` uses for oversized model output.
+fn cap_error_body(body: &str) -> String {
+    let snippet: String = body.chars().take(ERROR_BODY_CAP_CHARS).collect();
+    if snippet.len() < body.len() {
+        format!("{snippet} …(truncated)")
+    } else {
+        snippet
+    }
 }
 
 /// The OAuth token client: exchanges codes, refreshes access tokens, and answers the
@@ -198,8 +230,13 @@ impl OauthClient {
         if !status.is_success() {
             // The error body describes the failure (invalid grant, expired code) and
             // carries no token, so it is safe to surface; the success body never is.
+            // Capped defensively all the same: the body is provider/proxy-controlled
+            // and this string travels far (UI error, job history, run audit).
             let body = resp.text().unwrap_or_default();
-            bail!("Schwab token endpoint returned {status}: {body}");
+            bail!(
+                "Schwab token endpoint returned {status}: {}",
+                cap_error_body(&body)
+            );
         }
         resp.json::<TokenResponse>()
             .context("parsing Schwab token response")
@@ -371,21 +408,22 @@ pub fn schwab_gate(connected: bool) -> ValidationReport {
 
 /// Run the one-shot loopback capture: stand up the self-signed HTTPS server on
 /// `127.0.0.1:8182`, open the browser at the authorize URL, block for the single
-/// redirect, and return its authorization code. Live-only — it needs a real browser
-/// login — so it is exercised by `schwab_connect` and an `#[ignore]` smoke, never the
-/// offline suite. `open_browser` is false in the smoke (which drives the redirect by
-/// hand) and true in the command.
+/// redirect, and return its authorization code. The interactive whole — it needs a real
+/// browser login — is exercised by `schwab_connect` and an `#[ignore]` smoke;
+/// the capture loop itself ([`capture_redirect`]) is covered offline, driven over
+/// real TLS by the tests below. `open_browser` is false in the smoke (which drives
+/// the redirect by hand) and true in the command.
 pub fn run_loopback_capture(client_id: &str, open_browser: bool) -> Result<String> {
     // A self-signed cert for 127.0.0.1: no CA signs a loopback address, so the browser
     // shows a one-time warning the user clicks through (`docs/schwab-integration.md`).
+    // Generated fresh per run, in memory only; rcgen emits the DER that rustls takes
+    // directly (`serialize_der` is PKCS#8).
     let certified = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
         .context("generating self-signed loopback certificate")?;
-    let ssl = tiny_http::SslConfig {
-        certificate: certified.cert.pem().into_bytes(),
-        private_key: certified.signing_key.serialize_pem().into_bytes(),
-    };
-    let server = tiny_http::Server::https(LOOPBACK_ADDR, ssl)
-        .map_err(|e| anyhow!("binding loopback OAuth server on {LOOPBACK_ADDR}: {e}"))?;
+    let cert = certified.cert.der().clone();
+    let key =
+        rustls::pki_types::PrivateKeyDer::Pkcs8(certified.signing_key.serialize_der().into());
+    let server = LoopbackHttpsServer::bind(LOOPBACK_ADDR, cert, key)?;
 
     // A per-run nonce round-tripped through `state`: a redirect that doesn't echo the
     // exact value this capture issued is not our login, and is rejected.
@@ -394,38 +432,40 @@ pub fn run_loopback_capture(client_id: &str, open_browser: bool) -> Result<Strin
         open_url(&authorize_url(client_id, &state));
     }
 
-    // Wait for the redirect, bounded by CAPTURE_TIMEOUT so an abandoned browser login
-    // can't park this thread (and the run slot) forever. A misdirected probe (a browser
-    // prefetch, a favicon) that carries no code is answered and ignored; the real
-    // redirect resolves the loop.
-    let deadline = Instant::now() + CAPTURE_TIMEOUT;
+    capture_redirect(&server, &state, Instant::now() + CAPTURE_TIMEOUT)
+}
+
+/// The capture loop: wait on `server` for the redirect that carries an authorization
+/// code and echoes exactly `state`, bounded by `deadline` so an abandoned browser login
+/// can't park this thread (and the run slot) forever. A misdirected probe (a browser
+/// prefetch, a favicon) that carries no code is answered and ignored; a code-bearing
+/// request with the wrong state aborts the whole capture (fail-closed — one guess, no
+/// retries against the nonce); the real redirect resolves the loop. Split from
+/// [`run_loopback_capture`] so tests can drive it with an injected server and a known
+/// state.
+fn capture_redirect(
+    server: &LoopbackHttpsServer,
+    state: &str,
+    deadline: Instant,
+) -> Result<String> {
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            bail!("timed out waiting for the Schwab authorization redirect");
-        }
-        let Some(request) = server
-            .recv_timeout(remaining)
-            .context("awaiting the OAuth redirect")?
-        else {
+        let Some(request) = server.next_request(deadline)? else {
             bail!("timed out waiting for the Schwab authorization redirect");
         };
-        let target = request.url().to_string();
-        match parse_redirect_code(&target) {
+        match parse_redirect_code(request.target()) {
             Ok(code) => {
                 // The code-bearing request must carry our exact state, or it is a forged
                 // or stale redirect, not the login we initiated.
-                if redirect_state(&target).as_deref() != Some(state.as_str()) {
-                    let _ = request
-                        .respond(tiny_http::Response::from_string("State mismatch — ignoring."));
+                if redirect_state(request.target()).as_deref() != Some(state) {
+                    // The browser-facing text says what actually happens: the whole
+                    // login attempt is aborted, not just this request ignored.
+                    request.respond("State mismatch — login attempt aborted.");
                     bail!("OAuth redirect state did not match the issued nonce; aborting");
                 }
-                let _ = request.respond(tiny_http::Response::from_string(CLOSE_TAB_HTML));
+                request.respond(CLOSE_TAB_HTML);
                 return Ok(code);
             }
-            Err(_) => {
-                let _ = request.respond(tiny_http::Response::from_string("Waiting for Schwab…"));
-            }
+            Err(_) => request.respond("Waiting for Schwab…"),
         }
     }
 }
@@ -495,6 +535,50 @@ mod tests {
     fn parse_redirect_code_errors_when_no_code_present() {
         assert!(parse_redirect_code("/?error=access_denied").is_err());
         assert!(parse_redirect_code("/?code=").is_err());
+    }
+
+    #[test]
+    fn parse_redirect_code_error_never_carries_the_code() {
+        // A malformed target (the invalid IPv6 host fails the URL parse) that still
+        // carries a code: the error — including its full context chain — must not leak
+        // the one-time authorization code into a surfaceable string.
+        let err = parse_redirect_code("http://[bad/?code=SECRET-CODE").unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(!chain.contains("SECRET-CODE"), "{chain}");
+    }
+
+    #[test]
+    fn token_endpoint_error_body_is_capped_in_the_surfaced_message() {
+        let now = Utc::now();
+        let store = store_with_secret();
+        // An oversized (provider/proxy-controlled) error body must not travel whole
+        // into the error string the UI and job history render.
+        let huge: &'static str = Box::leak("x".repeat(5_000).into_boxed_str());
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 400,
+            headers: vec![("Content-Type", "application/json")],
+            body: huge,
+        }]);
+        let err = client(store, &server.base_url)
+            .exchange_code("the-code", now)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("400"), "{msg}");
+        assert!(msg.contains("…(truncated)"), "{msg}");
+        assert!(msg.len() < 500, "capped message, got {} chars", msg.len());
+    }
+
+    #[test]
+    fn token_response_debug_redacts_the_token_values() {
+        let resp = TokenResponse {
+            access_token: "acc-secret".into(),
+            refresh_token: "ref-secret".into(),
+            expires_in: 1800,
+        };
+        let dump = format!("{resp:?}");
+        assert!(!dump.contains("acc-secret"), "{dump}");
+        assert!(!dump.contains("ref-secret"), "{dump}");
+        assert!(dump.contains("1800"), "{dump}");
     }
 
     #[test]
@@ -589,6 +673,95 @@ mod tests {
             .valid_access_token(now)
             .unwrap_err();
         assert!(err.downcast_ref::<ReauthRequired>().is_some(), "{err}");
+    }
+
+    // ---- Offline loopback-capture round-trips (real TLS, no browser) ----
+
+    /// Stand up a capture on an ephemeral port with a known `state`, returning the
+    /// bound address and the capture thread. Mirrors `run_loopback_capture` exactly,
+    /// minus the fixed port, the minted state, and the browser.
+    fn spawn_capture(
+        state: &str,
+        deadline: std::time::Duration,
+    ) -> (
+        std::net::SocketAddr,
+        std::thread::JoinHandle<Result<String>>,
+    ) {
+        let certified =
+            rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+        let cert = certified.cert.der().clone();
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            certified.signing_key.serialize_der().into(),
+        );
+        let server = LoopbackHttpsServer::bind("127.0.0.1:0", cert, key).unwrap();
+        let addr = server.local_addr().unwrap();
+        let state = state.to_string();
+        let handle = std::thread::spawn(move || {
+            capture_redirect(&server, &state, Instant::now() + deadline)
+        });
+        (addr, handle)
+    }
+
+    /// Test-only HTTPS client: the capture's certificate is per-run self-signed by
+    /// design, so the client must skip verification to complete the handshake — the
+    /// browser's click-through, in code.
+    fn insecure_client() -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn loopback_capture_returns_the_code_for_a_state_matching_redirect() {
+        let (addr, handle) = spawn_capture("nonce-ok", std::time::Duration::from_secs(10));
+        let resp = insecure_client()
+            .get(format!("https://{addr}/?code=CAP-123&state=nonce-ok"))
+            .send()
+            .expect("redirect delivered");
+        // The browser gets the close-tab page…
+        assert!(resp.text().unwrap().contains("Schwab connected"));
+        // …and the capture returns the code.
+        assert_eq!(handle.join().unwrap().unwrap(), "CAP-123");
+    }
+
+    #[test]
+    fn loopback_capture_answers_probes_and_keeps_waiting() {
+        let (addr, handle) = spawn_capture("nonce-w", std::time::Duration::from_secs(10));
+        let client = insecure_client();
+        // A code-less probe (favicon, prefetch) is answered and ignored…
+        let probe = client
+            .get(format!("https://{addr}/favicon.ico"))
+            .send()
+            .expect("probe answered");
+        assert!(probe.text().unwrap().contains("Waiting for Schwab"));
+        // …and the capture still resolves on the real redirect afterwards.
+        let _ = client
+            .get(format!("https://{addr}/?code=LATE-9&state=nonce-w"))
+            .send()
+            .expect("redirect delivered");
+        assert_eq!(handle.join().unwrap().unwrap(), "LATE-9");
+    }
+
+    #[test]
+    fn loopback_capture_aborts_on_a_state_mismatch() {
+        let (addr, handle) = spawn_capture("nonce-real", std::time::Duration::from_secs(10));
+        let resp = insecure_client()
+            .get(format!("https://{addr}/?code=EVIL&state=forged"))
+            .send()
+            .expect("mismatch still answered");
+        assert!(resp.text().unwrap().contains("State mismatch"));
+        // Fail-closed: one wrong guess kills the whole capture, no retries.
+        let err = handle.join().unwrap().unwrap_err();
+        assert!(err.to_string().contains("state did not match"), "{err}");
+    }
+
+    #[test]
+    fn loopback_capture_times_out_when_no_redirect_arrives() {
+        // A zero deadline: the capture must give up on its own, not hang.
+        let (_addr, handle) = spawn_capture("nonce-t", std::time::Duration::ZERO);
+        let err = handle.join().unwrap().unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
     }
 
     /// Live end-to-end smoke: the real three-legged flow against Schwab. Ignored by
