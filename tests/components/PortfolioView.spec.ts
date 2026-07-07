@@ -3,7 +3,8 @@
 // Covers the page's data states (empty / pulled-not-analyzed / analyzed /
 // analyzed + fresher pull), the three verdict-card variants, the presence-only
 // churn tags, the sort bar (ordering, nulls-last, direction flip, persistence,
-// direction-bearing accessible names), and the trigger gating.
+// direction-bearing accessible names), the current-holdings table (price column,
+// head sorting via aria-sort, nulls-last, persistence), and the trigger gating.
 
 import { describe, test, expect, beforeEach } from "vitest";
 import { mount } from "@vue/test-utils";
@@ -136,7 +137,14 @@ const fresherPull: HoldingsPull = {
       position("AAPL", { cost_basis: 14_000, market_value: 20_000 }),
       position("NVDA", { cost_basis: 6_000, market_value: 9_000 }),
       position("XYZ"),
-      position("OPT", { asset_class: "option-contract", cost_basis: 0 }),
+      position("OPT", {
+        asset_class: "option-contract",
+        cost_basis: 0,
+        // 800 keeps the fixture's account_total arithmetic honest (44,800 =
+        // 20,000 + 9,000 + 12,000 + 800 + 3,000 cash).
+        market_value: 800,
+        current_price: null,
+      }),
     ],
     cash: 3_000,
     account_total: 44_800,
@@ -313,6 +321,102 @@ describe("PortfolioView sort bar", () => {
     );
     // Desc by cost basis: MSFT 32k > AAPL 14k > XYZ 2k > OPT (none) last.
     expect(stackTickers(second)).toEqual(["MSFT", "AAPL", "XYZ", "OPT"]);
+  });
+});
+
+// The pull table's tickers, in rendered order (scoped to the current-holdings
+// section so card/roll-up tickers don't leak in).
+function tableTickers(wrapper: ReturnType<typeof mountView>): string[] {
+  return wrapper
+    .findAll(".current-holdings tbody tr")
+    .map((r) => r.find(".ana-ticker").text());
+}
+
+function headButton(wrapper: ReturnType<typeof mountView>, label: string) {
+  return wrapper
+    .findAll(".current-holdings thead button")
+    .find((b) => b.text() === label)!;
+}
+
+describe("PortfolioView current-holdings table", () => {
+  test("renders price and % gain columns, no description; missing values show an em dash", () => {
+    const wrapper = mountView({ pull: fresherPull });
+    const heads = wrapper
+      .findAll(".current-holdings thead th")
+      .map((h) => h.text());
+    expect(heads.join(" ")).toContain("Price");
+    expect(heads.join(" ")).toContain("% gain");
+    expect(heads.join(" ")).not.toContain("Description");
+    // Column order: Symbol · Qty · Price · Market value · Cost basis · % gain.
+    const rows = wrapper.findAll(".current-holdings tbody tr");
+    expect(rows[0].findAll("td")[2].text()).toContain("120");
+    expect(rows[3].findAll("td")[2].text()).toBe("—");
+    // % gain rides the directional token: signed value + a non-color glyph.
+    const aaplGain = rows[0].findAll("td")[5].find(".dir");
+    expect(aaplGain.text()).toBe("+42.9%");
+    expect(aaplGain.classes()).toContain("up");
+    expect(rows[3].findAll("td")[5].text()).toBe("—");
+  });
+
+  test("price and % gain sort with their missing values last", async () => {
+    const wrapper = mountView({ pull: fresherPull });
+    await headButton(wrapper, "% gain").trigger("click");
+    // Desc: NVDA +50% > AAPL +42.9% > XYZ +20% > OPT (no cost basis) last.
+    expect(tableTickers(wrapper)).toEqual(["NVDA", "AAPL", "XYZ", "OPT"]);
+    await headButton(wrapper, "% gain").trigger("click");
+    expect(tableTickers(wrapper)).toEqual(["XYZ", "AAPL", "NVDA", "OPT"]);
+    // Price: the three priced names tie at 120 (ticker tie-break); OPT last.
+    await headButton(wrapper, "Price").trigger("click");
+    expect(tableTickers(wrapper)).toEqual(["AAPL", "NVDA", "XYZ", "OPT"]);
+  });
+
+  test("defaults to the as-pulled order with no aria-sort anywhere", () => {
+    const wrapper = mountView({ pull: fresherPull });
+    expect(tableTickers(wrapper)).toEqual(["AAPL", "NVDA", "XYZ", "OPT"]);
+    expect(wrapper.findAll(".current-holdings th[aria-sort]")).toHaveLength(0);
+  });
+
+  test("symbol opens ascending, carries aria-sort, and flips on re-click", async () => {
+    const wrapper = mountView({ pull: fresherPull });
+    const symbol = headButton(wrapper, "Symbol");
+    await symbol.trigger("click");
+    expect(tableTickers(wrapper)).toEqual(["AAPL", "NVDA", "OPT", "XYZ"]);
+    const ascHead = wrapper.find('.current-holdings th[aria-sort="ascending"]');
+    expect(ascHead.text()).toContain("Symbol");
+    // The active head carries the package's visible active-sort treatment.
+    expect(ascHead.classes()).toContain("sorted-asc");
+    expect(symbol.attributes("aria-label")).toBe("Sort by Symbol, ascending");
+    await symbol.trigger("click");
+    expect(tableTickers(wrapper)).toEqual(["XYZ", "OPT", "NVDA", "AAPL"]);
+    expect(
+      wrapper.find('.current-holdings th[aria-sort="descending"]').text()
+    ).toContain("Symbol");
+  });
+
+  test("a money column opens descending; a missing cost basis sorts last, any direction", async () => {
+    const wrapper = mountView({ pull: fresherPull });
+    const cost = headButton(wrapper, "Cost basis");
+    await cost.trigger("click");
+    // Desc: AAPL 14k > XYZ 10k > NVDA 6k > OPT (none) last.
+    expect(tableTickers(wrapper)).toEqual(["AAPL", "XYZ", "NVDA", "OPT"]);
+    await cost.trigger("click");
+    expect(tableTickers(wrapper)).toEqual(["NVDA", "XYZ", "AAPL", "OPT"]);
+  });
+
+  test("the table sort persists independently of the card sort", async () => {
+    const first = mountView({ run, pull: fresherPull });
+    await headButton(first, "Market value").trigger("click");
+    // Desc: AAPL 20k > XYZ 12k > NVDA 9k > OPT 800.
+    expect(tableTickers(first)).toEqual(["AAPL", "XYZ", "NVDA", "OPT"]);
+    // The card stack keeps its own default (value, descending) — untouched.
+    expect(stackTickers(first)).toEqual(["MSFT", "AAPL", "XYZ", "OPT"]);
+    first.unmount();
+
+    const second = mountView({ run, pull: fresherPull });
+    expect(tableTickers(second)).toEqual(["AAPL", "XYZ", "NVDA", "OPT"]);
+    expect(
+      second.find('.current-holdings th[aria-sort="descending"]').text()
+    ).toContain("Market value");
   });
 });
 

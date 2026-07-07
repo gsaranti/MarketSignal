@@ -84,6 +84,9 @@ function fmtPct(fraction: number, digits = 1): string {
 function fmtSigned(v: number): string {
   return `${v > 0 ? "+" : ""}${fmtMoney(v)}`;
 }
+function fmtSignedPct(fraction: number): string {
+  return `${fraction > 0 ? "+" : ""}${fmtPct(fraction)}`;
+}
 function fmtStamp(iso: string): string {
   return localDateTime(iso);
 }
@@ -241,6 +244,119 @@ const sortedVerdicts = computed<HoldingVerdict[]>(() => {
 function sortButtonName(key: SortKey, label: string): string {
   if (sort.value.key !== key) return `Sort by ${label}`;
   return `Sort by ${label}, ${sort.value.dir === "asc" ? "ascending" : "descending"}`;
+}
+
+// ---- Current-holdings table sorting ----------------------------------------------
+// Column sorting for the pull table, through its grid heads proper (aria-sort —
+// the pattern the card sort bar deliberately reserves for tables). Display-only,
+// like the card sort: reorders the pulled rows in place, touches nothing else.
+// Default is the account's as-pulled order; a position missing a key's value
+// (no reported cost basis or price — rendered "—") sorts last under that key
+// in either direction.
+
+type PullSortKey = "symbol" | "qty" | "price" | "value" | "cost" | "gain-pct";
+interface PullSortState {
+  key: PullSortKey;
+  dir: "asc" | "desc";
+}
+
+// Text opens ascending (alphabetical); the size/money columns open descending.
+const PULL_SORT_OPEN_DIR: Record<PullSortKey, "asc" | "desc"> = {
+  symbol: "asc",
+  qty: "desc",
+  price: "desc",
+  value: "desc",
+  cost: "desc",
+  "gain-pct": "desc",
+};
+const PULL_SORT_STORAGE_KEY = "market-signal.portfolio-pull-sort";
+
+function readStoredPullSort(): PullSortState | null {
+  try {
+    const raw = localStorage.getItem(PULL_SORT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PullSortState>;
+    if (
+      parsed.key !== undefined &&
+      parsed.key in PULL_SORT_OPEN_DIR &&
+      (parsed.dir === "asc" || parsed.dir === "desc")
+    ) {
+      return { key: parsed.key, dir: parsed.dir };
+    }
+  } catch {
+    // Unreadable storage falls back to the as-pulled order — never an error surface.
+  }
+  return null;
+}
+
+const pullSort = ref<PullSortState | null>(readStoredPullSort());
+
+function pickPullSort(key: PullSortKey) {
+  const cur = pullSort.value;
+  const next: PullSortState =
+    cur?.key === key
+      ? { key, dir: cur.dir === "desc" ? "asc" : "desc" }
+      : { key, dir: PULL_SORT_OPEN_DIR[key] };
+  pullSort.value = next;
+  try {
+    localStorage.setItem(PULL_SORT_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Storage full/unavailable only costs persistence, never the reorder.
+  }
+}
+
+function pullSortMetric(
+  p: Position,
+  key: Exclude<PullSortKey, "symbol">
+): number | null {
+  switch (key) {
+    case "qty":
+      return p.quantity;
+    case "price":
+      return p.current_price;
+    case "value":
+      return p.market_value;
+    case "cost":
+      return p.cost_basis > 0 ? p.cost_basis : null;
+    case "gain-pct":
+      return gainPctOf(p);
+  }
+}
+
+const sortedPullPositions = computed<Position[]>(() => {
+  const positions = props.pull?.holdings.positions ?? [];
+  const s = pullSort.value;
+  if (!s) return positions;
+  const sign = s.dir === "desc" ? -1 : 1;
+  return [...positions].sort((a, b) => {
+    if (s.key === "symbol") return sign * a.symbol.localeCompare(b.symbol);
+    const ma = pullSortMetric(a, s.key);
+    const mb = pullSortMetric(b, s.key);
+    if (ma === null && mb === null) return a.symbol.localeCompare(b.symbol);
+    if (ma === null) return 1;
+    if (mb === null) return -1;
+    if (ma !== mb) return sign * (ma - mb);
+    return a.symbol.localeCompare(b.symbol);
+  });
+});
+
+function pullSortClasses(key: PullSortKey): Record<string, boolean> {
+  const active = pullSort.value?.key === key;
+  return {
+    sortable: true,
+    "sorted-asc": active && pullSort.value?.dir === "asc",
+    "sorted-desc": active && pullSort.value?.dir === "desc",
+  };
+}
+
+function pullAriaSort(key: PullSortKey): "ascending" | "descending" | undefined {
+  if (pullSort.value?.key !== key) return undefined;
+  return pullSort.value.dir === "asc" ? "ascending" : "descending";
+}
+
+function pullSortName(key: PullSortKey, label: string): string {
+  if (pullSort.value?.key !== key) return `Sort by ${label}`;
+  return `Sort by ${label}, ${pullSort.value.dir === "asc" ? "ascending" : "descending"}`;
 }
 
 // ---- Verdict rendering helpers --------------------------------------------------
@@ -448,26 +564,115 @@ const keyFigures = computed(() => {
             <table class="ana-grid">
               <thead>
                 <tr>
-                  <th scope="col">Symbol</th>
-                  <th scope="col">Description</th>
-                  <th scope="col" class="num">Qty</th>
-                  <th scope="col" class="num">Market value</th>
-                  <th scope="col" class="num">Cost basis</th>
+                  <th
+                    scope="col"
+                    :class="pullSortClasses('symbol')"
+                    :aria-sort="pullAriaSort('symbol')"
+                  >
+                    <button
+                      type="button"
+                      :aria-label="pullSortName('symbol', 'Symbol')"
+                      @click="pickPullSort('symbol')"
+                    >
+                      Symbol
+                    </button>
+                  </th>
+                  <th
+                    scope="col"
+                    class="num"
+                    :class="pullSortClasses('qty')"
+                    :aria-sort="pullAriaSort('qty')"
+                  >
+                    <button
+                      type="button"
+                      :aria-label="pullSortName('qty', 'Quantity')"
+                      @click="pickPullSort('qty')"
+                    >
+                      Qty
+                    </button>
+                  </th>
+                  <th
+                    scope="col"
+                    class="num"
+                    :class="pullSortClasses('price')"
+                    :aria-sort="pullAriaSort('price')"
+                  >
+                    <button
+                      type="button"
+                      :aria-label="pullSortName('price', 'Price')"
+                      @click="pickPullSort('price')"
+                    >
+                      Price
+                    </button>
+                  </th>
+                  <th
+                    scope="col"
+                    class="num"
+                    :class="pullSortClasses('value')"
+                    :aria-sort="pullAriaSort('value')"
+                  >
+                    <button
+                      type="button"
+                      :aria-label="pullSortName('value', 'Market value')"
+                      @click="pickPullSort('value')"
+                    >
+                      Market value
+                    </button>
+                  </th>
+                  <th
+                    scope="col"
+                    class="num"
+                    :class="pullSortClasses('cost')"
+                    :aria-sort="pullAriaSort('cost')"
+                  >
+                    <button
+                      type="button"
+                      :aria-label="pullSortName('cost', 'Cost basis')"
+                      @click="pickPullSort('cost')"
+                    >
+                      Cost basis
+                    </button>
+                  </th>
+                  <th
+                    scope="col"
+                    class="num"
+                    :class="pullSortClasses('gain-pct')"
+                    :aria-sort="pullAriaSort('gain-pct')"
+                  >
+                    <button
+                      type="button"
+                      :aria-label="pullSortName('gain-pct', '% gain')"
+                      @click="pickPullSort('gain-pct')"
+                    >
+                      % gain
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="p in pull.holdings.positions" :key="p.symbol">
+                <tr v-for="p in sortedPullPositions" :key="p.symbol">
                   <td>
                     <span class="ana-ticker">{{ p.symbol }}</span>
                     <span v-if="newSinceAnalysis(p.symbol)" class="ana-tag ch-tag"
                       >New · not in last analysis</span
                     >
                   </td>
-                  <td class="ch-desc">{{ p.description }}</td>
                   <td class="num">{{ qtyFmt.format(p.quantity) }}</td>
+                  <td class="num">
+                    {{ p.current_price !== null ? fmtMoney(p.current_price) : "—" }}
+                  </td>
                   <td class="num">{{ fmtMoney(p.market_value) }}</td>
                   <td class="num">
                     {{ p.cost_basis > 0 ? fmtMoney(p.cost_basis) : "—" }}
+                  </td>
+                  <td class="num">
+                    <span
+                      v-if="gainPctOf(p) !== null"
+                      class="dir"
+                      :class="dirOf(gainPctOf(p))"
+                      >{{ fmtSignedPct(gainPctOf(p)!) }}</span
+                    >
+                    <template v-else>—</template>
                   </td>
                 </tr>
               </tbody>
@@ -1045,14 +1250,6 @@ const keyFigures = computed(() => {
 
 .ch-tag {
   margin-left: var(--s-2);
-}
-
-.ch-desc {
-  color: var(--ink-2);
-  max-width: 32ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .ch-foot {

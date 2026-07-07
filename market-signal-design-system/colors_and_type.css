@@ -858,6 +858,55 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .ana-grid th.sorted-desc::after { content: " ▾"; opacity: 1; }
 .ana-grid th.sorted-asc::after  { content: " ▴"; opacity: 1; }
 
+/* The ACTIVE head carries the sort bar's exact active-key treatment — full ink
+   + the paper-soft tonal step, glyph included — so the register speaks one
+   active-sort language; the original glyph-only opacity change is too faint to
+   read on the muted tracked-caps head. A package AMENDMENT to the glyph-only
+   active state above. */
+.ana-grid th.sorted-asc,
+.ana-grid th.sorted-desc {
+  color: var(--ink);
+  background: var(--paper-soft);
+}
+.ana-grid th.sorted-asc::after,
+.ana-grid th.sorted-desc::after {
+  color: var(--ink);
+}
+
+/* Production tables put the sortable head's label in a reset <button> inside
+   the th so the control is keyboard-operable; the th keeps the .sortable /
+   .sorted-* classes and aria-sort. The button owns the WHOLE cell — the th's
+   padding moves onto it and the direction glyph rides the button's ::after —
+   so the label, the glyph, and the padding around them are one hit target (a
+   glyph that shows a pointer but ignores the click is a dead zone). The
+   th-level glyph rules above still serve the static preview heads. The button
+   inherits the head's type treatment; its focus ring sits inset so a full-bleed
+   control never paints over neighboring cells. A package EXTENSION (the
+   previews spec only the static th classes). */
+.ana-grid th.sortable:has(> button) { padding: 0; }
+.ana-grid th.sortable:has(> button)::after { content: none; }
+.ana-grid th.sortable > button {
+  display: block;
+  width: 100%;
+  padding: 7px 12px; /* the th's own padding, moved onto the control */
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: inherit;
+  white-space: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.ana-grid th.sortable > button::after { content: " ▾"; color: var(--ink-3); opacity: 0.5; }
+.ana-grid th.sorted-desc > button::after { content: " ▾"; opacity: 1; color: var(--ink); }
+.ana-grid th.sorted-asc > button::after  { content: " ▴"; opacity: 1; color: var(--ink); }
+.ana-grid th.sortable > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 /* ---- Controlled-rich data / holding card (4c) — flat hairline rectangle ---- */
 .ana-card {
   background: var(--paper);
