@@ -40,12 +40,28 @@ pub const SECRET_TOKENS: &str = "tokens";
 /// transparently; the refresh token lasts 7 days and **cannot be extended**, so its
 /// expiry is set once at the interactive login and carried unchanged across
 /// refreshes — lapse forces a fresh browser re-login.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchwabTokens {
     pub access_token: String,
     pub refresh_token: String,
     pub access_expires_at: DateTime<Utc>,
     pub refresh_expires_at: DateTime<Utc>,
+}
+
+/// Manual, redacting `Debug`: the expiries print (they drive the lifecycle decisions a
+/// debug dump exists to explain), the token values never do — a derived `Debug` would
+/// hand any future `{:?}` site the raw bearer credentials. Same discipline as
+/// `config::MainAgentConfig`'s deliberate no-`Debug` bound. (`Serialize` stays: it is
+/// the Keychain blob format, written only to the [`TokenStore`] rail.)
+impl std::fmt::Debug for SchwabTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SchwabTokens")
+            .field("access_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field("access_expires_at", &self.access_expires_at)
+            .field("refresh_expires_at", &self.refresh_expires_at)
+            .finish()
+    }
 }
 
 impl SchwabTokens {
@@ -195,6 +211,17 @@ mod tests {
         assert_eq!(store.get(SECRET_CLIENT_SECRET).unwrap(), None);
         // Deleting an absent entry is a no-op, not an error.
         store.delete(SECRET_CLIENT_SECRET).unwrap();
+    }
+
+    #[test]
+    fn debug_output_redacts_the_token_values() {
+        let toks = sample_tokens(Utc::now());
+        let dump = format!("{toks:?}");
+        assert!(!dump.contains("access-abc"), "{dump}");
+        assert!(!dump.contains("refresh-xyz"), "{dump}");
+        // The lifecycle fields still print — the redaction is targeted, not a blanket.
+        assert!(dump.contains("access_expires_at"), "{dump}");
+        assert!(dump.contains("<redacted>"), "{dump}");
     }
 
     #[test]

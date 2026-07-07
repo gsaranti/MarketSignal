@@ -17,6 +17,7 @@ pub mod headline_filter;
 pub mod http_retry;
 pub mod jobs;
 pub mod local_model;
+pub mod loopback_https;
 pub mod market_clock;
 pub mod model_agent;
 pub mod news;
