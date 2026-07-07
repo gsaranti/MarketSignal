@@ -357,7 +357,7 @@ const keyFigures = computed(() => {
       <div class="toolbar-actions">
         <button
           type="button"
-          class="btn-secondary"
+          class="btn btn-secondary"
           :disabled="pullDisabled"
           :title="pullTitle"
           @click="emit('pull')"
@@ -366,7 +366,7 @@ const keyFigures = computed(() => {
         </button>
         <button
           type="button"
-          class="btn-primary"
+          class="btn btn-primary"
           :disabled="runDisabled"
           :title="runTitle"
           @click="emit('run')"
