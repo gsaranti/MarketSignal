@@ -108,6 +108,10 @@ pub enum RunKind {
     Report,
     Portfolio,
     SchwabConnect,
+    /// A standalone, view-only holdings pull (`docs/portfolio-analysis.md
+    /// §Triggering`) — a quick Schwab fetch, never an analysis run. It holds the
+    /// slot so it can't race a job's own pull or token refresh.
+    HoldingsPull,
 }
 
 /// The single-workflow-at-a-time guard. A shared slot (cloneable via the inner
@@ -535,6 +539,10 @@ mod tests {
             "portfolio"
         );
         assert_eq!(serde_json::to_value(RunKind::Report).unwrap(), "report");
+        assert_eq!(
+            serde_json::to_value(RunKind::HoldingsPull).unwrap(),
+            "holdings-pull"
+        );
     }
 
     /// The rendered identity of the current warning of `kind` — the `dismiss_id` the

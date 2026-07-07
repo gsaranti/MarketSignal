@@ -11,11 +11,15 @@
 
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 use crate::portfolio::{PortfolioRun, PORTFOLIO_RUN_RETENTION};
+use crate::schwab::Holdings;
 
-/// Create the Portfolio Analysis run table if absent. Idempotent, like the rest of
-/// `storage::init_schema`, which calls this.
+/// Create the Portfolio Analysis tables if absent. Idempotent, like the rest of
+/// `storage::init_schema`, which calls this. `holdings_pulls` is a single-row
+/// latest-only store (the `CHECK (id = 1)` pins it), matching its
+/// most-recent-pull-only semantics.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS portfolio_runs (
@@ -26,7 +30,60 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS holdings_pulls (
+            id            INTEGER PRIMARY KEY CHECK (id = 1),
+            pulled_at     TEXT NOT NULL,
+            holdings_json TEXT NOT NULL
+        )",
+        [],
+    )?;
     Ok(())
+}
+
+/// The latest standalone **Pull holdings** snapshot (`docs/portfolio-analysis.md
+/// §Triggering`, `docs/storage.md §Local Analysis Suite Storage`) — **view-only**
+/// Portfolio-page state, distinct from the holdings snapshot persisted *inside* each
+/// run: the run's snapshot is the holdings-diff baseline and the audit record's
+/// basis, while this store is never read by the job.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HoldingsPull {
+    /// Canonical UTC RFC3339; the frontend renders local time.
+    pub pulled_at: String,
+    pub holdings: Holdings,
+}
+
+/// Persist a standalone pull, replacing any prior one — the store holds only the
+/// most recent snapshot.
+pub fn save_pull(conn: &Connection, pull: &HoldingsPull) -> Result<()> {
+    let holdings_json = serde_json::to_string(&pull.holdings)?;
+    conn.execute(
+        "INSERT INTO holdings_pulls (id, pulled_at, holdings_json)
+         VALUES (1, ?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET
+             pulled_at = excluded.pulled_at,
+             holdings_json = excluded.holdings_json",
+        params![pull.pulled_at, holdings_json],
+    )?;
+    Ok(())
+}
+
+/// The latest standalone pull, or `None` before any pull happened.
+pub fn latest_pull(conn: &Connection) -> Result<Option<HoldingsPull>> {
+    let row = conn
+        .query_row(
+            "SELECT pulled_at, holdings_json FROM holdings_pulls WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    match row {
+        Some((pulled_at, json)) => Ok(Some(HoldingsPull {
+            pulled_at,
+            holdings: serde_json::from_str(&json)?,
+        })),
+        None => Ok(None),
+    }
 }
 
 /// Insert one completed run. The whole [`PortfolioRun`] is serialized into
@@ -207,5 +264,61 @@ mod tests {
         let run = sample_run("dup", "2026-06-25T12:00:00Z");
         insert_run(&conn, &run).unwrap();
         assert!(insert_run(&conn, &run).is_err(), "run_id is unique");
+    }
+
+    fn sample_pull(pulled_at: &str, quantity: f64) -> HoldingsPull {
+        HoldingsPull {
+            pulled_at: pulled_at.into(),
+            holdings: Holdings {
+                positions: vec![Position {
+                    symbol: "AAPL".into(),
+                    description: "Apple".into(),
+                    asset_class: AssetClass::Stock,
+                    quantity,
+                    cost_basis: 14_000.0,
+                    market_value: 19_500.0,
+                    current_price: Some(195.0),
+                }],
+                cash: 10_000.0,
+                account_total: 29_500.0,
+            },
+        }
+    }
+
+    #[test]
+    fn pull_round_trips_and_is_none_before_any_save() {
+        let conn = mem();
+        assert!(latest_pull(&conn).unwrap().is_none());
+        let pull = sample_pull("2026-07-07T12:00:00Z", 100.0);
+        save_pull(&conn, &pull).unwrap();
+        assert_eq!(latest_pull(&conn).unwrap().unwrap(), pull);
+    }
+
+    #[test]
+    fn save_pull_replaces_the_prior_snapshot() {
+        let conn = mem();
+        save_pull(&conn, &sample_pull("2026-07-07T12:00:00Z", 100.0)).unwrap();
+        save_pull(&conn, &sample_pull("2026-07-07T15:00:00Z", 150.0)).unwrap();
+        let back = latest_pull(&conn).unwrap().unwrap();
+        assert_eq!(back.pulled_at, "2026-07-07T15:00:00Z");
+        assert_eq!(back.holdings.positions[0].quantity, 150.0);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM holdings_pulls", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "latest-only: a single row, replaced in place");
+    }
+
+    #[test]
+    fn a_standalone_pull_never_touches_the_diff_baseline() {
+        // The job's holdings diff reads the prior *run's* snapshot (`job.rs` reads
+        // `store::latest_run`), never this store — pulling between runs must not
+        // change what the diff reports (`docs/portfolio-analysis.md §Triggering`).
+        let conn = mem();
+        let run = sample_run("run-1", "2026-07-01T00:00:00Z");
+        record_run(&conn, &run).unwrap();
+        save_pull(&conn, &sample_pull("2026-07-07T12:00:00Z", 999.0)).unwrap();
+        let baseline = latest_run(&conn).unwrap().unwrap();
+        assert_eq!(baseline, run, "the run snapshot is untouched by a pull");
+        assert_eq!(baseline.holdings.positions[0].quantity, 100.0);
     }
 }

@@ -319,6 +319,12 @@ reuse existing tokens and glyphs, and restyle in place (no new nav model).
   built on the `.btn-ghost` posture; segmented by hairlines **without a
   capsule** (radius ≤ 2px, no pill); the active view marked via
   `aria-pressed`. Restrained — not a tab bar.
+- **Status tag** (`.ana-tag`) — a quiet, tracked-caps informational marker
+  riding a card or grid row (the Portfolio holdings-churn tags *new · not
+  in last analysis* / *no longer held*; the neutral base the TO lifecycle
+  badges will extend). The words are the alert: ink tokens only, hairline
+  border, radius ≤ 2px, never a pill, and **never the accent** (reserved
+  for actionable states).
 
 ### Spacing & baseline
 

@@ -7,6 +7,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import RecentReportsSidebar from "./components/RecentReportsSidebar.vue";
 import LatestReportView from "./components/LatestReportView.vue";
 import JobTrackerView from "./components/JobTrackerView.vue";
+import PortfolioView from "./components/PortfolioView.vue";
 import ResearchDocuments from "./components/ResearchDocuments.vue";
 import Settings from "./components/Settings.vue";
 import PersistentWarningArea from "./components/PersistentWarningArea.vue";
@@ -18,7 +19,9 @@ import type {
   CredentialKey,
   CredentialUpdate,
   GeneratedReport,
+  HoldingsPull,
   JobStatus,
+  PortfolioRun,
   ProgressMessage,
   ReportSummary,
   ResearchDocument,
@@ -71,6 +74,15 @@ const reportPaneMode = ref<"report" | "tracker">("report");
 const runTrace = ref<RunTrace | null>(null);
 const runActive = ref(false);
 const cancelRequested = ref(false);
+// Which kind of run the current trace belongs to (set by whichever starter
+// kicked it off). The tracker is one shared component placed on the owning
+// page — a portfolio run's log shows in the Portfolio view, a report run's in
+// the report pane (docs/run-tracking.md) — and the footer's determinate /8
+// fill applies only to the report's fixed pipeline.
+const runTraceKind = ref<"report" | "portfolio" | null>(null);
+// The Portfolio view's pane toggle, mirroring reportPaneMode: while a portfolio
+// run is in flight (or its log is reopened) the page shows the tracker.
+const portfolioPaneMode = ref<"results" | "tracker">("results");
 // Wall-clock start of the in-flight run (epoch ms), stamped at `run-started`. Drives
 // the footer's live elapsed timer; null when no run has started this session.
 const runStartedAt = ref<number | null>(null);
@@ -108,6 +120,10 @@ const runProgress = computed<{
 } | null>(() => {
   const trace = runTrace.value;
   if (!trace || !runActive.value) return null;
+  // The fixed 8-step denominator is the report pipeline's; a portfolio run's
+  // steps are dynamic (one per holding), so it gets the running label + elapsed
+  // timer without a bogus fraction.
+  if (runTraceKind.value !== "report") return null;
   const total = PIPELINE_STEP_KEYS.length;
   let completed = 0; // count of canonical steps in a terminal state (steps finish in order)
   let running: { idx: number; label: string } | null = null;
@@ -311,11 +327,16 @@ function closeRunLog() {
 }
 
 // Open the tracker for the current/last run (the footer's "View progress" /
-// "Latest run log" handle). Brings the report surface forward if another view is
-// active, since the tracker lives in the report pane.
+// "Latest run log" handle). Routes to the run's owning page — the tracker
+// replaces the page whose job is running (docs/run-tracking.md).
 function viewTracker() {
-  view.value = "report";
-  reportPaneMode.value = "tracker";
+  if (runTraceKind.value === "portfolio") {
+    view.value = "portfolio";
+    portfolioPaneMode.value = "tracker";
+  } else {
+    view.value = "report";
+    reportPaneMode.value = "tracker";
+  }
 }
 
 // Markdown export state, kept on its own channel (like the others above):
@@ -353,8 +374,102 @@ const archiveCount = computed(() => archiveDocuments.value.length);
 const validation = ref<ValidationReport | null>(null);
 const validationError = ref<string | null>(null);
 
+// The local-suite presence gate (check_local_configuration — docs/interface.md
+// §Persistent Warning Area), kept apart from the cloud `validation`: its
+// categories join the warning band, but its is_blocked gates only the local
+// jobs' triggers, never the report's Generate.
+const localValidation = ref<ValidationReport | null>(null);
+
 const jobStatus = ref<JobStatus | null>(null);
 const jobStatusError = ref<string | null>(null);
+
+// --- Portfolio page state ----------------------------------------------------
+// The latest persisted analysis run + the latest standalone holdings pull
+// (docs/portfolio-analysis.md §Storage and display, §Triggering), read on
+// startup and on page entry; PortfolioView is presentational.
+const portfolioRun = ref<PortfolioRun | null>(null);
+const holdingsPull = ref<HoldingsPull | null>(null);
+const portfolioLoading = ref(false);
+const portfolioLoadError = ref<string | null>(null);
+// A run-gate block or run/pull failure — the page's inline (ephemeral) error,
+// never a persistent warning.
+const portfolioError = ref<string | null>(null);
+const portfolioRunning = ref(false);
+const pullingHoldings = ref(false);
+
+// Fail-safe like the cloud `blocked`: until the local check resolves, treat the
+// local jobs as blocked so their triggers are never briefly clickable.
+const localBlocked = computed(() => localValidation.value?.is_blocked ?? true);
+const localCategories = computed(() => localValidation.value?.categories ?? []);
+const schwabCategory = computed(
+  () => localCategories.value.find((c) => c.kind === "schwab") ?? null
+);
+// The view-only pull needs only the Schwab connection (no model call), so it
+// gates on that category alone — usable before local models are configured.
+const pullBlocked = computed(() =>
+  localValidation.value === null ? true : schwabCategory.value !== null
+);
+const localBlockedReason = computed(() => {
+  const items = localCategories.value.flatMap((c) => c.items);
+  return items.length > 0 ? items.join(" ") : null;
+});
+const pullBlockedReason = computed(
+  () => schwabCategory.value?.items.join(" ") ?? null
+);
+
+// The warning band shows both gates' categories in one de-duplicated block; the
+// cloud is_blocked keeps its report-gate meaning (the local one never blocks
+// the report — docs/interface.md §Persistent Warning Area).
+const displayedValidation = computed<ValidationReport | null>(() => {
+  if (validation.value === null && localValidation.value === null) return null;
+  return {
+    categories: [
+      ...(validation.value?.categories ?? []),
+      ...(localValidation.value?.categories ?? []),
+    ],
+    is_blocked: validation.value?.is_blocked ?? true,
+  };
+});
+
+async function refreshLocalValidation() {
+  try {
+    localValidation.value = await invoke<ValidationReport>(
+      "check_local_configuration"
+    );
+  } catch {
+    // Fail-safe: an unreadable local gate reads as blocked (localBlocked's
+    // null fallback) rather than silently unlocked; the cloud validationError
+    // channel already surfaces config-check faults.
+    localValidation.value = null;
+  }
+}
+
+// Invalidates in-flight portfolio reads: bumped when a refresh starts and when
+// fresher state lands directly (a run's inline result, a completed pull), so an
+// older latest_portfolio_run / latest_holdings_pull response resolving late can
+// never overwrite newer state — the selectReport / settingsEpoch pattern.
+let portfolioEpoch = 0;
+
+async function refreshPortfolio() {
+  const epoch = ++portfolioEpoch;
+  portfolioLoading.value = true;
+  portfolioLoadError.value = null;
+  try {
+    const [run, pull] = await Promise.all([
+      invoke<PortfolioRun | null>("latest_portfolio_run"),
+      invoke<HoldingsPull | null>("latest_holdings_pull"),
+    ]);
+    if (epoch !== portfolioEpoch) return;
+    portfolioRun.value = run;
+    holdingsPull.value = pull;
+  } catch (e) {
+    if (epoch !== portfolioEpoch) return;
+    portfolioLoadError.value = String(e);
+  } finally {
+    // A superseded read leaves the flags to whichever refresh is current.
+    if (epoch === portfolioEpoch) portfolioLoading.value = false;
+  }
+}
 
 // Settings state lives here alongside the other surfaces' state; the Settings
 // view is presentational. One `settingsError` carries both load and save errors.
@@ -402,22 +517,40 @@ const schwabStatus = ref<SchwabStatus | null>(null);
 const schwabConnecting = ref(false);
 const schwabError = ref<string | null>(null);
 
+// A workflow holds (or is about to claim) the single global run slot — report,
+// portfolio run, holdings pull, or Schwab connect. Every other trigger disables
+// while it does. The session flags cover the click-to-first-poll window; the
+// backend's is_running is the authoritative read that survives a reload.
+const slotBusy = computed(
+  () =>
+    generating.value ||
+    portfolioRunning.value ||
+    pullingHoldings.value ||
+    schwabConnecting.value ||
+    (jobStatus.value?.is_running ?? false)
+);
+
 // Connecting takes the single global run slot (schwab_connect holds the RunGuard),
 // so Connect is disabled while any report/job run is in flight; the button reads this.
 const schwabBusy = computed(
-  () => generating.value || (jobStatus.value?.is_running ?? false)
+  () => generating.value || portfolioRunning.value || pullingHoldings.value ||
+    (jobStatus.value?.is_running ?? false)
 );
 
 // What the footer calls the in-flight work. The run slot is shared (report /
-// Portfolio / Schwab connect), so the label follows the workflow actually holding
-// it: `schwabConnecting` covers the click-to-first-poll window (job_status is
-// refreshed on focus and at run edges, not on an interval), and the backend's
-// `running_kind` is the authoritative read that survives a webview reload.
+// Portfolio / holdings pull / Schwab connect), so the label follows the workflow
+// actually holding it: the session flags cover the click-to-first-poll window
+// (job_status is refreshed on focus and at run edges, not on an interval), and
+// the backend's `running_kind` is the authoritative read that survives a
+// webview reload.
 const footerRunningLabel = computed(() => {
   const kind = jobStatus.value?.running_kind ?? null;
   if (schwabConnecting.value || kind === "schwab-connect")
     return "Connecting to Charles Schwab…";
-  if (kind === "portfolio") return "Running Portfolio Analysis…";
+  if (pullingHoldings.value || kind === "holdings-pull")
+    return "Pulling holdings…";
+  if (portfolioRunning.value || kind === "portfolio")
+    return "Running Portfolio Analysis…";
   return "Generating report…";
 });
 
@@ -477,6 +610,7 @@ async function generate() {
   // Show the live tracker for the run the user just kicked off; run-started will
   // populate it (and reset cancelRequested, but set it here too for the gap before
   // the first event lands).
+  runTraceKind.value = "report";
   reportPaneMode.value = "tracker";
   cancelRequested.value = false;
   // Drop any prior run's trace up front. The new run replaces it via run-started; but
@@ -781,6 +915,9 @@ async function connectSchwab() {
   // polled `is_running: true`, and without this the footer would keep showing a
   // running row until the next focus change.
   void refreshJobStatus();
+  // A fresh connection clears the schwab presence warning (and unlocks the
+  // Portfolio triggers) without waiting for a focus change.
+  void refreshLocalValidation();
 }
 
 // Clear the stored OAuth session (keeps the saved credentials), then refresh the
@@ -793,6 +930,75 @@ async function disconnectSchwab() {
     schwabError.value = String(e);
   }
   await refreshSchwabStatus();
+  // Disconnecting re-raises the schwab presence warning and re-locks the
+  // Portfolio triggers immediately.
+  void refreshLocalValidation();
+}
+
+// Run the Portfolio Analysis job (docs/portfolio-analysis.md §Triggering — the
+// one-touch trigger: it pulls fresh holdings itself, never reusing a standalone
+// pull). Mirrors generate(): the run streams into the shared tracker, which
+// replaces the Portfolio page while it runs; a gate block (no run-started ever
+// arrives) surfaces as the page's inline error, never a persistent warning.
+async function generatePortfolio() {
+  if (localBlocked.value || slotBusy.value) return;
+  portfolioRunning.value = true;
+  portfolioError.value = null;
+  runTraceKind.value = "portfolio";
+  portfolioPaneMode.value = "tracker";
+  cancelRequested.value = false;
+  runTrace.value = null;
+  try {
+    const run = await invoke<PortfolioRun>("generate_portfolio_manual");
+    // The inline result is fresher than any read already in flight — invalidate
+    // them so a slow pre-run read can't clobber it.
+    portfolioEpoch++;
+    portfolioRun.value = run;
+    // Return to the results only if the user is still watching the run; if they
+    // navigated elsewhere the log lingers, reopenable from the footer.
+    if (portfolioPaneMode.value === "tracker") portfolioPaneMode.value = "results";
+  } catch (e) {
+    if (cancelRequested.value) {
+      // Intentional cancel — the tracker's terminal state carries it.
+    } else if (!runTrace.value) {
+      // Blocked before any event (run-gate / connectivity): inline on the page.
+      portfolioError.value = String(e);
+      portfolioPaneMode.value = "results";
+    }
+    // Otherwise the tracker's failed terminal state + failed-job warning carry it.
+  } finally {
+    portfolioRunning.value = false;
+    void refreshJobStatus();
+    void refreshValidation();
+    void refreshLocalValidation();
+    void refreshPortfolio();
+  }
+}
+
+// Standalone view-only holdings pull (docs/portfolio-analysis.md §Triggering):
+// fetches + persists the latest snapshot, never triggers analysis, never
+// becomes the diff baseline. Quick — no tracker; the footer labels the slot.
+async function pullHoldings() {
+  if (pullBlocked.value || slotBusy.value) return;
+  pullingHoldings.value = true;
+  portfolioError.value = null;
+  try {
+    const pull = await invoke<HoldingsPull>("pull_holdings");
+    portfolioEpoch++;
+    holdingsPull.value = pull;
+    // The direct assignment supersedes any in-flight read, whose finally will
+    // now skip the loading flag — settle it here so it can't strand true.
+    portfolioLoading.value = false;
+  } catch (e) {
+    portfolioError.value = String(e);
+  } finally {
+    pullingHoldings.value = false;
+    void refreshJobStatus();
+    // A failed pull can mean the connection lapsed mid-session — re-derive the
+    // presence gate so the warning band and button locks don't go stale until
+    // the next focus change (generatePortfolio's finally does the same).
+    void refreshLocalValidation();
+  }
 }
 
 // Test one saved credential against its provider. Result lands on that
@@ -843,16 +1049,22 @@ async function saveSettings(payload: {
   }
   settingsSaving.value = false;
   // Re-read settings (resets the form baseline and flips credential placeholders
-  // to "saved") and re-check config so completing the gate clears the warnings.
+  // to "saved") and re-check both gates so completing config clears the warnings.
   void refreshSettings();
   void refreshValidation();
+  void refreshLocalValidation();
 }
 
 // Switch surfaces. Fetch settings on entry so the configured-flags and model
-// selections are fresh each time the view is opened.
+// selections are fresh each time the view is opened; the Portfolio page
+// re-reads its persisted state + presence gate the same way.
 function navigate(next: AppView) {
   view.value = next;
   if (next === "settings") void refreshSettings();
+  if (next === "portfolio") {
+    void refreshPortfolio();
+    void refreshLocalValidation();
+  }
 }
 
 const unlisteners: UnlistenFn[] = [];
@@ -862,6 +1074,10 @@ onMounted(async () => {
     .then((v) => (appVersion.value = v))
     .catch(() => {});
   void refreshValidation();
+  // The local-suite presence gate loads up front too, so the warning band is
+  // proactive and the Portfolio triggers are correctly locked on first paint.
+  void refreshLocalValidation();
+  void refreshPortfolio();
   void refreshJobStatus();
   // Load the recent-reports list up front so the sidebar is populated and the
   // newest report shows in the pane on first paint.
@@ -889,6 +1105,7 @@ onMounted(async () => {
     await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (focused) {
         void refreshValidation();
+        void refreshLocalValidation();
         void refreshJobStatus();
         // Re-list defensively so the sidebar reflects the latest persisted state.
         void refreshReports();
@@ -929,7 +1146,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
     />
     <div class="main-column">
       <PersistentWarningArea
-        :report="validation"
+        :report="displayedValidation"
         :error="validationError"
         @dismiss="dismissWarning"
       />
@@ -937,9 +1154,16 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
         <template v-if="view === 'report'">
           <!-- While a run is in flight (or its terminal log is reopened) the pane
                shows the tracker in place of a report; selecting any report row
-               flips reportPaneMode back to "report". -->
+               flips reportPaneMode back to "report". Kind-gated like the
+               Portfolio branch, so a portfolio run's trace never renders here
+               (e.g. a failed report run left the pane in tracker mode, then a
+               portfolio run replaced the trace). -->
           <JobTrackerView
-            v-if="reportPaneMode === 'tracker' && runTrace"
+            v-if="
+              reportPaneMode === 'tracker' &&
+              runTrace &&
+              runTraceKind !== 'portfolio'
+            "
             :trace="runTrace"
             :active="runActive"
             :cancel-requested="cancelRequested"
@@ -955,6 +1179,39 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
             :exporting-markdown="exportingMarkdown"
             :export-error="exportError"
             @export-markdown="exportMarkdown"
+          />
+        </template>
+        <template v-else-if="view === 'portfolio'">
+          <!-- The shared tracker replaces the Portfolio page while its run is
+               in flight (docs/run-tracking.md — the run's owning page). -->
+          <JobTrackerView
+            v-if="
+              portfolioPaneMode === 'tracker' &&
+              runTrace &&
+              runTraceKind === 'portfolio'
+            "
+            :trace="runTrace"
+            :active="runActive"
+            :cancel-requested="cancelRequested"
+            @cancel="cancelRun"
+            @close="portfolioPaneMode = 'results'"
+          />
+          <PortfolioView
+            v-else
+            :run="portfolioRun"
+            :pull="holdingsPull"
+            :loading="portfolioLoading"
+            :load-error="portfolioLoadError"
+            :run-error="portfolioError"
+            :run-blocked="localBlocked"
+            :run-blocked-reason="localBlockedReason"
+            :pull-blocked="pullBlocked"
+            :pull-blocked-reason="pullBlockedReason"
+            :busy="slotBusy"
+            :running="portfolioRunning"
+            :pulling="pullingHoldings"
+            @run="generatePortfolio"
+            @pull="pullHoldings"
           />
         </template>
         <ResearchDocuments
@@ -1017,12 +1274,17 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
         :error="jobStatusError"
         :blocked="blocked"
         :generating="generating"
-        :run-active="runActive || schwabConnecting"
+        :run-active="
+          runActive || schwabConnecting || pullingHoldings || portfolioRunning
+        "
         :running-label="footerRunningLabel"
         :progress="runProgress"
         :run-started-at="runStartedAt"
         :has-run-log="runTrace !== null"
-        :viewing-tracker="view === 'report' && reportPaneMode === 'tracker'"
+        :viewing-tracker="
+          (view === 'report' && reportPaneMode === 'tracker') ||
+          (view === 'portfolio' && portfolioPaneMode === 'tracker')
+        "
         @generate="generate"
         @view-tracker="viewTracker"
       />

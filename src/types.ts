@@ -3,7 +3,7 @@
 
 // Which main surface is showing. A plain string union driving a ref switch in
 // App.vue (no router) — the app has a small, fixed set of destinations.
-export type AppView = "report" | "inbox" | "archive" | "settings";
+export type AppView = "report" | "portfolio" | "inbox" | "archive" | "settings";
 
 export interface ReportSummary {
   report_id: string;
@@ -71,7 +71,7 @@ export interface JobStatus {
   is_running: boolean;
   // Which workflow holds the single run slot while is_running — drives the
   // footer's running label (a Schwab connect must not read as a report run).
-  running_kind: "report" | "portfolio" | "schwab-connect" | null;
+  running_kind: "report" | "portfolio" | "schwab-connect" | "holdings-pull" | null;
   last_successful_at: string | null;
   last_failed_at: string | null;
   last_failure_detail: string | null;
@@ -204,6 +204,166 @@ export interface SchwabStatus {
 export interface SchwabCredentialUpdate {
   client_id: string;
   client_secret: string | null;
+}
+
+// --- Portfolio Analysis ------------------------------------------------------
+// Mirrors the Rust `portfolio::*` / `schwab::*` structs returned by the
+// `latest_portfolio_run`, `generate_portfolio_manual`, `pull_holdings`, and
+// `latest_holdings_pull` commands (docs/portfolio-analysis.md §Storage and
+// display, §Triggering). Enum wire shapes are kebab-case (pinned backend-side).
+
+export type AssetClass =
+  | "stock"
+  | "etf"
+  | "mutual-fund"
+  | "option-contract"
+  | "fixed-income"
+  | "cash"
+  | "other";
+
+// One position in the account. Cost basis and market value are account-currency
+// totals (not per-share), Schwab-reported — the sort bar's engine-computed keys
+// derive from these two, never a naive quote × shares.
+export interface Position {
+  symbol: string;
+  description: string;
+  asset_class: AssetClass;
+  quantity: number;
+  cost_basis: number;
+  market_value: number;
+  current_price: number | null;
+}
+
+export interface Holdings {
+  positions: Position[];
+  cash: number;
+  account_total: number;
+}
+
+// The latest standalone Pull-holdings snapshot — view-only page state, distinct
+// from the snapshot persisted inside each run (which is the diff baseline).
+// `pulled_at` is canonical UTC RFC3339; the UI renders local time.
+export interface HoldingsPull {
+  pulled_at: string;
+  holdings: Holdings;
+}
+
+// How a position changed vs the prior run's snapshot — the app's deterministic
+// quantity diff, never re-derived in the frontend.
+export type PositionChange = "new" | "increased" | "decreased" | "unchanged";
+
+export type PortfolioGrade = "A" | "B" | "C" | "D" | "F";
+export type PortfolioAction =
+  | "sell-all"
+  | "trim"
+  | "hold"
+  | "add"
+  | "add-aggressively";
+export type PortfolioConviction = "high" | "medium" | "low";
+export type HorizonRead = "bullish" | "neutral" | "bearish";
+
+// The four engine-computed sub-scores, 0–100, higher is better (risk inverted at
+// source: safer scores higher).
+export interface SubScores {
+  quality: number;
+  valuation: number;
+  momentum: number;
+  risk: number;
+}
+
+export interface HorizonOutlook {
+  short: HorizonRead;
+  mid: HorizonRead;
+  long: HorizonRead;
+}
+
+// One scenario target with its methodology exposed; the engine computed the
+// figures, the model selected and justified the base case.
+export interface PriceTarget {
+  base: number;
+  bear: number;
+  bull: number;
+  methodology: string;
+}
+
+export interface PriceTargets {
+  end_of_month: PriceTarget | null;
+  end_of_year: PriceTarget | null;
+}
+
+// The per-stock options-activity signal — an activity proxy, not positioning
+// truth; any field null when the chain lacked the data.
+export interface OptionsSignal {
+  put_call_volume: number | null;
+  put_call_open_interest: number | null;
+  implied_volatility: number | null;
+  iv_skew: number | null;
+}
+
+export interface ActionSizing {
+  target_weight_low: number;
+  target_weight_high: number;
+  est_share_delta: number | null;
+  est_dollar_delta: number | null;
+}
+
+export interface GradedVerdict {
+  grade: PortfolioGrade;
+  sub_scores: SubScores;
+  action: PortfolioAction;
+  action_sizing: ActionSizing;
+  conviction: PortfolioConviction;
+  horizon_outlook: HorizonOutlook;
+  price_targets: PriceTargets;
+  price_target_rationale: string;
+  options_signal: OptionsSignal;
+  financial_summary: string;
+  what_changed: string;
+}
+
+// Internally tagged on `status` (serde `tag = "status"`): a graded verdict's
+// fields sit beside the tag; the two abstention arms carry a reason.
+export type VerdictDisposition =
+  | ({ status: "graded" } & GradedVerdict)
+  | { status: "not-rated"; reason: string }
+  | { status: "insufficient-evidence"; reason: string };
+
+export interface HoldingVerdict {
+  symbol: string;
+  asset_class: AssetClass;
+  position_change: PositionChange;
+  disposition: VerdictDisposition;
+}
+
+// A position present last run but absent now — surfaced in the roll-up only,
+// never a card in the sortable stack.
+export interface ExitedPosition {
+  symbol: string;
+  description: string;
+  prior_quantity: number;
+  prior_cost_basis: number;
+  prior_market_value: number;
+}
+
+export interface PortfolioRollUp {
+  graded_count: number;
+  not_rated_count: number;
+  insufficient_evidence_count: number;
+  top_position_weight: number;
+  cash_weight: number;
+  exited: ExitedPosition[];
+  overview: string;
+}
+
+export interface PortfolioRun {
+  run_id: string;
+  created_at: string;
+  holdings: Holdings;
+  verdicts: HoldingVerdict[];
+  roll_up: PortfolioRollUp;
+  // The per-holding audit records (sources, metrics, model ids…) — persisted
+  // for traceability; not rendered by the Portfolio page in this slice.
+  audit: unknown[];
 }
 
 // --- Live job tracker -------------------------------------------------------

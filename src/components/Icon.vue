@@ -10,6 +10,7 @@ type SvgEl = [string, Record<string, string | number>];
 // type error at the call site, not a silently-empty render.
 export type IconName =
   | "report"
+  | "portfolio"
   | "archive"
   | "inbox"
   | "settings"
@@ -37,6 +38,14 @@ const PATHS: Record<IconName, SvgEl[]> = {
     ["rect", { x: 3, y: 3, width: 14, height: 3 }],
     ["rect", { x: 4, y: 6, width: 12, height: 11 }],
     ["line", { x1: 8, y1: 10, x2: 12, y2: 10 }],
+  ],
+  // Briefcase — the holdings/Portfolio surface. Same language as the rest:
+  // one stroke, squared caps, 20-unit viewBox (an icon-set extension; the kit
+  // ships no portfolio glyph).
+  portfolio: [
+    ["rect", { x: 3, y: 7, width: 14, height: 9 }],
+    ["path", { d: "M7 7V4h6v3" }],
+    ["line", { x1: 3, y1: 11, x2: 17, y2: 11 }],
   ],
   inbox: [
     ["path", { d: "M3 11l3 -7h8l3 7v6H3z" }],

@@ -957,6 +957,27 @@ button, input, textarea, select { font: inherit; color: inherit; }
   outline-offset: 1px;
 }
 
+/* ---- Status tag — a quiet, tracked-caps informational marker riding a card
+   or grid row (holdings churn: "new · not in last analysis" / "no longer
+   held"; the future TO lifecycle badges' neutral base). The words are the
+   alert: ink tokens only, hairline border, radius ≤ 2px, no pill, and NEVER
+   the accent (reserved for actionable states). Analytical register only. ---- */
+.ana-tag {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
 /* ---- Matrix / list view toggle — for Trade Opportunities. A minimal
    two-option switch flipping a surface between a card matrix and a flat list.
    Ghost-text built on the .btn-ghost posture, tracked-caps options, the active

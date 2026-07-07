@@ -576,8 +576,10 @@ pub fn roster_from_config(cfg: &AppConfig) -> Roster {
 /// the local suite, and vice versa.
 ///
 /// Three gaps fold into the one category, in order: configuration not yet complete
-/// (endpoint / any roster slot blank), the daemon unreachable, and a configured
-/// roster id the daemon doesn't have.
+/// (endpoint / a **required** roster slot — reasoner or embedder — blank; the
+/// optional fast tier never gates, `docs/configuration.md §Local Analysis Suite
+/// Configuration` — a blank fast falls back to the reasoner in the pipeline), the
+/// daemon unreachable, and a configured roster id the daemon doesn't have.
 pub fn local_gate(cfg: &AppConfig, probe: &DaemonProbe) -> ValidationReport {
     let mut items: Vec<String> = Vec::new();
 
@@ -587,9 +589,6 @@ pub fn local_gate(cfg: &AppConfig, probe: &DaemonProbe) -> ValidationReport {
     }
     if config::present(&cfg.local_reasoner_model).is_none() {
         unconfigured.push("reasoner model");
-    }
-    if config::present(&cfg.local_fast_model).is_none() {
-        unconfigured.push("fast model");
     }
     if config::present(&cfg.local_embedder_model).is_none() {
         unconfigured.push("embedder model");
@@ -623,6 +622,16 @@ pub fn local_gate(cfg: &AppConfig, probe: &DaemonProbe) -> ValidationReport {
         categories,
         is_blocked,
     }
+}
+
+/// The **presence-only** half of [`local_gate`], for the proactive Persistent
+/// Warning Area render (`docs/interface.md §Connection status`): the persistent
+/// warning fires on missing *configuration* only, never on a live connectivity
+/// probe — so this gates on the config fields alone by treating the daemon as
+/// reachable with a full roster. Connectivity stays a run-gate / Test-Connection
+/// concern, discovered at run time. Sync-safe: no network.
+pub fn local_presence_gate(cfg: &AppConfig) -> ValidationReport {
+    local_gate(cfg, &DaemonProbe::Reachable { missing: Vec::new() })
 }
 
 /// The Settings "Test connection" result for the local daemon: reachable?, a reason
@@ -796,6 +805,31 @@ mod tests {
         assert_eq!(cat.kind, WarningKind::LocalModels);
         assert!(cat.items[0].contains("daemon endpoint"), "{:?}", cat.items);
         assert!(cat.items[0].contains("reasoner model"), "{:?}", cat.items);
+    }
+
+    #[test]
+    fn gate_never_blocks_on_the_optional_fast_tier() {
+        // Endpoint + reasoner + embedder with NO fast model is a valid documented
+        // setup (`docs/configuration.md` — the fast tier never gates); the
+        // pipeline falls back to the reasoner for distillation.
+        let cfg = AppConfig {
+            local_fast_model: None,
+            ..local_cfg()
+        };
+        let report = local_gate(&cfg, &DaemonProbe::Reachable { missing: vec![] });
+        assert!(!report.is_blocked, "{:?}", report.categories);
+        assert!(!local_presence_gate(&cfg).is_blocked);
+    }
+
+    #[test]
+    fn presence_gate_reads_config_only_never_a_probe() {
+        // Unset config blocks; full config passes with no daemon anywhere — the
+        // presence-only contract the proactive warning band relies on
+        // (`docs/interface.md §Connection status`).
+        let blocked = local_presence_gate(&AppConfig::default());
+        assert!(blocked.is_blocked);
+        assert_eq!(blocked.categories[0].kind, WarningKind::LocalModels);
+        assert!(!local_presence_gate(&local_cfg()).is_blocked);
     }
 
     #[test]
