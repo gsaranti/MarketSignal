@@ -206,10 +206,15 @@ pre-mount to avoid a first-paint flash.
   and a denser, instrument-grade **analytical register** (mono-tabular numerics +
   a scoped, desaturated directional/grade palette, analytical-surfaces only) that
   the local-suite surfaces (Portfolio, Trade Opportunities) adopt as they are
-  built; shared chrome bridges the two. The register carries two **display-only**
+  built; shared chrome bridges the two. The register carries three **display-only**
   suite controls — the Portfolio **holdings sort bar** (in-place card reorder;
-  **built**, PR #52) and a Trade Opportunities **Matrix/List view toggle**
-  (designed, not yet built); both reorder already-computed fields only (no
+  **built**, PR #52), the Portfolio current-holdings table's **sortable grid
+  heads** (**built**, `1e04cb8`) — `aria-sort` on real column heads through the
+  package's keyboard-operable **full-cell head-button extension** (the
+  table-proper pattern the sort bar's `aria-pressed` toolbar deliberately
+  reserves for grids; symbol opens ascending, numerics descending, missing
+  values sort last) — and a Trade Opportunities **Matrix/List view toggle**
+  (designed, not yet built); all three reorder already-computed fields only (no
   engine/schema/workflow change), and the TO **matrix stays the canonical view**
   while the List is an additive flat ranking that preserves the load-bearing 3×3
   yet sorts across all cells.
