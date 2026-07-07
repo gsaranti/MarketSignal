@@ -6,7 +6,7 @@ A user-driven Portfolio-page polish session, two commits straight to `main`. (1)
 
 ## Current state
 
-On `main` @ `1e04cb8`, pushed, clean tree, nothing mid-implementation. **Eight slices now accumulated on `main` awaiting a build** — #48/#49/#50/#51, `0645351` (footer/RunKind), #52 (Portfolio page), `d488416` (button base class), `1e04cb8` (holdings table) — installed app still v1.2.1. One unverified detail: the glyph hit-target fix is CSS-only (`:has()`-switched, invisible to happy-dom specs) — confirm with one click on a head glyph next time the dev app is open. Carried #52 deferrals unchanged: sidebar Portfolio-runs history, portfolio-specific tracker layout, unpersisted card fields, and the local-models warning still lacking its in-app clear path (Local-analysis-models Settings section unbuilt).
+On `main` @ `1e04cb8`, pushed, clean tree, nothing mid-implementation. **Eight slices now accumulated on `main`** — #48/#49/#50/#51, `0645351` (footer/RunKind), #52 (Portfolio page), `d488416` (button base class), `1e04cb8` (holdings table) — installed app still v1.2.1, and **staying there by decision: no new version/build until Portfolio Analysis and Trade Opportunities are both complete** (user, 2026-07-07). One unverified detail: the glyph hit-target fix is CSS-only (`:has()`-switched, invisible to happy-dom specs) — confirm with one click on a head glyph next time the dev app is open. Carried #52 deferrals unchanged: sidebar Portfolio-runs history, portfolio-specific tracker layout, unpersisted card fields, and the local-models warning still lacking its in-app clear path (Local-analysis-models Settings section unbuilt).
 
 ## Open questions
 
@@ -18,4 +18,4 @@ On `main` @ `1e04cb8`, pushed, clean tree, nothing mid-implementation. **Eight s
 
 ## Where to start
 
-Same two clean options, now with eight slices banked: (1) **ship the accumulated `main` slices** — 5-anchor version bump + `npm run tauri build` (launch-time local-suite warnings are the proactive render working, not a regression; click a table-head glyph to confirm the CSS hit-target fix live); or (2) next slice via `/metis-plan-task` — the **Local analysis models Settings section** (still the most user-visible gap), the **sidebar Portfolio-runs history**, or **full Portfolio (funds)**.
+**No interim build** — the banked slices ride until the suite is complete, so the next step is the next slice via `/metis-plan-task`: the **Local analysis models Settings section** (still the most user-visible gap), the **sidebar Portfolio-runs history**, or **full Portfolio (funds)** — then Trade Opportunities. (For the eventual suite-complete build: launch-time local-suite warnings are the proactive render working, not a regression; click a table-head glyph to confirm the CSS hit-target fix live.)
