@@ -403,7 +403,14 @@ as-built; the rest remain planned):
   tokens; the client id is a non-secret in `app_settings`. Only the interactive
   browser round-trip is unexercised (an `#[ignore]` live smoke needing real
   credentials) — now **runnable**, since PR #50 added the Settings Connect surface
-  that seeds the client id and secret.
+  that seeds the client id and secret. The loopback's HTTPS server is an **in-house
+  one-shot rustls acceptor** (`loopback_https`, PR #51): the security audit that
+  cleared this surface found the original tiny_http server hard-pinned an EOL
+  rustls/ring stack (RUSTSEC-2024-0336 unfixed) and no maintained minimal
+  blocking-HTTPS crate exists, so the ~150-line acceptor rides the same
+  rustls + ring stack outbound HTTP already uses (no new native deps), and the
+  capture loop — fail-closed state check, probe tolerance, deadline — is
+  offline-tested over real TLS rather than live-only.
 - **Reuses the spine.** Each feature is a new Tauri command + job under a
   **single global run slot** (report + both local jobs are mutually exclusive,
   matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
