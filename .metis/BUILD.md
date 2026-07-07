@@ -185,7 +185,8 @@ pre-mount to avoid a first-paint flash.
   same stance, not opposites.
 - **`frontend` (Vue 3)** — Latest Report View, the **Run Tracker** (live
   per-step/per-request progress with streamed agent output), Recent Reports
-  Sidebar, Research Documents, the Persistent Warning Area, and Settings
+  Sidebar, Research Documents, the Persistent Warning Area, Settings, and the
+  **Portfolio page** (the first analytical-register surface — PR #52)
   (`docs/interface.md`). Markdown→HTML rendering uses **markdown-it** (JS), so
   HTML generation lives on the webview side, rendered on demand for display and
   PDF export and **never persisted** — agents never see HTML. PDF export uses the
@@ -206,11 +207,12 @@ pre-mount to avoid a first-paint flash.
   a scoped, desaturated directional/grade palette, analytical-surfaces only) that
   the local-suite surfaces (Portfolio, Trade Opportunities) adopt as they are
   built; shared chrome bridges the two. The register carries two **display-only**
-  suite controls (designed, not yet built) — a Portfolio **holdings sort bar**
-  (in-place card reorder) and a Trade Opportunities **Matrix/List view toggle**;
-  both reorder already-computed fields only (no engine/schema/workflow change),
-  and the TO **matrix stays the canonical view** while the List is an additive
-  flat ranking that preserves the load-bearing 3×3 yet sorts across all cells.
+  suite controls — the Portfolio **holdings sort bar** (in-place card reorder;
+  **built**, PR #52) and a Trade Opportunities **Matrix/List view toggle**
+  (designed, not yet built); both reorder already-computed fields only (no
+  engine/schema/workflow change), and the TO **matrix stays the canonical view**
+  while the List is an additive flat ranking that preserves the load-bearing 3×3
+  yet sorts across all cells.
 
 ## Runtime, observability & failure posture
 
@@ -246,8 +248,10 @@ reasoning** — the main agent on its own channel and each analyst per-posture
 (thoughts-only for analysts; the review body never streams). The streamed
 report tokens are a side-channel that can't corrupt the report — the full
 envelope is accumulated and parsed exactly as the non-streaming path. The
-frontend renders this as the run tracker (replacing the report pane while a run
-is in flight; latest-run-only). Cancellation is cooperative — a shared flag
+frontend renders this as the run tracker — one shared component placed on the
+**running job's own page** (a report run replaces the report pane, a portfolio
+run the Portfolio page; latest-run-only), the report's fixed /8 progress
+fraction applying to report runs only. Cancellation is cooperative — a shared flag
 polled at step/request boundaries and mid-stream, never interrupting an in-flight
 request. Two load-bearing UI invariants: a **run is never a report** (a row
 appears only on persisted success, so a cancel/fail removes nothing), and the
@@ -432,11 +436,23 @@ as-built; the rest remain planned):
   plus `schwab_status` / `schwab_disconnect` and the Settings Connect section;
   **`WarningKind::Schwab` is now produced + consumed at the local run-gate via a new
   `schwab_gate`** — parallel to `local_gate`, kept **off the cloud `validate` gate** so a
-  disconnected account blocks only the local jobs, never the report; its proactive
-  warning-band render and the #49 diff render both await the not-yet-built
-  **Portfolio-page frontend**) → **next: full Portfolio (funds)** or the
-  **Portfolio-page frontend** (renders the #49 diff + surfaces the local-suite warning
-  band) → Opportunities. Both jobs are personalized
+  disconnected account blocks only the local jobs, never the report) →
+  **Portfolio-page frontend (done — PR #52**: the first analytical-register surface —
+  verdict cards + roll-up with the #49 diff render, and the local-suite warning band
+  finally lit via a **presence-only `check_local_configuration`** (schwab + local-models
+  categories into the shared warning area; the cloud `is_blocked` untouched, so the
+  local gate locks only the local triggers). Two load-bearing trigger decisions:
+  **Run analysis always pulls fresh holdings itself**, and a separate **Pull holdings**
+  is **view-only** — persisted as a latest-pull snapshot that is **never the
+  holdings-diff baseline** (the job always diffs against the prior *run's* snapshot)
+  and gates on Schwab alone (no model call), so holdings are viewable before local
+  models exist. A fresher pull renders as a stamped section *above* the run-anchored
+  cards with **presence-only** churn tags — quantity classification stays the engine
+  diff's. Rider fix: the **optional fast tier no longer gates** — a blank fast model
+  falls back to the reasoner for distillation, per the settled roster default) →
+  **next: full Portfolio (funds)**, the **Local-analysis-models Settings section**
+  (the proactive local-models warning currently has no in-app clear path), or the
+  **sidebar Portfolio-runs history** → Opportunities. Both jobs are personalized
   by a **fixed default investor-profile preset** (long-term, profit-max, medium-high
   risk, cash always available, no tax adjustment; user config deferred) that frames
   the prescription, never which holdings or ideas qualify.
