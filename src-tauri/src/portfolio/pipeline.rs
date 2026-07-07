@@ -407,9 +407,10 @@ impl HoldingAnalyst for StubAnalyst {
 // ---- The live local analyst (Ollama daemon) ----------------------------------
 
 /// The live [`HoldingAnalyst`]: wraps a [`LocalModelClient`] and the roster's reasoner
-/// and fast model ids. Distillation runs on the fast model; interpretation runs on the
-/// reasoner in thinking mode with the grammar-constrained interpretation schema, so the
-/// returned object is structurally valid by construction.
+/// and fast model ids. Distillation runs on the fast model — or on the reasoner when no
+/// fast tier is configured; interpretation runs on the reasoner in thinking mode with
+/// the grammar-constrained interpretation schema, so the returned object is
+/// structurally valid by construction.
 pub struct LocalAnalyst {
     client: LocalModelClient,
     reasoner_model: String,
@@ -417,7 +418,17 @@ pub struct LocalAnalyst {
 }
 
 impl LocalAnalyst {
+    /// A blank `fast_model` falls back to the reasoner: the fast tier is **optional**
+    /// and never gates (`docs/configuration.md §Local Analysis Suite Configuration`),
+    /// and the documented roster default runs distillation on the resident reasoner
+    /// anyway (`docs/local-models.md §The model roster and per-task routing`) — so a
+    /// reasoner+embedder-only setup runs rather than failing mid-run on an empty id.
     pub fn new(client: LocalModelClient, reasoner_model: String, fast_model: String) -> Self {
+        let fast_model = if fast_model.trim().is_empty() {
+            reasoner_model.clone()
+        } else {
+            fast_model
+        };
         Self {
             client,
             reasoner_model,
@@ -462,7 +473,11 @@ impl HoldingAnalyst for LocalAnalyst {
     }
 
     fn model_ids(&self) -> Vec<String> {
-        vec![self.reasoner_model.clone(), self.fast_model.clone()]
+        let mut ids = vec![self.reasoner_model.clone(), self.fast_model.clone()];
+        // One entry when the fast tier fell back to the reasoner, so the audit
+        // record doesn't list the same model twice.
+        ids.dedup();
+        ids
     }
 }
 
@@ -615,5 +630,23 @@ mod tests {
         assert!(user.contains("SUB-SCORES"), "{user}");
         assert!(user.contains("NOT a grade input"), "options proxy is flagged: {user}");
         assert!(interpretation_system_prompt().contains("Do NOT invent"));
+    }
+
+    #[test]
+    fn blank_fast_tier_falls_back_to_the_reasoner() {
+        // The fast tier is optional and never gates (`docs/configuration.md`), so a
+        // blank slot must not reach the daemon as an empty model id — distillation
+        // runs on the reasoner instead, and the audit's model list carries it once.
+        let client = LocalModelClient::new("http://127.0.0.1:1").unwrap();
+        let analyst = LocalAnalyst::new(client, "qwen3.5:122b".into(), "  ".into());
+        assert_eq!(analyst.model_ids(), vec!["qwen3.5:122b".to_string()]);
+
+        // A configured fast tier is used as-is.
+        let client = LocalModelClient::new("http://127.0.0.1:1").unwrap();
+        let analyst = LocalAnalyst::new(client, "r".into(), "f".into());
+        assert_eq!(
+            analyst.model_ids(),
+            vec!["r".to_string(), "f".to_string()]
+        );
     }
 }

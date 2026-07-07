@@ -8,7 +8,7 @@ Market Signal
 │   ├── Rendered HTML report
 │   └── Export actions
 │
-├── Run Tracker (shown in place of the report while a job runs)
+├── Run Tracker (shown in place of the running job's page — report or local-suite)
 │   ├── Per-step progress
 │   ├── Per-request pass / fail
 │   ├── Streamed agent output
@@ -24,7 +24,7 @@ Market Signal
 │   └── Research Archive
 │
 ├── Portfolio (local analysis suite)
-│   ├── Holdings (manual pull / CSV import)
+│   ├── Holdings (Pull-holdings view-only refresh; Run analysis always re-pulls / CSV import supplement)
 │   ├── Holdings sort bar (value / $ gain / % gain / cash invested — reorders the cards in place)
 │   ├── Per-holding verdicts (standing thesis + intrinsic verdict [grade + forward outlook] + portfolio action + thesis monitor)
 │   └── Portfolio roll-up & construction

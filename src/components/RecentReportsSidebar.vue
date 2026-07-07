@@ -99,6 +99,16 @@ function rowTitle(r: ReportSummary): string {
       <button
         type="button"
         class="nav-item"
+        :class="{ 'is-active': view === 'portfolio' }"
+        :aria-current="view === 'portfolio' ? 'page' : undefined"
+        @click="$emit('navigate', 'portfolio')"
+      >
+        <Icon name="portfolio" :size="14" color="var(--ink-2)" />
+        <span class="nav-label">Portfolio</span>
+      </button>
+      <button
+        type="button"
+        class="nav-item"
         :class="{ 'is-active': view === 'inbox' }"
         :aria-current="view === 'inbox' ? 'page' : undefined"
         @click="$emit('navigate', 'inbox')"

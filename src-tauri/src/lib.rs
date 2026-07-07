@@ -467,6 +467,57 @@ fn schwab_fixture_escape() -> bool {
         .unwrap_or(false)
 }
 
+/// Build the holdings source — the single source-selection seam every holdings
+/// fetch goes through (`generate_portfolio_manual` and `pull_holdings`): the
+/// offline fixture behind the escape hatch, else the live Schwab source once
+/// connected, else the [`schwab_oauth::schwab_gate`] block flattened to its
+/// re-auth prompt. Only the non-fixture path touches the Keychain rail / OAuth.
+/// Blocking (Keychain reads); call inside `spawn_blocking`.
+fn build_holdings_source(cfg: &AppConfig) -> Result<Box<dyn schwab::HoldingsSource>, String> {
+    let store: Arc<dyn schwab_secrets::TokenStore> =
+        Arc::new(schwab_secrets::KeyringTokenStore::new());
+    let fixture_escape = schwab_fixture_escape();
+    let oauth = if fixture_escape {
+        None
+    } else {
+        let client_id = cfg.schwab_client_id.clone().unwrap_or_default();
+        Some(Arc::new(
+            schwab_oauth::OauthClient::new(client_id, store).map_err(|e| e.to_string())?,
+        ))
+    };
+    let connected = match &oauth {
+        Some(o) => o
+            .is_connected(chrono::Utc::now())
+            .map_err(|e| e.to_string())?,
+        None => false,
+    };
+    match choose_holdings_source(fixture_escape, connected) {
+        HoldingsChoice::Fixture => Ok(Box::new(schwab::FixtureHoldingsSource::new())),
+        HoldingsChoice::NotConnected => {
+            // Produce + consume the WarningKind::Schwab category via the shared
+            // gate, mirroring how `local_gate` blocks a run for LocalModels; the
+            // same producer feeds the warning band via `check_local_configuration`.
+            // Surface its item — the specific reconnect prompt — as the gate error.
+            let report = schwab_oauth::schwab_gate(false);
+            let message = report
+                .categories
+                .into_iter()
+                .flat_map(|c| c.items)
+                .collect::<Vec<_>>()
+                .join(" ");
+            Err(message)
+        }
+        HoldingsChoice::Live => {
+            let oauth = oauth.expect("oauth is built on the non-fixture path");
+            let token: schwab_live::TokenProvider =
+                Arc::new(move || oauth.valid_access_token(chrono::Utc::now()));
+            Ok(Box::new(
+                schwab_live::SchwabApiSource::new(token).map_err(|e| e.to_string())?,
+            ))
+        }
+    }
+}
+
 /// Begin the interactive Schwab OAuth connection (`docs/schwab-integration.md
 /// §Authorization`): stand up the self-signed HTTPS loopback server, open the system
 /// browser for the brokerage login, capture the redirect's authorization code, and
@@ -670,52 +721,10 @@ async fn generate_portfolio_manual(
             .with_context(ctx.clone());
         let company = portfolio::job::LiveCompanyData { fmp, sec };
 
-        // Source selection: the offline fixture behind the escape hatch, else the live
-        // Schwab source once connected, else a blocked run with a re-auth prompt. Only
-        // the non-fixture path touches the Keychain rail / OAuth.
-        let store: Arc<dyn schwab_secrets::TokenStore> =
-            Arc::new(schwab_secrets::KeyringTokenStore::new());
-        let fixture_escape = schwab_fixture_escape();
-        let oauth = if fixture_escape {
-            None
-        } else {
-            let client_id = cfg.schwab_client_id.clone().unwrap_or_default();
-            Some(Arc::new(
-                schwab_oauth::OauthClient::new(client_id, store.clone())
-                    .map_err(|e| e.to_string())?,
-            ))
-        };
-        let connected = match &oauth {
-            Some(o) => o
-                .is_connected(chrono::Utc::now())
-                .map_err(|e| e.to_string())?,
-            None => false,
-        };
-        let holdings: Box<dyn schwab::HoldingsSource> =
-            match choose_holdings_source(fixture_escape, connected) {
-                HoldingsChoice::Fixture => Box::new(schwab::FixtureHoldingsSource::new()),
-                HoldingsChoice::NotConnected => {
-                    // Produce + consume the WarningKind::Schwab category via the shared
-                    // gate, mirroring how `local_gate` blocks the run for LocalModels
-                    // above; the gate is also the producer the local-suite warning band
-                    // will reuse once built. Surface its item — the specific reconnect
-                    // prompt — as the run-gate error.
-                    let report = schwab_oauth::schwab_gate(false);
-                    let message = report
-                        .categories
-                        .into_iter()
-                        .flat_map(|c| c.items)
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    return Err(message);
-                }
-                HoldingsChoice::Live => {
-                    let oauth = oauth.expect("oauth is built on the non-fixture path");
-                    let token: schwab_live::TokenProvider =
-                        Arc::new(move || oauth.valid_access_token(chrono::Utc::now()));
-                    Box::new(schwab_live::SchwabApiSource::new(token).map_err(|e| e.to_string())?)
-                }
-            };
+        // Source selection: the shared seam (`build_holdings_source`) — fixture escape
+        // hatch, else live Schwab once connected, else a blocked run with a re-auth
+        // prompt.
+        let holdings: Box<dyn schwab::HoldingsSource> = build_holdings_source(&cfg)?;
 
         portfolio::job::run_portfolio_job(
             holdings.as_ref(),
@@ -737,6 +746,107 @@ async fn generate_portfolio_manual(
         portfolio::job::PortfolioJobOutcome::Skipped(reason) => Err(reason),
         portfolio::job::PortfolioJobOutcome::Cancelled(reason) => Err(reason),
     }
+}
+
+/// The most recent persisted Portfolio Analysis run for the Portfolio page
+/// (`docs/portfolio-analysis.md §Storage and display`), or `None` before the first
+/// run — the frontend renders the empty state. Sync: one local SQLite read.
+#[tauri::command]
+fn latest_portfolio_run(
+    app: tauri::AppHandle,
+) -> Result<Option<portfolio::PortfolioRun>, String> {
+    let conn = open_app_db(&app)?;
+    portfolio::store::latest_run(&conn).map_err(|e| e.to_string())
+}
+
+/// The latest standalone **Pull holdings** snapshot for the Portfolio page
+/// (`docs/portfolio-analysis.md §Triggering` — view-only, never read by the job),
+/// or `None` before any pull. Sync: one local SQLite read.
+#[tauri::command]
+fn latest_holdings_pull(
+    app: tauri::AppHandle,
+) -> Result<Option<portfolio::store::HoldingsPull>, String> {
+    let conn = open_app_db(&app)?;
+    portfolio::store::latest_pull(&conn).map_err(|e| e.to_string())
+}
+
+/// Standalone **Pull holdings** (`docs/portfolio-analysis.md §Triggering`): fetch the
+/// current positions from the connected Schwab account (or the fixture behind the
+/// escape hatch), persist them as the latest view-only snapshot, and return them. It
+/// never triggers analysis and never becomes the holdings-diff baseline — the job
+/// always re-pulls and diffs against the prior *run's* snapshot. Gates on the Schwab
+/// connection only (no model call → no local-model gate), so it works before local
+/// models are configured. Holds the single run slot as `RunKind::HoldingsPull` so it
+/// can't race a job's own pull or token refresh; the quick local persist happens
+/// after the slot is released.
+#[tauri::command]
+async fn pull_holdings(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, RunGuard>,
+) -> Result<portfolio::store::HoldingsPull, String> {
+    // Read config on a short-lived connection dropped before the await (a
+    // `rusqlite::Connection` is not `Send`).
+    let cfg = {
+        let conn = open_app_db(&app)?;
+        AppConfig::load(&conn)
+    };
+    let guard = guard.inner().clone();
+
+    let holdings = tauri::async_runtime::spawn_blocking(move || {
+        let _token = guard
+            .try_begin(RunKind::HoldingsPull)
+            .ok_or_else(|| "Another job is running — pull holdings once it finishes.".to_string())?;
+        let source = build_holdings_source(&cfg)?;
+        source.holdings().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("holdings pull task failed: {e}"))??;
+
+    let pull = portfolio::store::HoldingsPull {
+        pulled_at: chrono::Utc::now().to_rfc3339(),
+        holdings,
+    };
+    let conn = open_app_db(&app)?;
+    portfolio::store::save_pull(&conn, &pull).map_err(|e| e.to_string())?;
+    Ok(pull)
+}
+
+/// The local-suite **presence** gate for the Persistent Warning Area
+/// (`docs/interface.md §Persistent Warning Area` — both local categories are
+/// presence-based, fired on missing *configuration*, never a connectivity probe):
+/// the `local-models` category from the config fields alone
+/// (`local_model::local_presence_gate`) plus the `schwab` category from the stored
+/// token state (`schwab_oauth::schwab_gate` — not-connected or refresh lapsed, no
+/// network). Deliberately separate from the cloud `check_configuration`:
+/// `is_blocked` here means the **local jobs** are blocked, never the report. Sync —
+/// local SQLite + Keychain reads only.
+#[tauri::command]
+fn check_local_configuration(app: tauri::AppHandle) -> Result<config::ValidationReport, String> {
+    let cfg = {
+        let conn = open_app_db(&app)?;
+        AppConfig::load(&conn)
+    };
+    let local = local_model::local_presence_gate(&cfg);
+    let store = schwab_secrets::KeyringTokenStore::new();
+    let connected = if schwab_fixture_escape() {
+        // The offline fixture satisfies the holdings source, so don't warn about a
+        // connection the run wouldn't use.
+        true
+    } else {
+        store
+            .tokens()
+            .map_err(|e| e.to_string())?
+            .is_some_and(|t| t.refresh_valid(chrono::Utc::now()))
+    };
+    let schwab = schwab_oauth::schwab_gate(connected);
+
+    let mut categories = local.categories;
+    categories.extend(schwab.categories);
+    let is_blocked = categories.iter().any(|c| c.kind.is_blocking());
+    Ok(config::ValidationReport {
+        categories,
+        is_blocked,
+    })
 }
 
 /// List the most recent persisted reports for the Recent Reports sidebar
@@ -1056,6 +1166,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_report_manual,
             generate_portfolio_manual,
+            latest_portfolio_run,
+            latest_holdings_pull,
+            pull_holdings,
+            check_local_configuration,
             schwab_connect,
             save_schwab_credentials,
             schwab_status,

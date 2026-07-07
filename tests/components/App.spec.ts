@@ -66,6 +66,8 @@ import Settings from "../../src/components/Settings.vue";
 import JobTrackerView from "../../src/components/JobTrackerView.vue";
 import LatestReportView from "../../src/components/LatestReportView.vue";
 import JobStatusPanel from "../../src/components/JobStatusPanel.vue";
+import PortfolioView from "../../src/components/PortfolioView.vue";
+import { sampleHoldingsPull, samplePortfolioRun } from "../helpers/tauri";
 
 beforeEach(() => {
   // Clear call history between tests, then (re)apply implementations.
@@ -156,16 +158,20 @@ describe("App.vue Tauri boundary", () => {
     const events = tauri.listen.mock.calls.map((c) => c[0]).sort();
     expect(events).toEqual(["job-progress"]);
 
-    // Exactly the eight refresh commands onMounted issues — sorted-equality
+    // Exactly the refresh commands onMounted issues — sorted-equality
     // enforces the set with no extras or duplicates (not a subset), while
     // tolerating any reordering of the onMounted calls. Proves the four-module
     // mock is complete enough to mount the real App without a throw.
     // `truncation_stats` and `schwab_status` ride in via refreshSettings (loaded up
-    // front for the gate's config state), alongside get_settings.
+    // front for the gate's config state), alongside get_settings; the local-suite
+    // presence gate + the Portfolio page's persisted state load up front too.
     expect([...invokedCommands()].sort()).toEqual([
       "check_configuration",
+      "check_local_configuration",
       "get_settings",
       "job_status",
+      "latest_holdings_pull",
+      "latest_portfolio_run",
       "list_reports",
       "list_research_archive",
       "list_research_inbox",
@@ -651,10 +657,12 @@ describe("App.vue focus refresh", () => {
     focus(true);
     await flushPromises();
 
-    // Exactly the five refresh commands the focus handler issues — sorted-equality
-    // so it's a true set check with no extras.
+    // Exactly the refresh commands the focus handler issues — sorted-equality
+    // so it's a true set check with no extras (the local presence gate rides
+    // along so a Schwab/local-models change surfaces on return).
     expect([...invokedCommands()].sort()).toEqual([
       "check_configuration",
+      "check_local_configuration",
       "job_status",
       "list_reports",
       "list_research_archive",
@@ -742,6 +750,209 @@ describe("App.vue interleaved guards", () => {
     await flushPromises();
     expect(wrapper.findComponent(LatestReportView).props("report")).toEqual(sampleReport2);
 
+    wrapper.unmount();
+  });
+});
+
+// The Portfolio page's App-side wiring: navigation, the local-suite warning
+// merge (band shows both gates' categories; the cloud report gate is
+// untouched), the run flow, and the tracker's owning-page placement with no
+// bogus /8 fraction (the fixed denominator is the report pipeline's).
+describe("App.vue portfolio wiring", () => {
+  test("sidebar Portfolio nav shows PortfolioView with the persisted run", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({ latest_portfolio_run: () => samplePortfolioRun })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+
+    const portfolio = wrapper.findComponent(PortfolioView);
+    expect(portfolio.exists()).toBe(true);
+    expect(portfolio.props("run")).toEqual(samplePortfolioRun);
+    wrapper.unmount();
+  });
+
+  test("local presence categories join the warning band without blocking the report gate", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        check_local_configuration: () => ({
+          categories: [
+            {
+              kind: "schwab",
+              title: "Charles Schwab connection",
+              items: ["Schwab account not connected."],
+              dismiss_id: null,
+            },
+          ],
+          is_blocked: true,
+        }),
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    // The band renders the local category…
+    expect(wrapper.text()).toContain("Charles Schwab connection");
+    // …but the report gate stays unblocked (cloud validation is clean), and the
+    // Portfolio triggers are locked.
+    expect(wrapper.findComponent(JobStatusPanel).props("blocked")).toBe(false);
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+    const portfolio = wrapper.findComponent(PortfolioView);
+    expect(portfolio.props("runBlocked")).toBe(true);
+    expect(portfolio.props("pullBlocked")).toBe(true);
+    wrapper.unmount();
+  });
+
+  test("a portfolio run lands its result on the page, and its tracker shows no /8 fraction", async () => {
+    const pending = deferred<typeof samplePortfolioRun>();
+    // Stateful like the real store: after the run resolves, the defensive
+    // latest_portfolio_run re-read (generatePortfolio's finally) returns the
+    // persisted run instead of clobbering the inline result with null.
+    let persisted: typeof samplePortfolioRun | null = null;
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        generate_portfolio_manual: () => pending.promise,
+        latest_portfolio_run: () => persisted,
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+    wrapper.findComponent(PortfolioView).vm.$emit("run");
+    await flushPromises();
+
+    // The run streams into the shared tracker, which replaces the Portfolio
+    // page (owning-page placement) — and the footer's determinate fraction
+    // stays null: the /8 denominator belongs to the report pipeline only.
+    const emit = emitterFor(tauri.listen, "job-progress");
+    emit({ run_id: "P1", seq: 1, kind: "run-started", label: "Portfolio Analysis" });
+    await flushPromises();
+    expect(wrapper.findComponent(JobTrackerView).exists()).toBe(true);
+    expect(wrapper.findComponent(PortfolioView).exists()).toBe(false);
+    expect(wrapper.findComponent(JobStatusPanel).props("progress")).toBeNull();
+
+    emit({ run_id: "P1", seq: 2, kind: "run-finished", status: "successful" });
+    persisted = samplePortfolioRun;
+    pending.resolve(samplePortfolioRun);
+    await flushPromises();
+
+    const portfolio = wrapper.findComponent(PortfolioView);
+    expect(portfolio.exists()).toBe(true);
+    expect(portfolio.props("run")).toEqual(samplePortfolioRun);
+    wrapper.unmount();
+  });
+
+  test("a failed pull re-derives the presence gate so the band can't go stale", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        pull_holdings: () => {
+          throw new Error("Schwab account not connected — weekly re-login required.");
+        },
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+
+    tauri.invoke.mockClear();
+    wrapper.findComponent(PortfolioView).vm.$emit("pull");
+    await flushPromises();
+
+    // The failure is inline on the page, and the presence gate is re-read so a
+    // mid-session lapse re-locks the triggers without waiting for focus.
+    expect(wrapper.findComponent(PortfolioView).props("runError")).toContain(
+      "not connected"
+    );
+    expect(invokedCommands()).toContain("check_local_configuration");
+    wrapper.unmount();
+  });
+
+  test("a stale portfolio read can't overwrite a fresher run result", async () => {
+    // The mount-time read (#1) is held open across a full run; when it finally
+    // resolves with pre-run (null) state, the epoch guard must discard it.
+    const slow = deferred<typeof samplePortfolioRun | null>();
+    let persisted: typeof samplePortfolioRun | null = null;
+    let reads = 0;
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        latest_portfolio_run: () => (++reads === 1 ? slow.promise : persisted),
+        generate_portfolio_manual: () => {
+          persisted = samplePortfolioRun;
+          return samplePortfolioRun;
+        },
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises(); // read #1 hangs
+
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises(); // read #2 resolves (still null — nothing persisted)
+    wrapper.findComponent(PortfolioView).vm.$emit("run");
+    await flushPromises(); // run lands inline; finally's read #3 returns the run
+
+    slow.resolve(null);
+    await flushPromises();
+    expect(wrapper.findComponent(PortfolioView).props("run")).toEqual(
+      samplePortfolioRun
+    );
+    wrapper.unmount();
+  });
+
+  test("a successful pull settles the loading flag a superseded read left behind", async () => {
+    // Mount's read (#1) hangs; the pull's direct assignment supersedes it, so
+    // the discarded read's finally won't clear portfolioLoading — the pull
+    // path must settle it itself, and the stale resolution must change nothing.
+    const slow = deferred<null>();
+    let reads = 0;
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        latest_portfolio_run: () => (++reads === 1 ? slow.promise : null),
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+
+    wrapper.findComponent(PortfolioView).vm.$emit("pull");
+    await flushPromises();
+    const view = wrapper.findComponent(PortfolioView);
+    expect(view.props("loading")).toBe(false);
+    expect(view.props("pull")).toEqual(sampleHoldingsPull);
+
+    slow.resolve(null);
+    await flushPromises();
+    expect(view.props("loading")).toBe(false);
+    expect(view.props("pull")).toEqual(sampleHoldingsPull);
+    wrapper.unmount();
+  });
+
+  test("a run blocked before any event surfaces inline on the page, not a warning", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        generate_portfolio_manual: () => {
+          throw new Error("Daemon unreachable: connection refused.");
+        },
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+    wrapper.findComponent(PortfolioView).vm.$emit("run");
+    await flushPromises();
+
+    expect(wrapper.findComponent(PortfolioView).props("runError")).toContain(
+      "Daemon unreachable"
+    );
     wrapper.unmount();
   });
 });

@@ -10,13 +10,15 @@
 // reusable from any spec without fighting hoist ordering.
 
 import type {
-  ValidationReport,
+  HoldingsPull,
   JobStatus,
+  PortfolioRun,
   ReportSummary,
   ResearchDocument,
   SchwabStatus,
   SettingsView,
   TruncationStats,
+  ValidationReport,
 } from "../../src/types";
 
 // Minimal valid shapes for the commands App's `onMounted` cascade calls, so a
@@ -58,6 +60,92 @@ export const defaultSchwabStatus: SchwabStatus = {
   refresh_expires_at: null,
 };
 
+// The local-suite presence gate (check_local_configuration). The default keeps
+// the fixture "clean and unblocked" like the cloud validation above — specs
+// that exercise the local warning band override with categories.
+export const defaultLocalValidation: ValidationReport = {
+  categories: [],
+  is_blocked: false,
+};
+
+// A minimal persisted Portfolio run (one graded stock + one not-rated cash-like
+// position + one exited name) for specs that render the Portfolio page through
+// App. Kept small — PortfolioView's own spec builds richer fixtures.
+export const samplePortfolioRun: PortfolioRun = {
+  run_id: "prun-1",
+  created_at: "2026-07-01T12:00:00Z",
+  holdings: {
+    positions: [
+      {
+        symbol: "AAPL",
+        description: "Apple Inc.",
+        asset_class: "stock",
+        quantity: 100,
+        cost_basis: 14000,
+        market_value: 19500,
+        current_price: 195,
+      },
+    ],
+    cash: 10000,
+    account_total: 29500,
+  },
+  verdicts: [
+    {
+      symbol: "AAPL",
+      asset_class: "stock",
+      position_change: "unchanged",
+      disposition: {
+        status: "graded",
+        grade: "B",
+        sub_scores: { quality: 70, valuation: 55, momentum: 62, risk: 68 },
+        action: "hold",
+        action_sizing: {
+          target_weight_low: 0.55,
+          target_weight_high: 0.75,
+          est_share_delta: null,
+          est_dollar_delta: null,
+        },
+        conviction: "medium",
+        horizon_outlook: { short: "neutral", mid: "bullish", long: "bullish" },
+        price_targets: {
+          end_of_month: null,
+          end_of_year: {
+            base: 210,
+            bear: 180,
+            bull: 240,
+            methodology: "drift off revenue growth",
+          },
+        },
+        price_target_rationale: "base case tracks revenue drift",
+        options_signal: {
+          put_call_volume: null,
+          put_call_open_interest: null,
+          implied_volatility: null,
+          iv_skew: null,
+        },
+        financial_summary: "Solid margins.",
+        what_changed: "First analyzed run.",
+      },
+    },
+  ],
+  roll_up: {
+    graded_count: 1,
+    not_rated_count: 0,
+    insufficient_evidence_count: 0,
+    top_position_weight: 0.66,
+    cash_weight: 0.34,
+    exited: [],
+    overview: "One graded holding.",
+  },
+  audit: [],
+};
+
+// A standalone Pull-holdings snapshot, fresher than samplePortfolioRun.
+export const sampleHoldingsPull: HoldingsPull = {
+  pulled_at: "2026-07-07T09:00:00Z",
+  holdings: samplePortfolioRun.holdings,
+};
+
 // Loaded alongside settings when the Settings view opens; a clean install has
 // recorded no truncations.
 export const defaultTruncationStats: TruncationStats = {
@@ -81,6 +169,9 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
   return {
     // onMounted bootstrap reads.
     check_configuration: () => defaultValidation,
+    check_local_configuration: () => defaultLocalValidation,
+    latest_portfolio_run: () => null,
+    latest_holdings_pull: () => null,
     job_status: () => defaultJobStatus,
     list_reports: () => [] as ReportSummary[],
     list_research_inbox: () => [] as ResearchDocument[],
@@ -94,6 +185,8 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     save_schwab_credentials: () => null,
     schwab_connect: () => null,
     schwab_disconnect: () => null,
+    generate_portfolio_manual: () => samplePortfolioRun,
+    pull_holdings: () => sampleHoldingsPull,
   };
 }
 

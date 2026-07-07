@@ -1,15 +1,18 @@
 # Run Tracking and Cancellation
 
-While a Market Signal Report job is running, the application shows a live **run
-tracker** in place of the report, so the user can watch the job progress and stop
-it at any point. The tracker is presentation only — it observes the workflow
-defined in [report-workflow.md](report-workflow.md); it does not
-change what the job does.
+While a job is running, the application shows a live **run tracker** in place of
+the **running job's own page** — a report run replaces the report, a Portfolio
+run replaces the Portfolio page — so the user can watch the job progress and stop
+it at any point. It is one shared tracker (the local-suite jobs stream into the
+same component and event seam as a report run — [interface.md](interface.md)),
+placed on whichever page owns the run. The tracker is presentation only — it
+observes the workflow defined in [report-workflow.md](report-workflow.md) (or the
+local job's workflow doc); it does not change what the job does.
 
 ## What the Tracker Shows
 
-When a run begins, the report pane is replaced by the tracker, which streams the
-job's progress as it happens:
+When a run begins, the owning page (the report pane for a report run) is replaced
+by the tracker, which streams the job's progress as it happens:
 
 - **Each step as it initiates.** The workflow's stages appear in order as they
   start and resolve — the credential and configuration check, the baseline
