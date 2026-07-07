@@ -29,6 +29,7 @@ export const defaultValidation: ValidationReport = {
 
 export const defaultJobStatus: JobStatus = {
   is_running: false,
+  running_kind: null,
   last_successful_at: null,
   last_failed_at: null,
   last_failure_detail: null,

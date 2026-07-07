@@ -13,8 +13,7 @@
 //! produces just the four manual-run states (Successful / Failed / Skipped /
 //! Cancelled); there is no missed-job detection or `MissedScheduledJob` warning.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -99,41 +98,64 @@ pub enum JobOutcome {
     Cancelled(String),
 }
 
-/// The single-workflow-at-a-time guard. A shared atomic flag (cloneable via the
-/// inner `Arc`) so the Tauri command can `manage` one instance and hand a clone
-/// to each blocking run. The atomic check-and-set is what makes two racing runs
-/// resolve to exactly one runner and one skip.
+/// What kind of workflow holds the single run slot. Carried by the guard and
+/// surfaced through `JobStatus`, so the footer can label the in-flight work
+/// honestly — a Schwab connect or a Portfolio run must never read as a report
+/// generation. Kebab-case on the wire; mirrored in the frontend `JobStatus`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RunKind {
+    Report,
+    Portfolio,
+    SchwabConnect,
+}
+
+/// The single-workflow-at-a-time guard. A shared slot (cloneable via the inner
+/// `Arc`) so the Tauri command can `manage` one instance and hand a clone to
+/// each blocking run. The locked check-and-set is what makes two racing runs
+/// resolve to exactly one runner and one skip; the slot remembers *which* kind
+/// of workflow claimed it, for the status read.
 #[derive(Clone, Default)]
-pub struct RunGuard(Arc<AtomicBool>);
+pub struct RunGuard(Arc<Mutex<Option<RunKind>>>);
 
 impl RunGuard {
-    /// Try to claim the single run slot. Returns a `RunToken` held for the run's
-    /// duration when the slot was free, or `None` when a run is already in
-    /// flight. Releasing happens on the token's `Drop`, so success, failure, and
-    /// panic all free the slot.
-    pub fn try_begin(&self) -> Option<RunToken> {
-        match self
-            .0
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => Some(RunToken(self.0.clone())),
-            Err(_) => None,
+    /// Try to claim the single run slot for a `kind` of workflow. Returns a
+    /// `RunToken` held for the run's duration when the slot was free, or `None`
+    /// when a run is already in flight. Releasing happens on the token's `Drop`,
+    /// so success, failure, and panic all free the slot.
+    pub fn try_begin(&self, kind: RunKind) -> Option<RunToken> {
+        let mut slot = self.lock();
+        if slot.is_some() {
+            return None;
         }
+        *slot = Some(kind);
+        Some(RunToken(self.0.clone()))
     }
 
-    /// Whether a run currently holds the slot. A relaxed load is enough: this is
-    /// a best-effort status read for the UI, not a synchronization point.
+    /// Whether a run currently holds the slot.
     pub fn is_running(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.running_kind().is_some()
+    }
+
+    /// The kind of workflow holding the slot right now, if any. A best-effort
+    /// status read for the UI, not a synchronization point.
+    pub fn running_kind(&self) -> Option<RunKind> {
+        *self.lock()
+    }
+
+    /// The slot, poison-tolerant: the critical sections are plain assignments, but
+    /// a panic elsewhere must never wedge the guard permanently closed (or open).
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<RunKind>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
-/// Held for the duration of a run; clears the guard flag on drop.
-pub struct RunToken(Arc<AtomicBool>);
+/// Held for the duration of a run; clears the guard slot on drop.
+pub struct RunToken(Arc<Mutex<Option<RunKind>>>);
 
 impl Drop for RunToken {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 
@@ -162,7 +184,7 @@ pub fn run_job(
 
     // Claim the single run slot. `_token` is held until this function returns;
     // its Drop frees the slot after the outcome is recorded.
-    let _token = match guard.try_begin() {
+    let _token = match guard.try_begin(RunKind::Report) {
         Some(t) => t,
         None => {
             let now = now_rfc3339();
@@ -349,11 +371,14 @@ pub fn dismiss_warning_category(conn: &Connection, kind: WarningKind, dismiss_id
 
 /// A snapshot of job status for the UI (`docs/scheduling.md §Job Status
 /// Visibility`): last successful run, last failure, last skipped event, and
-/// whether a run is in flight now. Timestamps are the canonical UTC RFC3339
-/// strings; the frontend renders them in local time.
+/// whether a run is in flight now — and, when one is, which kind of workflow
+/// holds the slot, so the footer's running label matches the actual work.
+/// Timestamps are the canonical UTC RFC3339 strings; the frontend renders them
+/// in local time.
 #[derive(Debug, Clone, Serialize)]
 pub struct JobStatus {
     pub is_running: bool,
+    pub running_kind: Option<RunKind>,
     pub last_successful_at: Option<String>,
     pub last_failed_at: Option<String>,
     pub last_failure_detail: Option<String>,
@@ -379,6 +404,7 @@ pub fn job_status(conn: &Connection, guard: &RunGuard) -> Result<JobStatus> {
     let failed = last_of(JobState::Failed.as_str())?;
     Ok(JobStatus {
         is_running: guard.is_running(),
+        running_kind: guard.running_kind(),
         last_successful_at: last_of(JobState::Successful.as_str())?.map(|(at, _)| at),
         last_failed_at: failed.as_ref().map(|(at, _)| at.clone()),
         last_failure_detail: failed.and_then(|(_, detail)| detail),
@@ -478,8 +504,37 @@ mod tests {
     #[test]
     fn job_status_reflects_a_held_run_guard_as_running() {
         let guard = RunGuard::default();
-        let _token = guard.try_begin().unwrap();
-        assert!(job_status(&mem(), &guard).unwrap().is_running);
+        let _token = guard.try_begin(RunKind::Report).unwrap();
+        let st = job_status(&mem(), &guard).unwrap();
+        assert!(st.is_running);
+        assert_eq!(st.running_kind, Some(RunKind::Report));
+    }
+
+    #[test]
+    fn run_guard_slot_is_exclusive_and_freed_on_drop() {
+        let guard = RunGuard::default();
+        let token = guard.try_begin(RunKind::SchwabConnect).unwrap();
+        // Any second claim loses while the slot is held, regardless of kind.
+        assert!(guard.try_begin(RunKind::Report).is_none());
+        assert_eq!(guard.running_kind(), Some(RunKind::SchwabConnect));
+        drop(token);
+        assert_eq!(guard.running_kind(), None);
+        assert!(guard.try_begin(RunKind::Report).is_some());
+    }
+
+    #[test]
+    fn running_kind_serializes_kebab_case_for_the_frontend() {
+        // Pins the wire contract the frontend `JobStatus.running_kind` mirrors.
+        let guard = RunGuard::default();
+        let _token = guard.try_begin(RunKind::SchwabConnect).unwrap();
+        let st = job_status(&mem(), &guard).unwrap();
+        let json = serde_json::to_value(&st).unwrap();
+        assert_eq!(json["running_kind"], "schwab-connect");
+        assert_eq!(
+            serde_json::to_value(RunKind::Portfolio).unwrap(),
+            "portfolio"
+        );
+        assert_eq!(serde_json::to_value(RunKind::Report).unwrap(), "report");
     }
 
     /// The rendered identity of the current warning of `kind` — the `dismiss_id` the

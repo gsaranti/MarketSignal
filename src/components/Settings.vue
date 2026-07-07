@@ -635,8 +635,10 @@ function onSaveSchwab() {
           </p>
 
           <p v-if="schwabConnecting" class="schwab-hint" role="status">
-            Complete the Schwab login in your browser. A one-time certificate warning
-            for the local callback is expected — continue past it.
+            Complete the Schwab login in your browser. After the login, a
+            certificate warning for the local callback (127.0.0.1) is expected —
+            that page is this app's own listener. In Safari, choose Show Details,
+            then "visit this website" to finish connecting.
           </p>
 
           <div v-if="schwabError" class="settings-error" role="alert">

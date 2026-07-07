@@ -299,6 +299,41 @@ describe("App.vue Tauri boundary", () => {
 
     wrapper.unmount();
   });
+
+  test("a pending schwab_connect shows the footer's Schwab-labeled running row, then re-reads job_status", async () => {
+    // The connect holds the single global run slot, so the footer's running row is
+    // correct to appear — but it must say what's actually running, never
+    // "Generating report…" (the original mislabel this pins against).
+    const connect = deferred<null>();
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({ schwab_connect: () => connect.promise })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
+    await flushPromises();
+
+    wrapper.findComponent(Settings).vm.$emit("connect-schwab");
+    await flushPromises();
+    const panel = wrapper.findComponent(JobStatusPanel);
+    expect(panel.props("runActive")).toBe(true);
+    expect(panel.props("runningLabel")).toBe("Connecting to Charles Schwab…");
+
+    // Settling the connect drops the running row and re-syncs the run-slot view
+    // (a focus bounce mid-login may have polled `is_running: true`).
+    const before = tauri.invoke.mock.calls.filter(
+      (c: unknown[]) => c[0] === "job_status"
+    ).length;
+    connect.resolve(null);
+    await flushPromises();
+    expect(panel.props("runActive")).toBe(false);
+    const after = tauri.invoke.mock.calls.filter(
+      (c: unknown[]) => c[0] === "job_status"
+    ).length;
+    expect(after).toBeGreaterThan(before);
+
+    wrapper.unmount();
+  });
 });
 
 // The run tracker's event-folding (handleProgress) reducer, driven through the

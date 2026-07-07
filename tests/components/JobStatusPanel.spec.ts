@@ -16,6 +16,7 @@ import type { JobStatus } from "../../src/types";
 function status(overrides: Partial<JobStatus> = {}): JobStatus {
   return {
     is_running: false,
+    running_kind: null,
     last_successful_at: null,
     last_failed_at: null,
     last_failure_detail: null,
@@ -31,6 +32,7 @@ const baseProps = deepFreeze({
   blocked: false,
   generating: false,
   runActive: false,
+  runningLabel: "Generating report…",
   progress: null as { fraction: number; stepNumber: number; total: number; label: string } | null,
   runStartedAt: null as number | null,
   hasRunLog: false,
@@ -57,6 +59,19 @@ test("a live run shows the running indicator and hides both the facts and Genera
   const viaStatus = makeWrapper({ runActive: false, status: status({ is_running: true }) });
   expect(viaStatus.find(".job-running").exists()).toBe(true);
   expect(viaStatus.find(".btn-generate").exists()).toBe(false);
+});
+
+test("the running row's label is the caller's runningLabel, not a hardcoded string", () => {
+  // The run slot is shared (report / Portfolio / Schwab connect); the row must say
+  // what actually holds it — a Schwab login never reads as "Generating report…".
+  expect(makeWrapper({ runActive: true }).find(".job-running-label").text()).toBe(
+    "Generating report…"
+  );
+  expect(
+    makeWrapper({ runActive: true, runningLabel: "Connecting to Charles Schwab…" })
+      .find(".job-running-label")
+      .text()
+  ).toBe("Connecting to Charles Schwab…");
 });
 
 test("the determinate fill width tracks progress.fraction and clamps to [0, 100]%", () => {

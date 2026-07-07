@@ -9,7 +9,7 @@ use market_signal_temp_lib::data_sources::{
     BaselineMarketData, MarketDataSource, StubMarketDataSource,
 };
 use market_signal_temp_lib::embedding::StubEmbedder;
-use market_signal_temp_lib::jobs::{run_job, JobOutcome, RunGuard};
+use market_signal_temp_lib::jobs::{run_job, JobOutcome, RunGuard, RunKind};
 use market_signal_temp_lib::pipeline::{AnalystStages, ReportPaths, ResearchStages};
 use market_signal_temp_lib::progress::RunContext;
 
@@ -154,7 +154,7 @@ fn second_run_while_one_is_in_flight_is_skipped() {
     let guard = RunGuard::default();
 
     // Simulate an in-flight run by holding the single run slot.
-    let token = guard.try_begin().expect("first claim succeeds");
+    let token = guard.try_begin(RunKind::Report).expect("first claim succeeds");
 
     let outcome = run_job(
         &StubMainAgent,
@@ -269,7 +269,7 @@ fn a_skipped_run_does_not_reset_an_active_runs_cancel_flag() {
     let guard = RunGuard::default();
 
     // Simulate an active run holding the slot with a cancel already requested.
-    let _token = guard.try_begin().expect("first claim succeeds");
+    let _token = guard.try_begin(RunKind::Report).expect("first claim succeeds");
     let cancel = Arc::new(AtomicBool::new(true));
     let ctx = RunContext::new("competing", Arc::new(NoopReporter), cancel.clone());
 

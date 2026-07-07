@@ -12,9 +12,14 @@ const props = defineProps<{
   error: string | null;
   blocked: boolean;
   generating: boolean;
-  // A run is in flight right now (event-driven, immediate — independent of the
-  // periodically-refreshed job status).
+  // A workflow holds the single run slot right now (event-driven, immediate —
+  // independent of the periodically-refreshed job status). Covers a report run
+  // between run-started/run-finished, and the interactive Schwab connect.
   runActive: boolean;
+  // What the running row calls the in-flight work. The slot is shared by the
+  // report, the local jobs, and the Schwab connect, so the label is the
+  // caller's — a Schwab login must never read as "Generating report…".
+  runningLabel: string;
   // Determinate run progress (how far through the fixed pipeline), driving the
   // status row's 1px fill and "step N of T" caption. Null when no run is in flight.
   progress: { fraction: number; stepNumber: number; total: number; label: string } | null;
@@ -115,7 +120,7 @@ function formatLocal(iso: string): string {
     <div class="job-status" aria-live="polite">
       <div v-if="isRunning" class="job-running">
         <div class="job-running-row">
-          <span class="job-running-label">Generating report…</span>
+          <span class="job-running-label">{{ runningLabel }}</span>
           <span class="job-running-track" aria-hidden="true">
             <span class="job-running-fill" :style="{ width: progressPct }"></span>
           </span>

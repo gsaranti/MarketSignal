@@ -13,7 +13,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-use crate::jobs::{record_run, JobRun, JobState, RunGuard};
+use crate::jobs::{record_run, JobRun, JobState, RunGuard, RunKind};
 use crate::pipeline::ReportPaths;
 use crate::portfolio::dossier::{self, HoldingDossier};
 use crate::portfolio::engine::CompanyFinancials;
@@ -126,7 +126,7 @@ pub fn run_portfolio_job(
 
     // Claim the single global run slot — shared with the report job, so the two are
     // mutually exclusive. Held until this function returns.
-    let _token = match guard.try_begin() {
+    let _token = match guard.try_begin(RunKind::Portfolio) {
         Some(t) => t,
         None => {
             let now = now_rfc3339();
@@ -527,7 +527,7 @@ mod tests {
         let (_dir, paths) = paths();
         let guard = RunGuard::default();
         // Hold the slot as if a report (or another local job) were running.
-        let _token = guard.try_begin().unwrap();
+        let _token = guard.try_begin(RunKind::Report).unwrap();
         let outcome = run_portfolio_job(
             &FixtureHoldingsSource::new(),
             &StubCompanyData,

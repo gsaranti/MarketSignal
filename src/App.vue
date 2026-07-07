@@ -408,6 +408,19 @@ const schwabBusy = computed(
   () => generating.value || (jobStatus.value?.is_running ?? false)
 );
 
+// What the footer calls the in-flight work. The run slot is shared (report /
+// Portfolio / Schwab connect), so the label follows the workflow actually holding
+// it: `schwabConnecting` covers the click-to-first-poll window (job_status is
+// refreshed on focus and at run edges, not on an interval), and the backend's
+// `running_kind` is the authoritative read that survives a webview reload.
+const footerRunningLabel = computed(() => {
+  const kind = jobStatus.value?.running_kind ?? null;
+  if (schwabConnecting.value || kind === "schwab-connect")
+    return "Connecting to Charles Schwab…";
+  if (kind === "portfolio") return "Running Portfolio Analysis…";
+  return "Generating report…";
+});
+
 // The gate blocks generation when configuration is incomplete. The backend is
 // the authoritative guard; this only disables the control and short-circuits.
 // Fail safe: until the first check resolves (or if it errors), treat as blocked
@@ -764,6 +777,10 @@ async function connectSchwab() {
     schwabConnecting.value = false;
   }
   await refreshSchwabStatus();
+  // Re-sync the run-slot view: a focus bounce during the browser login may have
+  // polled `is_running: true`, and without this the footer would keep showing a
+  // running row until the next focus change.
+  void refreshJobStatus();
 }
 
 // Clear the stored OAuth session (keeps the saved credentials), then refresh the
@@ -1000,7 +1017,8 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
         :error="jobStatusError"
         :blocked="blocked"
         :generating="generating"
-        :run-active="runActive"
+        :run-active="runActive || schwabConnecting"
+        :running-label="footerRunningLabel"
         :progress="runProgress"
         :run-started-at="runStartedAt"
         :has-run-log="runTrace !== null"

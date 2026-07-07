@@ -69,6 +69,9 @@ export interface ResearchDocument {
 // RFC3339 strings; the UI renders them in local time.
 export interface JobStatus {
   is_running: boolean;
+  // Which workflow holds the single run slot while is_running — drives the
+  // footer's running label (a Schwab connect must not read as a report run).
+  running_kind: "report" | "portfolio" | "schwab-connect" | null;
   last_successful_at: string | null;
   last_failed_at: string | null;
   last_failure_detail: string | null;

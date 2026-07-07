@@ -75,7 +75,7 @@ use data_sources::CompositeMarketDataSource;
 use embedding::OpenAiEmbedder;
 use fmp::FmpDataSource;
 use fred::FredDataSource;
-use jobs::{run_job, JobOutcome, JobStatus, RunGuard};
+use jobs::{run_job, JobOutcome, JobStatus, RunGuard, RunKind};
 use model_agent::ModelMainAgent;
 use pipeline::{AnalystStages, GeneratedReport, ReportPaths, ResearchStages};
 use progress::{ProgressMessage, ProgressReporter, RunContext};
@@ -494,7 +494,7 @@ async fn schwab_connect(
         // login can take minutes, and letting a report/portfolio job start meanwhile
         // (both touch the Keychain / shared state) would violate the one-workflow-at-a-
         // time contract. The token releases on drop — success, failure, or panic.
-        let _token = guard.try_begin().ok_or_else(|| {
+        let _token = guard.try_begin(RunKind::SchwabConnect).ok_or_else(|| {
             "Another job is running — connect Schwab once it finishes.".to_string()
         })?;
         let store: Arc<dyn schwab_secrets::TokenStore> =
