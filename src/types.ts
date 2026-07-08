@@ -71,12 +71,70 @@ export interface JobStatus {
   is_running: boolean;
   // Which workflow holds the single run slot while is_running — drives the
   // footer's running label (a Schwab connect must not read as a report run).
-  running_kind: "report" | "portfolio" | "schwab-connect" | "holdings-pull" | null;
+  running_kind:
+    | "report"
+    | "portfolio"
+    | "schwab-connect"
+    | "holdings-pull"
+    | "data-portability"
+    | null;
   last_successful_at: string | null;
   last_failed_at: string | null;
   last_failure_detail: string | null;
   last_skipped_at: string | null;
   last_cancelled_at: string | null;
+}
+
+// --- Data portability (docs/data-portability.md) -----------------------------
+// Mirrors the Rust `portability::*` results returned by `export_data`,
+// `import_data_inspect`, and `import_data`.
+
+// What an export wrote (`export_data` returns null on a cancelled Save dialog).
+export interface ExportSummary {
+  // Where the archive landed — surfaced with the counts.
+  path: string;
+  reports: number;
+  learnings: number;
+  snapshots: number;
+  portfolio_runs: number;
+  holdings_pulls: number;
+  files: number;
+  encrypted: boolean;
+}
+
+// What an import loaded. `skipped_reports` counts report records whose Markdown
+// body was missing from the archive (skipped, never imported as shells).
+export interface ImportSummary {
+  reports: number;
+  learnings: number;
+  snapshots: number;
+  portfolio_runs: number;
+  holdings_pulls: number;
+  files: number;
+  skipped_reports: number;
+}
+
+// The pre-import peek of a picked archive's manifest.
+export interface ArchiveInfo {
+  encrypted: boolean;
+  format_version: number;
+  app_version: string;
+  created_at: string;
+  reports: number;
+  learnings: number;
+  snapshots: number;
+  portfolio_runs: number;
+  holdings_pulls: number;
+  files: number;
+}
+
+// `import_data_inspect`'s result (null on a cancelled Open dialog): the picked
+// path, whether the target store is empty (empty → straight load; non-empty →
+// the replace-all confirmation), and the archive's manifest read.
+export interface ImportInspection {
+  path: string;
+  store_empty: boolean;
+  info: ArchiveInfo;
 }
 
 // Mirrors the Rust `settings::*` structs (docs/configuration.md). The Settings

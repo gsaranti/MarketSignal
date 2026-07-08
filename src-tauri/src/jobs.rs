@@ -112,6 +112,10 @@ pub enum RunKind {
     /// §Triggering`) — a quick Schwab fetch, never an analysis run. It holds the
     /// slot so it can't race a job's own pull or token refresh.
     HoldingsPull,
+    /// A whole-corpus data export or import (`docs/data-portability.md`). Holds
+    /// the slot so an archive can never capture — or replace — a half-written
+    /// mid-run store, and so no job starts against a store mid-replacement.
+    DataPortability,
 }
 
 /// The single-workflow-at-a-time guard. A shared slot (cloneable via the inner

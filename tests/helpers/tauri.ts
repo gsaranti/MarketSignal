@@ -187,6 +187,12 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     schwab_disconnect: () => null,
     generate_portfolio_manual: () => samplePortfolioRun,
     pull_holdings: () => sampleHoldingsPull,
+    // Data portability: both dialogs default to "cancelled" (null), the no-op
+    // outcome. `import_data` is deliberately unregistered — it must only ever
+    // run against an inspected archive a spec explicitly set up, so reaching it
+    // without an override is a loud unhandled-invoke failure.
+    export_data: () => null,
+    import_data_inspect: () => null,
   };
 }
 

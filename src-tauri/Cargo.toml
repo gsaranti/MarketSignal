@@ -52,6 +52,16 @@ rcgen = "0.14.8"
 # process provider unambiguously. Replaces tiny_http, whose `ssl-rustls` hard-pinned the
 # EOL rustls 0.20 / ring 0.16 stack.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# Data-portability archive (`docs/data-portability.md`): the structured zip
+# container plus its optional passphrase encryption (AES-256-GCM over an
+# Argon2id-derived key), manifest checksums, and the NDJSON embedding encoding.
+# `zip` is trimmed to deflate only; aes-gcm/argon2 are the pure-Rust RustCrypto
+# pair (the rustls `ring` stack above carries no password KDF).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+base64 = "0.22"
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3.27.0"

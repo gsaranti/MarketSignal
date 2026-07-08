@@ -12,14 +12,18 @@ import ResearchDocuments from "./components/ResearchDocuments.vue";
 import Settings from "./components/Settings.vue";
 import PersistentWarningArea from "./components/PersistentWarningArea.vue";
 import JobStatusPanel from "./components/JobStatusPanel.vue";
+import ConfirmDialog from "./components/ConfirmDialog.vue";
 import type {
   AppView,
   AgentModels,
   ConnectionTestResult,
   CredentialKey,
   CredentialUpdate,
+  ExportSummary,
   GeneratedReport,
   HoldingsPull,
+  ImportInspection,
+  ImportSummary,
   JobStatus,
   PortfolioRun,
   ProgressMessage,
@@ -517,16 +521,30 @@ const schwabStatus = ref<SchwabStatus | null>(null);
 const schwabConnecting = ref(false);
 const schwabError = ref<string | null>(null);
 
+// Data portability (docs/data-portability.md): whole-corpus export/import.
+// `dataBusy` names which operation is in flight (both hold the backend run
+// slot); `pendingImport` carries an inspected archive awaiting the replace-all
+// confirmation, whose dialog `importConfirmBusy` marks mid-commit. Status and
+// error are the Settings Data section's channels.
+const dataBusy = ref<"export" | "import" | null>(null);
+const dataError = ref<string | null>(null);
+const dataStatus = ref<string | null>(null);
+const pendingImport = ref<{ path: string; passphrase: string } | null>(null);
+const importConfirmBusy = ref(false);
+
 // A workflow holds (or is about to claim) the single global run slot — report,
-// portfolio run, holdings pull, or Schwab connect. Every other trigger disables
-// while it does. The session flags cover the click-to-first-poll window; the
-// backend's is_running is the authoritative read that survives a reload.
+// portfolio run, holdings pull, Schwab connect, or a data export/import. Every
+// other trigger disables while it does. The session flags cover the
+// click-to-first-poll window; the backend's is_running is the authoritative
+// read that survives a reload.
 const slotBusy = computed(
   () =>
     generating.value ||
     portfolioRunning.value ||
     pullingHoldings.value ||
     schwabConnecting.value ||
+    dataBusy.value !== null ||
+    importConfirmBusy.value ||
     (jobStatus.value?.is_running ?? false)
 );
 
@@ -534,6 +552,7 @@ const slotBusy = computed(
 // so Connect is disabled while any report/job run is in flight; the button reads this.
 const schwabBusy = computed(
   () => generating.value || portfolioRunning.value || pullingHoldings.value ||
+    dataBusy.value !== null || importConfirmBusy.value ||
     (jobStatus.value?.is_running ?? false)
 );
 
@@ -551,6 +570,12 @@ const footerRunningLabel = computed(() => {
     return "Pulling holdings…";
   if (portfolioRunning.value || kind === "portfolio")
     return "Running Portfolio Analysis…";
+  if (dataBusy.value === "export") return "Exporting data…";
+  if (dataBusy.value === "import" || importConfirmBusy.value)
+    return "Importing data…";
+  // Backend flag only (e.g. after a webview reload mid-operation): the session
+  // flag that told export from import is gone, so stay neutral.
+  if (kind === "data-portability") return "Moving data…";
   return "Generating report…";
 });
 
@@ -1055,6 +1080,112 @@ async function saveSettings(payload: {
   void refreshLocalValidation();
 }
 
+// --- Data portability (docs/data-portability.md) -----------------------------
+
+// The success line for either direction, from the backend's written/loaded
+// counts — plus, for exports, the destination path (docs/data-portability.md
+// §Export flow: success surfaces the path and a count of what was written).
+function dataSummaryText(
+  verb: "Exported" | "Imported",
+  s: ExportSummary | ImportSummary,
+  dest?: string
+): string {
+  const parts = `${s.reports} reports, ${s.learnings} learnings, and ${s.files} files`;
+  const where = dest ? ` to ${dest}` : "";
+  const skipped =
+    "skipped_reports" in s && s.skipped_reports > 0
+      ? ` Skipped ${s.skipped_reports} report record(s) whose Markdown was missing from the archive.`
+      : "";
+  return `${verb} ${parts}${where}.${skipped}`;
+}
+
+async function exportData(passphrase: string) {
+  dataBusy.value = "export";
+  dataError.value = null;
+  dataStatus.value = null;
+  try {
+    // Null on a cancelled Save dialog — no status line, no error.
+    const summary = await invoke<ExportSummary | null>("export_data", {
+      passphrase: passphrase || null,
+    });
+    if (summary)
+      dataStatus.value = dataSummaryText("Exported", summary, summary.path);
+  } catch (e) {
+    dataError.value = String(e);
+  } finally {
+    dataBusy.value = null;
+    void refreshJobStatus();
+  }
+}
+
+// Import, phase one: pick + inspect. An empty target store loads straight in
+// (the hardware-migration case); a non-empty one parks the inspection in
+// `pendingImport`, which opens the replace-all ConfirmDialog.
+async function importData(passphrase: string) {
+  dataBusy.value = "import";
+  dataError.value = null;
+  dataStatus.value = null;
+  try {
+    const inspection = await invoke<ImportInspection | null>(
+      "import_data_inspect",
+      { passphrase: passphrase || null }
+    );
+    if (!inspection) return; // cancelled dialog
+    if (inspection.store_empty) {
+      await commitImport(inspection.path, passphrase, false);
+    } else {
+      pendingImport.value = { path: inspection.path, passphrase };
+    }
+  } catch (e) {
+    dataError.value = String(e);
+  } finally {
+    dataBusy.value = null;
+    void refreshJobStatus();
+  }
+}
+
+// Import, phase two: the actual load, shared by the straight-load and
+// confirmed-replace paths. On success every surface that reads the store is
+// re-fetched — the spec's restart/reload step, done in place (commands open the
+// DB per call, so no backend state survives to go stale).
+async function commitImport(path: string, passphrase: string, replace: boolean) {
+  const summary = await invoke<ImportSummary>("import_data", {
+    path,
+    passphrase: passphrase || null,
+    replace,
+  });
+  dataStatus.value = dataSummaryText("Imported", summary);
+  // The selected report may no longer exist; clear so refreshReports re-selects
+  // the newest imported one (or an empty pane for an empty corpus).
+  selectedReportId.value = null;
+  selectedReport.value = null;
+  void refreshReports();
+  void refreshPortfolio();
+  void refreshDocuments();
+  void refreshArchive();
+  void refreshValidation();
+  void refreshLocalValidation();
+}
+
+async function confirmImport() {
+  const pending = pendingImport.value;
+  if (!pending) return;
+  importConfirmBusy.value = true;
+  try {
+    await commitImport(pending.path, pending.passphrase, true);
+  } catch (e) {
+    dataError.value = String(e);
+  } finally {
+    importConfirmBusy.value = false;
+    pendingImport.value = null;
+    void refreshJobStatus();
+  }
+}
+
+function cancelImport() {
+  pendingImport.value = null;
+}
+
 // Switch surfaces. Fetch settings on entry so the configured-flags and model
 // selections are fresh each time the view is opened; the Portfolio page
 // re-reads its persisted state + presence gate the same way.
@@ -1261,12 +1392,18 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :schwab-connecting="schwabConnecting"
           :schwab-busy="schwabBusy"
           :schwab-error="schwabError"
+          :data-busy="dataBusy"
+          :slot-busy="slotBusy"
+          :data-error="dataError"
+          :data-status="dataStatus"
           @save="saveSettings"
           @set-dark="setDark"
           @test="testConnection"
           @save-schwab="saveSchwabCredentials"
           @connect-schwab="connectSchwab"
           @disconnect-schwab="disconnectSchwab"
+          @export-data="exportData"
+          @import-data="importData"
         />
       </div>
       <JobStatusPanel
@@ -1290,6 +1427,20 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
       />
       </div>
     </div>
+    <!-- Replace-all import confirmation (docs/data-portability.md §Import flow),
+         via the design package's confirmation dialog. Opens when an inspected
+         archive targets a non-empty store; the exact destructive scope is the
+         spec's own copy. -->
+    <ConfirmDialog
+      :open="pendingImport !== null"
+      title="Replace all analytical data?"
+      body="Importing this archive replaces all existing reports, learnings, snapshots, and portfolio runs. Your API keys and settings are untouched. This cannot be undone."
+      confirm-label="Replace and import"
+      :busy="importConfirmBusy"
+      busy-status="Replacing all analytical data. This may take a moment."
+      @confirm="confirmImport"
+      @cancel="cancelImport"
+    />
   </div>
 </template>
 

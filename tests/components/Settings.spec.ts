@@ -45,6 +45,11 @@ const baseProps = {
   schwabConnecting: false,
   schwabBusy: false,
   schwabError: null as string | null,
+  // Data portability: idle, nothing running, no status/error.
+  dataBusy: null as "export" | "import" | null,
+  slotBusy: false,
+  dataError: null as string | null,
+  dataStatus: null as string | null,
 };
 
 // makeWrapper spreads baseProps *shallowly*, so its nested objects (settingsView,
@@ -412,4 +417,67 @@ test("a lapsed session reads as expired", () => {
   expect(schwabSection(wrapper).find(".schwab-status").text()).toContain(
     "expired"
   );
+});
+
+// --- Data portability section ------------------------------------------------
+// Whole-corpus export/import (docs/data-portability.md): the passphrase rides
+// each emit, busy/slot states disable both actions with an explanatory title,
+// and the App-owned status/error channels render in place.
+
+function dataSection(wrapper: ReturnType<typeof makeWrapper>) {
+  return wrapper.find('section[aria-labelledby="sec-data"]');
+}
+
+function dataButton(
+  wrapper: ReturnType<typeof makeWrapper>,
+  label: string
+) {
+  return dataSection(wrapper)
+    .findAll("button")
+    .find((b) => b.text().startsWith(label));
+}
+
+test("export emits export-data carrying the typed passphrase", async () => {
+  const wrapper = makeWrapper();
+  await wrapper.find("#data-passphrase").setValue("hunter2");
+  await dataButton(wrapper, "Export archive")!.trigger("click");
+  expect(wrapper.emitted("export-data")).toEqual([["hunter2"]]);
+});
+
+test("import emits import-data; a blank passphrase rides as the empty string", async () => {
+  const wrapper = makeWrapper();
+  await dataButton(wrapper, "Import archive")!.trigger("click");
+  expect(wrapper.emitted("import-data")).toEqual([[""]]);
+});
+
+test("both data actions disable while a job holds the slot, with the reason as title", () => {
+  const wrapper = makeWrapper({ slotBusy: true });
+  const exportBtn = dataButton(wrapper, "Export archive")!;
+  const importBtn = dataButton(wrapper, "Import archive")!;
+  expect(exportBtn.attributes("disabled")).toBeDefined();
+  expect(importBtn.attributes("disabled")).toBeDefined();
+  expect(exportBtn.attributes("title")).toContain("Another job is running");
+  expect(importBtn.attributes("title")).toContain("Another job is running");
+});
+
+test("an in-flight export relabels its button and disables both actions", () => {
+  const wrapper = makeWrapper({ dataBusy: "export" });
+  const exportBtn = dataButton(wrapper, "Exporting")!;
+  expect(exportBtn).toBeTruthy();
+  expect(exportBtn.attributes("disabled")).toBeDefined();
+  expect(dataButton(wrapper, "Import archive")!.attributes("disabled")).toBeDefined();
+});
+
+test("the data status line renders as a status, the error as an alert", () => {
+  const withStatus = makeWrapper({
+    dataStatus: "Exported 12 reports, 48 learnings, and 30 files.",
+  });
+  const status = dataSection(withStatus).find('[role="status"]');
+  expect(status.exists()).toBe(true);
+  expect(status.text()).toContain("Exported 12 reports");
+
+  const withError = makeWrapper({ dataError: "wrong passphrase" });
+  const alert = dataSection(withError).find('[role="alert"]');
+  expect(alert.exists()).toBe(true);
+  expect(alert.text()).toContain("wrong passphrase");
 });

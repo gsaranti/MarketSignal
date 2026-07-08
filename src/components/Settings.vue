@@ -48,6 +48,14 @@ const props = defineProps<{
   schwabConnecting: boolean;
   schwabBusy: boolean;
   schwabError: string | null;
+  // Data portability (docs/data-portability.md): whole-corpus export/import.
+  // `dataBusy` names which operation is in flight (null = idle); `slotBusy` is
+  // true when any run holds the global slot (export/import take it too). Status
+  // and error are App-owned channels on the Schwab-section pattern.
+  dataBusy: "export" | "import" | null;
+  slotBusy: boolean;
+  dataError: string | null;
+  dataStatus: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -57,6 +65,8 @@ const emit = defineEmits<{
   (e: "save-schwab", payload: SchwabCredentialUpdate): void;
   (e: "connect-schwab"): void;
   (e: "disconnect-schwab"): void;
+  (e: "export-data", passphrase: string): void;
+  (e: "import-data", passphrase: string): void;
 }>();
 
 type ModelKey = "main" | "bull" | "bear" | "balanced";
@@ -408,6 +418,34 @@ function onSaveSchwab() {
     client_secret: schwabSecret.value.trim() ? schwabSecret.value : null,
   });
 }
+
+// --- Data portability --------------------------------------------------------
+// One optional passphrase field serves both directions: export encrypts with
+// it (blank = plaintext archive), import decrypts an encrypted archive with it.
+// Never stored, never round-tripped.
+const dataPassphrase = ref("");
+
+const canUseData = computed(() => props.dataBusy === null && !props.slotBusy);
+
+// Why the action is unavailable, as its title (the connectTitle idiom: never a
+// dead control with no explanation).
+const exportDataTitle = computed(() => {
+  if (props.dataBusy) return "An export or import is already in progress";
+  if (props.slotBusy) return "Another job is running — export once it finishes";
+  return "Choose where to save the archive";
+});
+const importDataTitle = computed(() => {
+  if (props.dataBusy) return "An export or import is already in progress";
+  if (props.slotBusy) return "Another job is running — import once it finishes";
+  return "Choose an archive to restore from";
+});
+
+const exportDataLabel = computed(() =>
+  props.dataBusy === "export" ? "Exporting…" : "Export archive…"
+);
+const importDataLabel = computed(() =>
+  props.dataBusy === "import" ? "Importing…" : "Import archive…"
+);
 </script>
 
 <template>
@@ -672,6 +710,71 @@ function onSaveSchwab() {
               @click="emit('disconnect-schwab')"
             >
               Disconnect
+            </button>
+          </div>
+        </section>
+
+        <!-- Data portability (docs/data-portability.md): whole-corpus
+             backup/restore. Its own section outside the config form on the Schwab
+             pattern — own props, own error/status channels, an action row
+             independent of the gated Save — and always rendered (it needs no
+             loaded settings; the store itself is the subject). The destructive
+             import path is confirmed by App's ConfirmDialog, not here. -->
+        <section class="settings-section" aria-labelledby="sec-data">
+          <h3 id="sec-data" class="section-eyebrow">Data</h3>
+          <p class="section-note">
+            Export every report, learning, snapshot, and portfolio run as one
+            archive, or restore from one — for a new machine or an offline
+            backup. API keys and settings never enter the archive.
+          </p>
+
+          <div class="field">
+            <label class="label" for="data-passphrase">Passphrase (optional)</label>
+            <input
+              id="data-passphrase"
+              v-model="dataPassphrase"
+              class="input mono"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Leave blank for an unencrypted archive"
+            />
+          </div>
+
+          <p class="section-note data-caution">
+            An unencrypted archive is your full analysis history in the clear —
+            keep the file private. An encrypted one is unrecoverable without its
+            passphrase; there is no reset.
+          </p>
+
+          <p v-if="dataStatus" class="save-status data-status" role="status">
+            <Icon name="check" :size="13" color="var(--ink-2)" />
+            {{ dataStatus }}
+          </p>
+
+          <div v-if="dataError" class="settings-error" role="alert">
+            <div class="settings-error-label">Couldn't move data</div>
+            <p class="settings-error-detail">{{ dataError }}</p>
+          </div>
+
+          <div class="data-actions">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              :disabled="!canUseData"
+              :title="exportDataTitle"
+              @click="emit('export-data', dataPassphrase)"
+            >
+              {{ exportDataLabel }}
+            </button>
+            <button
+              type="button"
+              class="btn btn-secondary"
+              :disabled="!canUseData"
+              :title="importDataTitle"
+              @click="emit('import-data', dataPassphrase)"
+            >
+              {{ importDataLabel }}
             </button>
           </div>
         </section>
@@ -974,12 +1077,27 @@ function onSaveSchwab() {
 
 /* Section-local action row — save / connect / disconnect. Unlike `.settings-actions`
    it carries no top rule (it sits mid-section, not at the form's foot). */
-.schwab-actions {
+.schwab-actions,
+.data-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--s-4);
   margin-top: var(--s-6);
+}
+
+/* The passphrase caution reads in the section-note voice but sits *after* its
+   field, so it drops the note's bottom rhythm in favor of a tight top one. */
+.data-caution {
+  margin: var(--s-2) 0 var(--s-5);
+}
+
+/* The export success line carries the archive's absolute path — a long
+   unbroken string that must wrap inside the column, not overflow it. */
+.data-status {
+  align-items: baseline;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 /* Appearance toggle hosted in the toolbar — a compact label + the kit switch,
