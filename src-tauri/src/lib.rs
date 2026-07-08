@@ -22,6 +22,7 @@ pub mod market_clock;
 pub mod model_agent;
 pub mod news;
 pub mod pipeline;
+pub mod portability;
 pub mod portfolio;
 pub mod progress;
 pub mod research;
@@ -914,6 +915,156 @@ async fn export_report_markdown(app: tauri::AppHandle, report_id: String) -> Res
     Ok(true)
 }
 
+/// A supplied passphrase, with the "leave blank for plaintext" convention
+/// applied: a missing or whitespace-only value means no encryption
+/// (`docs/data-portability.md §Optional passphrase encryption`). The original
+/// string is otherwise preserved byte-for-byte — a passphrase is never trimmed.
+fn normalized_passphrase(passphrase: Option<String>) -> Option<String> {
+    passphrase.filter(|p| !p.trim().is_empty())
+}
+
+/// Export the whole analytical corpus to a single archive
+/// (`docs/data-portability.md §Export flow`): a Save dialog picks the
+/// destination, then `portability::export_archive` serializes the included
+/// tables and files entirely in Rust. Returns `Ok(None)` on a cancelled dialog.
+///
+/// The run slot is claimed as `RunKind::DataPortability` for the whole command
+/// — including the dialog — so a report or local-suite job can never start
+/// against the store mid-archive (and a mid-run export can never capture a
+/// half-written state).
+#[tauri::command]
+async fn export_data(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, RunGuard>,
+    passphrase: Option<String>,
+) -> Result<Option<portability::ExportSummary>, String> {
+    let guard = guard.inner().clone();
+    let Some(_token) = guard.try_begin(RunKind::DataPortability) else {
+        return Err("A job is currently running — export can start once it finishes.".into());
+    };
+
+    // The archive is a corpus file, not a report file: local date, no `-<id8>`
+    // suffix (`docs/data-portability.md §The archive`).
+    let suggested = format!(
+        "market-signal-export-{}.zip",
+        chrono::Local::now().format("%Y-%m-%d")
+    );
+    let chosen = {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            app.dialog()
+                .file()
+                .set_file_name(&suggested)
+                .add_filter("Zip archive", &["zip"])
+                .blocking_save_file()
+        })
+        .await
+        .map_err(|e| format!("save dialog task failed: {e}"))?
+    };
+    let Some(chosen) = chosen else {
+        return Ok(None);
+    };
+    let dest = chosen.into_path().map_err(|e| e.to_string())?;
+
+    let paths = report_paths(&app)?;
+    // The manifest stamps the local embedder identity for any local-suite
+    // vector namespaces (the report namespace is the fixed cloud model).
+    let local_embedder = {
+        let conn = open_app_db(&app)?;
+        AppConfig::load(&conn).local_embedder_model
+    };
+    let passphrase = normalized_passphrase(passphrase);
+    tauri::async_runtime::spawn_blocking(move || {
+        portability::export_archive(&paths, &dest, passphrase.as_deref(), local_embedder.as_deref())
+            .map(Some)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("export task failed: {e}"))?
+}
+
+/// What the Import flow needs to know before committing
+/// (`docs/data-portability.md §Import flow`): the picked archive, its manifest
+/// read, and whether the target store is empty (empty → straight load;
+/// non-empty → the frontend's replace-all confirmation).
+#[derive(serde::Serialize)]
+struct ImportInspection {
+    path: String,
+    store_empty: bool,
+    info: portability::ArchiveInfo,
+}
+
+/// Pick an archive and read its manifest without touching the store. Returns
+/// `Ok(None)` on a cancelled dialog. An encrypted archive without a passphrase
+/// (or with the wrong one) surfaces as an error telling the user to supply it —
+/// read-only, so it deliberately does not claim the run slot.
+#[tauri::command]
+async fn import_data_inspect(
+    app: tauri::AppHandle,
+    passphrase: Option<String>,
+) -> Result<Option<ImportInspection>, String> {
+    let chosen = {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            app.dialog()
+                .file()
+                .add_filter("Zip archive", &["zip"])
+                .blocking_pick_file()
+        })
+        .await
+        .map_err(|e| format!("open dialog task failed: {e}"))?
+    };
+    let Some(chosen) = chosen else {
+        return Ok(None);
+    };
+    let src = chosen.into_path().map_err(|e| e.to_string())?;
+
+    let store_empty = {
+        let conn = open_app_db(&app)?;
+        portability::store_is_empty(&conn).map_err(|e| e.to_string())?
+    };
+    let path = src.to_string_lossy().into_owned();
+    let passphrase = normalized_passphrase(passphrase);
+    let info = tauri::async_runtime::spawn_blocking(move || {
+        portability::inspect_archive(&src, passphrase.as_deref()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("inspect task failed: {e}"))??;
+    Ok(Some(ImportInspection {
+        path,
+        store_empty,
+        info,
+    }))
+}
+
+/// Load an inspected archive into the store (`docs/data-portability.md §Import
+/// flow`): fresh-load into an empty store, or replace-all when the frontend's
+/// confirmation set `replace`. `app_settings` is never read or written. Slot-
+/// claimed like `export_data`, so no job can start against the store
+/// mid-replacement.
+#[tauri::command]
+async fn import_data(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, RunGuard>,
+    path: String,
+    passphrase: Option<String>,
+    replace: bool,
+) -> Result<portability::ImportSummary, String> {
+    let guard = guard.inner().clone();
+    let Some(_token) = guard.try_begin(RunKind::DataPortability) else {
+        return Err("A job is currently running — import can start once it finishes.".into());
+    };
+    let paths = report_paths(&app)?;
+    let src = PathBuf::from(path);
+    let passphrase = normalized_passphrase(passphrase);
+    tauri::async_runtime::spawn_blocking(move || {
+        portability::import_archive(&paths, &src, passphrase.as_deref(), replace)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("import task failed: {e}"))?
+}
+
 /// Resolve the SQLite path and ensure the app data directory exists, so a
 /// command that touches the database works even before the first report has been
 /// generated (the pipeline creates the directory as a side effect, but the
@@ -1178,6 +1329,9 @@ pub fn run() {
             list_reports,
             load_report,
             export_report_markdown,
+            export_data,
+            import_data_inspect,
+            import_data,
             check_configuration,
             dismiss_warning,
             job_status,

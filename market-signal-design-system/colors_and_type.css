@@ -35,6 +35,11 @@
   --accent-soft:  #8A3744;   /* for the rare disabled-but-visible state */
   --accent-text:  #6E2230;   /* accent used as TEXT — same as --accent in light (clears AA); lifts in dark */
 
+  /* Scrim — the confirmation dialog's FLAT dimming veil, never a frost: warm
+     near-black ink (not neutral), no backdrop-filter, no gradient. The panel it
+     backs is paper-on-paper, so the veil is what separates it from the page. */
+  --scrim: rgba(20, 17, 13, 0.55);
+
   /* Neutral chevron for direction (never red/green) */
   --signal-up:    var(--ink);
   --signal-down:  var(--ink);
@@ -154,6 +159,10 @@
   --accent-press: #C77384;
   --accent-soft:  #8F4452;
   --accent-text:  #CE8090;   /* lifted oxblood for accent TEXT only — clears WCAG AA (4.5:1) on dark surfaces; fills/rings keep --accent */
+
+  /* One step heavier than light mode: the page is already graphite, so the
+     paper-toned dialog panel needs the extra contrast to lift off it. */
+  --scrim: rgba(8, 7, 5, 0.64);
 
   /* Analytical register — lifted for graphite. Desaturated, never neon.
      On --paper-dk: up 6.50:1 · down 3.78:1 · flat 5.62:1. The down/oxblood
@@ -716,6 +725,79 @@ a.chrome-link:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* ---- Reset normalizations the system relies on ---- */
 * { box-sizing: border-box; }
 button, input, textarea, select { font: inherit; color: inherit; }
+
+/* ---- Confirmation dialog — generic chrome (a package EXTENSION; see
+   preview/confirmation-dialog.html for the full rationale). A small blocking
+   confirmation for destructive / irreversible actions — one title, one body,
+   two actions — not a general-purpose modal shell, and not a navigation
+   surface (the run tracker's never-a-modal rule is untouched). The panel is a
+   flat hairline rectangle with NO shadow: all separation comes from the
+   --scrim veil above. Buttons are the existing .btn postures — no danger
+   variant; explicit words carry the destructive weight. The scrim's fade is
+   neutralized by the global prefers-reduced-motion guard like all motion. ---- */
+.dialog-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--scrim);            /* flat tint — no blur, no gradient */
+  animation: dlg-fade var(--dur-fast) var(--ease);
+}
+@keyframes dlg-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 56ch;
+  max-height: min(80vh, 560px);
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);       /* 2px — and NO shadow */
+}
+.dialog-title {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 22px 24px 0;
+  font-family: var(--font-serif);
+  font-size: var(--t-h2);             /* 19px, sentence case */
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--ink);
+}
+.dialog-body {
+  flex: 1 1 auto;
+  overflow-y: auto;                    /* body scrolls; title + actions fixed */
+  padding: 12px 24px 20px;
+  font-family: var(--font-serif);
+  font-size: var(--t-prose-sm);        /* 16px */
+  line-height: var(--lh-prose);
+  letter-spacing: var(--track-prose);
+  color: var(--ink-2);
+}
+.dialog-body p { margin: 0 0 14px; }
+.dialog-body p:last-child { margin-bottom: 0; }
+.dialog-body strong { color: var(--ink); font-weight: 600; }
+.dialog-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--hairline);
+}
+/* Undecorated status line — sits at the left of the actions row while busy. */
+.dialog-status {
+  margin-right: auto;
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  letter-spacing: 0;
+  color: var(--ink-3);
+}
 
 /* =============================================================================
    Analytical register — Portfolio Analysis & Trade Opportunities only
