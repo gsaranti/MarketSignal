@@ -135,7 +135,9 @@ The on-disk home for all stores is resolved from the Tauri app-data dir keyed by
 the **bundle identifier**, so it is stable across versions (rebuilding or
 replacing the installed app reads the same store). Debug builds nest under a
 `dev/` subdir so a development session never touches production data;
-`MARKET_SIGNAL_DATA_DIR` overrides both. One deliberate exception to *persisted
+`MARKET_SIGNAL_DATA_DIR` overrides both. The **macOS Keychain rail sits outside
+this split** — the keyring service (`market-signal-schwab`) is app-scoped, not
+data-dir-scoped, so debug and release builds read the same Schwab entries. One deliberate exception to *persisted
 config lives in SQLite*: the Light/Dark appearance preference lives in webview
 `localStorage` — pure presentation with no backend consumer, read synchronously
 pre-mount to avoid a first-paint flash.
@@ -373,7 +375,15 @@ as-built; the rest remain planned):
   (daemon reachable, models pulled) is checked only at the **run-gate** and on a manual
   Test Connection, **never at startup**, so a config-set-but-daemon-down state is blind
   on re-open until Run/test (the deliberate cost of no startup probe) and a connectivity
-  failure is an **inline run-gate block**, not a persistent warning. A `LocalEmbedder`
+  failure is an **inline run-gate block**, not a persistent warning. The presence
+  check's **Keychain leg** (the Schwab category's token read, plus Settings'
+  `schwab_status`) carries one measured cost: the reads are synchronous
+  main-thread calls and macOS re-prompts its ACL for **every ad-hoc-signed
+  rebuild**, so a fresh binary's first launch can stack up to three prompts that
+  **block the webview's first paint** until answered; a denied prompt errors the
+  whole local report, which the frontend fail-safes to locked triggers with **no**
+  local warning categories for that session (fail-softing a failed token read to
+  not-connected is a named, unbuilt candidate). A `LocalEmbedder`
   reuses the existing `Embedder` trait so `vector_memory` is unchanged. The roster default is **settled**: one frontier reasoner
   (Qwen3.5-122B-A10B) **plus the embedder stay resident**, and the 122B fills *every*
   reasoning role — research/interpretation in thinking mode, distillation in
