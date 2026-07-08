@@ -2,6 +2,8 @@
 
 Reports are authored and stored internally as Markdown. The application also generates an HTML version for in-app display and PDF generation. For the canonical authoring format and the Markdown-vs-HTML distinction, see [report-structure.md](report-structure.md).
 
+This document covers exporting a **single report** for reading or sharing. To back up or migrate the **entire store** — every report, durable learnings, and continuity state — as one restorable archive, see [data-portability.md](data-portability.md); the two features are unrelated beyond the word "export."
+
 ## Export Options
 
 Users can export a Market Signal report as:

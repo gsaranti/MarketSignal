@@ -140,6 +140,32 @@ config lives in SQLite*: the Light/Dark appearance preference lives in webview
 `localStorage` — pure presentation with no backend consumer, read synchronously
 pre-mount to avoid a first-paint flash.
 
+**Planned (data portability, spec'd not built).** A whole-corpus
+**backup/restore** — distinct from the per-report Markdown/PDF export
+(`docs/export.md`) — that carries a machine's accumulated analytical history to
+new hardware as one archive (`docs/data-portability.md`; the motivating case is
+the M5 migration, since the store is stable across app *versions* on one machine
+but has no path across *machines*). The load-bearing line is **durable
+analytical data moves; secrets and machine-local operational state stay behind**:
+exported are the `reports` records *and their on-disk Markdown bodies* (the
+content is on the filesystem, not in SQLite — a table-only export would carry
+empty shells), `vector_memory` (summaries *and* durable learnings),
+`baseline_snapshots`, the local-suite `portfolio_runs`/`holdings_pulls`, and the
+research folders; `app_settings` (every plaintext key/token/model choice) and the
+Keychain are **never serialized**, so the archive cannot leak a credential (the
+target re-enters keys once), while `job_runs`/telemetry drop as regenerable. It
+is a **structured, versioned zip** (manifest + per-table NDJSON + the
+report/research files), deliberately **not** a raw DB-file copy — WAL sidecars,
+the impossibility of stripping secrets from a binary copy, and the absence of any
+DB schema-version marker all point to serialize-and-reinsert: import runs the
+idempotent schema-init, inserts, and re-derives each machine-specific
+`markdown_path`. Import is **fresh-load, or replace-all-with-confirmation** into a
+non-empty store (merge deferred), and never touches `app_settings`; optional
+passphrase encryption guards what is otherwise the user's full analysis history
+in the clear. It holds the spine — the app layer owns all archive I/O — and is
+**independent of the local suite** (table-driven, so new suite tables are picked
+up as they land).
+
 ## Module boundaries
 
 - **`app` (Rust orchestrator)** — the pipeline, the bounded research executor,
