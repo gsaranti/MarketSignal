@@ -168,9 +168,17 @@ schema's uniqueness/cardinality — so a bad archive can only abort while the
 store is untouched. The one accepted residue: a mid-import I/O failure can
 leave partial *files* (the row transaction holds; the intact archive is the
 retry path) — stage-and-swap is a named, unscheduled hardening. Optional
-passphrase encryption is AES-256-GCM over an Argon2id key, whole-container.
-Both directions hold the single run slot (`RunKind::DataPortability`) so an
-archive can never capture — or replace — a mid-run store. It holds the spine —
+passphrase encryption is AES-256-GCM over an Argon2id key, whole-container —
+with the **KDF cost parameters frozen in code, never the crate's defaults**
+(PR #54): the container stores salt + nonce but no parameters, so an inherited
+default shift on a dependency bump would strand every existing archive as
+"wrong passphrase" with no recovery path; a test vector pins the derivation,
+and raising costs means a new container version (`ENC_MAGIC`), keeping the old
+derivation for old archives. Archive reads are bounded (an entries ceiling +
+a separate manifest bound, both enforced on actually-inflated bytes), so a
+crafted zip can't demand unbounded memory from the whole-archive-in-memory
+design. Both directions hold the single run slot (`RunKind::DataPortability`)
+so an archive can never capture — or replace — a mid-run store. It holds the spine —
 the app layer owns all archive I/O (`portability.rs`) — and is **independent of
 the local suite** (table-driven, so new suite tables are picked up as they
 land).
