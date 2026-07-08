@@ -43,6 +43,15 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection> {
 /// out of scope for now; HTML is never persisted (rendered on demand for
 /// display/PDF, settled 2026-06-12), so it gets no table. Idempotent, so any run
 /// path can call it.
+///
+/// **Constraint coupling with data portability:** any UNIQUE / PRIMARY KEY /
+/// CHECK constraint on an *exported* table (`portability::TABLES`) must be
+/// mirrored by a matching pre-destructive validation in
+/// `portability::import_archive` — the import's file mutations precede its row
+/// transaction, so an unmirrored constraint firing mid-transaction would
+/// strand rolled-back rows pointing at already-replaced files. Today's mirror:
+/// `reports.report_id` PK, the `ux_vector_memory_summary` partial index below,
+/// and `portfolio_runs`/`holdings_pulls` in `portfolio::store`.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS reports (
@@ -132,7 +141,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     // Encodes the doc's "one embedding per report summary" in the schema rather than
     // trusting the flow (the persist step runs once per report_id today, but the
     // invariant is what the retrieval slice will lean on). Partial: learnings are
-    // unconstrained — many may share a report_id, or carry none.
+    // unconstrained — many may share a report_id, or carry none. Mirrored by a
+    // data-portability import pre-check (see `init_schema`'s coupling note).
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_vector_memory_summary
          ON vector_memory(report_id) WHERE kind = 'summary'",

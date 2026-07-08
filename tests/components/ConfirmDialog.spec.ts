@@ -66,6 +66,21 @@ test("initial focus lands on Cancel, the safe action", async () => {
   expect(document.activeElement?.textContent?.trim()).toBe("Cancel");
 });
 
+test("an optional detail renders as a second body paragraph", async () => {
+  const w = makeWrapper();
+  expect(w.find("#confirm-dialog-body").findAll("p")).toHaveLength(1);
+
+  await w.setProps({
+    detail:
+      "The selected archive was created 2026-07-05 and holds 30 reports, 214 learnings, and 34 files.",
+  });
+  const paragraphs = w.find("#confirm-dialog-body").findAll("p");
+  expect(paragraphs).toHaveLength(2);
+  // Both paragraphs live inside the aria-describedby target, so a screen
+  // reader announces the specifics along with the destructive scope.
+  expect(paragraphs[1].text()).toContain("created 2026-07-05");
+});
+
 test("confirm and cancel clicks emit their events", async () => {
   const w = makeWrapper();
   const { cancel, confirm } = buttons(w);

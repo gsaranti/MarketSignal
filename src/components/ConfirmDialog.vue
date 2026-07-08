@@ -13,6 +13,10 @@ const props = defineProps<{
   open: boolean;
   title: string;
   body: string;
+  // Optional second body paragraph — the concrete specifics of what the
+  // action targets (e.g. the picked archive's date and counts), kept apart
+  // from `body` so the destructive scope reads first.
+  detail?: string;
   confirmLabel: string;
   busy: boolean;
   // The undecorated status line at the left of the actions row while busy.
@@ -128,6 +132,7 @@ onBeforeUnmount(() => {
       <h2 id="confirm-dialog-title" class="dialog-title">{{ title }}</h2>
       <div id="confirm-dialog-body" class="dialog-body">
         <p>{{ body }}</p>
+        <p v-if="detail">{{ detail }}</p>
       </div>
       <div class="dialog-actions">
         <span v-if="busy" class="dialog-status" role="status">
