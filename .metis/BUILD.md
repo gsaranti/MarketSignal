@@ -3,8 +3,8 @@
 *Architecture brief for the app: the load-bearing decisions and their rationale —
 the durable shape future work builds on — not the construction history
 (commit-by-commit detail lives in git; per-feature specifics live in `docs/`).
-The body is as-built; the trailing section tracks planned work not yet
-implemented.*
+The body is as-built unless marked planned/designed; §What remains lists the
+build queue.*
 
 ## What it is
 
@@ -82,47 +82,29 @@ Three stores, by responsibility (`docs/storage.md`):
   seams contain the choice: the `vector_memory` module owns all store access,
   and the `embedding::Embedder` trait owns text→vector.
 
-The **report-summary metadata** is a JSON object stored with each report. The
-application owns the **identity fields** — `report_id` (a minted UUID),
-`report_type` (the constant `market_signal`), and `created_at` (an app-clock
-timestamp) — while the main agent authors the **judgment fields**: a short
-per-issue `title`, **`risk_posture`** ∈ {risk-on, risk-off, mixed},
-**`market_cycle`** ∈ {late-cycle, recessionary, recovery}, `thesis_stance` ∈
-{bullish, bearish, mixed, uncertain}, `header_summary_bullets` (3–6), plus the
-optional `key_risks` / `unresolved_questions` / `forward_outlook_themes` arrays.
-Risk posture and market cycle are two **orthogonal axes**, not a single regime
-field (full schema in `docs/storage.md §Report Summary Metadata Schema`).
+The **report-summary metadata** is a JSON object stored with each report: the
+application owns the identity fields (`report_id`, `report_type`, `created_at`)
+while the main agent authors the judgment fields — title, stance, header
+bullets, and **`risk_posture`** / **`market_cycle`** as two **orthogonal axes**,
+not a single regime field (full schema in `docs/storage.md §Report Summary
+Metadata Schema`).
 
-The **Step-3 baseline scan** produces an in-memory `BaselineMarketData` packet —
-indices, internals, sectors, macro/labor levels, the release calendar,
-multi-horizon index performance, equity-breadth movers and earnings, and the
-valuation/rotation groups (sector and industry P/E, market risk premium), and
-**CFTC futures positioning** (Commitments-of-Traders speculator nets on the
-bellwether contracts) — plus a **`gaps` missing-data manifest**. Partial failures degrade rather than abort:
-an adapter records each series it can't resolve as a tagged `DataGap` that rides
-into the prompt, so the model reasons over what's absent rather than inferring
-it. The **single coverage floor** lives in the app layer (`enforce_coverage`),
-the one point a too-thin baseline fails the run. Each run's baseline persists to
-a `baseline_snapshots` table; the next run reads the latest prior snapshot and
-computes a deterministic, **cadence-honest per-report change view** — level
-deltas over the level-bearing groups (positioning excluded — it carries its own
-native week-over-week change), anchored on the *actual* elapsed interval
-since the prior snapshot, never an assumed week — that rides into the prompt
-alongside the live baseline.
+The **Step-3 baseline scan** produces an in-memory `BaselineMarketData` packet
+(13 groups, indices through CFTC positioning) plus a **`gaps` missing-data
+manifest**: partial failures degrade rather than abort — each series an adapter
+can't resolve rides into the prompt as a tagged `DataGap`, so the model reasons
+over what's absent rather than inferring it. The **single coverage floor** lives
+in the app layer (`enforce_coverage`). Each run's baseline persists to
+`baseline_snapshots`; the next run computes a deterministic, **cadence-honest
+per-report change view** — level deltas anchored on the *actual* elapsed
+interval since the prior snapshot, never an assumed week (positioning excluded —
+it carries its own native week-over-week change).
 
-**Planned (paid-FMP report enrichment, spec'd not built).** The paid FMP key
-unlocks three additive baseline signals (`docs/data-sources.md §Planned report
-enrichment`): economic-calendar **consensus + surprise** (layered onto FRED's
-schedule, fail-soft to names+dates), **historical sector/industry valuation +
-performance** (trailing-window P/E percentile/band + a cumulative-return trend),
-and **IPO/M&A froth** (a new baseline group → Step-3 count 13→14). All hold the
-spine: the engine derives every number, only the compact derived read persists
-(`#[serde(default)]`), and none joins the level-delta engine (set-valued /
-trailing-window, like positioning). The only changes are the **calendar builder**
-(FRED → FRED+FMP join) and one **main-agent prompt** instruction forbidding
-over-time valuation reads (must be revised). **True index breadth** was ruled
-out — FMP exposes constituent lists but no breadth metric, so the movers group
-stays the proxy.
+*Planned:* the paid FMP key unlocks three additive baseline signals — calendar
+consensus+surprise, historical valuation percentile/band + performance trend,
+and IPO/M&A froth — all engine-derived and outside the level-delta engine
+(`docs/data-sources.md §Planned report enrichment`). True index breadth was
+ruled out (FMP exposes no breadth metric), so the movers group stays the proxy.
 
 **Retention** is deliberately asymmetric and must be honored in deletion code:
 only the most recent **30 reports** are kept (deleting one cascades its Markdown,
@@ -132,58 +114,38 @@ deletion**, guaranteed by the row's `kind` rather than its `report_id`. Baseline
 snapshots keep their own cap (14), decoupled from report retention.
 
 The on-disk home for all stores is resolved from the Tauri app-data dir keyed by
-the **bundle identifier**, so it is stable across versions (rebuilding or
-replacing the installed app reads the same store). Debug builds nest under a
-`dev/` subdir so a development session never touches production data;
+the **bundle identifier**, so it is stable across versions. Debug builds nest
+under a `dev/` subdir so a development session never touches production data;
 `MARKET_SIGNAL_DATA_DIR` overrides both. The **macOS Keychain rail sits outside
 this split** — the keyring service (`market-signal-schwab`) is app-scoped, not
-data-dir-scoped, so debug and release builds read the same Schwab entries. One deliberate exception to *persisted
-config lives in SQLite*: the Light/Dark appearance preference lives in webview
-`localStorage` — pure presentation with no backend consumer, read synchronously
-pre-mount to avoid a first-paint flash.
+data-dir-scoped, so debug and release builds read the same Schwab entries. The
+startup Keychain reads are synchronous main-thread calls and macOS re-prompts
+its ACL for every ad-hoc-signed rebuild, so a fresh binary's first launch can
+stack prompts that **block the webview's first paint**; a denied read errors the
+whole local-config report, which the frontend fail-safes to locked triggers with
+no local warning categories for that session (fail-softing a failed token read
+to not-connected is a named, unbuilt candidate). One deliberate exception to
+*persisted config lives in SQLite*: the Light/Dark appearance preference lives
+in webview `localStorage` — pure presentation with no backend consumer, read
+synchronously pre-mount to avoid a first-paint flash.
 
-**Data portability (built — PR #53).** A whole-corpus **backup/restore** —
-distinct from the per-report Markdown/PDF export (`docs/export.md`) — that
-carries a machine's accumulated analytical history to new hardware as one
-archive (`docs/data-portability.md`; the motivating case is the M5 migration,
-since the store is stable across app *versions* on one machine but has no path
-across *machines*). The load-bearing line is **durable analytical data moves;
-secrets and machine-local operational state stay behind**: exported are the
-`reports` records *and their on-disk Markdown bodies* (the content is on the
-filesystem, not in SQLite — a table-only export would carry empty shells),
-`vector_memory` (summaries *and* durable learnings), `baseline_snapshots`, the
-local-suite `portfolio_runs`/`holdings_pulls`, and the research folders;
-`app_settings` (every plaintext key/token/model choice) and the Keychain are
-**never serialized**, so the archive cannot leak a credential (the target
-re-enters keys once), while `job_runs`/telemetry drop as regenerable. It is a
-**structured, versioned zip** (a size+sha256-checksummed manifest + per-table
-NDJSON + the report/research files), deliberately **not** a raw DB-file copy —
-WAL sidecars, the impossibility of stripping secrets from a binary copy, and the
-absence of any DB schema-version marker all point to serialize-and-reinsert:
-import runs the idempotent schema-init, inserts, and re-derives each
-machine-specific `markdown_path`. Import is **fresh-load, or
-replace-all-with-confirmation** into a non-empty store (merge deferred), never
-touches `app_settings`, and **validates everything before its destructive
-phase** — format version, bidirectional manifest verification (bytes the
-manifest doesn't vouch for are never consumed), embedding decode, and the
-schema's uniqueness/cardinality — so a bad archive can only abort while the
-store is untouched. The one accepted residue: a mid-import I/O failure can
-leave partial *files* (the row transaction holds; the intact archive is the
-retry path) — stage-and-swap is a named, unscheduled hardening. Optional
-passphrase encryption is AES-256-GCM over an Argon2id key, whole-container —
-with the **KDF cost parameters frozen in code, never the crate's defaults**
-(PR #54): the container stores salt + nonce but no parameters, so an inherited
-default shift on a dependency bump would strand every existing archive as
-"wrong passphrase" with no recovery path; a test vector pins the derivation,
-and raising costs means a new container version (`ENC_MAGIC`), keeping the old
-derivation for old archives. Archive reads are bounded (an entries ceiling +
-a separate manifest bound, both enforced on actually-inflated bytes), so a
-crafted zip can't demand unbounded memory from the whole-archive-in-memory
-design. Both directions hold the single run slot (`RunKind::DataPortability`)
-so an archive can never capture — or replace — a mid-run store. It holds the spine —
-the app layer owns all archive I/O (`portability.rs`) — and is **independent of
-the local suite** (table-driven, so new suite tables are picked up as they
-land).
+**Data portability (built — PRs #53/#54, `portability.rs`).** A whole-corpus
+backup/restore — distinct from per-report export — that carries a machine's
+accumulated analytical history to new hardware as one archive
+(`docs/data-portability.md`). The load-bearing line: **durable analytical data
+moves; secrets and machine-local operational state stay behind** —
+`app_settings` and the Keychain are never serialized, so the archive cannot leak
+a credential. It is a structured, versioned, checksummed zip — deliberately
+**not** a raw DB-file copy (WAL sidecars; secrets can't be stripped from a
+binary copy; no DB schema-version marker) — and import **validates everything
+before its destructive phase**, so a bad archive can only abort while the store
+is untouched. Optional encryption is AES-256-GCM over an Argon2id key with the
+**KDF cost parameters frozen in code, never the crate's defaults** (an inherited
+default shift on a dependency bump would strand every archive as "wrong
+passphrase"; raising costs means a new `ENC_MAGIC`). Both directions hold the
+single run slot. Accepted residue: a mid-import I/O failure can leave partial
+*files* (the row transaction holds; the intact archive is the retry path) —
+stage-and-swap is a named, unscheduled hardening.
 
 ## Module boundaries
 
@@ -198,78 +160,55 @@ land).
   oil, gas, and the economic calendar behind premium, so those moved to FRED,
   and the calendar carries **names + dates only** today (no API serves US analyst
   consensus *free*, so consensus reaches the report through the agents' research
-  synthesis — which the planned paid-FMP enrichment above narrows to a fallback
-  where FMP carries no estimate). Data honesty is a consistent stance: a stale FRED
-  observation or an out-of-band FMP P/E aggregate **drops to a gap / `None`**
-  rather than feeding a fabricated level into the baseline. The newest source,
-  **CFTC** (keyless, like BLS), adds **Commitments-of-Traders positioning** — the
-  one signal the price / valuation / macro / credit groups can't give (how crowded
-  the speculative cohort is), as a fail-soft, additive group. Gated adapters share
-  a bounded, `Retry-After`-aware retry/backoff; GDELT is excluded — its
-  escalating IP lockout makes retrying harmful, so it stays single-shot
-  fail-soft. **Fixed internal models** are non-configurable and distinct from the
-  four user-selectable agent models: GPT-5 mini (headline filtering), Claude
-  Sonnet (research routing), `text-embedding-3-large` (embeddings). Inbox
-  document parsing runs **no model** — it is deterministic excerpting, so a
-  model summary can't omit or fabricate over the user's own source material.
+  synthesis). Data honesty is a consistent stance: a stale FRED observation or
+  an out-of-band FMP P/E aggregate **drops to a gap / `None`** rather than
+  feeding a fabricated level into the baseline. **CFTC** (keyless, like BLS)
+  adds Commitments-of-Traders positioning — the one signal the price /
+  valuation / macro / credit groups can't give (how crowded the speculative
+  cohort is) — as a fail-soft, additive group. Gated adapters share a bounded,
+  `Retry-After`-aware retry/backoff; GDELT is excluded — its escalating IP
+  lockout makes retrying harmful, so it stays single-shot fail-soft. **Fixed
+  internal models** are non-configurable and distinct from the four
+  user-selectable agent models: GPT-5 mini (headline filtering), Claude Sonnet
+  (research routing), `text-embedding-3-large` (embeddings). Inbox document
+  parsing runs **no model** — it is deterministic excerpting, so a model summary
+  can't omit or fabricate over the user's own source material.
 - **`agents` (prompt + schema contracts)** — the main agent and the
   Bull/Bear/Balanced analysts (run concurrently, no ordering dependency), plus a
-  **16-lens analytical skills library** supplied in full to both the main agent
-  and the analysts. Skills are **forcing-function-only**: each lens's verdict
-  disciplines the report/review prose but is never parsed back or persisted (the
-  report prose is the output; a rare keep-worthy verdict exits via a
-  `durable_learning`). Analyst reviews are ephemeral — never persisted. The main
-  agent's editorial posture is **conviction-first**: the thesis commits to a
-  directional base case — the most-probable path and the reasons for it — and weights
-  the alternatives around it rather than presenting co-equal either/or branches, so the
-  report reads as a *call* rather than a summary of the packet. A `mixed` / `uncertain`
-  `thesis_stance` is the earned exception (genuinely two-sided, or evidence too degraded
-  for a directional read), not a safe default; the base case carries forward across
-  reports and pivots only when the evidence has materially changed
-  (`docs/thesis-continuity.md`) — the conviction and the rare-pivot doctrine are the
-  same stance, not opposites.
-- **`frontend` (Vue 3)** — Latest Report View, the **Run Tracker** (live
-  per-step/per-request progress with streamed agent output), Recent Reports
-  Sidebar, Research Documents, the Persistent Warning Area, Settings, and the
-  **Portfolio page** (the first analytical-register surface — PR #52)
-  (`docs/interface.md`). Markdown→HTML rendering uses **markdown-it** (JS), so
-  HTML generation lives on the webview side, rendered on demand for display and
-  PDF export and **never persisted** — agents never see HTML. PDF export uses the
-  webview's native print-to-PDF, where the page margin comes from the report
-  article's **padding**, not `@page`: a non-zero `@page` margin makes WebKit
-  silently drop content that spills onto an added page, so `@page` stays 0 (the
-  cost — interior pages get no top/bottom margin — is a WebKit limitation, not a
-  choice). Embedded charts
-  ride the same seam: the agent emits a fenced `chart` JSON block as part of its
-  Markdown and `src/renderChart.ts` is the authoritative validator that renders
-  it to restrained inline SVG (line/bar/area), falling back to the raw code
-  block on anything malformed. The `chart` block is the *only* way a chart enters
-  a report — the app layer never injects one — keeping faith with the
-  agents-emit-Markdown / frontend-renders spine. All UI is built against the
-  design system in `market-signal-design-system/`, which defines **two
-  registers** — the report's **reading register** (serif, monochrome, unchanged)
-  and a denser, instrument-grade **analytical register** (mono-tabular numerics +
-  a scoped, desaturated directional/grade palette, analytical-surfaces only) that
-  the local-suite surfaces (Portfolio, Trade Opportunities) adopt as they are
-  built; shared chrome bridges the two. Generic chrome now includes the
-  package's **confirmation dialog** (`.dialog-*` + a per-theme `--scrim`
-  token; first use: the data-import replace-all): a flat hairline panel with
-  **no shadow**, separated from the page by a flat warm-ink **dimming veil** —
-  the no-glass/no-blur rule reads a scrim as a veil laid over the page, not a
-  translucent surface — destructive weight carried by words on the existing
-  button postures (no danger variant), and the run tracker's never-a-modal
-  rule untouched. The register carries three **display-only**
-  suite controls — the Portfolio **holdings sort bar** (in-place card reorder;
-  **built**, PR #52), the Portfolio current-holdings table's **sortable grid
-  heads** (**built**, `1e04cb8`) — `aria-sort` on real column heads through the
-  package's keyboard-operable **full-cell head-button extension** (the
-  table-proper pattern the sort bar's `aria-pressed` toolbar deliberately
-  reserves for grids; symbol opens ascending, numerics descending, missing
-  values sort last) — and a Trade Opportunities **Matrix/List view toggle**
-  (designed, not yet built); all three reorder already-computed fields only (no
-  engine/schema/workflow change), and the TO **matrix stays the canonical view**
-  while the List is an additive flat ranking that preserves the load-bearing 3×3
-  yet sorts across all cells.
+  **16-lens analytical skills library** supplied in full to both. Skills are
+  **forcing-function-only**: each lens's verdict disciplines the report/review
+  prose but is never parsed back or persisted (a rare keep-worthy verdict exits
+  via a `durable_learning`). Analyst reviews are ephemeral — never persisted.
+  The main agent's editorial posture is **conviction-first**: the thesis commits
+  to a directional base case and weights the alternatives around it, so the
+  report reads as a *call* rather than a summary of the packet. A `mixed` /
+  `uncertain` `thesis_stance` is the earned exception, not a safe default; the
+  base case carries forward across reports and pivots only when the evidence has
+  materially changed (`docs/thesis-continuity.md`) — the conviction and the
+  rare-pivot doctrine are the same stance, not opposites.
+- **`frontend` (Vue 3)** — Latest Report View, the **Run Tracker**, Recent
+  Reports Sidebar, Research Documents, the Persistent Warning Area, Settings,
+  and the **Portfolio page** (the first analytical-register surface)
+  (`docs/interface.md`). Markdown→HTML rendering uses **markdown-it** on the
+  webview side, on demand for display and PDF export, **never persisted** —
+  agents never see HTML. PDF export uses the webview's native print-to-PDF,
+  where the page margin comes from the report article's **padding**, not
+  `@page`: a non-zero `@page` margin makes WebKit silently drop content that
+  spills onto an added page, so `@page` stays 0 (the cost — interior pages get
+  no top/bottom margin — is a WebKit limitation, not a choice). Embedded charts
+  ride the same seam: the agent emits a fenced `chart` JSON block in its
+  Markdown and `src/renderChart.ts` is the authoritative validator rendering it
+  to restrained inline SVG, falling back to the raw code block on anything
+  malformed — the *only* way a chart enters a report. All UI is built against
+  `market-signal-design-system/`, which defines **two registers** — the report's
+  **reading register** (serif, monochrome, unchanged) and a denser,
+  instrument-grade **analytical register** the local-suite surfaces adopt as
+  they are built — bridged by shared chrome, which now includes the package's
+  confirmation dialog and the keyboard-operable sort-bar / sortable-grid-head /
+  view-toggle controls (the first two are built into the Portfolio page; the
+  view toggle ships with Trade Opportunities). All suite sorting/view controls
+  are **display-only**, reordering already-computed fields; specifics live in
+  the design package and `docs/interface.md`.
 
 ## Runtime, observability & failure posture
 
@@ -337,298 +276,153 @@ accessibility.
 The same trait spine powers a **dev-only demo-run mode** (`src-tauri/src/demo.rs`,
 behind a `demo-run` Cargo feature, out of `default`/`tauri build`): "Generate now"
 drives the *real* `run_job` pipeline through the live GUI against paced streaming
-stand-ins (per-request rows, token/thinking streaming) that delegate to the offline
-stubs — exercising the run tracker and report rendering end-to-end with no network,
-keys, or cost (`npm run tauri:demo`).
+stand-ins — run tracker and report rendering end-to-end with no network, keys, or
+cost (`npm run tauri:demo`).
 
-## Local analysis suite (substrate + narrow Portfolio slice built; features in progress)
+## Local analysis suite
 
-A second capability set: two on-demand, **local-model-only** features —
-**Portfolio Analysis** (grades the user's Charles Schwab holdings and recommends
-actions + price targets) and **Trade Opportunities** (researches new ideas across a
-3×3 risk×horizon matrix). The **shared substrate is built and merged** (PR #44),
-and a **narrow single-equity Portfolio slice** ships the first per-feature pipeline
-end-to-end against a **fixture Schwab source** (offline) plus FMP + SEC + the local
-models (PR #45) — **full Portfolio (funds) and Trade Opportunities remain planned**.
-Full design lives in `docs/local-models.md`, `web-research.md`,
-`schwab-integration.md`, `portfolio-analysis.md`, `portfolio-workflow.md`, and
-`trade-opportunities.md`. The
-load-bearing decisions (the model layer and the narrow Portfolio pipeline are
-as-built; the rest remain planned):
+A second capability set: two on-demand, **local-model-only**, deliberately
+**prescriptive** features (grades, actions, targets — a departure from the
+report's no-buy/sell stance) — **Portfolio Analysis** (grades the user's Schwab
+holdings and recommends actions + price targets) and **Trade Opportunities**
+(researches new ideas across a 3×3 risk×horizon matrix). Full design lives in
+`docs/local-models.md`, `web-research.md`, `schwab-integration.md`,
+`portfolio-analysis.md`, `portfolio-workflow.md`, and `trade-opportunities.md`.
+**As-built:** the shared substrate, the narrow single-equity Portfolio slice
+(fixture Schwab + FMP + SEC + local models, offline-verified; live validation is
+M5-gated), the live Schwab OAuth adapter + token lifecycle + Connect surface,
+the deterministic holdings-snapshot diff, and the Portfolio page with the
+presence-only local warning categories. **Full Portfolio (funds) and Trade
+Opportunities remain designed, not built.** The load-bearing decisions:
 
-- **A local-only model layer, distinct from the cloud report (built).** A flexible
-  local-model adapter (`local_model.rs`) parameterized by `{endpoint, model_id,
-  messages, tools, format_schema, options}` calls one **user-installed,
-  app-supervised** Ollama daemon over its native `/api/chat` (grammar-constrained
-  `format` for schema-valid output; token / reasoning streaming on the existing
-  `progress` seam), through the same `reqwest::blocking` / `spawn_blocking` seam the
-  cloud agents use — **added rather than extending the closed cloud `AgentModel`
-  enum**, so the roster changes through configuration. The app **bundles neither the
-  daemon nor the models** (the 122B is tens of GB and `ollama pull` already owns that
-  step best); it makes setup turnkey *around* a user-installed Ollama — guided install
-  + in-app pull with progress on the `progress` seam, and it may `ollama serve` a
-  stopped daemon. Daemon supervision (`health_check` + roster probe) feeds an
-  **independent local-suite gate** (its own `WarningKind::LocalModels`, separate from
-  the cloud `validate` gate) that holds the report's **presence-not-connectivity**
-  posture: *presence* of config (endpoint + roster ids) gates **proactively** — unset
-  → the local Run buttons lock plus a persistent warning — while *connectivity*
-  (daemon reachable, models pulled) is checked only at the **run-gate** and on a manual
-  Test Connection, **never at startup**, so a config-set-but-daemon-down state is blind
-  on re-open until Run/test (the deliberate cost of no startup probe) and a connectivity
-  failure is an **inline run-gate block**, not a persistent warning. The presence
-  check's **Keychain leg** (the Schwab category's token read, plus Settings'
-  `schwab_status`) carries one measured cost: the reads are synchronous
-  main-thread calls and macOS re-prompts its ACL for **every ad-hoc-signed
-  rebuild**, so a fresh binary's first launch can stack up to three prompts that
-  **block the webview's first paint** until answered; a denied prompt errors the
-  whole local report, which the frontend fail-safes to locked triggers with **no**
-  local warning categories for that session (fail-softing a failed token read to
-  not-connected is a named, unbuilt candidate). A `LocalEmbedder`
-  reuses the existing `Embedder` trait so `vector_memory` is unchanged. The roster default is **settled**: one frontier reasoner
-  (Qwen3.5-122B-A10B) **plus the embedder stay resident**, and the 122B fills *every*
-  reasoning role — research/interpretation in thinking mode, distillation in
-  non-thinking (schema-constrained distillation stays thinking-enabled until Ollama
-  bug #14645 is verified fixed — see `docs/local-model-operations.md`) — so
-  co-residency of a second large model is sidestepped and a
-  holding's research passes then distillation (single or hierarchical) pay no model-swap cost. The fast tier
-  (Qwen3.5-35B-A3B) is **demoted to a benchmark-gated option**, reintroduced only if
-  distillation wall-clock is a measured bottleneck *and* a 122B+35B+embedder set
-  co-resides cleanly on-device. Roster is configurable; the roster never runs more
-  than one large reasoner. Its **serving path is an M5 pre-flight risk** — the 122B
-  is not yet MLX-accelerated in Ollama (it runs on the llama.cpp Metal/GGUF
-  fallback), so loading and the `format`/thinking behavior must be verified on our
-  version (`docs/local-model-operations.md`).
+- **A local-only model layer, distinct from the cloud report (built).** A
+  flexible local-model adapter (`local_model.rs`) calls one **user-installed,
+  app-supervised** Ollama daemon over its native `/api/chat`
+  (grammar-constrained `format` for schema-valid output; token / reasoning
+  streaming on the existing `progress` seam), through the same
+  `reqwest::blocking` / `spawn_blocking` seam the cloud agents use — **added
+  rather than extending the closed cloud `AgentModel` enum**, so the roster
+  changes through configuration. The app **bundles neither the daemon nor the
+  models**; it makes setup turnkey *around* a user-installed Ollama (guided
+  install + in-app pull with progress). The suite gate holds the report's
+  **presence-not-connectivity** posture: *presence* of config gates
+  **proactively** (locked Run buttons + a persistent warning) while
+  *connectivity* is checked only at the **run-gate** and on a manual Test
+  Connection, **never at startup** — a config-set-but-daemon-down state is blind
+  on re-open, the deliberate cost of no startup probe. A `LocalEmbedder` reuses
+  the existing `Embedder` trait so `vector_memory` is unchanged. The roster
+  default is **settled**: one frontier reasoner (Qwen3.5-122B-A10B) **plus the
+  embedder stay resident**, the 122B filling *every* reasoning role by thinking
+  mode (schema-constrained distillation stays thinking-enabled until Ollama bug
+  #14645 is verified fixed); the 35B fast tier is **demoted to a
+  benchmark-gated option**. Its serving path is an **M5 pre-flight risk** — the
+  122B runs on the llama.cpp Metal/GGUF fallback, not MLX
+  (`docs/local-model-operations.md`).
 - **Per-job isolation (learnings only).** Each feature stores its own runs
   (last-N retention) and its own vector-memory partition; no job reads another's
   *learnings*. The Market Signal Report stays a read-only shared input, loaded
-  deterministically (not vector-searched). The report is additionally isolated by
-  embedder dimensionality.
+  deterministically (not vector-searched), additionally isolated by embedder
+  dimensionality.
 - **A cost-free web tool.** Self-hosted, keyless SearXNG for search plus a Rust
-  fetch/readability-extract layer, with the existing Tavily as fallback; the
-  orchestrator runs the tool, the model only requests it — holding the pure-stage
-  boundary. Like Ollama, **SearXNG isn't bundled** — the app *ships configuration, not
-  the server*: a **pinned `docker-compose.yml`** whose `settings.yml` bakes in the two
-  load-bearing settings (JSON output on, bot-limiter off) so first-run setup is one
-  command (OrbStack recommended over Docker Desktop on Apple Silicon). Vendoring a
-  Python runtime would inflate the binary and the macOS signing surface, so
-  app-bundling is **dominated** — a Rust-native metasearch would be the clean path if
-  search were ever owned end-to-end, and Brave's API stays a documented contingency,
-  not the default (it already contributes keyless results *inside* SearXNG). The
-  **fetch is a plain GET with a realistic browser-like header set** (cheap
-  bot-prevention on the default path); pages returning thin text (paywall / client-side
-  JS) trip a **selective rendered-retrieval tier** that reuses the **already-embedded
-  Tauri webview** — not a bundled Playwright/Selenium or a Python scraper sidecar (same
-  flat-footprint stance) — gated on extraction telemetry so rendering stays
-  **measured, never blanket** (an external headless browser is a spike-gated fallback).
-  SearXNG sits **off the execution gate**: unreachable or misconfigured, it degrades —
-  fall back to Tavily, or, for the SearXNG-only TO discovery lane, fewer candidates —
-  behind a **pre-run consent modal** (a live probe, Proceed/Cancel), never a blocking
-  warning. The per-item research loop is worked **one agenda topic at a time** —
-  each topic ≤3 research passes (root + ≤2 app-governed follow-ups, depth ≤2; a pass
-  is itself a bounded multi-turn tool loop) under a **per-item fetch+wall-clock budget**
-  that binds first (bounding the raw turns/fetches) and is spent in topic-priority
-  order, fail-soft on exhaustion. Model-chosen fetches are SSRF-guarded (no
-  private/loopback hosts,
-  bounded size/redirects, untrusted content) and every finding keeps its source
-  URL + timestamp. The web tool can additionally reach the user's own
-  paywalled subscriptions through an optional, health-tested **Connected
-  Sources** surface (in-app login → Keychain session, on the Schwab
-  credential rails) that is **never part of the execution gate**. Per-item
-  research consolidates with one shared **distillation
-  primitive** — *distill one complete topic-tree → structured object* — a single
-  pass by default, **map-reduce** (tier-1 per topic-tree → reduce) when it would
-  overflow the consolidation call's input budget (orchestrator-chosen
-  deterministically by evidence-ledger size; tier-1 always sees *complete*
-  findings, never in-loop summaries; TO's cross-lens contradiction check rides the
-  reduce, the first place the lenses meet). In TO discovery a **heavy route**
-  (budget overflow / >K hypotheses / >1 substantial side — event-impact sides
-  auto-count when populated) sub-distills along its seam too, but its route-level
-  reduce still emits **many distinct cards** — the **cross-route merge stays the
-  deterministic Step 4**, never a model collapse.
-- **Holdings & options ingestion.** Schwab Trader API via an OAuth loopback
-  (30-min access / 7-day refresh → a weekly re-login); it supplies holdings *and*
-  live option chains, from which a deterministic put/call + IV/skew signal is
-  computed — an activity proxy, not positioning truth, kept out of grade
-  sub-scores until calibrated (CBOE gives a Cboe venue-level put/call backdrop). **A connected Schwab
-  account is required to run either local job** — manual CSV/paste import only
-  supplements holdings and does not clear the gate, so both jobs block at each
-  re-auth. FMP/SEC stay the financial sources; OAuth access/refresh tokens live in
-  the macOS Keychain **and never enter logs or the run tracker**; non-equity
-  positions (options, bonds, cash) are marked not-rated. The Schwab surface is
-  **read-only by construction** — the adapter implements only holdings/positions/
-  option-chain `GET`s and never an order/trading endpoint. This is a code-enforced
-  guarantee, not a token scope: the Trader API bundles trading into the same
-  product with **no read-only scope**, and it exposes **no money-movement
-  (transfer/withdrawal/ACATS) endpoints at all** (money movement is a separate
-  Advisor Services API), so the read-only boundary lives in our code while the
-  worst-case blast radius of a leaked credential stays bounded to in-account
-  trades the app never issues. The developer app is registered and live
-  (Trader API – Individual, both `Accounts and Trading` + `Market Data`, callback
-  `https://127.0.0.1:8182`), and **the live adapter is built and merged** (PR #48):
-  the OAuth loopback (self-signed HTTPS + a per-run `state` nonce + a bounded
-  capture), the token lifecycle above, and the GET-only source behind the trait,
-  chosen over the fixture by a connection gate (offline runs keep the fixture via
-  `MARKET_SIGNAL_SCHWAB_FIXTURE`). The app secret rides the Keychain rail with the
-  tokens; the client id is a non-secret in `app_settings`. Only the interactive
-  browser round-trip is unexercised (an `#[ignore]` live smoke needing real
-  credentials) — now **runnable**, since PR #50 added the Settings Connect surface
-  that seeds the client id and secret. The loopback's HTTPS server is an **in-house
-  one-shot rustls acceptor** (`loopback_https`, PR #51): the security audit that
-  cleared this surface found the original tiny_http server hard-pinned an EOL
-  rustls/ring stack (RUSTSEC-2024-0336 unfixed) and no maintained minimal
-  blocking-HTTPS crate exists, so the ~150-line acceptor rides the same
-  rustls + ring stack outbound HTTP already uses (no new native deps), and the
-  capture loop — fail-closed state check, probe tolerance, deadline — is
-  offline-tested over real TLS rather than live-only.
-- **Reuses the spine.** Each feature is a new Tauri command + job under a
+  fetch/readability-extract layer, Tavily as fallback; the orchestrator runs the
+  tool, the model only requests it — holding the pure-stage boundary. SearXNG
+  isn't bundled — the app *ships configuration, not the server* (a pinned
+  `docker-compose.yml` with the two load-bearing settings baked in). The fetch
+  is a plain GET with realistic browser-like headers; thin extraction trips a
+  **selective rendered-retrieval tier reusing the already-embedded Tauri
+  webview** — not a bundled browser or Python sidecar — gated on telemetry so
+  rendering stays **measured, never blanket**. SearXNG sits **off the execution
+  gate**: unreachable means a degraded run (Tavily fallback; fewer candidates on
+  the SearXNG-only TO discovery lane) behind a pre-run notice, never a block.
+  The per-item research loop is bounded (per-topic passes, depth ≤2, a
+  fetch+wall-clock budget that binds first), SSRF-guarded, every finding keeping
+  its source URL + timestamp; consolidation is one shared **distillation
+  primitive** — single pass by default, map-reduce chosen deterministically by
+  evidence-ledger size, tier-1 always seeing *complete* findings. Optional
+  **Connected Sources** (in-app login → Keychain session, on the Schwab
+  credential rails) enrich fetching and are **never part of the execution
+  gate**.
+- **Holdings & options ingestion (built).** Schwab Trader API via an OAuth
+  loopback (30-min access / 7-day refresh → a weekly re-login), supplying
+  holdings *and* live option chains, from which a deterministic put/call +
+  IV/skew signal is computed — an activity proxy, not positioning truth, kept
+  out of grade sub-scores until calibrated. **A connected Schwab account is
+  required to run either local job** — manual CSV/paste import only supplements
+  holdings. The live source is chosen over the offline fixture by a connection
+  gate (`MARKET_SIGNAL_SCHWAB_FIXTURE` keeps the fixture for offline runs). The surface is **read-only by construction** — the adapter
+  implements only holdings/positions/option-chain `GET`s and never an
+  order/trading endpoint. This is a code-enforced guarantee, not a token scope:
+  the Trader API bundles trading into the same product with **no read-only
+  scope**, and it exposes **no money-movement endpoints at all** (money
+  movement is a separate Advisor Services API), so the read-only boundary lives
+  in our code while the worst-case blast radius of a leaked credential stays
+  bounded to in-account trades the app never issues. Access/refresh tokens and
+  the app secret ride the Keychain and **never enter logs or the run tracker**;
+  the client id is a non-secret in `app_settings`. The loopback's HTTPS server
+  is an **in-house one-shot rustls acceptor** (`loopback_https`): the security
+  audit found the original tiny_http server hard-pinned an EOL rustls/ring
+  stack (RUSTSEC-2024-0336 unfixed) and no maintained minimal blocking-HTTPS
+  crate exists, so the ~150-line acceptor rides the same rustls + ring stack
+  outbound HTTP already uses, and the capture loop is offline-tested over real
+  TLS. Only the interactive browser round-trip stays a live `#[ignore]` smoke.
+- **Reuses the spine.** Each feature is a new Tauri command + job under the
   **single global run slot** (report + both local jobs are mutually exclusive,
   matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
-  and the `vector_memory` / `Embedder` modules; local-job gate failures get their
-  own warning categories. The cloud report is unchanged. Build order: substrate
-  (**done** — PR #44) → narrow single-equity Portfolio slice (**done** — PR #45:
-  fixture Schwab + FMP + SEC + local models, offline-verified; the engine computes
-  every number and the model only interprets; per-job `vector_memory` namespace
-  partition added; live verdict-quality/runtime + FMP-tier validation is
-  hardware-gated on the M5) → **live Schwab OAuth (done — PR #48**: backend adapter +
-  token lifecycle + connection-gated source selection) → **deterministic
-  holdings-snapshot diff (done — PR #49**: prior-run snapshot vs current pull → per-position
-  new/increased/decreased/unchanged delta into each dossier + exited names in the
-  roll-up; classified by quantity/position-size in the app layer — shorts and net
-  long↔short reversals read correctly, cost basis corroborating context — backend-only,
-  frontend render deferred) → **frontend Schwab Connect surface (done — PR #50**: the
-  credential write-paths that finally make a connection seedable — client id →
-  `app_settings`, secret → Keychain, a client-id change clearing the now-stale tokens —
-  plus `schwab_status` / `schwab_disconnect` and the Settings Connect section;
-  **`WarningKind::Schwab` is now produced + consumed at the local run-gate via a new
-  `schwab_gate`** — parallel to `local_gate`, kept **off the cloud `validate` gate** so a
-  disconnected account blocks only the local jobs, never the report) →
-  **Portfolio-page frontend (done — PR #52**: the first analytical-register surface —
-  verdict cards + roll-up with the #49 diff render, and the local-suite warning band
-  finally lit via a **presence-only `check_local_configuration`** (schwab + local-models
-  categories into the shared warning area; the cloud `is_blocked` untouched, so the
-  local gate locks only the local triggers). Two load-bearing trigger decisions:
-  **Run analysis always pulls fresh holdings itself**, and a separate **Pull holdings**
-  is **view-only** — persisted as a latest-pull snapshot that is **never the
-  holdings-diff baseline** (the job always diffs against the prior *run's* snapshot)
-  and gates on Schwab alone (no model call), so holdings are viewable before local
-  models exist. A fresher pull renders as a stamped section *above* the run-anchored
-  cards with **presence-only** churn tags — quantity classification stays the engine
-  diff's. Rider fix: the **optional fast tier no longer gates** — a blank fast model
-  falls back to the reasoner for distillation, per the settled roster default) →
-  **next: full Portfolio (funds)**, the **Local-analysis-models Settings section**
-  (the proactive local-models warning currently has no in-app clear path), or the
-  **sidebar Portfolio-runs history** → Opportunities. Both jobs are personalized
-  by a **fixed default investor-profile preset** (long-term, profit-max, medium-high
-  risk, cash always available, no tax adjustment; user config deferred) that frames
-  the prescription, never which holdings or ideas qualify.
-- **Deterministic finance, primary-source evidence.** Sub-scores, risk tiers,
-  metrics, and scenario targets (methodology exposed) are computed by a shared Rust
-  engine over **FMP + keyless SEC EDGAR** (10-K/Q/8-K + XBRL); the model interprets,
-  never invents numbers. Deep **price history** is keyless **Stooq** (the input the
-  price-action confirmer and momentum/volatility reads need), **quotes** are FMP —
-  dispersal is load-relief on the **paid** key. **One shared FMP key, upgraded to paid;
-  the report's data-source logic is unchanged.** A **paid-plan tier audit**
-  (`data-sources.md`) found `*-bulk`, transcripts, 13F-institutional, fund-holdings, and
-  press-releases **off-plan** → fallbacks to SEC EDGAR / `sec-filings-8k` / the web loop /
-  N-PORT. **FINRA** carries short interest; **SEC EDGAR** is the authoritative cross-check
-  (ticker→CIK non-blocking). An **evidence floor** returns `insufficient-evidence` over a
-  low-conviction guess; long jobs **checkpoint/resume**; early runs are **shadow/calibration**.
-- **Portfolio decision-discipline (designed).** The per-holding design is fully
-  specified (`portfolio-workflow.md` is the Type-tagged control flow): a **three-layer
-  engine** (grade core from fundamentals+price+forensics; a conviction layer of
-  revision/narrative-vs-reality; positioning held out of the grade until calibrated),
-  with forward targets refinable **post-research only** via a typed, sourced
-  `research_forward_assumption` the engine recomputes (sub-scores never move). The
-  verdict is a **four-part read** — deterministic **grade** (backward/current anchor), a
-  first-class **forward outlook** (scenario targets + horizon, *surfaced beside* the grade
-  so a weak-grade / strong-forward name — the market pricing the future — reads as such
-  rather than buried), **bidirectional conviction**, and the portfolio **action**. The
-  load-bearing refinement: research may *raise* conviction, not only cap it — but **only**
-  via a typed `validated_leading_indicator` (an *engine-unscored* countable/dated metric,
-  returned and stored as a `base`/`raise`/`final` decomposition the **app recomputes**, ≤
-  one band, app-validated per-candidate incl. debuts), **never** via price or narrative
-  (the **anti-reflexivity / no-double-count invariant**). The same model and invariant
-  govern Trade Opportunities (the raise gated to its emerging-economics archetypes), whose
-  matrix cards now surface the engine's **price prediction user-facing** (EOY ~12-mo
-  scenario target + bear/bull range). Three pillars take the job past grade-then-summarize: **(1) intrinsic verdict vs. portfolio
-  action are separated** — the per-holding loop emits the intrinsic verdict (grade,
-  conviction, targets + a *standalone action lean*), and a post-roll-up construction
-  stage sets the final action+sizing with the whole book in view (**Step 7a** deterministic
-  aggregates — concentration, exposure, overlap, cash, material not-rated risk — → **7b**
-  reconciliation), resolving the Step-6→7 feedback path so "A-grade business, trim because
-  oversized" is expressible; **(2) an action-sizing spine** has the engine **bound the
-  feasible action set** (grade, conviction, upside/downside, a **capital-efficiency /
-  dead-money read** — forward base case vs a risk-free+premium hurdle — weight,
-  concentration, overlap, cash, tax) and the model choose within — model proposes, app
-  constrains; the dead-money read **overrides the disposition reflex** — a holding whose
-  forward case can't clear the hurdle leans to **exit, some or all**, with the *generic*
-  **possible tax benefit** of realizing a loss + **redeployment optionality** of freed cash
-  as counterweights (high-level — no harvest/wash-sale/account-type modeling, replacement-name
-  picks stay TO's isolated job — guarded so the loss never moves the grade and the lean fires
-  only once forward prospects are judged poor); **(3) a position
-  thesis ledger** persisted per holding (standing thesis, bear/base/bull monitor, typed
-  falsifiers, add/trim/sell triggers — the Portfolio analog of TO's opportunity graph)
-  evaluated deterministically each run, rewritten by interpretation, validated by the
-  continuity check. A **third-party technology event** that threatens a holding is a
-  first-class qualitative falsifier class on the ledger, sized by a typed
-  `technology_read` from a **conditional per-holding research topic** (the held-name
-  form of TO's event-impact lens — separating a panic drop from a genuine impairment,
-  and overstated-benefit euphoria on the upside). The **what-changed audit** splits to match (intrinsic half validated at
-  6g, action half at 7b; each maps to a real input-delta/aggregate or downgrades to a flagged
-  self-correction). Funds take a reduced path (exposure tilt from ETF weightings; constituent
-  holdings off-plan → N-PORT/dropped, a future **issuer-holdings adapter** planned;
-  fund-flavored ledger). The **house view is freshness-gated for every holding** —
-  older than one week, it is dropped as a gap rather than fed stale.
-- **Trade Opportunities (designed).** Discovers candidates through three feeders —
-  **model-led hypothesis research** (the edge: route planner → **hypothesis cards** tracing
-  value-chain *economics* → a **hypothesis score** gating promotion *before* any ticker),
-  **bottom-up structured feeders** (the screener *stratifies* — no fundamental field — plus
-  event/positioning), and a **carried-forward watchlist** (a persisted **opportunity graph**
-  reversing earlier stateless re-discovery) — then validates per-name with a **per-candidate**
-  composite (`*-bulk` off-plan). Two modes (**early**/**continuation**) × a first-class
-  **archetype** lens (5 archetypes set signal weights + valuation lens), gated by a mandatory
-  bear case, narrative-vs-reality, a cross-lens contradiction check (folded into distill+score),
-  and a forensic gate. The **research method is load-bearing** (`trade-opportunities.md`):
-  worldview-first regime+thematic map traced economically, five lenses reconciled as two tracks
-  through one moat/management/price gate, an inflecting **leading-metric hard gate**; all-cap
-  breadth is protected **structurally** by stratified diversity quotas (no bulk pre-scoring).
-  Deterministic **outcome labels** on prior picks feed a forward-staged **calibration**,
-  computed as **one engine primitive, two reads**: fixed **matured-window labels** (1/3/6/12mo
-  return vs sector/market, drawdown, metric-continuation, failure mode) for calibration, plus a
-  **continuous since-flagged read** (running return vs sector/market + drawdown from the
-  first-surfaced price, live from an idea's first *subsequent* run, stateless off the
-  carry-forward identity) rendered **inline in the matrix** and fed to the **Step-5g re-score of
-  a carried-forward name as reflexivity-disciplined context** (an unconfirmed gain caps
-  conviction, never a momentum boost). The feature runs as **two on-demand jobs sharing one
-  page**: **Discover (DTO)** — the discovery funnel + deep-research of candidates + a cheap engine
-  sweep of the carried matrix — and **Audit (ATO)** — user-selected re-evaluation forking to **Quick
-  Audit** (the cheap re-derivation) or **Deep Audit** (the full per-candidate loop). The load-bearing
-  invariant: **only a deep re-evaluation can archive; the cheap re-derivation never does** — it
-  refreshes the quant read and raises a non-destructive **attention warning** (the amber *Consider
-  Deep Audit* badge; a quiet *Research stale* >~4wk and a green *Deep-researched today* round out the
-  card), so the cheap pass runs liberally while the destructive action stays gated. DTO spends the
-  deep-research budget **new candidates first**, leftover on existing opportunities that
-  **re-surfaced** through discovery (oldest-`last_deep_researched_at` first) — run through the
-  **Step-5 loop as carried-forward candidates**, the prior record weighted by an age-banded
-  **`continuity_weight`** — while every other live pick gets the cheap sweep; **Step 7 is
-  deterministic** (reconciles + archives a deep-judged `invalidated`, never invokes the model). The
-  accepted cost: the matrix is **self-flagging, not self-cleaning** — a stale pick lingers
-  (cheap-refreshed, warning-badged) until a deep pass retires it. There is **no "target met" exit**
-  (`played-out` retired); the lone exit, `failed-reevaluation`, fires **only from a deep pass**
-  judging `invalidated`, moving a pick to a **price-tracked archive** (last 100 tombstones — frozen
-  record + live since-flagged return vs sector/market, **no forward prediction**), re-entry a
-  **fresh** opportunity (anti-reflexive — the archive never self-promotes). Displayed performance is a
-  **price-only render floor** over a keyless **Stooq daily-bar cache** (refreshed after 8 PM ET,
-  fail-soft); the live **FMP `quote`** is a job-time engine input, not a persisted price. The
-  local-suite gate stays **uniform on presence**, with one carve-out — Quick Audit, making no model
-  call, **skips the run-gate daemon-connectivity check**. GDELT
-  dropped; discovery is **SearXNG-only**. A new **event-impact / value-chain repricing route**
-  (materiality-gated, dormant otherwise) treats a discrete tech/product/standard announcement as a
-  **two-sided** trigger — beneficiaries, panic-vs-real feared-losers, latent (un-moved) names — each
-  carrying a sized typed `technology_read` (substitute/complement/mix-shift + exposed revenue/profit
-  pool) on the hypothesis card, plus a symmetric feared-loser adversarial pass; still one signal
-  among many, subject to the leading-metric + validation gates like any candidate.
+  and the `vector_memory` / `Embedder` modules. Local-gate failures get their
+  own warning categories (`schwab_gate` + `local_gate`), kept **off the cloud
+  `validate` gate** — a disconnected account blocks only the local jobs, never
+  the report. Both jobs are personalized by a **fixed default investor-profile
+  preset** (user config deferred) that frames the prescription, never which
+  holdings or ideas qualify.
+- **Invariants governing the designed features** (full specs in the docs; a
+  plan must not work against these):
+  - **Deterministic finance, primary-source evidence** — a shared Rust engine
+    over FMP + keyless SEC EDGAR / Stooq / FINRA / CBOE computes every
+    sub-score, risk tier, metric, and scenario target; **the model interprets,
+    never invents numbers**. One shared FMP key, upgraded to paid (`*-bulk`,
+    transcripts, 13F-institutional, fund-holdings, and press-releases are
+    **off-plan** → SEC EDGAR / 8-K / web-loop / N-PORT fallbacks); the report's
+    data-source logic is unchanged. An **evidence floor** returns
+    `insufficient-evidence` over a low-conviction guess; long jobs
+    **checkpoint/resume**; early runs are **shadow/calibration**.
+  - **Anti-reflexivity / no-double-count** — research may *raise* conviction
+    only via a typed, app-validated `validated_leading_indicator` (≤ one band),
+    never via price or narrative; an unconfirmed price gain caps conviction,
+    never boosts it; the archive never self-promotes.
+  - **Source quality informs conviction, never gates discovery** — tiers grade;
+    only the explicit deny list drops.
+  - **Only a deep re-evaluation can archive an opportunity; the cheap
+    re-derivation never does** — it refreshes the quant read and raises a
+    non-destructive attention warning.
+- **Portfolio Analysis (designed — `docs/portfolio-analysis.md`,
+  `portfolio-workflow.md`).** The verdict is a **four-part read** —
+  deterministic grade, first-class forward outlook, bidirectional conviction,
+  portfolio action — with the **intrinsic verdict separated from the portfolio
+  action**: the per-holding loop emits the intrinsic verdict plus a standalone
+  lean, and a post-roll-up construction stage (deterministic aggregates → model
+  reconciliation) sets the final action + sizing with the whole book in view —
+  the engine **bounds the feasible action set and the model chooses within**,
+  so "A-grade business, trim because oversized" is expressible. A persisted
+  per-holding **position thesis ledger** (standing thesis, monitors, typed
+  falsifiers, triggers) is evaluated deterministically each run and rewritten by
+  interpretation. Funds take a reduced path (exposure tilt from ETF weightings;
+  constituent look-through off-plan → N-PORT/dropped).
+- **Trade Opportunities (designed — `docs/trade-opportunities.md`,
+  `trade-opportunities-workflow.md`).** Discovery through three feeders —
+  **model-led hypothesis research** (the edge: hypothesis cards + a score
+  gating promotion *before any ticker*), stratified structured feeders (the
+  screener stratifies — stratification IS the breadth mechanism, no bulk
+  pre-scoring), and a persisted **opportunity-graph watchlist** — then
+  per-candidate validation under an archetype lens, a mandatory bear case, and
+  a leading-metric hard gate. Runs as two jobs sharing one page (**Discover** /
+  **Audit**, the latter forking Quick/Deep); deterministic outcome labels on
+  prior picks feed a forward-staged calibration; departed picks land in a
+  price-tracked archive.
 
-Both features are deliberately **prescriptive** (grades, actions, targets) — a
-departure from the report's no-buy/sell stance — applying the report's house view
-to the user's specific positions and to new ideas.
+## What remains
+
+In order: **full Portfolio (funds)** (`docs/portfolio-analysis.md §Asset
+eligibility`) → the **Local-analysis-models Settings section** (also the in-app
+clear path for the shipped presence warning) and the **sidebar Portfolio-runs
+history** → **Trade Opportunities**. Hardware-gated on the M5: live local-suite
+validation, the model-serving pre-flight, and the calibration knobs.
