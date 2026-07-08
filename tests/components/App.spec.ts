@@ -67,6 +67,7 @@ import JobTrackerView from "../../src/components/JobTrackerView.vue";
 import LatestReportView from "../../src/components/LatestReportView.vue";
 import JobStatusPanel from "../../src/components/JobStatusPanel.vue";
 import PortfolioView from "../../src/components/PortfolioView.vue";
+import ConfirmDialog from "../../src/components/ConfirmDialog.vue";
 import { sampleHoldingsPull, samplePortfolioRun } from "../helpers/tauri";
 
 beforeEach(() => {
@@ -953,6 +954,124 @@ describe("App.vue portfolio wiring", () => {
     expect(wrapper.findComponent(PortfolioView).props("runError")).toContain(
       "Daemon unreachable"
     );
+    wrapper.unmount();
+  });
+});
+
+// The data-import fork (docs/data-portability.md §Import flow): an inspected
+// archive either loads straight into an empty store or parks on the replace-all
+// ConfirmDialog, whose confirm is the only path to `import_data` with
+// `replace: true`. Wired through the real Settings emit and the real dialog.
+describe("App.vue data-import fork", () => {
+  const inspection = {
+    path: "/tmp/market-signal-export-2026-07-05.zip",
+    store_empty: false,
+    info: {
+      encrypted: false,
+      format_version: 1,
+      app_version: "1.2.1",
+      created_at: "2026-07-05T12:00:00Z",
+      reports: 30,
+      learnings: 214,
+      snapshots: 14,
+      portfolio_runs: 2,
+      holdings_pulls: 1,
+      files: 34,
+    },
+  };
+  const importSummary = {
+    reports: 30,
+    learnings: 214,
+    snapshots: 14,
+    portfolio_runs: 2,
+    holdings_pulls: 1,
+    files: 34,
+    skipped_reports: 0,
+  };
+
+  async function mountOnSettings(
+    overrides: Record<string, (args?: Record<string, unknown>) => unknown>
+  ) {
+    tauri.invoke.mockImplementation(makeInvokeRouter(overrides));
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
+    await flushPromises();
+    return wrapper;
+  }
+
+  test("a non-empty store parks on the dialog — with the archive's date and counts — and confirm commits with replace", async () => {
+    const wrapper = await mountOnSettings({
+      import_data_inspect: () => inspection,
+      import_data: () => importSummary,
+    });
+
+    wrapper.findComponent(Settings).vm.$emit("import-data", "pw");
+    await flushPromises();
+
+    // Nothing destructive yet: the inspection parked on the open dialog, whose
+    // detail line describes the actual picked artifact.
+    expect(invokedCommands()).not.toContain("import_data");
+    const dialog = wrapper.findComponent(ConfirmDialog);
+    expect(dialog.props("open")).toBe(true);
+    expect(dialog.props("detail")).toContain("2026-07-05");
+    expect(dialog.props("detail")).toContain("30 reports");
+    expect(dialog.props("detail")).toContain("214 learnings");
+
+    dialog.vm.$emit("confirm");
+    await flushPromises();
+
+    // The confirmed commit carries the inspected path, the passphrase, and the
+    // explicit replace; the dialog closes and the store-reading surfaces refetch.
+    expect(tauri.invoke).toHaveBeenCalledWith("import_data", {
+      path: inspection.path,
+      passphrase: "pw",
+      replace: true,
+    });
+    expect(wrapper.findComponent(ConfirmDialog).props("open")).toBe(false);
+    expect(invokedCommands()).toContain("list_reports");
+    expect(wrapper.findComponent(Settings).props("dataStatus")).toContain(
+      "Imported 30 reports"
+    );
+
+    wrapper.unmount();
+  });
+
+  test("an empty store loads straight in — no dialog, replace stays false", async () => {
+    const wrapper = await mountOnSettings({
+      import_data_inspect: () => ({ ...inspection, store_empty: true }),
+      import_data: () => importSummary,
+    });
+
+    wrapper.findComponent(Settings).vm.$emit("import-data", "");
+    await flushPromises();
+
+    expect(wrapper.findComponent(ConfirmDialog).props("open")).toBe(false);
+    expect(tauri.invoke).toHaveBeenCalledWith("import_data", {
+      path: inspection.path,
+      passphrase: null,
+      replace: false,
+    });
+
+    wrapper.unmount();
+  });
+
+  test("a cancelled dialog never reaches import_data", async () => {
+    const wrapper = await mountOnSettings({
+      import_data_inspect: () => inspection,
+    });
+
+    wrapper.findComponent(Settings).vm.$emit("import-data", "");
+    await flushPromises();
+    const dialog = wrapper.findComponent(ConfirmDialog);
+    expect(dialog.props("open")).toBe(true);
+
+    dialog.vm.$emit("cancel");
+    await flushPromises();
+
+    expect(wrapper.findComponent(ConfirmDialog).props("open")).toBe(false);
+    expect(invokedCommands()).not.toContain("import_data");
+
     wrapper.unmount();
   });
 });

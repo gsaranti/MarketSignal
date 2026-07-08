@@ -16,6 +16,7 @@ import ConfirmDialog from "./components/ConfirmDialog.vue";
 import type {
   AppView,
   AgentModels,
+  ArchiveInfo,
   ConnectionTestResult,
   CredentialKey,
   CredentialUpdate,
@@ -39,6 +40,7 @@ import type {
   ValidationReport,
 } from "./types";
 import { readDark, writeDark } from "./theme";
+import { localDate } from "./format";
 
 // Which main surface is showing. A plain ref switch (no router) — the app has a
 // small fixed set of destinations and the kit models this as top-level state,
@@ -529,7 +531,11 @@ const schwabError = ref<string | null>(null);
 const dataBusy = ref<"export" | "import" | null>(null);
 const dataError = ref<string | null>(null);
 const dataStatus = ref<string | null>(null);
-const pendingImport = ref<{ path: string; passphrase: string } | null>(null);
+const pendingImport = ref<{
+  path: string;
+  passphrase: string;
+  info: ArchiveInfo;
+} | null>(null);
 const importConfirmBusy = ref(false);
 
 // A workflow holds (or is about to claim) the single global run slot — report,
@@ -1134,7 +1140,11 @@ async function importData(passphrase: string) {
     if (inspection.store_empty) {
       await commitImport(inspection.path, passphrase, false);
     } else {
-      pendingImport.value = { path: inspection.path, passphrase };
+      pendingImport.value = {
+        path: inspection.path,
+        passphrase,
+        info: inspection.info,
+      };
     }
   } catch (e) {
     dataError.value = String(e);
@@ -1166,6 +1176,21 @@ async function commitImport(path: string, passphrase: string, replace: boolean) 
   void refreshValidation();
   void refreshLocalValidation();
 }
+
+// The confirmation dialog's second paragraph: what the picked archive holds
+// and when it was cut (from the inspect step's manifest read), so the user
+// confirms against the actual artifact rather than blind static copy — the
+// real failure mode of a destructive restore is replacing a good corpus with
+// the wrong or older archive.
+const importDetail = computed(() => {
+  const pending = pendingImport.value;
+  if (!pending) return "";
+  const { info } = pending;
+  return (
+    `The selected archive was created ${localDate(info.created_at)} and holds ` +
+    `${info.reports} reports, ${info.learnings} learnings, and ${info.files} files.`
+  );
+});
 
 async function confirmImport() {
   const pending = pendingImport.value;
@@ -1435,6 +1460,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
       :open="pendingImport !== null"
       title="Replace all analytical data?"
       body="Importing this archive replaces all existing reports, learnings, snapshots, and portfolio runs. Your API keys and settings are untouched. This cannot be undone."
+      :detail="importDetail"
       confirm-label="Replace and import"
       :busy="importConfirmBusy"
       busy-status="Replacing all analytical data. This may take a moment."

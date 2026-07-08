@@ -310,7 +310,25 @@ pub fn export_archive(
         Some(p) => encrypt_container(&plain, p)?,
         None => plain,
     };
-    std::fs::write(dest, &out).with_context(|| format!("writing archive {dest:?}"))?;
+    // Write-then-rename, so a failed write (disk full, unplugged volume) can
+    // never leave a truncated archive at the chosen path — a partial zip would
+    // otherwise sit there looking like a backup until an import fails it with
+    // a checksum error instead of "the export never completed".
+    let tmp = match dest.file_name() {
+        Some(name) => dest.with_file_name(format!("{}.partial", name.to_string_lossy())),
+        None => bail!("export destination {dest:?} has no file name"),
+    };
+    if let Err(e) = std::fs::write(&tmp, &out) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("writing archive {tmp:?}"));
+    }
+    if let Err(e) = std::fs::rename(&tmp, dest) {
+        // Same-directory rename on macOS should not fail after a successful
+        // write, but if it does, don't strand the `.partial` sibling.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e)
+            .with_context(|| format!("moving the finished archive into place at {dest:?}"));
+    }
 
     Ok(ExportSummary {
         path: dest.to_string_lossy().into_owned(),
@@ -410,9 +428,16 @@ pub fn import_archive(
         }
     }
     let verified: BTreeSet<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+    // Every table entry must be present AND manifest-vouched. An export always
+    // writes all five, so a missing one is truncation or tampering, not a
+    // sparse store — and without this check a dropped entry+listing pair would
+    // silently import that table as zero rows (`parse_ndjson` tolerates
+    // absence only for entries a future format may add). The manifest loop
+    // above already guarantees a *listed* entry exists and checksums, so
+    // membership in `verified` covers both legs.
     for name in DB_ENTRY_NAMES {
-        if entries.contains_key(name) && !verified.contains(name) {
-            bail!("archive entry {name} is not listed in the manifest — it cannot be verified");
+        if !verified.contains(name) {
+            bail!("archive entry {name} is missing or not listed in the manifest — it cannot be verified");
         }
     }
 
@@ -753,12 +778,34 @@ fn read_container(src: &Path, passphrase: Option<&str>) -> Result<(Vec<u8>, bool
     }
 }
 
+/// Ceiling on `manifest.json` itself. The manifest is read (and inflated)
+/// *before* `read_entries_bounded` can apply the archive-wide ceiling — both
+/// inspect and import read it first — so a bomb placed in the manifest would
+/// bypass that bound entirely. A real manifest is a few KB of inventory;
+/// 16 MiB is orders of magnitude of headroom.
+const MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+
 fn read_manifest(archive: &mut ZipArchive<Cursor<Vec<u8>>>) -> Result<Manifest> {
+    read_manifest_bounded(archive, MAX_MANIFEST_BYTES)
+}
+
+/// `read_manifest` with the ceiling injectable, mirroring
+/// `read_entries_bounded`'s test seam.
+fn read_manifest_bounded(
+    archive: &mut ZipArchive<Cursor<Vec<u8>>>,
+    limit: u64,
+) -> Result<Manifest> {
     let mut file = archive
         .by_name("manifest.json")
         .context("archive has no manifest.json — not a Market Signal export")?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    (&mut file).take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        bail!(
+            "manifest.json unpacks past the {} MB ceiling — refusing to read it into memory",
+            limit / (1024 * 1024)
+        );
+    }
     serde_json::from_slice(&bytes).context("parsing manifest.json")
 }
 
@@ -777,9 +824,30 @@ fn count(manifest: &Manifest, table: &str) -> u64 {
     manifest.row_counts.get(table).copied().unwrap_or(0)
 }
 
+/// Ceiling on an archive's total unpacked size. The whole archive is held in
+/// memory by design (a real corpus is tens of MB), so a crafted zip must not
+/// be able to demand arbitrary memory — deflate inflates up to ~1032:1, and an
+/// entry's header can simply lie about its size. Generous by two orders of
+/// magnitude over any real corpus.
+const MAX_UNPACKED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
 /// All file entries as `name → bytes`, zip-slip-guarded: any entry whose path
 /// would escape the archive root is a hard error, never written.
 fn read_entries(archive: &mut ZipArchive<Cursor<Vec<u8>>>) -> Result<BTreeMap<String, Vec<u8>>> {
+    read_entries_bounded(archive, MAX_UNPACKED_BYTES)
+}
+
+/// `read_entries` with the unpacked-size ceiling injectable, so a test can
+/// exercise the bound without a multi-GB fixture. Both guards distrust the
+/// entry header: preallocation is capped (a header may claim any size), and
+/// the ceiling is enforced on bytes *actually inflated*, via a `take` one past
+/// the remaining budget.
+fn read_entries_bounded(
+    archive: &mut ZipArchive<Cursor<Vec<u8>>>,
+    limit: u64,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    const PREALLOC_CAP: u64 = 16 * 1024 * 1024;
+    let mut remaining = limit;
     let mut map = BTreeMap::new();
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
@@ -790,8 +858,15 @@ fn read_entries(archive: &mut ZipArchive<Cursor<Vec<u8>>>) -> Result<BTreeMap<St
             bail!("archive entry {:?} has an unsafe path", file.name());
         }
         let name = file.name().to_string();
-        let mut bytes = Vec::with_capacity(file.size() as usize);
-        file.read_to_end(&mut bytes)?;
+        let mut bytes = Vec::with_capacity(file.size().min(PREALLOC_CAP) as usize);
+        (&mut file).take(remaining.saturating_add(1)).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > remaining {
+            bail!(
+                "archive unpacks past the {} MB ceiling — refusing to read it into memory",
+                limit / (1024 * 1024)
+            );
+        }
+        remaining -= bytes.len() as u64;
         map.insert(name, bytes);
     }
     Ok(map)
@@ -887,9 +962,24 @@ fn sha256_hex(bytes: &[u8]) -> String {
 // Passphrase encryption
 // ---------------------------------------------------------------------------
 
+/// The Argon2id cost parameters, FROZEN rather than defaulted: the container
+/// stores salt + nonce but no KDF parameters, so the derivation must be
+/// bit-stable forever — `Params::DEFAULT` is a crate-version artifact that has
+/// already changed once (argon2 0.4→0.5 moved m/t), and silently inheriting a
+/// future bump would make every existing encrypted archive fail as "wrong
+/// passphrase" on the one artifact whose spec promises no recovery path. These
+/// are argon2 0.5's Argon2id v19 defaults (the OWASP baseline): m = 19456 KiB,
+/// t = 2, p = 1. Raising them requires a new container version (`ENC_MAGIC`).
+const ARGON2_M_COST: u32 = 19_456;
+const ARGON2_T_COST: u32 = 2;
+const ARGON2_P_COST: u32 = 1;
+
 fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32]> {
+    let params = argon2::Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(32))
+        .map_err(|e| anyhow!("building the key-derivation parameters: {e}"))?;
+    let argon2 = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     let mut key = [0u8; 32];
-    argon2::Argon2::default()
+    argon2
         .hash_password_into(passphrase.as_bytes(), salt, &mut key)
         .map_err(|e| anyhow!("deriving the encryption key: {e}"))?;
     Ok(key)
@@ -1038,6 +1128,28 @@ mod tests {
             zip.write_all(content).unwrap();
         }
         std::fs::write(dest, zip.finish().unwrap().into_inner()).unwrap();
+    }
+
+    /// Add a new entry AND stamp a fresh manifest listing for it, so the
+    /// addition survives checksum verification and only the path checks can
+    /// catch it.
+    fn add_entry_rechecksummed(
+        entries: &mut BTreeMap<String, Vec<u8>>,
+        name: &str,
+        bytes: Vec<u8>,
+    ) {
+        let mut manifest: Manifest =
+            serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        manifest.files.push(FileEntry {
+            path: name.to_string(),
+            bytes: bytes.len() as u64,
+            sha256: sha256_hex(&bytes),
+        });
+        entries.insert(name.to_string(), bytes);
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
     }
 
     /// Replace one entry's bytes AND re-stamp its manifest listing (size +
@@ -1451,5 +1563,175 @@ mod tests {
         assert!(err.to_string().contains("checksum"), "{err}");
         // Validation happens before any destructive step: target untouched.
         assert_eq!(table_count(&target, "reports"), 0);
+    }
+
+    #[test]
+    fn a_newer_format_version_is_refused_by_inspect_and_import() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None, None).unwrap();
+
+        // Stamp a future format version (the manifest itself carries no
+        // checksum, so a plain rewrite suffices).
+        let mut entries = read_archive_entries(&dest);
+        let mut manifest: Manifest =
+            serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        manifest.format_version = FORMAT_VERSION + 1;
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let newer_path = source.db_path.parent().unwrap().join("newer.zip");
+        rebuild_zip(&entries, &newer_path);
+
+        let err = inspect_archive(&newer_path, None).unwrap_err();
+        assert!(err.to_string().contains("update Market Signal"), "{err}");
+        let (_b, target) = temp_store();
+        let err = import_archive(&target, &newer_path, None, false).unwrap_err();
+        assert!(err.to_string().contains("update Market Signal"), "{err}");
+        assert_eq!(table_count(&target, "reports"), 0);
+    }
+
+    #[test]
+    fn an_archive_missing_a_table_entry_is_refused() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None, None).unwrap();
+
+        // Drop BOTH the entry and its manifest listing — without the
+        // required-tables check this would import vector_memory as silently
+        // zero rows (an export always writes all five entries).
+        let mut entries = read_archive_entries(&dest);
+        entries.remove("db/vector_memory.ndjson");
+        let mut manifest: Manifest =
+            serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        manifest.files.retain(|f| f.path != "db/vector_memory.ndjson");
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let missing_path = source.db_path.parent().unwrap().join("missing.zip");
+        rebuild_zip(&entries, &missing_path);
+
+        let (_b, target) = temp_store();
+        let err = import_archive(&target, &missing_path, None, false).unwrap_err();
+        assert!(err.to_string().contains("missing or not listed"), "{err}");
+        assert_eq!(table_count(&target, "vector_memory"), 0);
+    }
+
+    #[test]
+    fn traversal_paths_are_rejected_before_any_write() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None, None).unwrap();
+        let (_b, target) = temp_store();
+
+        // (a) A `..` component — the zip-slip guard rejects it at read time,
+        // before validation even begins.
+        let mut entries = read_archive_entries(&dest);
+        add_entry_rechecksummed(&mut entries, "reports/../evil.md", b"# Evil\n".to_vec());
+        let dotdot_path = source.db_path.parent().unwrap().join("dotdot.zip");
+        rebuild_zip(&entries, &dotdot_path);
+        let err = import_archive(&target, &dotdot_path, None, false).unwrap_err();
+        assert!(err.to_string().contains("unsafe path"), "{err}");
+
+        // (b) A nested path — enclosed within the archive (so the zip-slip
+        // guard passes), but a store file must be a bare filename under its
+        // prefix; manifest-listed so only the bare-name check can catch it.
+        let mut entries = read_archive_entries(&dest);
+        add_entry_rechecksummed(&mut entries, "reports/sub/evil.md", b"# Evil\n".to_vec());
+        let nested_path = source.db_path.parent().unwrap().join("nested.zip");
+        rebuild_zip(&entries, &nested_path);
+        let err = import_archive(&target, &nested_path, None, false).unwrap_err();
+        assert!(err.to_string().contains("unsafe path"), "{err}");
+        assert!(!target.reports_dir.join("evil.md").exists());
+
+        // (c) A report row whose markdown_filename escapes — re-checksummed so
+        // only the bare-filename row pre-check can catch it.
+        let mut entries = read_archive_entries(&dest);
+        let text = String::from_utf8(entries["db/reports.ndjson"].clone()).unwrap();
+        let mut out = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+            if i == 0 {
+                v["markdown_filename"] = "../evil.md".into();
+            }
+            serde_json::to_writer(&mut out, &v).unwrap();
+            out.push(b'\n');
+        }
+        replace_entry_rechecksummed(&mut entries, "db/reports.ndjson", out);
+        let escape_path = source.db_path.parent().unwrap().join("escape.zip");
+        rebuild_zip(&entries, &escape_path);
+        let err = import_archive(&target, &escape_path, None, false).unwrap_err();
+        assert!(err.to_string().contains("unsafe markdown filename"), "{err}");
+
+        // Nothing was written or inserted by any of the three.
+        assert_eq!(table_count(&target, "reports"), 0);
+    }
+
+    #[test]
+    fn an_archive_that_unpacks_past_the_ceiling_is_refused() {
+        // Exercises the unpacked-size bound through the injectable limit (a
+        // multi-GB fixture would be absurd): 4 KiB of entry against a 1 KiB
+        // ceiling refuses; the same entry under a roomy ceiling reads whole.
+        let build = || {
+            let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+            let opts =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zip.start_file("db/reports.ndjson", opts).unwrap();
+            zip.write_all(&[b'x'; 4096]).unwrap();
+            zip.finish().unwrap().into_inner()
+        };
+        let mut archive = ZipArchive::new(Cursor::new(build())).unwrap();
+        let err = read_entries_bounded(&mut archive, 1024).unwrap_err();
+        assert!(err.to_string().contains("ceiling"), "{err}");
+
+        let mut archive = ZipArchive::new(Cursor::new(build())).unwrap();
+        let entries = read_entries_bounded(&mut archive, 8192).unwrap();
+        assert_eq!(entries["db/reports.ndjson"].len(), 4096);
+    }
+
+    #[test]
+    fn an_oversized_manifest_is_refused() {
+        // The manifest inflates BEFORE the archive-wide entries ceiling can
+        // apply (both inspect and import read it first), so it carries its own
+        // bound — a bomb in manifest.json must refuse, not exhaust memory.
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        let opts =
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        zip.start_file("manifest.json", opts).unwrap();
+        zip.write_all(&vec![b' '; 4096]).unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+
+        let mut archive = ZipArchive::new(Cursor::new(bytes.clone())).unwrap();
+        let err = read_manifest_bounded(&mut archive, 1024).unwrap_err();
+        assert!(err.to_string().contains("ceiling"), "{err}");
+
+        // Under a roomy ceiling the same entry reads through to the JSON
+        // parser (whitespace is not a manifest — the point is the bound
+        // fires first, the parser second).
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let err = read_manifest_bounded(&mut archive, 8192).unwrap_err();
+        assert!(err.to_string().contains("parsing manifest.json"), "{err}");
+    }
+
+    #[test]
+    fn key_derivation_parameters_are_frozen() {
+        // Pins the Argon2id derivation bit-for-bit: the encrypted container
+        // stores salt + nonce but no KDF parameters, so ANY drift — a
+        // dependency bump changing `Params::DEFAULT`, a refactor back to
+        // `Argon2::default()` — silently breaks decryption of every existing
+        // encrypted archive. If this test fails, do NOT update the expected
+        // value: old archives could no longer be opened. Keep this derivation
+        // for `MSDPENC1` and introduce a new container version instead.
+        let key = derive_key("hunter2", b"0123456789abcdef").unwrap();
+        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "9d4c62adf54ad88fef393e9fda5cb6c12823c19d68ab04cb0a6adca43ca389c0"
+        );
     }
 }

@@ -20,6 +20,11 @@ use crate::schwab::Holdings;
 /// `storage::init_schema`, which calls this. `holdings_pulls` is a single-row
 /// latest-only store (the `CHECK (id = 1)` pins it), matching its
 /// most-recent-pull-only semantics.
+///
+/// Both tables are exported by data portability: a new constraint here needs a
+/// matching import pre-check in `portability::import_archive` (see
+/// `storage::init_schema`'s coupling note). Today's mirror: `run_id` UNIQUE and
+/// the single-row `holdings_pulls` CHECK.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS portfolio_runs (

@@ -129,6 +129,13 @@ whole archive is encrypted; import detects an encrypted container and prompts fo
 the passphrase. There is **no recovery path** — a lost passphrase means an
 unrecoverable archive, stated plainly at export time.
 
+The Argon2id cost parameters are **frozen in code** (m = 19456 KiB, t = 2,
+p = 1 — pinned by a test vector), never taken from the crate's defaults: the
+container stores salt and nonce but no KDF parameters, so a dependency bump
+that shifted a default would silently strand every existing encrypted archive
+as "wrong passphrase". Raising the costs means a new container version
+(`ENC_MAGIC`), keeping the old derivation for old archives.
+
 ## Export flow
 
 A new **Data** section in Settings, with an **Export** action:
@@ -140,6 +147,9 @@ A new **Data** section in Settings, with an **Export** action:
    (the app layer owns all I/O — the agents/spine boundary is untouched):
    serialize the included tables to NDJSON, copy the report and research files,
    write the manifest with checksums, zip, and encrypt if a passphrase was set.
+   The finished bytes land via **write-then-rename** (a `.partial` sibling,
+   moved into place), so a failed write — disk full, unplugged volume — can
+   never leave a truncated zip at the chosen path masquerading as a backup.
 4. Success surfaces the path and a count of what was written (N reports, N
    learnings, N files).
 
@@ -160,16 +170,26 @@ The **Import** action in the same Settings section:
    it (no dedicated prompt dialog — retrying reopens the picker).
 3. Read and validate the manifest: reject a format version newer than this build
    understands; verify every entry's size + checksum, and never consume bytes
-   the manifest doesn't list. All row-level validation — NDJSON parse, embedding
+   the manifest doesn't list. All five table entries must be **present and
+   manifest-listed** — a truncated archive is refused, never imported as a
+   sparse store. All row-level validation — NDJSON parse, embedding
    decode, the schema's uniqueness/cardinality — also runs here, **before any
    destructive step**, so a bad archive can only abort while the store is
-   untouched.
+   untouched. Reading the archive is itself bounded: entries unpack under a
+   total-size ceiling (4 GiB — generous by orders of magnitude over a real
+   corpus), and `manifest.json` — which is read before that ceiling can apply —
+   carries its own smaller bound (16 MiB), so a crafted zip can't demand
+   unbounded memory through either read.
 4. Determine whether the target store is **empty** (no reports, no learnings, no
    portfolio runs):
    - **Empty** (the hardware-migration case) → straight load.
    - **Non-empty** → a confirmation modal makes the destructive scope explicit:
      *"This replaces all existing reports, learnings, snapshots, and portfolio
-     runs. Your API keys and settings are untouched. Continue?"* On confirm, the
+     runs. Your API keys and settings are untouched. Continue?"* — followed by
+     the picked archive's own specifics from the manifest read (its created
+     date and report/learning/file counts), so the user confirms against the
+     actual artifact rather than blind copy (the realistic mistake in a
+     destructive restore is the *wrong or older* archive). On confirm, the
      included tables and the report/research directories are cleared, then
      loaded. **Merge is deliberately deferred** (see below).
 5. Load, in dependency order so foreign keys resolve (reports before the
@@ -242,13 +262,20 @@ Per [CLAUDE.md](../CLAUDE.md) the full suite runs with the slice:
   assert row-and-file parity for every included table/folder — incl. the
   re-derived `markdown_path` — assert `app_settings` never reaches the archive,
   the encrypted + wrong-passphrase round-trips, and the tamper cases: bad
-  checksums, manifest-unlisted entries, corrupt embeddings, and duplicate rows,
-  each aborting before the destructive phase) plus
+  checksums, manifest-unlisted entries, corrupt embeddings, duplicate rows,
+  a newer format version, a missing table entry, and path-traversal entries
+  (`..`, nested store paths, an escaping `markdown_filename`), each aborting
+  before the destructive phase; the unpacked-size ceiling and the frozen
+  Argon2id derivation are each pinned by their own test) plus
   `cargo clippy --all-targets --all-features`.
 - **Frontend** — `npm run build`, a Settings spec for the Data section
   (export/import emit payloads, the passphrase field, status/error channels,
-  disabled-while-a-job-runs), and a ConfirmDialog spec (a11y contract, initial
-  focus on Cancel, Escape/scrim cancel inert while busy, the busy state).
+  disabled-while-a-job-runs), a ConfirmDialog spec (a11y contract, initial
+  focus on Cancel, Escape/scrim cancel inert while busy, the busy state, the
+  optional detail paragraph), and App-level import-fork specs (empty store →
+  straight load with `replace: false`; non-empty → the dialog carries the
+  archive's date + counts, confirm alone commits with `replace: true`, cancel
+  never reaches `import_data`).
 
 The Settings surface follows the existing Settings patterns and the design
 package; robustness (the confirmation modal, error and disabled states, the
