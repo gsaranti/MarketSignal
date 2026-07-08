@@ -1,8 +1,9 @@
 # Data Portability — Export & Import
 
-*Status: **designed, not yet built**. This spec captures the decisions; the
-Settings surface, the two Tauri commands, and the archive serializer are
-implementation work.*
+*Status: **built** (PR #53). This spec is as-built: the archive
+serializer/loader is `src-tauri/src/portability.rs`, the commands are
+`export_data` / `import_data_inspect` / `import_data`, and the Settings surface
+is the **Data** section plus the design package's confirmation dialog.*
 
 Whole-corpus **backup and restore**: bundle a machine's accumulated analytical
 history into a single archive and load it on another machine. The motivating
@@ -120,9 +121,9 @@ still the user's **entire market-analysis history** — and, once the local suit
 runs live, portfolio holdings and verdicts derived from a Schwab account. That
 is sensitive personal financial data in the clear.
 
-Export therefore offers **optional passphrase encryption** (recommended
-primitive: AES-256-GCM over a key derived with Argon2id; final choice is an
-implementation detail). Unchecked, the export is a plain `.zip` with a UI
+Export therefore offers **optional passphrase encryption** (as built:
+AES-256-GCM over an Argon2id-derived key, wrapping the whole container).
+Unchecked, the export is a plain `.zip` with a UI
 warning to keep the file private and move it over a trusted channel. Checked, the
 whole archive is encrypted; import detects an encrypted container and prompts for
 the passphrase. There is **no recovery path** — a lost passphrase means an
@@ -144,17 +145,25 @@ A new **Data** section in Settings, with an **Export** action:
 
 Export takes no model call and is not a pipeline job, but it **must not run
 concurrently with a report or local-suite job** — a mid-run export could capture
-a half-written state. Guard it against the single run slot (disable while a job
-is active), the same mutual-exclusion the jobs already hold.
+a half-written state. It **claims the single run slot**
+(`RunKind::DataPortability`) for the whole command, dialog included — so a job
+can neither be running when the archive is cut nor start mid-archive — and the
+Settings buttons disable while anything holds the slot.
 
 ## Import flow
 
 The **Import** action in the same Settings section:
 
 1. Tauri **open** dialog picks a `.zip`.
-2. If the container is encrypted, prompt for the passphrase and decrypt.
+2. If the container is encrypted, it decrypts with the Data section's shared
+   passphrase field; absent or wrong, import stops with a typed error asking for
+   it (no dedicated prompt dialog — retrying reopens the picker).
 3. Read and validate the manifest: reject a format version newer than this build
-   understands; verify file checksums against corruption.
+   understands; verify every entry's size + checksum, and never consume bytes
+   the manifest doesn't list. All row-level validation — NDJSON parse, embedding
+   decode, the schema's uniqueness/cardinality — also runs here, **before any
+   destructive step**, so a bad archive can only abort while the store is
+   untouched.
 4. Determine whether the target store is **empty** (no reports, no learnings, no
    portfolio runs):
    - **Empty** (the hardware-migration case) → straight load.
@@ -171,11 +180,15 @@ The **Import** action in the same Settings section:
       `markdown_path`** to the target's own absolute path — the exported path was
       machine-specific (a bundle-id data dir) and must never be trusted verbatim.
    4. A report record whose Markdown file is missing from the archive is skipped
-      with a logged warning, never imported as a dangling shell.
+      with a logged warning, never imported as a dangling shell — its summary
+      vector row and baseline snapshots drop with it, mirroring the live
+      deletion cascade.
 6. `app_settings` is **never read or written** by import — the target machine's
    keys and config are left exactly as they were.
-7. Prompt for a restart / reload: in-memory state, retention bookkeeping, and the
-   vector cache need to re-read the freshly loaded store.
+7. Refresh in place: every store-reading surface (reports list + pane, portfolio
+   state, research folders, warnings, job status) re-fetches after the load. No
+   restart is needed — commands open the database per call, and the backend
+   keeps no cross-command cache to go stale.
 
 Retention needs no special handling: the archive was produced by a machine that
 already enforced the caps (30 reports, 14 snapshots, 10 portfolio runs), so it
@@ -220,18 +233,22 @@ suite live, into one configured with a **different local embedder model** — th
 "change the local embedding model" case — and even then it degrades to a
 re-embed, never data loss.
 
-## Verification (when built)
+## Verification
 
-Per [CLAUDE.md](../CLAUDE.md) the full suite runs before the slice is done:
+Per [CLAUDE.md](../CLAUDE.md) the full suite runs with the slice:
 
-- **Backend** — `cargo test` (a round-trip test is the core: export a seeded
-  `MARKET_SIGNAL_DATA_DIR` store, import it into a second temp dir, assert
-  row-and-file parity for every included table/folder, assert `app_settings` and
-  Keychain are absent from the archive, and assert the encrypted round-trip)
-  plus `cargo clippy --all-targets --all-features`.
-- **Frontend** — `npm run build`, and a Vue spec for the Settings Data section
-  (export/import buttons, the passphrase field, the non-empty confirmation
-  modal, disabled-while-a-job-runs).
+- **Backend** — `cargo test` (the `portability` module's round-trip suite is
+  the core: export a seeded temp store, import it into a second temp dir,
+  assert row-and-file parity for every included table/folder — incl. the
+  re-derived `markdown_path` — assert `app_settings` never reaches the archive,
+  the encrypted + wrong-passphrase round-trips, and the tamper cases: bad
+  checksums, manifest-unlisted entries, corrupt embeddings, and duplicate rows,
+  each aborting before the destructive phase) plus
+  `cargo clippy --all-targets --all-features`.
+- **Frontend** — `npm run build`, a Settings spec for the Data section
+  (export/import emit payloads, the passphrase field, status/error channels,
+  disabled-while-a-job-runs), and a ConfirmDialog spec (a11y contract, initial
+  focus on Cancel, Escape/scrim cancel inert while busy, the busy state).
 
 The Settings surface follows the existing Settings patterns and the design
 package; robustness (the confirmation modal, error and disabled states, the
@@ -242,6 +259,5 @@ passphrase field's keyboard/screen-reader behavior) is `frontend-craft` work.
 This is **independent of the local suite** — it moves whatever the store holds,
 so it works today against the cloud report corpus and automatically covers the
 Portfolio / Trade-Opportunities tables as they fill in (the exporter is
-table-driven). It can land before, between, or after the remaining suite slices.
-Given the motivating hardware migration, it is worth landing **before** the M5
-transition so the accumulated report history and learnings survive the move.
+table-driven). It landed (PR #53) **before** the M5 transition, so the
+accumulated report history and learnings survive the move.
