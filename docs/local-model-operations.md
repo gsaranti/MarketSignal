@@ -12,7 +12,10 @@ runtime sources, gathered while the project is hardware-gated on the M5 (the M1
 dev machine can't host the model). Claims are tagged **[vendor]** (documented by
 Qwen / a model card), **[community]** (runtime reports, treat as directional), or
 **[verify on M5]** (a live pre-flight check, not yet confirmed). Re-validate the
-**[verify on M5]** items before the first real local run.
+**[verify on M5]** items before the first real local run. A **2026-07-07
+adversarially-verified web survey** (primary sources: Ollama release notes,
+library tags, GitHub issue/PR threads) refreshed the serving-stack facts below;
+those carry a dated **[verified 2026-07-07]** tag.
 
 ## Why this model (compact)
 
@@ -24,6 +27,17 @@ load-bearing property for a schema-validated pipeline — **reliable
 grammar-constrained JSON** on the Qwen family (the alternatives that fit either
 gave up structured-output reliability on Ollama or didn't fit cleanly). This
 choice is worth revisiting after v2 ships; it is not permanent.
+
+**Re-validated 2026-07-07:** a fresh adversarially-verified field survey surfaced
+no challenger in the ~80–130B class. GLM-Air-class models stay disqualified on
+*Ollama serving fidelity*, not model quality — GLM-4.5-Air is a community-port-only
+model whose template substitutes a Qwen-style JSON tool envelope for the XML
+envelope it was trained on (the port's own page warns behavior may vary), Ollama's
+Go template engine can't faithfully reproduce its Jinja chat template
+(ollama#10222 open), and Ollama's native XML tool-call parsing still breaks in the
+wild (ollama#13820 open). The official-library GLM-5/5.1 models ship first-party
+templates and are the named **re-benchmark candidate** once their
+structured-output reliability is assessed. **[verified 2026-07-07]**
 
 ## Model at a glance [vendor]
 
@@ -56,6 +70,12 @@ choice is worth revisiting after v2 ships; it is not permanent.
   budget**, plan reliable use up to ~130–170 K and treat beyond as degrading rather
   than failing. **[community / researched judgment — not a vendor number; validate
   with a Qwen3.5-specific RULER/LongBench figure or a live run on the M5]**
+  A 2026-07-07 survey hunted specifically for published RULER/LongBench-style
+  measurements of this model and found **none** — the heuristic stands
+  unvalidated, which firms the case for a small **in-house probe** (needle +
+  multi-hop over a synthetic financial dossier at the deployed quant) in the M5
+  pre-flight rather than waiting on published numbers. **[verified 2026-07-07 —
+  absence finding]**
 - **Do not starve the window either.** The model card advises keeping context
   **≥ 128 K to preserve thinking capability** — thinking chains are long
   (tens of thousands of tokens), so a too-small window truncates reasoning. The
@@ -93,15 +113,24 @@ two flags behave very differently together.
   constrains the final answer to schema-valid JSON. Reasoning lands in the separate
   `message.thinking` field, the schema-valid object in `content` — you get *both*
   reasoning and a constrained schema in one call. **[community]**
-- **`think: false` + `format` is BROKEN** — bug #14645, *"format is ignored when
-  think is disabled for qwen3.5 series."* With thinking off, the end-of-thinking
-  token the mask waits for is never emitted, so `format` never engages and the
-  model returns **free-form text where you asked for schema-valid JSON** — the exact
-  "parse-and-pray" failure the suite forbids, and *silent*. The trap: the intuitive
-  "fast, non-thinking distill" call (`think: false` + `format`) is precisely the
-  bugged configuration — and it is also how [local-models.md](local-models.md)'s
-  "non-thinking distillation" mode would naively be wired. **[verify on M5 — confirm
-  whether #14645 is fixed on our Ollama version]**
+- **`think: false` + `format` is BROKEN in every shipped release to date** — bug
+  #14645, *"format is ignored when think is disabled for qwen3.5 series."* Root
+  cause (maintainer-confirmed): Ollama defers the `format` grammar mask until a
+  thinking→content transition that never fires when `think: false` (the
+  qwen3-family template pre-closes the `<think>` block), so `format` never engages
+  and the model returns **free-form text where you asked for schema-valid JSON** —
+  the exact "parse-and-pray" failure the suite forbids, and *silent*. Worse, the
+  failure is **probabilistic** (a 0.30.7 repro failed ~1 in 3 calls on
+  `/api/chat`): a run of clean responses is model compliance, not enforcement.
+  The trap: the intuitive "fast, non-thinking distill" call (`think: false` +
+  `format`) is precisely the bugged configuration — and it is also how
+  [local-models.md](local-models.md)'s "non-thinking distillation" mode would
+  naively be wired. **The fix merged upstream 2026-07-07** (PR #15901, *"apply
+  format constraint for all thinking parsers when think=false"*, commit
+  `892e7f6`; issue closed by the maintainer) — **but it is in no tagged
+  release**: the latest, v0.31.2, was tagged 2026-07-06, one day before the
+  merge. **[verified 2026-07-07; verify on M5 — confirm the pinned Ollama
+  release actually ships the fix]**
 - **Our rule, until #14645 is confirmed fixed on our version:** every call that
   carries `format` **keeps thinking enabled** (`think: true` + `format`, which
   works — accept the extra thinking tokens), or the schema is validated app-side
@@ -116,6 +145,12 @@ two flags behave very differently together.
      reasoning *and* structure in one call, put a `reasoning` string field
      **first** in the schema (`{"reasoning": "...", ...}`) so the model reasons
      into that field before the structured fields — naturally a thinking-on call.
+
+  One additional repro to run before trusting `format` on the agentic path: a
+  single uncorroborated report (v0.20.2) of `format` being ignored even with
+  `think: true` **when `tools` are passed in the same call** — not obviously
+  covered by the merged fix, and exactly the shape of a research-loop call.
+  **[community — verify on M5]**
 
 ## Sampling settings [vendor]
 
@@ -141,21 +176,31 @@ model into repetition loops and quality collapse.
 ## Serving & memory (Apple Silicon, 128 GB)
 
 The suite serves through **Ollama** ([local-models.md §Serving runtime](local-models.md#serving-runtime)).
-Ollama added a genuine **MLX backend** on Apple Silicon in **v0.19** (Mar 2026;
-requires ≥32 GB unified memory, else it falls back to llama.cpp Metal). The
-caveat that lands directly on our choice: **the MLX backend currently accelerates
-only select architectures — at time of writing, Qwen3.5-*35B*-A3B, not the
-122B-A10B.** So our 122B almost certainly runs today on Ollama's **llama.cpp
-Metal** path (GGUF), *not* MLX — silently, with no indication — and that is also
-the path where the `mmproj`/vision loading caveat below lives. **[community —
-verify on M5 whether 122B MLX acceleration has since landed]**
+Ollama added a genuine **MLX backend** on Apple Silicon in **v0.19** (Mar 2026),
+since made the **default on macOS arm64** (no longer an opt-in preview). The
+caveat that lands directly on our choice: **MLX acceleration rolls out
+per-model, and the 122B-A10B is still not covered as of v0.31.2 (2026-07-06)** —
+release notes across the Jun 4 – Jul 6 window name Command A/North (v0.30.10)
+and Gemma 4 (v0.31.1) but no Qwen3.5, and the ollama.com library carries `-mlx`
+tags only for the 0.8b–35b sizes; every 122b tag is GGUF-only. Default-on MLX
+doesn't help a model with no MLX build: our 122B runs on Ollama's **llama.cpp
+Metal** path (GGUF) — silently, with no indication — and that is also the path
+where the `mmproj`/vision loading caveat below lives. **[verified 2026-07-07 —
+re-check on M5 whether 122B MLX support has since landed]**
 
 - **Quantization.** The likely-actual path (llama.cpp Metal / GGUF): the Ollama
   library build is **Q4_K_M ≈ 81 GB**, and Unsloth's dynamic **UD-Q4_K_XL (~70 GB)**
   is the recommended quality/size balance. If/when the 122B becomes
   MLX-accelerated, `mlx-community/Qwen3.5-122B-A10B-MLX-4bit` (~70–75 GB, ~10 %
   less memory and 15–30 % faster than GGUF at the same precision) becomes the
-  preferred build. **[community]**
+  preferred build. **[community]** Fit re-confirmed 2026-07-07 from multiple
+  independent secondary sources: ~70 GB on disk at 4-bit (Unsloth ladder: 3-bit
+  60 / 6-bit 106 / 8-bit 132 / BF16 245 GB), ~**74 GB resident** (MoE weights
+  unpack 10–15 % larger than the file), so weights + a 5–10 GB long-context KV
+  cache + the ~4 GB quantized embedder ≈ **84–89 GB** — inside even the default
+  ~96 GB macOS Metal wired limit on a 128 GB machine, with real headroom
+  (`iogpu.wired_limit_mb` can raise the ceiling if the KV cache is pushed
+  harder). **[community — mutually consistent, none primary]**
 - **Throughput.** ~**65–79 tok/s** on a 128 GB Mac — strong for the size (only
   10 B params activate per token) — but **path-dependent**: the MLX backend is
   materially faster than the llama.cpp Metal fallback the 122B currently uses, so
@@ -194,14 +239,29 @@ it**), too large starves memory.
 The serving path for the 122B is **not yet pinned** and must be resolved live
 before the first run:
 
-- Ollama's fast **MLX backend currently covers only select architectures (the
-  35B-A3B, not the 122B-A10B)**, so the 122B falls back to Ollama's **llama.cpp
+- Ollama's fast **MLX backend still doesn't cover the 122B-A10B** (re-verified
+  2026-07-07 through v0.31.2), so the 122B falls back to Ollama's **llama.cpp
   Metal** path (GGUF) today — silently, with no indication.
-- On that GGUF path, community runtime docs report **Qwen3.5 GGUFs failing to
-  load in Ollama** because the multimodal build ships a separate `mmproj` vision
-  file the loader mishandles. Yet an `ollama.com/library/qwen3.5:122b-a10b` entry
-  exists at Q4_K_M — so either it's been resolved or the library entry is
-  unreliable; we can't tell from the outside.
+- The `mmproj` loading failure is **real, ongoing, and now scoped** (verified
+  2026-07-07): attaching a vision projector to an **imported** GGUF via a
+  dual-`FROM` Modelfile forces Ollama off its Go engine onto the vendored C++
+  llama.cpp runner, which lacks the `qwen35moe` architecture — *all* inference
+  for that model fails (`unknown model architecture: 'qwen35moe'`; reproduced
+  0.17.x–0.21.0; canonical issue ollama#14575 still open; PR #14517 fixed only
+  the Go-engine text path). **Official-library models are unaffected** — the
+  clean path is a text-only `ollama pull` of the library `qwen3.5:122b-a10b`,
+  never a custom GGUF import with an `mmproj` sidecar. The earlier "either it's
+  been resolved or the library entry is unreliable" uncertainty resolves to:
+  the library entry is fine.
+- **Pin the Ollama version; treat upgrades as re-verification events, not
+  routine bumps.** Ollama's 2026 Apple-Silicon record argues for it: v0.20.4
+  shipped x86_64-only MLX dylibs that broke every MLX model on Apple Silicon (a
+  regression, with recurrences reported on 0.20.5/0.21.0), and MLX crashed
+  outright on M5-generation Metal (a bf16 tensor mismatch) for weeks in April
+  2026 before dedicated `mlx_metal_v4` builds landed for macOS 26 + M5 —
+  M5-specific breakage historically gets fixed weeks *after* it's reported.
+  Smoke-test the exact pinned version with the 122B on M5 arrival, and re-run
+  the schema-integrity check on every bump. **[verified 2026-07-07]**
 
 **Pre-flight on the M5 must verify, on the exact Ollama version we ship:** (1) the
 122B actually loads and serves text generation — and *which* backend it lands on
@@ -228,12 +288,19 @@ implements the existing `Embedder` trait, so nothing else changes.
 - [ ] **Serving:** the 122B loads & serves text generation on our Ollama version,
   and we know *which* backend it lands on (MLX vs llama.cpp Metal) and whether the
   GGUF/`mmproj` issue bites (resolves the [open serving risk](#open-serving-risk-verify-on-m5)).
-- [ ] **Schema integrity:** `format` genuinely constrains output (not bug #14645);
-  a malformed-schema attempt is rejected, not silently passed through.
+- [ ] **Schema integrity:** `format` genuinely constrains output — confirm the
+  pinned release ships the #14645 fix (PR #15901, merged 2026-07-07, absent from
+  v0.31.2 and earlier) and that a malformed-schema attempt is rejected, not
+  silently passed through; repro the reported `think: true` + `tools`
+  format-ignored mode before trusting `format` inside the research loop.
 - [ ] **Thinking:** reasoning trace appears with thinking-on and *no* `format`;
   the two-step reason→distill pattern produces schema-valid objects.
 - [ ] **`num_ctx`:** set explicitly; confirm a max-size packet is **not**
   front-truncated (check `ollama ps` `CONTEXT`).
+- [ ] **Long-context probe:** run a small in-house RULER-style check (needle +
+  multi-hop over a synthetic financial dossier) at the deployed quant — no
+  published effective-context measurement for this model exists (checked
+  2026-07-07).
 - [ ] **Memory:** `OLLAMA_FLASH_ATTENTION=1`; model + KV cache (at chosen context)
   + embedder fit 128 GB with headroom.
 - [ ] **Sampling:** per-mode settings wired; **no greedy decoding** anywhere.
@@ -250,4 +317,8 @@ implements the existing `Embedder` trait, so nothing else changes.
   · [Ollama — Context length](https://docs.ollama.com/context-length)
 - [Ollama JSON mode × thinking interaction (zenn)](https://zenn.dev/7shi/articles/fa36989a04c9ed?locale=en)
 - [ollama/ollama #14645 — `format` ignored when `think` disabled (qwen3.5)](https://github.com/ollama/ollama/issues/14645) · [#15260 — same bug class, gemma4](https://github.com/ollama/ollama/issues/15260)
+- [ollama/ollama PR #15901 — the #14645 fix (merged 2026-07-07, post-v0.31.2)](https://github.com/ollama/ollama/pull/15901)
+- [ollama/ollama #14575 — `qwen35moe` mmproj/GGUF-import loading failure (canonical, open)](https://github.com/ollama/ollama/issues/14575)
+- [ollama/ollama #13820 — GLM XML tool-call parsing failures](https://github.com/ollama/ollama/issues/13820) · [#10222 — Go-template gaps vs Jinja](https://github.com/ollama/ollama/issues/10222)
+- [Ollama releases — v0.30.5–v0.31.2 window checked for MLX rollout](https://github.com/ollama/ollama/releases) · [qwen3.5 library tags — `-mlx` coverage](https://ollama.com/library/qwen3.5/tags)
 - [NVIDIA RULER — effective context benchmark](https://github.com/NVIDIA/RULER)
