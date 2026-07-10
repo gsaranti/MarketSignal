@@ -506,7 +506,7 @@ The `*-bulk` universe-scoring endpoints this layer once leaned on are **off-plan
 | `company-screener` | discovery | universe definition + tradability gate + **market-cap-band / sector stratification** (coarse fields only — no valuation / metric filter) |
 | `insider-trading/latest` | discovery | market-wide newest-Form-4 feed → **insider cluster-buy** candidate surfacing (the per-symbol `insider-trading/search` is the per-candidate follow-up) |
 | `biggest-gainers`, `biggest-losers`, `most-actives` | discovery | market movers (the report's free movers, reused as a momentum / dislocation feeder) |
-| `earnings-calendar` | discovery | upcoming-catalyst calendar (event-scan feeder) |
+| `earnings-calendar` | discovery | upcoming-catalyst calendar (event-scan feeder) — and read **backward** over the trailing window as the **post-earnings surprise screen** (consensus + actuals on the paid key → the continuation-mode feeder; streaks confirmed per-candidate via `earnings`) |
 | `available-sectors`, `industry-classification-search`, `all-industry-classification` | discovery | industry taxonomy → map a surfaced theme onto its exposed names |
 | `stock-peers` | discovery + per-candidate | expand a screened / surfaced name to its peer cohort (discovery); relative-valuation comps (per-candidate) |
 | `shares-float-all` | discovery (optional) | universe low-float screen → squeeze-prone / thin-liquidity sleeve |

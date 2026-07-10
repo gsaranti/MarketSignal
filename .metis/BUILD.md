@@ -415,14 +415,19 @@ Opportunities remain designed, not built.** The load-bearing decisions:
   pre-scoring), and a persisted **opportunity-graph watchlist** — then
   per-candidate validation under an archetype lens, a mandatory bear case, and
   a leading-metric hard gate. Runs as two jobs sharing one page (**Discover** /
-  **Audit**, the latter forking Quick/Deep); deterministic outcome labels on
-  prior picks feed a forward-staged calibration; departed picks land in a
-  price-tracked archive.
+  **Audit**, the latter forking Quick/Deep); a reserved, maintenance-priority
+  **rotation slice** of the deep budget keeps the live matrix's research
+  bounded-stale; deterministic outcome labels on prior picks **and a shadow
+  scorecard over every name the funnel turned away** (typed decision episodes,
+  a strict measurement contract) feed a **propose-only, never auto-applied**
+  calibration; departed picks land in a price-tracked archive.
 
 ## What remains
 
 In order: **full Portfolio (funds)** (`docs/portfolio-analysis.md §Asset
 eligibility`) → the **Local-analysis-models Settings section** (also the in-app
 clear path for the shipped presence warning) and the **sidebar Portfolio-runs
-history** → **Trade Opportunities**. Hardware-gated on the M5: live local-suite
+history** → **Trade Opportunities** (design settled — full strategy audit plus
+three external review rounds to convergence, 2026-07-09; investment logic ready
+for implementation planning when the queue reaches it). Hardware-gated on the M5: live local-suite
 validation, the model-serving pre-flight, and the calibration knobs.
