@@ -1,14 +1,14 @@
 # Market Signal — Design System
 
 A design system for **Market Signal**, a local‑first desktop application
-(Tauri + Vue). Its core is a single long‑form market report published every
-Sunday morning, written by a multi‑agent pipeline that behaves like a
+(Tauri + Vue). Its core is a single long‑form market report, generated on
+demand at the user's chosen cadence, written by a multi‑agent pipeline that behaves like a
 professional research desk — a Head Market Analyst that synthesizes, three
 internal analyst voices (Bull, Bear, Balanced) that stress‑test the thesis,
 and a retrospective audit that holds prior reports accountable. Alongside the
 report it now ships two **local analysis features** — **Portfolio Analysis**
-and **Trade Opportunities** — which are deliberately **prescriptive** (grades,
-actions, price targets) and live in a denser **analytical register** (see
+and **Trade Opportunities** — which are deliberately **prescriptive** and
+live in a denser **analytical register** (see
 *The analytical palette* and the analytical previews / UI‑kit surfaces).
 
 The audience is the **serious individual investor or independent analyst**
@@ -25,15 +25,19 @@ Market Signal is narrow on purpose. The report surfaces are reading‑shaped;
 the two local‑analysis surfaces (Portfolio, Trade Opportunities) are denser
 and live in the analytical register:
 
-- **Latest Report** — the current Sunday issue, rendered from Markdown into
+- **Latest Report** — the most recent issue, rendered from Markdown into
   HTML. The loosest, most generous surface in the system.
 - **Portfolio Analysis** — *(analytical register)* grades the user's
-  holdings (A–F + sub-scores), conviction, price targets, a standing
-  per-holding thesis, and a whole-book roll-up. Structured numeric data,
-  not prose. Holdings shown as cards; a roll-up & construction panel below.
+  holdings (A–F + sub-scores, conviction, and price targets where the
+  vehicle class is priceable; an unpriceable fund renders a typed
+  role/risk card branch instead — no letter, targets, or conviction),
+  a standing per-holding thesis, and a whole-book roll-up. Structured
+  numeric data, not prose. Holdings shown as cards; a roll-up &
+  construction panel below.
 - **Trade Opportunities** — *(analytical register)* discovers ideas across
   a 3×3 risk×horizon matrix, with a leading operating metric, a
-  since-flagged performance read, a calibration scorecard, and a watchlist.
+  since-flagged performance read, a calibration scorecard (its product
+  display surface is still a deferred decision), and a watchlist.
 - **Recent Reports** — a sidebar listing the last thirty issues; dense,
   hairline‑separated rows. The **same shared-history sidebar** now also
   lists recent Portfolio runs and Trade Opportunities runs (content swaps
@@ -47,8 +51,8 @@ and live in the analytical register:
 
 ## What makes it distinctive
 
-- **Weekly cadence as an act of restraint.** Not a feed.
-- **Theses that evolve across issues** rather than reset each week.
+- **A deliberate issue cadence as an act of restraint.** Not a feed.
+- **Theses that evolve across issues** rather than reset each issue.
 - **Explicit retrospective auditing** — last month's call gets graded
   this month.
 - **A single unified analyst voice** rather than a feed of widgets.
@@ -91,13 +95,13 @@ The files at the root of this system:
 
 ## c. Content fundamentals
 
-The product writes the way a senior analyst writes the Sunday note to their
+The product writes the way a senior analyst writes a note to their
 own desk: **measured, plain‑spoken, accountable, structural, unhurried.**
 
 ### Voice
 
 - **Declarative.** Say the thing. Subject, verb, claim.
-  *"The thesis is unchanged this week."* — not *"We're continuing to monitor…"*
+  *"The thesis is unchanged since the last issue."* — not *"We're continuing to monitor…"*
 - **Specific.** Numbers belong to the prose, not to widgets.
   *"Energy is up 3.2% on the week; the underlying logic still holds, but
   the timing was wrong."*
@@ -118,13 +122,13 @@ own desk: **measured, plain‑spoken, accountable, structural, unhurried.**
   caption labels with restrained tracking.
 - **First‑person plural ("we")** in the report prose — the analyst desk
   voice. **Second‑person ("you")** for product chrome that addresses the
-  reader directly ("You haven't opened this week's issue yet.").
+  reader directly ("You haven't opened the latest issue yet.").
 - **Never first‑person singular** in the reading surface. The product is
   a desk, not a person.
 
 ### Tone — phrases the product would use
 
-> "The thesis is unchanged this week."
+> "The thesis is unchanged since the last issue."
 > "Last month's call on energy looks early; the underlying logic still holds, but the timing was wrong."
 > "Two things would force a revision: a sustained breach of [X], or a clear inflection in [Y]."
 > "We are not confident in this read. The conditions for revision are below."
@@ -135,15 +139,15 @@ own desk: **measured, plain‑spoken, accountable, structural, unhurried.**
 > ~~"Smart money is positioning for…"~~
 > ~~"Don't miss this week's must‑read insights"~~
 > ~~"Powered by AI"~~
-> ~~"Buy / Sell / Hold"~~ — the product explicitly does not give trade calls.
+> ~~"Buy / Sell / Hold"~~ — the *report* gives no trade calls; the local suite's prescriptive actions use the analytical register's structured verdict vocabulary, never promotional phrasing like this.
 
 ### Empty‑state and status copy
 
 Plain prose, no decoration. No emoji. No exclamation marks.
 
 - Empty inbox → *"No research has been filed yet. Drag a PDF here to add it to the archive."*
-- Generating → *"Generating this week's issue. Started 06:12 ET. Estimated 24 minutes remaining."*
-- Generation complete → *"This week's issue is ready."* (no toast theatrics, no celebration)
+- Generating → *"Generating the new issue. Started 06:12 ET. Estimated 24 minutes remaining."*
+- Generation complete → *"The new issue is ready."* (no toast theatrics, no celebration)
 - Warning → *"Last month's energy call was early. See the retrospective in §4."*
 
 ### Emoji
@@ -377,7 +381,7 @@ not to entertain.**
   ease‑out.** Quietly perceptible.
 - Navigation between views: **0ms.** A hard cut.
 - The longest acceptable transition is the appearance of a newly
-  generated report after a Sunday job completes: a single **~200ms
+  generated report after a report job completes: a single **~200ms
   fade‑and‑settle** as the new entry slides into the sidebar. Then it
   stops.
 - **No** number‑counter spin‑ups, **no** shimmer placeholders during

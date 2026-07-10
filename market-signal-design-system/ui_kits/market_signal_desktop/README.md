@@ -2,14 +2,19 @@
 
 A high-fidelity recreation of the desktop application's surfaces, built
 from the directional language in the brief (no codebase was provided).
+The brief predates the move to on-demand report generation, so mock copy
+still says "Weekly report" / "Sunday issue" / "this week's issue" — treat
+those strings as placeholders; the report has no fixed cadence
+(`docs/overview.md`), and cadence-neutral status copy is in the
+design-system README (§Empty-state and status copy).
 
 ## Surfaces
 
 | View | File | Notes |
 | --- | --- | --- |
 | Latest Report | `LatestReport.jsx` | The loosest surface. One readable column, 8px baseline, serif body, hairline-ruled watchlist, retrospective callout, three-voice stress test, restrained yield chart. |
-| Portfolio Analysis | `Portfolio.jsx` | *Analytical register.* Two-step trigger (Pull holdings → Run analysis), key-figure strip, controlled-rich holding cards (full / reduced ETF / not-rated / insufficient-evidence variants, thesis-anchored with graceful overflow), and a whole-book roll-up & construction panel. |
-| Trade Opportunities | `TradeOpportunities.jsx` | *Analytical register.* The 3×3 risk×horizon matrix, opportunity cards (directional thesis, prominent leading metric, since-flagged sparkline, honest empty cells), shadow banner, calibration scorecard. |
+| Portfolio Analysis | `Portfolio.jsx` | *Analytical register.* Trigger controls (the mock's two-step Pull holdings → Run analysis predates the settled three-control design — one-touch Run analysis · engine-only Quick check · view-only Pull holdings — see `docs/portfolio-analysis.md` §Triggering), key-figure strip, controlled-rich holding cards (full / reduced ETF / not-rated / insufficient-evidence variants — the typed `role_risk_only` card branch postdates the mock, see `docs/interface.md`; the mock's EOM/EOY target labels likewise predate the settled one-month / twelve-month rename, `docs/portfolio-analysis.md` §Starting parameters — thesis-anchored with graceful overflow), and a whole-book roll-up & construction panel. |
+| Trade Opportunities | `TradeOpportunities.jsx` | *Analytical register.* The 3×3 risk×horizon matrix, opportunity cards (directional thesis, prominent leading metric, since-flagged sparkline, honest empty cells), shadow banner, calibration scorecard (the scorecard's product display surface is still a deferred decision — see `docs/trade-opportunities.md` §Outcome learning). |
 | Analytical primitives | `Analytical.jsx` | Shared: directional value token, grade chip/scale, conviction meter, key-figure strip, restrained sparkline, methodology + reveal disclosures, card shell. |
 | Run tracker | `RunTracker.jsx` | The one leaveable run tracker (not a modal). Per-step / per-holding / per-cell progress, streamed output, cancel; the job lives in the footer and keeps going when you leave. |
 | Recent Reports sidebar | `Sidebar.jsx` | The **shared-history** sidebar. Dense rows, hairline separators, 2px accent leading edge on the current item. Content swaps per feature: report issues / Portfolio runs / TO runs. |

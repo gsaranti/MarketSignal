@@ -79,7 +79,14 @@ The application:
 Network reachability is not checked before a run begins — a job is always
 attempted, and an unreachable provider surfaces as a Failed job (with an
 immediate error to the user, since a run is always user-initiated) rather than a
-pre-run gate. Each job's execution gate checks credential *presence*, not
+pre-run gate. Two local-suite exceptions: the run-gate **Ollama daemon health
+check** — the one *blocking* pre-run reachability check, an unreachable daemon
+blocking the attempt **inline, before any job exists**, never a Failed job
+([local-models.md §Serving runtime](local-models.md#serving-runtime)) — and the
+live **SearXNG pre-run probe**, which only informs a consent modal and never
+blocks or gates ([interface.md §Pre-run web-research
+notice](interface.md#pre-run-web-research-notice-local-suite)). Each job's execution gate checks
+credential *presence*, not
 connectivity (the report's gate is in [configuration.md](configuration.md); the
 local jobs' in [local-models.md](local-models.md) and [schwab-integration.md](schwab-integration.md)).
 
@@ -87,8 +94,11 @@ local jobs' in [local-models.md](local-models.md) and [schwab-integration.md](sc
 
 Only one job may run at a time across the whole application. The Market Signal
 Report and the two local-suite jobs (Portfolio Analysis, Trade Opportunities)
-share a **single global run slot**, so they are mutually exclusive — matching the
-latest-run-only run tracker ([run-tracking.md](run-tracking.md)).
+share a **single global run slot**, so they are mutually exclusive — and the
+lighter Portfolio controls hold the same slot: the engine-only **quick check**
+and the view-only **Pull holdings**
+([portfolio-analysis.md §Triggering](portfolio-analysis.md#triggering)) —
+matching the latest-run-only run tracker ([run-tracking.md](run-tracking.md)).
 
 If a job is currently running and another execution is attempted, the second
 execution is skipped.

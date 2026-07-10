@@ -25,7 +25,7 @@ This matrix maps which job draws on which source; [The data sources](#the-data-s
 | [GDELT](#gdelt) | geopolitical sweep | — | — *(dropped from the suite)* |
 | [Charles Schwab](#charles-schwab-trader-api) | — | holdings + option chains **(required)** | owned / not-owned cross-ref + option chains |
 | [SEC EDGAR](#sec-edgar) | — | authoritative cross-check (10-K/Q/8-K + XBRL) | authoritative cross-check + 8-K |
-| [Stooq](#stooq) | — | deep price history | deep price history + sector / market benchmarks |
+| [Stooq](#stooq) | — | deep price history + sector / market benchmarks | deep price history + sector / market benchmarks |
 | [FINRA](#finra-short-interest) | — | short-interest risk / squeeze context | short-interest extremes screen + per-candidate |
 | [CBOE](#cboe) | — | venue-level put/call backdrop | venue-level put/call backdrop |
 | [SearXNG](#searxng-local-web-search) | — | **primary** web search (research loop) | **primary** discovery + per-candidate research |
@@ -72,7 +72,7 @@ Responsibilities:
 
 #### FMP — current paid-plan tier audit
 
-*Result of the #8 endpoint tier audit against the suite's actual paid FMP plan (verified 2026-06-26). It covers **every FMP endpoint the report and both local jobs call** — the per-job endpoint surfaces in [Endpoints by job](#endpoints-by-job) below (Market Signal Report, Portfolio Analysis, Trade Opportunities) — sorted into three buckets: **allowed (with constraint)**, **blocked → fallback**, **blocked → no fallback**. Net: the **report is fully covered**; **Portfolio equity grading is clean**; **Portfolio funds degrade** (ETF constituent look-through lost, mutual-fund holdings have no FMP path); **Trade Opportunities needs a discovery-funnel redesign** — every `*-bulk` endpoint is blocked.*
+*Result of the #8 endpoint tier audit against the suite's actual paid FMP plan (verified 2026-06-26). It covers **every FMP endpoint the report and both local jobs call** — the per-job endpoint surfaces in [Endpoints by job](#endpoints-by-job) below (Market Signal Report, Portfolio Analysis, Trade Opportunities) — sorted into three buckets: **allowed (with constraint)**, **blocked → fallback**, **blocked → no fallback**. Net: the **report is fully covered**; **Portfolio equity grading is clean**; **Portfolio funds degrade** (ETF constituent look-through lost; mutual-fund **constituent holdings** have no on-plan FMP path, while fund information and available allocation data remain usable); **Trade Opportunities needed a discovery-funnel redesign** — every `*-bulk` endpoint is blocked (since done: the discovery layer below is redesigned around `company-screener`-stratified discovery + per-symbol scoring).*
 
 **Allowed (with constraint).** Every US-exchange limit is moot — the suite is US-only by design (Schwab holdings + the US market report).
 
@@ -99,7 +99,7 @@ The annual-only limit on `key-metrics` / `ratios` is absorbed by reading trailin
 | `news/press-releases-latest` (market-wide) | `news/general-latest` + `news/stock-latest` + `sec-filings-8k` (all allowed). |
 | `mergers-acquisitions-search` (per-symbol) | `mergers-acquisitions-latest` (market-wide, allowed) + `sec-filings-8k`. |
 | `etf/holdings` | ETF exposure tilt from `etf/sector-weightings` + `etf/country-weightings` (allowed); single-name constituent concentration is dropped (or sourced from SEC N-PORT, heavy) — see the Portfolio fund-path degrade in [portfolio-analysis.md](portfolio-analysis.md). |
-| `funds/disclosure-holders-latest`, `funds/disclosure`, `funds/disclosure-dates` | SEC N-PORT filings (heavy, ~60-day lag), else mutual funds degrade to profile + Schwab position data only. |
+| `funds/disclosure-holders-latest`, `funds/disclosure`, `funds/disclosure-dates` | SEC N-PORT filings (heavy, ~60-day lag) for constituent detail; without it, a mutual fund keeps the on-plan `etf/info`, any returned country / sector allocation, quote / NAV, profile, and Schwab position data, then routes to `role_risk_only` when the usable weighting set is insufficient for exposure pricing. |
 
 **Blocked → no fallback (capability loss).**
 
@@ -254,7 +254,7 @@ FINRA publishes the **consolidated Equity Short Interest** file — keyless, biw
 ### Stooq
 Docs - https://stooq.com/db/h/
 
-**Used by:** Portfolio Analysis · Trade Opportunities (local suite only) — deep price history the engine's price-action / momentum / volatility reads need (plus sector / market benchmarks for Trade Opportunities' outcome learning). Not the report.
+**Used by:** Portfolio Analysis · Trade Opportunities (local suite only) — deep price history the engine's price-action / momentum / volatility reads need (plus sector / market benchmarks for both jobs' outcome learning and Portfolio's technology-event pre-flag). Not the report.
 
 Stooq is the suite's **deep historical price source** — keyless, with no documented rate cap, serving 20–30+ years of daily OHLCV per symbol via a simple CSV endpoint (plus bulk database downloads). Its value holds **independent of FMP's tier**: the multi-decade depth is what the engine's **price-action confirmer** (multi-year base-breakout / long relative-strength) and the momentum / volatility / price-target computations need, and serving that highest-volume per-holding read keylessly keeps the bulk price load off the shared FMP key regardless of cap. Like GDELT it is best-effort and fail-soft: an informal source with no SLA and occasional symbol-mapping gaps (US tickers take a `.us` suffix), so a missing series degrades to a gap rather than failing the run, and the adapter self-throttles to stay polite.
 
@@ -428,34 +428,37 @@ Every endpoint Portfolio Analysis ([portfolio-analysis.md](portfolio-analysis.md
 | Endpoint path | Cardinality | Portfolio Analysis use |
 | --- | --- | --- |
 | `profile` | per-holding | sector / industry / **beta** / description — classification + risk input |
-| `income-statement` (+ `-ttm`), `balance-sheet-statement`, `cash-flow-statement` | per-holding | core financial statements — engine fundamentals (balance-sheet / cash-flow TTM derived from the 4 quarterly statements, not a separate call) |
+| `income-statement` (+ `-ttm`), `balance-sheet-statement`, `cash-flow-statement` | per-holding | core financial statements — engine fundamentals (balance-sheet / cash-flow TTM derived from the 4 quarterly statements, not a separate call); re-pulled by the quick check on a fresh filing ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)) |
 | `key-metrics`, `ratios` (+ `…-ttm`) | per-holding | valuation / quality / leverage / margin ratios |
 | `financial-scores` | per-holding | Altman Z + Piotroski → risk / quality forensic input |
 | `owner-earnings` | per-holding | owner earnings (cash to shareholders) for valuation |
 | `enterprise-values` | per-holding | enterprise value for EV multiples |
 | `discounted-cash-flow` | per-holding | DCF valuation cross-check |
-| `analyst-estimates` | per-holding | forward revenue / EPS consensus → engine **revision-velocity** read |
+| `analyst-estimates` | per-holding | forward revenue / EPS consensus → engine **revision-velocity** read + the quick check's **revision preflight** |
 | `price-target-consensus`, `price-target-summary` | per-holding | street price-target level + trend — *evidence, not an engine input* |
 | `grades`, `grades-historical`, `grades-consensus` | per-holding | `grades-historical` distribution → engine **rating-drift** read; rating actions + current consensus ride as *evidence* |
 | `ratings-snapshot`, `ratings-historical` | per-holding | FMP's own composite rating — opinion cross-check only |
-| `dividends` | per-holding | yield, frequency, schedule — income / total-return grading |
-| `earnings` | per-holding | next earnings date + EPS / revenue estimate (catalyst); actual-vs-estimate surprise history |
+| `dividends` | per-holding + per maturing outcome episode (label time) | yield, frequency, schedule — income / total-return grading; re-pulled at label time per maturing outcome episode (symbol-scoped, so exited names stay computable — [portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)) and by the quick check on a fresh filing |
+| `earnings` | per-holding | next earnings date + EPS / revenue estimate (catalyst); actual-vs-estimate surprise history — re-pulled by the quick check (the new-earnings-actual leg) |
 | `insider-trading/search`, `insider-trading/statistics` | per-holding | insider buys / sells + aggregate statistics |
 | `senate-trades`, `house-trades` | per-holding | congressional trading in the name |
 | `stock-peers` | per-holding | peer set for relative valuation |
 | `shares-float` | per-holding | free float / liquidity → risk input |
 | `mergers-acquisitions-latest` | run-level | market-wide M&A feed + 8-K (SEC EDGAR) → acquirer / target catalyst, matched per holding |
 | `revenue-product-segmentation`, `revenue-geographic-segmentation` | per-holding | revenue by product / geography — business mix, thematic exposure, what-changed attribution |
-| `quote` | per-holding | live quote (current price) |
-| `etf/info` | per-fund | expense ratio, AUM, NAV, asset class, mandate |
-| `etf/sector-weightings`, `etf/country-weightings` | per-fund | sector / country exposure → fund exposure tilt (the constituent look-through proxy) |
+| `quote` | per-holding | live quote (current price); re-pulled by the quick check's per-holding price refresh ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)) |
+| `news/stock` | per-holding | symbol-scoped news headlines — research-loop **seed** (a lead, never evidence) + a trigger surface for the conditional technology-event topic ([portfolio-analysis.md §The per-holding pipeline](portfolio-analysis.md#the-per-holding-pipeline)); pulled by the quick check for tech-falsifier holdings (the qualifying-news-seed leg) |
+| `etf/info` | per-fund | expense ratio, AUM, NAV, asset class, mandate — refreshed by the quick check (the fund evidence-event leg) |
+| `etf/sector-weightings`, `etf/country-weightings` | per-fund | sector / country exposure → fund exposure tilt (the constituent look-through proxy); refreshed by the quick check per the exposure evidence-event legs |
+| `sector-pe-snapshot` | run-level (one call per exchange, shared across funds) | per-sector aggregate P/E (exchange-tagged) → the fund path's **exposure-priced valuation** composite ([portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)) |
+| `historical-sector-pe` | run-level (one call per sector × exchange — the composite's sectors on both exchanges, shared across funds) | the exposure composite's own trailing history → the fund's **constant-current-mix** vs-own-past read ([portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)) |
 
 **FRED** — base `https://api.stlouisfed.org/fred`, `/series/observations` (the `series_id` doubles as the quote symbol).
 
 | Series ID | Series | Cardinality | Portfolio Analysis use |
 | --- | --- | --- | --- |
 | `DGS10` | 10-Year Treasury Yield | run-level | risk-free rate → valuation-engine discounting |
-| `DGS2` | 2-Year Treasury Yield | run-level | risk-free rate (short end) |
+| `DGS2` | 2-Year Treasury Yield | run-level | risk-free rate (short end) → the capital-efficiency hurdle anchor; also refreshed by the quick check ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)) |
 | `DCOILWTICO` | WTI Crude Oil | run-level | commodity context for energy-linked holdings |
 | `DHHNGSP` | Henry Hub Natural Gas | run-level | commodity context for energy-linked holdings |
 
@@ -479,8 +482,9 @@ A fund whose underlying isn't among these contracts fail-softs to no positioning
 | SEC EDGAR · submissions (10-K / 10-Q / 8-K) | per-holding | filings — authoritative cross-check + 8-K events |
 | SEC EDGAR · company-facts (XBRL) | per-holding | normalized statement data the engine computes over |
 | SEC EDGAR · 13F filings | run-level (optional) | coarse institutional-ownership backdrop — EDGAR 13F is filer-keyed (not symbol-keyed), so a per-name read is approximate and **often omitted**; held out of the grade until calibrated |
-| SEC EDGAR · N-PORT filings | per-fund (optional enrichment) | fund constituent holdings for concentration / look-through (heavy, ~60-day lag); else the fund degrades to NAV + profile + Schwab position data |
-| Stooq · daily OHLCV CSV | per-holding | deep price history → momentum / volatility / price-target scenarios |
+| SEC EDGAR · N-PORT filings | per-fund (optional enrichment) | fund constituent holdings for concentration / single-name look-through (heavy, ~60-day lag); without it, ETFs retain the on-plan `etf/info` + sector / country exposure path, while mutual funds retain whatever information / allocation surface resolves and route to `role_risk_only` when the weighting set cannot support exposure pricing ([portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)) |
+| Stooq · daily OHLCV CSV | per-holding + per maturing outcome episode (label time) | deep price history → momentum / volatility / price-target scenarios; read through the shared price-bar cache by the quick check's per-holding price refresh ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)); label-time refresh through the matured window end, including exited symbols (cache may substitute only when it covers the full window — [portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)) |
+| Stooq · daily OHLCV CSV (sector / market benchmark indices) | run-level | sector- and market-relative benchmarks → the input delta's technology-event pre-flag and the outcome-learning labels ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)) |
 | FINRA · consolidated short-interest file | per-holding lookup (file fetched once / run) | short-interest level / trend / days-to-cover → risk / squeeze context |
 | CBOE · daily put/call statistics | run-level | venue-level options-sentiment backdrop (broad-market context, not a per-name signal) |
 | Web tool — keyless SearXNG | per-holding (research lane) | management commentary from earnings-call transcripts (IR / aggregator sites) + the per-holding research lane for signals with no structured feed ([web-research.md](web-research.md)) |
@@ -555,7 +559,7 @@ These were **premium-gated on the free tier** (HTTP 402 — see the report's not
 | Series ID | Series | Cardinality | Trade Opportunities use |
 | --- | --- | --- | --- |
 | `DGS10` | 10-Year Treasury Yield | run-level | risk-free rate → engine discounting / scenario targets |
-| `DGS2` | 2-Year Treasury Yield | run-level | risk-free rate (short end) |
+| `DGS2` | 2-Year Treasury Yield | run-level | risk-free rate (short end) → the entry-asymmetry threshold anchor ([trade-opportunities.md §Starting parameters](trade-opportunities.md#starting-parameters-calibratable)) |
 | `DCOILWTICO` | WTI Crude Oil (daily) | run-level | energy-price level / turn — cyclical sleeve + per-candidate context |
 | `DHHNGSP` | Henry Hub Natural Gas (daily) | run-level | energy-price level / turn — cyclical sleeve + per-candidate context |
 | `PCOPPUSDM` | Global price of Copper (monthly, IMF) | run-level | metals-price turn — commodity-cyclical archetype |

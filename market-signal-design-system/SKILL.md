@@ -1,6 +1,6 @@
 ---
 name: market-signal-design
-description: Use this skill to generate well-branded interfaces and assets for Market Signal — a local-first weekly market-report desktop app — either for production or throwaway prototypes/mocks. Contains essential design guidelines, colors, type, fonts, assets, and UI kit components for prototyping in the brand's voice.
+description: Use this skill to generate well-branded interfaces and assets for Market Signal — a local-first market-report desktop app — either for production or throwaway prototypes/mocks. Contains essential design guidelines, colors, type, fonts, assets, and UI kit components for prototyping in the brand's voice.
 user-invocable: true
 ---
 
@@ -30,7 +30,7 @@ available files (`colors_and_type.css`, the `preview/` cards, the
 ## The analytical register (Portfolio Analysis & Trade Opportunities)
 
 Market Signal now ships two **local analysis features** alongside the
-weekly report. They are **structured numeric data**, not prose, and they
+report. They are **structured numeric data**, not prose, and they
 live in a second, denser **analytical register** — instrument-grade
 (Bloomberg terminal, FT market pages, a research desk's working tools),
 never consumer-trading (Robinhood). The register split is the whole idea:

@@ -73,6 +73,12 @@
   --grade-d-tx: #8A4232;  --grade-d-bg: #EEE0D4;   /* D — 5.59:1 */
   --grade-f-tx: #6E2230;  --grade-f-bg: #EFDCDA;   /* F — 8.23:1 */
 
+  /* "Amber" attention state — the docs' actionable warning badges (Trade
+     Opportunities' Consider Deep Audit, Portfolio's attention flag) REUSE the
+     grade-D pair (--grade-d-tx on --grade-d-bg): the palette's warm
+     attention-side step. "Amber" names the state, not a token — no literal
+     amber exists in this system. */
+
   /* --- Type --------------------------------------------------------------- */
 
   --font-serif:   "Source Serif 4", "Source Serif Pro", Georgia, "Times New Roman", serif;

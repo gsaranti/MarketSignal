@@ -284,7 +284,8 @@ cost (`npm run tauri:demo`).
 A second capability set: two on-demand, **local-model-only**, deliberately
 **prescriptive** features (grades, actions, targets — a departure from the
 report's no-buy/sell stance) — **Portfolio Analysis** (grades the user's Schwab
-holdings and recommends actions + price targets) and **Trade Opportunities**
+holdings and recommends actions + price targets; a typed role/risk read where a
+vehicle class is unpriceable) and **Trade Opportunities**
 (researches new ideas across a 3×3 risk×horizon matrix). Full design lives in
 `docs/local-models.md`, `web-research.md`, `schwab-integration.md`,
 `portfolio-analysis.md`, `portfolio-workflow.md`, and `trade-opportunities.md`.
@@ -371,7 +372,10 @@ Opportunities remain designed, not built.** The load-bearing decisions:
   and the `vector_memory` / `Embedder` modules. Local-gate failures get their
   own warning categories (`schwab_gate` + `local_gate`), kept **off the cloud
   `validate` gate** — a disconnected account blocks only the local jobs, never
-  the report. Both jobs are personalized by a **fixed default investor-profile
+  the report. (Settled, engine update pending: FMP / FRED presence joins the
+  local gate through the shared missing-credentials category — the as-built
+  gate merges only the local-model and Schwab checks —
+  `portfolio-workflow.md §Step 1`.) Both jobs are personalized by a **fixed default investor-profile
   preset** (user config deferred) that frames the prescription, never which
   holdings or ideas qualify.
 - **Invariants governing the designed features** (full specs in the docs; a
@@ -395,18 +399,41 @@ Opportunities remain designed, not built.** The load-bearing decisions:
     re-derivation never does** — it refreshes the quant read and raises a
     non-destructive attention warning.
 - **Portfolio Analysis (designed — `docs/portfolio-analysis.md`,
-  `portfolio-workflow.md`).** The verdict is a **four-part read** —
-  deterministic grade, first-class forward outlook, bidirectional conviction,
-  portfolio action — with the **intrinsic verdict separated from the portfolio
-  action**: the per-holding loop emits the intrinsic verdict plus a standalone
-  lean, and a post-roll-up construction stage (deterministic aggregates → model
-  reconciliation) sets the final action + sizing with the whole book in view —
+  `portfolio-workflow.md`; strategy audit converged 2026-07-10, with one
+  named input deliberately open — the fund-form target methodology, the
+  first decision of the fund slice's plan).** The
+  intrinsic verdict is a **discriminated union**: the **`priced`** branch is
+  the four-part read — deterministic grade (momentum settled out of the
+  letter), first-class forward outlook, bidirectional conviction, portfolio
+  action — and a structurally unpriceable vehicle class returns
+  **`role_risk_only`** (no letter / targets / lean / conviction; a reduced
+  {sell all, trim, hold} spine) so no fabricated number rides an unpriceable
+  fund. The intrinsic verdict stays separated from the portfolio action: the
+  per-holding loop emits the verdict plus a standalone lean (`priced`
+  branch only), and a
+  post-roll-up construction stage (deterministic aggregates → model
+  reconciliation, joint-feasibility-checked) sets the final action + sizing —
   the engine **bounds the feasible action set and the model chooses within**,
-  so "A-grade business, trim because oversized" is expressible. A persisted
-  per-holding **position thesis ledger** (standing thesis, monitors, typed
-  falsifiers, triggers) is evaluated deterministically each run and rewritten by
-  interpretation. Funds take a reduced path (exposure tilt from ETF weightings;
-  constituent look-through off-plan → N-PORT/dropped).
+  so "A-grade business, trim because oversized" is expressible (an allocation
+  optimizer is **deferred, not adopted**). Capital efficiency tests **total
+  return** against a DGS2-anchored, tier-scaled, **three-state hurdle** —
+  only *fails* is dead money (exit-side hysteresis); **new money passes its
+  own base-case admission test**. The persisted per-holding **thesis ledger**
+  (typed by verdict branch; observation-identity persistence semantics) is
+  evaluated deterministically each run and kept live between runs by an
+  engine-only **quick check** (warn-don't-decide attention flags);
+  **selective re-analysis** re-runs a chosen subset under three safety rules
+  (force-include on flags / deterministic evidence events, the
+  carried-action transition rule, over-age add-demotion). **Outcome
+  learning** records
+  recommendation-state-keyed decision episodes (matured archive +
+  calibration-feature snapshot) under engine-computed labels — total-return
+  primary, price-only common basis, each derived read on a declared basis and
+  cohort layer, intrinsic calibration keyed on the standalone lean, never the
+  construction-shaped final action — feeding a propose-only calibration.
+  Funds are strategy-classified at loop time and routed (exposure-priced
+  proxy valuation for ≥70%-US equity funds; their structurally absent quality
+  axis uses the shared neutral-50 imputation; honest gaps elsewhere).
 - **Trade Opportunities (designed — `docs/trade-opportunities.md`,
   `trade-opportunities-workflow.md`).** Discovery through three feeders —
   **model-led hypothesis research** (the edge: hypothesis cards + a score
@@ -425,7 +452,9 @@ Opportunities remain designed, not built.** The load-bearing decisions:
 ## What remains
 
 In order: **full Portfolio (funds)** (`docs/portfolio-analysis.md §Asset
-eligibility`) → the **Local-analysis-models Settings section** (also the in-app
+eligibility`; strategy audited to convergence 2026-07-10 — the fund-form
+scenario-target methodology is the plan's named blocking input, decided first)
+→ the **Local-analysis-models Settings section** (also the in-app
 clear path for the shipped presence warning) and the **sidebar Portfolio-runs
 history** → **Trade Opportunities** (design settled — full strategy audit plus
 three external review rounds to convergence, 2026-07-09; investment logic ready
