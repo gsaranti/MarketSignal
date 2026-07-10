@@ -115,6 +115,8 @@ The most recent 14 snapshots are retained, pruned independently of the 30-report
 
 A missing or unreadable prior snapshot is non-fatal: the report is generated without a change view. Snapshots are additive context, never a precondition for a report.
 
+The planned paid-tier report enrichment adds fields to the serialized scan — compact derived reads only, each `#[serde(default)]` so an older snapshot still decodes; rules in [data-sources.md §Planned report enrichment](data-sources.md#planned-report-enrichment-paid-fmp-tier).
+
 ## Vector Memory
 
 Stores:
