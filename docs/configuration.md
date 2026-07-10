@@ -87,7 +87,7 @@ The local analysis suite (Portfolio Analysis and Trade Opportunities) is configu
 
 ### Local Models
 
-The suite calls a local model daemon over an OpenAI-compatible HTTP endpoint. Settings hold:
+The suite calls a local model daemon — Ollama, over its native HTTP API (the call path, and why it is not the daemon's OpenAI-compatible layer, is specified in [local-models.md §Serving runtime](local-models.md#serving-runtime)). Settings hold:
 - the **daemon endpoint** (the local Ollama URL)
 - the **model roster** — the model ids for the **reasoner** and the **embedder** (both required), plus an **optional fast tier** (benchmark-gated; see [local-models.md](local-models.md) for the recommended defaults)
 
