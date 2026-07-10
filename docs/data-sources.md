@@ -527,6 +527,7 @@ These were **premium-gated on the free tier** (HTTP 402 — see the report's not
 | `news/stock-latest` | discovery | ticker-tagged stock-news feed → dislocation / story surfacing for the theme scan |
 | `mergers-acquisitions-latest` | discovery + per-candidate | market-wide M&A feed → takeover-target / deal-flow candidates (discovery); also the per-candidate M&A catalyst read — whether a name is acquirer or target, matched per candidate + `sec-filings-8k` |
 | `sec-filings-8k` | discovery (optional) | market-wide 8-K material-event feed → fresh-catalyst scan |
+| `ipos-calendar` | discovery | recently priced + upcoming scheduled IPOs → the Step-3a IPO-catalyst event feeder |
 
 **FMP — per-candidate validation (the narrowed set; shared per-symbol surface with Portfolio Analysis)**
 
