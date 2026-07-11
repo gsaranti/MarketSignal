@@ -31,7 +31,8 @@ The app secret and the OAuth tokens are stored in the **macOS Keychain** — not
 
 Holdings come from the account positions endpoint (`GET /trader/v1/accounts/{accountHash}?fields=positions`).
 Schwab identifies accounts by a **hashed account number**, not the plaintext one, so the app first resolves the plaintext→hash mapping and uses the hash for all account calls.
-Each position yields the fields the analysis needs: instrument identity (symbol, CUSIP, asset type), quantity, average cost (cost basis), market value, and profit/loss.
+Each position yields the fields the analysis needs: instrument identity (symbol, CUSIP, asset type), quantity (one **signed net** value per symbol — long minus short), average cost (cost basis), market value, and profit/loss.
+The payload carries **no bond analytics and no held-contract greeks**, so a not-rated position's whole-book contribution is computed from these fields alone, the missing analytics riding as typed gaps ([portfolio-analysis.md §Portfolio roll-up and construction](portfolio-analysis.md#portfolio-roll-up-and-construction)); a held option's greeks are readable only where a chain is fetched for its underlier (below).
 
 **Option chains** come from the same OAuth's market-data endpoint (`GET /marketdata/v1/chains`) — no per-call fee, but served by the **Market Data Production** product, which is registered alongside Accounts-and-Trading on the developer app (both are attached, so chains do not 403); it is a separate product on the same OAuth, not the same Trader API surface.
 Each contract returns volume, open interest, implied volatility, and greeks, from which the suite computes a deterministic **options-activity signal** per stock: the put/call ratio (by volume and by open interest) and an IV/skew read (see [portfolio-analysis.md](portfolio-analysis.md), [trade-opportunities.md](trade-opportunities.md)).

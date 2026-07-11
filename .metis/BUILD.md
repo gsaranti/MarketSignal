@@ -427,8 +427,9 @@ Opportunities remain designed, not built.** The load-bearing decisions:
   evaluated deterministically each run and kept live between runs by an
   engine-only **quick check** (warn-don't-decide attention flags);
   **selective re-analysis** re-runs a chosen subset under three safety rules
-  (force-include on flags / deterministic evidence events, the
-  carried-action transition rule, over-age add-demotion). **Outcome
+  (force-include on flags / `unknown` degraded sweeps / side reversals /
+  deterministic evidence events, the carried-action transition rule,
+  over-age add-demotion). **Outcome
   learning** records
   recommendation-state-keyed decision episodes (matured archive +
   calibration-feature snapshot) under engine-computed labels — total-return
