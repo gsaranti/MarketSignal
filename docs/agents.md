@@ -2,11 +2,15 @@
 
 Market Signal uses a fixed multi-agent pipeline for each report.
 
-The pipeline is not tool-driven by the main agent. The analyst agents are required stages that run for every report after the research packet is created.
+The pipeline is not tool-driven by the main agent.
+The analyst agents are required stages that run for every report after the research packet is created.
 
 The application layer executes external API calls and deterministic data retrieval.
 
-Agents do not directly perform unbounded API access. When deeper research is needed, the application layer executes a bounded research plan against configured data sources. That plan is produced by the fixed research-routing model, not the main agent — the main agent shapes research only indirectly, through the inputs that feed routing (prior-report context, unresolved thesis questions, and retrieved memory). See [report-workflow.md §Step 8](report-workflow.md#step-8-perform-research-routing).
+Agents do not directly perform unbounded API access.
+When deeper research is needed, the application layer executes a bounded research plan against configured data sources.
+That plan is produced by the fixed research-routing model, not the main agent — the main agent shapes research only indirectly, through the inputs that feed routing (prior-report context, unresolved thesis questions, and retrieved memory).
+See [report-workflow.md §Step 8](report-workflow.md#step-8-perform-research-routing).
 
 The end-to-end ordering of pipeline stages — including when each agent runs relative to research gathering, news filtering, and report saving — is defined in [report-workflow.md](report-workflow.md).
 
@@ -72,7 +76,8 @@ Three analyst agents run after the application layer assembles the condensed res
 - Bear Analyst
 - Balanced Analyst
 
-These agents are not optional tools. They are fixed review stages in the report-generation pipeline.
+These agents are not optional tools.
+They are fixed review stages in the report-generation pipeline.
 
 Each analyst agent receives the same condensed research packet and produces a structured analysis from its assigned analytical perspective.
 
@@ -159,7 +164,9 @@ It may produce bullish or bearish conclusions when evidence strongly supports th
 
 ## Fixed Internal Models
 
-Some internal workflows use non-configurable models for cost control and predictable performance. These are distinct from the user-configurable model selections covered in [configuration.md](configuration.md). The non-configurable model used for vector-memory embeddings is documented in [storage.md §Embeddings](storage.md#embeddings).
+Some internal workflows use non-configurable models for cost control and predictable performance.
+These are distinct from the user-configurable model selections covered in [configuration.md](configuration.md).
+The non-configurable model used for vector-memory embeddings is documented in [storage.md §Embeddings](storage.md#embeddings).
 
 ### Headline Filtering
 
@@ -179,7 +186,10 @@ Rationale:
 
 ### Data Extraction
 
-No model-driven extraction stage runs in the pipeline. Research-inbox documents are parsed per format and condensed deterministically — bounded excerpts cut at the nearest paragraph or line seam (falling back to a hard character cut), with any truncation disclosed in the excerpt itself — rather than summarized or extracted by a model (see [research-documents.md §Processing at Job Start](research-documents.md#processing-at-job-start)). A deterministic excerpt is honest and free; a model summary would be lossy and could omit or fabricate over the user's own source material, so condensation stays in the deterministic application layer. News rides through the pipeline as headlines and snippets and is filtered, not extracted (see [Headline Filtering](#headline-filtering)).
+No model-driven extraction stage runs in the pipeline.
+Research-inbox documents are parsed per format and condensed deterministically — bounded excerpts cut at the nearest paragraph or line seam (falling back to a hard character cut), with any truncation disclosed in the excerpt itself — rather than summarized or extracted by a model (see [research-documents.md §Processing at Job Start](research-documents.md#processing-at-job-start)).
+A deterministic excerpt is honest and free; a model summary would be lossy and could omit or fabricate over the user's own source material, so condensation stays in the deterministic application layer.
+News rides through the pipeline as headlines and snippets and is filtered, not extracted (see [Headline Filtering](#headline-filtering)).
 
 ### Research Routing
 

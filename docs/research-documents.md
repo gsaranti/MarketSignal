@@ -35,7 +35,8 @@ At the start of each report job:
 
 ## Parse Failures
 
-Research documents are optional supplements, so a document that cannot be parsed never fails the job. When a supported-format file is malformed or otherwise cannot be parsed:
+Research documents are optional supplements, so a document that cannot be parsed never fails the job.
+When a supported-format file is malformed or otherwise cannot be parsed:
 - the application skips it and logs the failure
 - the job continues with the remaining documents and the rest of the workflow
 - the file is left in `/research-inbox`; it is not moved to `/research-archive`, which is reserved for successfully processed documents

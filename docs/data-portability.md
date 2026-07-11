@@ -1,40 +1,28 @@
 # Data Portability — Export & Import
 
-*Status: **built** (PR #53). This spec is as-built: the archive
-serializer/loader is `src-tauri/src/portability.rs`, the commands are
-`export_data` / `import_data_inspect` / `import_data`, and the Settings surface
-is the **Data** section plus the design package's confirmation dialog.*
+*Status: **built** (PR #53).
+This spec is as-built: the archive serializer/loader is `src-tauri/src/portability.rs`, the commands are `export_data` / `import_data_inspect` / `import_data`, and the Settings surface is the **Data** section plus the design package's confirmation dialog.*
 
-Whole-corpus **backup and restore**: bundle a machine's accumulated analytical
-history into a single archive and load it on another machine. The motivating
-case is a hardware migration — moving everything this build has learned from an
-old Mac to a new one — but the same archive doubles as an offline backup.
+Whole-corpus **backup and restore**: bundle a machine's accumulated analytical history into a single archive and load it on another machine.
+The motivating case is a hardware migration — moving everything this build has learned from an old Mac to a new one — but the same archive doubles as an offline backup.
 
-This is **not** the per-report export in [export.md](export.md): that saves one
-report as Markdown or PDF for reading or sharing. Data portability moves the
-*entire* store — every report, every durable learning, the continuity state —
-as one restorable unit. The two features are unrelated beyond the word "export";
-a reader wanting a single report's PDF is in the wrong document.
+This is **not** the per-report export in [export.md](export.md): that saves one report as Markdown or PDF for reading or sharing.
+Data portability moves the *entire* store — every report, every durable learning, the continuity state — as one restorable unit.
+The two features are unrelated beyond the word "export"; a reader wanting a single report's PDF is in the wrong document.
 
 ## The problem it solves
 
-The store is stable across app *versions* on one machine — the data dir is keyed
-by bundle identifier, so a rebuild reads the same data ([storage.md
-§Storage Location](storage.md#storage-location)). It is **not** portable across
-*machines*: a fresh install on new hardware starts empty, and there is no path
-to carry 30 reports, the accumulated durable learnings, and the cross-report
-continuity state over. Re-generating that history is impossible (it is grounded
-in past market states) and re-earning the learnings would take months of runs.
+The store is stable across app *versions* on one machine — the data dir is keyed by bundle identifier, so a rebuild reads the same data ([storage.md §Storage Location](storage.md#storage-location)).
+It is **not** portable across *machines*: a fresh install on new hardware starts empty, and there is no path to carry 30 reports, the accumulated durable learnings, and the cross-report continuity state over.
+Re-generating that history is impossible (it is grounded in past market states) and re-earning the learnings would take months of runs.
 Data portability is the missing bridge.
 
 ## What moves, and what deliberately does not
 
-The line is **durable analytical data moves; secrets and machine-local
-operational state stay behind.** Concretely, mapping onto the actual stores
-([storage.md](storage.md)):
+The line is **durable analytical data moves; secrets and machine-local operational state stay behind.**
+Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 
-**Exported — SQLite tables** (serialized as rows, not a file copy — see
-[§Why a structured archive](#why-a-structured-archive-not-a-db-file-copy)):
+**Exported — SQLite tables** (serialized as rows, not a file copy — see [§Why a structured archive](#why-a-structured-archive-not-a-db-file-copy)):
 
 | Table | Why it moves |
 |---|---|
@@ -46,10 +34,10 @@ operational state stay behind.** Concretely, mapping onto the actual stores
 
 **Exported — filesystem stores:**
 
-- `reports/` — the **canonical Markdown bodies**. This is load-bearing: the
-  report *content* is not in SQLite. The DB holds only a `markdown_path` pointer
-  and the summary JSON, so a table-only export would carry 30 empty shells
-  pointing at files that do not exist on the target. The files must ride along.
+- `reports/` — the **canonical Markdown bodies**.
+  This is load-bearing: the report *content* is not in SQLite.
+  The DB holds only a `markdown_path` pointer and the summary JSON, so a table-only export would carry 30 empty shells pointing at files that do not exist on the target.
+  The files must ride along.
 - `research-archive/` — processed source documents.
 - `research-inbox/` — documents awaiting processing.
 
@@ -64,9 +52,7 @@ operational state stay behind.** Concretely, mapping onto the actual stores
 | `research_parse_failures`, `document_truncations`, `document_parse_runs` | SQLite | Regenerable per-report telemetry, not primary data. |
 | HTML | (nothing — rendered on demand) | Never stored anywhere ([storage.md §SQLite](storage.md#sqlite)). |
 
-The exclusion of `app_settings` and the Keychain is the whole security story:
-**nothing sensitive is ever placed in the archive**, so even an unencrypted
-export cannot spill a credential.
+The exclusion of `app_settings` and the Keychain is the whole security story: **nothing sensitive is ever placed in the archive**, so even an unencrypted export cannot spill a credential.
 
 ## The archive
 
@@ -88,213 +74,112 @@ market-signal-export-YYYY-MM-DD.zip
   research-inbox/            pending source documents
 ```
 
-The default export filename drops the per-report `-<id8>` suffix convention —
-this is a corpus archive, not a report file — and a same-name collision is the
-save dialog's own overwrite prompt.
+The default export filename drops the per-report `-<id8>` suffix convention — this is a corpus archive, not a report file — and a same-name collision is the save dialog's own overwrite prompt.
 
 ### Why a structured archive, not a DB-file copy
 
 Copying `market_signal.db` wholesale looks simpler but is wrong on three counts:
 
-1. **WAL sidecars.** The database runs in WAL mode, so `market_signal.db-wal`
-   and `market_signal.db-shm` sit beside it; a naive copy of just the main file
-   captures a torn state.
-2. **Secrets ride along.** A binary copy carries the `app_settings` table —
-   every plaintext key — with no clean way to strip it. Serializing row-by-row
-   lets the exporter simply never touch that table.
-3. **No schema-version marker to lean on.** The DB has no `PRAGMA user_version`
-   and no migrations table; schema evolution is idempotent `CREATE TABLE IF NOT
-   EXISTS` plus guarded `ALTER … ADD COLUMN`. A raw file from an old build
-   dropped onto a new one is brittle. A structured import instead runs the
-   target's own schema-init first, then inserts — so it adapts to whatever
-   schema the target build carries. The archive stamps its **own** format
-   version in the manifest to gate gross incompatibility.
+1. **WAL sidecars.**
+   The database runs in WAL mode, so `market_signal.db-wal` and `market_signal.db-shm` sit beside it; a naive copy of just the main file captures a torn state.
+2. **Secrets ride along.**
+   A binary copy carries the `app_settings` table — every plaintext key — with no clean way to strip it.
+   Serializing row-by-row lets the exporter simply never touch that table.
+3. **No schema-version marker to lean on.**
+   The DB has no `PRAGMA user_version` and no migrations table; schema evolution is idempotent `CREATE TABLE IF NOT EXISTS` plus guarded `ALTER … ADD COLUMN`.
+   A raw file from an old build dropped onto a new one is brittle.
+   A structured import instead runs the target's own schema-init first, then inserts — so it adapts to whatever schema the target build carries.
+   The archive stamps its **own** format version in the manifest to gate gross incompatibility.
 
-A structured archive is also human-inspectable (open the zip, read your reports
-as Markdown) and lets import re-embed vectors if it ever needs to
-(see [§Vector memory is embedder-bound](#vector-memory-is-embedder-bound)).
+A structured archive is also human-inspectable (open the zip, read your reports as Markdown) and lets import re-embed vectors if it ever needs to (see [§Vector memory is embedder-bound](#vector-memory-is-embedder-bound)).
 
 ### Optional passphrase encryption
 
-The archive contents are non-secret by the exclusion rules above, but they are
-still the user's **entire market-analysis history** — and, once the local suite
-runs live, portfolio holdings and verdicts derived from a Schwab account. That
-is sensitive personal financial data in the clear.
+The archive contents are non-secret by the exclusion rules above, but they are still the user's **entire market-analysis history** — and, once the local suite runs live, portfolio holdings and verdicts derived from a Schwab account.
+That is sensitive personal financial data in the clear.
 
-Export therefore offers **optional passphrase encryption** (as built:
-AES-256-GCM over an Argon2id-derived key, wrapping the whole container).
-Unchecked, the export is a plain `.zip` with a UI
-warning to keep the file private and move it over a trusted channel. Checked, the
-whole archive is encrypted; import detects an encrypted container and prompts for
-the passphrase. There is **no recovery path** — a lost passphrase means an
-unrecoverable archive, stated plainly at export time.
+Export therefore offers **optional passphrase encryption** (as built: AES-256-GCM over an Argon2id-derived key, wrapping the whole container).
+Unchecked, the export is a plain `.zip` with a UI warning to keep the file private and move it over a trusted channel.
+Checked, the whole archive is encrypted; import detects an encrypted container and prompts for the passphrase.
+There is **no recovery path** — a lost passphrase means an unrecoverable archive, stated plainly at export time.
 
-The Argon2id cost parameters are **frozen in code** (m = 19456 KiB, t = 2,
-p = 1 — pinned by a test vector), never taken from the crate's defaults: the
-container stores salt and nonce but no KDF parameters, so a dependency bump
-that shifted a default would silently strand every existing encrypted archive
-as "wrong passphrase". Raising the costs means a new container version
-(`ENC_MAGIC`), keeping the old derivation for old archives.
+The Argon2id cost parameters are **frozen in code** (m = 19456 KiB, t = 2, p = 1 — pinned by a test vector), never taken from the crate's defaults: the container stores salt and nonce but no KDF parameters, so a dependency bump that shifted a default would silently strand every existing encrypted archive as "wrong passphrase".
+Raising the costs means a new container version (`ENC_MAGIC`), keeping the old derivation for old archives.
 
 ## Export flow
 
 A new **Data** section in Settings, with an **Export** action:
 
 1. User optionally enters a passphrase (leave blank for plaintext).
-2. Tauri **save** dialog picks the destination (default
-   `market-signal-export-YYYY-MM-DD.zip`).
-3. The backend `export_data` command builds the archive entirely in Rust
-   (the app layer owns all I/O — the agents/spine boundary is untouched):
-   serialize the included tables to NDJSON, copy the report and research files,
-   write the manifest with checksums, zip, and encrypt if a passphrase was set.
-   The finished bytes land via **write-then-rename** (a `.partial` sibling,
-   moved into place), so a failed write — disk full, unplugged volume — can
-   never leave a truncated zip at the chosen path masquerading as a backup.
-4. Success surfaces the path and a count of what was written (N reports, N
-   learnings, N files).
+2. Tauri **save** dialog picks the destination (default `market-signal-export-YYYY-MM-DD.zip`).
+3. The backend `export_data` command builds the archive entirely in Rust (the app layer owns all I/O — the agents/spine boundary is untouched): serialize the included tables to NDJSON, copy the report and research files, write the manifest with checksums, zip, and encrypt if a passphrase was set.
+   The finished bytes land via **write-then-rename** (a `.partial` sibling, moved into place), so a failed write — disk full, unplugged volume — can never leave a truncated zip at the chosen path masquerading as a backup.
+4. Success surfaces the path and a count of what was written (N reports, N learnings, N files).
 
-Export takes no model call and is not a pipeline job, but it **must not run
-concurrently with a report or local-suite job** — a mid-run export could capture
-a half-written state. It **claims the single run slot**
-(`RunKind::DataPortability`) for the whole command, dialog included — so a job
-can neither be running when the archive is cut nor start mid-archive — and the
-Settings buttons disable while anything holds the slot.
+Export takes no model call and is not a pipeline job, but it **must not run concurrently with a report or local-suite job** — a mid-run export could capture a half-written state.
+It **claims the single run slot** (`RunKind::DataPortability`) for the whole command, dialog included — so a job can neither be running when the archive is cut nor start mid-archive — and the Settings buttons disable while anything holds the slot.
 
 ## Import flow
 
 The **Import** action in the same Settings section:
 
 1. Tauri **open** dialog picks a `.zip`.
-2. If the container is encrypted, it decrypts with the Data section's shared
-   passphrase field; absent or wrong, import stops with a typed error asking for
-   it (no dedicated prompt dialog — retrying reopens the picker).
-3. Read and validate the manifest: reject a format version newer than this build
-   understands; verify every entry's size + checksum, and never consume bytes
-   the manifest doesn't list. Every table entry **the archive's own format
-   version requires** (five in format v1) must be **present and
-   manifest-listed** — a truncated archive is refused, never imported as a
-   sparse store, while an older archive imports complete under *its* version's
-   entry set (backward compatibility by version, never sparse tolerance). All row-level validation — NDJSON parse, embedding
-   decode, the schema's uniqueness/cardinality — also runs here, **before any
-   destructive step**, so a bad archive can only abort while the store is
-   untouched. Reading the archive is itself bounded: entries unpack under a
-   total-size ceiling (4 GiB — generous by orders of magnitude over a real
-   corpus), and `manifest.json` — which is read before that ceiling can apply —
-   carries its own smaller bound (16 MiB), so a crafted zip can't demand
-   unbounded memory through either read.
-4. Determine whether the target store is **empty** (no reports, no learnings, no
-   portfolio runs):
+2. If the container is encrypted, it decrypts with the Data section's shared passphrase field; absent or wrong, import stops with a typed error asking for it (no dedicated prompt dialog — retrying reopens the picker).
+3. Read and validate the manifest: reject a format version newer than this build understands; verify every entry's size + checksum, and never consume bytes the manifest doesn't list.
+   Every table entry **the archive's own format version requires** (five in format v1) must be **present and manifest-listed** — a truncated archive is refused, never imported as a sparse store, while an older archive imports complete under *its* version's entry set (backward compatibility by version, never sparse tolerance).
+   All row-level validation — NDJSON parse, embedding decode, the schema's uniqueness/cardinality — also runs here, **before any destructive step**, so a bad archive can only abort while the store is untouched.
+   Reading the archive is itself bounded: entries unpack under a total-size ceiling (4 GiB — generous by orders of magnitude over a real corpus), and `manifest.json` — which is read before that ceiling can apply — carries its own smaller bound (16 MiB), so a crafted zip can't demand unbounded memory through either read.
+4. Determine whether the target store is **empty** (no reports, no learnings, no portfolio runs):
    - **Empty** (the hardware-migration case) → straight load.
-   - **Non-empty** → a confirmation modal makes the destructive scope explicit:
-     *"This replaces all existing reports, learnings, snapshots, and portfolio
-     runs. Your API keys and settings are untouched. Continue?"* — followed by
-     the picked archive's own specifics from the manifest read (its created
-     date and report/learning/file counts), so the user confirms against the
-     actual artifact rather than blind copy (the realistic mistake in a
-     destructive restore is the *wrong or older* archive). On confirm, the
-     included tables and the report/research directories are cleared, then
-     loaded. **Merge is deliberately deferred** (see below).
-5. Load, in dependency order so foreign keys resolve (reports before the
-   `vector_memory` summaries and `baseline_snapshots` that reference them):
+   - **Non-empty** → a confirmation modal makes the destructive scope explicit: *"This replaces all existing reports, learnings, snapshots, and portfolio runs.
+     Your API keys and settings are untouched.
+     Continue?"* — followed by the picked archive's own specifics from the manifest read (its created date and report/learning/file counts), so the user confirms against the actual artifact rather than blind copy (the realistic mistake in a destructive restore is the *wrong or older* archive).
+     On confirm, the included tables and the report/research directories are cleared, then loaded.
+     **Merge is deliberately deferred** (see below).
+5. Load, in dependency order so foreign keys resolve (reports before the `vector_memory` summaries and `baseline_snapshots` that reference them):
    1. Run the idempotent schema-init so every table and column exists.
    2. Insert the table rows.
-   3. Copy the Markdown and research files into place, and **re-derive each
-      `markdown_path`** to the target's own absolute path — the exported path was
-      machine-specific (a bundle-id data dir) and must never be trusted verbatim.
-   4. A report record whose Markdown file is missing from the archive is skipped
-      with a logged warning, never imported as a dangling shell — its summary
-      vector row and baseline snapshots drop with it, mirroring the live
-      deletion cascade.
-6. `app_settings` is **never read or written** by import — the target machine's
-   keys and config are left exactly as they were.
-7. Refresh in place: every store-reading surface (reports list + pane, portfolio
-   state, research folders, warnings, job status) re-fetches after the load. No
-   restart is needed — commands open the database per call, and the backend
-   keeps no cross-command cache to go stale.
+   3. Copy the Markdown and research files into place, and **re-derive each `markdown_path`** to the target's own absolute path — the exported path was machine-specific (a bundle-id data dir) and must never be trusted verbatim.
+   4. A report record whose Markdown file is missing from the archive is skipped with a logged warning, never imported as a dangling shell — its summary vector row and baseline snapshots drop with it, mirroring the live deletion cascade.
+6. `app_settings` is **never read or written** by import — the target machine's keys and config are left exactly as they were.
+7. Refresh in place: every store-reading surface (reports list + pane, portfolio state, research folders, warnings, job status) re-fetches after the load.
+   No restart is needed — commands open the database per call, and the backend keeps no cross-command cache to go stale.
 
-Retention needs no special handling: the archive was produced by a machine that
-already enforced the caps (30 reports, 14 snapshots, 10 portfolio runs), so it
-arrives within them and the next run's retention pass is a no-op.
+Retention needs no special handling: the archive was produced by a machine that already enforced the caps (30 reports, 14 snapshots, 10 portfolio runs), so it arrives within them and the next run's retention pass is a no-op.
 
 ### Why replace-all, not merge (for v1)
 
-The motivating case — a new Mac — imports into an **empty** store, where load and
-replace are identical. Merge (insert-or-skip by `report_id` / `run_id`, dedup
-learnings by content hash) adds real complexity and edge cases for a scenario v1
-does not need. The archive is designed with stable primary keys so merge is a
-clean later addition, but v1 ships **fresh-load / replace-with-confirmation** and
-defers merge.
+The motivating case — a new Mac — imports into an **empty** store, where load and replace are identical.
+Merge (insert-or-skip by `report_id` / `run_id`, dedup learnings by content hash) adds real complexity and edge cases for a scenario v1 does not need.
+The archive is designed with stable primary keys so merge is a clean later addition, but v1 ships **fresh-load / replace-with-confirmation** and defers merge.
 
 ### Vector memory is embedder-bound
 
-Each `vector_memory` row stores its **source `content` alongside the embedding**,
-and the store carries no embedder-identity column — dimensionality is implicit in
-the vector, and search skips rows whose dimension does not match the query. This
-has one consequence for import:
+Each `vector_memory` row stores its **source `content` alongside the embedding**, and the store carries no embedder-identity column — dimensionality is implicit in the vector, and search skips rows whose dimension does not match the query.
+This has one consequence for import:
 
-- **Report-namespace vectors** embed with OpenAI `text-embedding-3-large` — a
-  fixed internal model, non-configurable and identical on every machine because
-  it is a cloud API. These are the migration payload, and they import and work
-  unchanged.
-- **Local-suite namespaces** (`portfolio`, `opportunities`) embed with the local
-  model. If the target machine's configured local embedder differs from the one
-  that produced them, those vectors no longer match its query dimension and are
-  silently skipped — harmless, not corrupting. Because the row keeps its
-  `content`, a future re-embed pass can regenerate them, and the manifest records
-  the per-namespace embedder id so import can detect the mismatch.
+- **Report-namespace vectors** embed with OpenAI `text-embedding-3-large` — a fixed internal model, non-configurable and identical on every machine because it is a cloud API.
+  These are the migration payload, and they import and work unchanged.
+- **Local-suite namespaces** (`portfolio`, `opportunities`) embed with the local model.
+  If the target machine's configured local embedder differs from the one that produced them, those vectors no longer match its query dimension and are silently skipped — harmless, not corrupting.
+  Because the row keeps its `content`, a future re-embed pass can regenerate them, and the manifest records the per-namespace embedder id so import can detect the mismatch.
 
-**This does not affect the M5 hardware migration.** Two independent reasons: the
-report-namespace vectors that make up the payload use the fixed cloud embedder
-above, so they cannot diverge; and the local-suite namespaces are *empty* on any
-machine that has not run the suite live — the local models are hardware-gated, so
-an old Mac accumulates no local vectors to carry, and the new machine builds its
-local vector memory fresh the first time the suite runs there (correct and
-unavoidable regardless of export/import). The embedder-mismatch case is scoped
-strictly to a **later** scenario: exporting from a machine that *has* run the
-suite live, into one configured with a **different local embedder model** — the
-"change the local embedding model" case — and even then it degrades to a
-re-embed, never data loss.
+**This does not affect the M5 hardware migration.**
+Two independent reasons: the report-namespace vectors that make up the payload use the fixed cloud embedder above, so they cannot diverge; and the local-suite namespaces are *empty* on any machine that has not run the suite live — the local models are hardware-gated, so an old Mac accumulates no local vectors to carry, and the new machine builds its local vector memory fresh the first time the suite runs there (correct and unavoidable regardless of export/import).
+The embedder-mismatch case is scoped strictly to a **later** scenario: exporting from a machine that *has* run the suite live, into one configured with a **different local embedder model** — the "change the local embedding model" case — and even then it degrades to a re-embed, never data loss.
 
 ## Verification
 
 Per [CLAUDE.md](../CLAUDE.md) the full suite runs with the slice:
 
-- **Backend** — `cargo test` (the `portability` module's round-trip suite is
-  the core: export a seeded temp store, import it into a second temp dir,
-  assert row-and-file parity for every included table/folder — incl. the
-  re-derived `markdown_path` — assert `app_settings` never reaches the archive,
-  the encrypted + wrong-passphrase round-trips, and the tamper cases: bad
-  checksums, manifest-unlisted entries, corrupt embeddings, duplicate rows,
-  a newer format version, a missing table entry, and path-traversal entries
-  (`..`, nested store paths, an escaping `markdown_filename`), each aborting
-  before the destructive phase; the unpacked-size ceiling and the frozen
-  Argon2id derivation are each pinned by their own test) plus
-  `cargo clippy --all-targets --all-features`.
-- **Frontend** — `npm run build`, a Settings spec for the Data section
-  (export/import emit payloads, the passphrase field, status/error channels,
-  disabled-while-a-job-runs), a ConfirmDialog spec (a11y contract, initial
-  focus on Cancel, Escape/scrim cancel inert while busy, the busy state, the
-  optional detail paragraph), and App-level import-fork specs (empty store →
-  straight load with `replace: false`; non-empty → the dialog carries the
-  archive's date + counts, confirm alone commits with `replace: true`, cancel
-  never reaches `import_data`).
+- **Backend** — `cargo test` (the `portability` module's round-trip suite is the core: export a seeded temp store, import it into a second temp dir, assert row-and-file parity for every included table/folder — incl. the re-derived `markdown_path` — assert `app_settings` never reaches the archive, the encrypted + wrong-passphrase round-trips, and the tamper cases: bad checksums, manifest-unlisted entries, corrupt embeddings, duplicate rows, a newer format version, a missing table entry, and path-traversal entries (`..`, nested store paths, an escaping `markdown_filename`), each aborting before the destructive phase; the unpacked-size ceiling and the frozen Argon2id derivation are each pinned by their own test) plus `cargo clippy --all-targets --all-features`.
+- **Frontend** — `npm run build`, a Settings spec for the Data section (export/import emit payloads, the passphrase field, status/error channels, disabled-while-a-job-runs), a ConfirmDialog spec (a11y contract, initial focus on Cancel, Escape/scrim cancel inert while busy, the busy state, the optional detail paragraph), and App-level import-fork specs (empty store → straight load with `replace: false`; non-empty → the dialog carries the archive's date + counts, confirm alone commits with `replace: true`, cancel never reaches `import_data`).
 
-The Settings surface follows the existing Settings patterns and the design
-package; robustness (the confirmation modal, error and disabled states, the
-passphrase field's keyboard/screen-reader behavior) is `frontend-craft` work.
+The Settings surface follows the existing Settings patterns and the design package; robustness (the confirmation modal, error and disabled states, the passphrase field's keyboard/screen-reader behavior) is `frontend-craft` work.
 
 ## Build-order placement
 
-This is **independent of the local suite** — it moves whatever the store holds,
-so it works today against the cloud report corpus. It landed (PR #53) **before**
-the M5 transition, so the accumulated report history and learnings survive the
-move. Local-suite coverage is a **format-extension rule, not an automatic
-property**: every new durable local-suite store — the
-[storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage)
-set (Portfolio outcome episodes + their matured archive; the opportunity
-matrix / run, opportunity graph, departed archive, shadow ledger, and its
-matured archive) — **joins the archive as part of the slice that lands it**: a
-new required manifest entry and a format-version bump, with regenerable caches
-(the Stooq price-bar cache) staying excluded under the what-moves rule above.
-The import's closed-set validation is versioned to match (§Import flow), so an
-archive is always complete *for its own format version*.
+This is **independent of the local suite** — it moves whatever the store holds, so it works today against the cloud report corpus.
+It landed (PR #53) **before** the M5 transition, so the accumulated report history and learnings survive the move.
+Local-suite coverage is a **format-extension rule, not an automatic property**: every new durable local-suite store — the [storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage) set (Portfolio outcome episodes + their matured archive; the opportunity matrix / run, opportunity graph, departed archive, shadow ledger, and its matured archive) — **joins the archive as part of the slice that lands it**: a new required manifest entry and a format-version bump, with regenerable caches (the Stooq price-bar cache) staying excluded under the what-moves rule above.
+The import's closed-set validation is versioned to match (§Import flow), so an archive is always complete *for its own format version*.

@@ -14,7 +14,8 @@ The main agent continuously:
 
 The system is designed to behave like a professional analyst team maintaining ongoing market coverage rather than a stateless news summarizer.
 
-For the main agent's broader responsibilities, see [agents.md](agents.md). For how memory is retrieved and stored, see [storage.md](storage.md).
+For the main agent's broader responsibilities, see [agents.md](agents.md).
+For how memory is retrieved and stored, see [storage.md](storage.md).
 
 ## Report Continuity
 

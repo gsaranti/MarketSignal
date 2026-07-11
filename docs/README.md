@@ -1,6 +1,8 @@
 # Market Signal Documentation Index
 
-> **Build status.** The local analysis suite docs — Portfolio Analysis (`portfolio-analysis.md`, `portfolio-workflow.md`), Trade Opportunities (`trade-opportunities.md`, `trade-opportunities-workflow.md`), and their shared substrate (`local-models.md`, `web-research.md`, `schwab-integration.md`) — are **forward design specs**: they describe the target design in present tense. See `.metis/BUILD.md` for what is built today versus still planned.
+> **Build status.**
+> The local analysis suite docs — Portfolio Analysis (`portfolio-analysis.md`, `portfolio-workflow.md`), Trade Opportunities (`trade-opportunities.md`, `trade-opportunities-workflow.md`), and their shared substrate (`local-models.md`, `web-research.md`, `schwab-integration.md`) — are **forward design specs**: they describe the target design in present tense.
+> See `.metis/BUILD.md` for what is built today versus still planned.
 
 ## Files
 

@@ -1,8 +1,11 @@
 # Export System
 
-Reports are authored and stored internally as Markdown. The application also generates an HTML version for in-app display and PDF generation. For the canonical authoring format and the Markdown-vs-HTML distinction, see [report-structure.md](report-structure.md).
+Reports are authored and stored internally as Markdown.
+The application also generates an HTML version for in-app display and PDF generation.
+For the canonical authoring format and the Markdown-vs-HTML distinction, see [report-structure.md](report-structure.md).
 
-This document covers exporting a **single report** for reading or sharing. To back up or migrate the **entire store** — every report, durable learnings, and continuity state — as one restorable archive, see [data-portability.md](data-portability.md); the two features are unrelated beyond the word "export."
+This document covers exporting a **single report** for reading or sharing.
+To back up or migrate the **entire store** — every report, durable learnings, and continuity state — as one restorable archive, see [data-portability.md](data-portability.md); the two features are unrelated beyond the word "export."
 
 ## Export Options
 
@@ -23,7 +26,8 @@ Markdown exports preserve:
 
 ## PDF Export
 
-PDF export is generated from the HTML report version using the Tauri webview's built-in print-to-PDF capability. Because the same webview engine renders both the in-app HTML and the exported PDF, presentation fidelity is preserved.
+PDF export is generated from the HTML report version using the Tauri webview's built-in print-to-PDF capability.
+Because the same webview engine renders both the in-app HTML and the exported PDF, presentation fidelity is preserved.
 
 PDF exports preserve:
 - rendered report styling
@@ -43,6 +47,7 @@ Example:
 
 ## Export Behavior
 
-Markdown export uses the stored canonical Markdown report. PDF export renders the report's HTML on demand and prints that to PDF — the HTML is never stored, only rendered when needed for display or export.
+Markdown export uses the stored canonical Markdown report.
+PDF export renders the report's HTML on demand and prints that to PDF — the HTML is never stored, only rendered when needed for display or export.
 
 Exporting a report does not re-run the agent workflow, regenerate analysis, or modify the stored report.
