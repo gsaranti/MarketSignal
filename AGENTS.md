@@ -13,10 +13,29 @@ Before committing or marking a slice done, run the full set — not a subset
 
 - **Backend:** `cd src-tauri && cargo test`, and `cargo clippy --all-targets
   --all-features`. Both the build and clippy are kept warning-free.
-- **Frontend:** `npm run build` (runs `vue-tsc --noEmit` type-check + Vite build).
+- **Frontend:** `npm run build` (runs `vue-tsc --noEmit` type-check + Vite build),
+  and `npm test` when a change touches a unit-tested module. `npm test` runs two
+  runners, split by file extension:
+  - **Pure modules** — `tests/**/*.test.ts` via Node's built-in runner, imported
+    via type-stripping (no build step). Currently the pure `src/renderChart.ts`.
+  - **Vue SFC component tests** — `tests/**/*.spec.ts` via Vitest (config in
+    `vitest.config.ts`: `@vitejs/plugin-vue` + happy-dom + `@vue/test-utils`),
+    which mounts real components and asserts behavior/accessibility. Currently the
+    specs under `tests/components/` (App, JobStatusPanel, JobTrackerView,
+    LatestReportView, PersistentWarningArea, RecentReportsSidebar, ResearchDocuments,
+    Settings), with shared mock helpers in `tests/helpers/`. Spec files run through esbuild
+    type-stripping, so they're a runtime/behavioral floor, not a type gate
+    (tsconfig `include` is `src/**`; specs aren't in the `vue-tsc` pass).
 
 When a Metis plan's verification command touches Rust, name clippy alongside
 `cargo test` so the review step runs it too.
+
+## Docs formatting
+
+`docs/*.md` prose is sentence-per-line (semantic line breaks): one sentence per
+line, continuation sentences indented to the bullet's content column;
+headings, fenced blocks, and tables stay verbatim — maintain this on every
+docs edit (format-only reflow commits are listed in `.git-blame-ignore-revs`).
 
 ## Design system
 
@@ -43,8 +62,8 @@ When working on any UI task:
    custom properties. Reference them in component <style> blocks
    via var(--token-name). Never invent off-system colors, radii,
    or spacing values.
-3. Use the components in `ui_kits/market_signal_desktop/` as the
-   fidelity reference for surfaces and component composition.
+3. Use the components in `market-signal-design-system/ui_kits/market_signal_desktop/`
+   as the fidelity reference for surfaces and component composition.
    Translate to Vue 3 single-file components faithfully; match
    visual output, not internal structure.
 4. The "What this system rejects on sight" section of `SKILL.md`
