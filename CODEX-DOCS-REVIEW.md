@@ -7,6 +7,11 @@ This review loop will continue until no more issues are found. Therefore, you
 can expect at some point to not find any issues in the docs. A review that returns
 no issues is completely valid.
 
+The prior round's findings have all been resolved, and the resolutions are
+recorded in **`claude-code-fixes.md`** at the repo root — read it before
+writing up any candidate finding, per the "Prior-round resolutions" section
+below.
+
 ## Purpose
 
 The `docs/` corpus is the **implementation-facing specification** for this app.
@@ -100,6 +105,32 @@ and shipped, so its as-built prose is settled — weight accordingly:
   so grep fragments, not just full phrases.
 - Finish with a **link/anchor sweep**: every relative `file.md#anchor` link in
   `docs/` must resolve (GitHub-style anchor slugs). Expected result: 0 broken.
+
+## Prior-round resolutions — use `claude-code-fixes.md` to triage a candidate finding
+
+`claude-code-fixes.md` (repo root) records how every prior-round finding was
+resolved: a disposition table naming each fixed contract's **canonical home**,
+the findings that were **refuted** (with the resolving anchors), a list of
+**deliberate designs** that can look like defects, the **drafted constants /
+typed states** added on purpose, and the **named open items** that are
+deliberately unresolved. Use it as the triage step for every candidate finding:
+
+- **Match first.** Before writing a finding up, check whether it (or its
+  underlying contract) appears in the file. If it does, go to the named
+  canonical home and verify the doc actually holds the recorded contract —
+  the notes are a map, not an authority; the docs remain the source of truth.
+- **Doc holds the contract → drop the finding.** Re-flagging a resolved,
+  refuted, deliberate, or named-open item is noise, not coverage.
+- **Doc does not match the notes → that is a real finding.** A recorded fix
+  that isn't actually in the doc, a canonical home that drifted from its
+  pointers since, or a new contradiction the fix itself introduced all clear
+  the bar — report those against the doc, citing the mismatch with the notes.
+- **Drafted constants and deliberate designs are not omissions**, so don't
+  flag their existence or their pending live verification (e.g. the Stooq
+  symbol map is M5-gated by design) — but a *factual error inside one* (a
+  wrong mapping, an internally inconsistent constant) still clears the bar.
+- **Genuinely new ground stays fully in scope.** The file constrains only
+  re-flagging; it never lowers the bar for something the prior rounds missed.
 
 ## Deliberate decisions — do not flag these as defects
 
