@@ -516,7 +516,6 @@ The `*-bulk` universe-scoring endpoints this layer once leaned on are **off-plan
 | `earnings-calendar` | discovery | upcoming-catalyst calendar (event-scan feeder) — and read **backward** over the trailing window as the **post-earnings surprise screen** (consensus + actuals on the paid key → the continuation-mode feeder; streaks confirmed per-candidate via `earnings`) |
 | `available-sectors`, `industry-classification-search`, `all-industry-classification` | discovery | industry taxonomy → map a surfaced theme onto its exposed names |
 | `stock-peers` | discovery + per-candidate | expand a screened / surfaced name to its peer cohort (discovery); relative-valuation comps (per-candidate) |
-| `shares-float-all` | discovery (optional) | universe low-float screen → squeeze-prone / thin-liquidity sleeve |
 
 **FMP — news & event feeds (discovery; structured, ticker-tagged, on the shared paid key)**
 
@@ -558,7 +557,7 @@ These were **premium-gated on the free tier** (HTTP 402 — see the report's not
 | `historical-employee-count`, `key-executives` | per-candidate (optional) | workforce trend (hiring / revenue-per-employee) + leadership roster → operating-efficiency & management read for the investor-judgment lens |
 | `quote` | per-candidate | live quote (current price) |
 
-**FRED** — base `https://api.stlouisfed.org/fred`, `/series/observations` (the `series_id` doubles as the quote symbol). Fired once per run as shared context; the commodity set also seeds the commodity-cyclical discovery sleeve (a price turn surfaces names).
+**FRED** — base `https://api.stlouisfed.org/fred`, `/series/observations` (the `series_id` doubles as the quote symbol) plus `/release/dates` (run-level — the **macro-release calendar** schedule, names + dates, that seeds the Step-3b discovery routes; the same free endpoint the report's calendar uses). Fired once per run as shared context; the commodity set also seeds the commodity-cyclical discovery sleeve (a price turn surfaces names).
 
 | Series ID | Series | Cardinality | Trade Opportunities use |
 | --- | --- | --- | --- |
