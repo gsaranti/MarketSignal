@@ -1,12 +1,9 @@
 # Codex brief — full docs-corpus review (3 passes)
 
 You are running an independent review of this project's `docs/` corpus — the
-same three-pass review a prior agent already ran. Its fixes are committed
-(`c177981` Portfolio, `c872d66` Trade Opportunities, `a9121f7` market report),
-so you are reviewing the **current, post-fix state at HEAD**. Your findings are
-deliberately not seeded with the prior rounds' — the entire point of this round
-is an independent cold read. Finding something the prior rounds missed is the
-goal; independently confirming an area clean is also a useful result.
+same three-pass review a prior agent already ran. Finding something the prior
+rounds missed is the goal; independently confirming an area clean is also a useful
+result.
 
 ## Purpose
 
@@ -21,7 +18,10 @@ class of problem **in the spec**, before code.
 The end goal, in the user's own words: these docs feed a per-task loop of
 **plan → implement → review** (the Metis workflow), and the review exists "to
 make sure that when we do the metis task plan, task implementation, and task
-review, the docs support the best possible code output."
+review, the docs support the best possible code output. Do not be a perfectionist.
+If you find something that really has no effect on the code implementation of
+the job or the quality of the job output, then really consider whether it needs
+to be handled or not".
 
 This is **not a strategy re-audit** — do not audit the jobs' investment
 strategies or attempt to make them better. The investment logic, gate designs,
@@ -161,7 +161,7 @@ pass for them explicitly:
 
 ## Output
 
-Write your findings as a single Markdown report to `iris-codex-last.md` at the
+Write your findings as a single Markdown report to `codex-review.md` at the
 repo root (gitignored; overwrite whatever is there). Order findings
 most-severe first, grouped by pass. For each finding give:
 
