@@ -69,7 +69,14 @@ If, during a run, the machine:
 - loses internet connectivity
 - cannot reach APIs
 - cannot access configured model providers
-the job fails cleanly.
+the job fails cleanly **when the loss hits a required input or stage — a
+degradable stage degrades instead**. Which failures are required (job-ending)
+versus fail-soft is the **owning workflow's contract**, not this document's:
+the report's research half is fully fail-soft
+([report-workflow.md](report-workflow.md)), and each local job carries its own
+failure matrix ([portfolio-analysis.md §Failure
+posture](portfolio-analysis.md#failure-posture), [trade-opportunities.md
+§Failure posture](trade-opportunities.md#failure-posture)).
 
 The application:
 - ends the current job
@@ -139,6 +146,12 @@ the application:
 1. cleanly ends the job
 2. stores the failure state
 3. displays a warning inside the Persistent Warning Area
+
+This section describes what happens *when a job fails* — it does not classify
+which stage failures end a job: the owning workflow does (research and
+enrichment feeds degrade fail-soft; required inputs, hard model stages, and
+persistence fail the run — see the per-job failure postures under [Offline
+Behavior](#offline-behavior)).
 
 The Persistent Warning Area de-duplicates warnings within each category. See
 [interface.md §Persistent Warning Area](interface.md#persistent-warning-area) for

@@ -170,9 +170,11 @@ The **Import** action in the same Settings section:
    it (no dedicated prompt dialog — retrying reopens the picker).
 3. Read and validate the manifest: reject a format version newer than this build
    understands; verify every entry's size + checksum, and never consume bytes
-   the manifest doesn't list. All five table entries must be **present and
+   the manifest doesn't list. Every table entry **the archive's own format
+   version requires** (five in format v1) must be **present and
    manifest-listed** — a truncated archive is refused, never imported as a
-   sparse store. All row-level validation — NDJSON parse, embedding
+   sparse store, while an older archive imports complete under *its* version's
+   entry set (backward compatibility by version, never sparse tolerance). All row-level validation — NDJSON parse, embedding
    decode, the schema's uniqueness/cardinality — also runs here, **before any
    destructive step**, so a bad archive can only abort while the store is
    untouched. Reading the archive is itself bounded: entries unpack under a
@@ -284,7 +286,15 @@ passphrase field's keyboard/screen-reader behavior) is `frontend-craft` work.
 ## Build-order placement
 
 This is **independent of the local suite** — it moves whatever the store holds,
-so it works today against the cloud report corpus and automatically covers the
-Portfolio / Trade-Opportunities tables as they fill in (the exporter is
-table-driven). It landed (PR #53) **before** the M5 transition, so the
-accumulated report history and learnings survive the move.
+so it works today against the cloud report corpus. It landed (PR #53) **before**
+the M5 transition, so the accumulated report history and learnings survive the
+move. Local-suite coverage is a **format-extension rule, not an automatic
+property**: every new durable local-suite store — the
+[storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage)
+set (Portfolio outcome episodes + their matured archive; the opportunity
+matrix / run, opportunity graph, departed archive, shadow ledger, and its
+matured archive) — **joins the archive as part of the slice that lands it**: a
+new required manifest entry and a format-version bump, with regenerable caches
+(the Stooq price-bar cache) staying excluded under the what-moves rule above.
+The import's closed-set validation is versioned to match (§Import flow), so an
+archive is always complete *for its own format version*.
