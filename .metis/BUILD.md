@@ -377,7 +377,8 @@ Opportunities remain designed, not built.** The load-bearing decisions:
   gate merges only the local-model and Schwab checks —
   `portfolio-workflow.md §Step 1`.) Both jobs are personalized by a **fixed default investor-profile
   preset** (user config deferred) that frames the prescription, never which
-  holdings or ideas qualify.
+  holdings or ideas qualify — nor the intrinsic verdict (profile-independence
+  is declared).
 - **Invariants governing the designed features** (full specs in the docs; a
   plan must not work against these):
   - **Deterministic finance, primary-source evidence** — a shared Rust engine
@@ -387,8 +388,11 @@ Opportunities remain designed, not built.** The load-bearing decisions:
     transcripts, 13F-institutional, fund-holdings, and press-releases are
     **off-plan** → SEC EDGAR / 8-K / web-loop / N-PORT fallbacks); the report's
     data-source logic is unchanged. An **evidence floor** returns
-    `insufficient-evidence` over a low-conviction guess; long jobs
-    **checkpoint/resume**; early runs are **shadow/calibration**.
+    `insufficient-evidence` over a low-conviction guess — with **debut
+    semantics**: a carried live name's inconclusive re-read holds its last
+    verdict, never a turn-away; long jobs **checkpoint/resume** (resume is its
+    own entry path on the run's pinned snapshot); early runs are
+    **shadow/calibration**.
   - **Anti-reflexivity / no-double-count** — research may *raise* conviction
     only via a typed, app-validated `validated_leading_indicator` (≤ one band),
     never via price or narrative; an unconfirmed price gain caps conviction,
@@ -444,7 +448,9 @@ Opportunities remain designed, not built.** The load-bearing decisions:
   a leading-metric hard gate. Runs as two jobs sharing one page (**Discover** /
   **Audit**, the latter forking Quick/Deep); a reserved, maintenance-priority
   **rotation slice** of the deep budget keeps the live matrix's research
-  bounded-stale; deterministic outcome labels on prior picks **and a shadow
+  bounded-stale (non-disableable — floored at one slot); deterministic outcome
+  labels on prior picks (recorded onto durable, **lifecycle-keyed picked
+  episodes** that outlive matrix / archive / run retention) **and a shadow
   scorecard over every name the funnel turned away** (typed decision episodes,
   a strict measurement contract) feed a **propose-only, never auto-applied**
   calibration; departed picks land in a price-tracked archive.
