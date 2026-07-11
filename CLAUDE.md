@@ -30,6 +30,13 @@ Before committing or marking a slice done, run the full set — not a subset
 When a Metis plan's verification command touches Rust, name clippy alongside
 `cargo test` so the review step runs it too.
 
+## Docs formatting
+
+`docs/*.md` prose is sentence-per-line (semantic line breaks): one sentence per
+line, continuation sentences indented to the bullet's content column;
+headings, fenced blocks, and tables stay verbatim — maintain this on every
+docs edit (format-only reflow commits are listed in `.git-blame-ignore-revs`).
+
 ## Design system
 
 This project has a design package at `./market-signal-design-system/`.

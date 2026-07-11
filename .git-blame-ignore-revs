@@ -1,0 +1,5 @@
+# Format-only commits to exclude from git blame
+# (git config blame.ignoreRevsFile .git-blame-ignore-revs)
+
+# docs: sentence-per-line reflow of the whole corpus (format-only)
+60d6878840a604f5635828c352c6a92dc38e8841
