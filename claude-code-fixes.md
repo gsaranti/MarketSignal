@@ -1,9 +1,19 @@
 # Notes for the next Codex docs review
 
-Written 2026-07-11 after resolving all 21 findings of run 2; extended the same day after resolving all 10 findings of run 3.
+Written 2026-07-11 after resolving all 21 findings of run 2; extended the same day after resolving all 10 findings of run 3, and again after resolving all 5 findings of run 4.
 Purpose: what changed and what is deliberate, so the next review doesn't re-flag handled or by-design material.
 Every fix follows the corpus's single-home discipline — the "canonical home" named per item is where the contract now lives; other mentions are pointers.
 **Finding IDs restart every round** — the disposition tables below are per-round, so run 2's "P1-1" and run 3's "P1-1" are unrelated findings; match by content, never by ID.
+
+## Disposition of the 5 round-4 findings
+
+| # | Finding | Disposition | Canonical home now |
+|---|---|---|---|
+| P1-1 | `conflict handling` model-authored, undefined | Fixed | `portfolio-workflow.md` §Step 6d — the field is the typed two-value **`conflict_handling`** declaration (`supplement` / `supersede`), a claim the engine validates, never a rule the model selects; §Step 6e holds the **app-owned conflict policy**: `supplement` never displaces a present feed value; `supersede` honored only when the engine verifies a strictly-newer as-of, a primary-source fact-type whitelist (issued guidance / signed contract / filed figure — drafted), and metric/units/period identity; **structured-wins is the default**, every rejection logged with its failed condition, the matched rule recorded in the audit record (`storage.md`). TO §5f points at §6e |
+| P2-1 | Step-6 dedup collapse semantically unvalidated | Fixed | `trade-opportunities-workflow.md` §Step 6 — **collapse eligibility is app-validated on a typed equivalence predicate**: same assigned cell AND a shared hypothesis-lineage node / identical leading-metric series identity / same typed catalyst; the free-text reason is recorded color, never the acceptance basis; an invalid proposal **defaults to list-both** (fail-open to redundancy, never omission); predicate inputs + validator result persist in the collapse audit (`storage.md`); the settled direction rule stays a separate invariant. TO §The pipeline mirrors by pointer |
+| P2-2 | Shadow label-time Stooq missing from endpoint surface; "no per-symbol spend" contradicts the cache contract | Fixed (narrowed) | `data-sources.md` §Trade Opportunities — endpoint surface — the label-time outcome refresh covers **picked and shadow episodes alike** (all five turn-away classes), **per distinct symbol after dedup** through the shared cache, bounded to windows maturing since the last run; the Stooq equities row tagged in lockstep; both "no per-symbol spend" clauses (TO §Outcome learning, workflow §Step 7) narrowed to **no FMP / research / model spend** with the label-time Stooq request named as the one touch; `storage.md`'s canonical rule now says "picked or shadow alike". The finding's operational claim (shadow stale by design) was **refuted** — storage.md's rule already covered shadow on a plain reading; the fix aligns the narrower surfaces to it |
+| P2-3 | `resolution_mode` tree asserted but never specified | Fixed | `trade-opportunities.md` §Outcome learning — the **ordered, first-match-wins tree, evaluated independently per matured window**: terminal typing → `forensic-materialization` → `leading-metric-rollover` (a lucky win lands here deliberately) → `multiple-unwind` → `market-beta` → `thesis-played-out` → the explicit **`no-dominant-mode`** residual (total function; residual share is itself a calibration read). Branch constants drafted in §Starting parameters (loser bar −10% — market-relative for unwind, absolute for beta; unwind = ≥60% multiple-contraction share w/ revisions in a ±5% band; beta = within ±5pp of sector; played-out = Stooq close at/above the stored base-case target w/ metric persisted); precedence itself calibratable. Workflow §Step 7 points at it |
+| P3-1 | Release→event map declared codeable with no rows | Fixed | `data-sources.md` §Planned report enrichment — the complete **17-row drafted table** over the 7 tracked releases (surfaced in-doc from the shipped `RELEASES` const), columns = FMP event string / unit normalization / polarity / epsilon, under the **Stooq-identities convention** (drafted in-doc, live-verified before wiring): FMP event strings + raw scales **pending paid-key verification, a named blocking prerequisite**; the polarity convention is stated (activity `higher-favorable`, inflation `lower-favorable`, regime-inverting prints `none`); a wrong string fails soft to names + dates, never a wrong classification |
 
 ## Disposition of the 10 round-3 findings
 
@@ -64,6 +74,11 @@ Every fix follows the corpus's single-home discipline — the "canonical home" n
 - **A matured, unchanged Portfolio holding carries no active episode** (round 3) — deliberate; re-affirmations over a matured decision record nothing, mirroring TO's immutable-episode bound.
 - **The resume window is one shared ~48h constant** (round 3) — homed in Portfolio §Starting parameters; TO points at it rather than drafting its own.
 - **The filing-cadence rider triggers off the swept `earnings` row** (round 3) — deliberately not SEC submissions, so TO's CIK resolver stays non-blocking; FMP's symbol-keyed statements are the model-free refresh path.
+- **The conflict policy is app-owned; `conflict_handling` is a validated claim, not a rule selection** (round 4) — the model declares `supplement` / `supersede`, the engine decides; flagging that the model "authors" the field misses that no declaration can bypass the engine-verified conditions.
+- **Collapse equivalence requires typed identity** (round 4) — "near-identical thesis" prose alone can never remove a gate-clearing name; a proposal failing the predicate lists both, by design (redundancy over omission).
+- **`no-dominant-mode` may absorb many ordinary windows** (round 4) — deliberate: calibration reads the tails, and the residual share is itself a surfaced read, not a silent bucket; the tree's precedence order is a drafted, calibratable constant, and its attribution bias (forensic-first undercounting unwind) is known and stated.
+- **A lucky win resolves as `leading-metric-rollover`** (round 4) — a price winner whose anchor reversed is a gate miss, not a validation; the mode describes how it resolved, not whether it made money.
+- **The event-map polarity convention is regime-aware** (round 4) — wages and JOLTS openings are `none` deliberately (growth-positive but rate-hawkish prints have no regime-free favorable side); flagging missing polarities on those rows would misread the convention.
 
 ## New drafted constants / typed states (deliberate drafts, shadow-tunable)
 
@@ -75,6 +90,7 @@ Every fix follows the corpus's single-home discipline — the "canonical home" n
 - `averageChange` sanity guard: **±25 percentage points**.
 - Stooq identities: `^spx`, SPDR sector ETFs (`xlk.us` … `xlc.us`), copper `hg.f` — **pending M5 live verification**, stated in-doc; flagging them as *unverified* is redundant, flagging a factual error in the mapping is welcome.
 - (Round 3) Graph node status **`departed`**; the all-outcome **`resolution_mode`** field (renamed from the loser-scoped "failure mode"); **`EconomicRelease.surprises[]`** per-event entries (estimate / actual / relation / absolute gap / % gap / beat-miss); the **book-level netted holdings row** (+ per-source rows for display/audit); the TO **resume pin set** (Step-2 context, Step-3 outputs + route plan, Step-4 slate/budget, as-of stamps, versions) under the shared ~48h window; the maintenance **filing-cadence rider** row set (statements / `key-metrics` / `ratios` / `financial-scores` / `financial-growth`).
+- (Round 4) The **`conflict_handling`** enum (`supplement` / `supersede`) + the supersede whitelist (issued guidance / signed contract / filed figure); the Step-6 **collapse equivalence predicate** (same cell + lineage node / metric identity / typed catalyst); the **resolution-mode tree constants** (loser bar **−10%**, unwind share **60%** w/ **±5%** revisions band, beta band **±5pp**, the target-hit predicate) + the residual **`no-dominant-mode`**; the **release→event map row set** (17 rows over 7 releases — FMP event strings and raw scales **pending paid-key live verification**, stated in-doc; flagging them as *unverified* is redundant, flagging a factual polarity/unit error is welcome).
 
 ## Known open items (named in-doc; re-flagging adds nothing)
 
@@ -83,6 +99,7 @@ Every fix follows the corpus's single-home discipline — the "canonical home" n
 - **Stage-and-swap import hardening** — named, unscheduled (data-portability).
 - **Factor-exposure model + portfolio stress reads** — deferred together (§Starting parameters).
 - **M5-gated live verifications** — local-suite smoke, Stooq symbol map, serving pre-flight.
+- **Release→event map string verification** (round 4) — the calendar enrichment's named blocking prerequisite, folded into the paid-key checkpoint; the drafted rows deliberately lead the verification.
 - **Holdings-normalization code change** (round 3) — the book-level netting step in the live adapter (plus a duplicate-symbol guard in the diff) is a named prerequisite of the full Portfolio slice; the docs contract deliberately leads the code.
 
 ## Notes on review mechanics
