@@ -37,7 +37,7 @@ export interface WarningCategory {
   items: string[];
   // The identity of the shown warning, echoed back to `dismiss_warning` so the
   // dismissal targets this row and not a newer one the backend would re-derive.
-  // Present only for the two non-blocking (dismissible) categories; null otherwise.
+  // Present only for the non-blocking (dismissible) failed-jobs category; null otherwise.
   dismiss_id: string | null;
 }
 

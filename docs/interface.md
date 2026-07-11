@@ -77,11 +77,13 @@ The Persistent Warning Area surfaces:
 - Missing provider credentials
 - Failed jobs
 
-Each warning category may have at most one unresolved warning at a time.
-If a warning already exists in a category and has not been dismissed or resolved, additional events in that category do not create duplicate warnings.
+Each warning category may have at most one unresolved warning at a time: additional events in a category that already shows a warning do not create duplicate warnings.
 
-Dismissing a warning permanently removes it.
-A subsequent event in the same category produces a fresh warning.
+The warning lifecycle splits by what owns the warning:
+- **Condition-owned (blocking) categories** — missing agent configuration, missing API tokens, missing provider credentials, and the local-suite categories below — are **gate state, not dismissible notices**: they expose no dismiss control and clear **automatically, and only, when the underlying condition resolves** (the field filled, the token saved, the account reconnected).
+  Dismissing one would hide the only persistent explanation for a locked Run button while leaving the gate in force.
+- **The event-owned failed-jobs category** — the one non-blocking category — is the **only dismissible** one: dismissing its warning permanently removes it, and the dismissal targets the **rendered** failure identity (echoed back to the dismiss command), never a click-time re-derived one, so a stale click can't silently hide a newer, unseen failure.
+  A subsequent failure in the category produces a fresh warning.
 
 The local analysis suite adds its own warning categories, both following the same one-warning-per-category de-duplication, both **blocking** the local jobs, and both **presence-based** (they fire on missing *configuration*, not on a live connectivity probe): **local models not configured** (the Ollama endpoint or a roster id is unset) and **Schwab connection** (not connected or the refresh token has lapsed) — a connected Schwab account is a hard precondition for both jobs, since holdings and the options-activity signal come from it, so manual-import holdings do not clear this gate.
 One **shared** category blocks the local jobs too: the existing **missing provider credentials** warning — the **FMP and FRED** data credentials are presence preconditions of the local-suite execution gate as well, so a missing one locks the local-suite Run buttons through that same category, no new category added (Tavily does not gate the local suite — [configuration.md §External Data Provider Credentials](configuration.md#external-data-provider-credentials), [portfolio-workflow.md §Step 1](portfolio-workflow.md#step-1-job-start-and-gate)).
