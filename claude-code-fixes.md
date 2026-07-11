@@ -1,8 +1,24 @@
 # Notes for the next Codex docs review
 
-Written 2026-07-11, after resolving all 21 findings of `codex-review.md` (independent run 2).
+Written 2026-07-11 after resolving all 21 findings of run 2; extended the same day after resolving all 10 findings of run 3.
 Purpose: what changed and what is deliberate, so the next review doesn't re-flag handled or by-design material.
 Every fix follows the corpus's single-home discipline — the "canonical home" named per item is where the contract now lives; other mentions are pointers.
+**Finding IDs restart every round** — the disposition tables below are per-round, so run 2's "P1-1" and run 3's "P1-1" are unrelated findings; match by content, never by ID.
+
+## Disposition of the 10 round-3 findings
+
+| # | Finding | Disposition | Canonical home now |
+|---|---|---|---|
+| P1-1 | Holdings consolidation undefined | Fixed (docs; code slice named) | `schwab-integration.md` §What is pulled — **book-level netting per symbol at snapshot assembly**: signed quantities + market values sum across granted accounts and manual supplements, cost basis share-weighted, long/short classified from the netted quantity, Schwab-authoritative identity fields, manual rows merge tagged-by-source with the overlap surfaced to the user; per-source rows retained for display/audit only, every downstream contract consumes the normalized book rows. The as-built adapter concatenates without netting (`schwab_live.rs` + `diff.rs` last-row-wins on duplicate symbols — a latent multi-account code bug), so the netting step is a **named prerequisite of the full Portfolio slice**, deliberately not yet implemented |
+| P1-2 | Shared sourcing still demoted the CIK resolver | Fixed | `data-sources.md` §Local analysis suite — shared sourcing now states the job split inline (Portfolio prerequisite / TO non-blocking), pointing at §SEC EDGAR — the one pre-P1-6 (run-2) sentence that fix missed |
+| P1-3 | Post-maturity episode has no legal state | Fixed (narrowed) | `portfolio-analysis.md` §Outcome learning — the **no-active-episode state is codified**: an episode is a bounded 12-month measurement instrument; extension applies only while one is active; a post-maturity re-affirmation records nothing; the next state change opens a fresh episode (TO's one-open-episode-per-live-lifecycle pattern, now cross-referenced); a post-maturity falsifier confirmation records on the **thesis ledger**, amending the "lives with the episode" rationale |
+| P2-1 | Maintenance endpoint surface can't serve the filing-cadence promises | Fixed | `data-sources.md` §Trade Opportunities — endpoint surface — the sweep gains a **conditional filing-cadence rider**: the swept `earnings` row doubles as the fresh-filing trigger; a name whose latest report postdates the last sweep refreshes its statements / `key-metrics` / `ratios` / `financial-scores` / `financial-growth` rows (tagged inline); SEC submissions / company-facts stay per-candidate (TO's CIK resolver stays non-blocking). Step 7's "tier … inputs refresh every run" overstatement corrected to price-side-every-run / statement-side-on-the-rider |
+| P2-2 | DTO resume pins nothing | Fixed | `trade-opportunities.md` §Failure posture — resume is its own entry path reopening the interrupted run's ID, pinning the Step-2 shared context, Step-3 feeder outputs + route plan, Step-4 slate / budget / rotation backlog, source as-of stamps, and model/prompt/schema versions; offered within the **~48h window shared with Portfolio** (single constant, Portfolio §Starting parameters); a new Discover discards checkpoints (research cache survives); ATO Deep Audit resumes under the same contract; Quick Audit never checkpoints |
+| P2-3 | Archived pick's graph node had no transition | Fixed | `trade-opportunities.md` §Discovery memory — fourth terminal node status **`departed`**, set in the same Step-7 reconciliation pass that archives; visible in route context as a dead thesis (anti-blind-rederivation), never a discovery feeder, never re-promotable in place, **excluded from shadow-ledger scoring** (the picked episode owns the outcome); fresh re-entry = new node + new lifecycle; tombstones pruned on the archive's retention (the uncited picked-node boundedness gap, also closed) |
+| P2-4 | Quick Audit "reads no Schwab data" vs Step-8 pull | **Refuted** (wording tightened) | All three sentences were already scoped to the cheap re-derivation, and the workflow's intro states the ATO holdings read outright. The one misreadable clause (workflow §ATO "needing only FMP / Stooq / FRED at runtime") now says "for the analytical pass" and names the Step-8 fail-soft, display-only pull as the run's one Schwab touch |
+| P2-5 | Winner value inside the loser-scoped enum | Fixed | `trade-opportunities.md` §Outcome learning — the field is the all-outcome **`resolution_mode`**, assigned to every matured pick by the deterministic tree; `thesis-played-out` is the winner branch; "for the losers" dropped; workflow §Step 7 / DTO overview and `storage.md` renamed in lockstep (the generic phrase "the failure mode of stateless re-discovery" at TO §Discovery memory is ordinary English, not the enum) |
+| P3-1 | One-to-many calendar fan-out vs scalar surprise fields | Fixed | `data-sources.md` §Planned report enrichment — the map row is one **release ↔ event pair** (per-event unit normalization / polarity / epsilon); `EconomicRelease` gains **`surprises[]`** keyed by the map's event name (estimate / actual / relation / **absolute gap** / % gap / beat-miss), empty default under `#[serde(default)]`, deduplicated per event name (latest print wins); the absolute gap now appears in the persist enumeration; Step-3, Step-16, and router prose updated in lockstep |
+| P3-2 | Prompt prose misstates the performance half | Fixed | `report-workflow.md` §Step 16 — "the P/E against its own trailing-~1yr range **paired with the cumulative return over that trailing window**" (no range read on the return); the router note and the Step-8 contract prose (an uncited third touchpoint) both carry the paired semantics and the re-rating-turn vs value-trap routing distinction |
 
 ## Disposition of the 21 round-2 findings
 
@@ -42,6 +58,12 @@ Every fix follows the corpus's single-home discipline — the "canonical home" n
 - **A live carry never collapses away in dedup** — the direction rule is an invariant (matrix exit = deep invalidation only), not an oversight.
 - **Bounded sizing is a model decision** — the compute-every-number invariant covers engine-owned analytical values only; Step 7b's target weight is engine-bounded, model-chosen, joint-feasibility-validated.
 - **The SEC cross-check for Trade Opportunities remains non-blocking** — only Portfolio promotes the CIK resolver to a prerequisite.
+- **Holdings identity is the book-level netted row** (round 3) — per-account and per-source truth is retained for display/audit only; a docs-vs-code gap against the as-built concatenating adapter is *known and named* (the netting step is a stated prerequisite of the full Portfolio slice), so flagging that mismatch adds nothing.
+- **`departed` graph nodes stay visible in route context** (round 3) — deliberate anti-blind-rederivation, not an anti-reflexivity leak: the node is never a feeder, never re-promotable in place, and excluded from shadow scoring; the fresh-start rule governs *influence on a new lifecycle*, not knowledge that a thesis died.
+- **`resolution_mode` is all-outcome by design** (round 3) — one field, one exhaustive deterministic tree over every matured pick; `thesis-played-out` is its winner branch, not a scope error.
+- **A matured, unchanged Portfolio holding carries no active episode** (round 3) — deliberate; re-affirmations over a matured decision record nothing, mirroring TO's immutable-episode bound.
+- **The resume window is one shared ~48h constant** (round 3) — homed in Portfolio §Starting parameters; TO points at it rather than drafting its own.
+- **The filing-cadence rider triggers off the swept `earnings` row** (round 3) — deliberately not SEC submissions, so TO's CIK resolver stays non-blocking; FMP's symbol-keyed statements are the model-free refresh path.
 
 ## New drafted constants / typed states (deliberate drafts, shadow-tunable)
 
@@ -52,6 +74,7 @@ Every fix follows the corpus's single-home discipline — the "canonical home" n
 - Picked matured-archive retention: **5,000** rows (mirrors the shadow matured archive).
 - `averageChange` sanity guard: **±25 percentage points**.
 - Stooq identities: `^spx`, SPDR sector ETFs (`xlk.us` … `xlc.us`), copper `hg.f` — **pending M5 live verification**, stated in-doc; flagging them as *unverified* is redundant, flagging a factual error in the mapping is welcome.
+- (Round 3) Graph node status **`departed`**; the all-outcome **`resolution_mode`** field (renamed from the loser-scoped "failure mode"); **`EconomicRelease.surprises[]`** per-event entries (estimate / actual / relation / absolute gap / % gap / beat-miss); the **book-level netted holdings row** (+ per-source rows for display/audit); the TO **resume pin set** (Step-2 context, Step-3 outputs + route plan, Step-4 slate/budget, as-of stamps, versions) under the shared ~48h window; the maintenance **filing-cadence rider** row set (statements / `key-metrics` / `ratios` / `financial-scores` / `financial-growth`).
 
 ## Known open items (named in-doc; re-flagging adds nothing)
 
@@ -60,6 +83,7 @@ Every fix follows the corpus's single-home discipline — the "canonical home" n
 - **Stage-and-swap import hardening** — named, unscheduled (data-portability).
 - **Factor-exposure model + portfolio stress reads** — deferred together (§Starting parameters).
 - **M5-gated live verifications** — local-suite smoke, Stooq symbol map, serving pre-flight.
+- **Holdings-normalization code change** (round 3) — the book-level netting step in the live adapter (plus a duplicate-symbol guard in the diff) is a named prerequisite of the full Portfolio slice; the docs contract deliberately leads the code.
 
 ## Notes on review mechanics
 

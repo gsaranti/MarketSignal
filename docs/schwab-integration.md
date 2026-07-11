@@ -31,8 +31,14 @@ The app secret and the OAuth tokens are stored in the **macOS Keychain** — not
 
 Holdings come from the account positions endpoint (`GET /trader/v1/accounts/{accountHash}?fields=positions`).
 Schwab identifies accounts by a **hashed account number**, not the plaintext one, so the app first resolves the plaintext→hash mapping and uses the hash for all account calls.
-Each position yields the fields the analysis needs: instrument identity (symbol, CUSIP, asset type), quantity (one **signed net** value per symbol — long minus short), average cost (cost basis), market value, and profit/loss.
+Each account's position rows yield the fields the analysis needs: instrument identity (symbol, CUSIP, asset type), quantity (one **signed net** value per account row — long minus short), average cost (cost basis), market value, and profit/loss.
 The payload carries **no bond analytics and no held-contract greeks**, so a not-rated position's whole-book contribution is computed from these fields alone, the missing analytics riding as typed gaps ([portfolio-analysis.md §Portfolio roll-up and construction](portfolio-analysis.md#portfolio-roll-up-and-construction)); a held option's greeks are readable only where a chain is fetched for its underlier (below).
+
+**Holdings normalization (book-level netting).**
+Multiple granted accounts — and manual supplements (below) — can each carry a row for the same security, so snapshot assembly **consolidates same-symbol rows into one book-level position** before anything downstream reads them: the uppercased symbol is the suite's sole position identity, signed quantities and market values **sum across rows**, cost basis aggregates share-weighted, and the position's long/short classification comes from the **netted** quantity — a long in one account and a short in another read as their true net side, never as two positions.
+Instrument-identity fields (CUSIP, asset type) come from the Schwab rows; a manual row supplies them only for a symbol Schwab doesn't report, and a manual row whose identity fields conflict with a Schwab-reported instrument surfaces as an import warning rather than merging silently.
+Per-source rows are retained on the snapshot for display and audit, but every downstream contract — the deterministic diff, the per-holding loop, the thesis ledger, the roll-up — consumes **only the normalized book-level rows** ([portfolio-analysis.md §Holdings change tracking](portfolio-analysis.md#holdings-change-tracking)).
+The as-built adapter concatenates account rows without this netting step, so the normalization stage is a **named prerequisite of the full Portfolio slice** (alongside the ticker→CIK resolver, [data-sources.md §SEC EDGAR](data-sources.md#sec-edgar)).
 
 **Option chains** come from the same OAuth's market-data endpoint (`GET /marketdata/v1/chains`) — no per-call fee, but served by the **Market Data Production** product, which is registered alongside Accounts-and-Trading on the developer app (both are attached, so chains do not 403); it is a separate product on the same OAuth, not the same Trader API surface.
 Each contract returns volume, open interest, implied volatility, and greeks, from which the suite computes a deterministic **options-activity signal** per stock: the put/call ratio (by volume and by open interest) and an IV/skew read (see [portfolio-analysis.md](portfolio-analysis.md), [trade-opportunities.md](trade-opportunities.md)).
@@ -52,6 +58,7 @@ Schwab says *what you own, at what cost, and how active its options market is*; 
 
 Holdings can also be entered **manually — by pasting or importing a CSV** of symbols, quantities, and cost bases, populating the same internal holdings model behind one trait.
 Because a connected Schwab account is **required** to run either job (below), manual import is a **supplement, not a substitute**: it adds positions Schwab doesn't report (for example, holdings at another brokerage) so the portfolio view can be complete.
+A manual row for a symbol a granted account already reports **merges into the same book-level netted row** ([§What is pulled](#what-is-pulled)), tagged by source — the legitimate case is the same security genuinely held at another brokerage; because re-entering a position Schwab already reports would double-count it, the import surface shows the overlap (symbol plus both quantities) so a duplicate entry is caught by the user, not silently summed.
 It does not bypass the Schwab-connection gate, and manually-added equities still draw their options-activity signal from Schwab chains where the symbol is listed.
 
 ## A connected Schwab account is required

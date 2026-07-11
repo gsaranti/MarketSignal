@@ -349,7 +349,11 @@ Opportunities remain designed, not built.** The load-bearing decisions:
   IV/skew signal is computed — an activity proxy, not positioning truth, kept
   out of grade sub-scores until calibrated. **A connected Schwab account is
   required to run either local job** — manual CSV/paste import only supplements
-  holdings. The live source is chosen over the offline fixture by a connection
+  holdings. One known as-built gap: same-symbol rows across granted accounts
+  (and future manual supplements) are concatenated, not netted — the book-level
+  holdings-normalization contract (`docs/schwab-integration.md §What is pulled`)
+  is a named code prerequisite of the full Portfolio slice. The live
+  source is chosen over the offline fixture by a connection
   gate (`MARKET_SIGNAL_SCHWAB_FIXTURE` keeps the fixture for offline runs). The surface is **read-only by construction** — the adapter
   implements only holdings/positions/option-chain `GET`s and never an
   order/trading endpoint. This is a code-enforced guarantee, not a token scope:
@@ -460,7 +464,9 @@ Opportunities remain designed, not built.** The load-bearing decisions:
 
 In order: **full Portfolio (funds)** (`docs/portfolio-analysis.md §Asset
 eligibility`; strategy audited to convergence 2026-07-10 — the fund-form
-scenario-target methodology is the plan's named blocking input, decided first)
+scenario-target methodology is the plan's named blocking input, decided first;
+named code prerequisites: the ticker→CIK resolver and the holdings book-level
+netting step)
 → the **Local-analysis-models Settings section** (also the in-app
 clear path for the shipped presence warning) and the **sidebar Portfolio-runs
 history** → **Trade Opportunities** (design settled — full strategy audit plus

@@ -78,6 +78,7 @@ Holdings are **fetched fresh at job start** — the Run-analysis trigger pulls t
 A **resumed** run performs no pull at all — it reopens its interrupted run's pinned snapshot ([portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture)).
 Each position carries instrument identity (symbol, CUSIP, asset type), quantity, average cost (cost basis), market value, and P/L, from `GET /trader/v1/accounts/{accountHash}?fields=positions` (Schwab identifies accounts by a hashed number; the app resolves plaintext→hash first).
 **Manual-import** positions (CSV/paste) populate the same holdings model as a supplement.
+Snapshot assembly then runs the **holdings-normalization step** — same-symbol rows across granted accounts and manual supplements net into one book-level position per symbol ([schwab-integration.md §What is pulled](schwab-integration.md#what-is-pulled)) — and every later step consumes only the normalized book-level rows.
 
 **Option chains are fetched fresh at job start** alongside the holdings, from `GET /marketdata/v1/chains` — per-contract volume, open interest, IV, and greeks — bounded by expiration and strike range, carrying an as-of timestamp and **rejected if stale** (mirroring the report's COT freshness guard).
 Any no-value chain condition — no listed options, stale, malformed, or a per-symbol fetch failure — degrades to the same typed options-signal gap, never a job failure ([schwab-integration.md §Failure posture](schwab-integration.md#failure-posture)).
