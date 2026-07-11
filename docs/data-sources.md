@@ -543,7 +543,7 @@ These were **premium-gated on the free tier** (HTTP 402 — see the report's not
 | `financial-scores` | per-candidate | Altman Z + Piotroski → forensic gate |
 | `owner-earnings`, `enterprise-values`, `discounted-cash-flow` | per-candidate | owner-earnings yield, EV multiples, DCF cross-check — archetype valuation lens |
 | `financial-growth` | per-candidate | multi-year per-share CAGRs (revenue / EPS / FCF / book value) → growth trajectory + the value-creation reinvestment-runway read |
-| `revenue-product-segmentation`, `revenue-geographic-segmentation` | per-candidate | segment-revenue acceleration — the leading-metric anchor for ai-infra / secular archetypes |
+| `revenue-product-segmentation`, `revenue-geographic-segmentation` | per-candidate | **annual periods only** ([tier audit](#fmp--current-paid-plan-tier-audit)) → segment mix / multi-year trajectory **context** and the own-history normalization basis — **not** the acceleration anchor's cadence source (the quarterly series is filing-derived — see below) |
 | `analyst-estimates` | per-candidate | forward consensus, snapshotted run-to-run → engine **revision-velocity** read |
 | `grades`, `grades-historical`, `grades-consensus` | per-candidate | `grades-historical` distribution → engine **rating-drift** read; actions + consensus ride as *evidence* |
 | `price-target-consensus`, `price-target-summary` | per-candidate | street target level + trend — *evidence, not an engine input* |
@@ -556,6 +556,8 @@ These were **premium-gated on the free tier** (HTTP 402 — see the report's not
 | `shares-float` | per-candidate | free float / liquidity → deterministic risk-tier + squeeze input |
 | `historical-employee-count`, `key-executives` | per-candidate (optional) | workforce trend (hiring / revenue-per-employee) + leadership roster → operating-efficiency & management read for the investor-judgment lens |
 | `quote` | per-candidate | live quote (current price) |
+
+**The segment-acceleration quarterly series is filing-derived.** FMP's segment endpoints are annual-only (above), which cannot carry the *accelerating*-family gate (seasonally comparable changes, ≥ 5-change minimum history — [trade-opportunities.md §Starting parameters](trade-opportunities.md#starting-parameters-calibratable)). The quarterly observations come from the name's **own 10-Q / press-release segment disclosures**, deep-read through the bounded research loop as **dated, cited, third-party observations** (the gate's research-supplied path), validated and **appended per filing** to the candidate's stored leading-metric series (a `filing`-cadence series). When neither the annual history nor the filing-derived observations reach the family minimum, the series is **unmeasurable → evidence-floor abstention** ([trade-opportunities.md §Evidence floor](trade-opportunities.md#evidence-floor)) — never an estimated substitute.
 
 **FRED** — base `https://api.stlouisfed.org/fred`, `/series/observations` (the `series_id` doubles as the quote symbol) plus `/release/dates` (run-level — the **macro-release calendar** schedule, names + dates, that seeds the Step-3b discovery routes; the same free endpoint the report's calendar uses). Fired once per run as shared context; the commodity set also seeds the commodity-cyclical discovery sleeve (a price turn surfaces names).
 
