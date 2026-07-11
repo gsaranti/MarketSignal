@@ -1,6 +1,6 @@
 
 You are running an independent review of this project's `docs/` corpus — the
-same three-pass review a prior agent already ran. This is the third run for you.
+same three-pass review a prior agent already ran. This is the fourth run for you.
 Finding something the prior rounds missed is the goal; independently confirming
 an area clean is also a useful result. What you find, Claude Code will then fix.
 This review loop will continue until no more issues are found. Therefore, you
