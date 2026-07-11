@@ -164,8 +164,8 @@ The skill focuses particularly on:
 Evaluates the health and participation level of the broader market beyond headline index performance.
 
 The skill analyzes:
-- advance/decline trends
-- equal-weight vs cap-weight performance
+- advance/decline trends *(no structured baseline feed — only where cited research supplies them; the movers group is the baseline's breadth proxy — [data-sources.md §Planned report enrichment](data-sources.md#planned-report-enrichment-paid-fmp-tier))*
+- equal-weight vs cap-weight performance *(likewise research-supplied only)*
 - sector participation
 - leadership concentration
 - whether rallies or selloffs are broad-based or narrow

@@ -115,64 +115,17 @@ The application gathers required baseline market data before agent reasoning beg
 
 Baseline market data is not optional and does not depend on the main agent deciding to request it. It is gathered early — before the audit and research routing — so the measured market picture and the change view below are available to every downstream stage that reasons about what actually happened.
 
-The baseline scan includes:
+The baseline scan assembles the **thirteen baseline groups** Step 16 serializes (fourteen once the planned IPO / M&A froth group lands — [§Step 16](#step-16-main-agent-synthesis)):
 
-Indices:
-- Dow
-- S&P 500
-- Nasdaq
-- Russell 2000
+**indices** · **market internals** · **sector performance** · **macro levels** · **labor levels** · **economic-release calendar** · **index performance** · **market movers** · **earnings** · **sector P/E** · **industries** · **US equity-risk-premium** · **CFTC positioning** — plus the planned **primary-market froth** group.
 
-Market internals:
-- VIX
-- 2Y yield
-- 10Y yield
-- dollar index
-- oil
-- natural gas
-- gold
-- silver
-- sector performance
+Each group's **series membership and endpoints are specified once, in [data-sources.md](data-sources.md)** (the FMP / FRED / BLS / CFTC per-source tables — including the credit-spread, curve-spread, volatility-term-structure, financial-conditions, stress, jobless-claims, Fed-balance-sheet, and mortgage-rate series the internals / macro groups carry), and are deliberately **not re-enumerated here**. Three groups carry a **planned paid-tier enrichment** ([data-sources.md §Planned report enrichment](data-sources.md#planned-report-enrichment-paid-fmp-tier)):
 
-Macro:
-- Fed expectations
-- CPI/PCE/jobs calendar (planned paid-tier enrichment: analyst consensus + realized beat/miss surprise on covered releases, plus Fed/FOMC event dates — see [data-sources.md §Planned report enrichment](data-sources.md#planned-report-enrichment-paid-fmp-tier))
-- inflation expectations
-- consumer confidence
-- recent major economic reports
+- the **economic-release calendar** gains analyst consensus + realized surprise — the relation tag, % gap, and the beat / miss read where the release's polarity is mapped — plus Fed/FOMC event dates;
+- **sector P/E** and **industries** gain the valuation- and performance-vs-own-history reads — each group's current P/E as a percentile within its trailing ~1yr range plus a min/median/max band, and a trailing cumulative return compounded from the performance endpoint's daily `averageChange` (derivation rules single-homed there; derived read persisted, raw series not);
+- the **primary-market froth** group (IPO recent + prior-window counts, the standalone upcoming-scheduled count, M&A recent + prior-window counts, notable names) is read as a risk-appetite / late-cycle pace *and trend* (native recent-vs-prior comparison, like CFTC positioning).
 
-Market movers:
-- biggest gainers
-- biggest losers
-- most-active names
-
-Earnings:
-- large-cap companies reporting in the recent and upcoming window
-
-Valuation and finer rotation (per exchange — NASDAQ growth + NYSE value):
-- sector valuation (per-sector aggregate P/E)
-- strongest and weakest industries (average move, joined with aggregate P/E)
-- US equity-risk-premium
-- valuation- and performance-vs-own-history (planned paid-tier enrichment: each sector's — and the extreme industries' — current P/E as a percentile within its trailing ~1yr range plus a min/median/max band, and a trailing cumulative return accumulated from the performance endpoint's daily `averageChange`; derived read persisted, raw series not — see [data-sources.md §Planned report enrichment](data-sources.md#planned-report-enrichment-paid-fmp-tier))
-
-Market positioning (CFTC Commitments of Traders, weekly snapshot):
-- speculator net (leveraged money / managed money) on the bellwether index, rate, FX, and commodity futures
-- asset-manager ("real money") net on the financial futures, where it diverges from fast money
-- week-over-week position changes and crowding (percent of open interest)
-
-Primary-market froth (IPO / M&A — planned paid-tier enrichment):
-- IPO calendar: recently priced (recent + prior-window counts) + upcoming scheduled offerings (a standalone forward count, no trend pair) + notable names
-- M&A: recently announced deals (recent + prior-window counts + notable names)
-- read as a risk-appetite / late-cycle pace *and trend* (native recent-vs-prior comparison on the recent counts, like CFTC positioning) — see [data-sources.md §Planned report enrichment](data-sources.md#planned-report-enrichment-paid-fmp-tier)
-
-News categories:
-- politics
-- geopolitics
-- China/trade
-- energy
-- earnings
-- AI/semiconductors
-- major economic developments
+**News is not part of the baseline scan** — gathering and filtering news belongs to the Step-7 funnel alone ([§Step 7](#step-7-gather-and-filter-news)).
 
 Individual series and releases degrade gracefully rather than aborting the scan: when a provider cannot return one, the application records it in a missing-data manifest, which is handed to the agents so they reason over what is absent instead of inferring it. A mandatory coverage floor still gates the run — the report is not generated unless the index picture and at least one macro or market-internals grounding are sufficiently covered — so a partially-degraded scan continues to a report while a too-thin one is treated as a failed job (see [scheduling.md §Error Handling](scheduling.md#error-handling)).
 
@@ -205,6 +158,8 @@ For what is stored in vector memory and the retention rules around it, see [stor
 ### Model call — Query embedding (text-embedding-3-large, fixed)
 
 **Model.** OpenAI `text-embedding-3-large` (3072-dimension vectors). Fixed internal stage, non-configurable. This call only *vectorizes* text — it performs no reasoning.
+
+**Validation (canonical for every embedding call in this workflow).** The response is validated **before any cosine search or persistence**: exactly **one vector per requested input**, the model's fixed **3,072 dimensions**, every element **finite**, and a **nonzero norm** — against a **bounded input** (the query text is capped before the call). An invalid response **fails softly**: this retrieval is skipped and the run proceeds without memory (Step 10 behaves the same; at Step 17 an invalid vector costs that memory row — dropped and logged — never the run) — the report-side counterpart of the local suite's shared embedding validator ([local-models.md §The local-model adapter seam](local-models.md#the-local-model-adapter-seam)).
 
 **Prompt (input text).** A query string assembled deterministically by the app layer (no LLM) from: each recent report's rendered summary; a "current market picture" block of the baseline index and internal levels with their change; the largest change-view moves (ordered by magnitude, capped at 12); and new/missing series transitions (capped at 6). The query is byte-capped (8,000 bytes) before the call, and the call is skipped entirely if the query is empty or the vector store is empty.
 
@@ -390,7 +345,7 @@ Like the pre-research pull, this retrieval is selective and fail-soft, and it dr
 
 ### Model call — Query embedding (text-embedding-3-large, fixed)
 
-**Model.** The same fixed `text-embedding-3-large` stage and mechanism as [Step 4](#step-4-retrieve-vector-memory-pre-research) — vectorization only, no reasoning.
+**Model.** The same fixed `text-embedding-3-large` stage and mechanism as [Step 4](#step-4-retrieve-vector-memory-pre-research) — vectorization only, no reasoning — including the **Step-4 response validation** (an invalid response skips this retrieval fail-soft).
 
 **Prompt (input text).** A query string built deterministically from the curated research evidence — each routed topic and its rationale, each finding's query, and up to three source titles per finding — byte-capped before the call.
 
@@ -488,7 +443,7 @@ For the synthesis behavior the main agent applies — independent critique, allo
 - calibrate depth and posture to the run's cadence (a short interval is a tactical update anchored to the standing thesis; a long interval is a fuller structural refresh);
 - ground all analysis in the supplied baseline and treat any item listed in the data-gaps manifest as unavailable — never infer or invent it;
 - read the breadth signals (movers, earnings) and valuation context (per-sector and per-industry P/E and return — both cross-sectionally and, under the planned paid-tier enrichment, each against its own trailing-~1yr range — exchange-specific growth-vs-value, the equity-risk-premium) as color, not a stock-picking mandate;
-- under the planned paid-tier enrichment, read the economic-release calendar's analyst consensus and any realized beat/miss surprise as an input to the risk-posture read — a run of upside or downside surprises bears on the macro thesis — treating a null consensus as no-estimate, not zero;
+- under the planned paid-tier enrichment, read the economic-release calendar's analyst consensus and any realized surprise (the relation tag, and the beat / miss read where the release's polarity is mapped) as an input to the risk-posture read — a run of upside or downside surprises bears on the macro thesis — treating a null consensus as no-estimate, not zero;
 - under the planned paid-tier enrichment, read IPO / M&A froth (the issuance and deal-making pace and its rising/cooling trend) as a risk-appetite / late-cycle signal bearing on the market-cycle and risk-posture reads;
 - ground every claim in the provided news clusters and deep-research evidence rather than prior knowledge, and treat recalled memory as continuity (recall, not fresh data — baseline and research win on conflict);
 - write the Retrospective Audit section only when recent prior reports are present, and omit it on a first report;
@@ -515,7 +470,7 @@ Ship the prose change in the same slice as the data: the data without the prose 
 
 ## Step 17: Save Report and Memory Outputs
 
-**Type:** Computed (persist the Markdown report + SQLite metadata) + Model call (embeddings for the summary and each durable learning).
+**Type:** Computed (persist the Markdown report + SQLite metadata) + Model call (embeddings for the summary and each durable learning). Each embedding response passes the **Step-4 validation** ([§Step 4](#step-4-retrieve-vector-memory-pre-research)); an invalid vector costs that memory row — dropped and logged — never the persisted report.
 
 The main agent writes the final report in Markdown.
 
