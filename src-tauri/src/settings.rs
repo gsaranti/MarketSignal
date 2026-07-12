@@ -141,6 +141,9 @@ pub fn save(conn: &Connection, models: &AgentModels, credentials: &CredentialUpd
     // after this update — a non-blank entered value counts, otherwise the
     // already-stored value must be non-blank. Checked before any write so a gated
     // save leaves the store untouched.
+    // Docs scope this gate to the agent/token submission; splitting the
+    // provider-credential save out of it is a named prerequisite of the
+    // local-suite Settings slice (docs/configuration.md §API Tokens).
     let token_present = |key: &str, update: &Option<String>| -> Result<bool> {
         if update
             .as_deref()

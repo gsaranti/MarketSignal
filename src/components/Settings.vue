@@ -159,6 +159,9 @@ const dirty = computed(() => modelsDirty.value || credsDirty.value);
 // Saving is disabled until both API tokens are present (docs/configuration.md
 // §API Tokens) — either already stored (configured) or entered now. The backend
 // enforces the same gate; this just keeps the Save control honest.
+// The docs scope this gate to the agent/token submission; ungating the
+// provider-credential save is a named prerequisite of the local-suite
+// Settings slice (docs/configuration.md §API Tokens).
 const tokensSatisfied = computed(() => {
   const c = props.settings?.credentials;
   const openai = creds.value.openai.trim() !== "" || !!c?.openai;

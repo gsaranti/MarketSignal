@@ -57,9 +57,13 @@ Both are mandatory because the fixed internal pipeline stages always use both pr
 See [agents.md §Fixed Internal Models](agents.md#fixed-internal-models) and [storage.md §Embeddings](storage.md#embeddings).
 Because the only model providers are OpenAI and Anthropic, the user's agent model selection adds no token requirement beyond these two.
 
+The two-token requirement gates the **cloud configuration submission** — the Settings save that persists the agent-model selection and the API tokens.
 If either token is missing:
-- saving the configuration is disabled
+- saving that agent / token configuration is disabled
 - the application displays a validation warning explaining which token is required
+
+The gate is **scoped to that submission, never to Settings as a whole**: the shared external data-provider credentials (below) and the local-suite configuration ([§Local Analysis Suite Configuration](#local-analysis-suite-configuration)) must be **independently savable with no cloud token present** — a machine set up only for the local suite persists FMP / FRED and its local-model settings without ever holding an OpenAI or Anthropic key ([local-models.md §Serving runtime](local-models.md#serving-runtime)).
+The as-built Settings form persists the agent models and all five credentials through one token-gated save, so the **provider-credential save split is a named code prerequisite of the queued Local-analysis-models Settings slice** (the shipped Schwab section's independent credential save is the in-code precedent); the docs contract deliberately leads the code here, as with the holdings-netting step.
 
 ## External Data Provider Credentials
 
@@ -69,6 +73,8 @@ The Settings section includes credential configuration for:
 - Financial Modeling Prep
 - FRED
 - Tavily
+
+These provider credentials save **independently of the API-token gate** ([§API Tokens](#api-tokens)) — the local suite's cloud-keyless setup path depends on it.
 
 The **Financial Modeling Prep**, **FRED**, and **Tavily** credentials are all required to run a **Market Signal Report** job:
 - **Tavily** is the primary research and news-ingestion system, and news gathering is a mandatory workflow step (see [report-workflow.md §Step 7](report-workflow.md#step-7-gather-and-filter-news)).
@@ -88,6 +94,7 @@ For the data providers themselves and what each is used for, see [data-sources.m
 ## Local Analysis Suite Configuration
 
 The local analysis suite (Portfolio Analysis and Trade Opportunities) is configured separately from the report, and its settings gate the **local jobs only** — they are independent of the report's execution gate, so a machine set up for one need not be set up for the other (with two shared exceptions: the **FMP and FRED** data credentials above, which both gates require as presence preconditions — [portfolio-workflow.md §Step 1](portfolio-workflow.md#step-1-job-start-and-gate)).
+Its settings — and those shared provider credentials — save independently of the report's API-token gate ([§API Tokens](#api-tokens)), so a cloud-keyless machine can complete local-suite setup.
 
 ### Local Models
 
@@ -172,7 +179,7 @@ Crucially, the **final matrix has no output cap**: every candidate that clears t
 Two **discovery-memory** settings bound that watchlist so it can't grow without limit: a **watchlist retention cap** (the maximum number of carried-forward worthy-but-unpicked names kept in active monitoring) and a **carry horizon** (how long a hypothesis is monitored without its leading metric confirming before it is retired — counted in the metric's own reporting periods, not runs, so the bound doesn't depend on how often the user runs DTO; a `research`-class metric, having no reporting period, counts its horizon in **calendar time**).
 Both have generous defaults; retired nodes leave active monitoring but stay in run history for outcome-learning ([trade-opportunities.md §Discovery memory](trade-opportunities.md#discovery-memory-the-opportunity-graph)).
 A third, calibration-side bound is the **shadow-ledger retention cap** — the maximum number of active turn-away **decision episodes** (the ledger's entry unit, one per ticker per turn-away — Step-5h rejects, dedup-collapsed peers, retired / unpromoted watchlist nodes) kept in label tracking for the price-only shadow scorecard — when the cap binds, the **oldest active entries are evicted before their labels mature**, logged as a coverage loss (the generous default makes this the pathological case, not the norm) — each surviving entry frozen into a compact matured archive (its own cap) once its 12-month outcome labels have been recorded ([trade-opportunities.md §Outcome learning](trade-opportunities.md#outcome-learning-calibration)).
-A fourth bound is the **picked matured-archive cap** — the retention ceiling on frozen, matured picked decision episodes (the active picked set needs no cap: one open episode per live lifecycle, each maturing within 12 months — [trade-opportunities.md §Starting parameters](trade-opportunities.md#starting-parameters-calibratable)).
+A fourth bound is the **picked matured-archive cap** — the retention ceiling on frozen, matured picked decision episodes (the active picked set needs no cap: one open episode per lifecycle, each closing by ~12 months plus the shared price-coverage grace — [trade-opportunities.md §Starting parameters](trade-opportunities.md#starting-parameters-calibratable)).
 
 Portfolio Analysis has no equivalent setting: it grades a known holdings list and never screens the universe.
 
