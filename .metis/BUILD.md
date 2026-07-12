@@ -468,8 +468,10 @@ scenario-target methodology is the plan's named blocking input, decided first;
 named code prerequisites: the ticker→CIK resolver and the holdings book-level
 netting step)
 → the **Local-analysis-models Settings section** (also the in-app
-clear path for the shipped presence warning) and the **sidebar Portfolio-runs
-history** → **Trade Opportunities** (design settled — full strategy audit plus
+clear path for the shipped presence warning; named code prerequisite: the
+provider-credential save split out of the token-gated cloud save, so a
+cloud-keyless machine can persist FMP / FRED — `configuration.md §API Tokens`)
+and the **sidebar Portfolio-runs history** → **Trade Opportunities** (design settled — full strategy audit plus
 three external review rounds to convergence, 2026-07-09; investment logic ready
 for implementation planning when the queue reaches it). Hardware-gated on the M5: live local-suite
 validation, the model-serving pre-flight, and the calibration knobs.
