@@ -466,7 +466,9 @@ In order: **full Portfolio (funds)** (`docs/portfolio-analysis.md §Asset
 eligibility`; strategy audited to convergence 2026-07-10 — the fund-form
 scenario-target methodology is the plan's named blocking input, decided first;
 named code prerequisites: the ticker→CIK resolver and the holdings book-level
-netting step)
+netting step; the slice's engine update also carries the round-7-settled **v2
+rate-anchored scenario-target function** and **per-branch risk-tier
+assignment** — docs-lead-code, `engine.rs` names the gap)
 → the **Local-analysis-models Settings section** (also the in-app
 clear path for the shipped presence warning; named code prerequisite: the
 provider-credential save split out of the token-gated cloud save, so a
