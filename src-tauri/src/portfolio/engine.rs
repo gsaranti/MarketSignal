@@ -291,6 +291,12 @@ fn return_volatility(history: &[f64]) -> Option<f64> {
 /// Scenario end-of-month and end-of-year targets from the spot price, an expected
 /// annual return blended from growth and a modest drift, and a volatility-scaled
 /// bull/bear band — methodology recorded on each target so the basis is inspectable.
+///
+/// This is the v1 drift formula. The settled replacement is the v2 rate-anchored
+/// forward-multiple function (driver ladder × DGS10 spread-anchored scenario
+/// multiples) specified in docs/portfolio-analysis.md §Starting parameters —
+/// docs-lead-code; it lands with the full Portfolio slice alongside the
+/// per-branch risk-tier assignment the same section defines.
 fn scenario_targets(price: f64, m: &ComputedMetrics) -> PriceTargets {
     // Expected annual drift: half the revenue growth (a deliberately conservative
     // pass-through) plus a 2% baseline, bounded so a single noisy input can't imply an
