@@ -1,6 +1,7 @@
 
 You are running an independent review of this project's `docs/` corpus — the
-same three-pass review a prior agent already ran. This is the sixth run for you.
+same review a prior agent already ran (originally three passes; the Market
+Signal Report pass is retired — see below). This is the seventh run for you.
 Finding something the prior rounds missed is the goal; independently confirming
 an area clean is also a useful result. What you find, Claude Code will then fix.
 This review loop will continue until no more issues are found. Therefore, you
@@ -45,6 +46,8 @@ better" strategy opinion does not.
 - **Market Signal Report** — `report-workflow.md`, `report-structure.md`,
   `agents.md`, `analyst-skills.md`, `thesis-continuity.md`,
   `research-documents.md`, `export.md`, `run-tracking.md`, `scheduling.md`.
+  **Review-complete** — run 6 returned this group clean (deep enrichment pass
+  + light suite sweep, no finding survived), so it is out of scope below.
 - **Portfolio Analysis** — `portfolio-analysis.md`, `portfolio-workflow.md`.
 - **Trade Opportunities** — `trade-opportunities.md`,
   `trade-opportunities-workflow.md`.
@@ -58,7 +61,7 @@ Build status lives in `.metis/BUILD.md` (read-only for you; do not edit
 anything under `.metis/`). The docs deliberately describe designed and built
 features **without distinction** — that is a convention, not a defect.
 
-## The three passes and their weighting
+## The two passes and their weighting
 
 **Pass 1 — Portfolio Analysis (full-contract deep read).** Cold read of
 `portfolio-analysis.md` + `portfolio-workflow.md` end to end, plus the
@@ -75,22 +78,14 @@ end, plus the TO sections of the shared docs (the TO endpoint tables and their
 three cardinality bands, the discovery feeders, the shadow ledger and outcome
 learning, the opportunity graph, the DTO/ATO lifecycle).
 
-**Pass 3 — Market Signal Report (enrichment-weighted).** The report is built
-and shipped, so its as-built prose is settled — weight accordingly:
-
-- **Deep (full contract):** the *planned report enrichment* —
-  `data-sources.md §Planned report enrichment` plus the report endpoint
-  table's planned-paid rows, `report-workflow.md §Step 3` and `§Step 16`
-  (where the new signals enter the packet and the prompts), and
-  `storage.md §Baseline Snapshots` (where the enriched scan serializes).
-  Check: internal consistency of the three enrichment signals across those
-  homes; every planned endpoint against the tier audit; the stated exclusions
-  holding (all three engine-derived, outside the level-delta engine; breadth
-  ruled out); window sizing consistent with the cadence-honest contract
-  (windows sized to the actual elapsed interval, clamped where stated).
-- **Light (checklist sweep only):** the rest of the report group — for the two
-  promoted classes below. Do not re-litigate settled as-built prose beyond
-  those; flag anything else only if it is glaring **and** job-result-affecting.
+**The former Pass 3 — Market Signal Report — is retired.** Run 6 executed it
+in full (the enrichment-weighted deep pass plus the light report-suite sweep)
+and no finding survived triage, so the report group is review-complete: do not
+sweep the Market Signal Report docs for their own sake.
+The shared docs stay fully in scope through their Portfolio / Trade
+Opportunities sections, and if a Pass-1/2 finding directly implicates a report
+doc (a shared contract both sides hold), citing it is still legitimate — the
+retirement removes the standalone sweep, not the cross-reference.
 
 ## Method that worked (suggested execution, feel free adjust)
 
