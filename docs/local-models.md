@@ -9,17 +9,17 @@ The per-feature pipelines live in their own documents.
 
 ## Serving runtime
 
-Local models are served by a single **Ollama** daemon running on the Apple-Silicon GPU via its **MLX backend where the model architecture is supported, with a llama.cpp Metal/GGUF fallback otherwise**, exposing an OpenAI-compatible HTTP API the Rust backend calls with `reqwest::blocking` behind the same `spawn_blocking` seam used for the cloud agents (see [agents.md](agents.md)).
+Local models are served by a single **Ollama** daemon running on the Apple-Silicon GPU via its **MLX backend where the model architecture is supported, with a llama.cpp Metal/GGUF fallback otherwise**; the Rust backend calls the daemon's **native HTTP surface** — `/api/chat` for generation, `/api/embed` for embeddings, `/api/tags` for the supervision/connectivity probes — with `reqwest::blocking` behind the same `spawn_blocking` seam used for the cloud agents (see [agents.md](agents.md)).
 Ollama is the chosen runtime because it is the one that, by default, keeps **several models resident simultaneously** and queues/evicts them by memory pressure — the posture the "route each role to the best model" design needs — while the MLX backend gives the GPU throughput where it supports the model (the default 122B reasoner currently lands on the Metal/GGUF fallback — see [local-model-operations.md](local-model-operations.md)).
 
 **Rationale (Ollama over alternatives):**
 - multi-model residency and on-demand swap are the default, not an opt-in;
-- one OpenAI-compatible surface for chat *and* embeddings, reachable from the existing reqwest adapter;
+- one daemon surface for chat *and* embeddings (native `/api/chat` + `/api/embed`), reachable from the existing reqwest adapter;
 - MLX backend closes the historical Apple-Silicon speed gap where a model's architecture is MLX-supported (llama.cpp Metal fallback otherwise).
 
 **Schema-constrained output uses Ollama's native `/api/chat` `format` parameter, not the `/v1/` OpenAI-compatible path.**
-The `/v1/` layer advertises only JSON mode; reliable JSON-Schema conformance comes from passing the schema to the native endpoint.
-This is the one place the local adapter diverges from a plain OpenAI client (see [§Schema-constrained output](#schema-constrained-output)).
+The daemon also exposes an OpenAI-compatible `/v1/` layer, but the suite deliberately does not use it: the `/v1/` layer advertises only JSON mode, while reliable JSON-Schema conformance comes from passing the schema to the native endpoint (see [§Schema-constrained output](#schema-constrained-output)).
+The native transport also carries its own streaming envelope — newline-delimited JSON rather than the cloud adapters' SSE — so the adapter has its own stream decoder rather than reusing the cloud one.
 
 **Lifecycle.**
 The app gates on the daemon in two layers, mirroring the cloud report's *gate on credential **presence**, not connectivity* posture ([scheduling.md](scheduling.md)).

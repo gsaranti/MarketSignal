@@ -12,10 +12,11 @@
 //! Like the cloud adapters, the HTTP call is synchronous (`reqwest::blocking`) so
 //! the per-stage boundary stays sync; the blocking work is offloaded via
 //! `spawn_blocking` at the Tauri-command seam (the `test_local_daemon` command in
-//! `lib.rs`, mirroring `connection_test`). Schema-constrained output rides Ollama's
-//! native `/api/chat` `format` parameter (not the `/v1/` OpenAI-compatible path,
-//! which advertises only JSON mode) — the one place this diverges from a plain
-//! OpenAI client. Token + reasoning streaming rides the existing `progress` seam,
+//! `lib.rs`, mirroring `connection_test`). All calls use Ollama's native surface
+//! (`/api/chat`, `/api/tags`; embeddings ride `/api/embed` in `embedding.rs`) —
+//! the daemon's OpenAI-compatible `/v1/` layer is deliberately unused, since
+//! schema-constrained output needs the native `format` parameter (the `/v1/` path
+//! advertises only JSON mode). Token + reasoning streaming rides the existing `progress` seam,
 //! so a local job streams into the run tracker exactly as a report run does; the
 //! native `/api/chat` stream is newline-delimited JSON (not SSE), so it carries its
 //! own decoder rather than reusing the cloud SSE one.
