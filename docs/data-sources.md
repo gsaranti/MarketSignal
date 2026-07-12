@@ -596,7 +596,7 @@ Equity grading is fully covered; the fund path degrades, since constituent look-
 | `owner-earnings` | per-holding | owner earnings (cash to shareholders) for valuation |
 | `enterprise-values` | per-holding | enterprise value for EV multiples |
 | `discounted-cash-flow` | per-holding | DCF valuation cross-check |
-| `analyst-estimates` | per-holding | forward revenue / EPS consensus → engine **revision-velocity** read + the quick check's **revision preflight** |
+| `analyst-estimates` | per-holding | forward revenue / EPS consensus → engine **revision-velocity** read, the quick check's **revision preflight**, and the **v2 target ladder's driver source** (consensus forward EPS mid / low / high, else forward revenue per share — [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)) |
 | `price-target-consensus`, `price-target-summary` | per-holding | street price-target level + trend — *evidence, not an engine input* |
 | `grades`, `grades-historical`, `grades-consensus` | per-holding | `grades-historical` distribution → engine **rating-drift** read; rating actions + current consensus ride as *evidence* |
 | `ratings-snapshot`, `ratings-historical` | per-holding | FMP's own composite rating — opinion cross-check only |
@@ -620,7 +620,7 @@ Equity grading is fully covered; the fund path degrades, since constituent look-
 
 | Series ID | Series | Cardinality | Portfolio Analysis use |
 | --- | --- | --- | --- |
-| `DGS10` | 10-Year Treasury Yield | run-level | risk-free rate → the v2 scenario-target function's spread-anchored multiples ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)) |
+| `DGS10` | 10-Year Treasury Yield | run-level | risk-free rate → the v2 scenario-target function's spread-anchored multiples ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)); also refreshed by the quick check, which re-anchors the stored multiples on the fresh print ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)) |
 | `DGS2` | 2-Year Treasury Yield | run-level | risk-free rate (short end) → the capital-efficiency hurdle anchor; also refreshed by the quick check ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)) |
 
 A run-level rate retrieval (`DGS10` / `DGS2`) still failing after the shared bounded retries **hard-fails the run before any per-holding work** — the suite's canonical rate-anchor rule, homed at [portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture); the engine-only quick paths fail-soft to the cached print under the drafted max age instead.
@@ -718,7 +718,8 @@ Primary-source disclosure catalysts come from `sec-filings-8k` + the web loop.*
 **FMP — per-candidate validation (the narrowed set; shared per-symbol surface with Portfolio Analysis)**
 
 *These are the available per-symbol paths Trade Opportunities validates a candidate over.
-Plan-tier status, the off-plan per-symbol signals these rows omit, and the web-research-loop / SEC EDGAR / `sec-filings-8k` fallbacks that cover them are recorded in [§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit) — as are the US-exchange / annual-period constraints.*
+Plan-tier status, the off-plan per-symbol signals these rows omit, and the web-research-loop / SEC EDGAR / `sec-filings-8k` fallbacks that cover them are recorded in [§FMP — current paid-plan tier audit](#fmp--current-paid-plan-tier-audit) — as are the US-exchange / annual-period constraints.
+The classification subset of these rows — `profile` plus the statement-derived margin / recurring-revenue / cyclicality inputs — fires at **Step 5a** as the archetype-classification prefetch and is **reused by the Step-5b dossier from the run cache**, so per-candidate cardinality is unchanged ([trade-opportunities-workflow.md §Step 5a](trade-opportunities-workflow.md#step-5a-archetype-classification)).*
 
 | Endpoint path | Cardinality | Trade Opportunities use |
 | --- | --- | --- |
@@ -729,7 +730,7 @@ Plan-tier status, the off-plan per-symbol signals these rows omit, and the web-r
 | `owner-earnings`, `enterprise-values`, `discounted-cash-flow` | per-candidate | owner-earnings yield, EV multiples, DCF cross-check — archetype valuation lens |
 | `financial-growth` | per-candidate + per swept name on fresh filing (filing-cadence rider) | multi-year per-share CAGRs (revenue / EPS / FCF / book value) → growth trajectory + the value-creation reinvestment-runway read |
 | `revenue-product-segmentation`, `revenue-geographic-segmentation` | per-candidate | **annual periods only** ([tier audit](#fmp--current-paid-plan-tier-audit)) → segment mix / multi-year trajectory **context** and the own-history normalization basis — **not** the acceleration anchor's cadence source (the quarterly series is filing-derived — see below) |
-| `analyst-estimates` | per-candidate + per swept name (carried-matrix / watchlist sweep) | forward consensus, snapshotted run-to-run → engine **revision-velocity** read |
+| `analyst-estimates` | per-candidate + per swept name (carried-matrix / watchlist sweep) | forward consensus, snapshotted run-to-run → engine **revision-velocity** read + the **v2 target ladder's driver source** under the archetype overrides ([trade-opportunities.md §Starting parameters](trade-opportunities.md#starting-parameters-calibratable)) |
 | `grades`, `grades-historical`, `grades-consensus` | per-candidate | `grades-historical` distribution → engine **rating-drift** read; actions + consensus ride as *evidence* |
 | `price-target-consensus`, `price-target-summary` | per-candidate | street target level + trend — *evidence, not an engine input* |
 | `ratings-snapshot`, `ratings-historical` | per-candidate | FMP composite rating — opinion cross-check only |
@@ -752,7 +753,7 @@ Fired once per run as shared context; the commodity set also seeds the commodity
 
 | Series ID | Series | Cardinality | Trade Opportunities use |
 | --- | --- | --- | --- |
-| `DGS10` | 10-Year Treasury Yield | run-level | risk-free rate → the v2 scenario-target function's spread-anchored multiples ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)) |
+| `DGS10` | 10-Year Treasury Yield | run-level | risk-free rate → the v2 scenario-target function's spread-anchored multiples ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)); also loaded by the ATO Quick Audit's target re-anchor under the quick-path cached-print rule ([trade-opportunities.md §Failure posture](trade-opportunities.md#failure-posture)) |
 | `DGS2` | 2-Year Treasury Yield | run-level | risk-free rate (short end) → the entry-asymmetry threshold anchor ([trade-opportunities.md §Starting parameters](trade-opportunities.md#starting-parameters-calibratable)); a run-level rate retrieval still failing after the shared bounded retries hard-fails the run before per-candidate work ([trade-opportunities.md §Failure posture](trade-opportunities.md#failure-posture)) |
 | `DCOILWTICO` | WTI Crude Oil (daily) | run-level | energy-price level / turn — cyclical sleeve + per-candidate context |
 | `DHHNGSP` | Henry Hub Natural Gas (daily) | run-level | energy-price level / turn — cyclical sleeve + per-candidate context |
