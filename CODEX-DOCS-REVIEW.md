@@ -1,7 +1,7 @@
 
 You are running an independent review of this project's `docs/` corpus — the
 same review a prior agent already ran (originally three passes; the Market
-Signal Report pass is retired — see below). This is the nineth run for you.
+Signal Report pass is retired — see below). This is the tenth run for you.
 Finding something the prior rounds missed is the goal; independently confirming
 an area clean is also a useful result. What you find, Claude Code will then fix.
 This review loop will continue until no more issues are found. Therefore, you
