@@ -432,8 +432,18 @@ Opportunities remain designed, not built.** The load-bearing decisions:
   engine-only **quick check** (warn-don't-decide attention flags);
   **selective re-analysis** re-runs a chosen subset under three safety rules
   (force-include on flags / `unknown` degraded sweeps / side reversals /
-  deterministic evidence events, the carried-action transition rule,
-  over-age add-demotion). **Outcome
+  deterministic evidence events / a capped held-name research refresh's
+  material update, the carried-action transition rule, over-age
+  add-demotion). The **held-name research refresh lane** checks at most two
+  otherwise-reused-or-carried holdings per run against one named qualitative
+  ledger driver / falsifier and can only force the normal full pass; it never
+  changes a verdict. A deterministic **pre-profit execution / financing
+  overlay** combines statement-derived runway / margin / capex / dilution with
+  app-validated operating observations from research; a first / history-thin
+  pass attempts a bounded latest-four-period backfill, and repeated misses
+  require a material shortfall in the same metric across distinct periods.
+  Severe multi-leg deterioration bounds conviction / actions without changing
+  the letter, and no single metric forces a sale. **Outcome
   learning** records
   recommendation-state-keyed decision episodes (matured archive +
   calibration-feature snapshot) under engine-computed labels — total-return

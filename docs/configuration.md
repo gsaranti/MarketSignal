@@ -193,7 +193,10 @@ When the watchlist cap binds, the eviction is **deterministic** — the lowest-h
 A third, calibration-side bound is the **shadow-ledger retention cap** — the maximum number of active turn-away **decision episodes** (the ledger's entry unit, one per ticker per turn-away — Step-5h rejects, dedup-collapsed peers, retired / unpromoted watchlist nodes) kept in label tracking for the price-only shadow scorecard — when the cap binds, the **oldest active entries are evicted before their labels mature**, logged as a coverage loss (the generous default makes this the pathological case, not the norm) — each surviving entry frozen into a compact matured archive (its own cap) once its 12-month outcome labels have been recorded ([trade-opportunities.md §Outcome learning](trade-opportunities.md#outcome-learning-calibration)).
 A fourth bound is the **picked matured-archive cap** — the retention ceiling on frozen, matured picked decision episodes (the active picked set needs no cap: one open episode per lifecycle, each closing by ~12 months plus the shared price-coverage grace — [trade-opportunities.md §Starting parameters](trade-opportunities.md#starting-parameters-calibratable)).
 
-Portfolio Analysis has no equivalent setting: it grades a known holdings list and never screens the universe.
+Portfolio Analysis has no discovery-breadth setting: it grades a known holdings list and never screens the universe.
+Its small **held-name research refresh lane** uses a fixed drafted cap of **2 holdings per Run analysis** for the first implementation, selected by the app from named qualitative ledger drivers / falsifiers and spent only on holdings whose research appears reusable from pre-loop-visible evidence or whose verdict would otherwise be carried ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).
+The cap is deliberately not user-configurable yet: it is a bounded freshness safeguard, not a quality or admission control, and a material result merely force-includes the holding into the normal full pass.
+The ordinary ~4-week research max age remains Portfolio's full-research liveness backstop.
 
 ### Research Context Management (hierarchical distillation)
 
