@@ -446,19 +446,32 @@ Opportunities remain designed, not built.** The load-bearing decisions:
 - **Trade Opportunities (designed — `docs/trade-opportunities.md`,
   `trade-opportunities-workflow.md`).** Discovery through three feeders —
   **model-led hypothesis research** (the edge: hypothesis cards + a score
-  gating promotion *before any ticker*), stratified structured feeders (the
-  screener stratifies — stratification IS the breadth mechanism, no bulk
-  pre-scoring), and a persisted **opportunity-graph watchlist** — then
-  per-candidate validation under an archetype lens, a mandatory bear case, and
-  a leading-metric hard gate. Runs as two jobs sharing one page (**Discover** /
-  **Audit**, the latter forking Quick/Deep); a reserved, maintenance-priority
-  **rotation slice** of the deep budget keeps the live matrix's research
-  bounded-stale (non-disableable — floored at one slot); deterministic outcome
-  labels on prior picks (recorded onto durable, **lifecycle-keyed picked
-  episodes** that outlive matrix / archive / run retention) **and a shadow
-  scorecard over every name the funnel turned away** (typed decision episodes,
-  a strict measurement contract) feed a **propose-only, never auto-applied**
-  calibration; departed picks land in a price-tracked archive.
+  gating promotion *before any ticker*), with an app-owned **calendar-time
+  coverage rotation** backed by a discovery-coverage ledger; stratified
+  structured feeders (the screener stratifies — stratification IS the breadth
+  mechanism, no bulk pre-scoring); and a persisted **opportunity-graph
+  watchlist**, whose structured / filing metrics refresh at class cadence and
+  whose research-class nodes have a small, current-search refresh lane. It then
+  performs per-candidate validation under an archetype lens, a mandatory bear
+  case, and a leading-metric hard gate. App-eligible new-listing,
+  spin-off/carve-out, or new-economic-perimeter cases may contribute identity-,
+  perimeter-, and comparability-validated direct or recast **limited-history
+  evidence** without weakening any normal floor or gate; proxies remain
+  corroboration only. The engine retains a structured-only
+  target counterfactual while the app validates any sourced, claim-id-based
+  **research target scenario** and computes the resulting targets; a validated
+  thesis-milestone DAG supplies the `milestone-chain` horizon basis and carries
+  condition-identity-keyed evaluation state. Runs as two jobs sharing one page
+  (**Discover** / **Audit**, the latter forking Quick/Deep); a reserved,
+  maintenance-priority **rotation slice** of the deep budget keeps the live
+  matrix's research bounded-stale (non-disableable — floored at one slot).
+  Deterministic outcome labels on prior picks (recorded onto durable,
+  **lifecycle-keyed picked episodes** that outlive matrix / archive / run
+  retention) **and a shadow scorecard over every name the funnel turned away**
+  (typed decision episodes, a strict measurement contract) feed a
+  **propose-only, never auto-applied** calibration. Persistence separates six
+  structures: matrix, opportunity graph, discovery-coverage ledger,
+  price-tracked departed-pick archive, shadow ledger, and picked-episode store.
 
 ## What remains
 

@@ -163,12 +163,23 @@ These defaults are the stated posture the suite runs against until a configurabl
 
 ### Trade Opportunities — Discovery Breadth
 
-Trade Opportunities runs as **two jobs** ([trade-opportunities.md §The two jobs](trade-opportunities.md#the-two-jobs)); only **Discover (DTO)** has a compute setting.
+Trade Opportunities runs as **two jobs** ([trade-opportunities.md §The two jobs](trade-opportunities.md#the-two-jobs)); only **Discover (DTO)** has discovery-compute controls.
 DTO is a discovery funnel: it screens the whole universe, then spends expensive per-candidate validation (deep local-model research plus per-symbol data) only on a narrowed set ([trade-opportunities-workflow.md §Step 4](trade-opportunities-workflow.md#step-4-candidate-consolidation)).
 Because that per-candidate work runs on a local reasoner, one run cannot deep-research every surfaced name — so a single **deep-research budget** caps how many names DTO deep-researches per run, split three ways: a **reserved rotation slice** (a configured share, default ~20%, floored at one slot) spent first on live opportunities in **maintenance-priority order** (warning-bearing → catalyst-near → threshold-near → stalest, with a **max-age service level** force-promoting any name whose research age exceeds the bound — the matrix's self-refresh, best-effort under the budget with any overdue overflow forming a stalest-first backlog surfaced to the user ([trade-opportunities-workflow.md §Step 4](trade-opportunities-workflow.md#step-4-candidate-consolidation)), so no live name's research can age indefinitely), then **brand-new candidates**, with any **leftover** spent on existing opportunities that re-surfaced through discovery (oldest-deep-researched first); every other live opportunity gets only the engine-only cheap re-derivation that run.
 The **rotation share and its max-age service level** are themselves configurable, but the slice **cannot be configured off**: whatever the share, it **floors at one slot per run**, so tuning changes the self-refresh's cadence, never voids its liveness ([trade-opportunities.md §The two jobs](trade-opportunities.md#the-two-jobs)).
 Settings expose this budget as a **discovery-breadth control**: a generous default, raised for a more exhaustive (longer) run or lowered for a faster one.
 **Audit (ATO)** has no compute setting — its depth is bounded by the opportunities the user selects (a large Deep-Audit selection confirms first).
+
+Two smaller DTO controls govern discovery **coverage**, not admission quality:
+
+- **Discovery coverage window** — calendar time before a canonical route class or coverage subject (broad industry or currently active house-view theme) becomes overdue; drafted default **~4 weeks**.
+  When debt exists, the app reserves the first route slot after the mandatory outside-view route for the oldest compatible overdue class + subject, within the existing route cap and discovery fetch / wall-clock ceiling.
+  A completed route clears the units it actually researched even when it found no idea; a failed or budget-exhausted attempt does not.
+- **Research-watchlist refresh cap** — the maximum `research`-class watchlist nodes receiving a narrow current-search refresh per DTO run; drafted default **1**.
+  This lane spends inside the existing discovery ceiling and updates only named leading-metric / falsifier / milestone evidence; promotion enters the normal candidate funnel and never bypasses validation ([trade-opportunities-workflow.md §Step 3c](trade-opportunities-workflow.md#step-3c-carried-forward-watchlist-re-check)).
+
+Both defaults are calibration parameters: raising them improves rotation / watchlist coverage at the cost of longer discovery, while lowering them cannot change a candidate's evidence, risk, valuation, forensic, or entry gates.
+The **limited-history evidence path is not a setting**: eligibility and observation comparability are app-validated identity / provenance rules, so a user cannot loosen them to make a thin-history candidate pass ([trade-opportunities.md §Evidence floor](trade-opportunities.md#evidence-floor)).
 
 This is a **compute budget, not a quality cap**.
 At the point it applies nothing has been validated yet, so a name that doesn't fit the budget is **not rejected, only deferred** — and a genuinely worthy deferral (a real hypothesis + an identified leading metric) is **remembered**: written to the persisted **opportunity graph** as a watchlist node and re-checked every later run with its leading metric monitored, so a deferred name that quietly compounds is caught rather than lost to chance ([trade-opportunities.md §Discovery memory](trade-opportunities.md#discovery-memory-the-opportunity-graph)).
