@@ -749,6 +749,119 @@ impl FredDataSource {
         Self::new(crate::config::AppConfig::from_env().fred_key()?)
     }
 
+    /// The latest numeric print of one rate series as a **decimal ratio** (`4.5` →
+    /// `0.045` — the suite's shared rate representation, normalized at the adapter
+    /// seam before any engine consumption; `docs/portfolio-analysis.md` §Starting
+    /// parameters). Errors on transport failure, a non-2xx, or no numeric
+    /// observation — the caller owns the posture (the run-level rate anchors are
+    /// **hard-fail** for a full run; `docs/portfolio-analysis.md` §Failure posture).
+    pub fn latest_rate_decimal(&self, series_id: &str) -> Result<f64> {
+        if self.progress.is_cancelled() {
+            anyhow::bail!("rate fetch skipped (run cancelled)");
+        }
+        self.progress
+            .request_started("FRED", "suite-rate", series_id, "Rate anchor");
+        let result = (|| -> Result<f64> {
+            let (status, body) = self.get(series_id)?;
+            if !(200..300).contains(&status) {
+                anyhow::bail!("FRED returned {status} for {series_id}");
+            }
+            let parsed: FredObservations =
+                serde_json::from_str(&body).context("parsing FRED observations")?;
+            parsed
+                .observations
+                .iter()
+                .find_map(|o| o.value.parse::<f64>().ok())
+                .map(|percent| percent / 100.0)
+                .with_context(|| format!("no numeric observation for {series_id}"))
+        })();
+        match &result {
+            Ok(_) => self
+                .progress
+                .request_finished("FRED", "suite-rate", series_id, "Rate anchor", "ok", None),
+            Err(e) => self.progress.request_finished(
+                "FRED",
+                "suite-rate",
+                series_id,
+                "Rate anchor",
+                "failed",
+                Some(e.to_string()),
+            ),
+        }
+        result
+    }
+
+    /// One date-ranged history request for a rate series, returned as **dated decimal
+    /// observations, oldest first** — the v2 anchor window's DGS10 history (the
+    /// acquisition rule on the DGS10 row, `docs/data-sources.md §Portfolio Analysis —
+    /// endpoint surface`: one request per run covering the trailing window plus
+    /// alignment slack, retained as dated observations for the
+    /// latest-published-on-or-before join).
+    pub fn rate_history_decimal(
+        &self,
+        series_id: &str,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+        if self.progress.is_cancelled() {
+            anyhow::bail!("rate-history fetch skipped (run cancelled)");
+        }
+        self.progress
+            .request_started("FRED", "suite-rate-history", series_id, "Rate history");
+        let result = (|| -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+            let url = format!("{}{FRED_OBSERVATIONS_PATH}", self.base_url);
+            let (status, body) = crate::http_retry::send_with_retry("FRED", || {
+                self.http.get(&url).query(&[
+                    ("series_id", series_id),
+                    ("api_key", self.api_key.as_str()),
+                    ("file_type", "json"),
+                    ("sort_order", "asc"),
+                    ("observation_start", &from.format("%Y-%m-%d").to_string()),
+                    ("observation_end", &to.format("%Y-%m-%d").to_string()),
+                ])
+            })?;
+            if !(200..300).contains(&status) {
+                anyhow::bail!("FRED returned {status} for {series_id} history");
+            }
+            let parsed: FredObservations =
+                serde_json::from_str(&body).context("parsing FRED history observations")?;
+            let mut out: Vec<crate::portfolio::engine::DatedValue> = parsed
+                .observations
+                .into_iter()
+                .filter_map(|o| {
+                    o.value
+                        .parse::<f64>()
+                        .ok()
+                        .map(|percent| crate::portfolio::engine::DatedValue {
+                            date: o.date,
+                            value: percent / 100.0,
+                        })
+                })
+                .collect();
+            out.sort_by(|a, b| a.date.cmp(&b.date));
+            Ok(out)
+        })();
+        match &result {
+            Ok(_) => self.progress.request_finished(
+                "FRED",
+                "suite-rate-history",
+                series_id,
+                "Rate history",
+                "ok",
+                None,
+            ),
+            Err(e) => self.progress.request_finished(
+                "FRED",
+                "suite-rate-history",
+                series_id,
+                "Rate history",
+                "failed",
+                Some(e.to_string()),
+            ),
+        }
+        result
+    }
+
     /// GET one series' most recent observations (newest-first), returning the
     /// status and raw body for `interpret_response` to judge. A transport error
     /// (the provider is unreachable) returns `Err` to the caller, which records it as an

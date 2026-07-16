@@ -38,10 +38,69 @@ pub struct Position {
 /// §Local Analysis Suite Storage`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Holdings {
+    /// The normalized **book-level** rows — one netted position per symbol once
+    /// [`Holdings::normalized`] has run at snapshot assembly. Every downstream
+    /// contract (the diff, the per-holding loop, the roll-up) consumes only these.
     pub positions: Vec<Position>,
     pub cash: f64,
     /// Sum of position market values plus cash — the denominator for portfolio weights.
     pub account_total: f64,
+    /// The pre-normalization per-source rows, retained for display and audit
+    /// (`docs/schwab-integration.md` §What is pulled). Empty on a snapshot assembled
+    /// before normalization existed (`#[serde(default)]`) and on a not-yet-normalized
+    /// pull.
+    #[serde(default)]
+    pub source_rows: Vec<Position>,
+}
+
+impl Holdings {
+    /// The holdings-normalization step (`docs/schwab-integration.md` §What is pulled):
+    /// same-symbol rows across granted accounts (and manual supplements) consolidate
+    /// into **one book-level position per symbol** before anything downstream reads
+    /// them. The uppercased symbol is the suite's sole position identity; signed
+    /// quantities, market values, and signed cost-basis totals each **sum** across
+    /// rows — never a share-weighted average price, so dollar gain stays additive
+    /// (Σ market value − Σ cost basis) and the totals stay well-defined even at zero
+    /// net quantity — and the position's long/short side comes from the **netted**
+    /// quantity. Identity fields (description, asset class) come from the first row
+    /// seen for the symbol; the pre-normalization rows are retained on
+    /// [`Holdings::source_rows`].
+    ///
+    /// Idempotent: a snapshot that already carries source rows is already normalized
+    /// and is returned unchanged, so a re-normalization can never lose the raw rows.
+    pub fn normalized(mut self) -> Holdings {
+        if !self.source_rows.is_empty() {
+            return self;
+        }
+        let raw = std::mem::take(&mut self.positions);
+        let mut order: Vec<String> = Vec::new();
+        let mut merged: std::collections::HashMap<String, Position> = std::collections::HashMap::new();
+        for row in &raw {
+            let key = row.symbol.to_ascii_uppercase();
+            match merged.get_mut(&key) {
+                None => {
+                    let mut netted = row.clone();
+                    netted.symbol = key.clone();
+                    order.push(key.clone());
+                    merged.insert(key, netted);
+                }
+                Some(existing) => {
+                    existing.quantity += row.quantity;
+                    existing.cost_basis += row.cost_basis;
+                    existing.market_value += row.market_value;
+                    if existing.current_price.is_none() {
+                        existing.current_price = row.current_price;
+                    }
+                }
+            }
+        }
+        self.positions = order
+            .into_iter()
+            .map(|k| merged.remove(&k).expect("every ordered key was inserted"))
+            .collect();
+        self.source_rows = raw;
+        self
+    }
 }
 
 /// Whether an option contract is a call or a put.
@@ -114,6 +173,7 @@ impl Default for FixtureHoldingsSource {
             positions: vec![position],
             cash: 10_000.0,
             account_total: 29_500.0,
+            source_rows: vec![],
         };
         // A compact near-dated chain: slightly more put volume/OI than call, and puts
         // carrying richer IV than calls — i.e. a mild hedging-demand tilt the activity
@@ -210,6 +270,93 @@ mod tests {
         // account_total is the positions + cash, so portfolio weights are well-defined.
         let positions_value: f64 = h.positions.iter().map(|p| p.market_value).sum();
         assert!((h.account_total - (positions_value + h.cash)).abs() < 1e-6);
+    }
+
+    fn row(symbol: &str, quantity: f64, cost_basis: f64, market_value: f64) -> Position {
+        Position {
+            symbol: symbol.into(),
+            description: format!("{symbol} Inc."),
+            asset_class: AssetClass::Stock,
+            quantity,
+            cost_basis,
+            market_value,
+            current_price: Some(if quantity != 0.0 { market_value / quantity } else { 0.0 }),
+        }
+    }
+
+    fn snapshot(positions: Vec<Position>) -> Holdings {
+        let account_total = positions.iter().map(|p| p.market_value).sum::<f64>();
+        Holdings {
+            positions,
+            cash: 0.0,
+            account_total,
+            source_rows: vec![],
+        }
+    }
+
+    #[test]
+    fn normalization_nets_same_symbol_rows_across_accounts() {
+        // Two accounts each hold AAPL: quantities, cost-basis totals, and market
+        // values each sum — never a share-weighted average price.
+        let h = snapshot(vec![
+            row("AAPL", 100.0, 14_000.0, 19_500.0),
+            row("MSFT", 10.0, 3_000.0, 4_200.0),
+            row("aapl", 50.0, 8_000.0, 9_750.0),
+        ])
+        .normalized();
+        assert_eq!(h.positions.len(), 2, "same-symbol rows merge case-insensitively");
+        let aapl = &h.positions[0];
+        assert_eq!(aapl.symbol, "AAPL");
+        assert_eq!(aapl.quantity, 150.0);
+        assert_eq!(aapl.cost_basis, 22_000.0);
+        assert_eq!(aapl.market_value, 29_250.0);
+        // First-seen order is preserved and the raw per-source rows are retained.
+        assert_eq!(h.positions[1].symbol, "MSFT");
+        assert_eq!(h.source_rows.len(), 3);
+    }
+
+    #[test]
+    fn normalization_reads_side_from_the_netted_quantity() {
+        // A long in one account and a larger short in another read as their true net
+        // side — one net-short book-level position, never two positions.
+        let h = snapshot(vec![
+            row("XYZ", 100.0, 10_000.0, 12_000.0),
+            row("XYZ", -140.0, -14_000.0, -16_800.0),
+        ])
+        .normalized();
+        assert_eq!(h.positions.len(), 1);
+        let net = &h.positions[0];
+        assert_eq!(net.quantity, -40.0);
+        assert_eq!(net.cost_basis, -4_000.0);
+        assert_eq!(net.market_value, -4_800.0);
+    }
+
+    #[test]
+    fn normalization_keeps_dollar_gain_additive_at_zero_net_quantity() {
+        // A fully offset book (zero net shares) keeps summed signed totals, so
+        // Σ market value − Σ cost basis still equals the aggregate unrealized P/L —
+        // a per-unit average price would be undefined here.
+        let h = snapshot(vec![
+            row("HEDG", 100.0, 9_000.0, 11_000.0),
+            row("HEDG", -100.0, -10_000.0, -11_000.0),
+        ])
+        .normalized();
+        let net = &h.positions[0];
+        assert_eq!(net.quantity, 0.0);
+        assert_eq!(net.market_value - net.cost_basis, 1_000.0);
+    }
+
+    #[test]
+    fn normalization_is_idempotent_and_leaves_unique_symbols_intact() {
+        let once = snapshot(vec![
+            row("AAPL", 100.0, 14_000.0, 19_500.0),
+            row("MSFT", 10.0, 3_000.0, 4_200.0),
+        ])
+        .normalized();
+        let twice = once.clone().normalized();
+        assert_eq!(once, twice, "re-normalizing an already-normalized snapshot is a no-op");
+        assert_eq!(once.positions.len(), 2);
+        assert_eq!(once.account_total, 23_700.0);
     }
 
     #[test]

@@ -126,6 +126,7 @@ impl HoldingsSource for SchwabApiSource {
             positions,
             cash,
             account_total,
+            source_rows: vec![],
         })
     }
 

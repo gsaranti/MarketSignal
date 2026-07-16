@@ -95,7 +95,7 @@ export const samplePortfolioRun: PortfolioRun = {
       asset_class: "stock",
       position_change: "unchanged",
       disposition: {
-        status: "graded",
+        status: "priced",
         grade: "B",
         sub_scores: { quality: 70, valuation: 55, momentum: 62, risk: 68 },
         action: "hold",
@@ -108,8 +108,8 @@ export const samplePortfolioRun: PortfolioRun = {
         conviction: "medium",
         horizon_outlook: { short: "neutral", mid: "bullish", long: "bullish" },
         price_targets: {
-          end_of_month: null,
-          end_of_year: {
+          one_month: null,
+          twelve_month: {
             base: 210,
             bear: 180,
             bull: 240,
@@ -123,6 +123,9 @@ export const samplePortfolioRun: PortfolioRun = {
           implied_volatility: null,
           iv_skew: null,
         },
+        risk_tier: "medium",
+        dead_money: "indeterminate",
+        low_confidence_grade: false,
         financial_summary: "Solid margins.",
         what_changed: "First analyzed run.",
       },
@@ -130,6 +133,7 @@ export const samplePortfolioRun: PortfolioRun = {
   ],
   roll_up: {
     graded_count: 1,
+    role_risk_only_count: 0,
     not_rated_count: 0,
     insufficient_evidence_count: 0,
     top_position_weight: 0.66,

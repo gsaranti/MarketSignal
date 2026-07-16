@@ -44,12 +44,12 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     conviction: "medium",
     horizon_outlook: { short: "neutral", mid: "bullish", long: "bullish" },
     price_targets: {
-      end_of_month: null,
-      end_of_year: {
+      one_month: null,
+      twelve_month: {
         base: 210,
         bear: 180,
         bull: 240,
-        methodology: "drift off revenue growth",
+        methodology: "v2 spread-anchored multiples",
       },
     },
     price_target_rationale: "base case tracks revenue drift",
@@ -59,6 +59,9 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
       implied_volatility: null,
       iv_skew: null,
     },
+    risk_tier: "medium",
+    dead_money: "indeterminate",
+    low_confidence_grade: false,
     financial_summary: "Solid margins.",
     what_changed: "First analyzed run.",
     ...over,
@@ -101,8 +104,8 @@ const run: PortfolioRun = {
   created_at: "2026-07-01T12:00:00Z",
   holdings: { positions, cash: 4_700, account_total: 60_000 },
   verdicts: [
-    verdict("MSFT", { status: "graded", ...graded({ grade: "A", action: "trim" }) }),
-    verdict("AAPL", { status: "graded", ...graded() }, { position_change: "increased" }),
+    verdict("MSFT", { status: "priced", ...graded({ grade: "A", action: "trim" }) }),
+    verdict("AAPL", { status: "priced", ...graded() }, { position_change: "increased" }),
     verdict("XYZ", {
       status: "insufficient-evidence",
       reason: "Too few sources to grade.",
@@ -113,6 +116,7 @@ const run: PortfolioRun = {
     graded_count: 2,
     not_rated_count: 1,
     insufficient_evidence_count: 1,
+    role_risk_only_count: 0,
     top_position_weight: 0.5,
     cash_weight: 0.078,
     exited: [
@@ -252,10 +256,84 @@ describe("PortfolioView verdict cards", () => {
     const wrapper = mountView({ run });
     const reveal = wrapper.findAll(".hc-reveal")[0];
     expect(reveal.attributes("aria-expanded")).toBe("false");
-    expect(wrapper.text()).not.toContain("drift off revenue growth");
+    expect(wrapper.text()).not.toContain("v2 spread-anchored multiples");
     await reveal.trigger("click");
     expect(reveal.attributes("aria-expanded")).toBe("true");
-    expect(wrapper.text()).toContain("drift off revenue growth");
+    expect(wrapper.text()).toContain("v2 spread-anchored multiples");
+  });
+
+  test("a low-confidence letter carries its visible marker", () => {
+    const lowConf: PortfolioRun = {
+      ...run,
+      verdicts: [
+        verdict("AAPL", {
+          status: "priced",
+          ...graded({ low_confidence_grade: true }),
+        }),
+      ],
+    };
+    const wrapper = mountView({ run: lowConf });
+    const tags = wrapper.findAll(".ana-tag").map((t) => t.text());
+    expect(tags).toContain("Low confidence");
+    // The unmarked fixture renders no marker.
+    const clean = mountView({ run });
+    expect(clean.findAll(".ana-tag").map((t) => t.text())).not.toContain(
+      "Low confidence"
+    );
+  });
+
+  test("a role-risk-only verdict renders its own card branch, never priced placeholders", () => {
+    const roleRun: PortfolioRun = {
+      ...run,
+      holdings: {
+        positions: [
+          position("BND", {
+            asset_class: "etf",
+            cost_basis: 9_000,
+            market_value: 10_000,
+          }),
+        ],
+        cash: 0,
+        account_total: 10_000,
+      },
+      verdicts: [
+        verdict(
+          "BND",
+          {
+            status: "role-risk-only",
+            class_label: "bond fund",
+            role_summary: "Core fixed-income sleeve supplying duration exposure.",
+            exposure_tilt: [{ label: "United States", weight: 0.97 }],
+            expense_drag: 0.0003,
+            observable_risk: 0.06,
+            structural_flag: false,
+            evidence_gaps: ["no on-plan duration/credit surface"],
+            action: "hold",
+            action_sizing: {
+              target_weight_low: 0.9,
+              target_weight_high: 1.1,
+              est_share_delta: null,
+              est_dollar_delta: null,
+            },
+            what_changed: "new holding",
+          },
+          { asset_class: "etf" }
+        ),
+      ],
+      roll_up: { ...run.roll_up, graded_count: 0, role_risk_only_count: 1 },
+    };
+    const wrapper = mountView({ run: roleRun });
+    // The typed branch: role read, classification, exposure, gaps, reduced action.
+    expect(wrapper.text()).toContain("Role & risk");
+    expect(wrapper.text()).toContain("bond fund · role / risk read");
+    expect(wrapper.text()).toContain("Core fixed-income sleeve");
+    expect(wrapper.text()).toContain("no on-plan duration/credit surface");
+    expect(wrapper.text()).toContain("Hold");
+    // No letter, no targets — the branch never renders priced placeholders.
+    expect(wrapper.find(".hc-grade").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("12-mo target");
+    // The key-figure strip counts the branch in its own tile.
+    expect(wrapper.text()).toContain("Role/risk");
   });
 });
 

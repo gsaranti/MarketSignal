@@ -344,10 +344,19 @@ export interface PriceTarget {
   methodology: string;
 }
 
+// Rolling one-month / twelve-month windows from the run date (the settled rename
+// of end-of-month / end-of-year — docs/portfolio-analysis.md §Starting parameters).
+// The backend decodes legacy field names through serde aliases and always emits
+// these.
 export interface PriceTargets {
-  end_of_month: PriceTarget | null;
-  end_of_year: PriceTarget | null;
+  one_month: PriceTarget | null;
+  twelve_month: PriceTarget | null;
 }
+
+// The deterministic per-branch risk tier and the three-state capital-efficiency
+// (dead-money) read — engine-computed, absent on runs persisted before the fields.
+export type RiskTier = "low" | "medium" | "high";
+export type HurdleState = "clears" | "indeterminate" | "fails" | "unscorable";
 
 // The per-stock options-activity signal — an activity proxy, not positioning
 // truth; any field null when the chain lacked the data.
@@ -375,14 +384,45 @@ export interface GradedVerdict {
   price_targets: PriceTargets;
   price_target_rationale: string;
   options_signal: OptionsSignal;
+  // Engine reads added by the fund slice — null/false on pre-field runs.
+  risk_tier: RiskTier | null;
+  dead_money: HurdleState | null;
+  // True when the letter rests on an imputed (neutral-50) sub-score — rendered as
+  // the visible low-confidence marker beside the letter (every priced fund, per
+  // the fund-grade contract).
+  low_confidence_grade: boolean;
   financial_summary: string;
   what_changed: string;
 }
 
-// Internally tagged on `status` (serde `tag = "status"`): a graded verdict's
-// fields sit beside the tag; the two abstention arms carry a reason.
+// One exposure weight (a sector or country label and its fraction of the fund).
+export interface ExposureWeight {
+  label: string;
+  weight: number;
+}
+
+// The role_risk_only branch of an analyzed verdict: a structurally unpriceable
+// vehicle class — no letter, no targets, no conviction; role + risk + the reduced
+// action spine (docs/portfolio-analysis.md §Intrinsic verdict).
+export interface RoleRiskVerdict {
+  class_label: string;
+  role_summary: string;
+  exposure_tilt: ExposureWeight[];
+  expense_drag: number | null;
+  observable_risk: number | null;
+  structural_flag: boolean;
+  evidence_gaps: string[];
+  action: PortfolioAction;
+  action_sizing: ActionSizing;
+  what_changed: string;
+}
+
+// Internally tagged on `status` (serde `tag = "status"`): the analyzed verdict is
+// a two-branch union — `priced` (the full record; legacy `graded` rows re-serialize
+// as this) and `role-risk-only` — beside the two abstention arms.
 export type VerdictDisposition =
-  | ({ status: "graded" } & GradedVerdict)
+  | ({ status: "priced" } & GradedVerdict)
+  | ({ status: "role-risk-only" } & RoleRiskVerdict)
   | { status: "not-rated"; reason: string }
   | { status: "insufficient-evidence"; reason: string };
 
@@ -407,6 +447,9 @@ export interface PortfolioRollUp {
   graded_count: number;
   not_rated_count: number;
   insufficient_evidence_count: number;
+  // Analyzed holdings on the role_risk_only branch — counted beside the priced
+  // holdings, never pooled with them.
+  role_risk_only_count: number;
   top_position_weight: number;
   cash_weight: number;
   exited: ExitedPosition[];

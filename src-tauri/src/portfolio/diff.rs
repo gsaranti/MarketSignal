@@ -150,6 +150,7 @@ mod tests {
             positions,
             cash: 0.0,
             account_total,
+            source_rows: vec![],
         }
     }
 

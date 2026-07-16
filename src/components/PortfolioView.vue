@@ -372,8 +372,10 @@ const CLASS_LABELS: Record<string, string> = {
 };
 function classLabel(v: HoldingVerdict): string {
   const base = CLASS_LABELS[v.asset_class] ?? v.asset_class;
-  if (v.disposition.status === "graded")
+  if (v.disposition.status === "priced")
     return `${base} · ${v.asset_class === "stock" ? "full verdict" : "reduced verdict"}`;
+  if (v.disposition.status === "role-risk-only")
+    return `${v.disposition.class_label} · role / risk read`;
   if (v.disposition.status === "not-rated") return `${base} · not rated`;
   return `${base} · insufficient evidence`;
 }
@@ -450,6 +452,12 @@ const keyFigures = computed(() => {
     { label: "Graded", value: String(run.roll_up.graded_count) },
     { label: "Not rated", value: String(run.roll_up.not_rated_count) },
   ];
+  if (run.roll_up.role_risk_only_count > 0) {
+    items.push({
+      label: "Role/risk",
+      value: String(run.roll_up.role_risk_only_count),
+    });
+  }
   if (run.roll_up.insufficient_evidence_count > 0) {
     items.push({
       label: "Insufficient",
@@ -724,7 +732,10 @@ const keyFigures = computed(() => {
             >
               <!-- Not-rated / insufficient-evidence: a legitimately reduced card. -->
               <div
-                v-if="v.disposition.status !== 'graded'"
+                v-if="
+                  v.disposition.status === 'not-rated' ||
+                  v.disposition.status === 'insufficient-evidence'
+                "
                 class="hc-reduced"
               >
                 <div class="hc-reduced-main">
@@ -747,7 +758,127 @@ const keyFigures = computed(() => {
                 </div>
               </div>
 
-              <!-- Graded verdict -->
+              <!-- Role/risk-only verdict: the union's other branch — an explicit
+                   designed card (role, exposure, risk, expense, gaps beside the
+                   action), never empty priced placeholders
+                   (docs/portfolio-analysis.md §Storage and display). -->
+              <template v-else-if="v.disposition.status === 'role-risk-only'">
+                <header class="hc-head">
+                  <div class="hc-id">
+                    <div class="hc-id-text">
+                      <div class="hc-idline">
+                        <span class="ana-ticker">{{ v.symbol }}</span>
+                        <span class="hc-class">{{ classLabel(v) }}</span>
+                        <span v-if="v.disposition.structural_flag" class="ana-tag"
+                          >Structurally path-dependent</span
+                        >
+                        <span v-if="noLongerHeld(v.symbol)" class="ana-tag"
+                          >No longer held</span
+                        >
+                      </div>
+                      <div class="hc-name">
+                        {{ positionFor(v.symbol)?.description ?? "" }}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="hc-unrealized">
+                    <span class="hc-kicker">Unrealized</span>
+                    <span
+                      v-if="gainOf(positionFor(v.symbol)) !== null"
+                      class="dir hc-gain"
+                      :class="dirOf(gainOf(positionFor(v.symbol)))"
+                    >
+                      {{ fmtSigned(gainOf(positionFor(v.symbol))!) }}
+                      ({{ fmtPct(gainPctOf(positionFor(v.symbol))!) }})
+                    </span>
+                    <span v-else class="ana-num hc-gain-none">—</span>
+                  </div>
+                </header>
+
+                <div class="hc-body">
+                  <div class="hc-col hc-col-intrinsic">
+                    <span class="hc-kicker">Role &amp; risk</span>
+                    <p class="hc-prose">{{ v.disposition.role_summary }}</p>
+                    <dl class="hc-kv">
+                      <template v-if="v.disposition.exposure_tilt.length > 0">
+                        <dt>Exposure</dt>
+                        <dd>
+                          <span
+                            v-for="tilt in v.disposition.exposure_tilt.slice(0, 3)"
+                            :key="tilt.label"
+                            class="hc-horizon"
+                          >
+                            <span class="hc-horizon-label">{{ tilt.label }}</span>
+                            <span class="ana-num">{{ fmtPct(tilt.weight) }}</span>
+                          </span>
+                        </dd>
+                      </template>
+                      <template v-if="v.disposition.expense_drag !== null">
+                        <dt>Expense drag</dt>
+                        <dd>
+                          <span class="ana-num">{{
+                            (v.disposition.expense_drag * 100).toFixed(2) + "%"
+                          }}</span>
+                        </dd>
+                      </template>
+                      <template v-if="v.disposition.observable_risk !== null">
+                        <dt>Realized vol</dt>
+                        <dd>
+                          <span class="ana-num">{{
+                            fmtPct(v.disposition.observable_risk)
+                          }}</span>
+                        </dd>
+                      </template>
+                    </dl>
+                    <p
+                      v-if="v.disposition.evidence_gaps.length > 0"
+                      class="hc-reason"
+                    >
+                      {{ v.disposition.evidence_gaps.join("; ") }}
+                    </p>
+                  </div>
+
+                  <div class="hc-col">
+                    <span class="hc-kicker">Portfolio action</span>
+                    <div class="hc-action">
+                      <span class="hc-action-word">{{
+                        ACTION_LABELS[v.disposition.action]
+                      }}</span>
+                      <span class="hc-action-band"
+                        >to
+                        {{
+                          weightBand(
+                            v.disposition.action_sizing.target_weight_low,
+                            v.disposition.action_sizing.target_weight_high
+                          )
+                        }}</span
+                      >
+                    </div>
+                    <dl class="hc-kv">
+                      <dt>Weight</dt>
+                      <dd>
+                        <span class="ana-num">{{
+                          weightOf(positionFor(v.symbol)) !== null
+                            ? fmtPct(weightOf(positionFor(v.symbol))!)
+                            : "—"
+                        }}</span>
+                      </dd>
+                    </dl>
+                  </div>
+                </div>
+
+                <footer class="hc-foot">
+                  <div class="hc-foot-main">
+                    <span class="hc-kicker">What changed · since last run</span>
+                    <p class="hc-changed">{{ v.disposition.what_changed }}</p>
+                  </div>
+                  <span class="ana-tag" :title="'Position vs. prior run'"
+                    >Position: {{ CHANGE_LABELS[v.position_change] }}</span
+                  >
+                </footer>
+              </template>
+
+              <!-- Priced verdict -->
               <template v-else>
                 <header class="hc-head">
                   <div class="hc-id">
@@ -760,6 +891,12 @@ const keyFigures = computed(() => {
                       <div class="hc-idline">
                         <span class="ana-ticker">{{ v.symbol }}</span>
                         <span class="hc-class">{{ classLabel(v) }}</span>
+                        <span
+                          v-if="v.disposition.low_confidence_grade"
+                          class="ana-tag"
+                          title="An imputed (neutral) sub-score underlies this letter"
+                          >Low confidence</span
+                        >
                         <span v-if="noLongerHeld(v.symbol)" class="ana-tag"
                           >No longer held</span
                         >
@@ -820,46 +957,46 @@ const keyFigures = computed(() => {
                           v.disposition.conviction
                         }}</span>
                       </dd>
-                      <template v-if="v.disposition.price_targets.end_of_month">
-                        <dt>EOM target</dt>
+                      <template v-if="v.disposition.price_targets.one_month">
+                        <dt>1-mo target</dt>
                         <dd>
                           <span class="ana-num"
                             >{{
                               moneyExact.format(
-                                v.disposition.price_targets.end_of_month.base
+                                v.disposition.price_targets.one_month.base
                               )
                             }}
                             <span class="hc-band"
                               >({{
                                 moneyExact.format(
-                                  v.disposition.price_targets.end_of_month.bear
+                                  v.disposition.price_targets.one_month.bear
                                 )
                               }}–{{
                                 moneyExact.format(
-                                  v.disposition.price_targets.end_of_month.bull
+                                  v.disposition.price_targets.one_month.bull
                                 )
                               }})</span
                             ></span
                           >
                         </dd>
                       </template>
-                      <template v-if="v.disposition.price_targets.end_of_year">
-                        <dt>EOY target</dt>
+                      <template v-if="v.disposition.price_targets.twelve_month">
+                        <dt>12-mo target</dt>
                         <dd>
                           <span class="ana-num"
                             >{{
                               moneyExact.format(
-                                v.disposition.price_targets.end_of_year.base
+                                v.disposition.price_targets.twelve_month.base
                               )
                             }}
                             <span class="hc-band"
                               >({{
                                 moneyExact.format(
-                                  v.disposition.price_targets.end_of_year.bear
+                                  v.disposition.price_targets.twelve_month.bear
                                 )
                               }}–{{
                                 moneyExact.format(
-                                  v.disposition.price_targets.end_of_year.bull
+                                  v.disposition.price_targets.twelve_month.bull
                                 )
                               }})</span
                             ></span
@@ -898,10 +1035,10 @@ const keyFigures = computed(() => {
                       class="hc-methodology"
                     >
                       <p
-                        v-if="v.disposition.price_targets.end_of_year"
+                        v-if="v.disposition.price_targets.twelve_month"
                         class="hc-prose"
                       >
-                        {{ v.disposition.price_targets.end_of_year.methodology }}
+                        {{ v.disposition.price_targets.twelve_month.methodology }}
                       </p>
                       <p class="hc-prose">
                         {{ v.disposition.price_target_rationale }}

@@ -51,6 +51,10 @@ pub struct HoldingDossier {
     pub options_signal: OptionsSignal,
     pub profile: InvestorProfile,
     pub house_view: HouseView,
+    /// The fund half (metadata + the sector-P/E surface) for an ETF / mutual-fund
+    /// holding — the reduced path's input (`docs/portfolio-analysis.md` §Asset
+    /// eligibility); `None` for a stock.
+    pub fund: Option<crate::portfolio::fund::FundContext>,
     /// The prior run's verdict for this holding (continuity input), or `None` on a
     /// holding the job has not seen before ("new holding").
     pub prior_verdict: Option<HoldingVerdict>,
@@ -107,6 +111,7 @@ pub fn assemble(
     chain: Option<&OptionChain>,
     profile: InvestorProfile,
     house_view: HouseView,
+    fund: Option<crate::portfolio::fund::FundContext>,
     prior_verdict: Option<HoldingVerdict>,
 ) -> HoldingDossier {
     let financials = merge_financials(fmp_financials, sec_facts);
@@ -126,6 +131,9 @@ pub fn assemble(
     if chain.is_some() {
         sources.push("Schwab option chain".to_string());
     }
+    if fund.is_some() {
+        sources.push("FMP fund metadata (etf/info + weightings + sector P/E)".to_string());
+    }
     if !house_view.recent_summaries.is_empty() || house_view.latest_sections.is_some() {
         sources.push("Market Signal Report (house view)".to_string());
     }
@@ -137,6 +145,7 @@ pub fn assemble(
         options_signal,
         profile,
         house_view,
+        fund,
         prior_verdict,
         sources,
     }
@@ -357,6 +366,7 @@ Watch the 2s10s and the labor prints.
             InvestorProfile::default_fixture(),
             HouseView::default(),
             None,
+            None,
         );
         assert!(dossier.sources.iter().any(|s| s.contains("FMP")));
         assert!(dossier.sources.iter().any(|s| s.contains("SEC")));
@@ -380,6 +390,7 @@ Watch the 2s10s and the labor prints.
                 positions: vec![],
                 cash: 0.0,
                 account_total: 0.0,
+                source_rows: vec![],
             },
             verdicts: vec![HoldingVerdict {
                 symbol: "AAPL".into(),
@@ -393,6 +404,7 @@ Watch the 2s10s and the labor prints.
                 graded_count: 0,
                 not_rated_count: 1,
                 insufficient_evidence_count: 0,
+                role_risk_only_count: 0,
                 top_position_weight: 0.0,
                 cash_weight: 0.0,
                 exited: vec![],

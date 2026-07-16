@@ -36,6 +36,7 @@ pub mod schwab_secrets;
 pub mod sec;
 pub mod settings;
 pub mod skills;
+pub mod stooq;
 pub mod storage;
 pub mod tavily;
 #[cfg(test)]
@@ -720,7 +721,25 @@ async fn generate_portfolio_manual(
         let sec = sec::SecEdgarSource::new()
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        let company = portfolio::job::LiveCompanyData { fmp, sec };
+        // Ticker→CIK resolution over SEC's full company_tickers.json map, cached
+        // beside the database with a staleness window; a failed refresh falls back
+        // fail-soft (stale cache, else empty → typed gaps per holding).
+        let cik_cache = paths
+            .db_path
+            .parent()
+            .map(|d| d.join("sec_company_tickers.json"))
+            .unwrap_or_else(|| std::path::PathBuf::from("sec_company_tickers.json"));
+        let cik = sec::load_cik_resolver(&cik_cache, &sec);
+        let stooq = stooq::StooqSource::new()
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let company = portfolio::job::LiveCompanyData { fmp, sec, cik, stooq };
+        // The run-level rate anchors (FRED DGS2/DGS10 + the DGS10 anchor-window
+        // history) — hard-fail inside the job, before any per-holding work.
+        let fred = crate::fred::FredDataSource::new(cfg.fred_api_key.clone().unwrap_or_default())
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let market = portfolio::job::LiveMarketContext { fred };
 
         // Source selection: the shared seam (`build_holdings_source`) — fixture escape
         // hatch, else live Schwab once connected, else a blocked run with a re-auth
@@ -730,6 +749,7 @@ async fn generate_portfolio_manual(
         portfolio::job::run_portfolio_job(
             holdings.as_ref(),
             &company,
+            &market,
             &analyst,
             &profile,
             &paths,
@@ -798,7 +818,13 @@ async fn pull_holdings(
             .try_begin(RunKind::HoldingsPull)
             .ok_or_else(|| "Another job is running — pull holdings once it finishes.".to_string())?;
         let source = build_holdings_source(&cfg)?;
-        source.holdings().map_err(|e| e.to_string())
+        // Snapshot assembly runs the same book-level normalization as a run's pull
+        // (`docs/schwab-integration.md` §What is pulled), so the view and the job
+        // read one position identity per symbol.
+        source
+            .holdings()
+            .map(|h| h.normalized())
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("holdings pull task failed: {e}"))??;

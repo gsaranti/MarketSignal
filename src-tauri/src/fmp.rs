@@ -1571,7 +1571,7 @@ impl FmpDataSource {
     /// statement lines (revenue, margins, equity) from keyless SEC EDGAR. The
     /// valuation multiples are left for the dossier to derive from market cap + SEC
     /// facts ("compute, don't guess"). One tracker row per actual call.
-    pub fn fetch_company_financials(
+    fn fetch_quote_and_eod(
         &self,
         symbol: &str,
     ) -> crate::portfolio::engine::CompanyFinancials {
@@ -1661,6 +1661,36 @@ impl FmpDataSource {
             None,
         );
 
+        fin
+    }
+
+    /// The full **stock** per-symbol surface: the quote + EOD core plus the v2
+    /// target surface — quarterly income prints (the anchor window's trailing
+    /// driver source), the forward consensus (the driver ladder), and the trailing
+    /// dividends (the total-return leg). Each fail-soft with a tagged gap; a
+    /// missing consensus later abstains the holding under the named
+    /// `no-admissible-driver` floor reason rather than failing here.
+    pub fn fetch_company_financials(
+        &self,
+        symbol: &str,
+    ) -> crate::portfolio::engine::CompanyFinancials {
+        let mut fin = self.fetch_quote_and_eod(symbol);
+        fin.quarterly_income = self.fetch_quarterly_income(symbol, &mut fin.gaps);
+        fin.consensus = self.fetch_analyst_estimates(symbol, &mut fin.gaps);
+        fin.ttm_dividends_per_share = self.fetch_ttm_dividends(symbol, &mut fin.gaps);
+        fin
+    }
+
+    /// The **fund** flavor of the per-symbol pull: the quote + EOD core plus the
+    /// dividend history (the TTM distributions the fund-form total return adds) —
+    /// the statement / consensus endpoints are stock surface, so a fund never logs
+    /// their spurious gaps.
+    pub fn fetch_fund_financials(
+        &self,
+        symbol: &str,
+    ) -> crate::portfolio::engine::CompanyFinancials {
+        let mut fin = self.fetch_quote_and_eod(symbol);
+        fin.ttm_dividends_per_share = self.fetch_ttm_dividends(symbol, &mut fin.gaps);
         fin
     }
 }
@@ -1857,9 +1887,11 @@ mod tests {
 
     #[test]
     fn company_quote_and_eod_parse_into_financials() {
-        // The per-company pull makes two calls — quote then EOD — so the mock scripts
-        // two replies. Quote carries price/market cap/shares; EOD is returned out of
-        // order and must come back chronological so the engine's first/last is honest.
+        // The per-company pull makes five calls — quote, EOD, quarterly income,
+        // analyst estimates, dividends — so the mock scripts five replies. Quote
+        // carries price/market cap/shares; EOD is returned out of order and must come
+        // back chronological so the engine's first/last is honest; the v2 surface
+        // (statements, consensus, dividends) parses into its typed fields.
         let server = MockHttp::serve(vec![
             Canned::Reply {
                 status: 200,
@@ -1872,6 +1904,23 @@ mod tests {
                 body: r#"[{"symbol":"AAPL","date":"2026-06-10","price":195.0,"volume":1},
                           {"symbol":"AAPL","date":"2026-06-03","price":180.0,"volume":1}]"#,
             },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2026-03-31","filingDate":"2026-05-01","revenue":95.0e9,
+                           "epsDiluted":1.55,"weightedAverageShsOutDil":1.5e10}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2027-09-30","epsAvg":6.5,"epsLow":6.0,"epsHigh":7.0,
+                           "revenueAvg":430e9,"revenueLow":420e9,"revenueHigh":440e9}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2026-05-10","adjDividend":0.26}]"#,
+            },
         ]);
         let fin = test_source(&server.base_url).fetch_company_financials("AAPL");
         assert_eq!(fin.symbol, "AAPL");
@@ -1880,8 +1929,21 @@ mod tests {
         assert_eq!(fin.shares_outstanding, Some(1.5e10));
         // Chronological: the older 180 first, the newer 195 last.
         assert_eq!(fin.price_history, vec![180.0, 195.0]);
+        // The v2 surface parses into its typed fields.
+        assert_eq!(fin.quarterly_income.len(), 1);
+        assert_eq!(fin.consensus.as_ref().unwrap().eps_mid, Some(6.5));
+        assert_eq!(fin.ttm_dividends_per_share, Some(0.26));
         assert!(fin.gaps.is_empty(), "a clean pull records no gap: {:?}", fin.gaps);
-        assert_eq!(server.request_paths(), vec!["/quote", "/historical-price-eod/light"]);
+        assert_eq!(
+            server.request_paths(),
+            vec![
+                "/quote",
+                "/historical-price-eod/light",
+                "/income-statement",
+                "/analyst-estimates",
+                "/dividends"
+            ]
+        );
     }
 
     #[test]
@@ -1903,7 +1965,9 @@ mod tests {
         let fin = test_source(&server.base_url).fetch_company_financials("AAPL");
         assert!(fin.current_price.is_none());
         assert!(fin.price_history.is_empty());
-        assert_eq!(fin.gaps.len(), 2, "two failed pulls, two gaps: {:?}", fin.gaps);
+        // Five endpoints, five tagged gaps — the three v2-surface calls degrade the
+        // same way the quote and EOD do.
+        assert_eq!(fin.gaps.len(), 5, "five failed pulls, five gaps: {:?}", fin.gaps);
     }
 
     #[test]
@@ -3205,5 +3269,550 @@ mod tests {
             &format!("{base}/news/press-releases-latest"),
             &[("page", "0"), ("limit", "5")],
         );
+    }
+}
+
+// ---- Local-suite per-holding surface (`docs/data-sources.md §Portfolio Analysis
+// — endpoint surface`): the statement / consensus / dividend / fund endpoints the
+// fund slice widened the adapter with. Each is fail-soft — a premium gate, transport
+// error, or malformed body records a tagged gap rather than failing — and every
+// actual call streams one tracker row.
+
+/// FMP endpoint paths added by the fund slice (all on the `/stable` base).
+const FMP_INCOME_QUARTERLY_PATH: &str = "/income-statement";
+const FMP_ANALYST_ESTIMATES_PATH: &str = "/analyst-estimates";
+const FMP_DIVIDENDS_PATH: &str = "/dividends";
+const FMP_ETF_INFO_PATH: &str = "/etf/info";
+const FMP_ETF_SECTOR_WEIGHTS_PATH: &str = "/etf/sector-weightings";
+const FMP_ETF_COUNTRY_WEIGHTS_PATH: &str = "/etf/country-weightings";
+const FMP_SECTOR_PE_SNAPSHOT_PATH: &str = "/sector-pe-snapshot";
+const FMP_HISTORICAL_SECTOR_PE_PATH: &str = "/historical-sector-pe";
+
+/// Quarters of income-statement history requested — the v2 anchor window (12) plus
+/// the four extra quarters its oldest TTM print needs.
+const INCOME_QUARTERS_LIMIT: &str = "16";
+
+impl FmpDataSource {
+    /// One suite GET with a tracker row and the shared fail-soft disposition.
+    fn suite_get(
+        &self,
+        kind: &str,
+        symbol: &str,
+        label: &str,
+        path: &str,
+        extra: &[(&str, &str)],
+    ) -> Disposition {
+        if self.progress.is_cancelled() {
+            return Disposition::Gap(GapReason::Unavailable);
+        }
+        self.progress.request_started("FMP", kind, symbol, label);
+        let disposition = match self.get(path, extra) {
+            Ok((status, body)) => interpret_response(status, &body),
+            Err(_) => Disposition::Gap(GapReason::Unavailable),
+        };
+        let status = match &disposition {
+            Disposition::Value(_) => "ok",
+            Disposition::Gap(_) => "empty",
+        };
+        self.progress
+            .request_finished("FMP", kind, symbol, label, status, None);
+        disposition
+    }
+
+    /// Quarterly income prints (newest first) — the v2 anchor window's trailing
+    /// driver source. Fail-soft: a gap leaves the list empty with a tagged reason.
+    pub fn fetch_quarterly_income(
+        &self,
+        symbol: &str,
+        gaps: &mut Vec<String>,
+    ) -> Vec<crate::portfolio::engine::QuarterlyIncomeRow> {
+        match self.suite_get(
+            "company-income-q",
+            symbol,
+            "Quarterly income statements",
+            FMP_INCOME_QUARTERLY_PATH,
+            &[
+                ("symbol", symbol),
+                ("period", "quarter"),
+                ("limit", INCOME_QUARTERS_LIMIT),
+            ],
+        ) {
+            Disposition::Value(value) => match quarterly_income_from_value(&value) {
+                rows if !rows.is_empty() => rows,
+                _ => {
+                    gaps.push("FMP quarterly income statements were empty".to_string());
+                    vec![]
+                }
+            },
+            Disposition::Gap(reason) => {
+                gaps.push(format!(
+                    "FMP quarterly income statements unavailable ({})",
+                    reason.as_str()
+                ));
+                vec![]
+            }
+        }
+    }
+
+    /// The forward consensus for the nearest coming fiscal year — the v2 driver
+    /// ladder's source. Fail-soft to `None` with a tagged gap.
+    pub fn fetch_analyst_estimates(
+        &self,
+        symbol: &str,
+        gaps: &mut Vec<String>,
+    ) -> Option<crate::portfolio::engine::ConsensusEstimate> {
+        let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+        match self.suite_get(
+            "company-estimates",
+            symbol,
+            "Analyst estimates",
+            FMP_ANALYST_ESTIMATES_PATH,
+            &[("symbol", symbol), ("period", "annual"), ("limit", "6")],
+        ) {
+            Disposition::Value(value) => match consensus_from_value(&value, &today) {
+                Some(c) => Some(c),
+                None => {
+                    gaps.push("FMP analyst estimates carried no usable consensus".to_string());
+                    None
+                }
+            },
+            Disposition::Gap(reason) => {
+                gaps.push(format!("FMP analyst estimates unavailable ({})", reason.as_str()));
+                None
+            }
+        }
+    }
+
+    /// Trailing-twelve-month dividends per share — the forward-dividend estimate the
+    /// twelve-month total return adds. `None` (with no gap) for a non-payer; a failed
+    /// call records the gap.
+    pub fn fetch_ttm_dividends(&self, symbol: &str, gaps: &mut Vec<String>) -> Option<f64> {
+        let today = Utc::now().date_naive();
+        match self.suite_get(
+            "company-dividends",
+            symbol,
+            "Dividend history",
+            FMP_DIVIDENDS_PATH,
+            &[("symbol", symbol), ("limit", "12")],
+        ) {
+            Disposition::Value(value) => ttm_dividends_from_value(&value, today),
+            Disposition::Gap(reason) => {
+                gaps.push(format!("FMP dividends unavailable ({})", reason.as_str()));
+                None
+            }
+        }
+    }
+
+    /// The per-fund metadata surface: `etf/info` plus the sector / country
+    /// weightings (`docs/portfolio-analysis.md` §Asset eligibility). Each endpoint
+    /// fail-softs to a tagged gap on the returned record.
+    pub fn fetch_fund_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
+        let mut fund = crate::portfolio::fund::FundData {
+            symbol: symbol.to_string(),
+            ..Default::default()
+        };
+        match self.suite_get(
+            "fund-info",
+            symbol,
+            "Fund metadata",
+            FMP_ETF_INFO_PATH,
+            &[("symbol", symbol)],
+        ) {
+            Disposition::Value(value) => fund_info_into(&value, &mut fund),
+            Disposition::Gap(reason) => fund
+                .gaps
+                .push(format!("FMP etf/info unavailable ({})", reason.as_str())),
+        }
+        match self.suite_get(
+            "fund-sectors",
+            symbol,
+            "Fund sector weightings",
+            FMP_ETF_SECTOR_WEIGHTS_PATH,
+            &[("symbol", symbol)],
+        ) {
+            Disposition::Value(value) => {
+                fund.sector_weights = weights_from_value(&value, "sector");
+                if fund.sector_weights.is_empty() {
+                    fund.gaps.push("FMP sector weightings were empty".to_string());
+                }
+            }
+            Disposition::Gap(reason) => fund.gaps.push(format!(
+                "FMP sector weightings unavailable ({})",
+                reason.as_str()
+            )),
+        }
+        match self.suite_get(
+            "fund-countries",
+            symbol,
+            "Fund country weightings",
+            FMP_ETF_COUNTRY_WEIGHTS_PATH,
+            &[("symbol", symbol)],
+        ) {
+            Disposition::Value(value) => {
+                fund.country_weights = weights_from_value(&value, "country");
+                if fund.country_weights.is_empty() {
+                    fund.gaps.push("FMP country weightings were empty".to_string());
+                }
+            }
+            Disposition::Gap(reason) => fund.gaps.push(format!(
+                "FMP country weightings unavailable ({})",
+                reason.as_str()
+            )),
+        }
+        fund
+    }
+
+    /// The per-sector aggregate P/E snapshot for one exchange (run-level, shared
+    /// across funds; `docs/data-sources.md` — one call per exchange). `date` is the
+    /// most recent weekday, computed by the caller.
+    pub fn fetch_sector_pe_snapshot(
+        &self,
+        exchange: &str,
+        date: &str,
+    ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+        match self.suite_get(
+            "sector-pe",
+            exchange,
+            "Sector P/E snapshot",
+            FMP_SECTOR_PE_SNAPSHOT_PATH,
+            &[("exchange", exchange), ("date", date)],
+        ) {
+            Disposition::Value(value) => Ok(sector_pe_rows_from_value(&value, exchange)),
+            Disposition::Gap(reason) => anyhow::bail!(
+                "FMP sector-pe-snapshot unavailable for {exchange} ({})",
+                reason.as_str()
+            ),
+        }
+    }
+
+    /// The trailing per-sector P/E history for one sector × exchange (memoized by
+    /// the caller across funds — `docs/data-sources.md`, the historical-sector-pe
+    /// row's cardinality).
+    pub fn fetch_historical_sector_pe(
+        &self,
+        sector: &str,
+        exchange: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+        match self.suite_get(
+            "sector-pe-history",
+            sector,
+            "Sector P/E history",
+            FMP_HISTORICAL_SECTOR_PE_PATH,
+            &[
+                ("sector", sector),
+                ("exchange", exchange),
+                ("from", from),
+                ("to", to),
+            ],
+        ) {
+            Disposition::Value(value) => Ok(sector_pe_rows_from_value(&value, exchange)),
+            Disposition::Gap(reason) => anyhow::bail!(
+                "FMP historical-sector-pe unavailable for {sector}/{exchange} ({})",
+                reason.as_str()
+            ),
+        }
+    }
+}
+
+/// Shape quarterly `/income-statement` rows (newest first). Lenient key spellings
+/// pinned by fixtures; live shape verification rides the paid-key checkpoint.
+fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::QuarterlyIncomeRow> {
+    let Some(rows) = value.as_array() else {
+        return vec![];
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let period_end = row.get("date").and_then(Value::as_str)?.to_string();
+            let filing_date = row
+                .get("filingDate")
+                .or_else(|| row.get("fillingDate"))
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+            Some(crate::portfolio::engine::QuarterlyIncomeRow {
+                period_end,
+                filing_date,
+                revenue: row.get("revenue").and_then(Value::as_f64),
+                eps_diluted: row
+                    .get("epsDiluted")
+                    .or_else(|| row.get("epsdiluted"))
+                    .and_then(Value::as_f64),
+                diluted_shares: row
+                    .get("weightedAverageShsOutDil")
+                    .and_then(Value::as_f64),
+            })
+        })
+        .collect()
+}
+
+/// Pick the nearest **coming** fiscal-year estimate row (smallest `date` ≥ today;
+/// falls back to the newest row when none is forward) and shape the consensus.
+/// Accepts both the stable (`epsAvg`) and legacy (`estimatedEpsAvg`) spellings.
+fn consensus_from_value(
+    value: &Value,
+    today: &str,
+) -> Option<crate::portfolio::engine::ConsensusEstimate> {
+    let rows = value.as_array()?;
+    let date_of = |row: &Value| {
+        row.get("date")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let field = |row: &Value, stable: &str, legacy: &str| {
+        row.get(stable)
+            .or_else(|| row.get(legacy))
+            .and_then(Value::as_f64)
+    };
+    let forward: Option<&Value> = rows
+        .iter()
+        .filter(|r| date_of(r).as_str() >= today)
+        .min_by_key(|r| date_of(r));
+    let chosen = forward.or_else(|| rows.iter().max_by_key(|r| date_of(r)))?;
+    Some(crate::portfolio::engine::ConsensusEstimate {
+        period_end: date_of(chosen),
+        eps_low: field(chosen, "epsLow", "estimatedEpsLow"),
+        eps_mid: field(chosen, "epsAvg", "estimatedEpsAvg"),
+        eps_high: field(chosen, "epsHigh", "estimatedEpsHigh"),
+        revenue_low: field(chosen, "revenueLow", "estimatedRevenueLow"),
+        revenue_mid: field(chosen, "revenueAvg", "estimatedRevenueAvg"),
+        revenue_high: field(chosen, "revenueHigh", "estimatedRevenueHigh"),
+    })
+}
+
+/// Sum the per-share dividends dated within the trailing twelve months of `today`.
+/// `None` when no row lands in the window (a non-payer, or a stale record) — the
+/// total-return leg then adds nothing rather than a fabricated yield.
+fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Option<f64> {
+    let rows = value.as_array()?;
+    let cutoff = (today - Duration::days(365)).format("%Y-%m-%d").to_string();
+    let mut sum = 0.0;
+    let mut any = false;
+    for row in rows {
+        let date = row.get("date").and_then(Value::as_str).unwrap_or_default();
+        if date < cutoff.as_str() {
+            continue;
+        }
+        let amount = row
+            .get("adjDividend")
+            .or_else(|| row.get("dividend"))
+            .and_then(Value::as_f64);
+        if let Some(a) = amount {
+            sum += a;
+            any = true;
+        }
+    }
+    any.then_some(sum)
+}
+
+/// Fill a [`crate::portfolio::fund::FundData`] from an `etf/info` body (array-of-one
+/// or bare object). The expense ratio arrives in **percent units** (0.09 = 9 bps)
+/// and normalizes to a decimal ratio at this seam — pinned by fixture, live-verified
+/// at the paid-key checkpoint.
+fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) {
+    let obj = value.as_array().and_then(|a| a.first()).or(Some(value));
+    let Some(obj) = obj.filter(|o| o.is_object()) else {
+        fund.gaps.push("FMP etf/info was malformed".to_string());
+        return;
+    };
+    fund.name = obj.get("name").and_then(Value::as_str).map(str::to_string);
+    fund.asset_class = obj
+        .get("assetClass")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    fund.expense_ratio = obj
+        .get("expenseRatio")
+        .and_then(Value::as_f64)
+        .map(|percent| percent / 100.0);
+    fund.aum = obj
+        .get("aum")
+        .or_else(|| obj.get("assetsUnderManagement"))
+        .and_then(Value::as_f64);
+    fund.nav = obj.get("nav").and_then(Value::as_f64);
+}
+
+/// Shape a weightings array (`[{sector|country, weightPercentage}]`) into
+/// `(label, fraction)` pairs. Weights arrive as `"25.53%"` strings or numbers; a set
+/// whose values exceed 1.5 reads as percent and normalizes to fractions.
+fn weights_from_value(value: &Value, label_key: &str) -> Vec<(String, f64)> {
+    let Some(rows) = value.as_array() else {
+        return vec![];
+    };
+    let mut out: Vec<(String, f64)> = rows
+        .iter()
+        .filter_map(|row| {
+            let label = row.get(label_key).and_then(Value::as_str)?.to_string();
+            let raw = row.get("weightPercentage")?;
+            let weight = match raw {
+                Value::Number(n) => n.as_f64()?,
+                Value::String(s) => s.trim().trim_end_matches('%').parse::<f64>().ok()?,
+                _ => return None,
+            };
+            Some((label, weight))
+        })
+        .collect();
+    if out.iter().any(|(_, w)| *w > 1.5) {
+        for (_, w) in &mut out {
+            *w /= 100.0;
+        }
+    }
+    out
+}
+
+/// Shape `sector-pe-snapshot` / `historical-sector-pe` rows; a row without a usable
+/// P/E is skipped, and a missing exchange echoes the requested one.
+fn sector_pe_rows_from_value(
+    value: &Value,
+    requested_exchange: &str,
+) -> Vec<crate::portfolio::fund::SectorPe> {
+    let Some(rows) = value.as_array() else {
+        return vec![];
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let sector = row.get("sector").and_then(Value::as_str)?.to_string();
+            let date = row
+                .get("date")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let pe = match row.get("pe") {
+                Some(Value::Number(n)) => n.as_f64()?,
+                Some(Value::String(s)) => s.trim().parse::<f64>().ok()?,
+                _ => return None,
+            };
+            let exchange = row
+                .get("exchange")
+                .and_then(Value::as_str)
+                .unwrap_or(requested_exchange)
+                .to_string();
+            Some(crate::portfolio::fund::SectorPe {
+                sector,
+                exchange,
+                date,
+                pe,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod suite_tests {
+    use super::*;
+    use crate::test_http::{Canned, MockHttp};
+
+    fn source(base: &str) -> FmpDataSource {
+        FmpDataSource::new("test-key".to_string())
+            .unwrap()
+            .with_base_url(base)
+    }
+
+    #[test]
+    fn quarterly_income_rows_parse_with_filing_dates() {
+        let body = r#"[
+          {"date":"2026-03-31","filingDate":"2026-05-01","revenue":95000000000.0,
+           "epsDiluted":1.55,"weightedAverageShsOutDil":15000000000.0},
+          {"date":"2025-12-31","fillingDate":"2026-01-30","revenue":120000000000.0,
+           "epsdiluted":2.10,"weightedAverageShsOutDil":15100000000.0}
+        ]"#;
+        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body }]);
+        let mut gaps = vec![];
+        let rows = source(&server.base_url).fetch_quarterly_income("AAPL", &mut gaps);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].period_end, "2026-03-31");
+        assert_eq!(rows[0].filing_date.as_deref(), Some("2026-05-01"));
+        // Both key spellings parse (epsDiluted / epsdiluted, filingDate / fillingDate).
+        assert_eq!(rows[1].eps_diluted, Some(2.10));
+        assert_eq!(rows[1].filing_date.as_deref(), Some("2026-01-30"));
+        assert!(gaps.is_empty());
+        assert_eq!(server.request_paths(), vec!["/income-statement"]);
+    }
+
+    #[test]
+    fn consensus_picks_the_nearest_forward_year() {
+        let body = r#"[
+          {"date":"2025-09-30","epsAvg":6.1,"epsLow":5.9,"epsHigh":6.3,
+           "revenueAvg":400e9,"revenueLow":390e9,"revenueHigh":410e9},
+          {"date":"2027-09-30","epsAvg":7.4,"epsLow":7.0,"epsHigh":7.8,
+           "revenueAvg":460e9,"revenueLow":450e9,"revenueHigh":470e9},
+          {"date":"2026-09-30","epsAvg":6.8,"epsLow":6.5,"epsHigh":7.1,
+           "revenueAvg":430e9,"revenueLow":420e9,"revenueHigh":440e9}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let c = consensus_from_value(&value, "2026-07-16").unwrap();
+        // The nearest coming fiscal year (2026-09-30), not the stale or far one.
+        assert_eq!(c.period_end, "2026-09-30");
+        assert_eq!(c.eps_mid, Some(6.8));
+        assert_eq!(c.revenue_low, Some(420e9));
+    }
+
+    #[test]
+    fn ttm_dividends_sum_only_the_trailing_window() {
+        let body = r#"[
+          {"date":"2026-05-10","adjDividend":0.26},
+          {"date":"2026-02-10","dividend":0.25},
+          {"date":"2024-11-10","adjDividend":0.24}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
+        let ttm = ttm_dividends_from_value(&value, today).unwrap();
+        assert!((ttm - 0.51).abs() < 1e-9, "{ttm}: the 2024 row is outside the window");
+        // No rows in the window → None, never a fabricated yield.
+        let stale: Value = serde_json::from_str(r#"[{"date":"2020-01-01","dividend":1.0}]"#).unwrap();
+        assert!(ttm_dividends_from_value(&stale, today).is_none());
+    }
+
+    #[test]
+    fn fund_data_parses_info_and_normalized_weightings() {
+        let info = r#"[{"symbol":"VTI","name":"Vanguard Total Stock Market ETF",
+            "assetClass":"Equity","expenseRatio":0.03,"aum":4.0e11,"nav":280.5}]"#;
+        let sectors = r#"[
+            {"sector":"Technology","weightPercentage":"32.5%"},
+            {"sector":"Financial Services","weightPercentage":"13.2%"}
+        ]"#;
+        let countries = r#"[{"country":"United States","weightPercentage":"99.4%"}]"#;
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 200, headers: vec![], body: info },
+            Canned::Reply { status: 200, headers: vec![], body: sectors },
+            Canned::Reply { status: 200, headers: vec![], body: countries },
+        ]);
+        let fund = source(&server.base_url).fetch_fund_data("VTI");
+        assert_eq!(fund.asset_class.as_deref(), Some("Equity"));
+        // Percent-unit expense ratio normalizes to a decimal ratio at the seam.
+        assert!((fund.expense_ratio.unwrap() - 0.0003).abs() < 1e-12);
+        assert_eq!(fund.nav, Some(280.5));
+        // Percent-string weights normalize to fractions.
+        assert!((fund.sector_weights[0].1 - 0.325).abs() < 1e-9);
+        assert!((fund.country_weights[0].1 - 0.994).abs() < 1e-9);
+        assert!(fund.gaps.is_empty(), "{:?}", fund.gaps);
+    }
+
+    #[test]
+    fn fund_data_records_gaps_per_failed_endpoint() {
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 402, headers: vec![], body: "premium" },
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+            Canned::Reply { status: 500, headers: vec![], body: "oops" },
+        ]);
+        let fund = source(&server.base_url).fetch_fund_data("VTI");
+        assert!(fund.asset_class.is_none());
+        assert_eq!(fund.gaps.len(), 3, "{:?}", fund.gaps);
+    }
+
+    #[test]
+    fn sector_pe_rows_parse_and_echo_the_exchange() {
+        let body = r#"[
+          {"date":"2026-07-15","sector":"Technology","exchange":"NYSE","pe":30.1},
+          {"date":"2026-07-15","sector":"Energy","pe":"11.4"},
+          {"date":"2026-07-15","sector":"Broken"}
+        ]"#;
+        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body }]);
+        let rows = source(&server.base_url)
+            .fetch_sector_pe_snapshot("NYSE", "2026-07-15")
+            .unwrap();
+        assert_eq!(rows.len(), 2, "the row without a usable P/E is skipped");
+        assert_eq!(rows[1].exchange, "NYSE", "missing exchange echoes the request");
+        assert!((rows[1].pe - 11.4).abs() < 1e-9, "string P/E parses");
     }
 }

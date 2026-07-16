@@ -19,6 +19,7 @@
 pub mod diff;
 pub mod dossier;
 pub mod engine;
+pub mod fund;
 pub mod job;
 pub mod pipeline;
 pub mod store;
@@ -250,7 +251,8 @@ pub struct SubScores {
 
 /// The action ladder (`docs/portfolio-analysis.md` §The holding verdict) — a fixed
 /// vocabulary so verdicts stay comparable and the model can't retreat into hedged
-/// language. The model selects the rung; the sizing is computed deterministically.
+/// language. The model selects the rung **within the engine-bounded feasible set**;
+/// the sizing is computed deterministically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Action {
@@ -259,6 +261,60 @@ pub enum Action {
     Hold,
     Add,
     AddAggressively,
+}
+
+impl Action {
+    /// The kebab label serde uses — for building per-holding schema enums.
+    pub fn as_kebab(&self) -> &'static str {
+        match self {
+            Action::SellAll => "sell-all",
+            Action::Trim => "trim",
+            Action::Hold => "hold",
+            Action::Add => "add",
+            Action::AddAggressively => "add-aggressively",
+        }
+    }
+}
+
+/// The deterministic risk tier (`docs/portfolio-analysis.md` §Starting parameters —
+/// assigned per branch in the engine stage; Trade Opportunities' High/Low/else-Medium
+/// rule is canonical for priced stocks, a fund mapping for priced equity funds; a
+/// `role_risk_only` holding carries none). Scales the capital-efficiency hurdle
+/// premium and rides the audit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RiskTier {
+    Low,
+    Medium,
+    High,
+}
+
+impl RiskTier {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RiskTier::Low => "low",
+            RiskTier::Medium => "medium",
+            RiskTier::High => "high",
+        }
+    }
+}
+
+/// The three-state capital-efficiency / dead-money read (`docs/portfolio-analysis.md`
+/// §Starting parameters): **clears** when even the bear-case total return clears the
+/// tier-scaled hurdle; **fails** when even the bull case misses it (only this state
+/// is dead money); **indeterminate** otherwise — a point estimate missing the hurdle
+/// inside its own scenario dispersion proves nothing. `unscorable` when the scenario
+/// total returns could not be computed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HurdleState {
+    Clears,
+    Indeterminate,
+    Fails,
+    /// The read could not be computed (no scenario total returns) — the default so
+    /// an empty [`engine::HurdleRead`] never fabricates a verdict.
+    #[default]
+    Unscorable,
 }
 
 /// The verdict's confidence, lowered when evidence is thin (below the evidence floor
@@ -303,12 +359,19 @@ pub struct PriceTarget {
     pub methodology: String,
 }
 
-/// End-of-month and end-of-year scenario targets, each `None` when the inputs to
-/// derive it were missing.
+/// One-month and twelve-month scenario targets — **rolling windows from the run
+/// date**, not calendar ends (the settled rename of the as-built end-of-month /
+/// end-of-year fields: outside January, calendar year-end is not twelve months away,
+/// and calibration scores these against the 1- and 12-month labels —
+/// `docs/portfolio-analysis.md` §Starting parameters). Each `None` when the inputs to
+/// derive it were missing. The serde aliases keep runs persisted under the old field
+/// names decodable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PriceTargets {
-    pub end_of_month: Option<PriceTarget>,
-    pub end_of_year: Option<PriceTarget>,
+    #[serde(alias = "end_of_month")]
+    pub one_month: Option<PriceTarget>,
+    #[serde(alias = "end_of_year")]
+    pub twelve_month: Option<PriceTarget>,
 }
 
 /// The per-stock options-activity signal computed from the Schwab option chain
@@ -343,10 +406,10 @@ pub struct ActionSizing {
     pub est_dollar_delta: Option<f64>,
 }
 
-/// The graded body of a holding verdict — present only when the holding was eligible
-/// *and* cleared the evidence floor. Numbers (grade, sub-scores, targets, options
-/// signal, sizing) come from the engine; the action, conviction, horizon reads, and
-/// prose come from the model's interpretation.
+/// The priced body of a holding verdict — present only when the holding was eligible,
+/// priceable, *and* cleared the evidence floor. Numbers (grade, sub-scores, targets,
+/// tier, hurdle, options signal, sizing) come from the engine; the action, conviction,
+/// horizon reads, and prose come from the model's interpretation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GradedVerdict {
     pub grade: Grade,
@@ -361,23 +424,82 @@ pub struct GradedVerdict {
     /// target basis stays inspectable.
     pub price_target_rationale: String,
     pub options_signal: OptionsSignal,
+    /// The deterministic per-branch risk tier (`docs/portfolio-analysis.md` §Starting
+    /// parameters). `#[serde(default)]` so a run persisted before the field decodes.
+    #[serde(default)]
+    pub risk_tier: Option<RiskTier>,
+    /// The three-state capital-efficiency / dead-money read — only `fails` is dead
+    /// money. `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub dead_money: Option<HurdleState>,
+    /// True when the letter rests on an imputed (neutral-50) sub-score — the visible
+    /// low-confidence marker beside the letter (`docs/portfolio-analysis.md` §Asset
+    /// eligibility, the priced-fund grade contract; also any stock graded over an
+    /// imputed axis). `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub low_confidence_grade: bool,
     /// A concise read of the company's financial health (model prose).
     pub financial_summary: String,
     /// The continuity diff against the prior run (model prose, or "new holding").
     pub what_changed: String,
 }
 
-/// What a holding's analysis resolved to (`docs/portfolio-analysis.md` §Asset
-/// eligibility, §Evidence floor). The three arms are kept distinct so the UI and the
-/// roll-up can tell a graded holding from one that *can't* be graded (wrong asset
-/// class) and one that *shouldn't* be (too little evidence) — a not-rated position
-/// never receives a fabricated grade.
+/// One exposure weight (a sector or country label and its fraction of the fund).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExposureWeight {
+    pub label: String,
+    pub weight: f64,
+}
+
+/// The `role_risk_only` branch of an analyzed verdict (`docs/portfolio-analysis.md`
+/// §Intrinsic verdict): a structurally unpriceable vehicle class gets a typed role /
+/// risk read — **no letter, no price targets, no conviction, no tier** — while the
+/// action machinery still applies over the reduced {sell all, trim, hold} spine.
+/// Engine-computed fields (exposure, expense, risk, gaps) plus the model's role read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoleRiskVerdict {
+    /// The deterministic classification label (e.g. "bond fund", "leveraged / inverse
+    /// vehicle", "ex-US equity fund below the US-exposure guard").
+    pub class_label: String,
+    /// The model's role read: the mandate and the exposure the vehicle exists to
+    /// supply, read in isolation (prose).
+    pub role_summary: String,
+    /// Top exposure weights (sector or country), engine-computed from the weightings.
+    pub exposure_tilt: Vec<ExposureWeight>,
+    /// The expense ratio as an annual return headwind, where reported.
+    pub expense_drag: Option<f64>,
+    /// Annualized realized volatility — the observable risk read, where computable.
+    pub observable_risk: Option<f64>,
+    /// The deterministic structurally-path-dependent flag (leveraged / inverse and
+    /// option-overlay vehicles).
+    pub structural_flag: bool,
+    /// The typed evidence gaps — this branch's confidence surface (never a fabricated
+    /// High / Medium / Low conviction).
+    pub evidence_gaps: Vec<String>,
+    /// The action from the reduced {sell all, trim, hold} spine.
+    pub action: Action,
+    pub action_sizing: ActionSizing,
+    /// The continuity diff against the prior run (model prose, or "new holding").
+    pub what_changed: String,
+}
+
+/// What a holding's analysis resolved to (`docs/portfolio-analysis.md` §Intrinsic
+/// verdict): the outer three-arm disposition — analyzed / can't-grade / shouldn't-grade
+/// — with the analyzed verdict a **discriminated union of two branches**: the default
+/// `priced` record (the full read) and the `role_risk_only` read for a structurally
+/// unpriceable vehicle class. A not-rated position never receives a fabricated grade.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "status")]
 pub enum VerdictDisposition {
-    // Boxed: the graded body dwarfs the two string variants, so without indirection
-    // every disposition would be sized to it.
-    Graded(Box<GradedVerdict>),
+    // Boxed: the priced body dwarfs the string variants, so without indirection
+    // every disposition would be sized to it. The `graded` alias keeps runs
+    // persisted by the single-equity slice decodable as the priced branch.
+    #[serde(alias = "graded")]
+    Priced(Box<GradedVerdict>),
+    /// A structurally unpriceable vehicle class — the typed role / risk read
+    /// (`docs/portfolio-analysis.md` §Asset eligibility), never `insufficient-evidence`
+    /// (the evidence isn't deficient; the class is unpriceable to this pipeline).
+    RoleRiskOnly(Box<RoleRiskVerdict>),
     /// Ineligible asset class (option, bond, cash, …) — excluded from grading.
     NotRated { reason: String },
     /// Eligible but below the evidence floor — an explicit abstention, never a
@@ -411,6 +533,11 @@ pub struct PortfolioRollUp {
     pub graded_count: usize,
     pub not_rated_count: usize,
     pub insufficient_evidence_count: usize,
+    /// Analyzed holdings on the `role_risk_only` branch (`docs/portfolio-analysis.md`
+    /// §Intrinsic verdict) — counted beside the priced (graded) holdings, never
+    /// pooled with them. `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub role_risk_only_count: usize,
     /// The largest single-position weight (0.0–1.0) — the concentration read.
     pub top_position_weight: f64,
     /// Cash as a fraction of the account total.
@@ -441,11 +568,19 @@ pub struct HoldingAudit {
     pub prompt_version: String,
     /// Inputs a source could not resolve, carried from the financials' gap manifest.
     pub degraded_inputs: Vec<String>,
+    /// How the scenario targets were derived — rung, fallbacks, and the parameter
+    /// version target calibration keys on (`docs/portfolio-analysis.md` §Outcome
+    /// learning). `None` on a not-rated / abstained / role-risk-only holding, and on
+    /// runs persisted before the field existed (`#[serde(default)]`).
+    #[serde(default)]
+    pub target_meta: Option<engine::TargetMeta>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the
-/// interpretation contract changes so older runs stay legible.
-pub const PROMPT_VERSION: &str = "portfolio-v1";
+/// interpretation contract changes so older runs stay legible. v2: the verdict union
+/// (priced / role-risk-only), the engine-bounded feasible action set, the v2
+/// rate-anchored scenario targets, and the rolling-window target rename.
+pub const PROMPT_VERSION: &str = "portfolio-v2";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -481,16 +616,18 @@ pub struct Interpretation {
 
 /// The JSON Schema handed to Ollama's `format` so the interpretation is structurally
 /// valid by construction. Mirrors [`Interpretation`]'s shape; enums are string enums
-/// with the same kebab labels serde uses, so the decoded object round-trips.
-pub fn interpretation_schema() -> Value {
+/// with the same kebab labels serde uses, so the decoded object round-trips. The
+/// action enum lists only the **engine-bounded feasible set** for this holding
+/// (`docs/portfolio-analysis.md` §Starting parameters — the feasible-set rule: the
+/// prompt states the allowed set; the model chooses within it, enforced structurally
+/// here).
+pub fn interpretation_schema(feasible: &[Action]) -> Value {
     let read = json!({ "type": "string", "enum": ["bullish", "neutral", "bearish"] });
+    let actions: Vec<&str> = feasible.iter().map(Action::as_kebab).collect();
     json!({
         "type": "object",
         "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["sell-all", "trim", "hold", "add", "add-aggressively"]
-            },
+            "action": { "type": "string", "enum": actions },
             "conviction": { "type": "string", "enum": ["high", "medium", "low"] },
             "horizon_outlook": {
                 "type": "object",
@@ -505,6 +642,38 @@ pub fn interpretation_schema() -> Value {
             "action", "conviction", "horizon_outlook",
             "financial_summary", "price_target_rationale", "what_changed"
         ]
+    })
+}
+
+/// The model's schema-constrained output for a **`role_risk_only`** holding — the
+/// union's other branch (`docs/portfolio-analysis.md` §Intrinsic verdict): the role
+/// read and the continuity note, plus an action from the reduced spine. None of the
+/// priced fields exist — no grade, conviction, horizon, or target rationale.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoleRiskInterpretation {
+    /// Reduced spine only: sell-all / trim / hold.
+    pub action: Action,
+    /// The vehicle's mandate and the exposure it exists to supply (prose).
+    pub role_summary: String,
+    pub what_changed: String,
+}
+
+/// The reduced action spine a `role_risk_only` holding's feasible set offers —
+/// the add family requires return evidence this branch has none of by construction
+/// (`docs/portfolio-analysis.md` §Portfolio action).
+pub const ROLE_RISK_ACTIONS: [Action; 3] = [Action::SellAll, Action::Trim, Action::Hold];
+
+/// The JSON Schema for [`RoleRiskInterpretation`] — the reduced spine is structural.
+pub fn role_risk_interpretation_schema() -> Value {
+    let actions: Vec<&str> = ROLE_RISK_ACTIONS.iter().map(Action::as_kebab).collect();
+    json!({
+        "type": "object",
+        "properties": {
+            "action": { "type": "string", "enum": actions },
+            "role_summary": { "type": "string" },
+            "what_changed": { "type": "string" }
+        },
+        "required": ["action", "role_summary", "what_changed"]
     })
 }
 
@@ -532,7 +701,14 @@ mod tests {
 
     #[test]
     fn interpretation_schema_lists_every_required_field() {
-        let schema = interpretation_schema();
+        let all = [
+            Action::SellAll,
+            Action::Trim,
+            Action::Hold,
+            Action::Add,
+            Action::AddAggressively,
+        ];
+        let schema = interpretation_schema(&all);
         let required: Vec<&str> = schema["required"]
             .as_array()
             .unwrap()
@@ -549,9 +725,26 @@ mod tests {
         ] {
             assert!(required.contains(&field), "schema must require {field}");
         }
-        // The action enum advertises the full ladder so the model can't invent a rung.
+        // The action enum advertises exactly the feasible set, so the model can't
+        // pick a rung the engine barred.
         let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
         assert_eq!(actions.len(), 5);
+        let bounded = interpretation_schema(&[Action::SellAll, Action::Trim, Action::Hold]);
+        let bounded_actions = bounded["properties"]["action"]["enum"].as_array().unwrap();
+        assert_eq!(bounded_actions.len(), 3);
+        assert!(!bounded_actions.iter().any(|a| a == "add"));
+    }
+
+    #[test]
+    fn role_risk_schema_offers_only_the_reduced_spine() {
+        let schema = role_risk_interpretation_schema();
+        let actions: Vec<&str> = schema["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(actions, vec!["sell-all", "trim", "hold"]);
     }
 
     #[test]
@@ -570,5 +763,82 @@ mod tests {
         let s = serde_json::to_value(&v).unwrap();
         assert_eq!(s["status"], "not-rated");
         assert_eq!(s["reason"], "option position");
+    }
+
+    #[test]
+    fn legacy_graded_rows_decode_as_the_priced_branch() {
+        // A run persisted by the single-equity slice carries `status: "graded"` and
+        // the old target field names; both must decode into the new union so old
+        // runs stay legible (`docs/portfolio-analysis.md` §Intrinsic verdict).
+        let legacy = json!({
+            "status": "graded",
+            "grade": "B",
+            "sub_scores": { "quality": 70.0, "valuation": 60.0, "momentum": 55.0, "risk": 65.0 },
+            "action": "hold",
+            "action_sizing": {
+                "target_weight_low": 0.05, "target_weight_high": 0.07,
+                "est_share_delta": null, "est_dollar_delta": null
+            },
+            "conviction": "medium",
+            "horizon_outlook": { "short": "neutral", "mid": "bullish", "long": "bullish" },
+            "price_targets": {
+                "end_of_month": null,
+                "end_of_year": {
+                    "base": 210.0, "bear": 180.0, "bull": 240.0,
+                    "methodology": "v1 drift"
+                }
+            },
+            "price_target_rationale": "midpoint",
+            "options_signal": {
+                "put_call_volume": null, "put_call_open_interest": null,
+                "implied_volatility": null, "iv_skew": null
+            },
+            "financial_summary": "fine",
+            "what_changed": "new holding"
+        });
+        let parsed: VerdictDisposition = serde_json::from_value(legacy).unwrap();
+        match parsed {
+            VerdictDisposition::Priced(g) => {
+                assert_eq!(g.grade, Grade::B);
+                // Old field names decode through the aliases into the rolling windows.
+                assert!(g.price_targets.one_month.is_none());
+                assert_eq!(g.price_targets.twelve_month.unwrap().base, 210.0);
+                // Pre-field runs default the new engine reads rather than fabricating.
+                assert!(g.risk_tier.is_none());
+                assert!(g.dead_money.is_none());
+                assert!(!g.low_confidence_grade);
+            }
+            other => panic!("legacy graded row must decode as priced, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn role_risk_only_serializes_its_own_branch() {
+        let v = VerdictDisposition::RoleRiskOnly(Box::new(RoleRiskVerdict {
+            class_label: "bond fund".into(),
+            role_summary: "Core fixed-income sleeve.".into(),
+            exposure_tilt: vec![ExposureWeight { label: "United States".into(), weight: 0.97 }],
+            expense_drag: Some(0.0003),
+            observable_risk: Some(0.06),
+            structural_flag: false,
+            evidence_gaps: vec!["valuation: no on-plan duration/credit surface".into()],
+            action: Action::Hold,
+            action_sizing: ActionSizing {
+                target_weight_low: 0.09,
+                target_weight_high: 0.11,
+                est_share_delta: None,
+                est_dollar_delta: None,
+            },
+            what_changed: "new holding".into(),
+        }));
+        let s = serde_json::to_value(&v).unwrap();
+        assert_eq!(s["status"], "role-risk-only");
+        assert_eq!(s["class_label"], "bond fund");
+        // The branch carries no grade / targets / conviction keys at all.
+        assert!(s.get("grade").is_none());
+        assert!(s.get("price_targets").is_none());
+        assert!(s.get("conviction").is_none());
+        let round: VerdictDisposition = serde_json::from_value(s).unwrap();
+        assert_eq!(round, v);
     }
 }

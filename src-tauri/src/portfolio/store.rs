@@ -198,6 +198,7 @@ mod tests {
                 positions: vec![position],
                 cash: 10_000.0,
                 account_total: 29_500.0,
+                source_rows: vec![],
             },
             verdicts: vec![HoldingVerdict {
                 symbol: "AAPL".into(),
@@ -208,6 +209,7 @@ mod tests {
                 },
             }],
             roll_up: PortfolioRollUp {
+                role_risk_only_count: 0,
                 graded_count: 0,
                 not_rated_count: 1,
                 insufficient_evidence_count: 0,
@@ -217,6 +219,7 @@ mod tests {
                 overview: "single fixture holding".into(),
             },
             audit: vec![HoldingAudit {
+                target_meta: None,
                 symbol: "AAPL".into(),
                 metrics: ComputedMetrics::default(),
                 sources: vec!["FMP".into()],
@@ -286,6 +289,7 @@ mod tests {
                 }],
                 cash: 10_000.0,
                 account_total: 29_500.0,
+                source_rows: vec![],
             },
         }
     }

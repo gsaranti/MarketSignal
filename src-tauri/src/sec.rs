@@ -55,19 +55,115 @@ impl CompanyFacts {
     }
 }
 
-/// Static ticker → CIK resolution for the names this slice runs against. The dynamic
-/// `company_tickers.json` resolution (the full ~10k-symbol map) is a later slice; for
-/// the single-equity fixture a small table keeps the path offline and fast. Returns
-/// the 10-digit zero-padded CIK EDGAR expects.
-pub fn cik_for_ticker(ticker: &str) -> Option<&'static str> {
-    match ticker.to_ascii_uppercase().as_str() {
-        "AAPL" => Some("0000320193"),
-        "MSFT" => Some("0000789019"),
-        "NVDA" => Some("0001045810"),
-        "GOOGL" | "GOOG" => Some("0001652044"),
-        "AMZN" => Some("0001018724"),
-        _ => None,
+/// Where the full ticker → CIK map lives. It is served from the `www.sec.gov` host,
+/// not the `data.sec.gov` API host the company-facts call uses, so it carries its own
+/// base-URL seam.
+const SEC_TICKERS_BASE: &str = "https://www.sec.gov";
+
+/// The company-tickers file path on [`SEC_TICKERS_BASE`].
+const SEC_TICKERS_PATH: &str = "/files/company_tickers.json";
+
+/// How long a cached `company_tickers.json` stays fresh before a run refreshes it
+/// (drafted — CIK assignments change rarely, so a week keeps the map current without
+/// re-downloading the ~1 MB file per run). A stale cache is still used when the
+/// refresh fetch fails: fail-soft, never a run blocker.
+pub const CIK_CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// The ticker → CIK resolver over SEC's full `company_tickers.json` map
+/// (`docs/data-sources.md §SEC EDGAR`). Resolution returns the 10-digit zero-padded
+/// CIK EDGAR expects; an unresolved ticker stays `None` and degrades to a typed gap
+/// at the caller, never a fabricated mapping.
+#[derive(Debug, Clone, Default)]
+pub struct CikResolver {
+    map: std::collections::HashMap<String, String>,
+}
+
+impl CikResolver {
+    /// An empty resolver — every lookup misses. The fail-soft floor when neither a
+    /// cache nor a fetch is available.
+    pub fn empty() -> Self {
+        Self::default()
     }
+
+    /// Parse the `company_tickers.json` body: an object keyed by row index, each row
+    /// `{cik_str, ticker, title}`. The CIK is zero-padded to the 10 digits EDGAR paths
+    /// expect.
+    pub fn from_json(body: &str) -> Result<Self> {
+        let value: Value = serde_json::from_str(body).context("parsing company_tickers.json")?;
+        let rows = value
+            .as_object()
+            .context("company_tickers.json: expected a top-level object")?;
+        let mut map = std::collections::HashMap::with_capacity(rows.len());
+        for row in rows.values() {
+            let (Some(ticker), Some(cik)) = (
+                row.get("ticker").and_then(Value::as_str),
+                row.get("cik_str").and_then(Value::as_u64),
+            ) else {
+                continue; // A malformed row is skipped, never a fabricated mapping.
+            };
+            map.insert(ticker.to_ascii_uppercase(), format!("{cik:010}"));
+        }
+        Ok(Self { map })
+    }
+
+    /// The 10-digit zero-padded CIK for a ticker (case-insensitive), or `None` when
+    /// the symbol has no EDGAR mapping.
+    pub fn resolve(&self, ticker: &str) -> Option<&str> {
+        self.map.get(&ticker.to_ascii_uppercase()).map(String::as_str)
+    }
+
+    /// How many tickers resolve — zero means the resolver is the empty fail-soft floor.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+/// Load the ticker → CIK resolver: the on-disk cache when fresh
+/// ([`CIK_CACHE_MAX_AGE`]), else a fetch that rewrites the cache. Fail-soft at every
+/// step — a failed fetch falls back to a stale cache when one exists, and to the
+/// empty resolver when none does, so an SEC outage degrades filings coverage to
+/// typed gaps rather than blocking the run.
+pub fn load_cik_resolver(cache_path: &std::path::Path, source: &SecEdgarSource) -> CikResolver {
+    let cached = std::fs::read_to_string(cache_path).ok();
+    let cache_fresh = std::fs::metadata(cache_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|age| age < CIK_CACHE_MAX_AGE)
+        .unwrap_or(false);
+    if cache_fresh {
+        if let Some(body) = &cached {
+            if let Ok(resolver) = CikResolver::from_json(body) {
+                return resolver;
+            }
+        }
+    }
+    match source.fetch_company_tickers() {
+        Ok(body) => match CikResolver::from_json(&body) {
+            Ok(resolver) => {
+                // Best-effort cache write: a failed write costs the next run a
+                // re-download, never this run's resolution.
+                if let Some(dir) = cache_path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let _ = std::fs::write(cache_path, &body);
+                resolver
+            }
+            Err(_) => stale_or_empty(cached),
+        },
+        Err(_) => stale_or_empty(cached),
+    }
+}
+
+/// The fail-soft floor for [`load_cik_resolver`]: a parseable stale cache, else empty.
+fn stale_or_empty(cached: Option<String>) -> CikResolver {
+    cached
+        .and_then(|body| CikResolver::from_json(&body).ok())
+        .unwrap_or_else(CikResolver::empty)
 }
 
 /// The keyless SEC EDGAR company-facts adapter. Mirrors the gated adapters' shape
@@ -75,6 +171,9 @@ pub fn cik_for_ticker(ticker: &str) -> Option<&'static str> {
 pub struct SecEdgarSource {
     http: reqwest::blocking::Client,
     base_url: String,
+    /// The `www.sec.gov` host serving `company_tickers.json` — a distinct base from
+    /// the `data.sec.gov` API host, with its own test seam.
+    tickers_base_url: String,
     progress: Arc<RunContext>,
 }
 
@@ -89,16 +188,59 @@ impl SecEdgarSource {
         Ok(Self {
             http,
             base_url: SEC_DATA_BASE.to_string(),
+            tickers_base_url: SEC_TICKERS_BASE.to_string(),
             progress: RunContext::noop(),
         })
     }
 
     /// Point the adapter at a mock base URL for the offline round-trip test. Trailing
-    /// slash trimmed so the joined path's leading slash doesn't double up.
+    /// slash trimmed so the joined path's leading slash doesn't double up. Points both
+    /// hosts at the mock, since a test exercises one endpoint at a time.
     #[cfg(test)]
     fn with_base_url(mut self, base_url: &str) -> Self {
-        self.base_url = base_url.trim_end_matches('/').to_string();
+        let base = base_url.trim_end_matches('/').to_string();
+        self.tickers_base_url = base.clone();
+        self.base_url = base;
         self
+    }
+
+    /// Fetch the raw `company_tickers.json` body (the caller parses and caches it —
+    /// [`load_cik_resolver`]). A transport error or non-2xx returns `Err`; resolution
+    /// then falls back fail-soft.
+    pub fn fetch_company_tickers(&self) -> Result<String> {
+        if self.progress.is_cancelled() {
+            anyhow::bail!("SEC ticker-map fetch skipped (run cancelled)");
+        }
+        let url = format!("{}{SEC_TICKERS_PATH}", self.tickers_base_url);
+        self.progress
+            .request_started("SEC", "company-tickers", "all", "SEC ticker→CIK map");
+        let result = (|| -> Result<String> {
+            let (status, body) =
+                crate::http_retry::send_with_retry("SEC", || self.http.get(&url))?;
+            if !(200..300).contains(&status) {
+                anyhow::bail!("SEC returned {status} for company_tickers.json");
+            }
+            Ok(body)
+        })();
+        match &result {
+            Ok(_) => self.progress.request_finished(
+                "SEC",
+                "company-tickers",
+                "all",
+                "SEC ticker→CIK map",
+                "ok",
+                None,
+            ),
+            Err(e) => self.progress.request_finished(
+                "SEC",
+                "company-tickers",
+                "all",
+                "SEC ticker→CIK map",
+                "failed",
+                Some(e.to_string()),
+            ),
+        }
+        result
     }
 
     /// Attach a live run context so each fetch streams a tracker row.
@@ -275,9 +417,76 @@ mod tests {
         assert!(err.to_string().contains("404"), "{err}");
     }
 
+    fn tickers_body() -> &'static str {
+        r#"{
+          "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+          "1": {"cik_str": 789019, "ticker": "MSFT", "title": "MICROSOFT CORP"},
+          "2": {"cik_str": 34088, "ticker": "XOM", "title": "EXXON MOBIL CORP"},
+          "3": {"ticker": "BROKEN"}
+        }"#
+    }
+
     #[test]
-    fn cik_resolution_covers_the_fixture_symbol() {
-        assert_eq!(cik_for_ticker("aapl"), Some("0000320193"));
-        assert!(cik_for_ticker("ZZZZ").is_none());
+    fn resolver_parses_the_full_map_and_zero_pads_ciks() {
+        let resolver = CikResolver::from_json(tickers_body()).unwrap();
+        assert_eq!(resolver.len(), 3, "the malformed row is skipped, not fabricated");
+        assert_eq!(resolver.resolve("aapl"), Some("0000320193"));
+        assert_eq!(resolver.resolve("XOM"), Some("0000034088"), "short CIKs zero-pad to 10");
+        assert_eq!(resolver.resolve("ZZZZ"), None);
+    }
+
+    #[test]
+    fn ticker_map_fetch_round_trips_and_hits_the_files_path() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: tickers_body(),
+        }]);
+        let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
+        let body = sec.fetch_company_tickers().unwrap();
+        assert!(CikResolver::from_json(&body).unwrap().resolve("MSFT").is_some());
+        assert_eq!(
+            server.request_paths(),
+            vec!["/files/company_tickers.json".to_string()]
+        );
+    }
+
+    #[test]
+    fn load_cik_resolver_fetches_then_reuses_the_fresh_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("sec_company_tickers.json");
+        // First load: no cache → fetch → cache written.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: tickers_body(),
+        }]);
+        let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
+        let resolver = load_cik_resolver(&cache, &sec);
+        assert_eq!(resolver.resolve("AAPL"), Some("0000320193"));
+        assert!(cache.exists(), "the fetched map is cached beside the db");
+        // Second load: the fresh cache serves without any request — the mock has no
+        // second canned reply, so a fetch attempt would fail and fall to empty.
+        let sec_offline = SecEdgarSource::new().unwrap().with_base_url("http://127.0.0.1:1");
+        let resolver = load_cik_resolver(&cache, &sec_offline);
+        assert_eq!(resolver.resolve("MSFT"), Some("0000789019"));
+    }
+
+    #[test]
+    fn load_cik_resolver_falls_back_to_a_stale_cache_then_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("sec_company_tickers.json");
+        std::fs::write(&cache, tickers_body()).unwrap();
+        // Age the cache past the freshness window so a refresh is attempted; the
+        // unreachable fetch then falls back to the stale cache rather than empty.
+        let stale = std::time::SystemTime::now() - (CIK_CACHE_MAX_AGE + Duration::from_secs(60));
+        let file = std::fs::File::options().append(true).open(&cache).unwrap();
+        file.set_modified(stale).unwrap();
+        let sec_offline = SecEdgarSource::new().unwrap().with_base_url("http://127.0.0.1:1");
+        let resolver = load_cik_resolver(&cache, &sec_offline);
+        assert_eq!(resolver.resolve("AAPL"), Some("0000320193"), "stale beats empty");
+        // No cache at all → the empty fail-soft floor.
+        let resolver = load_cik_resolver(&dir.path().join("missing.json"), &sec_offline);
+        assert!(resolver.is_empty());
     }
 }

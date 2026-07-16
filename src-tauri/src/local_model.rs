@@ -618,6 +618,30 @@ pub fn local_gate(cfg: &AppConfig, probe: &DaemonProbe) -> ValidationReport {
             dismiss_id: None,
         });
     }
+
+    // The shared FMP / FRED credential presence joins the local gate
+    // (`docs/portfolio-workflow.md` §Step 1): the per-holding fundamentals surface
+    // (FMP) and the run-level rate anchors (FRED) are load-bearing engine inputs, so
+    // a missing key blocks at the gate rather than failing hours into a run.
+    // Presence-only (no live probe), surfaced through the **existing**
+    // missing-provider-credentials category — no new category — while Tavily
+    // deliberately does not gate the local suite (an optional research fallback).
+    let mut missing_creds: Vec<&str> = Vec::new();
+    if config::present(&cfg.fmp_api_key).is_none() {
+        missing_creds.push("Financial Modeling Prep");
+    }
+    if config::present(&cfg.fred_api_key).is_none() {
+        missing_creds.push("FRED");
+    }
+    if !missing_creds.is_empty() {
+        categories.push(WarningCategory {
+            kind: WarningKind::ProviderCredentials,
+            title: "Provider credentials".to_string(),
+            items: vec![format!("Missing for {}.", config::join_list(&missing_creds))],
+            dismiss_id: None,
+        });
+    }
+
     let is_blocked = categories.iter().any(|c| c.kind.is_blocking());
     ValidationReport {
         categories,
@@ -704,6 +728,10 @@ mod tests {
             local_reasoner_model: Some("qwen3.5:122b".into()),
             local_fast_model: Some("qwen3.5:35b".into()),
             local_embedder_model: Some("qwen3-embedding:4b".into()),
+            // The shared FMP / FRED credentials joined the local gate with the full
+            // Portfolio slice (`docs/portfolio-workflow.md` §Step 1).
+            fmp_api_key: Some("fmp-key".into()),
+            fred_api_key: Some("fred-key".into()),
             ..AppConfig::default()
         }
     }
@@ -806,6 +834,29 @@ mod tests {
         assert_eq!(cat.kind, WarningKind::LocalModels);
         assert!(cat.items[0].contains("daemon endpoint"), "{:?}", cat.items);
         assert!(cat.items[0].contains("reasoner model"), "{:?}", cat.items);
+    }
+
+    #[test]
+    fn local_gate_blocks_on_missing_fmp_or_fred_via_the_shared_category() {
+        // The credential precondition of `docs/portfolio-workflow.md` §Step 1: FMP +
+        // FRED presence joins the local gate through the existing
+        // missing-provider-credentials category (no new category); Tavily
+        // deliberately does not gate the local suite.
+        let mut cfg = local_cfg();
+        cfg.fred_api_key = None;
+        cfg.tavily_api_key = None;
+        let report = local_gate(&cfg, &DaemonProbe::Reachable { missing: vec![] });
+        assert!(report.is_blocked);
+        let cat = report
+            .categories
+            .iter()
+            .find(|c| c.kind == WarningKind::ProviderCredentials)
+            .expect("the shared provider-credentials category");
+        assert!(cat.items[0].contains("FRED"), "{:?}", cat.items);
+        assert!(!cat.items[0].contains("Tavily"), "Tavily never gates: {:?}", cat.items);
+        // With both present, no credential category fires.
+        let clean = local_gate(&local_cfg(), &DaemonProbe::Reachable { missing: vec![] });
+        assert!(clean.categories.iter().all(|c| c.kind != WarningKind::ProviderCredentials));
     }
 
     #[test]
