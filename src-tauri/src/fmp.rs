@@ -3468,7 +3468,9 @@ impl FmpDataSource {
 
     /// The per-sector aggregate P/E snapshot for one exchange (run-level, shared
     /// across funds; `docs/data-sources.md` — one call per exchange). `date` is the
-    /// most recent weekday, computed by the caller.
+    /// most recent weekday, computed by the caller; a weekday market holiday still
+    /// returns a full snapshot (2026-07-03 and Juneteenth served with carried
+    /// values — live-verified 2026-07-16), so the keying needs no holiday case.
     pub fn fetch_sector_pe_snapshot(
         &self,
         exchange: &str,
@@ -3521,7 +3523,9 @@ impl FmpDataSource {
 }
 
 /// Shape quarterly `/income-statement` rows (newest first). Lenient key spellings
-/// pinned by fixtures; live shape verification rides the paid-key checkpoint.
+/// pinned by fixtures; live-verified 2026-07-16 — the feed serves the stable
+/// spellings (`filingDate` / `epsDiluted` / `weightedAverageShsOutDil`) and the
+/// full 16 rows on `limit=16`.
 fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::QuarterlyIncomeRow> {
     let Some(rows) = value.as_array() else {
         return vec![];
@@ -3555,7 +3559,8 @@ fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Q
 /// estimate is not a forward consensus, and letting it masquerade as one would
 /// bypass the driver ladder's `no-admissible-driver` abstention with a stale print
 /// (`docs/portfolio-analysis.md` §Starting parameters). Accepts both the stable
-/// (`epsAvg`) and legacy (`estimatedEpsAvg`) spellings.
+/// (`epsAvg`) and legacy (`estimatedEpsAvg`) spellings; live 2026-07-16 the feed
+/// serves the stable ones.
 fn consensus_from_value(
     value: &Value,
     today: &str,
@@ -3618,8 +3623,9 @@ fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Option<f
 
 /// Fill a [`crate::portfolio::fund::FundData`] from an `etf/info` body (array-of-one
 /// or bare object). The expense ratio arrives in **percent units** (0.09 = 9 bps)
-/// and normalizes to a decimal ratio at this seam — pinned by fixture, live-verified
-/// at the paid-key checkpoint.
+/// and normalizes to a decimal ratio at this seam — live-verified 2026-07-16
+/// (SPY 0.09 / ARKK 0.75 / VFIAX 0.04, mutual funds served too). The live body
+/// carries `assetsUnderManagement` and no `aum` key — the fallback chain covers it.
 fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) {
     let obj = value.as_array().and_then(|a| a.first()).or(Some(value));
     let Some(obj) = obj.filter(|o| o.is_object()) else {
