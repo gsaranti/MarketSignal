@@ -289,12 +289,26 @@ vehicle class is unpriceable) and **Trade Opportunities**
 (researches new ideas across a 3×3 risk×horizon matrix). Full design lives in
 `docs/local-models.md`, `web-research.md`, `schwab-integration.md`,
 `portfolio-analysis.md`, `portfolio-workflow.md`, and `trade-opportunities.md`.
-**As-built:** the shared substrate, the narrow single-equity Portfolio slice
+**As-built:** the shared substrate, the single-equity Portfolio slice
 (fixture Schwab + FMP + SEC + local models, offline-verified; live validation is
 M5-gated), the live Schwab OAuth adapter + token lifecycle + Connect surface,
-the deterministic holdings-snapshot diff, and the Portfolio page with the
-presence-only local warning categories. **Full Portfolio (funds) and Trade
-Opportunities remain designed, not built.** The load-bearing decisions:
+the deterministic holdings-snapshot diff, the Portfolio page with the
+presence-only local warning categories, and the **full Portfolio (funds) slice**
+(2026-07-16): book-level netting, the full ticker→CIK resolver, the per-symbol
+FMP / Stooq / FRED evidence surface (dated DGS10 anchor-window history —
+fail-soft to the raw-percentile fallback; the two run-level prints hard-fail),
+the **v2 rate-anchored scenario-target function** with per-branch risk tiers,
+the three-state hurdle + new-money admission and the engine-bounded feasible
+set (momentum-free letter, rolling-window target names, add-family floors),
+the strategy-classified fund path (exposure-priced composite under both ≥ 70%
+guards, priced-fund grade contract, fund-form v2 targets, option-overlay
+structural flag; net-short → not-rated), the `priced` / `role_risk_only`
+verdict union rendered as the Portfolio page's two card branches, and
+FMP / FRED presence on the local gate — triaged through two external review
+rounds to convergence. **Trade Opportunities and the remaining Portfolio depth
+slices (thesis ledger, quick check, selective re-analysis, held-name refresh
+lane, pre-profit overlay, outcome learning, the 7b construction stage, the
+live research loop) remain designed, not built.** The load-bearing decisions:
 
 - **A local-only model layer, distinct from the cloud report (built).** A
   flexible local-model adapter (`local_model.rs`) calls one **user-installed,
@@ -349,10 +363,12 @@ Opportunities remain designed, not built.** The load-bearing decisions:
   IV/skew signal is computed — an activity proxy, not positioning truth, kept
   out of grade sub-scores until calibrated. **A connected Schwab account is
   required to run either local job** — manual CSV/paste import only supplements
-  holdings. One known as-built gap: same-symbol rows across granted accounts
-  (and future manual supplements) are concatenated, not netted — the book-level
-  holdings-normalization contract (`docs/schwab-integration.md §What is pulled`)
-  is a named code prerequisite of the full Portfolio slice. The live
+  holdings. Same-symbol rows across granted accounts (and future manual
+  supplements) **net at snapshot assembly** into one signed book-level position
+  per symbol — the holdings-normalization contract
+  (`docs/schwab-integration.md §What is pulled`), built with the fund slice;
+  per-source rows survive for display and audit, and a net-short book-level
+  equity takes the not-rated treatment. The live
   source is chosen over the offline fixture by a connection
   gate (`MARKET_SIGNAL_SCHWAB_FIXTURE` keeps the fixture for offline runs). The surface is **read-only by construction** — the adapter
   implements only holdings/positions/option-chain `GET`s and never an
@@ -376,9 +392,8 @@ Opportunities remain designed, not built.** The load-bearing decisions:
   and the `vector_memory` / `Embedder` modules. Local-gate failures get their
   own warning categories (`schwab_gate` + `local_gate`), kept **off the cloud
   `validate` gate** — a disconnected account blocks only the local jobs, never
-  the report. (Settled, engine update pending: FMP / FRED presence joins the
-  local gate through the shared missing-credentials category — the as-built
-  gate merges only the local-model and Schwab checks —
+  the report. (Built with the fund slice: FMP / FRED presence joins the
+  local gate through the shared missing-credentials category —
   `portfolio-workflow.md §Step 1`.) Both jobs are personalized by a **fixed default investor-profile
   preset** (user config deferred) that frames the prescription, never which
   holdings or ideas qualify — nor the intrinsic verdict (profile-independence
@@ -406,10 +421,10 @@ Opportunities remain designed, not built.** The load-bearing decisions:
   - **Only a deep re-evaluation can archive an opportunity; the cheap
     re-derivation never does** — it refreshes the quant read and raises a
     non-destructive attention warning.
-- **Portfolio Analysis (designed — `docs/portfolio-analysis.md`,
-  `portfolio-workflow.md`; strategy audit converged 2026-07-10, with one
-  named input deliberately open — the fund-form target methodology, the
-  first decision of the fund slice's plan).** The
+- **Portfolio Analysis (per-holding spine + fund path built; depth slices
+  designed — `docs/portfolio-analysis.md`, `portfolio-workflow.md`; strategy
+  audit converged 2026-07-10; the fund-form target methodology settled
+  2026-07-16 — the v2 function over the exposure-priced composite).** The
   intrinsic verdict is a **discriminated union**: the **`priced`** branch is
   the four-part read — deterministic grade (momentum settled out of the
   letter), first-class forward outlook, bidirectional conviction, portfolio
@@ -485,18 +500,20 @@ Opportunities remain designed, not built.** The load-bearing decisions:
 
 ## What remains
 
-In order: **full Portfolio (funds)** (`docs/portfolio-analysis.md §Asset
-eligibility`; strategy audited to convergence 2026-07-10 — the fund-form
-scenario-target methodology is the plan's named blocking input, decided first;
-named code prerequisites: the ticker→CIK resolver and the holdings book-level
-netting step; the slice's engine update also carries the round-7-settled **v2
-rate-anchored scenario-target function** and **per-branch risk-tier
-assignment** — docs-lead-code, `engine.rs` names the gap)
-→ the **Local-analysis-models Settings section** (also the in-app
+In order: the **Local-analysis-models Settings section** (also the in-app
 clear path for the shipped presence warning; named code prerequisite: the
 provider-credential save split out of the token-gated cloud save, so a
 cloud-keyless machine can persist FMP / FRED — `configuration.md §API Tokens`)
 and the **sidebar Portfolio-runs history** → **Trade Opportunities** (design settled — full strategy audit plus
 three external review rounds to convergence, 2026-07-09; investment logic ready
-for implementation planning when the queue reaches it). Hardware-gated on the M5: live local-suite
-validation, the model-serving pre-flight, and the calibration knobs.
+for implementation planning when the queue reaches it). The **remaining
+Portfolio depth slices** (thesis ledger, quick check, selective re-analysis,
+held-name refresh lane, pre-profit overlay, outcome learning, the 7b
+construction stage, the live research loop) are designed and not yet sequenced
+in this queue; the shipped schemas don't preclude them. Hardware-gated on the
+M5: live local-suite validation, the model-serving pre-flight, and the
+calibration knobs — now including the fund slice's drafted constants (hurdle ×
+rate-anchored-multiple tightness, the ≥ 70% coverage / US guards, tier
+premiums, add floors, CIK-cache staleness) and the FMP paid-key shape
+checkpoint (new-endpoint field spellings, the expense-ratio `/100`
+normalization, `sector-pe-snapshot` holiday keying).
