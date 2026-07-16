@@ -126,6 +126,8 @@ export const samplePortfolioRun: PortfolioRun = {
         risk_tier: "medium",
         dead_money: "indeterminate",
         low_confidence_grade: false,
+        fund_class_label: null,
+        structural_flag: false,
         financial_summary: "Solid margins.",
         what_changed: "First analyzed run.",
       },

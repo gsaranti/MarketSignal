@@ -62,6 +62,8 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     risk_tier: "medium",
     dead_money: "indeterminate",
     low_confidence_grade: false,
+    fund_class_label: null,
+    structural_flag: false,
     financial_summary: "Solid margins.",
     what_changed: "First analyzed run.",
     ...over,
@@ -279,6 +281,50 @@ describe("PortfolioView verdict cards", () => {
     const clean = mountView({ run });
     expect(clean.findAll(".ana-tag").map((t) => t.text())).not.toContain(
       "Low confidence"
+    );
+  });
+
+  test("a priced fund shows its classification and the option-overlay flag", () => {
+    // The deterministic classification is shown on the card — the priced branch
+    // included — and an option-overlay fund carries the structural flag beside it
+    // (docs/portfolio-analysis.md §Asset eligibility).
+    const overlayRun: PortfolioRun = {
+      ...run,
+      holdings: {
+        positions: [
+          position("QYLD", {
+            asset_class: "etf",
+            cost_basis: 9_000,
+            market_value: 10_000,
+          }),
+        ],
+        cash: 0,
+        account_total: 10_000,
+      },
+      verdicts: [
+        verdict(
+          "QYLD",
+          {
+            status: "priced",
+            ...graded({
+              low_confidence_grade: true,
+              fund_class_label: "US equity fund",
+              structural_flag: true,
+            }),
+          },
+          { asset_class: "etf" }
+        ),
+      ],
+    };
+    const wrapper = mountView({ run: overlayRun });
+    expect(wrapper.text()).toContain("US equity fund · reduced verdict");
+    const tags = wrapper.findAll(".ana-tag").map((t) => t.text());
+    expect(tags).toContain("Structurally path-dependent");
+    // A stock (null classification) renders neither.
+    const clean = mountView({ run });
+    expect(clean.text()).toContain("Stock · full verdict");
+    expect(clean.findAll(".ana-tag").map((t) => t.text())).not.toContain(
+      "Structurally path-dependent"
     );
   });
 

@@ -1060,6 +1060,23 @@ mod tests {
             !meta.rate_anchored,
             "an empty admissible window cannot rate-anchor"
         );
+        // The documented fallback is the raw-multiple percentiles over the real
+        // driver history — never the current-multiple carry while quarters exist.
+        assert!(
+            !meta.current_multiple_carry,
+            "a failed DGS10 join must not degrade to the current-multiple carry"
+        );
+        match &run.verdicts[0].disposition {
+            crate::portfolio::VerdictDisposition::Priced(g) => {
+                let tm = g.price_targets.twelve_month.as_ref().unwrap();
+                assert!(
+                    tm.methodology.contains("raw multiple percentiles"),
+                    "{}",
+                    tm.methodology
+                );
+            }
+            other => panic!("expected a priced verdict, got {other:?}"),
+        }
     }
 
     #[test]

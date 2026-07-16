@@ -372,8 +372,14 @@ const CLASS_LABELS: Record<string, string> = {
 };
 function classLabel(v: HoldingVerdict): string {
   const base = CLASS_LABELS[v.asset_class] ?? v.asset_class;
-  if (v.disposition.status === "priced")
+  if (v.disposition.status === "priced") {
+    // A priced fund shows its deterministic strategy classification (e.g. "US
+    // equity fund" — docs/portfolio-analysis.md §Asset eligibility); null for a
+    // stock and on runs persisted before the field.
+    if (v.disposition.fund_class_label)
+      return `${v.disposition.fund_class_label} · reduced verdict`;
     return `${base} · ${v.asset_class === "stock" ? "full verdict" : "reduced verdict"}`;
+  }
   if (v.disposition.status === "role-risk-only")
     return `${v.disposition.class_label} · role / risk read`;
   if (v.disposition.status === "not-rated") return `${base} · not rated`;
@@ -896,6 +902,12 @@ const keyFigures = computed(() => {
                           class="ana-tag"
                           title="An imputed (neutral) sub-score underlies this letter"
                           >Low confidence</span
+                        >
+                        <span
+                          v-if="v.disposition.structural_flag"
+                          class="ana-tag"
+                          title="Option-overlay vehicle — structurally path-dependent; the Low risk tier is barred"
+                          >Structurally path-dependent</span
                         >
                         <span v-if="noLongerHeld(v.symbol)" class="ana-tag"
                           >No longer held</span

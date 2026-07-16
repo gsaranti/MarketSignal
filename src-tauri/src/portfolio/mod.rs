@@ -438,6 +438,17 @@ pub struct GradedVerdict {
     /// imputed axis). `#[serde(default)]` for pre-field runs.
     #[serde(default)]
     pub low_confidence_grade: bool,
+    /// The fund path's deterministic strategy classification label (`None` for a
+    /// stock) — "the classification is deterministic, shown on the card"
+    /// (`docs/portfolio-analysis.md` §Asset eligibility), the priced branch included.
+    /// `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub fund_class_label: Option<String>,
+    /// The deterministic structural path-dependency flag on the priced branch (an
+    /// option-overlay fund; leveraged / inverse routes to `role_risk_only` instead) —
+    /// card-visible beside the classification. `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub structural_flag: bool,
     /// A concise read of the company's financial health (model prose).
     pub financial_summary: String,
     /// The continuity diff against the prior run (model prose, or "new holding").

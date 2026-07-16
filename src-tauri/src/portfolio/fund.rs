@@ -609,14 +609,16 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
     // spreads from the constant-mix history against the dated DGS10 join, TTM
     // distributions in the total return.
     let implied_eps = spot * composite.yield_value;
+    // The dated-rate join is per-leg (the stock builder's rule): a sample with no
+    // DGS10 on or before its date loses only its spread — the raw multiple stays
+    // admissible, so a failed history request degrades to the raw-percentile
+    // fallback, never straight to the current-multiple carry.
     let observations: Vec<AnchorObservation> = history
         .iter()
-        .filter_map(|h| {
-            let dgs10_t = engine::latest_on_or_before(&inp.rates.dgs10_history, &h.date)?;
-            Some(AnchorObservation {
-                spread: h.value - dgs10_t,
-                raw_multiple: 1.0 / h.value,
-            })
+        .map(|h| AnchorObservation {
+            spread: engine::latest_on_or_before(&inp.rates.dgs10_history, &h.date)
+                .map(|dgs10_t| h.value - dgs10_t),
+            raw_multiple: 1.0 / h.value,
         })
         .collect();
     let distributions = fin.ttm_dividends_per_share.unwrap_or(0.0);
@@ -695,6 +697,10 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         // The quality axis is structurally absent and neutral-imputed — the letter
         // always carries the visible low-confidence marker on this branch.
         low_confidence_grade: true,
+        // The deterministic classification is shown on the card — the priced branch
+        // included, an option-overlay flag riding beside it.
+        fund_class_label: Some(classification.class_label),
+        structural_flag: classification.structural_flag,
     }))
 }
 
@@ -1077,6 +1083,10 @@ mod tests {
                 // The fixture's realized volatility is low — without the flag this
                 // fund would read Low; the overlay bars it.
                 assert_eq!(out.risk_tier, crate::portfolio::RiskTier::Medium);
+                // The classification rides the priced output — card-visible, not
+                // just an audit note.
+                assert!(out.structural_flag);
+                assert_eq!(out.fund_class_label.as_deref(), Some("US equity fund"));
             }
             other => panic!("expected the priced branch, got {other:?}"),
         }

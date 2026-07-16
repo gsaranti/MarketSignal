@@ -308,6 +308,8 @@ pub fn analyze_holding(
         risk_tier: Some(engine_output.risk_tier),
         dead_money: Some(engine_output.hurdle.state),
         low_confidence_grade: engine_output.low_confidence_grade,
+        fund_class_label: engine_output.fund_class_label.clone(),
+        structural_flag: engine_output.structural_flag,
         financial_summary: interpretation.financial_summary,
         what_changed: interpretation.what_changed,
     };
@@ -1073,6 +1075,9 @@ mod tests {
                 let tm = g.price_targets.twelve_month.as_ref().unwrap();
                 assert!(tm.methodology.contains("fund exposure composite"));
                 assert!(g.risk_tier.is_some());
+                // The deterministic classification reaches the card-visible verdict.
+                assert_eq!(g.fund_class_label.as_deref(), Some("US equity fund"));
+                assert!(!g.structural_flag);
             }
             other => panic!("expected a priced fund verdict, got {other:?}"),
         }

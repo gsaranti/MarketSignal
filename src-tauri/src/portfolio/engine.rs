@@ -313,6 +313,14 @@ pub struct EngineOutput {
     /// True when the letter rests on an imputed (neutral-50) sub-score — surfaced as
     /// the visible low-confidence marker beside the letter.
     pub low_confidence_grade: bool,
+    /// The fund path's deterministic strategy classification label (`None` for a
+    /// stock) — the classification is shown on the card
+    /// (`docs/portfolio-analysis.md` §Asset eligibility).
+    pub fund_class_label: Option<String>,
+    /// The deterministic structural path-dependency flag (an option-overlay fund on
+    /// the priced path; always false for a stock) — card-visible, and it barred the
+    /// Low risk tier.
+    pub structural_flag: bool,
 }
 
 /// What the engine resolved to: an analysis, or an explicit abstention when the
@@ -402,6 +410,8 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
         hurdle,
         target_meta: bundle.meta,
         low_confidence_grade,
+        fund_class_label: None,
+        structural_flag: false,
     }))
 }
 
@@ -536,10 +546,16 @@ pub(crate) fn return_volatility(history: &[f64]) -> Option<f64> {
 // bullet) shares the core through `spread_anchored_scenarios`.
 
 /// One admissible anchor-window observation: the driver-yield spread over the
-/// contemporaneous DGS10, and the raw multiple for the fallback paths.
+/// contemporaneous DGS10, and the raw multiple for the fallback paths. The spread is
+/// `None` when the quarter's dated `DGS10` join found no observation (a failed or
+/// thin history) — the quarter's **raw multiple stays admissible** so the
+/// raw-percentile fallback still reads real history rather than degrading straight
+/// to the current-multiple carry (`docs/portfolio-analysis.md` §Starting parameters:
+/// a failed history request leaves every *spread* observation inadmissible and takes
+/// the documented raw-percentile fallback).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnchorObservation {
-    pub spread: f64,
+    pub spread: Option<f64>,
     pub raw_multiple: f64,
 }
 
@@ -554,7 +570,10 @@ pub struct ScenarioSet {
     pub tr_base: f64,
     pub tr_bull: f64,
     pub rate_anchored: bool,
+    /// Dated-rate (spread-admissible) anchors — the count the ≥ 8 floor reads.
     pub anchor_observations: usize,
+    /// Driver-admissible quarters backing the raw-multiple fallback percentiles.
+    pub raw_observations: usize,
     pub degenerate_scenarios: usize,
     pub monotonicity_repaired: bool,
     pub current_multiple_carry: bool,
@@ -617,13 +636,17 @@ pub fn spread_anchored_scenarios(
     dgs10_now: f64,
     forward_income_per_share: f64,
 ) -> ScenarioSet {
-    let n = observations.len();
+    // The ≥ 8 floor reads the dated-rate (spread-admissible) anchors; the raw
+    // multiples of every driver-admissible quarter back the fallback percentiles, so
+    // a failed DGS10 join degrades to real history — never straight to the carry.
+    let spreads: Vec<f64> = observations.iter().filter_map(|o| o.spread).collect();
+    let raws: Vec<f64> = observations.iter().map(|o| o.raw_multiple).collect();
+    let n_spread = spreads.len();
+    let n_raw = raws.len();
     let mut degenerate = 0usize;
     let mut current_multiple_carry = false;
 
-    let multiples: [f64; 3] = if n >= MIN_ANCHOR_OBSERVATIONS {
-        let spreads: Vec<f64> = observations.iter().map(|o| o.spread).collect();
-        let raws: Vec<f64> = observations.iter().map(|o| o.raw_multiple).collect();
+    let multiples: [f64; 3] = if n_spread >= MIN_ANCHOR_OBSERVATIONS {
         // Inverse mapping in the spread domain; the raw fallback maps direct.
         let spread_ps = [
             percentile(&spreads, 0.75), // bear
@@ -646,8 +669,7 @@ pub fn spread_anchored_scenarios(
             }
         }
         ms
-    } else if n >= 1 {
-        let raws: Vec<f64> = observations.iter().map(|o| o.raw_multiple).collect();
+    } else if n_raw >= 1 {
         [
             percentile(&raws, 0.25),
             percentile(&raws, 0.50),
@@ -681,8 +703,9 @@ pub fn spread_anchored_scenarios(
         tr_bear: tr(prices[0]),
         tr_base: tr(prices[1]),
         tr_bull: tr(prices[2]),
-        rate_anchored: n >= MIN_ANCHOR_OBSERVATIONS,
-        anchor_observations: n,
+        rate_anchored: n_spread >= MIN_ANCHOR_OBSERVATIONS,
+        anchor_observations: n_spread,
+        raw_observations: n_raw,
         degenerate_scenarios: degenerate,
         monotonicity_repaired,
         current_multiple_carry,
@@ -742,12 +765,13 @@ fn stock_anchor_observations(
         if close <= 0.0 {
             continue;
         }
-        let Some(dgs10_t) = latest_on_or_before(&rates.dgs10_history, &anchor_date) else {
-            continue;
-        };
+        // The dated-rate join is per-leg: a quarter with no DGS10 on or before its
+        // anchor date loses only its spread — the raw multiple stays admissible for
+        // the fallback percentiles.
         let yield_t = ttm / close;
         out.push(AnchorObservation {
-            spread: yield_t - dgs10_t,
+            spread: latest_on_or_before(&rates.dgs10_history, &anchor_date)
+                .map(|dgs10_t| yield_t - dgs10_t),
             raw_multiple: close / ttm,
         });
     }
@@ -912,9 +936,10 @@ pub fn build_price_targets(
         )
     } else {
         format!(
-            "raw multiple percentiles P25/P50/P75 (direct map; window below the \
-             {MIN_ANCHOR_OBSERVATIONS}-observation floor at {} anchors)",
-            scenario.anchor_observations
+            "raw multiple percentiles P25/P50/P75 over {} quarterly anchors (direct \
+             map; dated-rate spread window below the {MIN_ANCHOR_OBSERVATIONS}-observation \
+             floor at {})",
+            scenario.raw_observations, scenario.anchor_observations
         )
     };
     let driver_note = if flat_driver {
@@ -1473,7 +1498,7 @@ mod tests {
         let observations: Vec<AnchorObservation> = (0..9)
             .map(|i| {
                 let spread = 0.06 - 0.005 * i as f64; // 6% down to 2%
-                AnchorObservation { spread, raw_multiple: 1.0 / (spread + 0.045) }
+                AnchorObservation { spread: Some(spread), raw_multiple: 1.0 / (spread + 0.045) }
             })
             .collect();
         let s = spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &observations, 0.045, 0.0);
@@ -1489,7 +1514,7 @@ mod tests {
         // guarded scenarios take their raw multiple percentiles instead.
         let observations: Vec<AnchorObservation> = (0..9)
             .map(|i| AnchorObservation {
-                spread: -0.041 - 0.0005 * i as f64, // denom = spread + 0.045 < 0.01
+                spread: Some(-0.041 - 0.0005 * i as f64), // denom = spread + 0.045 < 0.01
                 raw_multiple: 20.0 + i as f64,
             })
             .collect();
@@ -1502,13 +1527,32 @@ mod tests {
     #[test]
     fn a_thin_window_drops_the_rate_correction() {
         let observations: Vec<AnchorObservation> = (0..5)
-            .map(|i| AnchorObservation { spread: 0.01, raw_multiple: 18.0 + i as f64 })
+            .map(|i| AnchorObservation { spread: Some(0.01), raw_multiple: 18.0 + i as f64 })
             .collect();
         let s = spread_anchored_scenarios(100.0, [5.0, 5.5, 6.0], &observations, 0.045, 0.0);
         assert!(!s.rate_anchored, "below the 8-observation floor");
         assert_eq!(s.anchor_observations, 5);
         assert!(!s.current_multiple_carry);
         assert!(s.bear <= s.base && s.base <= s.bull);
+    }
+
+    #[test]
+    fn a_failed_dgs10_join_falls_back_to_raw_percentiles_not_the_carry() {
+        // Twelve driver-admissible quarters whose dated-rate join all failed (a
+        // failed DGS10 history request): the fallback must read the real raw-multiple
+        // history — never degrade straight to the current-multiple carry
+        // (`docs/portfolio-analysis.md` §Starting parameters).
+        let observations: Vec<AnchorObservation> = (0..12)
+            .map(|i| AnchorObservation { spread: None, raw_multiple: 14.0 + i as f64 })
+            .collect();
+        let s = spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &observations, 0.045, 0.0);
+        assert!(!s.rate_anchored, "no dated-rate anchors");
+        assert_eq!(s.anchor_observations, 0);
+        assert_eq!(s.raw_observations, 12);
+        assert!(!s.current_multiple_carry, "raw history must back the fallback");
+        // Direct-mapped raw percentiles over 14..=25 (flat driver 5.0): P25/P50/P75.
+        assert!((s.bear - 5.0 * percentile(&(0..12).map(|i| 14.0 + i as f64).collect::<Vec<_>>(), 0.25)).abs() < 1e-9);
+        assert!(s.bear < s.base && s.base < s.bull);
     }
 
     #[test]
@@ -1588,7 +1632,7 @@ mod tests {
         let scenario = |bear: f64, base: f64, bull: f64| ScenarioSet {
             bear: 0.0, base: 0.0, bull: 0.0,
             tr_bear: bear, tr_base: base, tr_bull: bull,
-            rate_anchored: true, anchor_observations: 12,
+            rate_anchored: true, anchor_observations: 12, raw_observations: 12,
             degenerate_scenarios: 0, monotonicity_repaired: false,
             current_multiple_carry: false,
         };
