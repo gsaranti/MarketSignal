@@ -186,10 +186,12 @@ stage-and-swap is a named, unscheduled hardening.
   base case carries forward across reports and pivots only when the evidence has
   materially changed (`docs/thesis-continuity.md`) — the conviction and the
   rare-pivot doctrine are the same stance, not opposites.
-- **`frontend` (Vue 3)** — Latest Report View, the **Run Tracker**, Recent
-  Reports Sidebar, Research Documents, the Persistent Warning Area, Settings,
-  and the **Portfolio page** (the first analytical-register surface)
-  (`docs/interface.md`). Markdown→HTML rendering uses **markdown-it** on the
+- **`frontend` (Vue 3)** — Latest Report View, the **Run Tracker**, the
+  **shared-history sidebar** (recent reports; on the Portfolio view its list
+  swaps to the Portfolio-runs history, an older run opening **read-only** —
+  `docs/interface.md §Main Layout`), Research Documents, the Persistent
+  Warning Area, Settings, and the **Portfolio page** (the first
+  analytical-register surface) (`docs/interface.md`). Markdown→HTML rendering uses **markdown-it** on the
   webview side, on demand for display and PDF export, **never persisted** —
   agents never see HTML. PDF export uses the webview's native print-to-PDF,
   where the page margin comes from the report article's **padding**, not
@@ -305,7 +307,17 @@ guards, priced-fund grade contract, fund-form v2 targets, option-overlay
 structural flag; net-short → not-rated), the `priced` / `role_risk_only`
 verdict union rendered as the Portfolio page's two card branches, and
 FMP / FRED presence on the local gate — triaged through two external review
-rounds to convergence. **Trade Opportunities and the remaining Portfolio depth
+rounds to convergence — and the **Local-analysis-models Settings section +
+sidebar Portfolio-runs history** (2026-07-16): the provider-credential save
+split (the two-token gate scoped to the cloud submission alone; FMP / FRED /
+Tavily and the local-model config save **ungated** — the cloud-keyless setup
+path), the local-models save with the **atomic embedder-identity guard** (an
+identity change clears both local vector namespaces in the same transaction
+as the write; re-embed-from-content stays M5-deferred), the manual daemon
+**Test Connection** (untested / unreachable / model-missing / connected — the
+in-app clear path for the shipped presence warning), and the read-only
+past-run view — two Codex rounds to convergence. **Trade Opportunities and
+the remaining Portfolio depth
 slices (thesis ledger, quick check, selective re-analysis, held-name refresh
 lane, pre-profit overlay, outcome learning, the 7b construction stage, the
 live research loop) remain designed, not built.** The load-bearing decisions:
@@ -500,13 +512,17 @@ live research loop) remain designed, not built.** The load-bearing decisions:
 
 ## What remains
 
-In order: the **Local-analysis-models Settings section** (also the in-app
-clear path for the shipped presence warning; named code prerequisite: the
-provider-credential save split out of the token-gated cloud save, so a
-cloud-keyless machine can persist FMP / FRED — `configuration.md §API Tokens`)
-and the **sidebar Portfolio-runs history** → **Trade Opportunities** (design settled — full strategy audit plus
-three external review rounds to convergence, 2026-07-09; investment logic ready
-for implementation planning when the queue reaches it). The **remaining
+In order: **Trade Opportunities** (design settled — full strategy audit plus
+three external review rounds to convergence, 2026-07-09; the paid FMP key's
+shapes live-verified 2026-07-16, so implementation planning codes against
+verified shapes). A named, unscheduled **local-suite guided-setup follow-up**
+carries the Settings-slice deferrals: in-app `ollama pull` with Run-Tracker
+progress + `ollama serve` start, an Install-Ollama deep-link (needs an opener
+capability), reflecting the run-gate connectivity check in the Settings
+daemon indicator (today it reflects manual tests only — an accepted, recorded
+deviation from `interface.md §Connection status`), and embedder
+re-embed-from-content (M5-gated; today an identity change clears the local
+namespaces atomically). The **remaining
 Portfolio depth slices** (thesis ledger, quick check, selective re-analysis,
 held-name refresh lane, pre-profit overlay, outcome learning, the 7b
 construction stage, the live research loop) are designed and not yet sequenced
@@ -514,6 +530,5 @@ in this queue; the shipped schemas don't preclude them. Hardware-gated on the
 M5: live local-suite validation, the model-serving pre-flight, and the
 calibration knobs — now including the fund slice's drafted constants (hurdle ×
 rate-anchored-multiple tightness, the ≥ 70% coverage / US guards, tier
-premiums, add floors, CIK-cache staleness) and the FMP paid-key shape
-checkpoint (new-endpoint field spellings, the expense-ratio `/100`
-normalization, `sector-pe-snapshot` holiday keying).
+premiums, add floors, CIK-cache staleness); the FMP paid-key shape checkpoint
+closed 2026-07-16 (`78df109`).

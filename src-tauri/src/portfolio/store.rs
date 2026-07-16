@@ -141,6 +141,55 @@ pub fn list_recent_runs(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRu
     Ok(out)
 }
 
+/// One sidebar row of the Portfolio-runs history (`docs/interface.md §Main
+/// Layout`; the design package's shared-history `RunRow`): identity, timestamp,
+/// and the two counts the row renders — never the run's verdict payload, so the
+/// listing IPC response stays rows, not ten full runs.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PortfolioRunSummary {
+    pub run_id: String,
+    /// Canonical UTC RFC3339; the frontend renders local time.
+    pub created_at: String,
+    /// Positions in the run's holdings snapshot.
+    pub holdings_count: usize,
+    /// Graded verdicts in the run (the roll-up's `graded_count`).
+    pub graded_count: usize,
+}
+
+/// List the most recent runs' summaries, newest first, capped at `limit` — the
+/// sidebar's Portfolio-runs history listing. Same ordering as [`latest_run`] /
+/// [`prune_runs`], so the list shows exactly the retained window. The counts
+/// come from each stored blob (bounded by the retention cap, so this stays a
+/// handful of local parses); the webview never receives the blobs themselves.
+pub fn list_run_summaries(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRunSummary>> {
+    Ok(list_recent_runs(conn, limit)?
+        .into_iter()
+        .map(|run| PortfolioRunSummary {
+            run_id: run.run_id,
+            created_at: run.created_at,
+            holdings_count: run.holdings.positions.len(),
+            graded_count: run.roll_up.graded_count,
+        })
+        .collect())
+}
+
+/// Load one persisted run by id for the historical Portfolio view, or `None`
+/// when the id is unknown (e.g. the run was pruned between listing and click —
+/// the frontend re-lists rather than erroring).
+pub fn run_by_id(conn: &Connection, run_id: &str) -> Result<Option<PortfolioRun>> {
+    let json = conn
+        .query_row(
+            "SELECT run_json FROM portfolio_runs WHERE run_id = ?1",
+            [run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    match json {
+        Some(j) => Ok(Some(serde_json::from_str(&j)?)),
+        None => Ok(None),
+    }
+}
+
 /// Prune runs beyond the newest `keep`, oldest first — the per-feature retention
 /// cascade (`docs/storage.md §Local Analysis Suite Storage`). Same newest-first
 /// ordering as [`latest_run`], so it evicts exactly the runs the history no longer
@@ -264,6 +313,38 @@ mod tests {
             .collect();
         assert!(!surviving.contains(&"run-00".to_string()));
         assert_eq!(latest_run(&conn).unwrap().unwrap().run_id, "run-10");
+    }
+
+    #[test]
+    fn run_summaries_list_newest_first_and_run_by_id_round_trips() {
+        let conn = mem();
+        record_run(&conn, &sample_run("run-a", "2026-07-01T00:00:00Z")).unwrap();
+        record_run(&conn, &sample_run("run-b", "2026-07-02T00:00:00Z")).unwrap();
+        let summaries = list_run_summaries(&conn, 10).unwrap();
+        assert_eq!(
+            summaries,
+            vec![
+                PortfolioRunSummary {
+                    run_id: "run-b".into(),
+                    created_at: "2026-07-02T00:00:00Z".into(),
+                    holdings_count: 1,
+                    graded_count: 0,
+                },
+                PortfolioRunSummary {
+                    run_id: "run-a".into(),
+                    created_at: "2026-07-01T00:00:00Z".into(),
+                    holdings_count: 1,
+                    graded_count: 0,
+                },
+            ],
+            "newest first, light rows only"
+        );
+        // The limit caps the window like the report sidebar's.
+        assert_eq!(list_run_summaries(&conn, 1).unwrap().len(), 1);
+        // A listed id opens the full run; an unknown (pruned) id is None, not an error.
+        let back = run_by_id(&conn, "run-a").unwrap().unwrap();
+        assert_eq!(back.run_id, "run-a");
+        assert!(run_by_id(&conn, "run-gone").unwrap().is_none());
     }
 
     #[test]

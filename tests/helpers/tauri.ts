@@ -48,6 +48,12 @@ export const defaultSettings: SettingsView = {
     fred: false,
     tavily: false,
   },
+  local_models: {
+    daemon_endpoint: "",
+    reasoner_model: "",
+    fast_model: "",
+    embedder_model: "",
+  },
   available_models: [],
 };
 
@@ -178,6 +184,7 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     check_local_configuration: () => defaultLocalValidation,
     latest_portfolio_run: () => null,
     latest_holdings_pull: () => null,
+    list_portfolio_runs: () => [],
     job_status: () => defaultJobStatus,
     list_reports: () => [] as ReportSummary[],
     list_research_inbox: () => [] as ResearchDocument[],
@@ -188,6 +195,14 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     schwab_status: () => defaultSchwabStatus,
     // Action commands a spec may drive through a user interaction.
     save_settings: () => null,
+    save_provider_credentials: () => null,
+    save_local_model_settings: () => null,
+    test_local_daemon: () => ({
+      reachable: false,
+      detail: "No local daemon endpoint configured",
+      missing_models: [],
+    }),
+    get_portfolio_run: () => null,
     save_schwab_credentials: () => null,
     schwab_connect: () => null,
     schwab_disconnect: () => null,

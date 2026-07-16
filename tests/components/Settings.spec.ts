@@ -13,14 +13,25 @@ import { mount } from "@vue/test-utils";
 import Settings from "../../src/components/Settings.vue";
 import { deepFreeze } from "../helpers/freeze";
 import { defaultSchwabStatus } from "../helpers/tauri";
-import type { SettingsView, SchwabStatus, TruncationStats } from "../../src/types";
+import type {
+  LocalDaemonStatus,
+  SettingsView,
+  SchwabStatus,
+  TruncationStats,
+} from "../../src/types";
 
 const settingsView: SettingsView = {
   models: { main: "gpt-main", bull: "gpt-bull", bear: "gpt-bear", balanced: "gpt-bal" },
   // Both API tokens already configured, so `tokensSatisfied` holds without
-  // retyping them — a single typed data-provider credential can drive a valid
-  // save while the four other slots stay untouched.
+  // retyping them — a model edit can drive a valid cloud save while the token
+  // fields stay untouched.
   credentials: { openai: true, anthropic: true, fmp: false, fred: false, tavily: false },
+  local_models: {
+    daemon_endpoint: "",
+    reasoner_model: "",
+    fast_model: "",
+    embedder_model: "",
+  },
   available_models: [
     { slug: "gpt-main", label: "GPT Main", provider: "OpenAI" },
     { slug: "gpt-bull", label: "GPT Bull", provider: "OpenAI" },
@@ -37,6 +48,14 @@ const baseProps = {
   dark: false,
   testing: { openai: false, anthropic: false, fmp: false, fred: false, tavily: false },
   testResults: { openai: null, anthropic: null, fmp: null, fred: null, tavily: null },
+  // The two independent submissions' channels + the local-daemon test state:
+  // idle, no errors, untested.
+  savingProviders: false,
+  providersError: null as string | null,
+  savingLocal: false,
+  localError: null as string | null,
+  localTesting: false,
+  localDaemon: null as LocalDaemonStatus | null,
   truncationStats: null as TruncationStats | null,
   // A clean install: no Schwab credentials, no connection (the shared helper
   // fixture, spread so deepFreeze can't freeze the shared object). Schwab tests
@@ -64,24 +83,221 @@ function makeWrapper(overrides: Partial<typeof baseProps> = {}) {
   return mount(Settings, { props: { ...baseProps, ...overrides } });
 }
 
-test("save emits only the typed credential, leaving untouched secrets null", async () => {
+// The three independent forms, in template order (docs/configuration.md §API
+// Tokens: the token gate is scoped to the cloud submission alone).
+function forms(wrapper: ReturnType<typeof makeWrapper>) {
+  const all = wrapper.findAll("form.settings-form");
+  return { cloud: all[0], providers: all[1], local: all[2] };
+}
+
+test("the cloud save emits models + typed tokens only, untouched secrets null", async () => {
   const wrapper = makeWrapper();
-  // Type a new FMP key; the four others (incl. both saved tokens) stay untouched.
-  await wrapper.find("#cred-fmp").setValue("new-fmp-key");
-  await wrapper.find("form.settings-form").trigger("submit");
+  // Type a new OpenAI token; the Anthropic slot stays untouched. The provider
+  // credentials are not part of this submission at all.
+  await wrapper.find("#cred-openai").setValue("sk-new");
+  await forms(wrapper).cloud.trigger("submit");
 
   const saved = wrapper.emitted("save");
   expect(saved).toHaveLength(1);
   expect(saved![0][0]).toEqual({
     models: { main: "gpt-main", bull: "gpt-bull", bear: "gpt-bear", balanced: "gpt-bal" },
-    credentials: { openai: null, anthropic: null, fmp: "new-fmp-key", fred: null, tavily: null },
+    credentials: { openai: "sk-new", anthropic: null },
   });
 });
 
 test("submitting with no edits does not emit save (nothing dirty)", async () => {
   const wrapper = makeWrapper();
-  await wrapper.find("form.settings-form").trigger("submit");
+  await forms(wrapper).cloud.trigger("submit");
   expect(wrapper.emitted("save")).toBeUndefined();
+});
+
+// --- Data provider credentials (independent, ungated submission) -------------
+
+test("a typed provider credential emits save-providers, never save", async () => {
+  const wrapper = makeWrapper();
+  await wrapper.find("#cred-fmp").setValue("new-fmp-key");
+  await forms(wrapper).providers.trigger("submit");
+
+  const saved = wrapper.emitted("save-providers");
+  expect(saved).toHaveLength(1);
+  expect(saved![0][0]).toEqual({ fmp: "new-fmp-key", fred: null, tavily: null });
+  expect(wrapper.emitted("save")).toBeUndefined();
+});
+
+test("provider credentials save with no cloud token configured (the ungate)", async () => {
+  // A cloud-keyless machine: no token stored, none typed — the local-suite
+  // setup path (docs/configuration.md §External Data Provider Credentials).
+  const wrapper = makeWrapper({
+    settings: {
+      ...settingsView,
+      credentials: { openai: false, anthropic: false, fmp: false, fred: false, tavily: false },
+    },
+  });
+  await wrapper.find("#cred-fred").setValue("fred-key");
+  await forms(wrapper).providers.trigger("submit");
+  expect(wrapper.emitted("save-providers")).toHaveLength(1);
+  // The cloud form, by contrast, still gates on its tokens.
+  await wrapper.find("#model-main").setValue("");
+  await forms(wrapper).cloud.trigger("submit");
+  expect(wrapper.emitted("save")).toBeUndefined();
+});
+
+test("a reload after one section's save never wipes another section's typed edits", async () => {
+  const wrapper = makeWrapper();
+  // The user types a cloud token but doesn't save it, then saves providers —
+  // App re-fetches settings and passes a fresh view object down.
+  await wrapper.find("#cred-openai").setValue("sk-typed-not-saved");
+  await wrapper.setProps({
+    settings: { ...settingsView, credentials: { ...settingsView.credentials, fmp: true } },
+  });
+  const openai = wrapper.find("#cred-openai").element as HTMLInputElement;
+  expect(openai.value).toBe("sk-typed-not-saved");
+});
+
+test("a clean save clears its OWN secret fields only (completion edge)", async () => {
+  const wrapper = makeWrapper();
+  await wrapper.find("#cred-openai").setValue("sk-typed-not-saved");
+  await wrapper.find("#cred-fmp").setValue("fmp-typed");
+  // Simulate the providers save round-trip: saving flips on, then cleanly off.
+  await wrapper.setProps({ savingProviders: true });
+  await wrapper.setProps({ savingProviders: false });
+  const fmp = wrapper.find("#cred-fmp").element as HTMLInputElement;
+  const openai = wrapper.find("#cred-openai").element as HTMLInputElement;
+  expect(fmp.value).toBe("");
+  expect(openai.value).toBe("sk-typed-not-saved");
+});
+
+// --- Local analysis models (independent, ungated submission) -----------------
+
+test("the local-models form round-trips saved values and emits save-local in full", async () => {
+  const wrapper = makeWrapper({
+    settings: {
+      ...settingsView,
+      local_models: {
+        daemon_endpoint: "http://127.0.0.1:11434",
+        reasoner_model: "reasoner-a",
+        fast_model: "",
+        embedder_model: "embed-a",
+      },
+    },
+  });
+  // Saved values pre-fill (not secrets — they round-trip).
+  const endpoint = wrapper.find("#local-endpoint").element as HTMLInputElement;
+  expect(endpoint.value).toBe("http://127.0.0.1:11434");
+  // An edit makes the form dirty; the submission carries all four verbatim.
+  await wrapper.find("#local-reasoner").setValue("reasoner-b");
+  await forms(wrapper).local.trigger("submit");
+  const saved = wrapper.emitted("save-local");
+  expect(saved).toHaveLength(1);
+  expect(saved![0][0]).toEqual({
+    daemon_endpoint: "http://127.0.0.1:11434",
+    reasoner_model: "reasoner-b",
+    fast_model: "",
+    embedder_model: "embed-a",
+  });
+});
+
+test("an unedited local-models form does not emit save-local", async () => {
+  const wrapper = makeWrapper();
+  await forms(wrapper).local.trigger("submit");
+  expect(wrapper.emitted("save-local")).toBeUndefined();
+});
+
+test("changing the embedder surfaces the local-memory reset heads-up", async () => {
+  const wrapper = makeWrapper({
+    settings: {
+      ...settingsView,
+      local_models: {
+        daemon_endpoint: "http://127.0.0.1:11434",
+        reasoner_model: "reasoner-a",
+        fast_model: "",
+        embedder_model: "embed-a",
+      },
+    },
+  });
+  expect(wrapper.find(".local-caution").exists()).toBe(false);
+  await wrapper.find("#local-embedder").setValue("embed-b");
+  expect(wrapper.find(".local-caution").exists()).toBe(true);
+});
+
+test("the daemon test is gated on a saved endpoint and an at-rest form", async () => {
+  // No endpoint saved → the test button is disabled with the reason as title.
+  const bare = makeWrapper();
+  const bareBtn = bare.find(".local-test .cred-test-btn");
+  expect(bareBtn.attributes("disabled")).toBeDefined();
+  expect(bareBtn.attributes("title")).toContain("Save a daemon endpoint");
+
+  // Saved endpoint → testable; an unsaved edit re-disables (probes the saved
+  // config, not what's typed); the untested state reads as untested.
+  const wrapper = makeWrapper({
+    settings: {
+      ...settingsView,
+      local_models: {
+        daemon_endpoint: "http://127.0.0.1:11434",
+        reasoner_model: "reasoner-a",
+        fast_model: "",
+        embedder_model: "embed-a",
+      },
+    },
+  });
+  expect(wrapper.find(".local-test .cred-status").text()).toContain("Untested");
+  const btn = wrapper.find(".local-test .cred-test-btn");
+  expect(btn.attributes("disabled")).toBeUndefined();
+  await btn.trigger("click");
+  expect(wrapper.emitted("test-local")).toHaveLength(1);
+  await wrapper.find("#local-endpoint").setValue("http://other:11434");
+  expect(
+    wrapper.find(".local-test .cred-test-btn").attributes("disabled")
+  ).toBeDefined();
+});
+
+test("the daemon status distinguishes unreachable from model-missing from connected", () => {
+  const saved = {
+    ...settingsView,
+    local_models: {
+      daemon_endpoint: "http://127.0.0.1:11434",
+      reasoner_model: "reasoner-a",
+      fast_model: "",
+      embedder_model: "embed-a",
+    },
+  };
+  const statusOf = (localDaemon: LocalDaemonStatus) =>
+    makeWrapper({ settings: saved, localDaemon }).find(".local-test .cred-status");
+
+  const down = statusOf({ reachable: false, detail: "connection refused", missing_models: [] });
+  expect(down.text()).toContain("connection refused");
+  expect(down.text()).toContain("install Ollama");
+  expect(down.classes()).toContain("cred-status--err");
+
+  const missing = statusOf({ reachable: true, detail: null, missing_models: ["embed-a"] });
+  expect(missing.text()).toContain("embed-a");
+  expect(missing.text()).toContain("aren't pulled");
+  expect(missing.classes()).toContain("cred-status--err");
+
+  const ok = statusOf({ reachable: true, detail: null, missing_models: [] });
+  expect(ok.text()).toContain("all rostered models available");
+  expect(ok.classes()).toContain("cred-status--ok");
+});
+
+test("a reachable daemon over an empty roster never claims full setup", () => {
+  // Endpoint saved, required roster blank: the probe has nothing to report
+  // missing, so the copy must point at the roster gap, not read as connected.
+  const wrapper = makeWrapper({
+    settings: {
+      ...settingsView,
+      local_models: {
+        daemon_endpoint: "http://127.0.0.1:11434",
+        reasoner_model: "",
+        fast_model: "",
+        embedder_model: "",
+      },
+    },
+    localDaemon: { reachable: true, detail: null, missing_models: [] },
+  });
+  const status = wrapper.find(".local-test .cred-status");
+  expect(status.text()).toContain("add the reasoner and embedder");
+  expect(status.text()).not.toContain("all rostered models available");
+  expect(status.classes()).toContain("cred-status--pending");
 });
 
 test("the appearance toggle (in the toolbar) emits set-dark with the flipped value", async () => {

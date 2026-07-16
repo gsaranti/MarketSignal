@@ -37,24 +37,47 @@ const props = defineProps<{
   busy: boolean;
   running: boolean;
   pulling: boolean;
+  // Viewing a persisted past run from the sidebar's runs history — read-only
+  // (docs/interface.md §Main Layout): the triggers lock, the current-holdings
+  // comparison (keyed to the latest vintage) hides, and a banner names the
+  // vintage with a way back. Optional so the latest-run mounting stays the
+  // default.
+  historical?: boolean;
+  // A past-run OPEN failure — its own channel so it never renders under the
+  // "Couldn't run" label; App clears it on the next selection / back-to-latest.
+  historyError?: string | null;
 }>();
 
-const emit = defineEmits<{ (e: "run"): void; (e: "pull"): void }>();
+const emit = defineEmits<{
+  (e: "run"): void;
+  (e: "pull"): void;
+  (e: "back-to-latest"): void;
+}>();
 
 // ---- Triggers ---------------------------------------------------------------
 
-const runDisabled = computed(() => props.runBlocked || props.busy);
-const pullDisabled = computed(() => props.pullBlocked || props.busy);
+const isHistorical = computed(() => props.historical ?? false);
+
+const runDisabled = computed(
+  () => isHistorical.value || props.runBlocked || props.busy
+);
+const pullDisabled = computed(
+  () => isHistorical.value || props.pullBlocked || props.busy
+);
 
 // The disabled reason, surfaced as the button title so the lock is explicable
 // in place (the warning band carries the full items).
 const runTitle = computed(() => {
+  if (isHistorical.value)
+    return "Viewing a past analysis — go back to the latest run to run jobs";
   if (props.runBlocked)
     return props.runBlockedReason ?? "Local-suite configuration is incomplete";
   if (props.busy) return "Another job is running";
   return "Pull fresh holdings and run the analysis";
 });
 const pullTitle = computed(() => {
+  if (isHistorical.value)
+    return "Viewing a past analysis — go back to the latest run to run jobs";
   if (props.pullBlocked)
     return props.pullBlockedReason ?? "Schwab account not connected";
   if (props.busy) return "Another job is running";
@@ -135,8 +158,11 @@ const pullIsFresher = computed(() => {
 });
 
 // The current-holdings section shows only when the pull is the fresher vintage
-// (before any run it IS the page body).
-const showCurrentHoldings = computed(() => props.pull !== null && pullIsFresher.value);
+// (before any run it IS the page body) — and never on a historical view, whose
+// run is not the vintage the pull compares against.
+const showCurrentHoldings = computed(
+  () => !isHistorical.value && props.pull !== null && pullIsFresher.value
+);
 
 const pullSymbols = computed(() => {
   const s = new Set<string>();
@@ -148,8 +174,13 @@ function newSinceAnalysis(symbol: string): boolean {
   return props.run !== null && !runPositions.value.has(symbol);
 }
 function noLongerHeld(symbol: string): boolean {
+  // Suppressed on a historical view: the tag compares the latest pull against
+  // the *latest* run's vintage, a pairing a past run doesn't participate in.
   return (
-    props.run !== null && pullIsFresher.value && !pullSymbols.value.has(symbol)
+    !isHistorical.value &&
+    props.run !== null &&
+    pullIsFresher.value &&
+    !pullSymbols.value.has(symbol)
   );
 }
 
@@ -506,10 +537,34 @@ const keyFigures = computed(() => {
       </div>
     </div>
 
+    <!-- Historical-view banner (docs/interface.md §Main Layout): a quiet
+         informational band, never the amber action treatment — viewing a past
+         run is a chosen state, not a problem. -->
+    <div v-if="isHistorical && run" class="hist-banner" role="status">
+      <span class="hist-banner-label">Past analysis</span>
+      <span class="hist-banner-text">
+        Viewing the run from {{ fmtStamp(run.created_at) }} — read-only.
+      </span>
+      <button
+        type="button"
+        class="btn btn-secondary hist-banner-back"
+        @click="emit('back-to-latest')"
+      >
+        Back to latest
+      </button>
+    </div>
+
     <!-- Inline run-gate block / failure — ephemeral, never a persistent warning. -->
     <div v-if="runError" class="pane-error" role="alert">
       <span class="pane-error-label">Couldn't run</span>
       <span class="pane-error-detail">{{ runError }}</span>
+    </div>
+
+    <!-- A past-run open failure — same ephemeral posture, its own label so it
+         never reads as a job failure. -->
+    <div v-if="historyError" class="pane-error" role="alert">
+      <span class="pane-error-label">Couldn't open the run</span>
+      <span class="pane-error-detail">{{ historyError }}</span>
     </div>
 
     <div class="pane-scroll">
@@ -1255,6 +1310,44 @@ const keyFigures = computed(() => {
   padding: var(--s-3) var(--s-6);
   background: var(--paper-edge);
   border-bottom: var(--border);
+  flex-shrink: 0;
+}
+
+/* Historical-view banner: the pane-error band's geometry with informational ink
+   (tracked-caps label in ink-3, body in ink-2 — never the accent/amber action
+   treatment; a chosen state, not a problem). The back control rides the row's
+   right edge. */
+.hist-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-6);
+  background: var(--paper-edge);
+  border-bottom: var(--border);
+  flex-shrink: 0;
+}
+
+.hist-banner-label {
+  flex-shrink: 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.hist-banner-text {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums lining-nums;
+  overflow-wrap: anywhere;
+}
+
+.hist-banner-back {
   flex-shrink: 0;
 }
 

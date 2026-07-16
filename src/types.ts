@@ -179,11 +179,34 @@ export interface ConnectionTestResult {
   detail: string;
 }
 
+// The local-analysis-models values (docs/configuration.md §Local Models):
+// daemon endpoint + roster ids. Not secrets, so unlike credentials they
+// round-trip in full ("" when unset) and the form submits all four verbatim to
+// `save_local_model_settings`. Reasoner + embedder are the presence-gated pair;
+// the fast tier is optional and never gates.
+export interface LocalModelSettings {
+  daemon_endpoint: string;
+  reasoner_model: string;
+  fast_model: string;
+  embedder_model: string;
+}
+
 // Returned by `get_settings`.
 export interface SettingsView {
   models: AgentModels;
   credentials: CredentialStatus;
+  local_models: LocalModelSettings;
   available_models: ModelOption[];
+}
+
+// Returned by `test_local_daemon` (the local suite's parallel to
+// ConnectionTestResult): endpoint reachability plus any configured roster ids
+// the daemon doesn't have pulled — "daemon up but the model isn't pulled" is a
+// distinct state (docs/interface.md §Connection status).
+export interface LocalDaemonStatus {
+  reachable: boolean;
+  detail: string | null;
+  missing_models: string[];
 }
 
 // Mirrors the Rust `storage::TruncationStats` returned by the `truncation_stats`
@@ -222,11 +245,20 @@ export interface FormatCount {
   count: number;
 }
 
-// The credential half of a `save_settings` submission. A field is set only when
-// the user entered a new value; null/"" leaves the stored secret unchanged.
+// The API-token half of a `save_settings` submission (the token-gated cloud
+// save). A field is set only when the user entered a new value; null/"" leaves
+// the stored secret unchanged. The FMP/FRED/Tavily provider credentials save
+// separately through `save_provider_credentials`, outside the token gate
+// (docs/configuration.md §API Tokens).
 export interface CredentialUpdate {
   openai: string | null;
   anthropic: string | null;
+}
+
+// The provider credentials' own `save_provider_credentials` submission —
+// ungated by the cloud tokens, so a cloud-keyless machine persists FMP/FRED for
+// the local suite. Same null/"" = leave-unchanged semantics.
+export interface ProviderCredentialUpdate {
   fmp: string | null;
   fred: string | null;
   tavily: string | null;
@@ -471,6 +503,19 @@ export interface PortfolioRun {
   // The per-holding audit records (sources, metrics, model ids…) — persisted
   // for traceability; not rendered by the Portfolio page in this slice.
   audit: unknown[];
+}
+
+// One sidebar row of the Portfolio-runs history, returned by
+// `list_portfolio_runs` (docs/interface.md §Main Layout — the shared-history
+// sidebar's run list). Light by design: identity, timestamp, and the two counts
+// the row renders; opening a run fetches the full record via
+// `get_portfolio_run`.
+export interface PortfolioRunSummary {
+  run_id: string;
+  // Canonical UTC RFC3339; rendered in local time.
+  created_at: string;
+  holdings_count: number;
+  graded_count: number;
 }
 
 // --- Live job tracker -------------------------------------------------------
