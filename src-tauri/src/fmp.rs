@@ -3372,7 +3372,11 @@ impl FmpDataSource {
             Disposition::Value(value) => match consensus_from_value(&value, &today) {
                 Some(c) => Some(c),
                 None => {
-                    gaps.push("FMP analyst estimates carried no usable consensus".to_string());
+                    gaps.push(
+                        "FMP analyst estimates carried no forward-dated consensus \
+                         (a past fiscal-year row is never used as forward)"
+                            .to_string(),
+                    );
                     None
                 }
             },
@@ -3546,9 +3550,12 @@ fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Q
         .collect()
 }
 
-/// Pick the nearest **coming** fiscal-year estimate row (smallest `date` ≥ today;
-/// falls back to the newest row when none is forward) and shape the consensus.
-/// Accepts both the stable (`epsAvg`) and legacy (`estimatedEpsAvg`) spellings.
+/// Pick the nearest **coming** fiscal-year estimate row (smallest `date` ≥ today)
+/// and shape the consensus. **No forward-dated row → `None`**: a past fiscal-year
+/// estimate is not a forward consensus, and letting it masquerade as one would
+/// bypass the driver ladder's `no-admissible-driver` abstention with a stale print
+/// (`docs/portfolio-analysis.md` §Starting parameters). Accepts both the stable
+/// (`epsAvg`) and legacy (`estimatedEpsAvg`) spellings.
 fn consensus_from_value(
     value: &Value,
     today: &str,
@@ -3565,11 +3572,10 @@ fn consensus_from_value(
             .or_else(|| row.get(legacy))
             .and_then(Value::as_f64)
     };
-    let forward: Option<&Value> = rows
+    let chosen: &Value = rows
         .iter()
         .filter(|r| date_of(r).as_str() >= today)
-        .min_by_key(|r| date_of(r));
-    let chosen = forward.or_else(|| rows.iter().max_by_key(|r| date_of(r)))?;
+        .min_by_key(|r| date_of(r))?;
     Some(crate::portfolio::engine::ConsensusEstimate {
         period_end: date_of(chosen),
         eps_low: field(chosen, "epsLow", "estimatedEpsLow"),
@@ -3581,17 +3587,21 @@ fn consensus_from_value(
     })
 }
 
-/// Sum the per-share dividends dated within the trailing twelve months of `today`.
-/// `None` when no row lands in the window (a non-payer, or a stale record) — the
-/// total-return leg then adds nothing rather than a fabricated yield.
+/// Sum the per-share dividends dated within the trailing twelve months of `today` —
+/// **bounded on both sides**: rows dated after `today` (announced-but-unpaid
+/// declarations the dividends feed carries) are excluded, since "trailing" means
+/// paid and a future declaration would inflate the trailing-return leg. `None` when
+/// no row lands in the window (a non-payer, or a stale record) — the total-return
+/// leg then adds nothing rather than a fabricated yield.
 fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Option<f64> {
     let rows = value.as_array()?;
     let cutoff = (today - Duration::days(365)).format("%Y-%m-%d").to_string();
+    let today_str = today.format("%Y-%m-%d").to_string();
     let mut sum = 0.0;
     let mut any = false;
     for row in rows {
         let date = row.get("date").and_then(Value::as_str).unwrap_or_default();
-        if date < cutoff.as_str() {
+        if date < cutoff.as_str() || date > today_str.as_str() {
             continue;
         }
         let amount = row
@@ -3748,8 +3758,24 @@ mod suite_tests {
     }
 
     #[test]
-    fn ttm_dividends_sum_only_the_trailing_window() {
+    fn consensus_without_a_forward_row_is_none_never_a_stale_row() {
+        // Only past fiscal-year rows: a stale estimate must not masquerade as forward
+        // consensus — the driver ladder abstains under `no-admissible-driver` instead.
         let body = r#"[
+          {"date":"2025-09-30","epsAvg":6.1,"epsLow":5.9,"epsHigh":6.3},
+          {"date":"2026-06-30","epsAvg":6.5,"epsLow":6.2,"epsHigh":6.8}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        assert!(consensus_from_value(&value, "2026-07-16").is_none());
+    }
+
+    #[test]
+    fn ttm_dividends_sum_only_the_trailing_window() {
+        // Bounded on both sides: the 2024 row is older than twelve months, and the
+        // announced future payment (2026-08-10) is not yet trailing — including it
+        // would inflate the trailing-return leg.
+        let body = r#"[
+          {"date":"2026-08-10","adjDividend":0.27},
           {"date":"2026-05-10","adjDividend":0.26},
           {"date":"2026-02-10","dividend":0.25},
           {"date":"2024-11-10","adjDividend":0.24}
@@ -3757,7 +3783,10 @@ mod suite_tests {
         let value: Value = serde_json::from_str(body).unwrap();
         let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
         let ttm = ttm_dividends_from_value(&value, today).unwrap();
-        assert!((ttm - 0.51).abs() < 1e-9, "{ttm}: the 2024 row is outside the window");
+        assert!(
+            (ttm - 0.51).abs() < 1e-9,
+            "{ttm}: the 2024 row is outside the window and the future row is excluded"
+        );
         // No rows in the window → None, never a fabricated yield.
         let stale: Value = serde_json::from_str(r#"[{"date":"2020-01-01","dividend":1.0}]"#).unwrap();
         assert!(ttm_dividends_from_value(&stale, today).is_none());

@@ -138,6 +138,13 @@ pub struct RateAnchors {
     /// Dated `DGS10` observations covering the trailing anchor window plus alignment
     /// slack, sorted oldest-first.
     pub dgs10_history: Vec<DatedValue>,
+    /// A degraded-input note when the anchor-window history request failed: the run
+    /// proceeds with an empty admissible window — every spread observation
+    /// inadmissible, the targets on their documented raw-percentile / carry fallback
+    /// — never a new failure state (`docs/portfolio-analysis.md` §Starting
+    /// parameters). Only the two run-level prints hard-fail (§Failure posture).
+    #[serde(default)]
+    pub history_gap: Option<String>,
 }
 
 /// One quarterly income-statement print (newest first in
@@ -997,21 +1004,26 @@ pub fn assign_stock_tier(
 }
 
 /// Deterministic **priced-equity-fund** tier mapping (`docs/portfolio-analysis.md`
-/// §Starting parameters, drafted): High on a leveraged / inverse structural flag,
+/// §Starting parameters, drafted): High on a **leveraged / inverse** structural flag,
 /// annualized volatility > 40%, or maximum drawdown > 50%; Low on volatility < 25%
-/// with no structural flag; else Medium.
+/// with **no structural flag of either kind** — an option-overlay flag bars Low
+/// without forcing High (the doc keys the High leg to leveraged / inverse
+/// specifically, while Low requires no structural flag at all); else Medium.
 pub fn assign_fund_tier(
+    leveraged_inverse: bool,
     structural_flag: bool,
     annual_vol: Option<f64>,
     drawdown: Option<f64>,
 ) -> crate::portfolio::RiskTier {
     use crate::portfolio::RiskTier;
-    if structural_flag
+    if leveraged_inverse
         || annual_vol.map(|v| v > TIER_HIGH_MIN_ANNUAL_VOL).unwrap_or(false)
         || drawdown.map(|d| d > TIER_HIGH_MIN_DRAWDOWN).unwrap_or(false)
     {
         RiskTier::High
-    } else if annual_vol.map(|v| v < TIER_LOW_MAX_ANNUAL_VOL).unwrap_or(false) {
+    } else if !structural_flag
+        && annual_vol.map(|v| v < TIER_LOW_MAX_ANNUAL_VOL).unwrap_or(false)
+    {
         RiskTier::Low
     } else {
         RiskTier::Medium
@@ -1252,6 +1264,7 @@ mod tests {
             dgs2: 0.04,
             dgs10: 0.045,
             dgs10_history: history,
+            history_gap: None,
         }
     }
 
@@ -1560,12 +1573,14 @@ mod tests {
 
     #[test]
     fn fund_tier_maps_flag_vol_and_drawdown() {
-        assert_eq!(assign_fund_tier(true, Some(0.10), Some(0.05)), RiskTier::High);
-        assert_eq!(assign_fund_tier(false, Some(0.45), None), RiskTier::High);
-        assert_eq!(assign_fund_tier(false, Some(0.30), Some(0.60)), RiskTier::High);
-        assert_eq!(assign_fund_tier(false, Some(0.12), Some(0.15)), RiskTier::Low);
-        assert_eq!(assign_fund_tier(false, Some(0.30), Some(0.20)), RiskTier::Medium);
-        assert_eq!(assign_fund_tier(false, None, None), RiskTier::Medium);
+        assert_eq!(assign_fund_tier(true, true, Some(0.10), Some(0.05)), RiskTier::High);
+        assert_eq!(assign_fund_tier(false, false, Some(0.45), None), RiskTier::High);
+        assert_eq!(assign_fund_tier(false, false, Some(0.30), Some(0.60)), RiskTier::High);
+        assert_eq!(assign_fund_tier(false, false, Some(0.12), Some(0.15)), RiskTier::Low);
+        // An option-overlay structural flag bars Low without forcing High.
+        assert_eq!(assign_fund_tier(false, true, Some(0.12), Some(0.15)), RiskTier::Medium);
+        assert_eq!(assign_fund_tier(false, false, Some(0.30), Some(0.20)), RiskTier::Medium);
+        assert_eq!(assign_fund_tier(false, false, None, None), RiskTier::Medium);
     }
 
     #[test]

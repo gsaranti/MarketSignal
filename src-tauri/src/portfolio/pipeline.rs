@@ -111,6 +111,13 @@ pub fn analyze_holding(
     if let Some(f) = &dossier.fund {
         degraded.extend(f.fund.gaps.iter().cloned());
     }
+    // A failed DGS10 anchor-window history is a run-level degraded input — the
+    // targets fell to their documented fallback rather than failing the run
+    // (`docs/portfolio-analysis.md` §Starting parameters), and each holding's audit
+    // records why.
+    if let Some(gap) = &rates.history_gap {
+        degraded.push(gap.clone());
+    }
     let audit = |metrics, target_meta| HoldingAudit {
         symbol: symbol.clone(),
         metrics,
@@ -138,6 +145,25 @@ pub fn analyze_holding(
             position_change,
             disposition: VerdictDisposition::NotRated {
                 reason: format!("{} is not graded by the equity pipeline", asset_class.label()),
+            },
+        };
+        return Ok((verdict, audit(Default::default(), None)));
+    }
+
+    // Eligibility: a net-short position is a direction the prescriptive layer doesn't
+    // model — the ladder's verbs, the sizing multipliers, and the outcome labels all
+    // read long — so it takes the not-rated treatment with a short-position reason;
+    // its signed (negative) market value still feeds the whole-book aggregates
+    // (`docs/portfolio-analysis.md` §Asset eligibility).
+    if dossier.position.quantity < 0.0 {
+        let verdict = HoldingVerdict {
+            symbol: symbol.clone(),
+            asset_class,
+            position_change,
+            disposition: VerdictDisposition::NotRated {
+                reason: "held net short — the ladder's long-side semantics don't apply; \
+                         the signed exposure still feeds the whole-book aggregates"
+                    .to_string(),
             },
         };
         return Ok((verdict, audit(Default::default(), None)));
@@ -292,7 +318,7 @@ pub fn analyze_holding(
         disposition: VerdictDisposition::Priced(Box::new(graded)),
     };
     // The engine's own gap notes (tier-input gaps, the fund composite's uncovered
-    // share, an unverifiable US-exposure guard) join the audit's degraded inputs —
+    // share, an option-overlay structural flag) join the audit's degraded inputs —
     // recorded, never silently dropped.
     let mut degraded_inputs = degraded.clone();
     degraded_inputs.extend(engine_output.tier_gaps.iter().cloned());
@@ -816,6 +842,7 @@ mod tests {
                         })
                 })
                 .collect(),
+            history_gap: None,
         }
     }
 
@@ -1119,6 +1146,23 @@ mod tests {
             verdict.disposition,
             VerdictDisposition::NotRated { .. }
         ));
+    }
+
+    #[test]
+    fn a_net_short_position_is_not_rated_with_a_short_reason() {
+        // A net-short equity is a direction the prescriptive layer doesn't model —
+        // not-rated with a short-position reason, never graded with long-side
+        // semantics (`docs/portfolio-analysis.md` §Asset eligibility).
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.position.quantity = -100.0;
+        d.position.market_value = -19_500.0;
+        let (verdict, _audit) = analyze_holding(&StubAnalyst, &d, 29_500.0, &rates()).unwrap();
+        match verdict.disposition {
+            VerdictDisposition::NotRated { reason } => {
+                assert!(reason.contains("short"), "{reason}");
+            }
+            other => panic!("expected not-rated, got {other:?}"),
+        }
     }
 
     #[test]

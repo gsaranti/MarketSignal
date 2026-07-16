@@ -45,9 +45,30 @@ const US_LABELS: &[&str] = &["united states", "united states of america", "usa",
 
 /// Name / mandate fragments that deterministically flag a structurally
 /// path-dependent vehicle (leveraged / inverse daily-reset products) — the same
-/// screen the report's movers list applies.
+/// screen the report's movers list applies. A leveraged / inverse match routes the
+/// fund to `role_risk_only`.
 const STRUCTURAL_FLAG_FRAGMENTS: &[&str] = &[
     "2x", "3x", "-1x", "-2x", "-3x", "ultra", "inverse", "leveraged", "daily bear", "daily bull",
+];
+
+/// Name / mandate fragments that deterministically flag an **option-overlay** vehicle
+/// (covered-call / buy-write / put-write / defined-outcome buffer funds). Unlike
+/// leveraged / inverse, an overlay fund is **not** in the unpriceable list — it stays
+/// on its class routing and carries the structural path-dependency flag instead
+/// (`docs/portfolio-analysis.md` §Asset eligibility), which bars the Low risk tier
+/// and rides the audit. The screen runs on fund names only, but still errs toward
+/// false negatives like the movers screen it mirrors.
+const OPTION_OVERLAY_FRAGMENTS: &[&str] = &[
+    "covered call",
+    "covered-call",
+    "buywrite",
+    "buy-write",
+    "putwrite",
+    "put-write",
+    "premium income",
+    "option income",
+    "defined outcome",
+    "buffer",
 ];
 
 // ---- Inputs --------------------------------------------------------------------
@@ -121,10 +142,10 @@ pub fn classify(fund: &FundData) -> FundClassification {
         fund.asset_class.as_deref().unwrap_or_default()
     )
     .to_ascii_lowercase();
-    let structural_flag = STRUCTURAL_FLAG_FRAGMENTS
+    let leveraged_inverse = STRUCTURAL_FLAG_FRAGMENTS
         .iter()
         .any(|f| name_blob.contains(f));
-    if structural_flag {
+    if leveraged_inverse {
         return FundClassification {
             class: FundStrategyClass::LeveragedInverse,
             structural_flag: true,
@@ -137,6 +158,13 @@ pub fn classify(fund: &FundData) -> FundClassification {
             ),
         };
     }
+
+    // An option-overlay vehicle carries the structural path-dependency flag but keeps
+    // its class routing — it is not in the unpriceable list, so a US equity
+    // covered-call fund still prices, flagged.
+    let overlay_flag = OPTION_OVERLAY_FRAGMENTS
+        .iter()
+        .any(|f| name_blob.contains(f));
 
     let class_str = fund.asset_class.as_deref().unwrap_or("").to_ascii_lowercase();
     let class = if class_str.contains("equity") || class_str.contains("stock") {
@@ -157,7 +185,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
     match class {
         FundStrategyClass::Bond => FundClassification {
             class,
-            structural_flag: false,
+            structural_flag: overlay_flag,
             us_share: us,
             class_label: "bond fund".to_string(),
             role_reason: Some(
@@ -168,7 +196,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
         },
         FundStrategyClass::Commodity => FundClassification {
             class,
-            structural_flag: false,
+            structural_flag: overlay_flag,
             us_share: us,
             class_label: "commodity fund".to_string(),
             role_reason: Some(
@@ -179,7 +207,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
         },
         FundStrategyClass::Unknown => FundClassification {
             class,
-            structural_flag: false,
+            structural_flag: overlay_flag,
             us_share: us,
             class_label: "fund with unresolved strategy class".to_string(),
             role_reason: Some(
@@ -192,7 +220,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
             if fund.sector_weights.is_empty() {
                 FundClassification {
                     class,
-                    structural_flag: false,
+                    structural_flag: overlay_flag,
                     us_share: us,
                     class_label: "equity fund without usable weightings".to_string(),
                     role_reason: Some(
@@ -204,7 +232,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
             } else if us.map(|s| s < US_EXPOSURE_GUARD).unwrap_or(false) {
                 FundClassification {
                     class,
-                    structural_flag: false,
+                    structural_flag: overlay_flag,
                     us_share: us,
                     class_label: "ex-US equity fund".to_string(),
                     role_reason: Some(format!(
@@ -218,7 +246,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
             } else {
                 FundClassification {
                     class,
-                    structural_flag: false,
+                    structural_flag: overlay_flag,
                     us_share: us,
                     class_label: "US equity fund".to_string(),
                     role_reason: None,
@@ -493,6 +521,25 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         }));
     }
 
+    // The remaining floor-bearing fund-analog legs, enforced on the exposure-priced
+    // branch (`docs/portfolio-analysis.md` §Evidence floor: quote / NAV, `etf/info`,
+    // the expense ratio, and enough weighting coverage to read exposure). The
+    // structural routing above takes precedence — a `role_risk_only` class is never
+    // an abstention, so these checks sit after it.
+    if fund.expense_ratio.is_none() {
+        return FundEngineVerdict::InsufficientEvidence(
+            "expense ratio missing — a floor-bearing fund-analog input (etf/info)"
+                .to_string(),
+        );
+    }
+    if classification.us_share.is_none() {
+        return FundEngineVerdict::InsufficientEvidence(
+            "no country weightings — the ≥ 70% US-exposure guard cannot be verified, \
+             a floor-bearing weighting-coverage input on the exposure-priced branch"
+                .to_string(),
+        );
+    }
+
     // The priced equity-fund path: the exposure-priced valuation under its coverage
     // guard, read against its own constant-current-mix history.
     let blended_now = blend_sector_pes(inp.sector_pe);
@@ -589,8 +636,8 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
     metrics.composite_coverage = Some(composite.covered_share);
 
     // The uncovered slice is reported beside the read, never averaged in
-    // (`docs/portfolio-analysis.md` §Asset eligibility), and a US-exposure guard
-    // that could not be verified is a stated premise, not a verified one.
+    // (`docs/portfolio-analysis.md` §Asset eligibility), and an option-overlay flag
+    // is recorded where it was detected — carried, never silently absorbed.
     let mut engine_notes: Vec<String> = Vec::new();
     if composite.covered_share < 1.0 {
         engine_notes.push(format!(
@@ -600,10 +647,11 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
             (1.0 - composite.covered_share) * 100.0
         ));
     }
-    if classification.us_share.is_none() {
+    if classification.structural_flag {
         engine_notes.push(
-            "US-exposure guard unverifiable (no country weightings) — the ≥ 70% US \
-             premise is assumed, not verified"
+            "option-overlay structural path-dependency flag (name / mandate screen) — \
+             the overlay reshapes the return path the exposure composite prices, so \
+             the flag rides the audit and bars the Low risk tier"
                 .to_string(),
         );
     }
@@ -615,7 +663,14 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         "fund exposure composite",
         true,
     );
-    let tier = engine::assign_fund_tier(false, annual_vol, drawdown);
+    let tier = engine::assign_fund_tier(
+        // Leveraged / inverse never reaches the priced path (it routes to
+        // `role_risk_only` above); the comparison keeps the High leg honest anyway.
+        classification.class == FundStrategyClass::LeveragedInverse,
+        classification.structural_flag,
+        annual_vol,
+        drawdown,
+    );
     let hurdle = engine::hurdle_read(&scenario, inp.rates.dgs2, tier);
     let meta = TargetMeta {
         driver_rung: "fund exposure composite".to_string(),
@@ -791,6 +846,7 @@ mod tests {
                 .iter()
                 .map(|d| DatedValue { date: d.to_string(), value: 0.04 })
                 .collect(),
+            history_gap: None,
         }
     }
 
@@ -923,8 +979,34 @@ mod tests {
             other => panic!("expected the priced branch, got {other:?}"),
         }
 
-        // A fund with no country weightings prices on the assumed US premise — the
-        // unverifiable guard is a recorded note, never a silent pass.
+    }
+
+    #[test]
+    fn missing_floor_bearing_fund_inputs_abstain_on_the_priced_branch() {
+        // The expense ratio is a floor-bearing fund-analog input — absent, the fund
+        // abstains rather than pricing without it (`docs/portfolio-analysis.md`
+        // §Evidence floor).
+        let mut no_er = fund();
+        no_er.expense_ratio = None;
+        let fin = financials(282.0);
+        let inputs = FundEngineInputs {
+            fund: &no_er,
+            financials: &fin,
+            sector_pe: &snapshot(),
+            sector_pe_history: &history(),
+            rates: &rates(),
+            as_of: as_of(),
+        };
+        match analyze_fund(&inputs) {
+            FundEngineVerdict::InsufficientEvidence(reason) => {
+                assert!(reason.contains("expense ratio"), "{reason}");
+            }
+            other => panic!("expected the floor abstention, got {other:?}"),
+        }
+
+        // Missing country weightings leave the ≥ 70% US-exposure guard unverifiable —
+        // floor-bearing weighting coverage on the exposure-priced branch, so the fund
+        // abstains rather than pricing on an assumed premise.
         let mut no_countries = fund();
         no_countries.country_weights = vec![];
         let fin = financials(282.0);
@@ -937,12 +1019,82 @@ mod tests {
             as_of: as_of(),
         };
         match analyze_fund(&inputs) {
+            FundEngineVerdict::InsufficientEvidence(reason) => {
+                assert!(reason.contains("US-exposure"), "{reason}");
+            }
+            other => panic!("expected the floor abstention, got {other:?}"),
+        }
+
+        // The floor checks never pre-empt the structural routing: a bond fund missing
+        // its expense ratio is still `role_risk_only`, not an abstention.
+        let mut bond = fund();
+        bond.asset_class = Some("Fixed Income".to_string());
+        bond.expense_ratio = None;
+        bond.sector_weights = vec![];
+        let fin = financials(100.0);
+        let inputs = FundEngineInputs {
+            fund: &bond,
+            financials: &fin,
+            sector_pe: &snapshot(),
+            sector_pe_history: &history(),
+            rates: &rates(),
+            as_of: as_of(),
+        };
+        assert!(matches!(
+            analyze_fund(&inputs),
+            FundEngineVerdict::RoleRiskOnly(_)
+        ));
+    }
+
+    #[test]
+    fn option_overlay_funds_carry_the_structural_flag_and_stay_priced() {
+        // An option-overlay fund is not in the unpriceable list — it prices, carries
+        // the deterministic path-dependency flag, and the flag bars the Low tier
+        // without forcing High (`docs/portfolio-analysis.md` §Asset eligibility,
+        // §Starting parameters).
+        let mut overlay = fund();
+        overlay.name = Some("US Equity Covered Call ETF".to_string());
+        let c = classify(&overlay);
+        assert!(c.structural_flag);
+        assert!(c.role_reason.is_none(), "overlay funds still price");
+
+        let fin = financials(282.0);
+        let inputs = FundEngineInputs {
+            fund: &overlay,
+            financials: &fin,
+            sector_pe: &snapshot(),
+            sector_pe_history: &history(),
+            rates: &rates(),
+            as_of: as_of(),
+        };
+        match analyze_fund(&inputs) {
             FundEngineVerdict::Priced(out) => {
                 assert!(
-                    out.tier_gaps.iter().any(|g| g.contains("US-exposure guard")),
-                    "{:?}",
+                    out.tier_gaps.iter().any(|g| g.contains("option-overlay")),
+                    "the flag must be a recorded note: {:?}",
                     out.tier_gaps
                 );
+                // The fixture's realized volatility is low — without the flag this
+                // fund would read Low; the overlay bars it.
+                assert_eq!(out.risk_tier, crate::portfolio::RiskTier::Medium);
+            }
+            other => panic!("expected the priced branch, got {other:?}"),
+        }
+
+        // The unflagged control: same fund without overlay naming reads Low.
+        let plain = fund();
+        let fin = financials(282.0);
+        let inputs = FundEngineInputs {
+            fund: &plain,
+            financials: &fin,
+            sector_pe: &snapshot(),
+            sector_pe_history: &history(),
+            rates: &rates(),
+            as_of: as_of(),
+        };
+        match analyze_fund(&inputs) {
+            FundEngineVerdict::Priced(out) => {
+                assert_eq!(out.risk_tier, crate::portfolio::RiskTier::Low);
             }
             other => panic!("expected the priced branch, got {other:?}"),
         }

@@ -98,9 +98,13 @@ pub trait CompanyDataSource {
 /// trait so the job is offline-testable; the live impl wraps FRED.
 pub trait MarketContextSource {
     /// The `DGS2` / `DGS10` prints plus the DGS10 anchor-window history, as decimal
-    /// ratios. **Hard-fail**: a retrieval still failing after the shared bounded
-    /// retries fails the run before any per-holding work — the suite's canonical
-    /// rate-anchor rule (`docs/portfolio-analysis.md` §Failure posture).
+    /// ratios. **Hard-fail on the prints only**: a print retrieval still failing
+    /// after the shared bounded retries fails the run before any per-holding work —
+    /// the suite's canonical rate-anchor rule (`docs/portfolio-analysis.md` §Failure
+    /// posture). The anchor-window **history** is fail-soft: a failed request leaves
+    /// the window empty (every spread observation inadmissible — the targets take
+    /// their documented raw-percentile / carry fallback) and records the reason on
+    /// the anchors' `history_gap`, never a new failure state (§Starting parameters).
     fn rates(&self) -> Result<crate::portfolio::engine::RateAnchors>;
 }
 
@@ -119,11 +123,27 @@ impl MarketContextSource for LiveMarketContext {
         let dgs10 = self.fred.latest_rate_decimal("DGS10")?;
         let to = chrono::Utc::now().date_naive();
         let from = to - chrono::Duration::days(RATE_HISTORY_LOOKBACK_DAYS);
-        let dgs10_history = self.fred.rate_history_decimal("DGS10", from, to)?;
+        // Fail-soft: a failed history request leaves every spread observation
+        // inadmissible — the targets take their documented raw-percentile / carry
+        // fallback, recorded — never a run failure (`docs/portfolio-analysis.md`
+        // §Starting parameters).
+        let (dgs10_history, history_gap) =
+            match self.fred.rate_history_decimal("DGS10", from, to) {
+                Ok(history) => (history, None),
+                Err(e) => (
+                    Vec::new(),
+                    Some(format!(
+                        "DGS10 anchor-window history unavailable: {e} — every spread \
+                         observation inadmissible; targets fell to the documented \
+                         raw-percentile / carry fallback"
+                    )),
+                ),
+            };
         Ok(crate::portfolio::engine::RateAnchors {
             dgs2,
             dgs10,
             dgs10_history,
+            history_gap,
         })
     }
 }
@@ -670,6 +690,26 @@ mod tests {
                         })
                     })
                     .collect(),
+                history_gap: None,
+            })
+        }
+    }
+
+    /// A market whose prints load but whose anchor-window history request failed —
+    /// the fail-soft leg of the rate-anchor rule.
+    struct HistoryGapMarket;
+    impl MarketContextSource for HistoryGapMarket {
+        fn rates(&self) -> Result<crate::portfolio::engine::RateAnchors> {
+            Ok(crate::portfolio::engine::RateAnchors {
+                dgs2: 0.04,
+                dgs10: 0.045,
+                dgs10_history: vec![],
+                history_gap: Some(
+                    "DGS10 anchor-window history unavailable: simulated outage — \
+                     every spread observation inadmissible; targets fell to the \
+                     documented raw-percentile / carry fallback"
+                        .to_string(),
+                ),
             })
         }
     }
@@ -980,6 +1020,46 @@ mod tests {
         // No partial run persisted.
         let conn = storage::open(&paths.db_path).unwrap();
         assert!(store::latest_run(&conn).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_failed_dgs10_history_degrades_to_the_fallback_not_a_failed_run() {
+        // The hard-fail rule covers the two run-level prints only: a failed
+        // anchor-window history leaves every spread observation inadmissible, the
+        // targets take their documented fallback, and the degradation is recorded —
+        // never a failed run (`docs/portfolio-analysis.md` §Starting parameters).
+        let (_dir, paths) = paths();
+        let guard = RunGuard::default();
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::new(),
+            &StubCompanyData,
+            &HistoryGapMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            &paths,
+            &guard,
+            &ctx(),
+        )
+        .unwrap();
+        let run = match outcome {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+        assert_eq!(run.roll_up.graded_count, 1, "{}", run.roll_up.overview);
+        let audit = &run.audit[0];
+        assert!(
+            audit
+                .degraded_inputs
+                .iter()
+                .any(|g| g.contains("DGS10 anchor-window history")),
+            "the run-level degradation must reach the audit: {:?}",
+            audit.degraded_inputs
+        );
+        let meta = audit.target_meta.as_ref().expect("target meta rides the audit");
+        assert!(
+            !meta.rate_anchored,
+            "an empty admissible window cannot rate-anchor"
+        );
     }
 
     #[test]
