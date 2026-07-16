@@ -173,6 +173,7 @@ describe("App.vue Tauri boundary", () => {
       "job_status",
       "latest_holdings_pull",
       "latest_portfolio_run",
+      "list_portfolio_runs",
       "list_reports",
       "list_research_archive",
       "list_research_inbox",
@@ -772,6 +773,133 @@ describe("App.vue portfolio wiring", () => {
 
     const portfolio = wrapper.findComponent(PortfolioView);
     expect(portfolio.exists()).toBe(true);
+    expect(portfolio.props("run")).toEqual(samplePortfolioRun);
+    wrapper.unmount();
+  });
+
+  test("opening a past run renders it read-only; the sidebar lists the history", async () => {
+    const oldRun = { ...samplePortfolioRun, run_id: "prun-old" };
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        latest_portfolio_run: () => samplePortfolioRun,
+        list_portfolio_runs: () => [
+          {
+            run_id: samplePortfolioRun.run_id,
+            created_at: samplePortfolioRun.created_at,
+            holdings_count: 1,
+            graded_count: 1,
+          },
+          {
+            run_id: "prun-old",
+            created_at: "2026-06-01T12:00:00Z",
+            holdings_count: 1,
+            graded_count: 0,
+          },
+        ],
+        get_portfolio_run: (args) =>
+          args?.runId === "prun-old" ? oldRun : null,
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const sidebar = wrapper.findComponent(RecentReportsSidebar);
+    expect(sidebar.props("portfolioRuns")).toHaveLength(2);
+
+    // Selecting the older run opens it read-only on the Portfolio page.
+    sidebar.vm.$emit("select-run", "prun-old");
+    await flushPromises();
+    const portfolio = wrapper.findComponent(PortfolioView);
+    expect(portfolio.props("run")).toEqual(oldRun);
+    expect(portfolio.props("historical")).toBe(true);
+    expect(sidebar.props("selectedRunId")).toBe("prun-old");
+
+    // Back to latest restores the live view.
+    portfolio.vm.$emit("back-to-latest");
+    await flushPromises();
+    expect(portfolio.props("run")).toEqual(samplePortfolioRun);
+    expect(portfolio.props("historical")).toBe(false);
+
+    // Selecting the newest row never enters the historical state.
+    sidebar.vm.$emit("select-run", samplePortfolioRun.run_id);
+    await flushPromises();
+    expect(portfolio.props("historical")).toBe(false);
+    wrapper.unmount();
+  });
+
+  test("a past-run open failure lands on its own channel and clears on back-to-latest", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        latest_portfolio_run: () => samplePortfolioRun,
+        list_portfolio_runs: () => [
+          {
+            run_id: "prun-old",
+            created_at: "2026-06-01T12:00:00Z",
+            holdings_count: 1,
+            graded_count: 0,
+          },
+        ],
+        get_portfolio_run: () => {
+          throw new Error("run row unreadable");
+        },
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const sidebar = wrapper.findComponent(RecentReportsSidebar);
+    sidebar.vm.$emit("select-run", "prun-old");
+    await flushPromises();
+
+    const portfolio = wrapper.findComponent(PortfolioView);
+    expect(portfolio.props("historyError")).toContain("run row unreadable");
+    // The general run-error channel stays untouched — the failure must never
+    // read as a job failure.
+    expect(portfolio.props("runError")).toBeNull();
+    // The latest view stayed up; returning to latest clears the message.
+    expect(portfolio.props("historical")).toBe(false);
+    portfolio.vm.$emit("back-to-latest");
+    await flushPromises();
+    expect(portfolio.props("historyError")).toBeNull();
+    wrapper.unmount();
+  });
+
+  test("a slow past-run fetch cannot reopen the view after a newer selection closed it", async () => {
+    const oldRun = { ...samplePortfolioRun, run_id: "prun-old" };
+    const slow = deferred<typeof samplePortfolioRun>();
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        latest_portfolio_run: () => samplePortfolioRun,
+        list_portfolio_runs: () => [
+          {
+            run_id: samplePortfolioRun.run_id,
+            created_at: samplePortfolioRun.created_at,
+            holdings_count: 1,
+            graded_count: 1,
+          },
+          {
+            run_id: "prun-old",
+            created_at: "2026-06-01T12:00:00Z",
+            holdings_count: 1,
+            graded_count: 0,
+          },
+        ],
+        get_portfolio_run: () => slow.promise,
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const sidebar = wrapper.findComponent(RecentReportsSidebar);
+    sidebar.vm.$emit("select-run", "prun-old"); // parks on the slow fetch
+    sidebar.vm.$emit("select-run", samplePortfolioRun.run_id); // supersedes → latest
+    await flushPromises();
+
+    slow.resolve(oldRun); // the stale fetch lands late…
+    await flushPromises();
+    // …and is discarded: the page stays on the live latest view.
+    const portfolio = wrapper.findComponent(PortfolioView);
+    expect(portfolio.props("historical")).toBe(false);
     expect(portfolio.props("run")).toEqual(samplePortfolioRun);
     wrapper.unmount();
   });

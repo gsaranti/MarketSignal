@@ -27,7 +27,7 @@ doc section rather than working from the clause here.*
 ## Configuration & validation
 - Settings overview — configuration.md §Settings Overview; interface.md (Settings tree)
 - Agent model selection (default = none selected) — configuration.md §Agent Model Configuration
-- API tokens (OpenAI, Anthropic; the save-disable rule scoped to the cloud agent/token submission — provider credentials + local-suite fields independently savable, the save split a named code prerequisite of the local-suite Settings slice) — configuration.md §API Tokens; data-sources.md §LLM Providers
+- API tokens (OpenAI, Anthropic; the save-disable rule scoped to the cloud agent/token submission — provider credentials + local-suite fields independently savable, the save split built with the Local-analysis-models Settings slice 2026-07-16) — configuration.md §API Tokens; data-sources.md §LLM Providers
 - External data provider credentials (FMP + Tavily required; FRED needs a free API key; BLS/GDELT keyless) — configuration.md §External Data Provider Credentials; data-sources.md
 - Execution gate / pre-run validation — configuration.md; report-workflow.md §Step 1
 
@@ -68,7 +68,7 @@ doc section rather than working from the clause here.*
 - Tavily (primary research/news ingestion; `/search` endpoint) — data-sources.md §Tavily
 - GDELT (geopolitical/event monitoring; DOC 2.0 endpoint) — data-sources.md §GDELT
 - LLM providers (OpenAI, Anthropic) — data-sources.md §LLM Providers
-- Planned report enrichment (paid FMP — calendar consensus+surprise as per-event `surprises[]` via a versioned per-event polarity-mapped release↔event map (complete 17-row drafted table over the 7 tracked releases, keyed on the numeric FRED `release_id` w/ the release name display-only; FMP event strings pending paid-key verification — a named blocking prerequisite), historical valuation/performance w/ single-homed derivation rules, IPO/M&A froth w/ deterministic windows + completion states; complete persisted payload w/ absent-never-zero semantics; engine-derived, out of the level-delta engine) — data-sources.md §Planned report enrichment; report-workflow.md §Step 3, §Step 16
+- Planned report enrichment (paid FMP — calendar consensus+surprise as per-event `surprises[]` via a versioned per-event polarity-mapped release↔event map (corrected table over the 7 tracked releases, keyed on the numeric FRED `release_id` w/ the release name display-only; FMP event strings live-verified 2026-07-16, `78df109`), historical valuation/performance w/ single-homed derivation rules, IPO/M&A froth w/ deterministic windows + completion states; complete persisted payload w/ absent-never-zero semantics; engine-derived, out of the level-delta engine) — data-sources.md §Planned report enrichment; report-workflow.md §Step 3, §Step 16
 
 ## Research documents
 - /research-inbox and /research-archive — research-documents.md; interface.md (Research Documents)
@@ -107,6 +107,7 @@ doc section rather than working from the clause here.*
 ## Interface
 - Main layout tree — interface.md §Main Layout
 - Latest Report View / Recent Reports Sidebar — interface.md; report-workflow.md §Step 18
+- Shared-history sidebar / Portfolio-runs history (content swaps per feature; last 10, newest first; an older run opens read-only w/ vintage banner + Back to latest, triggers locked, current-holdings section latest-only) — interface.md §Main Layout; portfolio-analysis.md §Storage and display
 - Run Tracker (live job progress; replaces report pane) — interface.md; run-tracking.md
 - Persistent Warning Area (cloud + local-suite categories, de-dup; condition-owned blocking warnings = non-dismissible gate state, failed-jobs the one dismissible category) — interface.md §Persistent Warning Area; scheduling.md §Error Handling
 
@@ -132,9 +133,10 @@ doc section rather than working from the clause here.*
 
 *Status: substrate, the Portfolio per-holding spine (single-equity + the full
 fund slice, 2026-07-16), Schwab OAuth + Connect surface, holdings netting +
-diff, and the Portfolio page are built; the remaining Portfolio depth slices
-and Trade Opportunities are designed, not built — the docs below describe both
-without distinction; build status lives in BUILD.md.*
+diff, the Portfolio page, and the Local-analysis-models Settings section +
+sidebar Portfolio-runs history (2026-07-16) are built; the remaining Portfolio
+depth slices and Trade Opportunities are designed, not built — the docs below
+describe both without distinction; build status lives in BUILD.md.*
 
 - Local analysis suite overview (local-only, two prescriptive features) — overview.md §Local Analysis Suite; local-models.md
 - Local model substrate (Ollama serving — native `/api/chat` + `/api/embed` + `/api/tags` transport, the `/v1/` OpenAI-compatible layer deliberately unused — roster, per-task routing) — local-models.md §Serving runtime, §The model roster and per-task routing

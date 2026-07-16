@@ -780,6 +780,32 @@ fn latest_portfolio_run(
     portfolio::store::latest_run(&conn).map_err(|e| e.to_string())
 }
 
+/// The sidebar's Portfolio-runs history (`docs/interface.md §Main Layout`):
+/// summaries of the retained runs, newest first, capped at the per-feature
+/// retention window — columns only, never the full run blobs. A fresh install
+/// lists as empty rather than erroring. Sync: one local SQLite read.
+#[tauri::command]
+fn list_portfolio_runs(
+    app: tauri::AppHandle,
+) -> Result<Vec<portfolio::store::PortfolioRunSummary>, String> {
+    let conn = open_app_db(&app)?;
+    portfolio::store::list_run_summaries(&conn, portfolio::PORTFOLIO_RUN_RETENTION)
+        .map_err(|e| e.to_string())
+}
+
+/// Load one persisted Portfolio Analysis run by id for the read-only historical
+/// view (`docs/interface.md §Main Layout` — selecting a sidebar run renders it on
+/// the Portfolio page). `None` when the id is unknown — e.g. pruned between
+/// listing and click; the frontend re-lists. Sync: one local SQLite read.
+#[tauri::command]
+fn get_portfolio_run(
+    app: tauri::AppHandle,
+    run_id: String,
+) -> Result<Option<portfolio::PortfolioRun>, String> {
+    let conn = open_app_db(&app)?;
+    portfolio::store::run_by_id(&conn, &run_id).map_err(|e| e.to_string())
+}
+
 /// The latest standalone **Pull holdings** snapshot for the Portfolio page
 /// (`docs/portfolio-analysis.md §Triggering` — view-only, never read by the job),
 /// or `None` before any pull. Sync: one local SQLite read.
@@ -1127,11 +1153,12 @@ fn get_settings(app: tauri::AppHandle) -> Result<settings::SettingsView, String>
     Ok(settings::load_view(&conn))
 }
 
-/// Persist a Settings submission (`docs/configuration.md`). Model slugs are
-/// validated; each credential is written only when a new value is supplied, so an
-/// untouched field keeps its stored secret. The frontend re-runs
-/// `check_configuration` afterward, so completing the config clears the
-/// Persistent Warning Area's blocking categories.
+/// Persist the **cloud** Settings submission — agent models + the two API tokens
+/// (`docs/configuration.md §API Tokens`; the token gate is scoped here, never to
+/// Settings as a whole). Model slugs are validated; each token is written only
+/// when a new value is supplied, so an untouched field keeps its stored secret.
+/// The frontend re-runs `check_configuration` afterward, so completing the config
+/// clears the Persistent Warning Area's blocking categories.
 #[tauri::command]
 fn save_settings(
     app: tauri::AppHandle,
@@ -1140,6 +1167,37 @@ fn save_settings(
 ) -> Result<(), String> {
     let conn = open_app_db(&app)?;
     settings::save(&conn, &models, &credentials).map_err(|e| e.to_string())
+}
+
+/// Persist the external data-provider credentials (FMP / FRED / Tavily) —
+/// **ungated** by the cloud tokens, so a cloud-keyless machine completes
+/// local-suite setup (`docs/configuration.md §External Data Provider
+/// Credentials`). The frontend re-runs both `check_configuration` and
+/// `check_local_configuration` afterward: the shared missing-provider-credentials
+/// category serves both gates.
+#[tauri::command]
+fn save_provider_credentials(
+    app: tauri::AppHandle,
+    credentials: settings::ProviderCredentialUpdate,
+) -> Result<(), String> {
+    let conn = open_app_db(&app)?;
+    settings::save_provider_credentials(&conn, &credentials).map_err(|e| e.to_string())
+}
+
+/// Persist the local-analysis-models config — daemon endpoint + roster ids
+/// (`docs/configuration.md §Local Models`) — **ungated**: presence of these
+/// fields is the in-app clear path for the *local models not configured*
+/// warning, so the frontend re-runs `check_local_configuration` afterward. A
+/// changed embedder identity clears the stale local vector namespaces
+/// (`settings::save_local_models`). Sync: local SQLite writes, no network — the
+/// save never probes the daemon (presence, not connectivity).
+#[tauri::command]
+fn save_local_model_settings(
+    app: tauri::AppHandle,
+    values: settings::LocalModelSettings,
+) -> Result<(), String> {
+    let conn = open_app_db(&app)?;
+    settings::save_local_models(&conn, &values).map_err(|e| e.to_string())
 }
 
 /// Validate one configured provider credential with a single live authenticated
@@ -1344,6 +1402,8 @@ pub fn run() {
             generate_report_manual,
             generate_portfolio_manual,
             latest_portfolio_run,
+            list_portfolio_runs,
+            get_portfolio_run,
             latest_holdings_pull,
             pull_holdings,
             check_local_configuration,
@@ -1363,6 +1423,8 @@ pub fn run() {
             job_status,
             get_settings,
             save_settings,
+            save_provider_credentials,
+            save_local_model_settings,
             test_connection,
             test_local_daemon,
             list_research_inbox,

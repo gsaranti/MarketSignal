@@ -26,8 +26,12 @@ import type {
   ImportInspection,
   ImportSummary,
   JobStatus,
+  LocalDaemonStatus,
+  LocalModelSettings,
   PortfolioRun,
+  PortfolioRunSummary,
   ProgressMessage,
+  ProviderCredentialUpdate,
   ReportSummary,
   ResearchDocument,
   RunTrace,
@@ -403,6 +407,27 @@ const portfolioError = ref<string | null>(null);
 const portfolioRunning = ref(false);
 const pullingHoldings = ref(false);
 
+// The sidebar's Portfolio-runs history (docs/interface.md §Main Layout): the
+// retained runs' summaries, plus the opened past run when the user selects one
+// that isn't the latest — the Portfolio page then renders it read-only.
+// `historicalRun === null` means the page shows the live latest view.
+const portfolioRuns = ref<PortfolioRunSummary[]>([]);
+const portfolioRunsError = ref<string | null>(null);
+const historicalRun = ref<PortfolioRun | null>(null);
+// A past-run OPEN failure — its own channel (never `portfolioError`, whose
+// pane block reads "Couldn't run"), cleared by the next selection or by
+// returning to the latest view so it can't outlive the click it described.
+const historicalError = ref<string | null>(null);
+
+// The run the Portfolio page renders (a past run wins while one is open) and
+// the sidebar's highlighted row (the open past run, else the latest).
+const displayedPortfolioRun = computed(
+  () => historicalRun.value ?? portfolioRun.value
+);
+const sidebarRunId = computed(
+  () => historicalRun.value?.run_id ?? portfolioRun.value?.run_id ?? null
+);
+
 // Fail-safe like the cloud `blocked`: until the local check resolves, treat the
 // local jobs as blocked so their triggers are never briefly clickable.
 const localBlocked = computed(() => localValidation.value?.is_blocked ?? true);
@@ -475,14 +500,94 @@ async function refreshPortfolio() {
     // A superseded read leaves the flags to whichever refresh is current.
     if (epoch === portfolioEpoch) portfolioLoading.value = false;
   }
+  // The runs-history list rides its own channel (a listing hiccup must never
+  // blank the page's run/pull state above). Same epoch guard.
+  try {
+    const runs = await invoke<PortfolioRunSummary[]>("list_portfolio_runs");
+    if (epoch !== portfolioEpoch) return;
+    portfolioRuns.value = runs;
+    portfolioRunsError.value = null;
+    // An open past run that fell out of retention closes back to the latest
+    // view rather than lingering as an unlisted orphan.
+    if (
+      historicalRun.value !== null &&
+      !runs.some((r) => r.run_id === historicalRun.value?.run_id)
+    ) {
+      historicalRun.value = null;
+    }
+  } catch (e) {
+    if (epoch !== portfolioEpoch) return;
+    portfolioRunsError.value = String(e);
+  }
+}
+
+// Invalidates in-flight historical-run fetches: bumped at the start of every
+// selection and whenever the historical view closes (back-to-latest, the
+// newest-row shortcut, a fresh run), so a slow older-run fetch resolving after
+// the user has already moved on can never reopen the read-only view — the
+// selection sibling of portfolioEpoch, kept separate so closing the view never
+// discards an unrelated in-flight page refresh.
+let historicalSeq = 0;
+
+// Open one run from the sidebar's history. The newest row is the live latest
+// view (never the read-only historical state); an older row fetches the full
+// persisted run and renders it read-only. An id the backend no longer has
+// (pruned between listing and click) re-lists and stays on the latest.
+async function selectPortfolioRun(runId: string) {
+  view.value = "portfolio";
+  const seq = ++historicalSeq;
+  historicalError.value = null;
+  if (runId === portfolioRun.value?.run_id) {
+    historicalRun.value = null;
+    return;
+  }
+  const epoch = portfolioEpoch;
+  try {
+    const run = await invoke<PortfolioRun | null>("get_portfolio_run", {
+      runId,
+    });
+    // Superseded by a newer selection/close (seq) or by fresher page state
+    // landing wholesale (epoch — a completed run, a data import): discard.
+    if (seq !== historicalSeq || epoch !== portfolioEpoch) return;
+    if (run === null) {
+      historicalRun.value = null;
+      void refreshPortfolio();
+      return;
+    }
+    historicalRun.value = run;
+  } catch (e) {
+    if (seq !== historicalSeq || epoch !== portfolioEpoch) return;
+    // An open failure is ephemeral — inline on the page, never a persistent
+    // warning; the latest view stays up.
+    historicalError.value = String(e);
+  }
+}
+
+function backToLatestRun() {
+  historicalSeq++;
+  historicalRun.value = null;
+  historicalError.value = null;
 }
 
 // Settings state lives here alongside the other surfaces' state; the Settings
-// view is presentational. One `settingsError` carries both load and save errors.
+// view is presentational. One `settingsError` carries both load and save errors
+// for the token-gated cloud form; the two independent submissions (provider
+// credentials, local models) ride their own channels below, the Schwab pattern.
 const settings = ref<SettingsView | null>(null);
 const settingsLoading = ref(false);
 const settingsSaving = ref(false);
 const settingsError = ref<string | null>(null);
+const providersSaving = ref(false);
+const providersError = ref<string | null>(null);
+const localSaving = ref(false);
+const localSaveError = ref<string | null>(null);
+
+// The local-daemon Test Connection state (docs/interface.md §Connection
+// status): the last probe result, null until tested — never probed at startup,
+// so the indicator reads untested until the user tests or runs. Reset on every
+// settings reload like the credential test channels.
+const localDaemonTesting = ref(false);
+const localDaemonStatus = ref<LocalDaemonStatus | null>(null);
 
 // Aggregate truncation telemetry for the Settings diagnostics section, loaded
 // alongside settings. `null` = not yet loaded / unavailable (the section shows
@@ -879,6 +984,10 @@ async function refreshSettings() {
   settingsEpoch.value += 1;
   connectionTesting.value = emptyConnectionState(false);
   connectionTests.value = emptyConnectionState<ConnectionTestResult | null>(null);
+  // The local-daemon probe result describes the saved endpoint + roster, which
+  // this reload may be changing — reset with the credential channels.
+  localDaemonTesting.value = false;
+  localDaemonStatus.value = null;
   try {
     settings.value = await invoke<SettingsView>("get_settings");
   } catch (e) {
@@ -985,6 +1094,10 @@ async function generatePortfolio() {
     // them so a slow pre-run read can't clobber it.
     portfolioEpoch++;
     portfolioRun.value = run;
+    // A fresh run is the new current view — an open past run closes, and any
+    // in-flight historical fetch is superseded.
+    historicalSeq++;
+    historicalRun.value = null;
     // Return to the results only if the user is still watching the run; if they
     // navigated elsewhere the log lingers, reopenable from the footer.
     if (portfolioPaneMode.value === "tracker") portfolioPaneMode.value = "results";
@@ -1084,6 +1197,69 @@ async function saveSettings(payload: {
   void refreshSettings();
   void refreshValidation();
   void refreshLocalValidation();
+}
+
+// Persist the provider credentials — the ungated submission split out of the
+// cloud save (docs/configuration.md §External Data Provider Credentials). Both
+// gates re-check: the shared missing-provider-credentials category serves the
+// report's and the local suite's execution gates alike.
+async function saveProviderCredentials(payload: ProviderCredentialUpdate) {
+  providersSaving.value = true;
+  providersError.value = null;
+  try {
+    await invoke("save_provider_credentials", { credentials: payload });
+  } catch (e) {
+    // Error before the saving edge clears, so the view's saved-watch sees it.
+    providersError.value = String(e);
+    providersSaving.value = false;
+    return;
+  }
+  providersSaving.value = false;
+  void refreshSettings();
+  void refreshValidation();
+  void refreshLocalValidation();
+}
+
+// Persist the local-analysis-models config — the in-app clear path for the
+// "local models not configured" warning: the presence gate re-checks right
+// after, so filling the fields unlocks the local-suite Run buttons.
+async function saveLocalModelSettings(payload: LocalModelSettings) {
+  localSaving.value = true;
+  localSaveError.value = null;
+  try {
+    await invoke("save_local_model_settings", { values: payload });
+  } catch (e) {
+    localSaveError.value = String(e);
+    localSaving.value = false;
+    return;
+  }
+  localSaving.value = false;
+  void refreshSettings();
+  void refreshLocalValidation();
+}
+
+// Probe the saved daemon endpoint + roster (test_local_daemon — /api/tags, no
+// model call). The same epoch discipline as the credential tests: a probe that
+// resolves after a settings reload described the old saved config and is
+// discarded.
+async function testLocalDaemon() {
+  const epoch = settingsEpoch.value;
+  localDaemonTesting.value = true;
+  localDaemonStatus.value = null;
+  try {
+    const result = await invoke<LocalDaemonStatus>("test_local_daemon");
+    if (epoch !== settingsEpoch.value) return;
+    localDaemonStatus.value = result;
+  } catch (e) {
+    if (epoch !== settingsEpoch.value) return;
+    localDaemonStatus.value = {
+      reachable: false,
+      detail: String(e),
+      missing_models: [],
+    };
+  } finally {
+    if (epoch === settingsEpoch.value) localDaemonTesting.value = false;
+  }
 }
 
 // --- Data portability (docs/data-portability.md) -----------------------------
@@ -1294,11 +1470,15 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
       :reports="reports"
       :selected-report-id="selectedReportId"
       :reports-error="reportsError"
+      :portfolio-runs="portfolioRuns"
+      :selected-run-id="sidebarRunId"
+      :portfolio-runs-error="portfolioRunsError"
       :view="view"
       :inbox-count="inboxCount"
       :archive-count="archiveCount"
       @navigate="navigate"
       @select="selectAndShow"
+      @select-run="selectPortfolioRun"
     />
     <div class="main-column">
       <PersistentWarningArea
@@ -1354,7 +1534,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           />
           <PortfolioView
             v-else
-            :run="portfolioRun"
+            :run="displayedPortfolioRun"
             :pull="holdingsPull"
             :loading="portfolioLoading"
             :load-error="portfolioLoadError"
@@ -1366,8 +1546,11 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
             :busy="slotBusy"
             :running="portfolioRunning"
             :pulling="pullingHoldings"
+            :historical="historicalRun !== null"
+            :history-error="historicalError"
             @run="generatePortfolio"
             @pull="pullHoldings"
+            @back-to-latest="backToLatestRun"
           />
         </template>
         <ResearchDocuments
@@ -1412,6 +1595,12 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :dark="dark"
           :testing="connectionTesting"
           :test-results="connectionTests"
+          :saving-providers="providersSaving"
+          :providers-error="providersError"
+          :saving-local="localSaving"
+          :local-error="localSaveError"
+          :local-testing="localDaemonTesting"
+          :local-daemon="localDaemonStatus"
           :truncation-stats="truncationStats"
           :schwab-status="schwabStatus"
           :schwab-connecting="schwabConnecting"
@@ -1422,6 +1611,9 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :data-error="dataError"
           :data-status="dataStatus"
           @save="saveSettings"
+          @save-providers="saveProviderCredentials"
+          @save-local="saveLocalModelSettings"
+          @test-local="testLocalDaemon"
           @set-dark="setDark"
           @test="testConnection"
           @save-schwab="saveSchwabCredentials"

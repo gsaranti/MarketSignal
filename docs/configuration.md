@@ -63,7 +63,7 @@ If either token is missing:
 - the application displays a validation warning explaining which token is required
 
 The gate is **scoped to that submission, never to Settings as a whole**: the shared external data-provider credentials (below) and the local-suite configuration ([§Local Analysis Suite Configuration](#local-analysis-suite-configuration)) must be **independently savable with no cloud token present** — a machine set up only for the local suite persists FMP / FRED and its local-model settings without ever holding an OpenAI or Anthropic key ([local-models.md §Serving runtime](local-models.md#serving-runtime)).
-The as-built Settings form persists the agent models and all five credentials through one token-gated save, so the **provider-credential save split is a named code prerequisite of the queued Local-analysis-models Settings slice** (the shipped Schwab section's independent credential save is the in-code precedent); the docs contract deliberately leads the code here, as with the holdings-netting step.
+The as-built Settings form matches this contract (built with the Local-analysis-models Settings slice): the cloud submission — agent models + the two API tokens — is one token-gated save, while the provider credentials and the local-analysis-models values save through their own **ungated** submissions, each with its own Save control (the shipped Schwab section's independent credential save was the in-code precedent).
 
 ## External Data Provider Credentials
 

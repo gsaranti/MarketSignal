@@ -229,6 +229,48 @@ describe("PortfolioView states", () => {
   });
 });
 
+describe("PortfolioView historical mode", () => {
+  // Viewing a past run from the sidebar's runs history (docs/interface.md
+  // §Main Layout): read-only — banner + back control, triggers locked with the
+  // reason as title, and the latest-vintage comparison section suppressed.
+  test("a historical view banners the vintage, locks the triggers, and emits back-to-latest", async () => {
+    const wrapper = mountView({ run, pull: fresherPull, historical: true });
+    const banner = wrapper.find(".hist-banner");
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain("read-only");
+
+    const buttons = wrapper.findAll(".toolbar-actions button");
+    for (const b of buttons) {
+      expect(b.attributes("disabled")).toBeDefined();
+      expect(b.attributes("title")).toContain("past analysis");
+    }
+
+    // The fresher pull's current-holdings section is keyed to the LATEST
+    // vintage, so it never renders over a historical run — and no churn tags.
+    expect(wrapper.find(".current-holdings").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("no longer held");
+
+    await banner.find(".hist-banner-back").trigger("click");
+    expect(wrapper.emitted("back-to-latest")).toHaveLength(1);
+  });
+
+  test("the latest view renders no banner and keeps the triggers live", () => {
+    const wrapper = mountView({ run, pull: fresherPull });
+    expect(wrapper.find(".hist-banner").exists()).toBe(false);
+    const buttons = wrapper.findAll(".toolbar-actions button");
+    for (const b of buttons) expect(b.attributes("disabled")).toBeUndefined();
+    expect(wrapper.find(".current-holdings").exists()).toBe(true);
+  });
+
+  test("a past-run open failure renders under its own label, not 'Couldn't run'", () => {
+    const wrapper = mountView({ run, historyError: "run row unreadable" });
+    const alert = wrapper.find('[role="alert"]');
+    expect(alert.text()).toContain("Couldn't open the run");
+    expect(alert.text()).toContain("run row unreadable");
+    expect(alert.text()).not.toContain("Couldn't run");
+  });
+});
+
 describe("PortfolioView verdict cards", () => {
   test("renders all four cards: grades, abstention reasons, and the roll-up", () => {
     const wrapper = mountView({ run });

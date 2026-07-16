@@ -1,15 +1,28 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import Icon from "./Icon.vue";
 import { localDateTime } from "../format";
-import type { AppView, ReportSummary } from "../types";
+import type { AppView, PortfolioRunSummary, ReportSummary } from "../types";
 
-defineProps<{
+// The ONE shared-history sidebar (design kit Sidebar.jsx): same structure and
+// treatment everywhere, only the history content swaps per feature — recent
+// report issues on the report (and inbox/archive/settings) views, recent
+// Portfolio runs on the Portfolio view. Same density, same oxblood
+// leading-edge selection accent — a scoped extension of the report-history
+// sidebar, not a new navigation pattern.
+const props = defineProps<{
   reports: ReportSummary[];
   selectedReportId: string | null;
   // A failure to list the reports (sidebar-level). Only surfaces when there's no
   // list to fall back on — a refresh failure with an existing list keeps the
   // stale list silently rather than flashing an error.
   reportsError: string | null;
+  // The Portfolio-runs history (docs/interface.md §Main Layout): the retained
+  // runs' summaries, the selected run (the latest, or an opened past run), and
+  // the same no-list-to-fall-back-on error posture as the reports.
+  portfolioRuns: PortfolioRunSummary[];
+  selectedRunId: string | null;
+  portfolioRunsError: string | null;
   view: AppView;
   inboxCount: number;
   archiveCount: number;
@@ -18,7 +31,14 @@ defineProps<{
 defineEmits<{
   (e: "navigate", view: AppView): void;
   (e: "select", reportId: string): void;
+  (e: "select-run", runId: string): void;
 }>();
+
+// Which feature's history the list shows (the kit's featureOf): the Portfolio
+// view swaps in its runs; every other view keeps the report list visible.
+const feature = computed<"portfolio" | "report">(() =>
+  props.view === "portfolio" ? "portfolio" : "report"
+);
 
 // The row's report date and time in local time, matching the report toolbar's
 // dateline — the time is included so two reports generated on the same day are
@@ -36,64 +56,120 @@ function shortId(id: string): string {
 function rowTitle(r: ReportSummary): string {
   return r.title?.trim() || "Market Signal Report";
 }
+
+// A run row's label (kit RunRow): every run is a full-book pass in this slice.
+function runTitle(r: PortfolioRunSummary): string {
+  const n = r.holdings_count;
+  return `Full book · ${n} ${n === 1 ? "holding" : "holdings"}`;
+}
 </script>
 
 <template>
   <aside class="sidebar">
-    <div class="sidebar-header">Recent reports · last 30</div>
-    <div class="sidebar-list">
-      <!-- One row per persisted report, newest first. Selecting a row loads that
-           issue into the report pane (App handles the load + view switch). -->
-      <template v-if="reports.length > 0">
+    <!-- Shared history — content swaps per feature (design kit Sidebar.jsx):
+         Portfolio runs on the Portfolio view, report issues everywhere else. -->
+    <template v-if="feature === 'portfolio'">
+      <div class="sidebar-header">Portfolio runs · last 10</div>
+      <div class="sidebar-list">
+        <!-- One row per retained run, newest first. Selecting a row opens that
+             run on the Portfolio page (the newest = the live latest view; an
+             older one = the read-only historical view — App decides). -->
+        <template v-if="portfolioRuns.length > 0">
+          <button
+            v-for="r in portfolioRuns"
+            :key="r.run_id"
+            type="button"
+            class="row report-row"
+            :class="{ 'is-current': r.run_id === selectedRunId }"
+            :aria-current="r.run_id === selectedRunId ? 'true' : undefined"
+            @click="$emit('select-run', r.run_id)"
+          >
+            <div class="row-main">
+              <div class="row-title">{{ runTitle(r) }}</div>
+              <div class="row-meta">
+                {{ shortStamp(r.created_at) }} · rated {{ r.graded_count }}
+              </div>
+            </div>
+          </button>
+        </template>
+        <!-- Empty / list-failure state, mirroring the report list's posture. -->
         <button
-          v-for="r in reports"
-          :key="r.report_id"
+          v-else
           type="button"
-          class="row report-row"
-          :class="{
-            'is-current': view === 'report' && r.report_id === selectedReportId,
-          }"
-          :aria-current="
-            view === 'report' && r.report_id === selectedReportId
-              ? 'true'
-              : undefined
-          "
-          @click="$emit('select', r.report_id)"
+          class="row report-row is-current"
+          aria-current="true"
+          :title="portfolioRunsError ?? undefined"
+          @click="$emit('navigate', 'portfolio')"
         >
           <div class="row-main">
-            <div class="row-title">{{ rowTitle(r) }}</div>
-            <div class="row-meta">
-              {{ shortStamp(r.created_at) }} · #{{ shortId(r.report_id) }}
+            <div class="row-title">Portfolio analysis</div>
+            <div
+              class="row-meta"
+              :class="{ 'is-error': portfolioRunsError }"
+              aria-live="polite"
+            >
+              {{ portfolioRunsError ? "Couldn't load runs" : "No runs yet" }}
             </div>
           </div>
         </button>
-      </template>
-      <!-- Empty state keeps a path back to the (empty) report view from the
-           inbox/archive/settings surfaces, since the bottom nav has no report
-           target. Clickable and keyboard-operable like a real row. When listing
-           failed (and there's no list to show), the meta says so rather than
-           misreporting an empty library as "No reports yet". -->
-      <button
-        v-else
-        type="button"
-        class="row report-row"
-        :class="{ 'is-current': view === 'report' }"
-        :aria-current="view === 'report' ? 'true' : undefined"
-        :title="reportsError ?? undefined"
-        @click="$emit('navigate', 'report')"
-      >
-        <div class="row-main">
-          <div class="row-title">Market Signal Report</div>
-          <div
-            class="row-meta"
-            :class="{ 'is-error': reportsError }"
-            aria-live="polite"
+      </div>
+    </template>
+    <template v-else>
+      <div class="sidebar-header">Recent reports · last 30</div>
+      <div class="sidebar-list">
+        <!-- One row per persisted report, newest first. Selecting a row loads that
+             issue into the report pane (App handles the load + view switch). -->
+        <template v-if="reports.length > 0">
+          <button
+            v-for="r in reports"
+            :key="r.report_id"
+            type="button"
+            class="row report-row"
+            :class="{
+              'is-current': view === 'report' && r.report_id === selectedReportId,
+            }"
+            :aria-current="
+              view === 'report' && r.report_id === selectedReportId
+                ? 'true'
+                : undefined
+            "
+            @click="$emit('select', r.report_id)"
           >
-            {{ reportsError ? "Couldn't load reports" : "No reports yet" }}
+            <div class="row-main">
+              <div class="row-title">{{ rowTitle(r) }}</div>
+              <div class="row-meta">
+                {{ shortStamp(r.created_at) }} · #{{ shortId(r.report_id) }}
+              </div>
+            </div>
+          </button>
+        </template>
+        <!-- Empty state keeps a path back to the (empty) report view from the
+             inbox/archive/settings surfaces, since the bottom nav has no report
+             target. Clickable and keyboard-operable like a real row. When listing
+             failed (and there's no list to show), the meta says so rather than
+             misreporting an empty library as "No reports yet". -->
+        <button
+          v-else
+          type="button"
+          class="row report-row"
+          :class="{ 'is-current': view === 'report' }"
+          :aria-current="view === 'report' ? 'true' : undefined"
+          :title="reportsError ?? undefined"
+          @click="$emit('navigate', 'report')"
+        >
+          <div class="row-main">
+            <div class="row-title">Market Signal Report</div>
+            <div
+              class="row-meta"
+              :class="{ 'is-error': reportsError }"
+              aria-live="polite"
+            >
+              {{ reportsError ? "Couldn't load reports" : "No reports yet" }}
+            </div>
           </div>
-        </div>
-      </button>
-    </div>
+        </button>
+      </div>
+    </template>
 
     <nav class="sidebar-nav" aria-label="Views">
       <button

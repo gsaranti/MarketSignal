@@ -14,10 +14,10 @@ Market Signal
 │   ├── Streamed agent output
 │   └── Cancel control
 │
-├── Recent Reports Sidebar
+├── Recent Reports Sidebar (the shared-history sidebar — content swaps per feature)
 │   ├── Ordered descending
-│   ├── Report timestamps
-│   └── Market Signal reports
+│   ├── Recent reports · last 30 (report / inbox / archive / settings views)
+│   └── Portfolio runs · last 10 (Portfolio view; an older run opens read-only)
 │
 ├── Research Documents
 │   ├── Research Inbox
@@ -28,6 +28,7 @@ Market Signal
 │   ├── Holdings sort bar (value / $ gain / % gain / cash invested — reorders the cards in place)
 │   ├── Quick check (engine-only: re-checks every thesis ledger → per-card attention flags)
 │   ├── Per-holding verdicts (standing thesis + intrinsic verdict [grade + forward outlook, or an unpriceable fund's role/risk read] + portfolio action + thesis monitor; selection control · attention flag · analysis-vintage stamp)
+│   ├── Past-run view (a sidebar-selected older run, read-only: vintage banner + Back to latest; triggers locked)
 │   └── Portfolio roll-up & construction
 │
 ├── Trade Opportunities (local analysis suite)
@@ -68,6 +69,12 @@ The operational behavior of each panel is defined in the relevant concern files:
 - Trade Opportunities — see [trade-opportunities.md](trade-opportunities.md).
 - Local analysis suite substrate and its settings — see [local-models.md](local-models.md), [web-research.md](web-research.md), and [configuration.md](configuration.md).
   Both local jobs stream into the same Run Tracker as a report run ([run-tracking.md](run-tracking.md)).
+
+### The shared-history sidebar and the Portfolio runs history
+
+The sidebar is **one shared-history component whose list content swaps per feature** (the design package's shared-history pattern): the Portfolio view swaps in the retained **Portfolio runs** (last 10, newest first — each row a full-book label with its holdings count, local timestamp, and rated count), while every other view keeps the recent-reports list.
+Selecting the **newest** run row shows the live Portfolio page; selecting an **older** one renders that persisted run on the Portfolio page **read-only** — an informational banner names the run's vintage and carries a *Back to latest* control, the Run analysis / Pull holdings triggers lock with the reason stated, and the current-holdings comparison section (whose churn tags are keyed to the *latest* vintage) never renders over a past run.
+A run row appears only on persisted success (the run-is-never-a-report invariant — [run-tracking.md](run-tracking.md)), a fresh successful run closes any open past-run view, and a run pruned by the 10-run retention leaves the list — an open past run that falls out of retention closes back to the latest view.
 
 ## Persistent Warning Area
 

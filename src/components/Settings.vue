@@ -8,20 +8,27 @@ import type {
   AgentModels,
   ConnectionTestResult,
   CredentialUpdate,
+  LocalDaemonStatus,
+  LocalModelSettings,
   ModelOption,
+  ProviderCredentialUpdate,
   SchwabStatus,
   SchwabCredentialUpdate,
   TruncationStats,
 } from "../types";
 
-// Configuration surface — agent models, API tokens, provider credentials
-// (docs/configuration.md, docs/interface.md §Settings). Presentational: state
-// lives in App.vue, which fetches via `get_settings` and persists via
-// `save_settings`. Visual idiom from the design kit's Settings.jsx (single
-// column, label-above-field, open bottom-border inputs); the data is the spec's
-// real configuration, not the kit's mock. Secrets never arrive here — a
-// credential is shown only as "configured" or not; the user types a new value to
-// replace one, and an untouched field is left unchanged on save.
+// Configuration surface — agent models, API tokens, provider credentials, and
+// the local-analysis-models config (docs/configuration.md, docs/interface.md
+// §Settings). Presentational: state lives in App.vue, which fetches via
+// `get_settings` and persists via the three independent save commands. Visual
+// idiom from the design kit's Settings.jsx (single column, label-above-field,
+// open bottom-border inputs); the data is the spec's real configuration, not
+// the kit's mock. Secrets never arrive here — a credential is shown only as
+// "configured" or not; the user types a new value to replace one, and an
+// untouched field is left unchanged on save. Three independent submissions
+// (docs/configuration.md §API Tokens): the token-gated cloud form (models +
+// API tokens), the ungated provider credentials, and the ungated local
+// analysis models — so a cloud-keyless machine completes local-suite setup.
 const props = defineProps<{
   settings: SettingsView | null;
   loading: boolean;
@@ -34,6 +41,18 @@ const props = defineProps<{
   // home): which credential is mid-test, and the last result for each.
   testing: Record<CredKey, boolean>;
   testResults: Record<CredKey, ConnectionTestResult | null>;
+  // The provider-credential submission's own channels — independent of the
+  // token-gated cloud save above (docs/configuration.md §API Tokens).
+  savingProviders: boolean;
+  providersError: string | null;
+  // The local-analysis-models submission's channels + the daemon Test
+  // Connection state (docs/interface.md §Connection status). `localDaemon` is
+  // the last probe result, null until tested — the indicator reads untested
+  // until the user tests or runs.
+  savingLocal: boolean;
+  localError: string | null;
+  localTesting: boolean;
+  localDaemon: LocalDaemonStatus | null;
   // Read-only truncation telemetry for the diagnostics section. `null` =
   // unavailable / not yet loaded (the section is omitted); a populated all-zero
   // aggregate renders the "none recorded" empty state.
@@ -60,6 +79,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "save", payload: { models: AgentModels; credentials: CredentialUpdate }): void;
+  (e: "save-providers", payload: ProviderCredentialUpdate): void;
+  (e: "save-local", payload: LocalModelSettings): void;
+  (e: "test-local"): void;
   (e: "set-dark", value: boolean): void;
   (e: "test", key: CredKey): void;
   (e: "save-schwab", payload: SchwabCredentialUpdate): void;
@@ -91,7 +113,8 @@ const credentialFields: { key: CredKey; label: string }[] = [
 ];
 
 // Local, editable form state. Models pre-select the saved slugs; credential
-// inputs always start empty (the secret is never sent to the webview).
+// inputs always start empty (the secret is never sent to the webview). The
+// local-models values are not secrets, so they round-trip in full.
 const local = ref<AgentModels>({ main: "", bull: "", bear: "", balanced: "" });
 const creds = ref<Record<CredKey, string>>({
   openai: "",
@@ -100,27 +123,73 @@ const creds = ref<Record<CredKey, string>>({
   fred: "",
   tavily: "",
 });
+const localModels = ref<LocalModelSettings>({
+  daemon_endpoint: "",
+  reasoner_model: "",
+  fast_model: "",
+  embedder_model: "",
+});
 const justSaved = ref(false);
+const providersJustSaved = ref(false);
+const localJustSaved = ref(false);
 
-// (Re)initialise the form whenever a fresh view arrives — on first load and
-// after a save (App re-fetches, which clears typed secrets and resets the
-// dirty baseline to what was just persisted).
+// Initialise the form when the view FIRST arrives (mount, or a recovery from a
+// failed load). Later reloads — App re-fetches after every save — deliberately
+// do NOT reset form state: the three submissions are independent, so saving one
+// section must never discard another section's typed-but-unsaved edits. The
+// dirty computeds compare against `props.settings` directly, so a reload that
+// persists a section's values makes that section read clean on its own; each
+// save's *own* secret fields are cleared on its completion edge below.
 watch(
   () => props.settings,
-  (s) => {
-    if (!s) return;
+  (s, prev) => {
+    if (!s || prev) return;
     local.value = { ...s.models };
     creds.value = { openai: "", anthropic: "", fmp: "", fred: "", tavily: "" };
+    localModels.value = { ...s.local_models };
   },
   { immediate: true }
 );
 
-// A new save starting clears a stale confirmation; a clean completion sets it.
+// A new save starting clears a stale confirmation; a clean completion sets it —
+// and clears that submission's OWN typed fields (a persisted secret must not
+// linger in its input; the other sections' edits are untouched). One watch per
+// independent submission, on its own saving/error channels.
 watch(
   () => props.saving,
   (now, was) => {
     if (now && !was) justSaved.value = false;
-    if (was && !now && props.error === null) justSaved.value = true;
+    if (was && !now && props.error === null) {
+      justSaved.value = true;
+      creds.value = { ...creds.value, openai: "", anthropic: "" };
+    }
+  }
+);
+watch(
+  () => props.savingProviders,
+  (now, was) => {
+    if (now && !was) providersJustSaved.value = false;
+    if (was && !now && props.providersError === null) {
+      providersJustSaved.value = true;
+      creds.value = { ...creds.value, fmp: "", fred: "", tavily: "" };
+    }
+  }
+);
+watch(
+  () => props.savingLocal,
+  (now, was) => {
+    if (now && !was) localJustSaved.value = false;
+    if (was && !now && props.localError === null) {
+      localJustSaved.value = true;
+      // Adopt what the backend persisted (values are written trimmed), so the
+      // form reads clean against the reloaded baseline.
+      localModels.value = {
+        daemon_endpoint: localModels.value.daemon_endpoint.trim(),
+        reasoner_model: localModels.value.reasoner_model.trim(),
+        fast_model: localModels.value.fast_model.trim(),
+        embedder_model: localModels.value.embedder_model.trim(),
+      };
+    }
   }
 );
 
@@ -150,18 +219,26 @@ const modelsDirty = computed(() => {
   );
 });
 
-const credsDirty = computed(() =>
-  (Object.keys(creds.value) as CredKey[]).some((k) => creds.value[k].trim() !== "")
+// The cloud form's typed-token dirtiness vs the provider section's — two
+// independent submissions, each with its own Save (docs/configuration.md §API
+// Tokens: the token gate is scoped to the cloud submission alone).
+const tokensTyped = computed(
+  () => creds.value.openai.trim() !== "" || creds.value.anthropic.trim() !== ""
+);
+const providersDirty = computed(
+  () =>
+    creds.value.fmp.trim() !== "" ||
+    creds.value.fred.trim() !== "" ||
+    creds.value.tavily.trim() !== ""
 );
 
-const dirty = computed(() => modelsDirty.value || credsDirty.value);
+const dirty = computed(() => modelsDirty.value || tokensTyped.value);
 
-// Saving is disabled until both API tokens are present (docs/configuration.md
-// §API Tokens) — either already stored (configured) or entered now. The backend
-// enforces the same gate; this just keeps the Save control honest.
-// The docs scope this gate to the agent/token submission; ungating the
-// provider-credential save is a named prerequisite of the local-suite
-// Settings slice (docs/configuration.md §API Tokens).
+// Saving the cloud form is disabled until both API tokens are present
+// (docs/configuration.md §API Tokens) — either already stored (configured) or
+// entered now. The backend enforces the same gate; this just keeps the Save
+// control honest. Scoped to this form: the provider credentials and the local
+// models save ungated below.
 const tokensSatisfied = computed(() => {
   const c = props.settings?.credentials;
   const openai = creds.value.openai.trim() !== "" || !!c?.openai;
@@ -179,6 +256,10 @@ const canSave = computed(
     tokensSatisfied.value
 );
 
+const canSaveProviders = computed(
+  () => !!props.settings && !props.savingProviders && providersDirty.value
+);
+
 // Appearance toggle — flips and applies instantly (App owns the apply+persist).
 function toggleDark() {
   emit("set-dark", !props.dark);
@@ -187,6 +268,13 @@ function toggleDark() {
 // "Saved" shows only while the form is at rest and unchanged since the save.
 const showSaved = computed(
   () => justSaved.value && !dirty.value && !props.saving && props.error === null
+);
+const showProvidersSaved = computed(
+  () =>
+    providersJustSaved.value &&
+    !providersDirty.value &&
+    !props.savingProviders &&
+    props.providersError === null
 );
 
 function tokenPlaceholder(key: CredKey): string {
@@ -200,12 +288,125 @@ function onSave() {
   const credUpdate: CredentialUpdate = {
     openai: creds.value.openai.trim() ? creds.value.openai : null,
     anthropic: creds.value.anthropic.trim() ? creds.value.anthropic : null,
-    fmp: creds.value.fmp.trim() ? creds.value.fmp : null,
-    fred: creds.value.fred.trim() ? creds.value.fred : null,
-    tavily: creds.value.tavily.trim() ? creds.value.tavily : null,
   };
   emit("save", { models: { ...local.value }, credentials: credUpdate });
 }
+
+function onSaveProviders() {
+  if (!canSaveProviders.value) return;
+  emit("save-providers", {
+    fmp: creds.value.fmp.trim() ? creds.value.fmp : null,
+    fred: creds.value.fred.trim() ? creds.value.fred : null,
+    tavily: creds.value.tavily.trim() ? creds.value.tavily : null,
+  });
+}
+
+// --- Local analysis models ---------------------------------------------------
+// Daemon endpoint + roster ids (docs/configuration.md §Local Models). Ungated
+// values that round-trip; presence of endpoint + reasoner + embedder is what
+// clears the "local models not configured" warning (App re-checks after save).
+
+const localDirty = computed(() => {
+  const s = props.settings?.local_models;
+  if (!s) return false;
+  const m = localModels.value;
+  return (
+    m.daemon_endpoint !== s.daemon_endpoint ||
+    m.reasoner_model !== s.reasoner_model ||
+    m.fast_model !== s.fast_model ||
+    m.embedder_model !== s.embedder_model
+  );
+});
+
+const canSaveLocal = computed(
+  () => !!props.settings && !props.savingLocal && localDirty.value
+);
+
+const showLocalSaved = computed(
+  () =>
+    localJustSaved.value &&
+    !localDirty.value &&
+    !props.savingLocal &&
+    props.localError === null
+);
+
+// Whether the *saved* embedder id would change — the save clears the suite's
+// local memory in that case, so the form says so up front rather than silently.
+const embedderChanging = computed(() => {
+  const saved = props.settings?.local_models.embedder_model.trim() ?? "";
+  return saved !== "" && localModels.value.embedder_model.trim() !== saved;
+});
+
+function onSaveLocal() {
+  if (!canSaveLocal.value) return;
+  emit("save-local", { ...localModels.value });
+}
+
+// Test Connection probes the *saved* endpoint + roster (like the credential
+// rows), so it is offered only when an endpoint is saved and the form has no
+// unsaved edits.
+const localEndpointConfigured = computed(
+  () => (props.settings?.local_models.daemon_endpoint.trim() ?? "") !== ""
+);
+const canTestLocal = computed(
+  () => localEndpointConfigured.value && !localDirty.value && !props.localTesting
+);
+const localTestTitle = computed(() => {
+  if (props.localTesting) return "Testing…";
+  if (!localEndpointConfigured.value)
+    return "Save a daemon endpoint before testing";
+  if (localDirty.value) return "Save your changes before testing";
+  return "Check the daemon is reachable and the rostered models are pulled";
+});
+
+// Whether the *saved* required roster (reasoner + embedder) is filled — a
+// reachable daemon with an empty roster must not read as fully set up (the
+// probe only checks the ids that are configured, so an empty roster has
+// nothing to be "missing").
+const savedRosterComplete = computed(() => {
+  const lm = props.settings?.local_models;
+  return (
+    !!lm && lm.reasoner_model.trim() !== "" && lm.embedder_model.trim() !== ""
+  );
+});
+
+// The connection indicator's four states (docs/interface.md §Connection
+// status): untested (no probe yet), unreachable, daemon-up-but-model-missing
+// (a distinct state), and connected. Shown only while the form is at rest —
+// a result describes the saved config, not unsaved edits.
+type LocalStatusTone = "pending" | "ok" | "err";
+const localStatus = computed<{ tone: LocalStatusTone; text: string }>(() => {
+  if (props.localTesting) return { tone: "pending", text: "Testing…" };
+  const d = props.localDaemon;
+  if (localDirty.value || d === null) {
+    return {
+      tone: "pending",
+      text: "Untested — connectivity is checked here or when a run starts.",
+    };
+  }
+  if (!d.reachable) {
+    const detail = d.detail ?? "Daemon unreachable";
+    return {
+      tone: "err",
+      text: `${detail} — install Ollama from ollama.com/download (or brew install ollama), start it, then re-test.`,
+    };
+  }
+  if (d.missing_models.length > 0) {
+    return {
+      tone: "err",
+      text: `Daemon reachable, but these models aren't pulled: ${d.missing_models.join(
+        ", "
+      )}. Pull each with "ollama pull", then re-test.`,
+    };
+  }
+  if (!savedRosterComplete.value) {
+    return {
+      tone: "pending",
+      text: "Daemon reachable — add the reasoner and embedder model ids to complete setup.",
+    };
+  }
+  return { tone: "ok", text: "Daemon reachable — all rostered models available." };
+});
 
 // Whether a credential field holds a typed (unsaved) value — drives the test
 // row's gating (it validates the saved credential, not what's typed).
@@ -539,6 +740,9 @@ const importDataLabel = computed(() =>
             </p>
             <div v-for="field in tokenFields" :key="field.key" class="field">
               <label class="label" :for="`cred-${field.key}`">{{ field.label }}</label>
+              <!-- Disabled while THIS section's save is in flight: the clean
+                   completion clears these fields, so text typed mid-save would
+                   be lost — locking the input closes that window. -->
               <input
                 :id="`cred-${field.key}`"
                 v-model="creds[field.key]"
@@ -546,33 +750,7 @@ const importDataLabel = computed(() =>
                 type="password"
                 autocomplete="off"
                 spellcheck="false"
-                :placeholder="tokenPlaceholder(field.key)"
-              />
-              <ConnectionTestRow
-                :configured="!!settings.credentials[field.key]"
-                :dirty="credDirty(field.key)"
-                :testing="testing[field.key]"
-                :result="testResults[field.key]"
-                @test="emit('test', field.key)"
-              />
-            </div>
-          </section>
-
-          <section class="settings-section" aria-labelledby="sec-creds">
-            <h3 id="sec-creds" class="section-eyebrow">Data provider credentials</h3>
-            <p class="section-note">
-              Financial Modeling Prep, FRED, and Tavily are all required to run a
-              job. FRED needs a free API key; BLS, GDELT, and CFTC need no credential.
-            </p>
-            <div v-for="field in credentialFields" :key="field.key" class="field">
-              <label class="label" :for="`cred-${field.key}`">{{ field.label }}</label>
-              <input
-                :id="`cred-${field.key}`"
-                v-model="creds[field.key]"
-                class="input mono"
-                type="password"
-                autocomplete="off"
-                spellcheck="false"
+                :disabled="saving"
                 :placeholder="tokenPlaceholder(field.key)"
               />
               <ConnectionTestRow
@@ -612,6 +790,193 @@ const importDataLabel = computed(() =>
               Add both API tokens to save.
             </span>
           </div>
+        </form>
+
+        <!-- Data provider credentials — an independent submission, deliberately
+             outside the token-gated form above (docs/configuration.md §External
+             Data Provider Credentials): a cloud-keyless machine persists FMP /
+             FRED for the local suite. Own Save + error/saved channels, the
+             Schwab-section idiom. -->
+        <form
+          v-if="settings"
+          class="settings-form"
+          @submit.prevent="onSaveProviders"
+        >
+          <section class="settings-section" aria-labelledby="sec-creds">
+            <h3 id="sec-creds" class="section-eyebrow">Data provider credentials</h3>
+            <p class="section-note">
+              Financial Modeling Prep, FRED, and Tavily are all required to run a
+              report; the local analysis suite needs Financial Modeling Prep and
+              FRED. These save on their own — no cloud API token needed. FRED
+              needs a free API key; BLS, GDELT, and CFTC need no credential.
+            </p>
+            <div v-for="field in credentialFields" :key="field.key" class="field">
+              <label class="label" :for="`cred-${field.key}`">{{ field.label }}</label>
+              <!-- Locked mid-save for the same reason as the token fields. -->
+              <input
+                :id="`cred-${field.key}`"
+                v-model="creds[field.key]"
+                class="input mono"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                :disabled="savingProviders"
+                :placeholder="tokenPlaceholder(field.key)"
+              />
+              <ConnectionTestRow
+                :configured="!!settings.credentials[field.key]"
+                :dirty="credDirty(field.key)"
+                :testing="testing[field.key]"
+                :result="testResults[field.key]"
+                @test="emit('test', field.key)"
+              />
+            </div>
+
+            <div v-if="providersError" class="settings-error" role="alert">
+              <div class="settings-error-label">Couldn't save</div>
+              <p class="settings-error-detail">{{ providersError }}</p>
+            </div>
+
+            <div class="section-actions">
+              <button
+                type="submit"
+                class="btn btn-secondary"
+                :disabled="!canSaveProviders"
+              >
+                {{ savingProviders ? "Saving…" : "Save credentials" }}
+              </button>
+              <span v-if="showProvidersSaved" class="save-status" role="status">
+                <Icon name="check" :size="13" color="var(--ink-2)" />
+                Saved
+              </span>
+            </div>
+          </section>
+        </form>
+
+        <!-- Local analysis models (docs/configuration.md §Local Models,
+             docs/interface.md §Connection status). The in-app clear path for the
+             "local models not configured" warning: presence of endpoint +
+             reasoner + embedder unlocks the local-suite Run buttons the moment
+             it saves (App re-checks the presence gate). Ungated like the
+             provider credentials — no cloud token needed. Connectivity is a
+             separate, manual Test Connection: never probed at startup, so the
+             indicator reads untested until tested or a run starts. -->
+        <form v-if="settings" class="settings-form" @submit.prevent="onSaveLocal">
+          <section class="settings-section" aria-labelledby="sec-local-models">
+            <h3 id="sec-local-models" class="section-eyebrow">Local analysis models</h3>
+            <p class="section-note">
+              Portfolio Analysis and Trade Opportunities run on your own Ollama
+              daemon. The endpoint, reasoner, and embedder are required before
+              either can run; the fast tier is optional. The app supervises a
+              daemon you install — it bundles neither Ollama nor the models.
+            </p>
+
+            <div class="field">
+              <label class="label" for="local-endpoint">Daemon endpoint</label>
+              <input
+                id="local-endpoint"
+                v-model="localModels.daemon_endpoint"
+                class="input mono"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                :disabled="savingLocal"
+                placeholder="http://127.0.0.1:11434"
+              />
+            </div>
+            <div class="field">
+              <label class="label" for="local-reasoner">Reasoner model</label>
+              <input
+                id="local-reasoner"
+                v-model="localModels.reasoner_model"
+                class="input mono"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                :disabled="savingLocal"
+                placeholder="Not set"
+              />
+            </div>
+            <div class="field">
+              <label class="label" for="local-embedder">Embedder model</label>
+              <input
+                id="local-embedder"
+                v-model="localModels.embedder_model"
+                class="input mono"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                :disabled="savingLocal"
+                placeholder="Not set"
+              />
+            </div>
+            <div class="field">
+              <label class="label" for="local-fast">Fast model (optional)</label>
+              <input
+                id="local-fast"
+                v-model="localModels.fast_model"
+                class="input mono"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                :disabled="savingLocal"
+                placeholder="Not set — the reasoner covers this role"
+              />
+            </div>
+
+            <!-- The daemon connection row — the ConnectionTestRow pattern with
+                 the richer LocalDaemonStatus vocabulary (reachability AND
+                 per-roster-model presence are distinct states). -->
+            <div class="cred-test local-test">
+              <button
+                type="button"
+                class="cred-test-btn"
+                :disabled="!canTestLocal"
+                :title="localTestTitle"
+                @click="emit('test-local')"
+              >
+                {{ localTesting ? "Testing…" : "Test connection" }}
+              </button>
+              <span
+                class="cred-status"
+                :class="`cred-status--${localStatus.tone}`"
+                role="status"
+                aria-live="polite"
+              >
+                <Icon
+                  v-if="localStatus.tone === 'ok'"
+                  name="check"
+                  :size="13"
+                  color="var(--ink-2)"
+                />
+                {{ localStatus.text }}
+              </span>
+            </div>
+
+            <p v-if="embedderChanging" class="section-note local-caution">
+              Changing the embedder resets the local suite's run memory — past
+              runs' recall is re-built by later runs. Report memory is untouched.
+            </p>
+
+            <div v-if="localError" class="settings-error" role="alert">
+              <div class="settings-error-label">Couldn't save</div>
+              <p class="settings-error-detail">{{ localError }}</p>
+            </div>
+
+            <div class="section-actions">
+              <button
+                type="submit"
+                class="btn btn-secondary"
+                :disabled="!canSaveLocal"
+              >
+                {{ savingLocal ? "Saving…" : "Save local models" }}
+              </button>
+              <span v-if="showLocalSaved" class="save-status" role="status">
+                <Icon name="check" :size="13" color="var(--ink-2)" />
+                Saved
+              </span>
+            </div>
+          </section>
         </form>
 
         <!-- Charles Schwab connection (docs/schwab-integration.md, docs/interface.md
@@ -1081,12 +1446,84 @@ const importDataLabel = computed(() =>
 /* Section-local action row — save / connect / disconnect. Unlike `.settings-actions`
    it carries no top rule (it sits mid-section, not at the form's foot). */
 .schwab-actions,
-.data-actions {
+.data-actions,
+.section-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--s-4);
   margin-top: var(--s-6);
+}
+
+/* The local-daemon test row reuses ConnectionTestRow's visual vocabulary (that
+   component's styles are scoped, so the classes are re-declared here for the
+   one richer row whose status carries reachability + per-model presence). */
+.cred-test {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-5);
+  margin-top: var(--s-3);
+  min-height: 18px;
+}
+
+.cred-test-btn {
+  flex-shrink: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  color: var(--ink-2);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.cred-test-btn:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.cred-test-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.cred-test-btn:disabled {
+  color: var(--ink-3);
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
+.cred-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  line-height: var(--lh-ui);
+  overflow-wrap: anywhere;
+}
+
+.cred-status--pending {
+  color: var(--ink-3);
+}
+
+/* ink-2 (not ink-3) to clear AA at 13px, matching the Save "Saved" confirmation. */
+.cred-status--ok {
+  color: var(--ink-2);
+}
+
+.cred-status--err {
+  color: var(--accent-text);
+}
+
+/* The embedder-change heads-up sits after the test row, so it trades the note's
+   bottom rhythm for a tight top one (the data-caution idiom). */
+.local-caution {
+  margin: var(--s-3) 0 0;
 }
 
 /* The passphrase caution reads in the section-note voice but sits *after* its
@@ -1261,7 +1698,8 @@ const importDataLabel = computed(() =>
 
 @media (prefers-reduced-motion: reduce) {
   .field-select,
-  .switch-knob {
+  .switch-knob,
+  .cred-test-btn {
     transition: none;
   }
 }

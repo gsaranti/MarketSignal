@@ -11,7 +11,7 @@ import { mount, type VueWrapper } from "@vue/test-utils";
 import RecentReportsSidebar from "../../src/components/RecentReportsSidebar.vue";
 import { deepFreeze } from "../helpers/freeze";
 import { localDateTime } from "../../src/format";
-import type { ReportSummary } from "../../src/types";
+import type { PortfolioRunSummary, ReportSummary } from "../../src/types";
 
 function summary(id: string, createdAt: string, title = "Sample headline"): ReportSummary {
   return {
@@ -35,10 +35,29 @@ const reports: ReportSummary[] = deepFreeze([
   summary("22222222-aaaa-4bbb-8ccc-000000000002", "2026-06-01T13:00:00Z", "Credit cracks widen"),
 ]);
 
+// Two portfolio runs, newest first — the swap-in history for the Portfolio view.
+const portfolioRuns: PortfolioRunSummary[] = deepFreeze([
+  {
+    run_id: "prun-2",
+    created_at: "2026-07-12T09:00:00Z",
+    holdings_count: 23,
+    graded_count: 19,
+  },
+  {
+    run_id: "prun-1",
+    created_at: "2026-07-05T09:00:00Z",
+    holdings_count: 1,
+    graded_count: 0,
+  },
+]);
+
 const baseProps = deepFreeze({
   reports,
   selectedReportId: null as string | null,
   reportsError: null as string | null,
+  portfolioRuns,
+  selectedRunId: null as string | null,
+  portfolioRunsError: null as string | null,
   view: "report" as const,
   inboxCount: 0,
   archiveCount: 0,
@@ -127,6 +146,59 @@ test("a listing failure (no list to fall back on) reads as an error, not an empt
   expect(meta.text()).toBe("Couldn't load reports");
   expect(meta.classes()).toContain("is-error");
   expect(row.attributes("title")).toBe("permission denied");
+});
+
+// --- Portfolio-runs history (the shared-history swap per feature) ------------
+// On the Portfolio view the same sidebar swaps its history content to the
+// retained Portfolio runs (design kit Sidebar.jsx; docs/interface.md §Main
+// Layout) — same rows, same selection accent, run-flavored copy.
+
+test("the Portfolio view swaps the history list to portfolio runs", () => {
+  const wrapper = makeWrapper({ view: "portfolio" });
+  expect(wrapper.find(".sidebar-header").text()).toBe("Portfolio runs · last 10");
+  const rows = wrapper.findAll(".sidebar-list .report-row");
+  expect(rows).toHaveLength(2);
+  expect(rows[0].find(".row-title").text()).toBe("Full book · 23 holdings");
+  expect(rows[0].find(".row-meta").text()).toBe(
+    `${localDateTime(portfolioRuns[0].created_at)} · rated 19`
+  );
+  // The report list is not rendered on this view.
+  expect(wrapper.find(".sidebar-header").text()).not.toContain("Recent reports");
+});
+
+test("every other view keeps the report history visible", () => {
+  for (const view of ["report", "inbox", "archive", "settings"] as const) {
+    const wrapper = makeWrapper({ view });
+    expect(wrapper.find(".sidebar-header").text()).toBe("Recent reports · last 30");
+  }
+});
+
+test("selecting a run row emits select-run and the selected run is marked current", async () => {
+  const wrapper = makeWrapper({ view: "portfolio", selectedRunId: "prun-2" });
+  const rows = wrapper.findAll(".sidebar-list .report-row");
+  expect(rows[0].classes()).toContain("is-current");
+  expect(rows[0].attributes("aria-current")).toBe("true");
+  expect(rows[1].attributes("aria-current")).toBeUndefined();
+
+  await rows[1].trigger("click");
+  expect(wrapper.emitted("select-run")).toEqual([["prun-1"]]);
+});
+
+test("the runs empty state and list failure mirror the report list's posture", async () => {
+  const empty = makeWrapper({ view: "portfolio", portfolioRuns: [] });
+  const emptyRow = empty.find(".sidebar-list .report-row");
+  expect(emptyRow.find(".row-meta").text()).toBe("No runs yet");
+  await emptyRow.trigger("click");
+  expect(empty.emitted("navigate")).toEqual([["portfolio"]]);
+
+  const failed = makeWrapper({
+    view: "portfolio",
+    portfolioRuns: [],
+    portfolioRunsError: "db locked",
+  });
+  const failedMeta = failed.find(".sidebar-list .report-row .row-meta");
+  expect(failedMeta.text()).toBe("Couldn't load runs");
+  expect(failedMeta.classes()).toContain("is-error");
 });
 
 test("nav items mark the active view and emit navigate with its key", async () => {

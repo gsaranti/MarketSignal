@@ -239,6 +239,27 @@ pub fn delete_report_summary(conn: &Connection, report_id: &str) -> Result<usize
     Ok(deleted)
 }
 
+/// Delete every row in the two **local** namespaces (portfolio + opportunities)
+/// — the stale-cohort clear the Settings save runs when the configured local
+/// embedder identity changes (`docs/storage.md §Local Vector Memory`: identity,
+/// never dimension, is the compatibility key, so vectors from the old embedder
+/// must never be cosine-compared under the new one). The report namespace is
+/// embedded by the fixed cloud model and is never touched. Returns how many rows
+/// were deleted. Re-embedding the cohort from retained content instead of
+/// clearing it is deliberately deferred: it needs a reachable daemon, which the
+/// presence-only save path must not require, and no production local rows can
+/// predate this write path (the local jobs were gate-locked without it).
+pub fn clear_local_namespaces(conn: &Connection) -> Result<usize> {
+    let deleted = conn.execute(
+        "DELETE FROM vector_memory WHERE namespace IN (?1, ?2)",
+        [
+            MemoryNamespace::Portfolio.as_str(),
+            MemoryNamespace::Opportunities.as_str(),
+        ],
+    )?;
+    Ok(deleted)
+}
+
 /// Total rows in `namespace` — the cheap guard the retrieval pulls use to skip a
 /// paid embedding call when there is nothing to search (an empty partition on
 /// early runs). Scoped per namespace so a populated partition (e.g. the report's)
