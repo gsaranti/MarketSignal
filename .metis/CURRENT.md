@@ -2,30 +2,30 @@
 
 ## What happened
 
-**The full Portfolio (funds) slice was triaged through two Codex review rounds, fixed, and merged to `main` (fast-forward `a91e53b → bda9a06`); the feature branch is deleted local + remote.**
-Round 1 (`108c628`): of 8 findings, 6 confirmed and fixed — net-short positions → not-rated with a short reason; the fund evidence floor now enforces the expense-ratio and country-weighting legs on the exposure-priced branch (**behavior change**: a fund without country weightings now abstains where it previously priced on an "assumed US" note); a failed DGS10 anchor-window history is fail-soft (`RateAnchors.history_gap` → degraded inputs) — only the two prints hard-fail; analyst-estimates consensus returns `None` with no forward-dated row (no stale-row masquerade past `no-admissible-driver`); TTM dividends bounded both sides; option-overlay funds get a deterministic name-screen flag — priced (not `role_risk_only`), barred from the Low tier without forcing High.
-One finding was a deliberate deferral (the `role_risk_only` action authored in-loop — the 7b construction slice owns the move, both branches), one was doc catch-up (pending→as-built flips across portfolio-analysis/workflow/TO).
-Round 2 (`6789501`): `AnchorObservation.spread` became `Option` so raw multiples survive a failed DGS10 join (raw-percentile fallback, never the current-multiple carry); the fund classification + structural flag now ride `GradedVerdict` (`fund_class_label`/`structural_flag`, serde defaults) and render on the priced card.
-BUILD/INDEX catch-up ran (user-directed, `bda9a06`).
-Verification green throughout: cargo test 690/0, clippy clean, `npm run build`, npm test 40 + 155.
+**Open-questions triage — no feature slice; two items closed, one advanced, all direct to `main` (`fb56a7e`, `78df109`).**
+The legacy-docs broken anchor is fixed (`NOTES-FROM-RESTRUCTURING.md:15` → `scheduling.md#generating-a-report`).
+Ollama: v0.32.0/v0.32.1 shipped; the #14645 fix (PR #15901) is verified an ancestor of the v0.32.0 tag; still no 122B MLX through v0.32.1; `docs/local-model-operations.md` re-tagged `[verified 2026-07-16]` — the thinking-on rule stands until the fix is verified to *behave* on the pinned version (≥ v0.32.0) on the M5.
+**FMP: the user upgraded the subscription (same key) and the paid-key shape checkpoint ran and CLOSED** (~27 live GETs, `78df109`): audit #8's buckets confirmed live (allowed → 200, blocked → 402, `analyst-estimates` annual-only verbatim); every fund-slice shape assumption held (expense-ratio percent-units `/100`, stable spellings, `etf/info` serves `assetsUnderManagement` with no `aum` key — the fallback covers it, mutual funds served); the `sector-pe-snapshot` holiday-keying concern dissolved (weekday market holidays return full carried snapshots); the release→event map was corrected + live-verified (trailing period-suffix strip then exact base match; `PPI MoM` → `Producer Price Index MoM`; `JOLTs` casing; the drafted `Core PPI MoM` row removed — no live counterpart; NFP unit `K` / JOLTs `M`; CPI alias rows documented inert); the other enrichment shapes (`averageChange` in percentage points, IPO/M&A feeds) verified too.
+Details are single-homed in `docs/data-sources.md`, the `fmp.rs` seam comments, and the `78df109` commit message.
+Verification green: cargo test 690/0, clippy clean, `npm run build`.
 
 ## Current state
 
-Nothing in flight — the fund slice is fully landed on `main`, no open branch, working tree clean.
-Honest residue (unchanged, now recorded in BUILD §What remains): the research loop stays the stub; thesis ledger, quick check, selective re-analysis, held-name refresh lane, pre-profit overlay, outcome learning, and the 7b construction stage are designed depth slices, unsequenced; grade normalization rides TO's engine work; persisted price-bar cache later; CFTC fund mapping + N-PORT skipped.
+Nothing in flight — clean tree on `main` at `78df109`.
+The FMP key is now paid-tier: Trade Opportunities implementation will code against live-verified shapes, and the planned report-enrichment slice (`data-sources.md §Planned report enrichment`) is no longer key-blocked — it stays unqueued; sequencing it is the user's call.
+`INDEX.md`'s planned-enrichment row still says "pending paid-key verification" (user-run catch-up when convenient).
 
 ## Open questions
 
 - **Hurdle × rate-anchored-multiple tightness (M5-calibration)** — the strong test fixture lands dead-money; the bars may bind harder than intended on real names.
-- **FMP shape assumptions (paid-key checkpoint)** — new-endpoint field spellings and the expense-ratio `/100` normalization are fixture-pinned; `sector-pe-snapshot` last-weekday keying gaps on market holidays.
 - **Fraud-producer posture (carried, review-optional)** — research-fed `forensic_event`, tier-0 lineage.
-- **Local-suite scorecard display (carried, deferred)**; **encrypted-archive live round-trip (carried, optional)**; **dev-app sanity residue (carried)**; **Keychain fail-soft candidate (carried)**; **stage-and-swap import hardening (carried)**; **first post-v0.31.2 Ollama release (carried)**; **chain both-maps invariant (carried)**; **long/cold-start 600s stress (carried)** — all unchanged.
-- **Local-model M5 pre-flight + M5-calibration (carried)** — prior list plus the fund slice's drafted constants (CIK-cache staleness, coverage/US guards, tier premiums, add floors) and the two items above.
+- **Ollama pin + #14645 behavioral verify (folds into the M5 pre-flight)** — pin ≥ v0.32.0 (the fix ships there); shipping ≠ enforcement given the probabilistic failure, so the schema-integrity check on the pinned version decides when non-thinking distillation unlocks.
+- **Local-suite scorecard display (carried, deferred)**; **encrypted-archive live round-trip (carried, optional)**; **dev-app sanity residue (carried)**; **Keychain fail-soft candidate (carried)**; **stage-and-swap import hardening (carried)**; **chain both-maps invariant (carried)**; **long/cold-start 600s stress (carried)** — all unchanged.
+- **Local-model M5 pre-flight + M5-calibration (carried)** — the prior list plus the fund slice's drafted constants (CIK-cache staleness, coverage/US guards, tier premiums, add floors); the FMP shape checkpoint is off this list (closed this session).
 - **Four-part verdict + bidirectional-conviction bound; §1 open drafts; M5-gated backlog (carried)** — land with the remaining Portfolio depth slices + TO.
-- **Legacy-docs broken anchor (carried, trivial)** — `legacy_docs/NOTES-FROM-RESTRUCTURING.md:15`.
 
 ## Where to start
 
 **Run `/metis-plan-task` for the next queue item (BUILD §What remains): the Local-analysis-models Settings section + sidebar Portfolio-runs history.**
 The Settings section's named code prerequisite is the provider-credential save split out of the token-gated cloud save (`configuration.md §API Tokens`), and it is the in-app clear path for the shipped presence warning.
-After that: Trade Opportunities (design settled 2026-07-09, ready for implementation planning).
+After that: Trade Opportunities (design settled 2026-07-09; the paid key is now live-verified, so implementation planning codes against verified shapes).
