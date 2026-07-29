@@ -140,7 +140,8 @@ describe both without distinction; build status lives in BUILD.md.*
 
 - Local analysis suite overview (local-only, two prescriptive features) — overview.md §Local Analysis Suite; local-models.md
 - Local model substrate (Ollama serving — native `/api/chat` + `/api/embed` + `/api/tags` transport, the `/v1/` OpenAI-compatible layer deliberately unused — roster, per-task routing) — local-models.md §Serving runtime, §The model roster and per-task routing
-- Local model operational reference (Qwen3.5-122B context / thinking / sampling / `num_ctx` / `format` gotchas; serving pre-flight; M5-gated) — local-model-operations.md; local-models.md §The model roster and per-task routing
+- Local model operational reference (Qwen3.5-122B context / thinking / sampling / `num_ctx` / `format` gotchas; serving pre-flight completed 2026-07-28) — local-model-operations.md; local-models.md §The model roster and per-task routing
+- M5 pre-flight verification record (2026-07-28 — serving/backend, #14645 behavioral verify, long-context probe 35/35 → 160.6K, memory/throughput; re-verification template + harness scripts for Ollama bumps) — verification/2026-07-28-m5-preflight.md; local-model-operations.md §M5 pre-flight checklist
 - Model residency default (one 122B fills all reasoning roles + embedder resident; 35B fast tier benchmark-gated) — local-models.md §The model roster and per-task routing
 - Local-model adapter seam (flexible endpoint/model_id client, distinct from the cloud AgentModel enum) — local-models.md §The local-model adapter seam
 - Schema-constrained output (grammar-constrained JSON) — local-models.md §Schema-constrained output

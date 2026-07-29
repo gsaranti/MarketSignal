@@ -340,11 +340,14 @@ live research loop) remain designed, not built.** The load-bearing decisions:
   the existing `Embedder` trait so `vector_memory` is unchanged. The roster
   default is **settled**: one frontier reasoner (Qwen3.5-122B-A10B) **plus the
   embedder stay resident**, the 122B filling *every* reasoning role by thinking
-  mode (schema-constrained distillation stays thinking-enabled until Ollama bug
-  #14645 is verified fixed); the 35B fast tier is **demoted to a
-  benchmark-gated option**. Its serving path is an **M5 pre-flight risk** — the
-  122B runs on the llama.cpp Metal/GGUF fallback, not MLX
-  (`docs/local-model-operations.md`).
+  mode (bug #14645 verified fixed live on the pinned Ollama v0.32.5, so
+  non-thinking distillation is unlocked on this version — it re-locks on any
+  unverified bump); the 35B fast tier is **demoted to a benchmark-gated
+  option**. Its serving path is **verified live** (M5 pre-flight, 2026-07-28):
+  the 122B serves on the llama.cpp Metal/GGUF fallback, not MLX, fitting 128 GB
+  with ~40 GB headroom at full native context, with effective context measured
+  clean to 160.6 K (`docs/local-model-operations.md`; evidence record in
+  `docs/verification/2026-07-28-m5-preflight.md`).
 - **Per-job isolation (learnings only).** Each feature stores its own runs
   (last-N retention) and its own vector-memory partition; no job reads another's
   *learnings*. The Market Signal Report stays a read-only shared input, loaded
@@ -526,9 +529,13 @@ namespaces atomically). The **remaining
 Portfolio depth slices** (thesis ledger, quick check, selective re-analysis,
 held-name refresh lane, pre-profit overlay, outcome learning, the 7b
 construction stage, the live research loop) are designed and not yet sequenced
-in this queue; the shipped schemas don't preclude them. Hardware-gated on the
-M5: live local-suite validation, the model-serving pre-flight, and the
-calibration knobs — now including the fund slice's drafted constants (hurdle ×
+in this queue; the shipped schemas don't preclude them. The **model-serving pre-flight completed
+2026-07-28** (Ollama pinned v0.32.5, roster pulled, all checks green —
+`docs/verification/2026-07-28-m5-preflight.md`), surfacing one small named
+slice: the adapter never sets Ollama `options` (per-stage `num_ctx`, per-mode
+sampling, `keep_alive` residency all unwired). Still M5-gated: the remaining
+live local-suite validation (first live Portfolio run next) and the
+calibration knobs — including the fund slice's drafted constants (hurdle ×
 rate-anchored-multiple tightness, the ≥ 70% coverage / US guards, tier
 premiums, add floors, CIK-cache staleness); the FMP paid-key shape checkpoint
 closed 2026-07-16 (`78df109`).
