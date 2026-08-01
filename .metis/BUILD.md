@@ -551,13 +551,24 @@ blank-fast-tier default path shares the 128 K interpretation context),
 `keep_alive:-1` residency including the embedder, plus the **step-scoped live
 thinking channel** (F8) streaming each holding's interpretation reasoning onto
 its own tracker step — two review rounds (internal + Codex) to convergence.
+The second — the **target-function calibration slice** — **landed 2026-08-01**
+(F1/F2 closed): the **NTM consensus read** (the two nearest forward
+fiscal-year rows blend time-weighted by twelve-month overlap, so a
+mostly-reported current year no longer masquerades as the forward driver;
+the selection persisted on the target meta), a **volatility-scaled widen-only
+dispersion floor** plus a recorded growth-clamp collapse (zero scenario
+dispersion no longer degenerates the three-state hurdle into a point test —
+parameter version `targets-v3`, run `3b21ae85` staying the v2 baseline),
+**Stooq resilience** (the 200-HTML daily-hits notice typed at the parse seam,
+a run-wide breaker, politeness pacing, and an FMP dated-EOD second rung for
+the anchor price leg), and the **run-level data-health roll-up** (typed
+aggregate off the audits, persisted with the roll-up, rendered on the
+roll-up card with an attention state) — two internal review rounds to
+approve-with-nits; its live confirmation rides the next calibration run
+(FMP-EOD adjustment basis, the new action distribution, the fund carry-path
+floor).
 Remaining, in order:
-the **target-function calibration slice** — the run's flat-target syndrome
-(consensus-period selection ≈ trailing EPS + current-multiple carry under a
-run-wide Stooq throttle → base ≈ spot → 35/44 hurdle-fails; the hurdle
-three-state logic itself verified correct), plus Stooq resilience and a
-run-level data-health roll-up;
-and the **grade-band shadow-tune** — zero A/B letters across 44 priced
+the **grade-band shadow-tune** — zero A/B letters across 44 priced
 holdings (relative ordering sound, absolute levels compressed), opening by
 certifying the sub-score formulas against spec and closing the FMP
 statement-field gaps, tuned against the persisted run (`3b21ae85`, the first
