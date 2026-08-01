@@ -17,7 +17,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::local_model::{ChatMessage, ChatRequest, LocalModelClient, StreamRole};
+use crate::local_model::{options, ChatMessage, ChatRequest, LocalModelClient, StreamRole};
 use crate::portfolio::dossier::HoldingDossier;
 use crate::portfolio::engine::{self, EngineOutput, EngineVerdict, RateAnchors};
 use crate::portfolio::fund::{self, FundEngineVerdict, RoleRiskReadout};
@@ -744,55 +744,127 @@ impl LocalAnalyst {
     }
 }
 
+// Per-stage context sizes (`docs/local-model-operations.md §The num_ctx trap`):
+// always explicit — the daemon's memory-dependent auto-size (~256 K on 128 GB)
+// over-allocates KV cache, while an unset small default silently front-truncates
+// the deterministic packet. Sized to hold packet + thinking budget + output.
+/// Distillation: a compact findings condense — small packet, no thinking chain.
+const NUM_CTX_DISTILL: u32 = 32_768;
+/// Interpretation: the vendor advises ≥ 128 K context to preserve thinking
+/// capability (chains run tens of thousands of tokens); hybrid attention keeps
+/// the KV cost of this a few GB (`docs/local-model-operations.md §Context window`).
+const NUM_CTX_INTERPRET: u32 = 131_072;
+/// Ollama `keep_alive: -1` — never idle-unload. The roster's documented posture:
+/// the reasoner (and embedder) stay resident between calls and runs
+/// (`docs/local-models.md §The model roster and per-task routing`).
+const KEEP_ALIVE_RESIDENT: i64 = -1;
+
+/// The distill stage's context size, resolved per *model*, not per call: Ollama
+/// reloads a resident runner whenever a request's load-time options — `num_ctx`
+/// included — differ from the loaded ones, even under `keep_alive: -1`. So when
+/// the fast tier fell back to the reasoner (the documented default roster),
+/// distillation shares the interpretation context rather than bouncing the 81 GB
+/// runner between 32 K and 128 K at every stage transition; the smaller distill
+/// context applies only to a genuinely distinct fast model
+/// (`docs/local-model-operations.md §The num_ctx trap`).
+fn distill_num_ctx(fast_model: &str, reasoner_model: &str) -> u32 {
+    if fast_model == reasoner_model {
+        NUM_CTX_INTERPRET
+    } else {
+        NUM_CTX_DISTILL
+    }
+}
+
+/// Build the distillation request: **explicitly non-thinking** (`Some(false)` —
+/// an omitted flag rides Qwen's thinking-on default and cost the first live run
+/// ~45 minutes, F3), non-thinking sampling, the caller-resolved context size
+/// ([`distill_num_ctx`]). Pure, so the per-stage wiring is asserted offline.
+fn distill_request(
+    fast_model: &str,
+    num_ctx: u32,
+    dossier: &HoldingDossier,
+    findings: &ResearchFindings,
+) -> ChatRequest {
+    // The fast model condenses the findings into a compact paragraph. With research
+    // stubbed this is light, but it keeps the stage in the live path.
+    let prompt = format!(
+        "Condense these research findings on {} into 2-3 sentences of decision-relevant \
+         signal. Findings:\n{}",
+        dossier.position.symbol,
+        findings.notes.join("\n")
+    );
+    let mut req = ChatRequest::new(fast_model, vec![ChatMessage::user(prompt)]);
+    req.think = Some(false);
+    req.options = Some(options::non_thinking_general(num_ctx));
+    req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
+    req
+}
+
+/// Build the priced-branch interpretation request: thinking on (composes with the
+/// grammar-constrained `format`), thinking sampling, interpret-sized context.
+fn interpret_request(reasoner_model: &str, input: &InterpretationInput) -> ChatRequest {
+    let mut req = ChatRequest::new(
+        reasoner_model,
+        vec![
+            ChatMessage::system(interpretation_system_prompt()),
+            ChatMessage::user(interpretation_user_prompt(input)),
+        ],
+    );
+    // The per-holding schema advertises only the engine-bounded feasible set, so
+    // a barred rung is structurally unreachable (`docs/portfolio-analysis.md`
+    // §Starting parameters — the feasible-set rule).
+    req.format_schema = Some(interpretation_schema(input.feasible));
+    req.think = Some(true);
+    req.options = Some(options::thinking_general(NUM_CTX_INTERPRET));
+    req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
+    req
+}
+
+/// Build the `role_risk_only`-branch interpretation request — same mode wiring as
+/// the priced branch, reduced schema.
+fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest {
+    let mut req = ChatRequest::new(
+        reasoner_model,
+        vec![
+            ChatMessage::system(role_risk_system_prompt()),
+            ChatMessage::user(role_risk_user_prompt(input)),
+        ],
+    );
+    req.format_schema = Some(role_risk_interpretation_schema());
+    req.think = Some(true);
+    req.options = Some(options::thinking_general(NUM_CTX_INTERPRET));
+    req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
+    req
+}
+
 impl HoldingAnalyst for LocalAnalyst {
     fn distill(&self, dossier: &HoldingDossier, findings: &ResearchFindings) -> Result<String> {
-        // The fast model condenses the findings into a compact paragraph. With research
-        // stubbed this is light, but it keeps the stage in the live path.
-        let prompt = format!(
-            "Condense these research findings on {} into 2-3 sentences of decision-relevant \
-             signal. Findings:\n{}",
-            dossier.position.symbol,
-            findings.notes.join("\n")
-        );
-        let req = ChatRequest::new(
+        let req = distill_request(
             &self.fast_model,
-            vec![ChatMessage::user(prompt)],
+            distill_num_ctx(&self.fast_model, &self.reasoner_model),
+            dossier,
+            findings,
         );
         let resp = self.client.chat(&req)?;
         Ok(resp.content)
     }
 
     fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
-        let mut req = ChatRequest::new(
-            &self.reasoner_model,
-            vec![
-                ChatMessage::system(interpretation_system_prompt()),
-                ChatMessage::user(interpretation_user_prompt(input)),
-            ],
-        );
-        // The per-holding schema advertises only the engine-bounded feasible set, so
-        // a barred rung is structurally unreachable (`docs/portfolio-analysis.md`
-        // §Starting parameters — the feasible-set rule).
-        req.format_schema = Some(interpretation_schema(input.feasible));
-        req.think = true;
-        // Stream silently: the structured stage has no console value, but accumulating
-        // through the stream path keeps the reasoning on the tracker's thinking channel.
-        let resp = self.client.chat_streaming(&req, StreamRole::Silent)?;
+        let req = interpret_request(&self.reasoner_model, input);
+        // Stream step-scoped: the structured body has no console value (it stays
+        // accumulated, never streamed), but the reasoning streams onto this
+        // holding's own "Analyze {SYM}" step, so the tracker shows live thinking
+        // instead of a minutes-long quiet stretch (the first live run's F8).
+        let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
+        let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
         serde_json::from_str(&resp.content)
             .with_context(|| format!("parsing interpretation JSON: {}", resp.content))
     }
 
     fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
-        let mut req = ChatRequest::new(
-            &self.reasoner_model,
-            vec![
-                ChatMessage::system(role_risk_system_prompt()),
-                ChatMessage::user(role_risk_user_prompt(input)),
-            ],
-        );
-        req.format_schema = Some(role_risk_interpretation_schema());
-        req.think = true;
-        let resp = self.client.chat_streaming(&req, StreamRole::Silent)?;
+        let req = role_risk_request(&self.reasoner_model, input);
+        let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
+        let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
         serde_json::from_str(&resp.content)
             .with_context(|| format!("parsing role/risk interpretation JSON: {}", resp.content))
     }
@@ -1235,6 +1307,97 @@ mod tests {
             .unwrap();
         assert!(!allowed_line.contains("add"), "{allowed_line}");
         assert!(interpretation_system_prompt().contains("Do NOT invent"));
+    }
+
+    #[test]
+    fn stage_requests_carry_the_per_stage_mode_options_and_residency() {
+        // The options-wiring contract (`docs/local-model-operations.md`): distill is
+        // explicitly non-thinking (F3 — an omitted flag rides the thinking-on
+        // default), interpretation thinks; every stage pins an explicit `num_ctx`
+        // (never the daemon auto-size), its mode's sampling row, and stay-resident
+        // `keep_alive`.
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let findings = research(&d);
+
+        let distill = distill_request("fast-model", NUM_CTX_DISTILL, &d, &findings);
+        assert_eq!(distill.think, Some(false));
+        assert_eq!(distill.keep_alive, Some(-1));
+        let opts = distill.options.as_ref().unwrap();
+        assert_eq!(opts["num_ctx"], NUM_CTX_DISTILL);
+        assert_eq!(opts["temperature"], 0.7, "non-thinking-general row");
+        assert!(distill.format_schema.is_none(), "distill is free prose");
+
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let feasible = vec![Action::SellAll, Action::Trim, Action::Hold];
+        let interpret = interpret_request(
+            "reasoner-model",
+            &InterpretationInput {
+                dossier: &d,
+                engine: &engine_output,
+                distilled: "distilled findings",
+                feasible: &feasible,
+            },
+        );
+        assert_eq!(interpret.think, Some(true));
+        assert_eq!(interpret.keep_alive, Some(-1));
+        let opts = interpret.options.as_ref().unwrap();
+        assert_eq!(opts["num_ctx"], NUM_CTX_INTERPRET);
+        assert_eq!(opts["temperature"], 1.0, "thinking-general row");
+        assert!(interpret.format_schema.is_some(), "grammar-constrained");
+
+        let readout = RoleRiskReadout {
+            class_label: "commodity fund".into(),
+            exposure_tilt: vec![("gold".into(), 1.0)],
+            expense_ratio: Some(0.4),
+            observable_risk: None,
+            structural_flag: false,
+            evidence_gaps: vec![],
+        };
+        let role_risk = role_risk_request(
+            "reasoner-model",
+            &RoleRiskInput {
+                dossier: &d,
+                readout: &readout,
+            },
+        );
+        assert_eq!(role_risk.think, Some(true));
+        assert_eq!(role_risk.keep_alive, Some(-1));
+        let opts = role_risk.options.as_ref().unwrap();
+        assert_eq!(opts["num_ctx"], NUM_CTX_INTERPRET);
+        assert!(role_risk.format_schema.is_some(), "grammar-constrained");
+    }
+
+    #[test]
+    fn blank_fast_tier_never_bounces_the_reasoner_context() {
+        // The same-model context rule: an Ollama `num_ctx` change reloads the
+        // resident runner even under `keep_alive: -1`, so when distillation and
+        // interpretation share one model the distill call must ride the
+        // interpretation context — alternating 32 K / 128 K would bounce the 81 GB
+        // load at every stage transition (external review finding, 2026-08-01).
+        assert_eq!(
+            distill_num_ctx("qwen3.5:122b", "qwen3.5:122b"),
+            NUM_CTX_INTERPRET
+        );
+        // A genuinely distinct fast model keeps the smaller distill context.
+        assert_eq!(
+            distill_num_ctx("qwen3.5:35b", "qwen3.5:122b"),
+            NUM_CTX_DISTILL
+        );
+        // The documented default roster (blank fast tier) resolves to the same-model
+        // path at construction, so the rule engages for the default configuration.
+        let analyst = LocalAnalyst::new(
+            LocalModelClient::new("http://localhost:11434").unwrap(),
+            "qwen3.5:122b".into(),
+            "   ".into(),
+        );
+        assert_eq!(analyst.fast_model, analyst.reasoner_model);
+        assert_eq!(
+            distill_num_ctx(&analyst.fast_model, &analyst.reasoner_model),
+            NUM_CTX_INTERPRET
+        );
     }
 
     #[test]

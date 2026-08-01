@@ -49,7 +49,7 @@ The default roster:
 
 **One brain, two modes — not two brains.**
 The default resident set is **the 122B reasoner plus the embedding model**, and the 122B fills *every* reasoning role — research, distillation, and interpretation — switching by **mode** (thinking for multi-step research and interpretation, non-thinking for the cheap consolidation steps) rather than by model.
-*(Runtime caveat — Ollama bug #14645: a consolidation/distillation step that emits **schema-constrained** JSON keeps thinking **enabled** until the bug is verified fixed on our version; the non-thinking mode applies to unconstrained consolidation.
+*(Version discipline — Ollama bug #14645: the fix is verified on the pinned v0.32.5 and non-thinking distillation is wired (2026-08-01), but any Ollama bump re-locks a `format`-carrying `think: false` call until the schema-integrity check passes on the new version.
 See [local-model-operations.md](local-model-operations.md).)*
 This is the deliberate default for two reasons.
 First, it sidesteps the co-residency question entirely: one 122B at the target quantization plus the embedder fits 128 GB with comfortable headroom, where two large models never co-fit.
@@ -91,7 +91,7 @@ Four rules enforce this:
   Continuity context from the job's *own* prior runs enters through **vector retrieval of the relevant slice** of that job's partition, not by replaying whole runs.
 - **Forward only what's needed.**
   A research stage's output is condensed (by the reasoner in non-thinking mode, or the fast 35B tier if resident) into a findings object before the interpretation stage sees it, so interpretation reasons over evidence, not over the research transcript.
-  (That findings object is schema-constrained JSON, so this distill call keeps thinking **enabled** until Ollama bug #14645 is verified fixed — see [local-model-operations.md](local-model-operations.md).)
+  (The distill call runs non-thinking — wired 2026-08-01 with an explicit `think: false` on the wire, unlocked by the #14645 verification on the pinned Ollama; the version-discipline rule in [local-model-operations.md](local-model-operations.md) re-locks a `format`-carrying non-thinking call on any unverified version bump.)
 - **Compute, don't guess.**
   Quantitative finance — metrics, sub-scores, risk tiers, valuation multiples, volatility, concentration, and scenario price targets — is computed by the Rust application layer (a deterministic financial-analysis engine), not produced by the model.
   The model *interprets* those computed values and explains them; it never invents a number.

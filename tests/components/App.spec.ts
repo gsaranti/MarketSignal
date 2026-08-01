@@ -422,6 +422,29 @@ describe("App.vue run tracker", () => {
     wrapper.unmount();
   });
 
+  test("step-thinking folds into the owning step's reasoning, keeping its label", async () => {
+    const { wrapper, emit } = await mountWithTracker();
+
+    // The portfolio per-holding interpretation streams step-scoped reasoning onto
+    // the holding's own step (App.vue's step-thinking branch) — not the report
+    // workflow's fixed "agent"/"analysts" steps.
+    emit({ run_id: "R1", seq: 2, kind: "step-started", step: "holding-AAPL", label: "Analyze AAPL" });
+    emit({ run_id: "R1", seq: 3, kind: "step-thinking", step: "holding-AAPL", delta: "Weighing the trim " });
+    emit({ run_id: "R1", seq: 4, kind: "step-thinking", step: "holding-AAPL", delta: "against the tilt" });
+    await flushPromises();
+
+    const steps = wrapper.findComponent(JobTrackerView).props("trace").steps;
+    const holding = steps.find((s) => s.key === "holding-AAPL");
+    expect(holding?.agentThinking).toBe("Weighing the trim against the tilt");
+    // The chunks fold into the existing step (label intact) rather than creating a
+    // duplicate or leaking onto the report workflow's fixed steps.
+    expect(holding?.label).toBe("Analyze AAPL");
+    expect(steps.filter((s) => s.key === "holding-AAPL")).toHaveLength(1);
+    expect(steps.some((s) => s.key === "agent" || s.key === "analysts")).toBe(false);
+
+    wrapper.unmount();
+  });
+
   test("run-finished sets the terminal state, stops the run, and reconciles a still-running step", async () => {
     const { wrapper, emit } = await mountWithTracker();
 

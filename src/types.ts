@@ -532,6 +532,7 @@ export type ProgressKind =
   | "agent-token"
   | "agent-thinking"
   | "analyst-thinking"
+  | "step-thinking"
   | "run-finished";
 
 export interface ProgressMessage {
@@ -541,6 +542,8 @@ export interface ProgressMessage {
   // run-started: a short human title for the run.
   label?: string;
   // step-started / step-finished: the stable step key + its human label.
+  // step-thinking: the key of the step the reasoning chunk belongs to (the
+  // portfolio per-holding steps), folded into that step's reasoning pane.
   step?: string;
   // step-finished ("ok" | "failed" | "cancelled"), request-finished ("ok" or a
   // gap reason), run-finished ("successful" | "failed" | "cancelled").
@@ -551,8 +554,9 @@ export interface ProgressMessage {
   group?: string;
   series_id?: string;
   name?: string;
-  // agent-token / agent-thinking / analyst-thinking: a coalesced chunk of the streamed
-  // report text, the main agent's reasoning, or one analyst's reasoning, respectively.
+  // agent-token / agent-thinking / analyst-thinking / step-thinking: a coalesced
+  // chunk of the streamed report text, the main agent's reasoning, one analyst's
+  // reasoning, or a step-scoped stage's reasoning, respectively.
   delta?: string;
   // analyst-thinking: which analyst the reasoning chunk belongs to (bull / bear /
   // balanced), so the tracker routes the three concurrent analysts to distinct panes.
@@ -578,7 +582,9 @@ export type StepStatus = "pending" | "running" | "ok" | "failed" | "cancelled";
 // One pipeline step in the tracker. `requests` carries the baseline step's
 // per-series rows; `agentText` accumulates the main-agent step's streamed report;
 // `agentThinking` accumulates its streamed reasoning (extended-thinking summary),
-// shown as a quieter stream above the report. Empty for non-thinking models.
+// shown as a quieter stream above the report — and, via step-thinking events, a
+// step-scoped stage's reasoning on its own step (the portfolio per-holding
+// interpretation). Empty for non-thinking models.
 // `analystThinking` maps each analyst posture (bull / bear / balanced) to its streamed
 // reasoning, accumulated under the "analysts" step — one pane per analyst that surfaces
 // thinking; empty for non-thinking analyst models.

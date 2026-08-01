@@ -23,6 +23,9 @@ When a run begins, the owning page (the report pane for a report run) is replace
   Models that do not surface their reasoning simply show none; nothing breaks and no error is raised.
 - **Each analyst's reasoning, streamed live.**
   While the three analysts (Bull / Bear / Balanced) run concurrently, each one's reasoning streams into its own labeled pane under the analyst step — the same quieter, subordinate stream as the main agent's. Only the reasoning streams here, not the analyst's review itself; an analyst whose model does not surface reasoning simply shows none.
+- **Step-scoped reasoning, streamed live (local jobs).**
+  A local job's per-item interpretation stages stream their reasoning onto the step the stage belongs to — a Portfolio run's "Analyze {symbol}" step shows the model's live thinking for that holding while it runs, in the same subordinate reasoning pane the report steps use.
+  The structured verdict itself never streams; only the reasoning does, so the schema-validated result remains the single source of truth.
 
 The tracker is a live view of one run.
 Its contents are kept for the current application session and reflect the **latest run only**; they are not persisted across restarts.

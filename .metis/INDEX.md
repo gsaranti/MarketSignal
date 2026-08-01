@@ -45,6 +45,7 @@ doc section rather than working from the clause here.*
 - Live run tracker (replaces the report pane while a job runs; latest-run-only) — run-tracking.md §What the Tracker Shows; interface.md
 - Per-request pass/fail rows (one row per actual API call) — run-tracking.md §What the Tracker Shows
 - Streamed main-agent output (report text token-by-token) — run-tracking.md §What the Tracker Shows
+- Step-scoped reasoning stream (a local job's per-holding interpretation thinking on its own "Analyze {symbol}" step; the structured verdict never streams) — run-tracking.md §What the Tracker Shows
 - Job cancellation (cooperative; Cancelled state, raises no warning) — run-tracking.md §Cancellation; scheduling.md §Job States
 - Run-is-not-a-report invariant — run-tracking.md §A Run Is Not a Report
 - Reaching the tracker (footer: View progress / View run log) — run-tracking.md §Reaching the Tracker
@@ -141,6 +142,7 @@ describe both without distinction; build status lives in BUILD.md.*
 - Local analysis suite overview (local-only, two prescriptive features) — overview.md §Local Analysis Suite; local-models.md
 - Local model substrate (Ollama serving — native `/api/chat` + `/api/embed` + `/api/tags` transport, the `/v1/` OpenAI-compatible layer deliberately unused — roster, per-task routing) — local-models.md §Serving runtime, §The model roster and per-task routing
 - Local model operational reference (Qwen3.5-122B context / thinking / sampling / `num_ctx` / `format` gotchas; serving pre-flight completed 2026-07-28) — local-model-operations.md; local-models.md §The model roster and per-task routing
+- Local-model per-stage options wiring (explicit tri-state `think`; per-mode sampling profiles; per-stage `num_ctx` w/ the one-`num_ctx`-per-model reload rule; `keep_alive` stay-resident incl. the embedder; wired 2026-08-01) — local-model-operations.md §Sampling settings, §The `num_ctx` trap, §M5 pre-flight checklist
 - M5 pre-flight verification record (2026-07-28 — serving/backend, #14645 behavioral verify, long-context probe 35/35 → 160.6K, memory/throughput; re-verification template + harness scripts for Ollama bumps) — verification/2026-07-28-m5-preflight.md; local-model-operations.md §M5 pre-flight checklist
 - First live Portfolio run record (2026-07-31 — spine live-verified end-to-end; 10 findings incl. flat-target syndrome + grade-band compression + think-wire; follow-up slices #1–9 incl. the user-settled section-scoped footer / report-nav design; run `3b21ae85` = the first calibration dataset) — verification/2026-07-31-first-live-portfolio-run.md
 - Model residency default (one 122B fills all reasoning roles + embedder resident; 35B fast tier benchmark-gated) — local-models.md §The model roster and per-task routing

@@ -84,10 +84,11 @@ The mechanic is asymmetric: Ollama applies the `format` GBNF grammar mask **only
 - **The fix is confirmed on the pinned v0.32.5, so non-thinking distillation is unlocked *on this version*.**
   The rule survives as a version discipline rather than a standing prohibition: every call that carries `format` may now run `think: false`, **but any Ollama version bump re-locks it until the schema-integrity check passes on the new version** — a run of clean responses on an unverified version is model compliance, not enforcement.
   **Never ship a `think: false` + `format` call on an unverified version.**
-  Two patterns fit:
+  On the verified pinned version, a `format`-carrying call runs `think: false` directly — the wired default mapping (see [§Sampling settings](#sampling-settings-vendor)).
+  Two **fallback patterns** cover a re-locked (unverified-bump) version:
   1. **Two-step (heavy stages).**
-     A thinking call reasons freely (no `format`), then a **second `format`-carrying call — thinking still on** — distills into the schema object.
-     This is the suite's research/interpretation → schema-distillation split; the only thing the bug changes is that the distill call stays thinking-on rather than running non-thinking.
+     A thinking call reasons freely (no `format`), then a **second `format`-carrying call — thinking kept on** — distills into the schema object.
+     This is the suite's research/interpretation → schema-distillation split with the distill call temporarily riding thinking-on until the new version re-verifies.
   2. **Reasoning-field-first (light stages).**
      For a stage wanting a little reasoning *and* structure in one call, put a `reasoning` string field **first** in the schema (`{"reasoning": "...", ...}`) so the model reasons into that field before the structured fields — naturally a thinking-on call.
 
@@ -107,7 +108,8 @@ Greedy decoding is **explicitly warned against** — temperature 0 / disabled sa
 | Non-thinking — reasoning | 1.0 | 1.0 | 40 | 0.0 | 2.0 |
 
 - `presence_penalty` may be tuned 0–2 to curb repetition; **too high causes language-mixing and quality loss.**
-- Default mapping for our stages: **research / interpretation → thinking-general**; **schema distillation → a `format`-carrying call with thinking *enabled*** (the #14645 constraint above — *not* non-thinking — until the bug is verified fixed on our version; use the lower-temperature **thinking — precise/coding** row for a firm, deterministic distillation).
+- Default mapping for our stages: **research / interpretation → thinking-general**; **consolidation / distillation → non-thinking-general** (wired 2026-08-01 — the #14645 fix is verified on the pinned v0.32.5, so distillation sends an explicit `think: false`; the version-discipline rule above still re-locks a `format`-carrying `think: false` call on any unverified Ollama bump).
+  The two rows ship as adapter option profiles (`local_model::options`), so stages never hand-roll sampling literals.
 
 ## Serving & memory (Apple Silicon, 128 GB)
 
@@ -142,6 +144,9 @@ Both extremes hurt — too small silently drops prompt content, too large starve
 
 - **Always set `num_ctx` explicitly** in the adapter `options`, sized to *just* hold the full packet + thinking budget + output — not the 256 K auto-default.
   This is both a correctness rule (no silent truncation of the deterministic packet) and a memory rule (KV cache scales linearly with it).
+- **One `num_ctx` per model, not per stage.**
+  The scheduler reloads a resident runner whenever a request's load-time options — `num_ctx` included — differ from the loaded ones, `keep_alive` notwithstanding, so alternating context sizes on one model bounces the full 81 GB load at every switch.
+  Per-stage contexts therefore apply per *model*: when the optional fast tier falls back to the reasoner (the documented default roster), distillation shares the interpretation context (wired 2026-08-01; surfaced by external review against the pinned v0.32.5 scheduler).
 - Symptom of setting it too *low*: **gibberish output** (the card's own tell).
 - Confirm the effective value at runtime via the `CONTEXT` column of `ollama ps`.
 
@@ -175,14 +180,14 @@ It implements the existing `Embedder` trait, so nothing else changes.
 - [x] **Serving** *(2026-07-28)*: the 122B loads & serves on v0.32.5 — backend = **llama.cpp Metal** (M5 Max, 100 % GPU), official-library pull clean, `mmproj` issue does not bite (see [§Serving path](#serving-path-resolved-live-on-m5-2026-07-28-v0325)).
 - [x] **Schema integrity** *(2026-07-28)*: 24/24 `think:false` + `format` schema-valid, malformed schema rejected HTTP 400, `think:true` + `tools` + `format` 8/8 clean — the #14645 fix behaves on v0.32.5; non-thinking distillation unlocked on this version.
 - [x] **Thinking** *(2026-07-28)*: reasoning trace populated with thinking-on and no `format` (≈16 K chars); two-step reason→distill produced a schema-valid object.
-- [ ] **`num_ctx`:** behavior verified *(2026-07-28: explicit `num_ctx` honored per `ollama ps` `CONTEXT`; front-truncation of over-long prompts confirmed live)* — **but the adapter never sets it**: `ChatRequest::new` defaults `options: None` and no pipeline call site populates it, so live calls ride the version-dependent auto-size (~256 K on 128 GB).
-  Wiring `num_ctx` per stage is an outstanding code slice — the same slice should also wire **residency** (`keep_alive`): the daemon's default 5-minute idle unload contradicts the roster's stay-resident default, and today nothing sets `OLLAMA_KEEP_ALIVE` on the daemon or `keep_alive` on requests (the cost is only a ~15 s reload after idle, but the documented residency posture is unimplemented).
+- [x] **`num_ctx`:** behavior verified *(2026-07-28: explicit `num_ctx` honored per `ollama ps` `CONTEXT`; front-truncation of over-long prompts confirmed live)*; **wired 2026-08-01** — every Portfolio model stage sets an explicit per-stage `num_ctx` through the adapter option profiles (interpretation 128 K, honoring the ≥ 128 K thinking-capability advice; distillation 32 K on a genuinely distinct fast tier, sharing the 128 K interpretation context on the same-model fallback path — see the one-`num_ctx`-per-model rule in [§The `num_ctx` trap](#the-num_ctx-trap-critical)), never the version-dependent auto-size.
+  **Residency wired in the same slice:** every chat call and the local embed call send `keep_alive: -1` (stay-resident, per the roster default); the daemon-side `OLLAMA_KEEP_ALIVE` stays untouched and user-owned.
+  Confirm live at the next run via the `CONTEXT` column of `ollama ps`.
 - [x] **Long-context probe** *(2026-07-28)*: in-house RULER-style check run at the deployed quant — 35/35 (needles at 3 depths + multi-hop + aggregation) across seven sizes 6 K → **160.6 K actual prompt tokens** with zero degradation; the ~130–170 K conservative budget now has measured support to its midpoint (see [§Context window](#context-window) and [verification/2026-07-28-m5-preflight.md](verification/2026-07-28-m5-preflight.md)).
 - [x] **Memory** *(2026-07-28)*: `OLLAMA_FLASH_ATTENTION=1` set on the daemon; at the **full native 262 K** `num_ctx` the 122B reports 87 GB (81 GB weights + ~6 GB KV — hybrid attention keeps KV tiny) with the system still 31 % free alongside the embedder — the fit holds with ~40 GB headroom at the theoretical worst case.
-- [ ] **Sampling:** per-mode settings wired; **no greedy decoding** anywhere.
-  *(Finding 2026-07-28: NOT wired — no call site sets `options`, so calls ride the Modelfile defaults (temp 1.0 / top_p 0.95 / top_k 20 — non-greedy, and coincidentally near the thinking-general row, but no `presence_penalty`, no per-mode switching, distill stages never get the precise row). Same outstanding slice as the `num_ctx` wiring.)*
-- [ ] **`think` reaches the wire:** an explicit `think: false` must be *sent*, not omitted.
-  *(Finding 2026-07-31, first live Portfolio run: `ChatWire` skips serializing `think` when false (`skip_serializing_if`), so the intended non-thinking distill stage rides Qwen's thinking-on default — 27–121 s and up to ~4.3 K generated tokens per call to condense one stub sentence, ~45 min of that run. The #14645 verification unlocked `think:false`+`format` precisely for this; the adapter just never says it. Same outstanding options-wiring slice. Evidence: [verification/2026-07-31-first-live-portfolio-run.md](verification/2026-07-31-first-live-portfolio-run.md) §F3.)*
+- [x] **Sampling:** per-mode settings wired *(2026-08-01: the vendor table's thinking-general and non-thinking-general rows ship as adapter option profiles selected per stage — interpretation thinking-general, distillation non-thinking-general; unit tests pin the exact rows and forbid greedy decoding)*.
+- [x] **`think` reaches the wire** *(wired 2026-08-01: the adapter's `think` is tri-state — `Some(false)` always serializes a literal `"think": false`, `None` omits the field — and the distill stage sends `Some(false)`; a wire test guards the regression)*.
+  *(The finding it closes — 2026-07-31, first live Portfolio run: `ChatWire` skipped serializing `think` when false, so the intended non-thinking distill stage rode Qwen's thinking-on default, ~45 min of that run. Evidence: [verification/2026-07-31-first-live-portfolio-run.md](verification/2026-07-31-first-live-portfolio-run.md) §F3.)*
 - **Eval-stats caveat for any instrumentation** *(2026-07-31)*: on v0.32.5 the `/api/chat` terminal-chunk `eval_count` / `eval_duration` cover only the post-thinking content phase — the thinking phase rides inside `total_duration` unaccounted.
   Compute effective tok/s from accumulated output chars ÷ elapsed, never from the reported eval fields (a thinking-heavy call otherwise reads as ~90 s of "missing" time).
 - [x] **Throughput** *(2026-07-28, llama.cpp Metal path)*: measured across the probe — prompt eval 933 tok/s at 6 K falling to ~154 tok/s at 113 K; decode 41 tok/s at 6 K falling to ~16 tok/s at 113 K.

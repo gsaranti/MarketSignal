@@ -2,29 +2,28 @@
 
 ## What happened
 
-**The first live Portfolio Analysis run completed successfully** — the M5-gated spine shakedown is closed.
-Run in the dev app (fresh `dev/` store + production corpus imported — the plain portability round-trip incidentally live-verified) over the real 47-holding Schwab book: 2 h 31 m, zero mechanical failures — all four disposition branches, 45/45 schema-valid grammar-constrained calls, honest evidence-floor abstentions ×2, complete audits, UI rendered to contract.
-Full evidence: `docs/verification/2026-07-31-first-live-portfolio-run.md` (10 findings, 9 follow-ups); the persisted dev run `3b21ae85` is the first calibration dataset.
-Headline findings: **flat-target syndrome** (Stooq throttled run-wide → zero anchor observations → multiple carry; consensus driver ≈ trailing EPS → base ≈ spot → 35/44 hurdle-fails → sell-all cascade; the hurdle three-state logic itself verified correct), **grade-band compression** (zero A/B across 44 priced — ordering sound, levels not), **`think:false` never serialized** (distill rides thinking-on, ~45 min wasted).
-Model judgment read well (position-size-aware trims, honest gap prose) but is under-supplied until research + real targets land.
-All committed + pushed (`d696f46`: report, ops-doc checklist additions, BUILD queue, INDEX row). Daemon + dev app spun down.
+**The queue-head decision landed: calibration before Trade Opportunities**, and the first calibration-tier slice — **adapter options-wiring — was implemented, reviewed, and hardened; it sits UNCOMMITTED in the working tree, verification fully green.**
+Scope as built (user widened it to include F8's live thinking channel): explicit tri-state `think` (`Some(false)` now reaches the wire — F3 closed), per-mode sampling profiles (`local_model::options`, vendor rows test-pinned), per-stage `num_ctx` (interpret 128 K / distill 32 K), `keep_alive:-1` on all chat + embed calls, and a new **step-scoped thinking channel** (`step-thinking` event → `StreamRole::Step` → each "Analyze {SYM}" step shows live reasoning; App.vue folds it into the existing per-step pane, zero new UI surface).
+Internal review: **approve**. A Codex round then surfaced two valid findings, both verified and fixed: **P1 — same-model `num_ctx` bounce** (blank fast tier → distill 32 K / interpret 128 K on the same 122B would reload the 81 GB runner every transition despite `keep_alive`; fixed via `distill_num_ctx` — one context per model, regression-tested) and **P2 — ops-doc contradiction** ("Two patterns fit" block still said distill stays thinking-on; rescoped as unverified-bump fallback).
+Docs caught up: ops-doc checklist boxes ticked + one-`num_ctx`-per-model rule added, `local-models.md` #14645 caveats refreshed (version-discipline rule retained), `run-tracking.md` gained the step-scoped channel.
+Verification: `cargo test` 669/0, clippy 0 warnings, `npm run build` clean, `npm test` 40 + 176.
 
 ## Current state
 
-Clean tree on `main` at `d696f46`; nothing mid-flow.
-The live run converted the queue into **three named calibration-tier slices** (BUILD §What remains): adapter **options-wiring** (now incl. explicit per-stage `think`), **target-function calibration** (consensus-period selection, dispersion, Stooq resilience, run-level data-health roll-up), **grade-band shadow-tune** (opens by certifying sub-score formulas + closing FMP statement gaps, against run `3b21ae85`).
-Plus two fully-specified small fixes from result review: the **Portfolio-page polish micro-slice** (wrap-safe stat-strip hairlines, position block: price/cost-basis/avg-cost, adaptive weight precision, Hold "maintain" phrasing) and the **section-scoped footer + report-nav slice** (user-settled design: "Latest Market Report" nav entry, Generate-now only on the report view, LAST RUN filtered by `job_type`; amend `interface.md` when it lands).
-Interpretation-prompt adjustments (target provenance, tilt weighting, conviction definition, house-view scoping) deliberately sequenced **after** the calibration slices.
+Working tree holds the finished, twice-reviewed slice — **needs commit** (tests/docs included; scope report was clean: nothing skipped/deferred/stubbed).
+Remaining calibration queue (order settled): **target-function calibration** next (consensus-period selection, dispersion, Stooq resilience, run-level data-health roll-up — flat-target syndrome F1/F2), then FMP statement-gap closure → **grade-band shadow-tune** (opens by certifying sub-score formulas, vs run `3b21ae85`), interpretation-prompt adjustments last.
+Two specified UI micro-slices (Portfolio-page polish; section-scoped footer + report-nav) slot anywhere as breathers.
+TO planning deliberately deferred behind calibration.
 
 ## Open questions
 
-- **Queue sequencing (the first decision next session):** Trade Opportunities planning remains the standing head, but the calibration slices now have a real dataset and arguably higher leverage — user's call.
-- **Encrypted portability round-trip** — still open (this session's import was passphrase-less; plain round-trip verified).
-- **Step-17 embedding-failure recurrence (watch)** — not exercised (nothing embeds in the Portfolio slice).
-- **Long/cold-start 600 s stress** — softened, not closed: cold load measured 13.3 s, longest live call 238 s.
-- **Carried unchanged:** local-suite scorecard display; dev-app sanity residue (dev store now holds the calibration run — deliberately kept); Keychain fail-soft candidate; stage-and-swap import hardening; chain both-maps invariant; four-part verdict + bidirectional-conviction bound; §1 open drafts; fraud-producer posture; fund-slice drafted constants.
+- **Live confirmations pending (next calibration run, free):** one stable 128 K runner across the loop (`ollama ps` CONTEXT, no reload stalls — confirms the P1 fix against the pinned v0.32.5 scheduler, which was fixed on reasoning, not a source read), distill dropping 27–121 s → seconds, live reasoning panes on real streams, models staying resident.
+- **Reasoning-pane DOM weight:** ~45 panes × ~16 KB accumulate for the run's duration; accepted, collapse-on-step-finish is the named lever if it bites.
+- **Encrypted portability round-trip** — still open (plain verified 2026-07-31).
+- **Step-17 embedding-failure recurrence (watch)**; **long/cold-start 600 s stress** softened, not closed.
+- **Carried unchanged:** local-suite scorecard display; dev-store calibration-run residue (deliberate); Keychain fail-soft candidate; stage-and-swap import hardening; chain both-maps invariant; four-part verdict + bidirectional-conviction bound; §1 open drafts; fraud-producer posture; fund-slice drafted constants.
 
 ## Where to start
 
-**Decide the queue head:** `/metis-plan-task` for either Trade Opportunities (standing head) or the calibration-tier slices the live run surfaced (options-wiring is the smallest and unblocks non-thinking distill; target-function calibration is the highest-leverage for verdict quality).
-Read `docs/verification/2026-07-31-first-live-portfolio-run.md` §Follow-up candidates before choosing — it is the authoritative list with per-finding evidence.
+**Commit the options-wiring slice** (user-run; full verification already green).
+Then `/metis-plan-task` for the **target-function calibration slice** — read `docs/verification/2026-07-31-first-live-portfolio-run.md` §F1/§F2 first; its first live re-run doubles as this slice's runtime confirmation.

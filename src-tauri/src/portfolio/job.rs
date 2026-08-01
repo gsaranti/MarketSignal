@@ -459,7 +459,7 @@ fn run_analysis(
         if ctx.is_cancelled() {
             anyhow::bail!("run cancelled");
         }
-        let step_key = format!("holding-{}", position.symbol);
+        let step_key = crate::portfolio::holding_step_key(&position.symbol);
         ctx.step_started(step_key.clone(), format!("Analyze {}", position.symbol));
 
         // Gather the holding's evidence (fail-soft external data). The per-company FMP

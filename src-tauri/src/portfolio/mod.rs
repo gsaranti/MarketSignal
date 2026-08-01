@@ -27,6 +27,15 @@ pub mod store;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+/// The tracker step key for one holding's per-holding pass — the single home for
+/// the `holding-{SYMBOL}` format, shared by the job's step rows ([`job`]) and the
+/// interpretation stages' step-scoped reasoning stream ([`pipeline`]), so the
+/// streamed thinking always lands on the step the run tracker is showing for that
+/// holding.
+pub fn holding_step_key(symbol: &str) -> String {
+    format!("holding-{symbol}")
+}
+
 // ---- Durable plan-time parameters (pinned this slice) ------------------------
 //
 // These three are pinned because they shape retention, the house-view loader, and

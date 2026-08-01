@@ -298,6 +298,15 @@ function handleProgress(msg: ProgressMessage) {
       step.analystThinking[posture] = (step.analystThinking[posture] ?? "") + (msg.delta ?? "");
       break;
     }
+    case "step-thinking": {
+      // Step-scoped reasoning (the portfolio per-holding interpretation): fold the
+      // chunk into the owning step's reasoning pane. step-started always precedes
+      // the stage's stream, so the lookup normally hits; the key doubles as the
+      // fallback label on the ensureStep safety net.
+      const key = msg.step ?? "";
+      ensureStep(trace, key, key).agentThinking += msg.delta ?? "";
+      break;
+    }
     case "run-finished": {
       trace.terminal = { status: msg.status ?? "", detail: msg.detail ?? null };
       runActive.value = false;

@@ -176,9 +176,12 @@ impl Embedder for OpenAiEmbedder {
 /// adapter seam`).
 const OLLAMA_EMBED_PATH: &str = "/api/embed";
 
-/// Build the Ollama `/api/embed` request body: the roster's embedder model + one input.
+/// Build the Ollama `/api/embed` request body: the roster's embedder model + one
+/// input. `keep_alive: -1` holds the embedder resident between calls — the roster's
+/// documented stay-resident set is the reasoner *plus* the embedder
+/// (`docs/local-models.md §The model roster and per-task routing`).
 fn build_local_request(model: &str, text: &str) -> Value {
-    json!({ "model": model, "input": text })
+    json!({ "model": model, "input": text, "keep_alive": -1 })
 }
 
 /// Pull the vector out of Ollama's `/api/embed` response envelope (`embeddings[0]`,
@@ -334,6 +337,8 @@ mod tests {
         let body = build_local_request("qwen3-embedding:4b", "the summary text");
         assert_eq!(body["model"], "qwen3-embedding:4b");
         assert_eq!(body["input"], "the summary text");
+        // The stay-resident posture: the embedder never idle-unloads.
+        assert_eq!(body["keep_alive"], -1);
     }
 
     #[test]

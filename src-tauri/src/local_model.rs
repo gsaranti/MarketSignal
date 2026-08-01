@@ -108,11 +108,20 @@ pub struct ChatRequest {
     /// Tool definitions (Ollama native `tools`). The orchestrator executes tools and
     /// feeds results back; the model only requests them.
     pub tools: Option<Value>,
-    /// Whether to enable the model's thinking mode (Ollama native `think`). Sent only
-    /// when `true`, so a non-thinking model is never asked to think.
-    pub think: bool,
+    /// The model's thinking mode (Ollama native `think`). `None` omits the field —
+    /// the model's own default, and the safe shape for a model that can't take the
+    /// parameter at all. `Some(b)` is **always serialized**, so a non-thinking stage
+    /// explicitly says `think: false` rather than silently riding a thinking-on
+    /// default (the first live run's F3: the omitted flag cost ~45 minutes,
+    /// `docs/verification/2026-07-31-first-live-portfolio-run.md`).
+    pub think: Option<bool>,
     /// Generation options (temperature, `num_ctx`, …) passed as Ollama `options`.
     pub options: Option<Value>,
+    /// Residency (Ollama native `keep_alive`), in seconds; `-1` keeps the model
+    /// loaded indefinitely — the roster's stay-resident default
+    /// (`docs/local-models.md §The model roster and per-task routing`). `None`
+    /// omits the field (the daemon's own idle-unload default).
+    pub keep_alive: Option<i64>,
 }
 
 impl ChatRequest {
@@ -123,9 +132,45 @@ impl ChatRequest {
             messages,
             format_schema: None,
             tools: None,
-            think: false,
+            think: None,
             options: None,
+            keep_alive: None,
         }
+    }
+}
+
+/// Generation-option profiles for the roster reasoner, straight from the vendor
+/// sampling table (`docs/local-model-operations.md §Sampling settings`). Greedy
+/// decoding (temperature 0) is explicitly warned against for this model family, so
+/// stages build `options` through these rather than ad-hoc literals. `num_ctx` is
+/// always explicit — never the daemon's memory-dependent auto-size — per the
+/// ops doc's `num_ctx` trap: too small silently front-truncates the deterministic
+/// packet, too large starves memory.
+pub mod options {
+    use serde_json::{json, Value};
+
+    /// The "Thinking — general" row: research / interpretation stages.
+    pub fn thinking_general(num_ctx: u32) -> Value {
+        json!({
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 1.5,
+            "num_ctx": num_ctx,
+        })
+    }
+
+    /// The "Non-thinking — general" row: consolidation / distillation stages.
+    pub fn non_thinking_general(num_ctx: u32) -> Value {
+        json!({
+            "temperature": 0.7,
+            "top_p": 0.8,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 1.5,
+            "num_ctx": num_ctx,
+        })
     }
 }
 
@@ -138,27 +183,26 @@ pub struct ChatResponse {
     pub thinking: Option<String>,
 }
 
-/// Skip a `false` bool when serializing (so `think: false` is omitted entirely).
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
 /// The `/api/chat` request body, serialized from the typed request. `stream` is set
 /// by the caller (`false` for [`LocalModelClient::chat`], `true` for the streaming
 /// path). Pure, so the wire contract is unit-testable without a live daemon.
+/// `think: Some(false)` serializes as an explicit `"think": false` — never skipped —
+/// so a non-thinking stage actually reaches the wire as one.
 #[derive(Debug, Serialize)]
 struct ChatWire<'a> {
     model: &'a str,
     messages: &'a [ChatMessage],
     stream: bool,
-    #[serde(skip_serializing_if = "is_false")]
-    think: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<i64>,
 }
 
 /// Build the `/api/chat` request body for the given streaming mode.
@@ -171,6 +215,7 @@ fn build_chat_body(req: &ChatRequest, stream: bool) -> Value {
         format: req.format_schema.as_ref(),
         tools: req.tools.as_ref(),
         options: req.options.as_ref(),
+        keep_alive: req.keep_alive,
     };
     // These are plain owned/borrowed values; serialization cannot fail.
     serde_json::to_value(&wire).expect("local chat request is serializable")
@@ -453,6 +498,10 @@ pub enum StreamRole<'a> {
     Main,
     /// Stream reasoning only, posture-tagged (`analyst_thinking`).
     Analyst(&'a str),
+    /// Stream reasoning only, scoped to one tracker step by its key
+    /// (`step_thinking`) — the portfolio per-holding interpretation stages, whose
+    /// reasoning renders on the holding's own "Analyze {SYM}" step.
+    Step(&'a str),
     /// Stream nothing — accumulate silently (structured stages with no console value).
     Silent,
 }
@@ -462,6 +511,7 @@ fn emit_thinking(progress: &RunContext, role: StreamRole<'_>, delta: String) {
     match role {
         StreamRole::Main => progress.agent_thinking(delta),
         StreamRole::Analyst(posture) => progress.analyst_thinking(posture, delta),
+        StreamRole::Step(step) => progress.step_thinking(step, delta),
         StreamRole::Silent => {}
     }
 }
@@ -742,7 +792,7 @@ mod tests {
     fn build_chat_body_carries_model_messages_format_and_stream() {
         let mut req = ChatRequest::new("qwen3.5:122b", vec![ChatMessage::user("hi")]);
         req.format_schema = Some(serde_json::json!({ "type": "object" }));
-        req.think = true;
+        req.think = Some(true);
         let body = build_chat_body(&req, true);
         assert_eq!(body["model"], "qwen3.5:122b");
         assert_eq!(body["stream"], true);
@@ -753,16 +803,55 @@ mod tests {
     }
 
     #[test]
-    fn build_chat_body_omits_optional_and_false_fields() {
+    fn build_chat_body_omits_unset_optional_fields() {
         let req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
         let body = build_chat_body(&req, false);
         assert_eq!(body["stream"], false);
-        // think:false, format, tools, options are all omitted entirely.
+        // Unset think, format, tools, options, keep_alive are all omitted entirely.
         let obj = body.as_object().unwrap();
         assert!(!obj.contains_key("think"), "{obj:?}");
         assert!(!obj.contains_key("format"), "{obj:?}");
         assert!(!obj.contains_key("tools"), "{obj:?}");
         assert!(!obj.contains_key("options"), "{obj:?}");
+        assert!(!obj.contains_key("keep_alive"), "{obj:?}");
+    }
+
+    #[test]
+    fn build_chat_body_serializes_an_explicit_think_false_and_keep_alive() {
+        // The F3 regression guard: `Some(false)` must reach the wire as a literal
+        // `"think": false` (never skipped), or a non-thinking stage silently rides
+        // the model's thinking-on default. `keep_alive: -1` rides beside it as the
+        // stay-resident posture.
+        let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
+        req.think = Some(false);
+        req.keep_alive = Some(-1);
+        let body = build_chat_body(&req, false);
+        assert_eq!(body["think"], false);
+        assert_eq!(body["keep_alive"], -1);
+    }
+
+    #[test]
+    fn option_profiles_match_the_vendor_sampling_rows() {
+        // The two rows from `docs/local-model-operations.md §Sampling settings`,
+        // exact — and never greedy (temperature 0 is explicitly warned against).
+        let think = options::thinking_general(131_072);
+        assert_eq!(think["temperature"], 1.0);
+        assert_eq!(think["top_p"], 0.95);
+        assert_eq!(think["top_k"], 20);
+        assert_eq!(think["min_p"], 0.0);
+        assert_eq!(think["presence_penalty"], 1.5);
+        assert_eq!(think["num_ctx"], 131_072);
+
+        let fast = options::non_thinking_general(32_768);
+        assert_eq!(fast["temperature"], 0.7);
+        assert_eq!(fast["top_p"], 0.8);
+        assert_eq!(fast["top_k"], 20);
+        assert_eq!(fast["min_p"], 0.0);
+        assert_eq!(fast["presence_penalty"], 1.5);
+        assert_eq!(fast["num_ctx"], 32_768);
+        for profile in [&think, &fast] {
+            assert_ne!(profile["temperature"], 0.0, "greedy decoding is forbidden");
+        }
     }
 
     #[test]
@@ -1054,6 +1143,32 @@ mod tests {
         assert!(msgs.iter().any(|m| matches!(
             &m.event,
             ProgressEvent::AnalystThinking { posture, .. } if posture == "bear"
+        )));
+    }
+
+    #[test]
+    fn stream_decoder_step_role_streams_step_scoped_thinking() {
+        let (rec, ctx) = recording_ctx();
+        let ndjson = concat!(
+            r#"{"message":{"content":"{\"grade\":\"B\"}"}}"#,
+            "\n",
+            r#"{"message":{"thinking":"the trim balances concentration risk"}}"#,
+            "\n",
+            r#"{"done":true}"#,
+            "\n",
+        );
+        let resp =
+            stream_chat_response(ndjson.as_bytes(), &ctx, StreamRole::Step("holding-AAPL")).unwrap();
+        assert_eq!(resp.content, r#"{"grade":"B"}"#); // still accumulated
+        let msgs = rec.messages();
+        // No content tokens stream for a structured stage...
+        assert!(!msgs
+            .iter()
+            .any(|m| matches!(&m.event, ProgressEvent::AgentToken { .. })));
+        // ...but its reasoning streams onto the owning step's channel.
+        assert!(msgs.iter().any(|m| matches!(
+            &m.event,
+            ProgressEvent::StepThinking { step, .. } if step == "holding-AAPL"
         )));
     }
 

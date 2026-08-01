@@ -242,8 +242,10 @@ spine stays unit-testable: a `ProgressReporter` trait plus a per-run
 **no trait signature changes** for the seam. While a job runs the app streams to
 an open window: per-step progress, one **request row per actual HTTP call**, the
 main agent's report **token-by-token**, and the agent models' **extended-thinking
-reasoning** — the main agent on its own channel and each analyst per-posture
-(thoughts-only for analysts; the review body never streams). The streamed
+reasoning** — the main agent on its own channel, each analyst per-posture, and
+a local job's per-holding interpretation **step-scoped** onto that holding's
+own step (thoughts-only in each case; a review body or structured verdict
+never streams). The streamed
 report tokens are a side-channel that can't corrupt the report — the full
 envelope is accumulated and parsed exactly as the non-streaming path. The
 frontend renders this as the run tracker — one shared component placed on the
@@ -518,10 +520,11 @@ live research loop) remain designed, not built.** The load-bearing decisions:
 
 ## What remains
 
-In order: **Trade Opportunities** (design settled — full strategy audit plus
-three external review rounds to convergence, 2026-07-09; the paid FMP key's
-shapes live-verified 2026-07-16, so implementation planning codes against
-verified shapes). A named, unscheduled **local-suite guided-setup follow-up**
+In order — **the calibration tier first** (settled 2026-08-01, while the first
+live run's dataset is fresh), **then Trade Opportunities** (design settled —
+full strategy audit plus three external review rounds to convergence,
+2026-07-09; the paid FMP key's shapes live-verified 2026-07-16, so
+implementation planning codes against verified shapes). A named, unscheduled **local-suite guided-setup follow-up**
 carries the Settings-slice deferrals: in-app `ollama pull` with Run-Tracker
 progress + `ollama serve` start, an Install-Ollama deep-link (needs an opener
 capability), reflecting the run-gate connectivity check in the Settings
@@ -538,12 +541,17 @@ in this queue; the shipped schemas don't preclude them. The **model-serving pre-
 run completed 2026-07-31** (dev app, successful over a real 47-position book;
 zero mechanical failures — the spine is live-verified; findings in
 `docs/verification/2026-07-31-first-live-portfolio-run.md`). The live run
-sharpened the queue into three named calibration-tier slices, none yet
-sequenced against Trade Opportunities (that ordering is the open queue
-decision):
-the **adapter options-wiring slice** — per-stage `num_ctx`, per-mode sampling,
-`keep_alive` residency, and an explicit per-stage `think` flag (`think:false`
-is currently never serialized, so distill stages ride the thinking-on default);
+sharpened the queue into three named calibration-tier slices; the first — the
+**adapter options-wiring slice** — **landed 2026-08-01**: explicit tri-state
+per-stage `think` (F3 closed — `Some(false)` always serializes, distill runs
+non-thinking on the verified pinned Ollama), per-mode sampling profiles, and
+per-stage `num_ctx` under a **one-`num_ctx`-per-model** rule (an Ollama
+`num_ctx` change reloads the resident runner despite `keep_alive`, so the
+blank-fast-tier default path shares the 128 K interpretation context),
+`keep_alive:-1` residency including the embedder, plus the **step-scoped live
+thinking channel** (F8) streaming each holding's interpretation reasoning onto
+its own tracker step — two review rounds (internal + Codex) to convergence.
+Remaining, in order:
 the **target-function calibration slice** — the run's flat-target syndrome
 (consensus-period selection ≈ trailing EPS + current-multiple carry under a
 run-wide Stooq throttle → base ≈ spot → 35/44 hurdle-fails; the hurdle
@@ -555,6 +563,8 @@ certifying the sub-score formulas against spec and closing the FMP
 statement-field gaps, tuned against the persisted run (`3b21ae85`, the first
 calibration dataset). Interpretation-prompt adjustments (target provenance in
 the prompt, tilt weighting, conviction definition, house-view scoping) ride
-after those. Still M5-gated: the fund slice's remaining drafted constants (the
+after those. The two specified result-review UI fixes (the Portfolio-page
+polish micro-slice; the section-scoped footer + report-nav slice) are small,
+display-only, and slot anywhere between slices. Still M5-gated: the fund slice's remaining drafted constants (the
 ≥ 70% coverage / US guards, tier premiums, add floors, CIK-cache staleness);
 the FMP paid-key shape checkpoint closed 2026-07-16 (`78df109`).

@@ -84,6 +84,12 @@ pub enum ProgressEvent {
     /// streams **thoughts only** — the structured review body never streams — and, like
     /// [`Self::AgentThinking`], a non-thinking analyst model simply never sends it.
     AnalystThinking { posture: String, delta: String },
+    /// A coalesced chunk of streamed reasoning scoped to one tracker step, tagged by
+    /// the step `key` it belongs to. The portfolio job's interpretation stages stream
+    /// their thinking here so each per-holding step shows live reasoning while it
+    /// runs — unlike [`Self::AgentThinking`] / [`Self::AnalystThinking`], which route
+    /// to the report workflow's fixed agent / analysts steps.
+    StepThinking { step: String, delta: String },
     /// The run reached a terminal state. `status` ∈ {`successful`, `failed`,
     /// `cancelled`}; `report_id` is set only on success.
     RunFinished {
@@ -269,6 +275,13 @@ impl RunContext {
         });
     }
 
+    pub fn step_thinking(&self, step: impl Into<String>, delta: impl Into<String>) {
+        self.emit(ProgressEvent::StepThinking {
+            step: step.into(),
+            delta: delta.into(),
+        });
+    }
+
     pub fn run_finished(
         &self,
         status: impl Into<String>,
@@ -383,6 +396,24 @@ mod tests {
         assert_eq!(v["posture"], "bear");
         assert_eq!(v["delta"], "The curve is lying about the cycle");
         assert_eq!(v["run_id"], "run-3");
+    }
+
+    #[test]
+    fn step_thinking_serializes_with_its_step_key() {
+        // The step-scoped reasoning channel carries the owning step's key so the
+        // frontend folds the delta into that step's reasoning pane (the portfolio
+        // per-holding steps); otherwise the same envelope as `agent-thinking`.
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("run-4", rec.clone(), Arc::new(AtomicBool::new(false)));
+        ctx.step_thinking("holding-AAPL", "Weighing the trim against the tilt");
+
+        let msgs = rec.messages();
+        assert_eq!(msgs.len(), 1);
+        let v = serde_json::to_value(&msgs[0]).unwrap();
+        assert_eq!(v["kind"], "step-thinking");
+        assert_eq!(v["step"], "holding-AAPL");
+        assert_eq!(v["delta"], "Weighing the trim against the tilt");
+        assert_eq!(v["run_id"], "run-4");
     }
 
     #[test]
