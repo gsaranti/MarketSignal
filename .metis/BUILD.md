@@ -292,8 +292,11 @@ vehicle class is unpriceable) and **Trade Opportunities**
 `docs/local-models.md`, `web-research.md`, `schwab-integration.md`,
 `portfolio-analysis.md`, `portfolio-workflow.md`, and `trade-opportunities.md`.
 **As-built:** the shared substrate, the single-equity Portfolio slice
-(fixture Schwab + FMP + SEC + local models, offline-verified; live validation is
-M5-gated), the live Schwab OAuth adapter + token lifecycle + Connect surface,
+(fixture Schwab + FMP + SEC + local models — and since 2026-07-31 **live-verified
+end-to-end**: the first live run over a real 47-position book completed
+successfully in the dev app, all disposition branches exercised, evidence in
+`docs/verification/2026-07-31-first-live-portfolio-run.md`), the live Schwab
+OAuth adapter + token lifecycle + Connect surface,
 the deterministic holdings-snapshot diff, the Portfolio page with the
 presence-only local warning categories, and the **full Portfolio (funds) slice**
 (2026-07-16): book-level netting, the full ticker→CIK resolver, the per-symbol
@@ -531,11 +534,27 @@ held-name refresh lane, pre-profit overlay, outcome learning, the 7b
 construction stage, the live research loop) are designed and not yet sequenced
 in this queue; the shipped schemas don't preclude them. The **model-serving pre-flight completed
 2026-07-28** (Ollama pinned v0.32.5, roster pulled, all checks green —
-`docs/verification/2026-07-28-m5-preflight.md`), surfacing one small named
-slice: the adapter never sets Ollama `options` (per-stage `num_ctx`, per-mode
-sampling, `keep_alive` residency all unwired). Still M5-gated: the remaining
-live local-suite validation (first live Portfolio run next) and the
-calibration knobs — including the fund slice's drafted constants (hurdle ×
-rate-anchored-multiple tightness, the ≥ 70% coverage / US guards, tier
-premiums, add floors, CIK-cache staleness); the FMP paid-key shape checkpoint
-closed 2026-07-16 (`78df109`).
+`docs/verification/2026-07-28-m5-preflight.md`) and the **first live Portfolio
+run completed 2026-07-31** (dev app, successful over a real 47-position book;
+zero mechanical failures — the spine is live-verified; findings in
+`docs/verification/2026-07-31-first-live-portfolio-run.md`). The live run
+sharpened the queue into three named calibration-tier slices, none yet
+sequenced against Trade Opportunities (that ordering is the open queue
+decision):
+the **adapter options-wiring slice** — per-stage `num_ctx`, per-mode sampling,
+`keep_alive` residency, and an explicit per-stage `think` flag (`think:false`
+is currently never serialized, so distill stages ride the thinking-on default);
+the **target-function calibration slice** — the run's flat-target syndrome
+(consensus-period selection ≈ trailing EPS + current-multiple carry under a
+run-wide Stooq throttle → base ≈ spot → 35/44 hurdle-fails; the hurdle
+three-state logic itself verified correct), plus Stooq resilience and a
+run-level data-health roll-up;
+and the **grade-band shadow-tune** — zero A/B letters across 44 priced
+holdings (relative ordering sound, absolute levels compressed), opening by
+certifying the sub-score formulas against spec and closing the FMP
+statement-field gaps, tuned against the persisted run (`3b21ae85`, the first
+calibration dataset). Interpretation-prompt adjustments (target provenance in
+the prompt, tilt weighting, conviction definition, house-view scoping) ride
+after those. Still M5-gated: the fund slice's remaining drafted constants (the
+≥ 70% coverage / US guards, tier premiums, add floors, CIK-cache staleness);
+the FMP paid-key shape checkpoint closed 2026-07-16 (`78df109`).
