@@ -2,32 +2,29 @@
 
 ## What happened
 
-**The M5 serving pre-flight ran end-to-end and closed green — the local stack is certified.**
-Ollama installed **pinned v0.32.5** (standalone tgz at `~/ollama/v0.32.5/`, deliberately not the auto-updating .app; symlink in `~/.local/bin`), roster pulled (`qwen3.5:122b-a10b` official Q4_K_M 81 GB + `qwen3-embedding:4b`, 2560-dim verified).
-Results: backend = **llama.cpp Metal** (no 122B MLX; the mmproj caveat doesn't bite official pulls); **#14645 fix behaves** (24/24 `think:false`+`format` schema-valid, malformed schemas rejected, `tools`+`format` 8/8) → **non-thinking distillation unlocked on this version**, re-locks on any unverified bump; front-truncation confirmed live (model hallucinates over the missing head); **long-context probe 35/35 through 160.6K tokens** (61 % of native — first known measurement for this model); 87 GB at full native context with 31 % RAM free; throughput measured (~4–6 min per thinking-heavy per-holding call).
-New evidence-record home **`docs/verification/`** (dated record + preserved harness scripts = the re-verification template for Ollama bumps).
-Finding surfaced: **the adapter never sets Ollama `options`** — per-stage `num_ctx`, per-mode sampling, and `keep_alive` residency all unwired → one small named code slice.
-All committed + pushed (`9da1105`, suite green: 694/0 + clippy + npm build); BUILD/INDEX updated in-session at user request; the deferred MLX doc-tag micro-edit folded in.
+**The first live Portfolio Analysis run completed successfully** — the M5-gated spine shakedown is closed.
+Run in the dev app (fresh `dev/` store + production corpus imported — the plain portability round-trip incidentally live-verified) over the real 47-holding Schwab book: 2 h 31 m, zero mechanical failures — all four disposition branches, 45/45 schema-valid grammar-constrained calls, honest evidence-floor abstentions ×2, complete audits, UI rendered to contract.
+Full evidence: `docs/verification/2026-07-31-first-live-portfolio-run.md` (10 findings, 9 follow-ups); the persisted dev run `3b21ae85` is the first calibration dataset.
+Headline findings: **flat-target syndrome** (Stooq throttled run-wide → zero anchor observations → multiple carry; consensus driver ≈ trailing EPS → base ≈ spot → 35/44 hurdle-fails → sell-all cascade; the hurdle three-state logic itself verified correct), **grade-band compression** (zero A/B across 44 priced — ordering sound, levels not), **`think:false` never serialized** (distill rides thinking-on, ~45 min wasted).
+Model judgment read well (position-size-aware trims, honest gap prose) but is under-supplied until research + real targets land.
+All committed + pushed (`d696f46`: report, ops-doc checklist additions, BUILD queue, INDEX row). Daemon + dev app spun down.
 
 ## Current state
 
-Clean tree on `main` at `9da1105`; nothing mid-flow.
-**Queued next (user chose): the first live Portfolio run** — needs the user present: start the daemon (`OLLAMA_FLASH_ATTENTION=1 ~/ollama/v0.32.5/ollama serve` — no LaunchAgent yet), enter the local-suite Settings via GUI (endpoint `http://localhost:11434`, reasoner `qwen3.5:122b-a10b`, embedder `qwen3-embedding:4b`, fast blank) + Test Connection, **reconnect Schwab** (client id + secret + browser OAuth — `app_settings`/Keychain never migrate), then run.
-Framing: a **spine shakedown, not the finished feature** — research is stubbed and the 7b construction stage / depth slices are designed-not-built; validates verdict quality, wall-clock, and the live local-model path.
-Build-queue head otherwise unchanged: **Trade Opportunities** planning.
+Clean tree on `main` at `d696f46`; nothing mid-flow.
+The live run converted the queue into **three named calibration-tier slices** (BUILD §What remains): adapter **options-wiring** (now incl. explicit per-stage `think`), **target-function calibration** (consensus-period selection, dispersion, Stooq resilience, run-level data-health roll-up), **grade-band shadow-tune** (opens by certifying sub-score formulas + closing FMP statement gaps, against run `3b21ae85`).
+Plus two fully-specified small fixes from result review: the **Portfolio-page polish micro-slice** (wrap-safe stat-strip hairlines, position block: price/cost-basis/avg-cost, adaptive weight precision, Hold "maintain" phrasing) and the **section-scoped footer + report-nav slice** (user-settled design: "Latest Market Report" nav entry, Generate-now only on the report view, LAST RUN filtered by `job_type`; amend `interface.md` when it lands).
+Interpretation-prompt adjustments (target provenance, tilt weighting, conviction definition, house-view scoping) deliberately sequenced **after** the calibration slices.
 
 ## Open questions
 
-- **Adapter `options` wiring slice (new)** — `num_ctx` per stage, per-mode sampling rows, `keep_alive` residency; small, unsequenced — ideally lands before heavy live use but needn't block the shakedown run.
-- **Actually switching distill stages to `think:false` (new)** — unlocked by the #14645 verify; a wiring/design choice that naturally rides the options slice.
-- **Step-17 embedding-failure recurrence (watch)** — one occurrence 2026-07-28; recurrence justifies extending retry-once to the embedder or a backfill.
-- **Hurdle × rate-anchored-multiple tightness (M5-calibration, now exercisable)** — plus the fund slice's drafted constants (coverage/US guards, tier premiums, add floors, CIK-cache staleness).
-- **Fraud-producer posture (carried, review-optional)** — research-fed `forensic_event`, tier-0 lineage.
-- **Carried unchanged:** local-suite scorecard display; encrypted-archive live round-trip (optional); dev-app sanity residue; Keychain fail-soft candidate; stage-and-swap import hardening; chain both-maps invariant; long/cold-start 600s stress; four-part verdict + bidirectional-conviction bound; §1 open drafts.
+- **Queue sequencing (the first decision next session):** Trade Opportunities planning remains the standing head, but the calibration slices now have a real dataset and arguably higher leverage — user's call.
+- **Encrypted portability round-trip** — still open (this session's import was passphrase-less; plain round-trip verified).
+- **Step-17 embedding-failure recurrence (watch)** — not exercised (nothing embeds in the Portfolio slice).
+- **Long/cold-start 600 s stress** — softened, not closed: cold load measured 13.3 s, longest live call 238 s.
+- **Carried unchanged:** local-suite scorecard display; dev-app sanity residue (dev store now holds the calibration run — deliberately kept); Keychain fail-soft candidate; stage-and-swap import hardening; chain both-maps invariant; four-part verdict + bidirectional-conviction bound; §1 open drafts; fraud-producer posture; fund-slice drafted constants.
 
 ## Where to start
 
-**Run the first live Portfolio analysis** — the user has queued it and must be present (Schwab OAuth).
-Sequence: daemon up → GUI Settings + Test Connection → Schwab reconnect → run; watch verdict quality, wall-clock, and the run tracker's thinking channel.
-Full run-book detail in auto-memory (`local-suite-hardware-gated`) and `docs/verification/2026-07-28-m5-preflight.md`.
-If the user prefers build work instead: `/metis-plan-task` for Trade Opportunities (standing queue head).
+**Decide the queue head:** `/metis-plan-task` for either Trade Opportunities (standing head) or the calibration-tier slices the live run surfaced (options-wiring is the smallest and unblocks non-thinking distill; target-function calibration is the highest-leverage for verdict quality).
+Read `docs/verification/2026-07-31-first-live-portfolio-run.md` §Follow-up candidates before choosing — it is the authoritative list with per-finding evidence.
