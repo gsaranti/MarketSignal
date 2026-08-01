@@ -1244,6 +1244,21 @@ const keyFigures = computed(() => {
               <span class="ch-stamp">Analyzed {{ fmtStamp(run.created_at) }}</span>
             </header>
             <p class="rollup-overview hc-prose">{{ run.roll_up.overview }}</p>
+            <!-- Run-level data health: how the target surface was actually sourced.
+                 Absent on runs persisted before the field existed. The attention tag
+                 reuses the sanctioned grade-D "amber" pair (design system §Grade
+                 scale — Portfolio's attention flag). -->
+            <div v-if="run.roll_up.data_health" class="rollup-datahealth">
+              <span class="hc-kicker">Data health</span>
+              <p class="dh-line hc-prose">
+                <span
+                  v-if="run.roll_up.data_health.attention"
+                  class="ana-tag dh-attention-tag"
+                  >Attention</span
+                >
+                {{ run.roll_up.data_health.summary }}
+              </p>
+            </div>
             <div v-if="run.roll_up.exited.length > 0" class="rollup-exited">
               <span class="hc-kicker">Positions closed since last run</span>
               <ul class="exited-list">
@@ -1883,9 +1898,26 @@ const keyFigures = computed(() => {
   padding: var(--s-4) var(--s-5);
 }
 
-.rollup-exited {
+.rollup-datahealth {
   padding: var(--s-4) var(--s-5);
   border-top: 1px solid var(--hairline-soft);
+}
+
+.rollup-datahealth .hc-kicker {
+  margin-bottom: var(--s-2);
+}
+
+.dh-line {
+  margin: 0;
+}
+
+/* The sanctioned "amber" attention state — the grade-D pair reused
+   (colors_and_type.css §Grade scale), never a literal amber. */
+.dh-attention-tag {
+  color: var(--grade-d-tx);
+  background: var(--grade-d-bg);
+  border-color: var(--grade-d-bg);
+  margin-right: var(--s-2);
 }
 
 .rollup-exited .hc-kicker {

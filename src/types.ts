@@ -481,6 +481,25 @@ export interface ExitedPosition {
   prior_market_value: number;
 }
 
+// The run-level data-health aggregate: how the target surface was actually
+// sourced (rate-anchored vs the fallbacks) plus the deep-history and DGS10
+// degradations — computed deterministically from the persisted audits, so a
+// degraded-but-successful run is visible at a glance. `attention` marks
+// infrastructure degradation (unrecovered deep-history failures, any
+// current-multiple carry, a run-wide DGS10 history gap).
+export interface DataHealth {
+  targets_total: number;
+  rate_anchored_count: number;
+  raw_percentile_count: number;
+  current_multiple_carry_count: number;
+  dispersion_floor_count: number;
+  deep_history_failures: number;
+  deep_history_fallbacks: number;
+  dgs10_history_gap: boolean;
+  attention: boolean;
+  summary: string;
+}
+
 export interface PortfolioRollUp {
   graded_count: number;
   not_rated_count: number;
@@ -491,6 +510,8 @@ export interface PortfolioRollUp {
   top_position_weight: number;
   cash_weight: number;
   exited: ExitedPosition[];
+  // Absent on runs persisted before the field existed.
+  data_health?: DataHealth | null;
   overview: string;
 }
 

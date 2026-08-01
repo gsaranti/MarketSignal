@@ -265,6 +265,7 @@ mod tests {
                 top_position_weight: 0.66,
                 cash_weight: 0.34,
                 exited: vec![],
+                data_health: None,
                 overview: "single fixture holding".into(),
             },
             audit: vec![HoldingAudit {

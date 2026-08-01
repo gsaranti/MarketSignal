@@ -628,6 +628,10 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         &observations,
         inp.rates.dgs10,
         distributions,
+        // The fund driver is deliberately flat, so on the carry path both scenario
+        // axes collapse — the shared floor keeps the three-state hurdle honest there
+        // too (`docs/portfolio-analysis.md` §Starting parameters).
+        engine::dispersion_floor(vol),
     );
 
     let mut metrics = base_metrics(fin);
@@ -682,6 +686,10 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         degenerate_scenarios: scenario.degenerate_scenarios,
         monotonicity_repaired: scenario.monotonicity_repaired,
         current_multiple_carry: scenario.current_multiple_carry,
+        consensus_rows: None,
+        consensus_near_weight: None,
+        clamp_flattened: false,
+        dispersion_floor_applied: scenario.dispersion_floor_applied,
         parameter_version: engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string(),
     };
 

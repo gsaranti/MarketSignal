@@ -1738,6 +1738,32 @@ fn eod_prices_from_value(value: &Value) -> Result<Vec<f64>> {
     Ok(dated.into_iter().map(|(_, p)| p).collect())
 }
 
+/// Shape an FMP `/historical-price-eod/light` array body into **dated** chronological
+/// closes — the deep-history form the v2 anchor join reads when this endpoint serves
+/// as the Stooq fallback ([`FmpDataSource::fetch_dated_eod`]). Pure.
+fn dated_eod_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+    let rows = value
+        .as_array()
+        .context("FMP EOD response did not match the expected array shape")?;
+    let mut dated: Vec<crate::portfolio::engine::DatedValue> = rows
+        .iter()
+        .filter_map(|row| {
+            match (
+                row.get("date").and_then(Value::as_str),
+                row.get("price").and_then(Value::as_f64),
+            ) {
+                (Some(date), Some(price)) => Some(crate::portfolio::engine::DatedValue {
+                    date: date.to_string(),
+                    value: price,
+                }),
+                _ => None,
+            }
+        })
+        .collect();
+    dated.sort_by(|a, b| a.date.cmp(&b.date));
+    Ok(dated)
+}
+
 impl MarketDataSource for FmpDataSource {
     fn baseline_scan(&self, cadence: ReportCadence) -> Result<BaselineMarketData> {
         // Every group degrades to recorded gaps rather than failing: a thin or empty
@@ -3354,8 +3380,9 @@ impl FmpDataSource {
         }
     }
 
-    /// The forward consensus for the nearest coming fiscal year — the v2 driver
-    /// ladder's source. Fail-soft to `None` with a tagged gap.
+    /// The NTM forward consensus (the time-weighted blend of the two nearest coming
+    /// fiscal-year rows — [`consensus_from_value`]) — the v2 driver ladder's source.
+    /// Fail-soft to `None` with a tagged gap.
     pub fn fetch_analyst_estimates(
         &self,
         symbol: &str,
@@ -3403,6 +3430,35 @@ impl FmpDataSource {
             Disposition::Gap(reason) => {
                 gaps.push(format!("FMP dividends unavailable ({})", reason.as_str()));
                 None
+            }
+        }
+    }
+
+    /// Deep **dated** daily closes over `lookback_days` — the anchor join's fallback
+    /// price source when Stooq, the primary deep-history source, is throttled or
+    /// unavailable (`docs/data-sources.md §Stooq`). Spent only on the fallback path,
+    /// so the dispersal principle — the bulk per-holding price load stays off the
+    /// shared FMP key — holds.
+    pub fn fetch_dated_eod(
+        &self,
+        symbol: &str,
+        lookback_days: i64,
+    ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+        let to = Utc::now().date_naive();
+        let from = (to - Duration::days(lookback_days))
+            .format("%Y-%m-%d")
+            .to_string();
+        let to = to.format("%Y-%m-%d").to_string();
+        match self.suite_get(
+            "company-eod-deep",
+            symbol,
+            "Deep price history (Stooq fallback)",
+            FMP_EOD_PATH,
+            &[("symbol", symbol), ("from", &from), ("to", &to)],
+        ) {
+            Disposition::Value(value) => dated_eod_from_value(&value),
+            Disposition::Gap(reason) => {
+                anyhow::bail!("FMP dated EOD unavailable ({})", reason.as_str())
             }
         }
     }
@@ -3554,11 +3610,16 @@ fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Q
         .collect()
 }
 
-/// Pick the nearest **coming** fiscal-year estimate row (smallest `date` ≥ today)
-/// and shape the consensus. **No forward-dated row → `None`**: a past fiscal-year
-/// estimate is not a forward consensus, and letting it masquerade as one would
-/// bypass the driver ladder's `no-admissible-driver` abstention with a stale print
-/// (`docs/portfolio-analysis.md` §Starting parameters). Accepts both the stable
+/// The **next-twelve-months (NTM) consensus read**: blend the two nearest **coming**
+/// fiscal-year estimate rows, each weighted by its overlap with the rolling
+/// twelve-month forward window — so a mostly-reported current fiscal year (whose
+/// consensus ≈ the trailing print) contributes only its remaining months instead of
+/// masquerading as the forward year, the live-run flat-target mechanism
+/// (`docs/portfolio-analysis.md` §Starting parameters; the 2026-07-31 F1 finding).
+/// A single forward row keeps the prior single-row semantics. **No forward-dated
+/// row → `None`**: a past fiscal-year estimate is not a forward consensus, and
+/// letting it masquerade as one would bypass the driver ladder's
+/// `no-admissible-driver` abstention with a stale print. Accepts both the stable
 /// (`epsAvg`) and legacy (`estimatedEpsAvg`) spellings; live 2026-07-16 the feed
 /// serves the stable ones.
 fn consensus_from_value(
@@ -3577,18 +3638,57 @@ fn consensus_from_value(
             .or_else(|| row.get(legacy))
             .and_then(Value::as_f64)
     };
-    let chosen: &Value = rows
+    let mut forward: Vec<&Value> = rows
         .iter()
         .filter(|r| date_of(r).as_str() >= today)
-        .min_by_key(|r| date_of(r))?;
+        .collect();
+    forward.sort_by_key(|r| date_of(r));
+    let near: &Value = forward.first()?;
+    let far: Option<&&Value> = forward.get(1);
+
+    // The near row's weight = the share of the rolling twelve months its fiscal year
+    // still covers (days to its period end / 365, clamped); the far row carries the
+    // rest. An unparseable date falls back to the near row alone — the prior
+    // single-row semantics, never a fabricated blend. At the boundary (the near
+    // fiscal year ends today) the weight is 0 — the value is entirely the far
+    // row's while `period_end` still names the near row; `near_weight` on the
+    // record is what keys the provenance.
+    let near_weight = match (
+        far,
+        chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d"),
+        chrono::NaiveDate::parse_from_str(&date_of(near), "%Y-%m-%d"),
+    ) {
+        (Some(_), Ok(t), Ok(n)) => ((n - t).num_days().clamp(0, 365) as f64) / 365.0,
+        _ => 1.0,
+    };
+    let blended = near_weight < 1.0;
+    let blend = |stable: &str, legacy: &str| -> Option<f64> {
+        let n = field(near, stable, legacy);
+        // An inactive blend (single forward row, a far year wholly beyond the
+        // window, or unparseable dates) reads the near row alone — a far fiscal
+        // year must never leak in at full weight through a missing near leg.
+        if !blended {
+            return n;
+        }
+        let f = far.and_then(|r| field(r, stable, legacy));
+        match (n, f) {
+            (Some(n), Some(f)) => Some(near_weight * n + (1.0 - near_weight) * f),
+            // Inside an active blend, a leg only one row carries is used alone
+            // rather than dropped.
+            (Some(n), None) => Some(n),
+            (None, f) => f,
+        }
+    };
     Some(crate::portfolio::engine::ConsensusEstimate {
-        period_end: date_of(chosen),
-        eps_low: field(chosen, "epsLow", "estimatedEpsLow"),
-        eps_mid: field(chosen, "epsAvg", "estimatedEpsAvg"),
-        eps_high: field(chosen, "epsHigh", "estimatedEpsHigh"),
-        revenue_low: field(chosen, "revenueLow", "estimatedRevenueLow"),
-        revenue_mid: field(chosen, "revenueAvg", "estimatedRevenueAvg"),
-        revenue_high: field(chosen, "revenueHigh", "estimatedRevenueHigh"),
+        period_end: date_of(near),
+        eps_low: blend("epsLow", "estimatedEpsLow"),
+        eps_mid: blend("epsAvg", "estimatedEpsAvg"),
+        eps_high: blend("epsHigh", "estimatedEpsHigh"),
+        revenue_low: blend("revenueLow", "estimatedRevenueLow"),
+        revenue_mid: blend("revenueAvg", "estimatedRevenueAvg"),
+        revenue_high: blend("revenueHigh", "estimatedRevenueHigh"),
+        periods_used: if blended { 2 } else { 1 },
+        near_weight,
     })
 }
 
@@ -3746,7 +3846,13 @@ mod suite_tests {
     }
 
     #[test]
-    fn consensus_picks_the_nearest_forward_year() {
+    fn consensus_blends_the_two_nearest_forward_years_by_ntm_overlap() {
+        // Today 2026-07-16; the near fiscal year ends 2026-09-30 (76 days out, mostly
+        // reported — its consensus ≈ the trailing print), the far one 2027-09-30. The
+        // NTM read weights the near row by its remaining share of the rolling twelve
+        // months (76/365) and the far row by the rest — so real forward growth
+        // reaches the driver instead of the near-realized current year (the
+        // 2026-07-31 F1 flat-target mechanism). The stale 2025 row never enters.
         let body = r#"[
           {"date":"2025-09-30","epsAvg":6.1,"epsLow":5.9,"epsHigh":6.3,
            "revenueAvg":400e9,"revenueLow":390e9,"revenueHigh":410e9},
@@ -3757,10 +3863,62 @@ mod suite_tests {
         ]"#;
         let value: Value = serde_json::from_str(body).unwrap();
         let c = consensus_from_value(&value, "2026-07-16").unwrap();
-        // The nearest coming fiscal year (2026-09-30), not the stale or far one.
+        assert_eq!(c.period_end, "2026-09-30", "the near row names the period");
+        assert_eq!(c.periods_used, 2);
+        let w = 76.0 / 365.0;
+        assert!((c.near_weight - w).abs() < 1e-12);
+        assert!((c.eps_mid.unwrap() - (w * 6.8 + (1.0 - w) * 7.4)).abs() < 1e-9);
+        assert!((c.eps_low.unwrap() - (w * 6.5 + (1.0 - w) * 7.0)).abs() < 1e-9);
+        assert!((c.revenue_high.unwrap() - (w * 440e9 + (1.0 - w) * 470e9)).abs() < 1.0);
+    }
+
+    #[test]
+    fn consensus_with_one_forward_row_keeps_single_row_semantics() {
+        let body = r#"[
+          {"date":"2025-09-30","epsAvg":6.1},
+          {"date":"2026-09-30","epsAvg":6.8,"epsLow":6.5,"epsHigh":7.1}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let c = consensus_from_value(&value, "2026-07-16").unwrap();
         assert_eq!(c.period_end, "2026-09-30");
+        assert_eq!(c.periods_used, 1);
+        assert!((c.near_weight - 1.0).abs() < 1e-12);
         assert_eq!(c.eps_mid, Some(6.8));
-        assert_eq!(c.revenue_low, Some(420e9));
+    }
+
+    #[test]
+    fn consensus_blend_uses_a_leg_only_one_row_carries() {
+        // The far row publishes no low/high: the mid blends, the spread legs fall to
+        // the near row's values alone rather than dropping to None.
+        let body = r#"[
+          {"date":"2026-09-30","epsAvg":6.8,"epsLow":6.5,"epsHigh":7.1},
+          {"date":"2027-09-30","epsAvg":7.4}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let c = consensus_from_value(&value, "2026-07-16").unwrap();
+        assert_eq!(c.periods_used, 2);
+        let w = 76.0 / 365.0;
+        assert!((c.eps_mid.unwrap() - (w * 6.8 + (1.0 - w) * 7.4)).abs() < 1e-9);
+        assert_eq!(c.eps_low, Some(6.5));
+        assert_eq!(c.eps_high, Some(7.1));
+    }
+
+    #[test]
+    fn consensus_far_fiscal_year_beyond_the_window_is_unused() {
+        // The near fiscal year ends ≥ 12 months out (just past a FY end): the rolling
+        // window lies entirely inside it, so the far row carries no weight — not even
+        // through a leg the near row lacks (a far year must never leak in at full
+        // weight when the blend is inactive).
+        let body = r#"[
+          {"date":"2027-09-30","epsAvg":6.8,"epsHigh":7.1},
+          {"date":"2028-09-30","epsAvg":7.4,"epsLow":7.0,"epsHigh":7.8}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let c = consensus_from_value(&value, "2026-09-29").unwrap();
+        assert_eq!(c.periods_used, 1);
+        assert!((c.near_weight - 1.0).abs() < 1e-12);
+        assert_eq!(c.eps_mid, Some(6.8));
+        assert_eq!(c.eps_low, None, "the far row's lone leg must not leak in");
     }
 
     #[test]
@@ -3773,6 +3931,30 @@ mod suite_tests {
         ]"#;
         let value: Value = serde_json::from_str(body).unwrap();
         assert!(consensus_from_value(&value, "2026-07-16").is_none());
+    }
+
+    #[test]
+    fn dated_eod_round_trips_sorted_dated_closes() {
+        // The Stooq-fallback form keeps the dates the undated per-company EOD read
+        // discards — the v2 anchor join needs them for the latest-on-or-before join.
+        let body = r#"[
+          {"date":"2026-07-14","price":195.0},
+          {"date":"2026-07-10","price":192.5},
+          {"date":"broken"},
+          {"date":"2026-07-15","price":196.2}
+        ]"#;
+        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body }]);
+        let closes = source(&server.base_url)
+            .fetch_dated_eod("AAPL", 1_600)
+            .unwrap();
+        assert_eq!(closes.len(), 3, "the broken row is skipped");
+        assert_eq!(closes[0].date, "2026-07-10");
+        assert_eq!(closes[2].date, "2026-07-15");
+        assert!((closes[2].value - 196.2).abs() < 1e-9);
+        let target = &server.request_targets()[0];
+        assert!(target.starts_with("/historical-price-eod/light"), "{target}");
+        assert!(target.contains("symbol=AAPL"), "{target}");
+        assert!(target.contains("from="), "{target}");
     }
 
     #[test]

@@ -8,8 +8,9 @@
 //! caller: a failed or empty history degrades to a tagged gap (the anchor window
 //! then falls to its documented fallback), never a run failure.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
@@ -25,11 +26,43 @@ const STOOQ_DAILY_PATH: &str = "/q/d/l/";
 
 const STOOQ_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Minimum spacing between Stooq requests — the doc-promised politeness
+/// self-throttle (`docs/data-sources.md §Stooq`). Negligible against a run's model
+/// time; only back-to-back fetches (e.g. a run of fast failures) ever wait.
+const STOOQ_MIN_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Stooq's daily-hits throttle, classified distinctly: the notice arrives as an
+/// HTTP **200 HTML body** in place of the daily-bars CSV — invisible to the
+/// status-based retry layer by construction — and it is account/IP-wide, so the
+/// first detection trips a run-wide breaker rather than burning one doomed request
+/// per remaining holding (the 2026-07-31 F2 finding: 43 of 44 fetches failed this
+/// way).
+#[derive(Debug)]
+pub struct StooqThrottled;
+
+impl std::fmt::Display for StooqThrottled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Stooq daily-hits limit reached (HTML notice body in place of the daily-bars CSV)"
+        )
+    }
+}
+
+impl std::error::Error for StooqThrottled {}
+
 /// The keyless Stooq daily-bar adapter.
 pub struct StooqSource {
     http: reqwest::blocking::Client,
     base_url: String,
     progress: Arc<RunContext>,
+    /// Set once the daily-hits throttle is detected; every later fetch this run
+    /// skips the network and fails fast as throttled (no tracker row — a skipped
+    /// fetch is not an HTTP call). The adapter is constructed per run, so the
+    /// breaker resets naturally.
+    throttled: AtomicBool,
+    /// The last request's send time, for the politeness spacing.
+    last_request: Mutex<Option<Instant>>,
 }
 
 impl StooqSource {
@@ -42,7 +75,14 @@ impl StooqSource {
             http,
             base_url: STOOQ_BASE.to_string(),
             progress: RunContext::noop(),
+            throttled: AtomicBool::new(false),
+            last_request: Mutex::new(None),
         })
+    }
+
+    /// Whether the run-wide daily-hits breaker has tripped.
+    pub fn is_throttled(&self) -> bool {
+        self.throttled.load(Ordering::Relaxed)
     }
 
     /// Attach a live run context so each fetch streams a tracker row.
@@ -58,6 +98,22 @@ impl StooqSource {
         self
     }
 
+    /// The politeness spacing: sleep out the remainder of [`STOOQ_MIN_INTERVAL`]
+    /// since the last request, then stamp now. Skipped entirely in tests (the mock
+    /// round-trips shouldn't wait).
+    fn pace(&self) {
+        let mut last = self.last_request.lock().expect("stooq pacing lock");
+        if !cfg!(test) {
+            if let Some(prev) = *last {
+                let elapsed = prev.elapsed();
+                if elapsed < STOOQ_MIN_INTERVAL {
+                    std::thread::sleep(STOOQ_MIN_INTERVAL - elapsed);
+                }
+            }
+        }
+        *last = Some(Instant::now());
+    }
+
     /// Daily closes for a symbol over `[from, to]`, oldest first. A US listing maps
     /// to Stooq's `<symbol>.us` identity (`docs/data-sources.md §Stooq`); a symbol
     /// already carrying a venue suffix (or an index like `^spx`) passes through.
@@ -70,6 +126,15 @@ impl StooqSource {
         if self.progress.is_cancelled() {
             anyhow::bail!("Stooq fetch skipped (run cancelled)");
         }
+        // The run-wide breaker: after one throttle detection, every later fetch fails
+        // fast as throttled — the daily-hits limit is account/IP-wide, so retrying
+        // per holding only burns requests (and goodwill). No tracker row: a skipped
+        // fetch is not an HTTP call.
+        if self.is_throttled() {
+            return Err(anyhow::Error::new(StooqThrottled)
+                .context(format!("Stooq skipped for {symbol} (throttled earlier this run)")));
+        }
+        self.pace();
         let stooq_symbol = stooq_symbol(symbol);
         let url = format!("{}{STOOQ_DAILY_PATH}", self.base_url);
         self.progress
@@ -92,6 +157,11 @@ impl StooqSource {
             }
             Ok(closes)
         })();
+        if let Err(e) = &result {
+            if e.downcast_ref::<StooqThrottled>().is_some() {
+                self.throttled.store(true, Ordering::Relaxed);
+            }
+        }
         match &result {
             Ok(_) => self.progress.request_finished(
                 "Stooq",
@@ -128,11 +198,17 @@ fn stooq_symbol(symbol: &str) -> String {
 
 /// Parse Stooq's daily CSV (`Date,Open,High,Low,Close,Volume`, header first) into
 /// dated closes, oldest first. A malformed row is skipped rather than failing the
-/// whole history; a body with no header at all is malformed.
+/// whole history; a body with no header at all is malformed — and an **HTML body in
+/// the CSV's place is the daily-hits throttle notice** (it rides HTTP 200, so only
+/// this seam can see it), classified as [`StooqThrottled`] for the run-wide breaker.
 fn parse_daily_csv(body: &str) -> Result<Vec<DatedValue>> {
     let mut lines = body.lines();
     let header = lines.next().context("empty Stooq body")?;
     if !header.to_ascii_lowercase().starts_with("date,") {
+        let head = body.trim_start().get(..256).unwrap_or(body.trim_start());
+        if head.starts_with('<') || head.to_ascii_lowercase().contains("<html") {
+            return Err(anyhow::Error::new(StooqThrottled));
+        }
         anyhow::bail!("Stooq body did not start with the daily-bars CSV header");
     }
     let mut out = Vec::new();
@@ -219,5 +295,36 @@ mod tests {
                 NaiveDate::from_ymd_opt(2026, 7, 15).unwrap(),
             )
             .is_err());
+        // A plain non-CSV, non-HTML body stays an ordinary parse error, not a
+        // throttle classification.
+        assert!(parse_daily_csv("nope,nothing")
+            .unwrap_err()
+            .downcast_ref::<StooqThrottled>()
+            .is_none());
+    }
+
+    #[test]
+    fn an_html_notice_body_classifies_as_the_throttle_and_trips_the_breaker() {
+        // The daily-hits notice rides HTTP 200 with an HTML body in the CSV's place
+        // (the 2026-07-31 live-run signature), so only the parse seam can see it.
+        // One detection must trip the run-wide breaker: the next call fails fast as
+        // throttled with no HTTP request spent.
+        let html = "<html><body>Przekroczony dzienny limit wywolan</body></html>";
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: html,
+        }]);
+        let stooq = StooqSource::new().unwrap().with_base_url(&server.base_url);
+        let from = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let err = stooq.daily_closes("AAPL", from, to).unwrap_err();
+        assert!(err.downcast_ref::<StooqThrottled>().is_some(), "{err}");
+        assert!(stooq.is_throttled());
+        // The breaker short-circuits: one canned reply was consumed, and the second
+        // call still errors as throttled without reaching the server.
+        let err = stooq.daily_closes("MSFT", from, to).unwrap_err();
+        assert!(err.downcast_ref::<StooqThrottled>().is_some(), "{err}");
+        assert_eq!(server.request_targets().len(), 1, "no second HTTP request");
     }
 }

@@ -976,6 +976,7 @@ mod tests {
                 revenue_low: Some(420.0e9),
                 revenue_mid: Some(430.0e9),
                 revenue_high: Some(440.0e9),
+                ..ConsensusEstimate::default()
             }),
             ttm_dividends_per_share: Some(1.0),
             ..CompanyFinancials::default()
@@ -1126,7 +1127,7 @@ mod tests {
         assert_eq!(audit.prompt_version, PROMPT_VERSION);
         // The audit records how the targets were derived, versioned for calibration.
         let meta = audit.target_meta.expect("target meta rides the audit");
-        assert_eq!(meta.parameter_version, "targets-v2");
+        assert_eq!(meta.parameter_version, "targets-v3");
     }
 
     #[test]

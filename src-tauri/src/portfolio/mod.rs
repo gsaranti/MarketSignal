@@ -544,6 +544,41 @@ pub struct HoldingVerdict {
 
 // ---- Run-level aggregate (persisted per run) ---------------------------------
 
+/// The run-level **data-health** aggregate (`docs/portfolio-analysis.md` §Portfolio
+/// roll-up): the per-holding fail-soft posture is honest but silent at run level — a
+/// degraded run that looks clean produces confidently wrong prescriptions (the
+/// 2026-07-31 first live run: 43 of 44 anchor windows empty, invisible outside the
+/// audits). Computed deterministically from the audits' typed `target_meta` plus the
+/// run-scoped deep-history counters, persisted with the roll-up, and rendered as one
+/// line on the Portfolio page's roll-up card.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DataHealth {
+    /// Priced holdings carrying a `target_meta` (the denominator).
+    pub targets_total: usize,
+    /// Targets whose multiples were rate-anchored on the DGS10 spread history.
+    pub rate_anchored_count: usize,
+    /// Targets on the raw-percentile fallback (thin dated-rate window).
+    pub raw_percentile_count: usize,
+    /// Targets on the current-multiple carry (no anchor history at all).
+    pub current_multiple_carry_count: usize,
+    /// Targets whose scenario band was widened to the dispersion floor.
+    pub dispersion_floor_count: usize,
+    /// Holdings whose deep-history (Stooq) fetch degraded.
+    pub deep_history_failures: usize,
+    /// Of those, holdings the FMP dated-EOD fallback still served.
+    pub deep_history_fallbacks: usize,
+    /// The run-level DGS10 anchor-history request failed (every spread observation
+    /// inadmissible run-wide).
+    pub dgs10_history_gap: bool,
+    /// Infrastructure degradation worth surfacing prominently: unrecovered
+    /// deep-history failures, any current-multiple carry, or a run-wide DGS10
+    /// history gap — a raw-percentile fallback from genuinely thin issuer history is
+    /// counted but not flagged.
+    pub attention: bool,
+    /// The one-line deterministic summary the roll-up card renders.
+    pub summary: String,
+}
+
 /// The portfolio-level view produced after the per-holding pass
 /// (`docs/portfolio-analysis.md` §Portfolio roll-up): concentration and a cash
 /// stance, read against the house view and the profile. For this single-equity
@@ -568,6 +603,10 @@ pub struct PortfolioRollUp {
     /// run persisted before the field existed still decodes.
     #[serde(default)]
     pub exited: Vec<ExitedPosition>,
+    /// The run-level data-health aggregate. `#[serde(default)]` (`None`) so runs
+    /// persisted before the field existed still decode.
+    #[serde(default)]
+    pub data_health: Option<DataHealth>,
     /// A short deterministic synthesis line.
     pub overview: String,
 }

@@ -76,10 +76,22 @@ const FILING_GRACE_DAYS: i64 = 45;
 const DRIVER_GROWTH_MIN: f64 = -0.25;
 const DRIVER_GROWTH_MAX: f64 = 0.35;
 
+/// Minimum scenario half-spread on the price axis (decimal, around the base target):
+/// the dispersion floor `spread_anchored_scenarios` widens a too-tight bear/bull band
+/// to, volatility-scaled between these bounds (`docs/portfolio-analysis.md` §Starting
+/// parameters). Zero scenario dispersion degenerates the three-state hurdle into a
+/// point test, so an artificially flat surface (near-realized consensus, the
+/// current-multiple carry) reads as false certainty — recorded when it binds.
+const DISPERSION_FLOOR_MIN: f64 = 0.05;
+const DISPERSION_FLOOR_MAX: f64 = 0.20;
+/// Scale from annualized realized volatility to the half-spread floor.
+const DISPERSION_FLOOR_VOL_SCALE: f64 = 0.5;
+
 /// The scenario-target function's parameter version, stamped on each run's audit so
-/// target calibration never mixes v1 and v2 bases (`docs/portfolio-analysis.md`
-/// §Outcome learning).
-pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v2";
+/// target calibration never mixes bases (`docs/portfolio-analysis.md` §Outcome
+/// learning). v3: the NTM consensus blend, the dispersion floor, and the recorded
+/// clamp-collapse — run `3b21ae85` is the v2 baseline.
+pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v3";
 
 // -- Risk tiers and the capital-efficiency hurdle (`docs/portfolio-analysis.md`
 //    §Starting parameters).
@@ -162,12 +174,17 @@ pub struct QuarterlyIncomeRow {
     pub diluted_shares: Option<f64>,
 }
 
-/// The forward consensus for the nearest coming fiscal year — the v2 driver ladder's
-/// source (`analyst-estimates`). Mid is the consensus average; low / high bound the
-/// bear / bull scenario drivers where the spread is published.
+/// The forward consensus the v2 driver ladder reads (`analyst-estimates`) — the
+/// **next-twelve-months (NTM) read**: a time-weighted blend of the two nearest
+/// forward fiscal-year rows by their month-overlap with the rolling twelve-month
+/// window, so a mostly-reported current fiscal year (whose consensus ≈ the trailing
+/// print) contributes only its remaining months rather than masquerading as the
+/// forward year (`docs/portfolio-analysis.md` §Starting parameters). Mid is the
+/// consensus average; low / high bound the bear / bull scenario drivers where the
+/// spread is published.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConsensusEstimate {
-    /// The estimate's fiscal-period end, ISO date.
+    /// The near row's fiscal-period end, ISO date.
     pub period_end: String,
     pub eps_low: Option<f64>,
     pub eps_mid: Option<f64>,
@@ -175,6 +192,13 @@ pub struct ConsensusEstimate {
     pub revenue_low: Option<f64>,
     pub revenue_mid: Option<f64>,
     pub revenue_high: Option<f64>,
+    /// Forward annual rows the read blended: 2 on the NTM blend, 1 on a single
+    /// forward row (0 only on a hand-built fixture — read as 1).
+    #[serde(default)]
+    pub periods_used: u8,
+    /// The near row's blend weight (1.0 on a single-row read).
+    #[serde(default)]
+    pub near_weight: f64,
 }
 
 /// The normalized financial inputs the engine reasons over, assembled by the dossier
@@ -292,6 +316,25 @@ pub struct TargetMeta {
     /// True when no anchor observation existed at all and the current multiple was
     /// carried (recorded, never silent).
     pub current_multiple_carry: bool,
+    /// Forward annual consensus rows behind the driver (2 = the NTM blend, 1 = a
+    /// single forward row; `None` on the fund form). `#[serde(default)]` for
+    /// pre-field audits.
+    #[serde(default)]
+    pub consensus_rows: Option<u8>,
+    /// The near row's NTM blend weight (1.0 on a single-row read; `None` on the
+    /// fund form or a pre-blend record) — persisted so a stored run's driver
+    /// provenance is fully recoverable. `#[serde(default)]` for pre-field audits.
+    #[serde(default)]
+    pub consensus_near_weight: Option<f64>,
+    /// True when the growth clamp flattened a *published* driver spread to a single
+    /// value — without this the calibration data can't tell "published flat" from
+    /// "clamp-flattened". `#[serde(default)]` for pre-field audits.
+    #[serde(default)]
+    pub clamp_flattened: bool,
+    /// True when the scenario band was widened to the volatility-scaled dispersion
+    /// floor. `#[serde(default)]` for pre-field audits.
+    #[serde(default)]
+    pub dispersion_floor_applied: bool,
     pub parameter_version: String,
 }
 
@@ -577,6 +620,8 @@ pub struct ScenarioSet {
     pub degenerate_scenarios: usize,
     pub monotonicity_repaired: bool,
     pub current_multiple_carry: bool,
+    /// True when the bear/bull band was widened to the dispersion-floor half-spread.
+    pub dispersion_floor_applied: bool,
 }
 
 /// What the v2 wrapper resolved to: a computed bundle, or the named
@@ -628,13 +673,17 @@ fn percentile(values: &[f64], p: f64) -> f64 {
 /// multiple in both domains); with no observations at all the current multiple is
 /// carried (recorded — scenario spread then comes from driver dispersion alone).
 /// Scenario identity comes from the mapping, never from sorting the finished prices —
-/// the monotonicity sort is a recorded defensive repair only.
+/// the monotonicity sort is a recorded defensive repair only. `dispersion_floor` is
+/// the minimum half-spread (decimal, around the base price) the finished band is
+/// widened to when the driver and multiple axes both collapse — see
+/// [`dispersion_floor`]; pass `0.0` to disable (a test pinning the raw mapping).
 pub fn spread_anchored_scenarios(
     spot: f64,
     drivers: [f64; 3],
     observations: &[AnchorObservation],
     dgs10_now: f64,
     forward_income_per_share: f64,
+    dispersion_floor: f64,
 ) -> ScenarioSet {
     // The ≥ 8 floor reads the dated-rate (spread-admissible) anchors; the raw
     // multiples of every driver-admissible quarter back the fallback percentiles, so
@@ -695,6 +744,25 @@ pub fn spread_anchored_scenarios(
         prices.sort_by(|a, b| a.partial_cmp(b).expect("finite scenario prices"));
     }
 
+    // The dispersion floor: widen (never narrow) each side to at least the
+    // half-spread around base, after the repair so base is the middle price. Zero
+    // dispersion turns the three-state hurdle into a point test — even the bull leg
+    // sits at base, so a flat surface reads `fails` with false certainty; the floor
+    // restores the exit-side hysteresis the three-state read is defined by, recorded.
+    let mut dispersion_floor_applied = false;
+    if dispersion_floor > 0.0 && prices[1].is_finite() && prices[1] > 0.0 {
+        let min_bear = prices[1] * (1.0 - dispersion_floor);
+        let min_bull = prices[1] * (1.0 + dispersion_floor);
+        if prices[0] > min_bear {
+            prices[0] = min_bear;
+            dispersion_floor_applied = true;
+        }
+        if prices[2] < min_bull {
+            prices[2] = min_bull;
+            dispersion_floor_applied = true;
+        }
+    }
+
     let tr = |p: f64| (p + forward_income_per_share) / spot - 1.0;
     ScenarioSet {
         bear: prices[0],
@@ -709,7 +777,21 @@ pub fn spread_anchored_scenarios(
         degenerate_scenarios: degenerate,
         monotonicity_repaired,
         current_multiple_carry,
+        dispersion_floor_applied,
     }
+}
+
+/// The volatility-scaled minimum scenario half-spread (decimal, on the price axis):
+/// annualized realized volatility × the scale, clamped to the drafted bounds; the
+/// lower bound when volatility can't be computed. Shared by the stock and fund forms
+/// (`docs/portfolio-analysis.md` §Starting parameters).
+pub fn dispersion_floor(return_volatility: Option<f64>) -> f64 {
+    return_volatility
+        .map(|v| {
+            (v * ANNUALIZATION_FACTOR * DISPERSION_FLOOR_VOL_SCALE)
+                .clamp(DISPERSION_FLOOR_MIN, DISPERSION_FLOOR_MAX)
+        })
+        .unwrap_or(DISPERSION_FLOOR_MIN)
 }
 
 /// The trailing-twelve-month driver print anchored at each of the newest
@@ -778,14 +860,26 @@ fn stock_anchor_observations(
     out
 }
 
+/// What the driver ladder picked: the scenario drivers plus the derivation record.
+struct DriverRead {
+    /// `[bear, base, bull]` per-share drivers.
+    drivers: [f64; 3],
+    rung: &'static str,
+    use_eps: bool,
+    /// No published low/high spread — the driver held at mid.
+    flat_driver: bool,
+    /// A published spread collapsed to a single value by the growth clamp — recorded
+    /// so calibration can tell it apart from a published-flat spread.
+    clamp_flattened: bool,
+}
+
 /// The v2 driver ladder (`docs/portfolio-analysis.md` §Starting parameters): pick the
 /// per-share fundamental deterministically — consensus forward EPS where a positive
 /// consensus exists, else consensus forward revenue per share on the latest reported
 /// diluted share count — with each scenario driver's implied growth clamped by the v1
 /// sanity bound against the trailing print, and a missing published spread holding
-/// the driver flat (recorded). Returns `(drivers[bear,base,bull], rung label,
-/// use_eps, flat_driver)`, or `None` when no rung is admissible.
-fn driver_ladder(fin: &CompanyFinancials) -> Option<([f64; 3], &'static str, bool, bool)> {
+/// the driver flat (recorded). `None` when no rung is admissible.
+fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
     let c = fin.consensus.as_ref();
 
     // Trailing TTM prints for the growth clamp (newest four quarters).
@@ -824,6 +918,12 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<([f64; 3], &'static str, boo
         }
     };
 
+    // A published (non-flat) spread whose clamped drivers all landed on one value was
+    // flattened by the clamp, not by the consensus — recorded distinctly.
+    let clamp_collapse = |drivers: &[f64; 3], flat: bool| {
+        !flat && (drivers[0] - drivers[1]).abs() < 1e-12 && (drivers[2] - drivers[1]).abs() < 1e-12
+    };
+
     // Rung 1: forward EPS, eligible only on a finite positive consensus mid.
     if let Some(mid) = c.and_then(|c| c.eps_mid).filter(|m| m.is_finite() && *m > 0.0) {
         let base = clamp(mid, ttm_eps, mid);
@@ -835,7 +935,13 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<([f64; 3], &'static str, boo
             base,
             clamp(high, ttm_eps, base),
         ];
-        return Some((drivers, "consensus forward EPS", true, flat));
+        return Some(DriverRead {
+            clamp_flattened: clamp_collapse(&drivers, flat),
+            drivers,
+            rung: "consensus forward EPS",
+            use_eps: true,
+            flat_driver: flat,
+        });
     }
 
     // Rung 2: forward revenue per share on the latest reported diluted count.
@@ -854,7 +960,13 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<([f64; 3], &'static str, boo
             base,
             clamp(high, ttm_rev_ps, base),
         ];
-        return Some((drivers, "consensus forward revenue per share", false, flat));
+        return Some(DriverRead {
+            clamp_flattened: clamp_collapse(&drivers, flat),
+            drivers,
+            rung: "consensus forward revenue per share",
+            use_eps: false,
+            flat_driver: flat,
+        });
     }
 
     None
@@ -873,24 +985,40 @@ pub fn scenario_targets_v2(
     rates: &RateAnchors,
     m: &ComputedMetrics,
 ) -> TargetOutcome {
-    let Some((drivers, rung, use_eps, flat_driver)) = driver_ladder(fin) else {
+    let Some(read) = driver_ladder(fin) else {
         return TargetOutcome::NoAdmissibleDriver;
     };
 
-    let observations = stock_anchor_observations(fin, rates, use_eps);
+    let observations = stock_anchor_observations(fin, rates, read.use_eps);
     let forward_dividends = fin.ttm_dividends_per_share.unwrap_or(0.0);
-    let scenario =
-        spread_anchored_scenarios(spot, drivers, &observations, rates.dgs10, forward_dividends);
+    let scenario = spread_anchored_scenarios(
+        spot,
+        read.drivers,
+        &observations,
+        rates.dgs10,
+        forward_dividends,
+        dispersion_floor(m.return_volatility),
+    );
 
-    let targets = build_price_targets(spot, &scenario, m, rung, flat_driver);
+    let targets = build_price_targets(spot, &scenario, m, read.rung, read.flat_driver);
     let meta = TargetMeta {
-        driver_rung: rung.to_string(),
+        driver_rung: read.rung.to_string(),
         rate_anchored: scenario.rate_anchored,
         anchor_observations: scenario.anchor_observations,
-        flat_driver,
+        flat_driver: read.flat_driver,
         degenerate_scenarios: scenario.degenerate_scenarios,
         monotonicity_repaired: scenario.monotonicity_repaired,
         current_multiple_carry: scenario.current_multiple_carry,
+        consensus_rows: fin.consensus.as_ref().map(|c| c.periods_used.max(1)),
+        // Recorded only off a live parse (`periods_used > 0`) — a hand-built
+        // fixture's default 0.0 is not a real weight.
+        consensus_near_weight: fin
+            .consensus
+            .as_ref()
+            .filter(|c| c.periods_used > 0)
+            .map(|c| c.near_weight),
+        clamp_flattened: read.clamp_flattened,
+        dispersion_floor_applied: scenario.dispersion_floor_applied,
         parameter_version: SCENARIO_TARGET_PARAMETER_VERSION.to_string(),
     };
     TargetOutcome::Computed(Box::new(TargetBundle {
@@ -947,6 +1075,11 @@ pub fn build_price_targets(
     } else {
         format!("{rung} low/mid/high")
     };
+    let floor_note = if scenario.dispersion_floor_applied {
+        "; band widened to the volatility-scaled dispersion floor"
+    } else {
+        ""
+    };
 
     PriceTargets {
         one_month: Some(PriceTarget {
@@ -966,7 +1099,7 @@ pub fn build_price_targets(
             bear: scenario.bear,
             bull: scenario.bull,
             methodology: format!(
-                "Twelve-month (rolling) scenarios = {driver_note} × {anchor_note} [{}]",
+                "Twelve-month (rolling) scenarios = {driver_note} × {anchor_note}{floor_note} [{}]",
                 SCENARIO_TARGET_PARAMETER_VERSION
             ),
         }),
@@ -1347,6 +1480,7 @@ mod tests {
                 revenue_low: Some(420.0e9),
                 revenue_mid: Some(430.0e9),
                 revenue_high: Some(440.0e9),
+                ..ConsensusEstimate::default()
             }),
             ttm_dividends_per_share: Some(1.0),
             gaps: vec![],
@@ -1484,11 +1618,59 @@ mod tests {
         let ttm: f64 = 1.55 + 1.54 + 1.53 + 1.52;
         let mut fin = strong();
         fin.consensus.as_mut().unwrap().eps_mid = Some(20.0);
-        let (drivers, ..) = driver_ladder(&fin).unwrap();
+        let drivers = driver_ladder(&fin).unwrap().drivers;
         assert!((drivers[1] - ttm * (1.0 + DRIVER_GROWTH_MAX)).abs() < 1e-9);
         fin.consensus.as_mut().unwrap().eps_mid = Some(1.0);
-        let (drivers, ..) = driver_ladder(&fin).unwrap();
+        let drivers = driver_ladder(&fin).unwrap().drivers;
         assert!((drivers[1] - ttm * (1.0 + DRIVER_GROWTH_MIN)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_ntm_selection_record_is_persisted_on_the_target_meta() {
+        // A live-parsed consensus (periods_used > 0) lands its row count and near
+        // weight on the persisted meta — the stored run's driver provenance; a
+        // hand-built fixture (periods_used 0) records the row count floor with no
+        // fabricated weight.
+        let mut fin = strong();
+        {
+            let c = fin.consensus.as_mut().unwrap();
+            c.periods_used = 2;
+            c.near_weight = 0.3;
+        }
+        match analyze(&fin, &rates()) {
+            EngineVerdict::Analyzed(out) => {
+                assert_eq!(out.target_meta.consensus_rows, Some(2));
+                assert_eq!(out.target_meta.consensus_near_weight, Some(0.3));
+            }
+            other => panic!("{other:?}"),
+        }
+        match analyze(&strong(), &rates()) {
+            EngineVerdict::Analyzed(out) => {
+                assert_eq!(out.target_meta.consensus_rows, Some(1), "fixture floor");
+                assert_eq!(out.target_meta.consensus_near_weight, None);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_clamp_flattened_published_spread_is_recorded_distinctly() {
+        // Low/mid/high all above the growth-clamp ceiling collapse to ttm × 1.35 — a
+        // published spread flattened by the clamp, not by the consensus, and the
+        // record must tell the two apart (the calibration-data honesty the flat-target
+        // finding exposed).
+        let mut fin = strong();
+        let c = fin.consensus.as_mut().unwrap();
+        c.eps_low = Some(18.0);
+        c.eps_mid = Some(20.0);
+        c.eps_high = Some(22.0);
+        let read = driver_ladder(&fin).unwrap();
+        assert!(!read.flat_driver, "the spread was published");
+        assert!(read.clamp_flattened, "…but the clamp collapsed it");
+        assert!((read.drivers[0] - read.drivers[2]).abs() < 1e-12);
+        // The healthy fixture spread is not flagged.
+        let read = driver_ladder(&strong()).unwrap();
+        assert!(!read.clamp_flattened);
     }
 
     #[test]
@@ -1501,7 +1683,7 @@ mod tests {
                 AnchorObservation { spread: Some(spread), raw_multiple: 1.0 / (spread + 0.045) }
             })
             .collect();
-        let s = spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &observations, 0.045, 0.0);
+        let s = spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &observations, 0.045, 0.0, 0.0);
         assert!(s.rate_anchored);
         assert_eq!(s.degenerate_scenarios, 0);
         assert!(!s.monotonicity_repaired, "inverse map orders without repair");
@@ -1518,7 +1700,7 @@ mod tests {
                 raw_multiple: 20.0 + i as f64,
             })
             .collect();
-        let s = spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &observations, 0.045, 0.0);
+        let s = spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &observations, 0.045, 0.0, 0.0);
         assert!(s.rate_anchored);
         assert_eq!(s.degenerate_scenarios, 3, "every scenario hit the ε guard");
         assert!(s.bear <= s.base && s.base <= s.bull, "direct raw map holds the order");
@@ -1529,7 +1711,7 @@ mod tests {
         let observations: Vec<AnchorObservation> = (0..5)
             .map(|i| AnchorObservation { spread: Some(0.01), raw_multiple: 18.0 + i as f64 })
             .collect();
-        let s = spread_anchored_scenarios(100.0, [5.0, 5.5, 6.0], &observations, 0.045, 0.0);
+        let s = spread_anchored_scenarios(100.0, [5.0, 5.5, 6.0], &observations, 0.045, 0.0, 0.0);
         assert!(!s.rate_anchored, "below the 8-observation floor");
         assert_eq!(s.anchor_observations, 5);
         assert!(!s.current_multiple_carry);
@@ -1545,7 +1727,7 @@ mod tests {
         let observations: Vec<AnchorObservation> = (0..12)
             .map(|i| AnchorObservation { spread: None, raw_multiple: 14.0 + i as f64 })
             .collect();
-        let s = spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &observations, 0.045, 0.0);
+        let s = spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &observations, 0.045, 0.0, 0.0);
         assert!(!s.rate_anchored, "no dated-rate anchors");
         assert_eq!(s.anchor_observations, 0);
         assert_eq!(s.raw_observations, 12);
@@ -1557,7 +1739,7 @@ mod tests {
 
     #[test]
     fn no_anchor_history_carries_the_current_multiple() {
-        let s = spread_anchored_scenarios(100.0, [6.0, 6.5, 7.0], &[], 0.045, 2.0);
+        let s = spread_anchored_scenarios(100.0, [6.0, 6.5, 7.0], &[], 0.045, 2.0, 0.0);
         assert!(s.current_multiple_carry);
         // Carry multiple = spot / base driver, so the base scenario lands on spot and
         // the spread comes from driver dispersion alone.
@@ -1565,6 +1747,55 @@ mod tests {
         assert!(s.bear < s.base && s.base < s.bull);
         // TR decomposition: (P + forward income) / spot − 1.
         assert!((s.tr_base - (100.0 + 2.0) / 100.0 + 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_flat_carry_surface_is_widened_to_the_dispersion_floor() {
+        // Flat drivers on the carry path: both scenario axes collapsed, so without
+        // the floor bear == base == bull and the three-state hurdle degenerates into
+        // a point test (the live-run flat-target syndrome). The floor widens each
+        // side to ± the half-spread around base, recorded.
+        let s = spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &[], 0.045, 0.0, 0.08);
+        assert!(s.current_multiple_carry);
+        assert!(s.dispersion_floor_applied);
+        assert!((s.base - 100.0).abs() < 1e-9);
+        assert!((s.bear - 92.0).abs() < 1e-9);
+        assert!((s.bull - 108.0).abs() < 1e-9);
+        // The TR legs read the widened band, so `fails` needs the bull leg to miss
+        // for real, not by construction.
+        assert!(s.tr_bear < s.tr_base && s.tr_base < s.tr_bull);
+    }
+
+    #[test]
+    fn a_wide_observed_band_is_never_narrowed_by_the_floor() {
+        // Real dispersion wider than the floor on both sides: the floor must be a
+        // widen-only guard, never a haircut on honest scenario spread.
+        let observations: Vec<AnchorObservation> = (0..9)
+            .map(|i| {
+                let spread = 0.06 - 0.005 * i as f64;
+                AnchorObservation { spread: Some(spread), raw_multiple: 1.0 / (spread + 0.045) }
+            })
+            .collect();
+        let with_floor =
+            spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &observations, 0.045, 0.0, 0.02);
+        let without =
+            spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &observations, 0.045, 0.0, 0.0);
+        assert!(!with_floor.dispersion_floor_applied);
+        assert!((with_floor.bear - without.bear).abs() < 1e-12);
+        assert!((with_floor.bull - without.bull).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dispersion_floor_scales_with_volatility_inside_the_bounds() {
+        // No vol → the lower bound; a calm large cap stays near it; a volatile name
+        // scales up; an extreme one clamps at the ceiling.
+        assert!((dispersion_floor(None) - 0.05).abs() < 1e-12);
+        let calm = dispersion_floor(Some(0.004)); // ~6.3% annualized → below the min
+        assert!((calm - 0.05).abs() < 1e-12);
+        let vol = dispersion_floor(Some(0.015)); // ~23.8% annualized → ~0.119
+        assert!((vol - 0.015 * ANNUALIZATION_FACTOR * 0.5).abs() < 1e-12);
+        let extreme = dispersion_floor(Some(0.10));
+        assert!((extreme - 0.20).abs() < 1e-12);
     }
 
     #[test]
@@ -1634,7 +1865,7 @@ mod tests {
             tr_bear: bear, tr_base: base, tr_bull: bull,
             rate_anchored: true, anchor_observations: 12, raw_observations: 12,
             degenerate_scenarios: 0, monotonicity_repaired: false,
-            current_multiple_carry: false,
+            current_multiple_carry: false, dispersion_floor_applied: false,
         };
         // Hurdle = dgs2 0.04 + medium 0.05 = 0.09.
         let clears = hurdle_read(&scenario(0.10, 0.15, 0.20), 0.04, RiskTier::Medium);

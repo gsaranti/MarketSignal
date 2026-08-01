@@ -408,6 +408,7 @@ Watch the 2s10s and the labor prints.
                 top_position_weight: 0.0,
                 cash_weight: 0.0,
                 exited: vec![],
+                data_health: None,
                 overview: String::new(),
             },
             audit: vec![],
