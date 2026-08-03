@@ -38,6 +38,12 @@ fn company_facts_path(cik10: &str) -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompanyFacts {
     pub revenue: Option<i64>,
+    /// The prior fiscal year's revenue — read from the **same concept** that
+    /// supplied `revenue` (never a different tag, so the growth read can't mix
+    /// bases), the second-latest distinct annual period end. Feeds the annual-basis
+    /// `revenue_growth` fallback where the FMP quarterly prints are too thin for
+    /// the TTM basis (the grade-band slice's F5 closure).
+    pub revenue_prior: Option<i64>,
     pub gross_profit: Option<i64>,
     pub net_income: Option<i64>,
     pub total_assets: Option<i64>,
@@ -48,6 +54,7 @@ impl CompanyFacts {
     /// Whether any fact resolved — the dossier uses this to decide if SEC contributed.
     pub fn is_empty(&self) -> bool {
         self.revenue.is_none()
+            && self.revenue_prior.is_none()
             && self.gross_profit.is_none()
             && self.net_income.is_none()
             && self.total_assets.is_none()
@@ -303,13 +310,21 @@ const REVENUE_CONCEPTS: &[&str] = &[
 ];
 
 /// Shape an `/api/xbrl/companyfacts` body into [`CompanyFacts`]. Pure, so the
-/// envelope contract is unit-testable without a live call.
+/// envelope contract is unit-testable without a live call. The prior-year revenue
+/// deliberately comes from the **same concept ladder rung** that supplied the latest
+/// print — a growth read across two different revenue tags would compare different
+/// economics.
 fn facts_from_value(value: &Value) -> CompanyFacts {
-    let revenue = REVENUE_CONCEPTS
+    let (revenue, revenue_prior) = REVENUE_CONCEPTS
         .iter()
-        .find_map(|c| latest_annual_usd(value, c));
+        .find_map(|c| {
+            let (latest, prior) = latest_two_annual_usd(value, c);
+            latest.map(|l| (Some(l), prior))
+        })
+        .unwrap_or((None, None));
     CompanyFacts {
         revenue,
+        revenue_prior,
         gross_profit: latest_annual_usd(value, "GrossProfit"),
         net_income: latest_annual_usd(value, "NetIncomeLoss"),
         total_assets: latest_annual_usd(value, "Assets"),
@@ -322,26 +337,60 @@ fn facts_from_value(value: &Value) -> CompanyFacts {
 /// USD datapoint. Reading only the 10-K full-year rows avoids mixing a quarterly
 /// figure into an annual metric.
 fn latest_annual_usd(value: &Value, concept: &str) -> Option<i64> {
-    let units = value
+    let (latest, _) = latest_two_annual_usd(value, concept);
+    latest
+}
+
+/// The latest **two** annual full-year USD values for one GAAP concept, by distinct
+/// `end` date descending — the second is the prior fiscal year's print (a 10-K
+/// carries its comparative-year rows under the same concept, which is what makes the
+/// prior read possible without a second request). Duplicate rows for one period end
+/// (an original filing plus a later 10-K's comparative) collapse to the
+/// **latest-filed** row — a later filing that restates the period (recast for a
+/// disposal, an accounting change) supersedes the original print; rows without a
+/// `filed` date fall back to array order, where EDGAR lists later filings later.
+fn latest_two_annual_usd(value: &Value, concept: &str) -> (Option<i64>, Option<i64>) {
+    let Some(units) = value
         .pointer(&format!("/facts/us-gaap/{concept}/units/USD"))
-        .and_then(Value::as_array)?;
-    units
+        .and_then(Value::as_array)
+    else {
+        return (None, None);
+    };
+    // (end, filed, array index, val) — sorted so the row to keep per period end
+    // comes first: end desc, then filed desc (absent filed sorts behind any
+    // present one), then array position desc as the filing-order proxy.
+    let mut dated: Vec<(String, Option<String>, usize, i64)> = units
         .iter()
-        .filter(|row| row.get("form").and_then(Value::as_str) == Some("10-K"))
+        .enumerate()
+        .filter(|(_, row)| row.get("form").and_then(Value::as_str) == Some("10-K"))
         // Prefer full-year datapoints; many 10-K rows carry `"fp":"FY"`.
-        .filter(|row| {
+        .filter(|(_, row)| {
             row.get("fp")
                 .and_then(Value::as_str)
                 .map(|fp| fp == "FY")
                 .unwrap_or(true)
         })
-        .filter_map(|row| {
+        .filter_map(|(idx, row)| {
             let end = row.get("end").and_then(Value::as_str)?;
+            let filed = row
+                .get("filed")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
             let val = row.get("val").and_then(Value::as_i64)?;
-            Some((end.to_string(), val))
+            Some((end.to_string(), filed, idx, val))
         })
-        .max_by(|a, b| a.0.cmp(&b.0))
-        .map(|(_, val)| val)
+        .collect();
+    dated.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.cmp(&a.2))
+    });
+    dated.dedup_by(|a, b| a.0 == b.0);
+    let mut iter = dated.into_iter();
+    (
+        iter.next().map(|(_, _, _, v)| v),
+        iter.next().map(|(_, _, _, v)| v),
+    )
 }
 
 #[cfg(test)]
@@ -350,15 +399,24 @@ mod tests {
     use crate::test_http::{Canned, MockHttp};
 
     fn facts_body() -> &'static str {
-        // Two revenue datapoints (older + newer 10-K) and one each for the rest. The
-        // parser must pick the latest annual by `end` date.
+        // Two revenue datapoints (older + newer 10-K, the older year appearing twice:
+        // the original print and a later-filed 10-K comparative that RESTATES it) and
+        // one each for the rest. The parser must pick the latest annual by `end`
+        // date, the prior year from the same concept's second-distinct end, and the
+        // latest-FILED row where one period end appears twice.
         r#"{
           "facts": {
             "us-gaap": {
               "RevenueFromContractWithCustomerExcludingAssessedTax": {
                 "units": { "USD": [
-                  {"end":"2024-09-28","val":391035000000,"form":"10-K","fp":"FY"},
-                  {"end":"2023-09-30","val":383285000000,"form":"10-K","fp":"FY"}
+                  {"end":"2024-09-28","val":391035000000,"form":"10-K","fp":"FY","filed":"2024-11-01"},
+                  {"end":"2023-09-30","val":383285000000,"form":"10-K","fp":"FY","filed":"2023-11-03"},
+                  {"end":"2023-09-30","val":380000000000,"form":"10-K","fp":"FY","filed":"2024-11-01"}
+                ]}
+              },
+              "Revenues": {
+                "units": { "USD": [
+                  {"end":"2022-09-24","val":394328000000,"form":"10-K","fp":"FY"}
                 ]}
               },
               "NetIncomeLoss": {
@@ -381,6 +439,11 @@ mod tests {
         let facts = facts_from_value(&value);
         // Latest annual revenue (the 2024 10-K), not the prior year.
         assert_eq!(facts.revenue, Some(391_035_000_000));
+        // The prior year comes from the SAME concept's second-distinct end; the
+        // duplicated period end collapses to the latest-FILED row (the later 10-K's
+        // restated comparative supersedes the original print), and the older
+        // `Revenues` concept (a different tag, different economics) never mixes in.
+        assert_eq!(facts.revenue_prior, Some(380_000_000_000));
         // The 10-Q net-income row is filtered out; the 10-K stands.
         assert_eq!(facts.net_income, Some(93_736_000_000));
         assert_eq!(facts.stockholders_equity, Some(56_950_000_000));

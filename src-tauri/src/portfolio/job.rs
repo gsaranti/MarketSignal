@@ -507,7 +507,15 @@ fn run_analysis(
         } else {
             company_data.financials(&position.symbol)
         };
-        let sec_data = company_data.facts(&position.symbol);
+        // A fund never hits SEC company facts: its statement lines feed nothing on
+        // the reduced path (quality is imputed, valuation composite-priced), and the
+        // trust entity behind an ETF routinely 404s the facts API — pure gap noise
+        // on the audit (the 2026-07-31 run's QQQ finding, F5).
+        let sec_data = if is_fund {
+            SecData::default()
+        } else {
+            company_data.facts(&position.symbol)
+        };
         fmp_financials.gaps.extend(sec_data.gaps);
         // Deep dated history (Stooq, FMP dated-EOD fallback) for the anchor join and
         // drawdown reads.
@@ -890,6 +898,9 @@ mod tests {
                         filing_date: None,
                         revenue: Some(100.0e9 - 1.0e9 * i as f64),
                         eps_diluted: Some(1.55 - 0.01 * i as f64),
+                        net_income: None,
+                        gross_profit: None,
+                        cost_of_revenue: None,
                         diluted_shares: Some(1.5e10),
                     })
                     .collect(),
@@ -1336,6 +1347,67 @@ mod tests {
             }
             other => panic!("expected a priced fund verdict, got {other:?}"),
         }
+    }
+
+    /// [`FundCompanyData`] with a tripwired SEC leg — the fund path must never reach
+    /// it (its statement lines feed nothing on the reduced path, and the trust
+    /// entity behind an ETF routinely 404s the facts API into pure gap noise).
+    struct SecTripwireFundData;
+    impl CompanyDataSource for SecTripwireFundData {
+        fn financials(&self, symbol: &str) -> CompanyFinancials {
+            FundCompanyData.financials(symbol)
+        }
+        fn facts(&self, symbol: &str) -> SecData {
+            panic!("SEC company facts must not be fetched for a fund ({symbol})");
+        }
+        fn fund_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
+            FundCompanyData.fund_data(symbol)
+        }
+        fn sector_pe_snapshot(&self) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+            FundCompanyData.sector_pe_snapshot()
+        }
+        fn sector_pe_history(
+            &self,
+            sector: &str,
+        ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+            FundCompanyData.sector_pe_history(sector)
+        }
+    }
+
+    #[test]
+    fn a_fund_holding_never_fetches_sec_facts() {
+        let (_dir, paths) = paths();
+        let guard = RunGuard::default();
+        let mut fund_position = stock("VTI", 50.0, 9_750.0);
+        fund_position.asset_class = AssetClass::Etf;
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings_of(vec![fund_position])),
+            &SecTripwireFundData,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            &paths,
+            &guard,
+            &ctx(),
+        )
+        .unwrap();
+        let run = match outcome {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+        // The tripwire not firing is the assertion; the audit records no SEC source
+        // and no SEC gap for the fund.
+        let audit = &run.audit[0];
+        assert!(
+            !audit.sources.iter().any(|s| s.contains("SEC")),
+            "no SEC source on a fund audit: {:?}",
+            audit.sources
+        );
+        assert!(
+            !audit.degraded_inputs.iter().any(|g| g.contains("SEC")),
+            "no SEC gap noise on a fund audit: {:?}",
+            audit.degraded_inputs
+        );
     }
 
     #[test]

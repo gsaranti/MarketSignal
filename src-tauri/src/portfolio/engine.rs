@@ -48,6 +48,47 @@ const GRADE_D: f64 = 40.0;
 /// (`docs/portfolio-analysis.md` §Evidence floor).
 const MIN_SUBSCORES_FOR_GRADE: usize = 2;
 
+// -- Sub-score normalization bands (`docs/portfolio-analysis.md` §Starting
+//    parameters — clamped linear maps, each `(lo, hi)` pair mapping lo → 0 and
+//    hi → 100 through `scale`; an inverted pair scores lower inputs higher).
+//    Shadow-tuned against run `3b21ae85` (the first calibration dataset) —
+//    the tune is versioned by [`GRADE_PARAMETER_VERSION`].
+
+/// Quality: net margin 0 → 0, 30%+ → 100.
+const QUALITY_NET_MARGIN_BAND: (f64, f64) = (0.0, 0.30);
+/// Quality: gross margin 15% → 0, 65%+ → 100.
+const QUALITY_GROSS_MARGIN_BAND: (f64, f64) = (0.15, 0.65);
+/// Valuation: P/E 70+ → 0, 12 → 100 (inverted — cheaper is better). The v1
+/// (40, 10) band read normal large-cap-growth multiples as junk-expensive —
+/// the 2026-07-31 run's whole-book C/D/F compression (F4).
+const VALUATION_PE_BAND: (f64, f64) = (70.0, 12.0);
+/// Valuation: the fixed low score for a non-positive P/E (a loss-maker is never
+/// "cheap", never off the scale).
+const VALUATION_NEGATIVE_PE_SCORE: f64 = 20.0;
+/// Valuation: P/S 25+ → 0, 2 → 100 (inverted).
+const VALUATION_PS_BAND: (f64, f64) = (25.0, 2.0);
+/// Valuation: P/B 30+ → 0, 2 → 100 (inverted).
+const VALUATION_PB_BAND: (f64, f64) = (30.0, 2.0);
+/// Momentum (context, outside the letter): trailing return −30% → 0, +30% → 100.
+const MOMENTUM_TRAILING_RETURN_BAND: (f64, f64) = (-0.30, 0.30);
+/// Risk: per-period (daily) realized volatility 4.5%+ → 0, 0.5% → 100 (inverted —
+/// calmer is safer).
+const RISK_VOLATILITY_BAND: (f64, f64) = (0.045, 0.005);
+/// Risk: debt/equity 2.5×+ → 0, unlevered → 100 (inverted). A **negative**
+/// debt/equity (negative equity — levered beyond the equity base) scores 0, the
+/// mirror of the negative-P/E rule: the inverted clamp would otherwise read it as
+/// maximally safe (`risk_score`).
+const RISK_DEBT_EQUITY_BAND: (f64, f64) = (2.5, 0.0);
+
+/// The grade-band parameter version, stamped on each run's audit
+/// (`HoldingAudit.grade_parameter_version`) so a band recalibration — letters
+/// moving with no input change — is recognizable to the what-changed audit and
+/// outcome-learning cohorts. v2 (the 2026-08-03 shadow-tune against run
+/// `3b21ae85`, certified v1-exact first): the recentered-growth bands above plus
+/// the negative-D/E → 0 guard; runs decoding `None` predate the stamp and carry
+/// the v1 bands.
+pub const GRADE_PARAMETER_VERSION: &str = "grade-v2";
+
 /// Fallback one-month scenario half-band (fraction of the base target) when
 /// realized volatility can't be computed. The twelve-month band needs no fallback
 /// under v2 — its bear/bull ARE the scenario prices.
@@ -172,6 +213,16 @@ pub struct QuarterlyIncomeRow {
     pub revenue: Option<f64>,
     pub eps_diluted: Option<f64>,
     pub diluted_shares: Option<f64>,
+    /// Statement lines for the TTM statement basis (`docs/portfolio-analysis.md`
+    /// §Starting parameters — four-quarter sums feeding the margin / growth /
+    /// multiple inputs, the grade-band slice's F5 closure). `#[serde(default)]`
+    /// keeps rows persisted before the fields decodable.
+    #[serde(default)]
+    pub net_income: Option<f64>,
+    #[serde(default)]
+    pub gross_profit: Option<f64>,
+    #[serde(default)]
+    pub cost_of_revenue: Option<f64>,
 }
 
 /// The forward consensus the v2 driver ladder reads (`analyst-estimates`) — the
@@ -478,7 +529,7 @@ pub fn grade_from_subscores(s: &SubScores) -> Grade {
     }
 }
 
-fn compute_metrics(fin: &CompanyFinancials) -> ComputedMetrics {
+pub(crate) fn compute_metrics(fin: &CompanyFinancials) -> ComputedMetrics {
     let ratio = |num: Option<f64>, den: Option<f64>| match (num, den) {
         (Some(n), Some(d)) if d != 0.0 => Some(n / d),
         _ => None,
@@ -521,37 +572,53 @@ fn average(parts: &[Option<f64>]) -> Option<f64> {
     }
 }
 
-/// Quality (higher better): profitability and cash generation.
+/// Quality (higher better): profitability margins on one statement basis.
 fn quality_score(m: &ComputedMetrics) -> Option<f64> {
+    let (nl, nh) = QUALITY_NET_MARGIN_BAND;
+    let (gl, gh) = QUALITY_GROSS_MARGIN_BAND;
     average(&[
-        m.net_margin.map(|x| scale(x, 0.0, 0.25)),
-        m.gross_margin.map(|x| scale(x, 0.20, 0.60)),
+        m.net_margin.map(|x| scale(x, nl, nh)),
+        m.gross_margin.map(|x| scale(x, gl, gh)),
     ])
 }
 
 /// Valuation (higher better == cheaper): inverted multiples. A negative P/E (no
 /// earnings) is not "cheap" — it scores low rather than off the scale.
 fn valuation_score(m: &ComputedMetrics) -> Option<f64> {
-    let pe = m.pe_ratio.map(|x| if x <= 0.0 { 20.0 } else { scale(x, 40.0, 10.0) });
+    let (pel, peh) = VALUATION_PE_BAND;
+    let (psl, psh) = VALUATION_PS_BAND;
+    let (pbl, pbh) = VALUATION_PB_BAND;
+    let pe = m.pe_ratio.map(|x| {
+        if x <= 0.0 {
+            VALUATION_NEGATIVE_PE_SCORE
+        } else {
+            scale(x, pel, peh)
+        }
+    });
     average(&[
         pe,
-        m.ps_ratio.map(|x| scale(x, 10.0, 1.0)),
-        m.pb_ratio.map(|x| scale(x, 8.0, 1.0)),
+        m.ps_ratio.map(|x| scale(x, psl, psh)),
+        m.pb_ratio.map(|x| scale(x, pbl, pbh)),
     ])
 }
 
 /// Momentum (higher better): trailing price return over the available history.
 fn momentum_score(m: &ComputedMetrics) -> Option<f64> {
-    m.trailing_return.map(|r| scale(r, -0.30, 0.30))
+    let (lo, hi) = MOMENTUM_TRAILING_RETURN_BAND;
+    m.trailing_return.map(|r| scale(r, lo, hi))
 }
 
-/// Risk (higher == safer): low realized volatility and low leverage.
+/// Risk (higher == safer): low realized volatility and low leverage. Negative
+/// equity makes the D/E ratio negative — levered beyond the equity base, not
+/// unlevered — so it takes the band's floor rather than riding the inverted
+/// clamp to "maximally safe" (the mirror of the negative-P/E rule).
 fn risk_score(m: &ComputedMetrics) -> Option<f64> {
+    let (vl, vh) = RISK_VOLATILITY_BAND;
+    let (dl, dh) = RISK_DEBT_EQUITY_BAND;
     average(&[
-        // 0% per-period vol → 100 (safest); 4%+ → 0.
-        m.return_volatility.map(|v| scale(v, 0.04, 0.0)),
-        // No leverage → 100; debt 2× equity or more → 0.
-        m.debt_to_equity.map(|d| scale(d, 2.0, 0.0)),
+        m.return_volatility.map(|v| scale(v, vl, vh)),
+        m.debt_to_equity
+            .map(|d| if d < 0.0 { 0.0 } else { scale(d, dl, dh) }),
     ])
 }
 
@@ -1439,6 +1506,9 @@ mod tests {
                 revenue: Some(100.0 - i as f64),
                 eps_diluted: Some(1.55 - 0.01 * i as f64),
                 diluted_shares: Some(1.5e10),
+                net_income: None,
+                gross_profit: None,
+                cost_of_revenue: None,
             })
             .collect();
         // Dated closes: one per quarter end plus a recent print, rising over time.
@@ -1817,6 +1887,82 @@ mod tests {
         assert_eq!(f(72.0, 0.0), f(72.0, 100.0));
     }
 
+    /// The letter cutoffs are ≥-inclusive at exactly A 85 / B 70 / C 55 / D 40
+    /// (`docs/portfolio-analysis.md` §Starting parameters), certified with the
+    /// grade-band shadow-tune slice.
+    #[test]
+    fn letter_cutoffs_are_inclusive_at_the_documented_boundaries() {
+        let at = |v: f64| {
+            grade_from_subscores(&SubScores {
+                quality: v,
+                valuation: v,
+                momentum: 0.0,
+                risk: v,
+            })
+        };
+        assert_eq!(at(GRADE_A), Grade::A);
+        assert_eq!(at(GRADE_A - 0.01), Grade::B);
+        assert_eq!(at(GRADE_B), Grade::B);
+        assert_eq!(at(GRADE_B - 0.01), Grade::C);
+        assert_eq!(at(GRADE_C), Grade::C);
+        assert_eq!(at(GRADE_C - 0.01), Grade::D);
+        assert_eq!(at(GRADE_D), Grade::D);
+        assert_eq!(at(GRADE_D - 0.01), Grade::F);
+    }
+
+    /// A missing sub-score is imputed to the neutral midpoint (50) — the composite
+    /// divides by the full weight sum, never renormalizes over the present axes —
+    /// and the letter carries the visible low-confidence marker
+    /// (`docs/portfolio-analysis.md` §Starting parameters).
+    #[test]
+    fn missing_subscore_imputes_neutral_and_marks_low_confidence() {
+        let mut fin = strong();
+        // Kill both quality legs (margins) while valuation/risk stay computable;
+        // the multiples ride the fixture's direct pe/ps/pb fields.
+        fin.net_income = None;
+        fin.gross_profit = None;
+        let EngineVerdict::Analyzed(out) = analyze(&fin, &rates()) else {
+            panic!("two real sub-scores must still grade");
+        };
+        assert_eq!(out.sub_scores.quality, 50.0, "imputed to the neutral midpoint");
+        assert!(out.low_confidence_grade, "imputed axis must mark the letter");
+        // The letter is exactly the roll-up over the imputed struct — the
+        // full-weight-sum arithmetic, not a present-axes renormalization.
+        assert_eq!(out.grade, grade_from_subscores(&out.sub_scores));
+        // And a fully-supplied strong company carries no marker.
+        let EngineVerdict::Analyzed(full) = analyze(&strong(), &rates()) else {
+            panic!("strong fixture grades");
+        };
+        assert!(!full.low_confidence_grade);
+    }
+
+    /// A negative P/E (no earnings) scores low — never "cheap", never off the scale
+    /// (`docs/portfolio-analysis.md` §Starting parameters).
+    #[test]
+    fn negative_pe_scores_low_never_cheap() {
+        let m = |pe: Option<f64>| ComputedMetrics {
+            pe_ratio: pe,
+            ..ComputedMetrics::default()
+        };
+        let negative = valuation_score(&m(Some(-5.0))).unwrap();
+        let cheap = valuation_score(&m(Some(12.0))).unwrap();
+        assert_eq!(negative, 20.0, "the fixed low score for a loss-maker");
+        assert!(negative < cheap, "a loss-maker must never outscore a cheap earner");
+    }
+
+    /// A negative debt/equity (negative equity) takes the leverage band's floor —
+    /// the inverted clamp must never read "levered beyond the equity base" as
+    /// maximally safe (the grade-v2 guard, the negative-P/E rule's mirror).
+    #[test]
+    fn negative_debt_equity_scores_zero_never_safe() {
+        let m = |de: Option<f64>| ComputedMetrics {
+            debt_to_equity: de,
+            ..ComputedMetrics::default()
+        };
+        assert_eq!(risk_score(&m(Some(-2.9))).unwrap(), 0.0);
+        assert_eq!(risk_score(&m(Some(0.0))).unwrap(), 100.0, "unlevered stays safest");
+    }
+
     #[test]
     fn stock_tier_legs_trigger_and_default_per_the_missing_input_rule() {
         let fin = strong();
@@ -2066,5 +2212,361 @@ mod tests {
         assert_eq!(sizing.target_weight_high, 0.0);
         // Selling the whole position is a negative dollar delta of its full value.
         assert!(sizing.est_dollar_delta.unwrap() < 0.0);
+    }
+
+    /// Certification replay over a persisted live run — the grade-band shadow-tune
+    /// slice's opening step (`docs/verification/2026-07-31-first-live-portfolio-run.md`
+    /// §F4: the sub-score formulas were judged by their outputs, never audited against
+    /// spec): recompute each priced holding's sub-scores and letter from its audit's
+    /// persisted metrics and diff them against the persisted verdict. Stocks get the
+    /// full derivation check; a priced fund's valuation/risk derive from the composite
+    /// path whose history inputs the audit doesn't carry, so funds get the
+    /// sub-scores→letter roll-up check only. Ignored like the live smokes: it reads a
+    /// run exported from a real store (`MARKET_SIGNAL_RUN_JSON` = path to a
+    /// `portfolio_runs.run_json` export), which holds a real book and never enters the
+    /// repo.
+    #[test]
+    #[ignore]
+    fn certify_run_grade_path() {
+        let path = std::env::var("MARKET_SIGNAL_RUN_JSON")
+            .expect("set MARKET_SIGNAL_RUN_JSON to an exported portfolio_runs.run_json");
+        let body = std::fs::read_to_string(&path).expect("reading the run export");
+        let run: crate::portfolio::PortfolioRun =
+            serde_json::from_str(&body).expect("decoding PortfolioRun");
+
+        let audits: std::collections::HashMap<&str, &crate::portfolio::HoldingAudit> =
+            run.audit.iter().map(|a| (a.symbol.as_str(), a)).collect();
+
+        let (mut priced, mut stocks) = (0usize, 0usize);
+        let (mut derivation_mismatches, mut rollup_mismatches) = (0usize, 0usize);
+
+        println!(
+            "symbol   | persisted Q/V/M/R → letter    | recomputed Q/V/M/R → letter   | missing inputs"
+        );
+        for v in &run.verdicts {
+            let crate::portfolio::VerdictDisposition::Priced(g) = &v.disposition else {
+                continue;
+            };
+            priced += 1;
+            let audit = audits
+                .get(v.symbol.as_str())
+                .unwrap_or_else(|| panic!("no audit row for {}", v.symbol));
+            let m = &audit.metrics;
+
+            // Roll-up leg (every priced holding): the persisted sub-scores must
+            // reproduce the persisted letter through the fixed weights and cutoffs.
+            let rolled = grade_from_subscores(&g.sub_scores);
+            if rolled != g.grade {
+                rollup_mismatches += 1;
+                println!(
+                    "{:8} | ROLL-UP MISMATCH: persisted {} ≠ rolled {}",
+                    v.symbol,
+                    g.grade.as_str(),
+                    rolled.as_str()
+                );
+            }
+            if g.fund_class_label.is_some() {
+                continue;
+            }
+            // The derivation leg replays the CURRENT band constants, so it only
+            // certifies a run stamped with the current grade parameter version —
+            // an older-vintage run (or a pre-stamp `None`) keeps the roll-up check
+            // alone. (Run `3b21ae85` was derivation-certified exact against its own
+            // v1 bands on 2026-08-03, before the grade-v2 retune — the evidence
+            // record in `docs/verification/`.)
+            if audit.grade_parameter_version.as_deref() != Some(GRADE_PARAMETER_VERSION) {
+                continue;
+            }
+
+            // Derivation leg (stocks): metrics → sub-score maps → imputation → letter.
+            stocks += 1;
+            let q = quality_score(m);
+            let val = valuation_score(m);
+            let mom = momentum_score(m);
+            let r = risk_score(m);
+            let recomputed = SubScores {
+                quality: q.unwrap_or(50.0),
+                valuation: val.unwrap_or(50.0),
+                momentum: mom.unwrap_or(50.0),
+                risk: r.unwrap_or(50.0),
+            };
+            let letter = grade_from_subscores(&recomputed);
+            let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+            let ok = close(recomputed.quality, g.sub_scores.quality)
+                && close(recomputed.valuation, g.sub_scores.valuation)
+                && close(recomputed.momentum, g.sub_scores.momentum)
+                && close(recomputed.risk, g.sub_scores.risk)
+                && letter == g.grade
+                && (q.is_none() || val.is_none() || r.is_none()) == g.low_confidence_grade;
+            if !ok {
+                derivation_mismatches += 1;
+            }
+            let gap = |name: &str, x: Option<f64>| {
+                if x.is_none() {
+                    format!("{name} ")
+                } else {
+                    String::new()
+                }
+            };
+            println!(
+                "{:8} | {:5.1}/{:5.1}/{:5.1}/{:5.1} → {} | {:5.1}/{:5.1}/{:5.1}/{:5.1} → {} {}| {}{}{}{}{}{}{}{}",
+                v.symbol,
+                g.sub_scores.quality,
+                g.sub_scores.valuation,
+                g.sub_scores.momentum,
+                g.sub_scores.risk,
+                g.grade.as_str(),
+                recomputed.quality,
+                recomputed.valuation,
+                recomputed.momentum,
+                recomputed.risk,
+                letter.as_str(),
+                if ok { "" } else { "← MISMATCH " },
+                gap("net_margin", m.net_margin),
+                gap("gross_margin", m.gross_margin),
+                gap("pe", m.pe_ratio),
+                gap("ps", m.ps_ratio),
+                gap("pb", m.pb_ratio),
+                gap("vol", m.return_volatility),
+                gap("d/e", m.debt_to_equity),
+                gap("rev_growth", m.revenue_growth),
+            );
+        }
+        println!(
+            "{priced} priced ({stocks} stocks): {derivation_mismatches} derivation mismatches, \
+             {rollup_mismatches} roll-up mismatches"
+        );
+        assert_eq!(
+            derivation_mismatches, 0,
+            "stock sub-score derivation must reproduce the persisted audit"
+        );
+        assert_eq!(
+            rollup_mismatches, 0,
+            "sub-scores → letter roll-up must reproduce the persisted grade"
+        );
+    }
+
+    /// One candidate normalization-band set for the shadow-tune sweep below —
+    /// the same clamped-map shapes as the shipped formulas, parameterized.
+    struct BandSet {
+        name: &'static str,
+        nm: (f64, f64),
+        gm: (f64, f64),
+        pe: (f64, f64),
+        ps: (f64, f64),
+        pb: (f64, f64),
+        vol: (f64, f64),
+        de: (f64, f64),
+        /// Score a negative debt/equity (negative equity — levered beyond the
+        /// equity base) as 0 instead of letting the inverted clamp read it as
+        /// maximally safe (the mirror of the negative-P/E rule).
+        negative_de_scores_zero: bool,
+    }
+
+    impl BandSet {
+        fn scores(&self, m: &ComputedMetrics) -> (Option<f64>, Option<f64>, Option<f64>) {
+            let quality = average(&[
+                m.net_margin.map(|x| scale(x, self.nm.0, self.nm.1)),
+                m.gross_margin.map(|x| scale(x, self.gm.0, self.gm.1)),
+            ]);
+            let pe = m.pe_ratio.map(|x| {
+                if x <= 0.0 {
+                    VALUATION_NEGATIVE_PE_SCORE
+                } else {
+                    scale(x, self.pe.0, self.pe.1)
+                }
+            });
+            let valuation = average(&[
+                pe,
+                m.ps_ratio.map(|x| scale(x, self.ps.0, self.ps.1)),
+                m.pb_ratio.map(|x| scale(x, self.pb.0, self.pb.1)),
+            ]);
+            let de = m.debt_to_equity.map(|d| {
+                if d < 0.0 && self.negative_de_scores_zero {
+                    0.0
+                } else {
+                    scale(d, self.de.0, self.de.1)
+                }
+            });
+            let risk = average(&[
+                m.return_volatility.map(|v| scale(v, self.vol.0, self.vol.1)),
+                de,
+            ]);
+            (quality, valuation, risk)
+        }
+
+        fn letter(&self, m: &ComputedMetrics) -> (f64, Grade) {
+            let (q, v, r) = self.scores(m);
+            let s = SubScores {
+                quality: q.unwrap_or(50.0),
+                valuation: v.unwrap_or(50.0),
+                momentum: 50.0,
+                risk: r.unwrap_or(50.0),
+            };
+            let composite = (s.quality * W_QUALITY + s.valuation * W_VALUATION + s.risk * W_RISK)
+                / (W_QUALITY + W_VALUATION + W_RISK);
+            (composite, grade_from_subscores(&s))
+        }
+    }
+
+    /// Spearman rank correlation between two equal-length score vectors — the
+    /// ordering-preservation check (F4: relative ordering carries real signal).
+    /// Ties take the average rank and the coefficient is Pearson over the ranks,
+    /// so clamped scores that tie (composites pinned at a band edge) don't skew
+    /// the statistic the no-ties shortcut would.
+    fn spearman(a: &[f64], b: &[f64]) -> f64 {
+        fn ranks(xs: &[f64]) -> Vec<f64> {
+            let mut idx: Vec<usize> = (0..xs.len()).collect();
+            idx.sort_by(|&i, &j| xs[i].partial_cmp(&xs[j]).unwrap());
+            let mut r = vec![0.0; xs.len()];
+            let mut pos = 0;
+            while pos < idx.len() {
+                let mut end = pos;
+                while end + 1 < idx.len() && xs[idx[end + 1]] == xs[idx[pos]] {
+                    end += 1;
+                }
+                let avg = (pos + end) as f64 / 2.0;
+                for &i in &idx[pos..=end] {
+                    r[i] = avg;
+                }
+                pos = end + 1;
+            }
+            r
+        }
+        fn pearson(xs: &[f64], ys: &[f64]) -> f64 {
+            let n = xs.len() as f64;
+            let (mx, my) = (
+                xs.iter().sum::<f64>() / n,
+                ys.iter().sum::<f64>() / n,
+            );
+            let cov: f64 = xs.iter().zip(ys).map(|(x, y)| (x - mx) * (y - my)).sum();
+            let (vx, vy): (f64, f64) = (
+                xs.iter().map(|x| (x - mx).powi(2)).sum(),
+                ys.iter().map(|y| (y - my).powi(2)).sum(),
+            );
+            cov / (vx.sqrt() * vy.sqrt())
+        }
+        pearson(&ranks(a), &ranks(b))
+    }
+
+    /// Pin the tie handling: identical vectors correlate 1.0 even with ties, and
+    /// average-rank ties beat the arbitrary-distinct-rank assignment (which would
+    /// read the same tied vector as imperfectly correlated with itself under a
+    /// different tiebreak order).
+    #[test]
+    fn spearman_handles_ties_with_average_ranks() {
+        let tied = [50.0, 50.0, 70.0, 30.0, 50.0];
+        assert!((spearman(&tied, &tied) - 1.0).abs() < 1e-12);
+        let reversed = [5.0, 4.0, 3.0, 2.0, 1.0];
+        let ascending = [1.0, 2.0, 3.0, 4.0, 5.0];
+        assert!((spearman(&ascending, &reversed) + 1.0).abs() < 1e-12);
+    }
+
+    /// The grade-band shadow-tune sweep (the slice's closing step): candidate band
+    /// sets over the persisted metric surface AND the probe-refreshed surface
+    /// (`MARKET_SIGNAL_REFRESHED_METRICS` — optional), printing per-stock letters,
+    /// the letter distribution, and rank correlation against the shipped bands.
+    /// A decision aid, not a gate: the chosen constants land in the calibration
+    /// surface above and re-certify through `certify_run_grade_path`.
+    #[test]
+    #[ignore]
+    fn sweep_grade_bands() {
+        let path = std::env::var("MARKET_SIGNAL_RUN_JSON").expect("MARKET_SIGNAL_RUN_JSON");
+        let run: crate::portfolio::PortfolioRun =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let refreshed: std::collections::BTreeMap<String, ComputedMetrics> =
+            match std::env::var("MARKET_SIGNAL_REFRESHED_METRICS") {
+                Ok(p) => serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap(),
+                Err(_) => Default::default(),
+            };
+
+        let baseline = BandSet {
+            // Reads whatever constants are currently shipped — after a retune this
+            // is the NEW basis, not the vintage the run was graded under. The
+            // negative-D/E guard mirrors production `risk_score` (grade-v2+), so
+            // the baseline is the real shipped behavior, not a hybrid.
+            name: "current consts (shipped)",
+            nm: QUALITY_NET_MARGIN_BAND,
+            gm: QUALITY_GROSS_MARGIN_BAND,
+            pe: VALUATION_PE_BAND,
+            ps: VALUATION_PS_BAND,
+            pb: VALUATION_PB_BAND,
+            vol: RISK_VOLATILITY_BAND,
+            de: RISK_DEBT_EQUITY_BAND,
+            negative_de_scores_zero: true,
+        };
+        let moderate = BandSet {
+            name: "moderate",
+            nm: (0.0, 0.25),
+            gm: (0.20, 0.60),
+            pe: (55.0, 10.0),
+            ps: (18.0, 1.5),
+            pb: (20.0, 1.5),
+            vol: (0.04, 0.0),
+            de: (2.0, 0.0),
+            negative_de_scores_zero: true,
+        };
+        let recentered = BandSet {
+            name: "recentered-growth",
+            nm: (0.0, 0.30),
+            gm: (0.15, 0.65),
+            pe: (70.0, 12.0),
+            ps: (25.0, 2.0),
+            pb: (30.0, 2.0),
+            vol: (0.045, 0.005),
+            de: (2.5, 0.0),
+            negative_de_scores_zero: true,
+        };
+
+        let stocks: Vec<(&str, &ComputedMetrics)> = run
+            .verdicts
+            .iter()
+            .filter_map(|v| match &v.disposition {
+                crate::portfolio::VerdictDisposition::Priced(g) if g.fund_class_label.is_none() => {
+                    run.audit
+                        .iter()
+                        .find(|a| a.symbol == v.symbol)
+                        .map(|a| (v.symbol.as_str(), &a.metrics))
+                }
+                _ => None,
+            })
+            .collect();
+
+        let surfaces: Vec<(&str, Vec<(&str, &ComputedMetrics)>)> = if refreshed.is_empty() {
+            vec![("as-persisted", stocks.clone())]
+        } else {
+            vec![
+                ("as-persisted", stocks.clone()),
+                (
+                    "refreshed",
+                    stocks
+                        .iter()
+                        .map(|(s, m)| (*s, refreshed.get(*s).unwrap_or(m)))
+                        .collect(),
+                ),
+            ]
+        };
+
+        for (surface_name, surface) in &surfaces {
+            println!("\n=== surface: {surface_name} ===");
+            let base_composites: Vec<f64> =
+                surface.iter().map(|(_, m)| baseline.letter(m).0).collect();
+            for bands in [&baseline, &moderate, &recentered] {
+                let mut dist = std::collections::BTreeMap::new();
+                let mut composites = vec![];
+                println!("--- {} ---", bands.name);
+                for (symbol, m) in surface {
+                    let (composite, letter) = bands.letter(m);
+                    composites.push(composite);
+                    *dist.entry(letter.as_str()).or_insert(0usize) += 1;
+                    println!("{symbol:8} {composite:5.1} {}", letter.as_str());
+                }
+                println!(
+                    "distribution: {:?}  spearman-vs-shipped: {:.3}",
+                    dist,
+                    spearman(&base_composites, &composites)
+                );
+            }
+        }
     }
 }

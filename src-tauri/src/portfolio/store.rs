@@ -276,6 +276,7 @@ mod tests {
                 model_ids: vec!["qwen3.5:122b".into()],
                 prompt_version: "portfolio-v1".into(),
                 degraded_inputs: vec![],
+                grade_parameter_version: None,
             }],
         }
     }

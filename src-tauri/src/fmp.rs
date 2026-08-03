@@ -1666,16 +1666,20 @@ impl FmpDataSource {
 
     /// The full **stock** per-symbol surface: the quote + EOD core plus the v2
     /// target surface — quarterly income prints (the anchor window's trailing
-    /// driver source), the forward consensus (the driver ladder), and the trailing
-    /// dividends (the total-return leg). Each fail-soft with a tagged gap; a
-    /// missing consensus later abstains the holding under the named
-    /// `no-admissible-driver` floor reason rather than failing here.
+    /// driver source and the TTM statement basis), the latest balance sheet (the
+    /// leverage leg and the P/B denominator), the forward consensus (the driver
+    /// ladder), and the trailing dividends (the total-return leg). Each fail-soft
+    /// with a tagged gap; a missing consensus later abstains the holding under the
+    /// named `no-admissible-driver` floor reason rather than failing here.
     pub fn fetch_company_financials(
         &self,
         symbol: &str,
     ) -> crate::portfolio::engine::CompanyFinancials {
         let mut fin = self.fetch_quote_and_eod(symbol);
         fin.quarterly_income = self.fetch_quarterly_income(symbol, &mut fin.gaps);
+        let balance = self.fetch_balance_sheet(symbol, &mut fin.gaps);
+        fin.total_debt = balance.total_debt;
+        fin.total_equity = balance.total_equity;
         fin.consensus = self.fetch_analyst_estimates(symbol, &mut fin.gaps);
         fin.ttm_dividends_per_share = self.fetch_ttm_dividends(symbol, &mut fin.gaps);
         fin
@@ -1913,11 +1917,12 @@ mod tests {
 
     #[test]
     fn company_quote_and_eod_parse_into_financials() {
-        // The per-company pull makes five calls — quote, EOD, quarterly income,
-        // analyst estimates, dividends — so the mock scripts five replies. Quote
-        // carries price/market cap/shares; EOD is returned out of order and must come
-        // back chronological so the engine's first/last is honest; the v2 surface
-        // (statements, consensus, dividends) parses into its typed fields.
+        // The per-company pull makes six calls — quote, EOD, quarterly income,
+        // balance sheet, analyst estimates, dividends — so the mock scripts six
+        // replies. Quote carries price/market cap/shares; EOD is returned out of
+        // order and must come back chronological so the engine's first/last is
+        // honest; the v2 surface (statements, balance sheet, consensus, dividends)
+        // parses into its typed fields.
         let server = MockHttp::serve(vec![
             Canned::Reply {
                 status: 200,
@@ -1934,7 +1939,13 @@ mod tests {
                 status: 200,
                 headers: vec![],
                 body: r#"[{"date":"2026-03-31","filingDate":"2026-05-01","revenue":95.0e9,
-                           "epsDiluted":1.55,"weightedAverageShsOutDil":1.5e10}]"#,
+                           "epsDiluted":1.55,"weightedAverageShsOutDil":1.5e10,
+                           "netIncome":24.0e9,"grossProfit":44.0e9,"costOfRevenue":51.0e9}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2026-03-31","totalDebt":110.0e9,"totalStockholdersEquity":62.0e9,"totalEquity":63.0e9}]"#,
             },
             Canned::Reply {
                 status: 200,
@@ -1955,8 +1966,15 @@ mod tests {
         assert_eq!(fin.shares_outstanding, Some(1.5e10));
         // Chronological: the older 180 first, the newer 195 last.
         assert_eq!(fin.price_history, vec![180.0, 195.0]);
-        // The v2 surface parses into its typed fields.
+        // The v2 surface parses into its typed fields, the statement lines included.
         assert_eq!(fin.quarterly_income.len(), 1);
+        assert_eq!(fin.quarterly_income[0].net_income, Some(24.0e9));
+        assert_eq!(fin.quarterly_income[0].gross_profit, Some(44.0e9));
+        assert_eq!(fin.quarterly_income[0].cost_of_revenue, Some(51.0e9));
+        // The balance sheet fills the leverage leg; equity prefers the
+        // stockholders' (parent-only) line over totalEquity.
+        assert_eq!(fin.total_debt, Some(110.0e9));
+        assert_eq!(fin.total_equity, Some(62.0e9));
         assert_eq!(fin.consensus.as_ref().unwrap().eps_mid, Some(6.5));
         assert_eq!(fin.ttm_dividends_per_share, Some(0.26));
         assert!(fin.gaps.is_empty(), "a clean pull records no gap: {:?}", fin.gaps);
@@ -1966,6 +1984,7 @@ mod tests {
                 "/quote",
                 "/historical-price-eod/light",
                 "/income-statement",
+                "/balance-sheet-statement",
                 "/analyst-estimates",
                 "/dividends"
             ]
@@ -1991,9 +2010,9 @@ mod tests {
         let fin = test_source(&server.base_url).fetch_company_financials("AAPL");
         assert!(fin.current_price.is_none());
         assert!(fin.price_history.is_empty());
-        // Five endpoints, five tagged gaps — the three v2-surface calls degrade the
+        // Six endpoints, six tagged gaps — the four v2-surface calls degrade the
         // same way the quote and EOD do.
-        assert_eq!(fin.gaps.len(), 5, "five failed pulls, five gaps: {:?}", fin.gaps);
+        assert_eq!(fin.gaps.len(), 6, "six failed pulls, six gaps: {:?}", fin.gaps);
     }
 
     #[test]
@@ -2726,6 +2745,95 @@ mod tests {
         assert!((out[0].total_equity_risk_premium - 4.46).abs() < 1e-9);
     }
 
+    /// The grade-band shadow-tune's calibration-surface refresh (the slice's step 6,
+    /// a user-approved bounded live spend): re-derive the statement-based metric
+    /// surface for the exported run's priced stocks through the NEW fetch path —
+    /// quote + quarterly income + balance sheet, three calls per stock, the TTM
+    /// statement basis + balance-sheet leg applied exactly as the live job would —
+    /// and write symbol → `ComputedMetrics` JSON for the band sweep to read beside
+    /// the as-persisted surface. Volatility / trailing return carry over from the
+    /// persisted audit (the price surface didn't change basis). Call count is
+    /// printed for the evidence record.
+    #[test]
+    #[ignore = "hits the live FMP API; set FMP_API_KEY, MARKET_SIGNAL_RUN_JSON, MARKET_SIGNAL_REFRESHED_METRICS_OUT"]
+    fn probe_refresh_statement_surface_for_band_tune() {
+        let run_path = std::env::var("MARKET_SIGNAL_RUN_JSON").expect("MARKET_SIGNAL_RUN_JSON");
+        let out_path = std::env::var("MARKET_SIGNAL_REFRESHED_METRICS_OUT")
+            .expect("MARKET_SIGNAL_REFRESHED_METRICS_OUT");
+        let run: crate::portfolio::PortfolioRun =
+            serde_json::from_str(&std::fs::read_to_string(&run_path).unwrap()).unwrap();
+        let src = FmpDataSource::from_env().expect("FMP_API_KEY set");
+        let mut refreshed: std::collections::BTreeMap<
+            String,
+            crate::portfolio::engine::ComputedMetrics,
+        > = Default::default();
+        let mut calls = 0usize;
+        for v in &run.verdicts {
+            let crate::portfolio::VerdictDisposition::Priced(g) = &v.disposition else {
+                continue;
+            };
+            if g.fund_class_label.is_some() {
+                continue;
+            }
+            let audit = run
+                .audit
+                .iter()
+                .find(|a| a.symbol == v.symbol)
+                .expect("audit row");
+            let mut fin = crate::portfolio::engine::CompanyFinancials {
+                symbol: v.symbol.clone(),
+                ..Default::default()
+            };
+            if let Ok((status, body)) = src.get(FMP_QUOTE_PATH, &[("symbol", v.symbol.as_str())])
+            {
+                if let Disposition::Value(value) = interpret_response(status, &body) {
+                    if let Some(q) = company_quote_from_value(&value) {
+                        fin.market_cap = q.market_cap;
+                        fin.current_price = q.price;
+                    }
+                }
+            }
+            let mut gaps = vec![];
+            fin.quarterly_income = src.fetch_quarterly_income(&v.symbol, &mut gaps);
+            let balance = src.fetch_balance_sheet(&v.symbol, &mut gaps);
+            fin.total_debt = balance.total_debt;
+            fin.total_equity = balance.total_equity;
+            calls += 3;
+            let basis = crate::portfolio::dossier::apply_ttm_statement_basis(&mut fin);
+            let merged = crate::portfolio::dossier::merge_financials(
+                fin,
+                &crate::sec::CompanyFacts::default(),
+                basis,
+            );
+            let mut m = crate::portfolio::engine::compute_metrics(&merged);
+            m.return_volatility = audit.metrics.return_volatility;
+            m.trailing_return = audit.metrics.trailing_return;
+            eprintln!(
+                "{}: ttm={} nm={:?} gm={:?} rg={:?} de={:?} pe={:?} ps={:?} pb={:?} gaps={:?}",
+                v.symbol,
+                basis,
+                m.net_margin,
+                m.gross_margin,
+                m.revenue_growth,
+                m.debt_to_equity,
+                m.pe_ratio,
+                m.ps_ratio,
+                m.pb_ratio,
+                gaps
+            );
+            refreshed.insert(v.symbol.clone(), m);
+            // Politeness pacing between symbols — a probe, not a throughput race.
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        std::fs::write(&out_path, serde_json::to_string_pretty(&refreshed).unwrap()).unwrap();
+        eprintln!(
+            "{} stocks refreshed, {} HTTP calls → {}",
+            refreshed.len(),
+            calls,
+            out_path
+        );
+    }
+
     #[test]
     #[ignore = "hits the live FMP API; set FMP_API_KEY"]
     fn fmp_baseline_smoke() {
@@ -3306,6 +3414,7 @@ mod tests {
 
 /// FMP endpoint paths added by the fund slice (all on the `/stable` base).
 const FMP_INCOME_QUARTERLY_PATH: &str = "/income-statement";
+const FMP_BALANCE_SHEET_PATH: &str = "/balance-sheet-statement";
 const FMP_ANALYST_ESTIMATES_PATH: &str = "/analyst-estimates";
 const FMP_DIVIDENDS_PATH: &str = "/dividends";
 const FMP_ETF_INFO_PATH: &str = "/etf/info";
@@ -3376,6 +3485,34 @@ impl FmpDataSource {
                     reason.as_str()
                 ));
                 vec![]
+            }
+        }
+    }
+
+    /// The latest quarterly balance sheet — the risk sub-score's leverage leg
+    /// (`totalDebt` / equity) and the P/B denominator, FMP-first with the SEC annual
+    /// equity as fallback (`docs/portfolio-analysis.md` §Starting parameters — the
+    /// grade-band slice's F5 closure; before it, `total_debt` had no source at all and
+    /// the risk read rested on volatility alone). Fail-soft: a gap leaves both `None`
+    /// with a tagged reason.
+    pub fn fetch_balance_sheet(&self, symbol: &str, gaps: &mut Vec<String>) -> BalanceSheetLines {
+        match self.suite_get(
+            "company-balance",
+            symbol,
+            "Balance sheet",
+            FMP_BALANCE_SHEET_PATH,
+            &[("symbol", symbol), ("period", "quarter"), ("limit", "1")],
+        ) {
+            Disposition::Value(value) => match balance_sheet_from_value(&value) {
+                Some(lines) => lines,
+                None => {
+                    gaps.push("FMP balance sheet was empty or malformed".to_string());
+                    BalanceSheetLines::default()
+                }
+            },
+            Disposition::Gap(reason) => {
+                gaps.push(format!("FMP balance sheet unavailable ({})", reason.as_str()));
+                BalanceSheetLines::default()
             }
         }
     }
@@ -3578,6 +3715,31 @@ impl FmpDataSource {
     }
 }
 
+/// The two balance-sheet lines the per-holding pull consumes (`fetch_balance_sheet`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BalanceSheetLines {
+    pub total_debt: Option<f64>,
+    pub total_equity: Option<f64>,
+}
+
+/// Shape an FMP `/balance-sheet-statement` array body into [`BalanceSheetLines`] from
+/// its newest row. `None` only when the body is not the expected non-empty array;
+/// individual missing lines stay `None`. Equity prefers `totalStockholdersEquity`
+/// (the parent-only line P/B conventionally reads) over `totalEquity` (which folds in
+/// minority interest). Pure, so the contract is unit-testable offline.
+fn balance_sheet_from_value(value: &Value) -> Option<BalanceSheetLines> {
+    let first = value.as_array()?.first()?;
+    Some(BalanceSheetLines {
+        total_debt: first.get("totalDebt").and_then(Value::as_f64),
+        // Numeric-first per key: a present-but-null preferred line must still
+        // fall through to the alternate, so the fallback runs after `as_f64`.
+        total_equity: first
+            .get("totalStockholdersEquity")
+            .and_then(Value::as_f64)
+            .or_else(|| first.get("totalEquity").and_then(Value::as_f64)),
+    })
+}
+
 /// Shape quarterly `/income-statement` rows (newest first). Lenient key spellings
 /// pinned by fixtures; live-verified 2026-07-16 — the feed serves the stable
 /// spellings (`filingDate` / `epsDiluted` / `weightedAverageShsOutDil`) and the
@@ -3605,6 +3767,9 @@ fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Q
                 diluted_shares: row
                     .get("weightedAverageShsOutDil")
                     .and_then(Value::as_f64),
+                net_income: row.get("netIncome").and_then(Value::as_f64),
+                gross_profit: row.get("grossProfit").and_then(Value::as_f64),
+                cost_of_revenue: row.get("costOfRevenue").and_then(Value::as_f64),
             })
         })
         .collect()
@@ -3843,6 +4008,38 @@ mod suite_tests {
         assert_eq!(rows[1].filing_date.as_deref(), Some("2026-01-30"));
         assert!(gaps.is_empty());
         assert_eq!(server.request_paths(), vec!["/income-statement"]);
+    }
+
+    #[test]
+    fn balance_sheet_null_stockholders_equity_falls_through_to_total_equity() {
+        // FMP serves JSON nulls: a present-but-null preferred line must not block
+        // the alternate key.
+        let value: Value = serde_json::from_str(
+            r#"[{"date":"2026-03-31","totalDebt":null,"totalStockholdersEquity":null,"totalEquity":63.0e9}]"#,
+        )
+        .unwrap();
+        let lines = balance_sheet_from_value(&value).unwrap();
+        assert_eq!(lines.total_equity, Some(63.0e9));
+        assert_eq!(lines.total_debt, None);
+    }
+
+    #[test]
+    fn balance_sheet_gaps_on_a_malformed_body_and_a_premium_gate() {
+        // Malformed body (not the expected array) → a tagged gap, both lines None.
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 200, headers: vec![], body: r#"{"unexpected":true}"# },
+            Canned::Reply { status: 402, headers: vec![], body: "Payment Required" },
+        ]);
+        let src = source(&server.base_url);
+        let mut gaps = vec![];
+        let lines = src.fetch_balance_sheet("AAPL", &mut gaps);
+        assert_eq!(lines, BalanceSheetLines::default());
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        // Premium gate (402) → the same fail-soft shape with the gated reason.
+        let mut gaps = vec![];
+        let lines = src.fetch_balance_sheet("AAPL", &mut gaps);
+        assert_eq!(lines, BalanceSheetLines::default());
+        assert!(gaps[0].contains("unavailable"), "{gaps:?}");
     }
 
     #[test]

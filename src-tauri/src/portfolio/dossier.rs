@@ -62,12 +62,72 @@ pub struct HoldingDossier {
     pub sources: Vec<String>,
 }
 
+/// Adopt the **TTM statement basis** where the quarterly income prints support it
+/// (`docs/portfolio-analysis.md` §Starting parameters — the grade-band slice's F5
+/// closure): the four newest quarters sum to TTM revenue / net income / gross
+/// profit, and quarters five through eight to the prior-TTM revenue the growth read
+/// compares against. **One statement basis per holding**: a ratio's numerator and
+/// denominator must share a period basis, and `revenue` denominates several, so the
+/// margin / growth / multiple family either adopts TTM wholesale or stays on the
+/// SEC annual fill — never a mix (an annual gross profit over a TTM revenue would
+/// fabricate a margin). Adoption requires revenue and net income on all four newest
+/// quarters — the lines the margins and multiples cannot do without; gross profit
+/// sums where every quarter carries it (or derives per-quarter from cost of
+/// revenue), else stays an honest gap even when SEC has an annual print. Returns
+/// whether the basis was adopted, so the SEC merge confines itself to fallback.
+pub fn apply_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
+    let mut rows: Vec<&crate::portfolio::engine::QuarterlyIncomeRow> =
+        fin.quarterly_income.iter().collect();
+    rows.sort_by(|a, b| b.period_end.cmp(&a.period_end));
+    rows.dedup_by(|a, b| a.period_end == b.period_end);
+
+    fn sum4(
+        rows: &[&crate::portfolio::engine::QuarterlyIncomeRow],
+        get: impl Fn(&crate::portfolio::engine::QuarterlyIncomeRow) -> Option<f64>,
+    ) -> Option<f64> {
+        if rows.len() < 4 {
+            return None;
+        }
+        rows[..4].iter().map(|r| get(r)).sum()
+    }
+    let ttm_revenue = sum4(&rows, |r| r.revenue);
+    let ttm_net_income = sum4(&rows, |r| r.net_income);
+    let (Some(_), Some(_)) = (ttm_revenue, ttm_net_income) else {
+        return false;
+    };
+    // Per-quarter: each quarter contributes its reported gross line, or derives
+    // its own from revenue − cost of revenue — mixing reported and derived
+    // quarters is fine (same economic line per quarter), a quarter with neither
+    // gaps the whole sum.
+    let ttm_gross_profit = sum4(&rows, |r| {
+        r.gross_profit
+            .or_else(|| Some(r.revenue? - r.cost_of_revenue?))
+    });
+    let prior = if rows.len() >= 8 { &rows[4..8] } else { &[][..] };
+    let prior_revenue = sum4(prior, |r| r.revenue);
+
+    fin.revenue = ttm_revenue;
+    fin.net_income = ttm_net_income;
+    fin.gross_profit = ttm_gross_profit;
+    fin.revenue_prior = prior_revenue;
+    true
+}
+
 /// Merge the keyless SEC EDGAR facts into the FMP per-company financials and derive
-/// the valuation multiples from market cap plus statement lines. SEC fills the
-/// statement fields FMP left empty (revenue, gross profit, net income, equity) — a
-/// missing field stays a gap rather than a fabricated level — and the multiples are
-/// computed only when both market cap and the denominator are present.
-pub fn merge_financials(mut fmp: CompanyFinancials, sec: &CompanyFacts) -> CompanyFinancials {
+/// the valuation multiples from market cap plus statement lines. On the annual
+/// fallback basis SEC fills the statement fields FMP left empty (revenue and its
+/// prior-year print, gross profit, net income) — a missing field stays a gap rather
+/// than a fabricated level; when the TTM basis was adopted
+/// ([`apply_ttm_statement_basis`]) those fills are skipped wholesale so the two
+/// period bases never mix inside one ratio. Equity fills either way (a
+/// balance-sheet instant, not a flow line — the FMP quarterly balance sheet is
+/// preferred upstream, SEC the fallback), and the multiples are computed only when
+/// both market cap and the denominator are present.
+pub fn merge_financials(
+    mut fmp: CompanyFinancials,
+    sec: &CompanyFacts,
+    ttm_statement_basis: bool,
+) -> CompanyFinancials {
     let fill = |dst: &mut Option<f64>, src: Option<i64>| {
         if dst.is_none() {
             if let Some(v) = src {
@@ -75,9 +135,12 @@ pub fn merge_financials(mut fmp: CompanyFinancials, sec: &CompanyFacts) -> Compa
             }
         }
     };
-    fill(&mut fmp.revenue, sec.revenue);
-    fill(&mut fmp.gross_profit, sec.gross_profit);
-    fill(&mut fmp.net_income, sec.net_income);
+    if !ttm_statement_basis {
+        fill(&mut fmp.revenue, sec.revenue);
+        fill(&mut fmp.revenue_prior, sec.revenue_prior);
+        fill(&mut fmp.gross_profit, sec.gross_profit);
+        fill(&mut fmp.net_income, sec.net_income);
+    }
     fill(&mut fmp.total_equity, sec.stockholders_equity);
 
     // Derive multiples from market cap + fundamentals when FMP didn't supply them.
@@ -114,7 +177,9 @@ pub fn assemble(
     fund: Option<crate::portfolio::fund::FundContext>,
     prior_verdict: Option<HoldingVerdict>,
 ) -> HoldingDossier {
-    let financials = merge_financials(fmp_financials, sec_facts);
+    let mut fmp_financials = fmp_financials;
+    let ttm_basis = apply_ttm_statement_basis(&mut fmp_financials);
+    let financials = merge_financials(fmp_financials, sec_facts, ttm_basis);
     let options_signal = chain
         .map(crate::portfolio::engine::options_signal)
         .unwrap_or(OptionsSignal {
@@ -125,6 +190,9 @@ pub fn assemble(
         });
 
     let mut sources = vec!["FMP company financials".to_string()];
+    if ttm_basis {
+        sources.push("FMP TTM statement basis (four-quarter sums)".to_string());
+    }
     if !sec_facts.is_empty() {
         sources.push("SEC EDGAR company facts".to_string());
     }
@@ -244,6 +312,7 @@ pub fn prior_verdict_for(conn: &Connection, symbol: &str) -> Option<HoldingVerdi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::portfolio::engine::QuarterlyIncomeRow;
     use crate::portfolio::{AssetClass, PositionChange, VerdictDisposition};
     use crate::schwab::{Holdings, Position};
 
@@ -262,14 +331,16 @@ mod tests {
     fn merge_fills_statement_lines_from_sec_and_derives_multiples() {
         let sec = CompanyFacts {
             revenue: Some(400_000_000_000),
+            revenue_prior: Some(360_000_000_000),
             gross_profit: Some(180_000_000_000),
             net_income: Some(100_000_000_000),
             total_assets: Some(350_000_000_000),
             stockholders_equity: Some(60_000_000_000),
         };
-        let merged = merge_financials(fmp_only(), &sec);
-        // SEC filled the empty statement lines.
+        let merged = merge_financials(fmp_only(), &sec, false);
+        // SEC filled the empty statement lines (annual basis — no TTM adoption).
         assert_eq!(merged.revenue, Some(400_000_000_000.0));
+        assert_eq!(merged.revenue_prior, Some(360_000_000_000.0));
         assert_eq!(merged.net_income, Some(100_000_000_000.0));
         assert_eq!(merged.total_equity, Some(60_000_000_000.0));
         // Multiples derived from market cap (3e12): P/E=30, P/S=7.5, P/B=50.
@@ -283,11 +354,107 @@ mod tests {
         let mut fmp = fmp_only();
         fmp.pe_ratio = Some(28.0); // FMP already supplied a P/E
         let sec = CompanyFacts::default(); // SEC contributed nothing
-        let merged = merge_financials(fmp, &sec);
+        let merged = merge_financials(fmp, &sec, false);
         assert_eq!(merged.pe_ratio, Some(28.0), "FMP value not overwritten");
         // No revenue anywhere -> P/S stays a gap rather than fabricated.
         assert!(merged.ps_ratio.is_none());
         assert!(merged.revenue.is_none());
+    }
+
+    /// Quarterly rows for the TTM tests, newest-first: revenue 100/99/98/…, net
+    /// income a fixed 22% of revenue, gross profit / cost of revenue set per test.
+    fn quarters(n: usize, gross_profit: bool, cost_of_revenue: bool) -> Vec<QuarterlyIncomeRow> {
+        let ends = [
+            "2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30",
+            "2025-06-30", "2025-03-31", "2024-12-31", "2024-09-30",
+        ];
+        ends.iter()
+            .take(n)
+            .enumerate()
+            .map(|(i, end)| {
+                let revenue = 100.0 - i as f64;
+                QuarterlyIncomeRow {
+                    period_end: end.to_string(),
+                    filing_date: None,
+                    revenue: Some(revenue),
+                    eps_diluted: None,
+                    diluted_shares: None,
+                    net_income: Some(0.22 * revenue),
+                    gross_profit: gross_profit.then_some(0.45 * revenue),
+                    cost_of_revenue: cost_of_revenue.then_some(0.55 * revenue),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ttm_basis_adopts_four_quarter_sums_and_the_prior_window() {
+        let mut fin = fmp_only();
+        fin.quarterly_income = quarters(8, true, false);
+        assert!(apply_ttm_statement_basis(&mut fin));
+        // Newest four quarters: 100+99+98+97; prior four: 96+95+94+93.
+        assert_eq!(fin.revenue, Some(394.0));
+        assert_eq!(fin.revenue_prior, Some(378.0));
+        assert!((fin.net_income.unwrap() - 0.22 * 394.0).abs() < 1e-9);
+        assert!((fin.gross_profit.unwrap() - 0.45 * 394.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ttm_gross_profit_derives_from_cost_of_revenue_when_unreported() {
+        let mut fin = fmp_only();
+        fin.quarterly_income = quarters(4, false, true);
+        assert!(apply_ttm_statement_basis(&mut fin));
+        // Σ(rev − cor) over the newest four: 0.45 × 394.
+        assert!((fin.gross_profit.unwrap() - 0.45 * 394.0).abs() < 1e-9);
+        // Only four quarters — the prior window stays an honest gap.
+        assert_eq!(fin.revenue_prior, None);
+    }
+
+    #[test]
+    fn ttm_gross_profit_mixes_reported_and_derived_quarters() {
+        let mut fin = fmp_only();
+        let mut rows = quarters(4, true, true);
+        // Two quarters report the gross line, two derive theirs from cost of
+        // revenue — the sum must not gap on the mix.
+        rows[1].gross_profit = None;
+        rows[3].gross_profit = None;
+        fin.quarterly_income = rows;
+        assert!(apply_ttm_statement_basis(&mut fin));
+        assert!((fin.gross_profit.unwrap() - 0.45 * 394.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn thin_quarters_fall_back_to_the_sec_annual_basis() {
+        let mut fin = fmp_only();
+        fin.quarterly_income = quarters(3, true, false);
+        assert!(!apply_ttm_statement_basis(&mut fin), "three quarters cannot sum a TTM");
+        assert!(fin.revenue.is_none(), "no partial fill on the failed adoption");
+        let sec = CompanyFacts {
+            revenue: Some(400),
+            revenue_prior: Some(360),
+            net_income: Some(88),
+            ..CompanyFacts::default()
+        };
+        let merged = merge_financials(fin, &sec, false);
+        assert_eq!(merged.revenue, Some(400.0));
+        assert_eq!(merged.revenue_prior, Some(360.0), "annual growth pair from SEC");
+    }
+
+    #[test]
+    fn ttm_basis_never_mixes_an_annual_gross_profit_into_the_margin() {
+        let mut fin = fmp_only();
+        // TTM adopts on revenue + net income, but no quarter carries a gross line.
+        fin.quarterly_income = quarters(4, false, false);
+        assert!(apply_ttm_statement_basis(&mut fin));
+        assert!(fin.gross_profit.is_none());
+        let sec = CompanyFacts {
+            gross_profit: Some(180), // an annual print over a TTM denominator would fabricate a margin
+            stockholders_equity: Some(60),
+            ..CompanyFacts::default()
+        };
+        let merged = merge_financials(fin, &sec, true);
+        assert!(merged.gross_profit.is_none(), "the annual line must not ride the TTM basis");
+        assert_eq!(merged.total_equity, Some(60.0), "the balance-sheet instant still fills");
     }
 
     #[test]

@@ -633,6 +633,13 @@ pub struct HoldingAudit {
     /// runs persisted before the field existed (`#[serde(default)]`).
     #[serde(default)]
     pub target_meta: Option<engine::TargetMeta>,
+    /// The grade-band parameter version the letter was computed under
+    /// ([`engine::GRADE_PARAMETER_VERSION`]) — the boundary marker that lets the
+    /// what-changed audit and outcome-learning cohorts recognize a band recalibration
+    /// (letters moving with no input change) for what it is. `None` on runs persisted
+    /// before the field existed (`#[serde(default)]`) — the pre-tune bands.
+    #[serde(default)]
+    pub grade_parameter_version: Option<String>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the

@@ -126,6 +126,7 @@ pub fn analyze_holding(
         prompt_version: PROMPT_VERSION.to_string(),
         degraded_inputs: degraded.clone(),
         target_meta,
+        grade_parameter_version: Some(engine::GRADE_PARAMETER_VERSION.to_string()),
     };
     let abstain = |reason: String, metrics, meta| {
         let verdict = HoldingVerdict {
@@ -332,6 +333,7 @@ pub fn analyze_holding(
         prompt_version: PROMPT_VERSION.to_string(),
         degraded_inputs,
         target_meta: Some(engine_output.target_meta.clone()),
+        grade_parameter_version: Some(engine::GRADE_PARAMETER_VERSION.to_string()),
     };
     Ok((verdict, audit_record))
 }
@@ -936,6 +938,9 @@ mod tests {
                 revenue: Some(100.0e9 - 1.0e9 * i as f64),
                 eps_diluted: Some(1.55 - 0.01 * i as f64),
                 diluted_shares: Some(1.5e10),
+                net_income: None,
+                gross_profit: None,
+                cost_of_revenue: None,
             })
             .collect();
         let daily_closes = ends
