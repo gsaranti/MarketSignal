@@ -2,25 +2,26 @@
 
 ## What happened
 
-**The target-function calibration slice was implemented, twice-reviewed, and SHIPPED** — committed `b4467fc` and pushed to main; BUILD/INDEX caught up in `da46722`.
-Scope as built (F1/F2 + follow-up #7 closed): the **NTM consensus read** (the two nearest forward fiscal-year rows blend time-weighted by twelve-month overlap; single-row/no-row semantics kept; an inactive blend can never leak a far-year leg; selection persisted via `TargetMeta.consensus_rows` + `consensus_near_weight`), a **volatility-scaled widen-only dispersion floor** (annualized vol × 0.5 clamped to a 5–20% half-spread, post-repair, so a flat surface reads `indeterminate` rather than false-certain `fails`) plus **recorded clamp-collapse**, parameter version **`targets-v3`** (run `3b21ae85` stays the v2 baseline), **Stooq resilience** (typed 200-HTML throttle classification at the parse seam, run-wide breaker with per-run reset, ≥1 s pacing, FMP dated-EOD second rung at the 1,600-day lookback), and the **run-level data-health roll-up** (`DataHealth` on `PortfolioRollUp`, serde-default so old runs decode; one-line roll-up-card readout with the sanctioned grade-D amber attention tag; deliberately not a PWA category).
-Review: round 1 **reject-with-reasons** (blend weight unpersisted; inactive-blend far-leg leak) → both fixed with tests → round 2 **approve-with-nits**.
-Verification: `cargo test` 712/0 (all binaries), clippy 0, `npm run build` clean, `npm test` 40 + 176.
+**The post-live-run plan was locked (2026-08-02, four user-confirmed choices):** no further live Portfolio runs until the full pre-test block is built — the calibration tier (grade-band shadow-tune → interpretation-prompt adjustments), the two UI micro-slices, AND every designed depth slice (thesis ledger, quick check, selective re-analysis, pre-profit overlay, outcome learning, 7b construction).
+Excluded from the block: the live research loop AND the held-name research refresh lane (it depends on the loop, so it rides with it).
+The next live run is the single big confirmation test after the block, banking ALL stacked runtime confirmations; Trade Opportunities moves behind the whole block.
+The fund carry-path dispersion floor veto was declined (kept as implemented; a carve-out stays possible after live observation), and the `pace()` mutex nit closed as accepted.
+**The FMP light-EOD adjustment-basis desk probe ran and CLOSED its open question** (committed `760d271`): `light` `price` verified **split-adjusted + dividend-unadjusted — Stooq's exact basis** — via FMP's own `non-split-adjusted` / `dividend-adjusted` variants (NVDA 10:1 window; MO cumulative-payout window), so the fallback rung never mixes bases; no code change (evidence: `docs/verification/2026-08-02-fmp-light-eod-adjustment-basis.md`).
+Incidental: Stooq now answers all non-JS clients (browser headers included) with a **JS proof-of-work interstitial** — a second 200-HTML body distinct from the daily-hits notice; the parse seam's generic any-HTML classification already trips the breaker → FMP rung, so behavior is unchanged (the daily-hits label may misattribute cause — cosmetic, left unfixed).
+**User decision: KEEP Stooq as primary rung** (zero-cost self-healing hedge vs FMP plan/cap risk); revisit only with the big run's data-health evidence.
 
 ## Current state
 
-Tree clean, both commits pushed — nothing in flight.
-Remaining calibration queue: **grade-band shadow-tune** next (F4/F5 — opens by certifying the sub-score formulas against spec over run `3b21ae85`'s persisted audits, then closing the FMP statement-field gaps, before touching band constants; note that run is a `targets-v2`-basis dataset, so target comparisons cross the version boundary by design), then **interpretation-prompt adjustments** (target provenance in the prompt, tilt weighting, conviction definition, house-view scoping).
-The two specified UI micro-slices (Portfolio-page polish; section-scoped footer + report-nav) still slot anywhere as breathers.
-TO planning stays deferred behind calibration.
+Tree clean; `760d271` committed to main but **not pushed** (user asked commit only).
+Block queue, in order: **grade-band shadow-tune** (F4/F5 — opens by certifying the sub-score formulas against spec over run `3b21ae85`'s persisted audits, then closing the FMP statement-field gaps, before touching band constants; that run is a targets-v2-basis dataset, so target comparisons cross the version boundary by design), then **interpretation-prompt adjustments** (target provenance in the prompt, tilt weighting, conviction definition, house-view scoping), then the depth slices; the two UI micro-slices slot anywhere as breathers.
+`BUILD.md §What remains` still reads "calibration tier first, then Trade Opportunities" — it predates the locked block and needs a catch-up pass when convenient.
 
 ## Open questions
 
-- **Live confirmations now stacked for the next calibration run (free), covering both 2026-08-01 slices:** options-wiring's (one stable 128 K runner in `ollama ps`, distill seconds-not-minutes, live reasoning panes) plus this slice's (**FMP light-EOD adjustment basis** vs the split-adjusted/dividend-unadjusted convention — check before trusting FMP-anchored windows; the new **action distribution** — fails → indeterminate at scale on the same book; the fund carry-path floor reading sensibly; the data-health line rendering on a real run).
-- **Fund carry-path dispersion floor** manufactures band width where the fund driver is deliberately flat — implemented per plan; user veto still open.
-- **Reviewer nit (informational):** `StooqSource::pace()` holds its mutex across the politeness sleep — revisit only if per-holding fetches ever go concurrent.
+- **Runtime confirmations now all banked on the single big confirmation run at the block's end** (no interim live runs): 128 K runner stability, distill speed, reasoning panes; the fails → indeterminate action distribution at scale; the fund carry-path floor reading sensibly; the data-health line rendering — plus **whether Stooq's PoW gate is permanent** (the data-health deep-history line answers it; if Stooq still serves nothing, a small rung-order slice + re-homing the benchmark/futures identities onto FMP becomes the follow-up).
 - **Carried unchanged:** reasoning-pane DOM weight (collapse-on-step-finish is the lever); encrypted portability round-trip; step-17 embedding-failure recurrence watch; long/cold-start 600 s stress softened not closed; local-suite scorecard display; dev-store calibration-run residue (deliberate); Keychain fail-soft candidate; stage-and-swap import hardening; chain both-maps invariant; four-part verdict + bidirectional-conviction bound; §1 open drafts; fraud-producer posture; fund-slice drafted constants.
 
 ## Where to start
 
-Two sensible openings — pick one: **run the next live calibration run** (user-present, free) to bank both shipped slices' runtime confirmations on the real book before tuning; or go straight to `/metis-plan-task` for the **grade-band shadow-tune slice** — read `docs/verification/2026-07-31-first-live-portfolio-run.md` §F4/§F5 first, and open with the sub-score-formula certification against `docs/portfolio-analysis.md` spec, not the band constants.
+`/metis-plan-task` for the **grade-band shadow-tune slice**: read `docs/verification/2026-07-31-first-live-portfolio-run.md` §F4/§F5 first, and open with the sub-score-formula certification against `docs/portfolio-analysis.md` spec — not the band constants.
+Push `760d271` (or fold it into the next push).
