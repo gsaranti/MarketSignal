@@ -169,6 +169,20 @@ const ADD_AGGRESSIVE_FLOOR_WEIGHT: f64 = 0.03;
 /// account, and at-or-above it the add family leaves the feasible set.
 const MAX_SINGLE_WEIGHT: f64 = 0.25;
 
+// -- Thesis-ledger persistence semantics (`docs/portfolio-analysis.md` §The position
+//    thesis ledger; the suite's shared condition-identity contract's drafted
+//    constants — `docs/trade-opportunities.md §The opportunity`): the required
+//    consecutive distinct breaching observations before a breach confirms, by the
+//    series' cadence. A filing print is the period's settled observation, so the
+//    first qualifying breach confirms immediately (the materiality margin is its
+//    noise guard); a high-frequency series needs two, so a single noisy print logs
+//    a quiet first-breach note only.
+
+/// Required consecutive breaching observations for a market-data-cadence series.
+pub const LEDGER_CONSECUTIVE_MARKET_DATA: u32 = 2;
+/// Required consecutive breaching observations for a filing-cadence series.
+pub const LEDGER_CONSECUTIVE_FILING: u32 = 1;
+
 // ---- Inputs ------------------------------------------------------------------
 
 /// One dated observation (an ISO `YYYY-MM-DD` date and a value) — daily closes, rate
@@ -423,6 +437,357 @@ pub struct EngineOutput {
 pub enum EngineVerdict {
     Analyzed(Box<EngineOutput>),
     InsufficientEvidence(String),
+}
+
+// ---- Thesis-ledger series resolution & condition evaluation --------------------
+//
+// The executability surface (`docs/portfolio-analysis.md` §The position thesis
+// ledger): a quantitative ledger condition must resolve to a series the engine
+// actually computes and refreshes — the suite's shared resolution contract
+// (`docs/trade-opportunities-workflow.md` §Step 3c), applied at Portfolio's seam.
+// This closed enum IS that surface: the 6g validation parses a draft's series
+// claim against it, and the evaluation below resolves each series to a value plus
+// a distinct observation identity.
+
+/// The closed set of engine-resolvable ledger series. Each maps to a value the
+/// engine computes every run ([`ComputedMetrics`], the live price, the position's
+/// book weight) and carries a derived cadence — statement-derived series advance on
+/// filing cadence, price-derived ones on market-data cadence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LedgerSeries {
+    NetMargin,
+    GrossMargin,
+    RevenueGrowth,
+    DebtToEquity,
+    ReturnVolatility,
+    TrailingReturn,
+    PeRatio,
+    PsRatio,
+    PbRatio,
+    ExpenseRatio,
+    Price,
+    PortfolioWeight,
+}
+
+impl LedgerSeries {
+    /// Every resolvable series — the vocabulary the ledger schema advertises and the
+    /// interpretation prompt lists.
+    pub const ALL: [LedgerSeries; 12] = [
+        LedgerSeries::NetMargin,
+        LedgerSeries::GrossMargin,
+        LedgerSeries::RevenueGrowth,
+        LedgerSeries::DebtToEquity,
+        LedgerSeries::ReturnVolatility,
+        LedgerSeries::TrailingReturn,
+        LedgerSeries::PeRatio,
+        LedgerSeries::PsRatio,
+        LedgerSeries::PbRatio,
+        LedgerSeries::ExpenseRatio,
+        LedgerSeries::Price,
+        LedgerSeries::PortfolioWeight,
+    ];
+
+    /// The kebab label serde uses — for schema enums and claim parsing.
+    pub fn as_kebab(&self) -> &'static str {
+        match self {
+            LedgerSeries::NetMargin => "net-margin",
+            LedgerSeries::GrossMargin => "gross-margin",
+            LedgerSeries::RevenueGrowth => "revenue-growth",
+            LedgerSeries::DebtToEquity => "debt-to-equity",
+            LedgerSeries::ReturnVolatility => "return-volatility",
+            LedgerSeries::TrailingReturn => "trailing-return",
+            LedgerSeries::PeRatio => "pe-ratio",
+            LedgerSeries::PsRatio => "ps-ratio",
+            LedgerSeries::PbRatio => "pb-ratio",
+            LedgerSeries::ExpenseRatio => "expense-ratio",
+            LedgerSeries::Price => "price",
+            LedgerSeries::PortfolioWeight => "portfolio-weight",
+        }
+    }
+
+    /// Parse a draft's series claim against the closed surface — the resolution
+    /// contract's app-side check; `None` means the claim doesn't resolve and the
+    /// condition downgrades to qualitative.
+    pub fn parse(claim: &str) -> Option<LedgerSeries> {
+        LedgerSeries::ALL
+            .iter()
+            .copied()
+            .find(|s| s.as_kebab() == claim.trim())
+    }
+
+    /// The series' cadence (`docs/portfolio-analysis.md` §The position thesis
+    /// ledger): statement-derived series are filing-cadence; price-derived ones
+    /// market-data. The expense ratio rides the fund's `etf/info` print — a
+    /// filing-like cadence.
+    pub fn cadence(&self) -> crate::portfolio::ConditionCadence {
+        use crate::portfolio::ConditionCadence::*;
+        match self {
+            LedgerSeries::NetMargin
+            | LedgerSeries::GrossMargin
+            | LedgerSeries::RevenueGrowth
+            | LedgerSeries::DebtToEquity
+            | LedgerSeries::ExpenseRatio => Filing,
+            LedgerSeries::ReturnVolatility
+            | LedgerSeries::TrailingReturn
+            | LedgerSeries::PeRatio
+            | LedgerSeries::PsRatio
+            | LedgerSeries::PbRatio
+            | LedgerSeries::Price
+            | LedgerSeries::PortfolioWeight => MarketData,
+        }
+    }
+
+    /// The required consecutive distinct breaching observations for this series —
+    /// the persistence-semantics count, derived from cadence (drafted constants).
+    pub fn required_consecutive(&self) -> u32 {
+        match self.cadence() {
+            crate::portfolio::ConditionCadence::Filing => LEDGER_CONSECUTIVE_FILING,
+            crate::portfolio::ConditionCadence::MarketData => LEDGER_CONSECUTIVE_MARKET_DATA,
+        }
+    }
+
+    /// A short human description for the interpretation prompt's vocabulary list.
+    pub fn describe(&self) -> &'static str {
+        match self {
+            LedgerSeries::NetMargin => "TTM net margin (decimal)",
+            LedgerSeries::GrossMargin => "TTM gross margin (decimal)",
+            LedgerSeries::RevenueGrowth => "year-over-year revenue growth (decimal)",
+            LedgerSeries::DebtToEquity => "debt / equity ratio",
+            LedgerSeries::ReturnVolatility => "daily realized return volatility (decimal)",
+            LedgerSeries::TrailingReturn => "trailing price return (decimal)",
+            LedgerSeries::PeRatio => "price / earnings multiple",
+            LedgerSeries::PsRatio => "price / sales multiple",
+            LedgerSeries::PbRatio => "price / book multiple",
+            LedgerSeries::ExpenseRatio => "fund expense ratio (decimal)",
+            LedgerSeries::Price => "the holding's price (account currency)",
+            LedgerSeries::PortfolioWeight => "the position's portfolio weight (fraction 0-1)",
+        }
+    }
+}
+
+/// One resolved series observation: the value plus the distinct observation identity
+/// the persistence semantics key on (a trading-day date for market-data series, the
+/// newest statement period end for filing-cadence ones).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedObservation {
+    pub value: f64,
+    pub observation_id: String,
+}
+
+/// Resolve one series against this run's computed surface. `Err` carries the typed
+/// reason the series could not be resolved this run (a metric gap, no dated print
+/// to key the observation) — an unevaluable condition is a typed state, never a
+/// silent clear.
+pub fn resolve_series(
+    series: LedgerSeries,
+    metrics: &ComputedMetrics,
+    fin: &CompanyFinancials,
+    portfolio_weight: Option<f64>,
+) -> Result<ResolvedObservation, String> {
+    // Observation identities — always a real print, never the calendar. Market-data:
+    // the newest daily close's date (the actual trading-day print); with no dated
+    // history the series is unevaluable rather than keyed to the run date, which
+    // would let successive degraded runs advance a streak against unchanged data.
+    // Filing: the newest quarterly period end — the statement vintage anchor; absent
+    // quarterly rows, likewise unevaluable. The expense ratio's `etf/info` print
+    // carries no date, so its identity keys to the **value itself** — a distinct
+    // observation exists only when the print actually changed
+    // (`docs/portfolio-analysis.md` §The position thesis ledger: a fund-ledger
+    // condition advances on a *changed* `etf/info` print), so repeated runs against
+    // one unchanged print can never advance a streak or re-raise an acknowledged
+    // breach.
+    let market_obs = || -> Result<String, String> {
+        fin.daily_closes
+            .last()
+            .map(|d| d.date.clone())
+            .ok_or_else(|| "no dated price print to key the observation".to_string())
+    };
+    let filing_obs = || -> Result<String, String> {
+        fin.quarterly_income
+            .iter()
+            .map(|r| r.period_end.clone())
+            .max()
+            .ok_or_else(|| "no quarterly statement print to key the observation".to_string())
+    };
+    let metric = |v: Option<f64>, label: &str| -> Result<f64, String> {
+        v.ok_or_else(|| format!("{label} is a gap this run"))
+    };
+
+    match series {
+        LedgerSeries::NetMargin => Ok(ResolvedObservation {
+            value: metric(metrics.net_margin, "net margin")?,
+            observation_id: filing_obs()?,
+        }),
+        LedgerSeries::GrossMargin => Ok(ResolvedObservation {
+            value: metric(metrics.gross_margin, "gross margin")?,
+            observation_id: filing_obs()?,
+        }),
+        LedgerSeries::RevenueGrowth => Ok(ResolvedObservation {
+            value: metric(metrics.revenue_growth, "revenue growth")?,
+            observation_id: filing_obs()?,
+        }),
+        LedgerSeries::DebtToEquity => Ok(ResolvedObservation {
+            value: metric(metrics.debt_to_equity, "debt/equity")?,
+            observation_id: filing_obs()?,
+        }),
+        LedgerSeries::ExpenseRatio => {
+            let value = metric(metrics.expense_ratio, "expense ratio")?;
+            Ok(ResolvedObservation {
+                value,
+                observation_id: format!("expense-ratio:{value}"),
+            })
+        }
+        LedgerSeries::ReturnVolatility => Ok(ResolvedObservation {
+            value: metric(metrics.return_volatility, "return volatility")?,
+            observation_id: market_obs()?,
+        }),
+        LedgerSeries::TrailingReturn => Ok(ResolvedObservation {
+            value: metric(metrics.trailing_return, "trailing return")?,
+            observation_id: market_obs()?,
+        }),
+        LedgerSeries::PeRatio => Ok(ResolvedObservation {
+            value: metric(metrics.pe_ratio, "P/E")?,
+            observation_id: market_obs()?,
+        }),
+        LedgerSeries::PsRatio => Ok(ResolvedObservation {
+            value: metric(metrics.ps_ratio, "P/S")?,
+            observation_id: market_obs()?,
+        }),
+        LedgerSeries::PbRatio => Ok(ResolvedObservation {
+            value: metric(metrics.pb_ratio, "P/B")?,
+            observation_id: market_obs()?,
+        }),
+        LedgerSeries::Price => Ok(ResolvedObservation {
+            value: metric(fin.current_price, "current price")?,
+            observation_id: market_obs()?,
+        }),
+        // Weight moves with the marks, so its observation identity is the marks'
+        // trading day (the newest close date), not the calendar date of the run:
+        // an unchanged carried snapshot on a later day is the same observation,
+        // and two same-day evaluations can never double-advance a streak.
+        LedgerSeries::PortfolioWeight => Ok(ResolvedObservation {
+            value: metric(portfolio_weight, "portfolio weight")?,
+            observation_id: market_obs()?,
+        }),
+    }
+}
+
+/// The engine's evaluation of a prior ledger's quantitative conditions — the
+/// crossings interpretation reads, the typed unevaluable notes, and each evaluated
+/// condition's updated state (`docs/portfolio-analysis.md` §The position thesis
+/// ledger: the engine tests which quantitative falsifiers and triggers crossed this
+/// run, under their persistence semantics).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LedgerEvaluation {
+    pub crossings: Vec<crate::portfolio::ConditionCrossing>,
+    /// "condition '<statement>': <reason>" lines for series unresolvable this run.
+    pub unevaluable: Vec<String>,
+    /// Updated evaluation state per evaluated condition id (unevaluated conditions
+    /// keep their carried state).
+    pub updated_states: Vec<(String, crate::portfolio::ConditionEvalState)>,
+}
+
+/// Evaluate the prior ledger's quantitative conditions against this run's computed
+/// surface, under the persistence semantics: the breach streak advances **only on a
+/// distinct new observation** (a new trading day's print, a new filing); a
+/// filing-cadence breach confirms immediately (count 1, the margin its noise
+/// guard); a market-data breach needs [`LEDGER_CONSECUTIVE_MARKET_DATA`] consecutive
+/// distinct observations; and an acknowledged confirmed breach re-raises only when
+/// confirmed against a **later** observation than the acknowledged one.
+pub fn evaluate_ledger_conditions(
+    ledger: &crate::portfolio::ThesisLedger,
+    metrics: &ComputedMetrics,
+    fin: &CompanyFinancials,
+    portfolio_weight: Option<f64>,
+    run_date: &str,
+) -> LedgerEvaluation {
+    use crate::portfolio::{ConditionCrossing, ConditionEvalState, CrossingOutcome};
+
+    let mut out = LedgerEvaluation::default();
+    for cond in &ledger.conditions {
+        let Some(quant) = &cond.quant else { continue };
+        let resolved = match resolve_series(quant.series, metrics, fin, portfolio_weight) {
+            Ok(r) => r,
+            Err(reason) => {
+                out.unevaluable
+                    .push(format!("condition '{}': {reason}", cond.statement));
+                continue;
+            }
+        };
+
+        let mut st = cond.eval_state.clone().unwrap_or_default();
+        let margin = quant.margin.max(0.0);
+        let breached = match quant.comparator {
+            crate::portfolio::LedgerComparator::Below => resolved.value < quant.threshold - margin,
+            crate::portfolio::LedgerComparator::Above => resolved.value > quant.threshold + margin,
+        };
+        let new_observation =
+            st.last_observation_id.as_deref() != Some(resolved.observation_id.as_str());
+        if new_observation {
+            st.last_observation_id = Some(resolved.observation_id.clone());
+            st.last_value = Some(resolved.value);
+            st.last_evaluated_at = Some(run_date.to_string());
+            if breached {
+                st.breach_streak += 1;
+                if st.breach_streak == 1 {
+                    st.first_breach_at = Some(run_date.to_string());
+                }
+                if st.breach_streak >= quant.series.required_consecutive()
+                    && st.confirmed_at.is_none()
+                {
+                    st.confirmed_at = Some(run_date.to_string());
+                }
+            } else {
+                // A clean distinct observation resets the streak — the prior streak's
+                // record lives in the previously persisted runs.
+                st.breach_streak = 0;
+                st.first_breach_at = None;
+                st.confirmed_at = None;
+            }
+        } else {
+            // Same observation: re-evaluation never advances the streak — repeated
+            // passes against one print can't confirm a breach.
+            st.last_value = Some(resolved.value);
+            st.last_evaluated_at = Some(run_date.to_string());
+        }
+
+        let confirmed_now = st.breach_streak >= quant.series.required_consecutive();
+        // The acknowledgment transition: a consumed breach re-raises only against a
+        // distinct new observation. Date-keyed ids (closes, period ends) only ever
+        // move forward and the value-keyed expense-ratio id has no order, so
+        // "distinct from the acknowledged one" is the honest test for every id kind.
+        let past_ack = match (&st.acknowledged_observation_id, &st.last_observation_id) {
+            (Some(ack), Some(last)) => last != ack,
+            (None, _) => true,
+            (Some(_), None) => false,
+        };
+        if confirmed_now && past_ack {
+            out.crossings.push(ConditionCrossing {
+                condition_id: cond.condition_id.clone(),
+                statement: cond.statement.clone(),
+                role: cond.role,
+                outcome: CrossingOutcome::Confirmed,
+                observed_value: resolved.value,
+                threshold: quant.threshold,
+                observation_id: resolved.observation_id.clone(),
+            });
+        } else if breached && new_observation && !confirmed_now {
+            out.crossings.push(ConditionCrossing {
+                condition_id: cond.condition_id.clone(),
+                statement: cond.statement.clone(),
+                role: cond.role,
+                outcome: CrossingOutcome::FirstBreach,
+                observed_value: resolved.value,
+                threshold: quant.threshold,
+                observation_id: resolved.observation_id.clone(),
+            });
+        }
+        let final_state: ConditionEvalState = st;
+        out.updated_states
+            .push((cond.condition_id.clone(), final_state));
+    }
+    out
 }
 
 // ---- The engine --------------------------------------------------------------
@@ -2568,5 +2933,336 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- Thesis-ledger series resolution & condition evaluation ----------------
+
+    use crate::portfolio::{
+        ConditionCadence, ConditionEvalState, ConditionRole, CrossingOutcome, LedgerBranch,
+        LedgerComparator, LedgerCondition, QuantCore, ThesisLedger,
+    };
+
+    fn ledger_of(conditions: Vec<LedgerCondition>) -> ThesisLedger {
+        ThesisLedger {
+            branch: LedgerBranch::Priced,
+            original_thesis: "o".into(),
+            current_thesis: "c".into(),
+            key_drivers: vec![],
+            monitor: vec![],
+            what_must_improve: String::new(),
+            what_must_not_break: String::new(),
+            conditions,
+            target_weight_low: 0.0,
+            target_weight_high: 0.1,
+        }
+    }
+
+    fn quant_cond(
+        id: &str,
+        series: LedgerSeries,
+        comparator: LedgerComparator,
+        threshold: f64,
+        margin: f64,
+        state: Option<ConditionEvalState>,
+    ) -> LedgerCondition {
+        LedgerCondition {
+            condition_id: id.into(),
+            role: ConditionRole::Falsifier,
+            trigger_family: None,
+            statement: format!(
+                "{} {} {threshold}",
+                series.as_kebab(),
+                comparator.as_kebab()
+            ),
+            quant: Some(QuantCore {
+                series,
+                comparator,
+                threshold,
+                margin,
+            }),
+            downgraded_reason: None,
+            technology_class: false,
+            tripped: false,
+            supersedes: None,
+            eval_state: state,
+        }
+    }
+
+    #[test]
+    fn series_resolution_maps_values_and_observation_identities() {
+        let fin = strong();
+        let metrics = compute_metrics(&fin);
+        let m = resolve_series(LedgerSeries::NetMargin, &metrics, &fin, None).unwrap();
+        assert_eq!(m.observation_id, "2026-06-30", "filing series keys to the newest period end");
+        let p = resolve_series(LedgerSeries::Price, &metrics, &fin, None).unwrap();
+        assert_eq!(p.value, 195.0);
+        assert_eq!(p.observation_id, "2026-07-15", "market series keys to the newest close date");
+        let w = resolve_series(LedgerSeries::PortfolioWeight, &metrics, &fin, Some(0.3)).unwrap();
+        assert_eq!(w.value, 0.3);
+        assert_eq!(
+            w.observation_id, "2026-07-15",
+            "weight keys to the marks' trading day, never the calendar run date"
+        );
+        // A gap is a typed error, never a silent clear.
+        assert!(resolve_series(LedgerSeries::ExpenseRatio, &metrics, &fin, None).is_err());
+    }
+
+    #[test]
+    fn market_series_without_a_dated_print_read_unevaluable_never_calendar_keyed() {
+        // A degraded run (no dated close history) has no print to key a
+        // market-data observation, so the series is unevaluable — never keyed to
+        // the calendar date, which would let successive runs advance a streak
+        // against unchanged data (Codex round 2, finding 1).
+        let mut fin = strong();
+        fin.daily_closes.clear();
+        let metrics = compute_metrics(&fin);
+        assert!(resolve_series(LedgerSeries::Price, &metrics, &fin, None).is_err());
+        assert!(
+            resolve_series(LedgerSeries::PortfolioWeight, &metrics, &fin, Some(0.5)).is_err()
+        );
+        let ledger = ledger_of(vec![quant_cond(
+            "w",
+            LedgerSeries::PortfolioWeight,
+            LedgerComparator::Above,
+            0.25,
+            0.0,
+            None,
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, Some(0.5), "2026-08-03");
+        assert!(eval.crossings.is_empty());
+        assert_eq!(eval.unevaluable.len(), 1);
+        assert!(eval.updated_states.is_empty(), "state untouched — a typed non-detection");
+    }
+
+    #[test]
+    fn cadence_and_counts_derive_from_the_series() {
+        assert_eq!(LedgerSeries::NetMargin.cadence(), ConditionCadence::Filing);
+        assert_eq!(
+            LedgerSeries::NetMargin.required_consecutive(),
+            LEDGER_CONSECUTIVE_FILING
+        );
+        assert_eq!(LedgerSeries::Price.cadence(), ConditionCadence::MarketData);
+        assert_eq!(
+            LedgerSeries::Price.required_consecutive(),
+            LEDGER_CONSECUTIVE_MARKET_DATA
+        );
+        // Every kebab label round-trips through the claim parser.
+        for s in LedgerSeries::ALL {
+            assert_eq!(LedgerSeries::parse(s.as_kebab()), Some(s));
+        }
+        assert_eq!(LedgerSeries::parse("made-up-series"), None);
+    }
+
+    #[test]
+    fn filing_cadence_confirms_on_the_first_qualifying_breach_beyond_the_margin() {
+        let fin = strong();
+        let metrics = compute_metrics(&fin); // net margin 100/400 = 0.25
+        // Below 0.30 with margin 0.06: the 0.05 shortfall sits inside the noise
+        // guard — no breach at all.
+        let inside = ledger_of(vec![quant_cond(
+            "a",
+            LedgerSeries::NetMargin,
+            LedgerComparator::Below,
+            0.30,
+            0.06,
+            None,
+        )]);
+        let eval = evaluate_ledger_conditions(&inside, &metrics, &fin, None, "2026-08-03");
+        assert!(eval.crossings.is_empty(), "{:?}", eval.crossings);
+
+        // Beyond the margin, a filing print is the period's settled observation —
+        // the first qualifying breach confirms immediately (count 1).
+        let beyond = ledger_of(vec![quant_cond(
+            "a",
+            LedgerSeries::NetMargin,
+            LedgerComparator::Below,
+            0.30,
+            0.01,
+            None,
+        )]);
+        let eval = evaluate_ledger_conditions(&beyond, &metrics, &fin, None, "2026-08-03");
+        assert_eq!(eval.crossings.len(), 1);
+        assert_eq!(eval.crossings[0].outcome, CrossingOutcome::Confirmed);
+        let (_, st) = &eval.updated_states[0];
+        assert_eq!(st.breach_streak, 1);
+        assert!(st.confirmed_at.is_some());
+    }
+
+    #[test]
+    fn market_data_breach_needs_two_distinct_observations_and_never_advances_on_a_reprint() {
+        let mut fin = strong();
+        let metrics = compute_metrics(&fin);
+        // Price 195 below 200 — a market-data condition (count 2).
+        let ledger = ledger_of(vec![quant_cond(
+            "p",
+            LedgerSeries::Price,
+            LedgerComparator::Below,
+            200.0,
+            0.0,
+            None,
+        )]);
+        let eval1 = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        assert_eq!(
+            eval1.crossings[0].outcome,
+            CrossingOutcome::FirstBreach,
+            "a lone print is a quiet note"
+        );
+        let st1 = eval1.updated_states[0].1.clone();
+        assert_eq!(st1.breach_streak, 1);
+
+        // Re-evaluating the same print never advances the streak or confirms.
+        let carried = ledger_of(vec![quant_cond(
+            "p",
+            LedgerSeries::Price,
+            LedgerComparator::Below,
+            200.0,
+            0.0,
+            Some(st1),
+        )]);
+        let eval2 = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        assert!(eval2.crossings.is_empty(), "{:?}", eval2.crossings);
+        assert_eq!(eval2.updated_states[0].1.breach_streak, 1);
+
+        // A second distinct breaching observation confirms.
+        fin.daily_closes.push(DatedValue {
+            date: "2026-07-16".into(),
+            value: 195.0,
+        });
+        let eval3 = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-05");
+        assert_eq!(eval3.crossings[0].outcome, CrossingOutcome::Confirmed);
+        assert_eq!(eval3.updated_states[0].1.breach_streak, 2);
+    }
+
+    #[test]
+    fn an_acknowledged_breach_re_raises_only_against_a_later_observation() {
+        let mut fin = strong();
+        let metrics = compute_metrics(&fin);
+        let acknowledged = ConditionEvalState {
+            last_observation_id: Some("2026-07-15".into()),
+            last_value: Some(195.0),
+            last_evaluated_at: Some("2026-08-01".into()),
+            breach_streak: 2,
+            first_breach_at: Some("2026-07-31".into()),
+            confirmed_at: Some("2026-08-01".into()),
+            acknowledged_observation_id: Some("2026-07-15".into()),
+        };
+        let carried = ledger_of(vec![quant_cond(
+            "p",
+            LedgerSeries::Price,
+            LedgerComparator::Below,
+            200.0,
+            0.0,
+            Some(acknowledged),
+        )]);
+        // The same observation the full pass already examined: no re-raise.
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-03");
+        assert!(eval.crossings.is_empty(), "{:?}", eval.crossings);
+        // A later distinct breaching observation re-raises the confirmed breach.
+        fin.daily_closes.push(DatedValue {
+            date: "2026-07-20".into(),
+            value: 190.0,
+        });
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        assert_eq!(eval.crossings.len(), 1);
+        assert_eq!(eval.crossings[0].outcome, CrossingOutcome::Confirmed);
+    }
+
+    #[test]
+    fn a_clean_distinct_observation_resets_the_streak() {
+        let mut fin = strong();
+        let metrics = compute_metrics(&fin);
+        let st = ConditionEvalState {
+            last_observation_id: Some("2026-07-15".into()),
+            breach_streak: 1,
+            first_breach_at: Some("2026-08-01".into()),
+            ..Default::default()
+        };
+        // Price 195 is NOT below 180 — a clean print on a new observation resets.
+        let carried = ledger_of(vec![quant_cond(
+            "p",
+            LedgerSeries::Price,
+            LedgerComparator::Below,
+            180.0,
+            0.0,
+            Some(st),
+        )]);
+        fin.daily_closes.push(DatedValue {
+            date: "2026-07-16".into(),
+            value: 195.0,
+        });
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        assert!(eval.crossings.is_empty());
+        let s = &eval.updated_states[0].1;
+        assert_eq!(s.breach_streak, 0);
+        assert!(s.first_breach_at.is_none());
+    }
+
+    #[test]
+    fn expense_ratio_identity_keys_to_the_changed_print_not_the_run_date() {
+        // The `etf/info` print carries no date, so its observation identity is the
+        // value itself: repeated runs against one unchanged print are the SAME
+        // observation — no streak advance, no re-raise of an acknowledged breach —
+        // and only a changed print is a distinct observation.
+        let fin = strong();
+        let mut metrics = ComputedMetrics {
+            expense_ratio: Some(0.009),
+            ..Default::default()
+        };
+        // Breach: 0.009 > 0.0075 + 0.0005. Filing cadence (count 1) confirms.
+        let ledger = ledger_of(vec![quant_cond(
+            "e",
+            LedgerSeries::ExpenseRatio,
+            LedgerComparator::Above,
+            0.0075,
+            0.0005,
+            None,
+        )]);
+        let eval1 = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        assert_eq!(eval1.crossings[0].outcome, CrossingOutcome::Confirmed);
+        let mut st = eval1.updated_states[0].1.clone();
+        assert_eq!(st.last_observation_id.as_deref(), Some("expense-ratio:0.009"));
+
+        // Acknowledged; the same unchanged print on a later run date never
+        // re-raises (the run date plays no part in the identity).
+        st.acknowledged_observation_id = st.last_observation_id.clone();
+        let carried = ledger_of(vec![quant_cond(
+            "e",
+            LedgerSeries::ExpenseRatio,
+            LedgerComparator::Above,
+            0.0075,
+            0.0005,
+            Some(st.clone()),
+        )]);
+        let eval2 = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-10");
+        assert!(eval2.crossings.is_empty(), "{:?}", eval2.crossings);
+        assert_eq!(eval2.updated_states[0].1.breach_streak, st.breach_streak);
+
+        // A changed print is a distinct observation: the breach re-raises past
+        // the acknowledgment.
+        metrics.expense_ratio = Some(0.010);
+        let eval3 = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-17");
+        assert_eq!(eval3.crossings.len(), 1);
+        assert_eq!(eval3.crossings[0].outcome, CrossingOutcome::Confirmed);
+    }
+
+    #[test]
+    fn unresolvable_series_reads_unevaluable_never_a_silent_clear() {
+        let fin = strong();
+        let metrics = compute_metrics(&fin);
+        let ledger = ledger_of(vec![quant_cond(
+            "e",
+            LedgerSeries::ExpenseRatio,
+            LedgerComparator::Above,
+            0.01,
+            0.0,
+            None,
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        assert!(eval.crossings.is_empty());
+        assert_eq!(eval.unevaluable.len(), 1);
+        assert!(
+            eval.updated_states.is_empty(),
+            "state untouched on an unevaluable family"
+        );
     }
 }

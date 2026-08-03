@@ -606,8 +606,14 @@ fn run_analysis(
 
         // The model/grade half is fail-hard: an interpretation or persistence error
         // fails the whole run (`docs/local-models.md §Failure posture`).
+        // The run date keys the ledger evaluation's observation identities and
+        // timestamps (deterministic under test — injected, never re-derived inside
+        // the engine). It is the UTC date, consistent with stored `created_at` —
+        // engine-internal state, never rendered; a card-facing date must convert to
+        // local per the project's date convention.
+        let run_date = now_rfc3339().chars().take(10).collect::<String>();
         let (verdict, audit) =
-            analyze_holding(analyst, &dossier, holdings.account_total, &rates)?;
+            analyze_holding(analyst, &dossier, holdings.account_total, &rates, &run_date)?;
         ctx.step_finished(step_key, "ok", None);
         verdicts.push(verdict);
         audits.push(audit);
@@ -1569,15 +1575,40 @@ mod tests {
             .unwrap()
         };
         // First run is a "new holding"; the second run's dossier sees the prior verdict.
-        let _first = run_once();
+        let first = match run_once() {
+            PortfolioJobOutcome::Successful(r) => *r,
+            other => panic!("expected success, got {other:?}"),
+        };
         let conn = storage::open(&paths.db_path).unwrap();
         assert!(dossier::prior_verdict_for(&conn, "AAPL").is_some());
-        let _second = run_once();
+        let second = match run_once() {
+            PortfolioJobOutcome::Successful(r) => *r,
+            other => panic!("expected success, got {other:?}"),
+        };
         // Two runs persisted; retention (N=10) is well clear.
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM portfolio_runs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2);
+
+        // The thesis ledger carries run to run: run 1 authored the debut ledger;
+        // run 2's validated rewrite kept the unchanged cores' condition ids and the
+        // frozen original thesis (`docs/portfolio-analysis.md` §The position thesis
+        // ledger), and its audit records the ledger legs.
+        let l1 = first.verdicts[0]
+            .thesis_ledger
+            .as_ref()
+            .expect("run 1 authors the debut ledger");
+        let l2 = second.verdicts[0]
+            .thesis_ledger
+            .as_ref()
+            .expect("run 2 carries a ledger");
+        assert_eq!(l1.original_thesis, l1.current_thesis, "frozen at debut");
+        assert_eq!(l2.original_thesis, l1.original_thesis);
+        let ids1: Vec<&str> = l1.conditions.iter().map(|c| c.condition_id.as_str()).collect();
+        let ids2: Vec<&str> = l2.conditions.iter().map(|c| c.condition_id.as_str()).collect();
+        assert_eq!(ids1, ids2, "unchanged cores carry their ids");
+        assert!(second.audit[0].ledger_audit.is_some());
     }
 
     #[test]

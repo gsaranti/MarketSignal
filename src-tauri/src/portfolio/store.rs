@@ -256,6 +256,7 @@ mod tests {
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
+                thesis_ledger: None,
             }],
             roll_up: PortfolioRollUp {
                 role_risk_only_count: 0,
@@ -277,6 +278,7 @@ mod tests {
                 prompt_version: "portfolio-v1".into(),
                 degraded_inputs: vec![],
                 grade_parameter_version: None,
+                ledger_audit: None,
             }],
         }
     }

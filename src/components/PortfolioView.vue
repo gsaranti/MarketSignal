@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref } from "vue";
 import { localDateTime } from "../format";
 import type {
   HoldingsPull,
@@ -478,6 +478,60 @@ function toggleMethodology(symbol: string) {
   openMethodology.value = next;
 }
 
+// ---- Standing-thesis anchor (the kit's ThesisAnchor overflow contract) -----------
+// A long model-authored thesis clamps to three lines with an accessible reveal,
+// shown only when the text actually overflows (market-signal-design-system
+// ui_kits Portfolio.jsx). Keyed per symbol, like the methodology disclosure.
+
+const openThesis = ref<Set<string>>(new Set());
+const thesisOverflow = ref<Set<string>>(new Set());
+const thesisEls = new Map<string, HTMLElement>();
+// Re-measure on card-width changes so the toggle tracks real overflow; absent
+// ResizeObserver (older webviews), the mount/update measurement stands alone.
+const thesisObserver =
+  typeof ResizeObserver !== "undefined"
+    ? new ResizeObserver(() => {
+        for (const [symbol, el] of thesisEls) measureThesis(symbol, el);
+      })
+    : null;
+function measureThesis(symbol: string, el: HTMLElement) {
+  // While expanded the paragraph never scrolls; the "Show less" control stays
+  // visible via the open set, so skip measuring (it would read no-overflow).
+  if (openThesis.value.has(symbol)) return;
+  const overflows = el.scrollHeight - el.clientHeight > 2;
+  if (overflows !== thesisOverflow.value.has(symbol)) {
+    const next = new Set(thesisOverflow.value);
+    if (overflows) next.add(symbol);
+    else next.delete(symbol);
+    thesisOverflow.value = next;
+  }
+}
+// A per-symbol function ref: registers the paragraph for measurement and
+// observation on mount/patch, unregisters on unmount.
+function thesisRef(symbol: string) {
+  return (el: unknown) => {
+    const prev = thesisEls.get(symbol);
+    if (el instanceof HTMLElement) {
+      if (prev !== el) {
+        if (prev) thesisObserver?.unobserve(prev);
+        thesisEls.set(symbol, el);
+        thesisObserver?.observe(el);
+      }
+      measureThesis(symbol, el);
+    } else if (prev) {
+      thesisObserver?.unobserve(prev);
+      thesisEls.delete(symbol);
+    }
+  };
+}
+function toggleThesis(symbol: string) {
+  const next = new Set(openThesis.value);
+  if (next.has(symbol)) next.delete(symbol);
+  else next.add(symbol);
+  openThesis.value = next;
+}
+onBeforeUnmount(() => thesisObserver?.disconnect());
+
 // ---- Key-figure strip ------------------------------------------------------------
 
 const keyFigures = computed(() => {
@@ -856,6 +910,32 @@ const keyFigures = computed(() => {
                   </div>
                 </header>
 
+                <!-- The card's anchor: the ledger's standing thesis, rendered
+                     straight from the continuity-validated ledger — never a
+                     separately authored summary
+                     (docs/portfolio-analysis.md §Storage and display). Long
+                     theses follow the kit's ThesisAnchor overflow contract:
+                     a three-line clamp with a reveal shown only on overflow. -->
+                <div v-if="v.thesis_ledger" class="hc-thesis">
+                  <span class="hc-kicker">Standing thesis</span>
+                  <p
+                    :ref="thesisRef(v.symbol)"
+                    class="hc-thesis-text"
+                    :class="{ clamped: !openThesis.has(v.symbol) }"
+                  >
+                    {{ v.thesis_ledger.current_thesis }}
+                  </p>
+                  <button
+                    v-if="thesisOverflow.has(v.symbol) || openThesis.has(v.symbol)"
+                    type="button"
+                    class="hc-thesis-toggle"
+                    :aria-expanded="openThesis.has(v.symbol)"
+                    @click="toggleThesis(v.symbol)"
+                  >
+                    {{ openThesis.has(v.symbol) ? "Show less" : "Read full thesis" }}
+                  </button>
+                </div>
+
                 <div class="hc-body">
                   <div class="hc-col hc-col-intrinsic">
                     <span class="hc-kicker">Role &amp; risk</span>
@@ -986,6 +1066,32 @@ const keyFigures = computed(() => {
                     <span v-else class="ana-num hc-gain-none">—</span>
                   </div>
                 </header>
+
+                <!-- The card's anchor: the ledger's standing thesis, rendered
+                     straight from the continuity-validated ledger — never a
+                     separately authored summary
+                     (docs/portfolio-analysis.md §Storage and display). Long
+                     theses follow the kit's ThesisAnchor overflow contract:
+                     a three-line clamp with a reveal shown only on overflow. -->
+                <div v-if="v.thesis_ledger" class="hc-thesis">
+                  <span class="hc-kicker">Standing thesis</span>
+                  <p
+                    :ref="thesisRef(v.symbol)"
+                    class="hc-thesis-text"
+                    :class="{ clamped: !openThesis.has(v.symbol) }"
+                  >
+                    {{ v.thesis_ledger.current_thesis }}
+                  </p>
+                  <button
+                    v-if="thesisOverflow.has(v.symbol) || openThesis.has(v.symbol)"
+                    type="button"
+                    class="hc-thesis-toggle"
+                    :aria-expanded="openThesis.has(v.symbol)"
+                    @click="toggleThesis(v.symbol)"
+                  >
+                    {{ openThesis.has(v.symbol) ? "Show less" : "Read full thesis" }}
+                  </button>
+                </div>
 
                 <!-- Two linked blocks: intrinsic verdict beside portfolio action
                      (distinct but linked — docs/interface.md). -->
@@ -1846,6 +1952,67 @@ const keyFigures = computed(() => {
 
 .hc-summary .hc-kicker {
   margin-bottom: var(--s-2);
+}
+
+/* The card's standing-thesis anchor (the thesis ledger's current thesis),
+   per the kit's ThesisAnchor + card seams (ui_kits Portfolio.jsx): its own
+   section between the header and the verdict body, closed by a bottom
+   hairline — the header already draws the one above it. */
+.hc-thesis {
+  padding: var(--s-4) var(--s-5);
+  border-bottom: 1px solid var(--hairline-soft);
+}
+
+.hc-thesis .hc-kicker {
+  margin-bottom: var(--s-2);
+}
+
+/* The kit's thesis lead: serif at 15px in full ink (a register up from the
+   13px secondary prose elsewhere on the card). */
+.hc-thesis-text {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  line-height: 1.5;
+  letter-spacing: -0.006em;
+  color: var(--ink);
+  margin: 0;
+  max-width: 78ch;
+  overflow-wrap: anywhere;
+}
+
+.hc-thesis-text.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The reveal, per the kit's text-only toggle — accent TEXT rides the
+   AA-safe --accent-text token (--accent is fills/rings only); hover and
+   focus-visible follow the .hc-reveal conventions. */
+.hc-thesis-toggle {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 2px 0;
+  margin-top: var(--s-2);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+
+.hc-thesis-toggle:hover {
+  color: var(--ink);
+}
+
+.hc-thesis-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .hc-foot {

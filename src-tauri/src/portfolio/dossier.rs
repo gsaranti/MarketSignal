@@ -68,6 +68,18 @@ pub struct HoldingDossier {
     pub sources: Vec<String>,
 }
 
+impl HoldingDossier {
+    /// The prior run's thesis ledger for this holding — it rides the prior verdict
+    /// (`docs/portfolio-analysis.md` §The position thesis ledger: read at dossier
+    /// assembly, re-evaluated and rewritten each run). `None` on a debut or a
+    /// pre-ledger prior run.
+    pub fn prior_ledger(&self) -> Option<&crate::portfolio::ThesisLedger> {
+        self.prior_verdict
+            .as_ref()
+            .and_then(|v| v.thesis_ledger.as_ref())
+    }
+}
+
 /// Adopt the **TTM statement basis** where the quarterly income prints support it
 /// (`docs/portfolio-analysis.md` §Starting parameters — the grade-band slice's F5
 /// closure): the four newest quarters sum to TTM revenue / net income / gross
@@ -589,6 +601,7 @@ Watch the 2s10s and the labor prints.
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
+                thesis_ledger: None,
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
                 graded_count: 0,
@@ -630,6 +643,7 @@ Watch the 2s10s and the labor prints.
                 disposition: VerdictDisposition::NotRated {
                     reason: "fixture".into(),
                 },
+                thesis_ledger: None,
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
                 graded_count: 0,
@@ -651,6 +665,7 @@ Watch the 2s10s and the labor prints.
                 degraded_inputs: vec![],
                 target_meta: None,
                 grade_parameter_version: Some("grade-v2".into()),
+                ledger_audit: None,
             }],
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();

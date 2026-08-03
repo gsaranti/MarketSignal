@@ -464,11 +464,41 @@ export type VerdictDisposition =
   | { status: "not-rated"; reason: string }
   | { status: "insufficient-evidence"; reason: string };
 
+// One bear/base/bull monitor scenario of the thesis ledger: the model's defining
+// conditions and probability lean; the engine's own scenario price target is
+// app-stamped (null on the condition-only role-risk-only branch).
+export interface MonitorScenario {
+  scenario: "bear" | "base" | "bull";
+  conditions: string;
+  probability_pct: number;
+  engine_target: number | null;
+}
+
+// The persisted per-holding thesis ledger (docs/portfolio-analysis.md §The
+// position thesis ledger). This slice renders the standing thesis as the card's
+// anchor; the conditions' machine detail stays untyped until a display slice
+// needs it.
+export interface ThesisLedger {
+  branch: "priced" | "role-risk-only";
+  original_thesis: string;
+  current_thesis: string;
+  key_drivers: { name: string; series: string | null }[];
+  monitor: MonitorScenario[];
+  what_must_improve: string;
+  what_must_not_break: string;
+  conditions: unknown[];
+  target_weight_low: number;
+  target_weight_high: number;
+}
+
 export interface HoldingVerdict {
   symbol: string;
   asset_class: AssetClass;
   position_change: PositionChange;
   disposition: VerdictDisposition;
+  // The holding's thesis ledger — the card's "why we hold this view" anchor.
+  // Absent on not-rated positions and on runs persisted before the ledger.
+  thesis_ledger?: ThesisLedger | null;
 }
 
 // A position present last run but absent now — surfaced in the roll-up only,

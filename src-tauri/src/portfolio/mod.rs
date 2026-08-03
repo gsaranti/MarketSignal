@@ -527,6 +527,287 @@ pub enum VerdictDisposition {
     InsufficientEvidence { reason: String },
 }
 
+// ---- Position thesis ledger ----------------------------------------------------
+//
+// The persisted per-holding standing thesis (`docs/portfolio-analysis.md` §The
+// position thesis ledger): why the job holds a view on the position, carried
+// forward run to run. The model authors the thesis / monitor / condition
+// *statements* at interpretation; the app owns everything structural — condition
+// ids, the machine-evaluable cores' validation, evaluation state, the engine
+// scenario targets stamped into the monitor, and what carries across a rewrite.
+
+/// Which verdict branch a ledger is typed by (`docs/portfolio-analysis.md` §The
+/// position thesis ledger): a `priced` ledger carries the full shape; a
+/// `role_risk_only` ledger keeps the same sections with two reductions — its
+/// monitor scenarios are condition-only (no engine scenario target exists on that
+/// branch) and its triggers are trim / sell only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LedgerBranch {
+    Priced,
+    RoleRiskOnly,
+}
+
+/// A condition's series cadence (`docs/portfolio-analysis.md` §The position thesis
+/// ledger): market-data conditions are evaluable on every pass; filing-cadence
+/// conditions advance only when a fresh observation of their series lands.
+/// Derived from the series, never authored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConditionCadence {
+    MarketData,
+    Filing,
+}
+
+/// The comparator of a machine-evaluable condition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LedgerComparator {
+    Below,
+    Above,
+}
+
+impl LedgerComparator {
+    pub fn as_kebab(&self) -> &'static str {
+        match self {
+            LedgerComparator::Below => "below",
+            LedgerComparator::Above => "above",
+        }
+    }
+}
+
+/// Whether a ledger condition is a key falsifier or a pre-committed action trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConditionRole {
+    Falsifier,
+    Trigger,
+}
+
+/// The action family a trigger pre-commits (`docs/portfolio-analysis.md` §The
+/// position thesis ledger — add / trim / sell triggers; a `role_risk_only` ledger's
+/// triggers are trim / sell only, since its feasible set never offers the add family).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TriggerFamily {
+    Add,
+    Trim,
+    Sell,
+}
+
+/// The machine-evaluable core of a **quantitative** condition — the structural
+/// identity the app matches across rewrites (`docs/trade-opportunities.md §The
+/// opportunity` — the suite's shared condition-identity contract, applied at
+/// Portfolio's seams): a rewrite that leaves this core unchanged carries the
+/// condition's id and evaluation state through any re-wording; an edit to it
+/// supersedes. The cadence and required consecutive-observation count are derived
+/// from the series ([`engine::LedgerSeries`]), so they are not part of the authored
+/// core.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuantCore {
+    pub series: engine::LedgerSeries,
+    pub comparator: LedgerComparator,
+    pub threshold: f64,
+    /// Materiality margin (same units as the series, absolute): a breach counts only
+    /// beyond `threshold ± margin` — the noise guard. Clamped non-negative at
+    /// validation.
+    pub margin: f64,
+}
+
+/// A quantitative condition's **evaluation state** — engine state, distinct from the
+/// model-authored ledger content (`docs/storage.md §Local Analysis Suite Storage`),
+/// observation-identity-keyed so the breach streak advances only on a distinct new
+/// print or filing, never on re-evaluating the same one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConditionEvalState {
+    /// The last distinct observation evaluated (a trading-day date for a market-data
+    /// series; a statement period end for a filing-cadence one).
+    pub last_observation_id: Option<String>,
+    pub last_value: Option<f64>,
+    /// The run date of the last evaluation.
+    pub last_evaluated_at: Option<String>,
+    /// Consecutive distinct breaching observations (reset by a clean observation).
+    pub breach_streak: u32,
+    pub first_breach_at: Option<String>,
+    /// Set when the streak reached the series' required count — a confirmed breach.
+    pub confirmed_at: Option<String>,
+    /// The acknowledgment transition (`docs/portfolio-analysis.md` §The position
+    /// thesis ledger): once a full pass consumes a confirmed breach it stamps the
+    /// confirming observation here, so the breach re-raises only when confirmed
+    /// against a *later* observation, never straight back from the one already
+    /// examined.
+    pub acknowledged_observation_id: Option<String>,
+}
+
+/// One ledger condition — a key falsifier or an action trigger, **quantitative**
+/// (carrying a validated machine-evaluable core plus evaluation state) or
+/// **qualitative** (research / model-checkable prose; no machine state).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LedgerCondition {
+    /// Stable app-assigned id (`docs/portfolio-analysis.md` §The position thesis
+    /// ledger) — carried across rewrites when the machine core is unchanged; a
+    /// changed core supersedes into a fresh id.
+    pub condition_id: String,
+    pub role: ConditionRole,
+    /// The trigger's action family (`None` on a falsifier).
+    #[serde(default)]
+    pub trigger_family: Option<TriggerFamily>,
+    /// The model's statement of the condition (prose).
+    pub statement: String,
+    /// The validated machine core — present only on a quantitative condition.
+    #[serde(default)]
+    pub quant: Option<QuantCore>,
+    /// Logged when a claimed-quantitative condition failed executability validation
+    /// and was downgraded to qualitative (never dropped —
+    /// `docs/portfolio-workflow.md` §Step 6g).
+    #[serde(default)]
+    pub downgraded_reason: Option<String>,
+    /// A third-party technology-event falsifier (`docs/portfolio-analysis.md` §The
+    /// position thesis ledger — the first-class qualitative falsifier class).
+    #[serde(default)]
+    pub technology_class: bool,
+    /// The validated tripped (falsifier) / fired (trigger) claim — set only when the
+    /// claim mapped to the engine's deterministic crossing; an unmapped claim is
+    /// cleared and logged, so the ledger can't be quietly rewritten to fit a verdict.
+    #[serde(default)]
+    pub tripped: bool,
+    /// The id of the condition this one superseded (a rewrite that changed the
+    /// machine core — fresh streak, the old condition closed into the audit).
+    #[serde(default)]
+    pub supersedes: Option<String>,
+    /// Engine evaluation state (quantitative conditions only; app-owned).
+    #[serde(default)]
+    pub eval_state: Option<ConditionEvalState>,
+}
+
+/// The three monitor scenarios.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScenarioKind {
+    Bear,
+    Base,
+    Bull,
+}
+
+/// One bear / base / bull monitor scenario (`docs/portfolio-analysis.md` §The
+/// position thesis ledger): its defining conditions, a rough probability lean, and —
+/// on the `priced` branch — the **engine's** scenario price target, stamped by the
+/// app from the engine's own scenario set (never a model-written number). A
+/// `role_risk_only` scenario is condition-only (`engine_target` stays `None`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonitorScenario {
+    pub scenario: ScenarioKind,
+    /// The conditions that define this scenario (prose).
+    pub conditions: String,
+    /// Rough probability lean, percent (0–100).
+    pub probability_pct: f64,
+    /// The engine's twelve-month scenario price target for this scenario — app-stamped.
+    pub engine_target: Option<f64>,
+}
+
+/// One key driver — a variable the thesis actually depends on, tied where possible to
+/// an engine-tracked series so the next run can read whether it moved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeyDriver {
+    pub name: String,
+    /// The engine series backing the driver, where one exists.
+    #[serde(default)]
+    pub series: Option<engine::LedgerSeries>,
+}
+
+/// The persisted per-holding **thesis ledger** (`docs/portfolio-analysis.md` §The
+/// position thesis ledger): the standing thesis with its goalposts, carried forward
+/// run to run, re-evaluated by the engine, rewritten by interpretation, and
+/// validated by the continuity check. Persisted on the holding's verdict; an
+/// insufficient-evidence exit retains the prior ledger unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ThesisLedger {
+    pub branch: LedgerBranch,
+    /// The thesis when the position first entered an analysis — frozen at debut and
+    /// carried immutable, so drift stays legible.
+    pub original_thesis: String,
+    pub current_thesis: String,
+    pub key_drivers: Vec<KeyDriver>,
+    /// The bear / base / bull monitor.
+    pub monitor: Vec<MonitorScenario>,
+    /// What must improve to migrate toward the bull case.
+    pub what_must_improve: String,
+    /// What must not break to stay in the base case.
+    pub what_must_not_break: String,
+    /// Key falsifiers and action triggers.
+    pub conditions: Vec<LedgerCondition>,
+    /// The pre-committed target-weight range (fractions of the portfolio, 0.0–1.0).
+    pub target_weight_low: f64,
+    pub target_weight_high: f64,
+}
+
+/// One engine-detected condition crossing (`docs/portfolio-analysis.md` §The
+/// position thesis ledger — the engine tests which quantitative falsifiers and
+/// triggers crossed this run, under their persistence semantics), fed to
+/// interpretation and recorded on the audit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConditionCrossing {
+    pub condition_id: String,
+    pub statement: String,
+    pub role: ConditionRole,
+    pub outcome: CrossingOutcome,
+    pub observed_value: f64,
+    pub threshold: f64,
+    /// The distinct observation the evaluation keyed on.
+    pub observation_id: String,
+}
+
+/// A crossing's persistence-semantics outcome: a lone noisy print is a quiet
+/// first-breach note; only a confirmed breach (the series' required consecutive
+/// distinct observations) trips a falsifier or fires a trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CrossingOutcome {
+    FirstBreach,
+    Confirmed,
+}
+
+/// A prior condition the rewrite closed — superseded by an edited core, or removed
+/// outright — preserved **whole**: statement, machine core, and its accumulated
+/// evaluation state as of this run's evaluation. The shared contract requires the
+/// old condition to close *with its state* into the audit record
+/// (`docs/trade-opportunities.md §The opportunity`), so the record stays
+/// reconstructible after older runs prune.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClosedCondition {
+    /// The successor's condition id on a supersession; `None` on a removal.
+    #[serde(default)]
+    pub superseded_by: Option<String>,
+    pub condition: LedgerCondition,
+}
+
+/// The ledger legs of a holding's continuity audit (`docs/portfolio-workflow.md`
+/// §Step 6g): what the engine detected, what validation downgraded / superseded /
+/// closed / rejected — recorded so a ledger rewrite is traceable, never silent.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LedgerAudit {
+    /// The crossings this pass consumed as continuity input.
+    pub crossings: Vec<ConditionCrossing>,
+    /// Conditions whose series could not be resolved this run (typed, not silent).
+    pub unevaluable: Vec<String>,
+    /// Claimed-quantitative conditions downgraded to qualitative (logged, never dropped).
+    pub downgraded: Vec<String>,
+    /// Rewrites that changed a machine core — the old condition closed whole (state
+    /// included), the successor starting a fresh streak with a `supersedes` link.
+    pub superseded: Vec<ClosedCondition>,
+    /// Prior conditions the rewrite removed — closed whole into this record.
+    pub closed: Vec<ClosedCondition>,
+    /// Tripped / fired claims that mapped to no engine crossing (or no source-backed
+    /// finding) and were cleared.
+    pub rejected_claims: Vec<String>,
+    /// Draft conditions dropped as duplicates of one already validated this pass
+    /// (identical role + machine core, or an identical qualitative statement) — a
+    /// repetitive model can't pad the ledger with copies. `#[serde(default)]` for
+    /// records written before the field.
+    #[serde(default)]
+    pub duplicates: Vec<String>,
+}
+
 /// One holding's complete verdict record, persisted per run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HoldingVerdict {
@@ -540,6 +821,13 @@ pub struct HoldingVerdict {
     #[serde(default)]
     pub position_change: PositionChange,
     pub disposition: VerdictDisposition,
+    /// The holding's thesis ledger (`docs/portfolio-analysis.md` §The position
+    /// thesis ledger) — present on an analyzed (priced / role-risk-only) verdict, and
+    /// carried unchanged on an insufficient-evidence exit; `None` on a not-rated
+    /// position and on runs persisted before the ledger existed (`#[serde(default)]`
+    /// — the debut path).
+    #[serde(default)]
+    pub thesis_ledger: Option<ThesisLedger>,
 }
 
 // ---- Run-level aggregate (persisted per run) ---------------------------------
@@ -640,6 +928,12 @@ pub struct HoldingAudit {
     /// before the field existed (`#[serde(default)]`) — the pre-tune bands.
     #[serde(default)]
     pub grade_parameter_version: Option<String>,
+    /// The ledger legs of the continuity audit — crossings consumed, downgrades,
+    /// supersessions, closures, rejected claims (`docs/portfolio-workflow.md`
+    /// §Step 6g). `None` on a not-rated holding and on pre-ledger runs
+    /// (`#[serde(default)]`).
+    #[serde(default)]
+    pub ledger_audit: Option<LedgerAudit>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the
@@ -651,8 +945,12 @@ pub struct HoldingAudit {
 /// the dead-money tilt softened to a weighed input, conviction defined against the
 /// action's decisiveness, the house view scoped to horizon/market-setup context,
 /// and a band-recalibration continuity note when the prior verdict's
-/// `grade_parameter_version` differs from the current bands.
-pub const PROMPT_VERSION: &str = "portfolio-v3";
+/// `grade_parameter_version` differs from the current bands. v4: the thesis ledger
+/// (`docs/portfolio-analysis.md` §The position thesis ledger) — the prior ledger and
+/// the engine's condition crossings rendered into the prompt (the first prior-run
+/// content the prompt carries), and the rewritten ledger required in the response,
+/// validated at the 6g seam.
+pub const PROMPT_VERSION: &str = "portfolio-v4";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -669,11 +967,91 @@ pub struct PortfolioRun {
 
 // ---- The model's schema-constrained interpretation ---------------------------
 
+/// The model's **draft** of a quantitative condition core — the claim the app
+/// validates (`docs/portfolio-workflow.md` §Step 6g: a class claim is app-validated,
+/// never a bare assertion): `series` / `comparator` are strings here so an
+/// unresolvable claim downgrades to qualitative with a logged reason rather than
+/// failing deserialization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuantCoreDraft {
+    pub series: String,
+    pub comparator: String,
+    pub threshold: f64,
+    #[serde(default)]
+    pub margin: f64,
+}
+
+/// The model's draft of one falsifier.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FalsifierDraft {
+    pub statement: String,
+    /// The machine core where the condition is quantitative; `null` = qualitative.
+    #[serde(default)]
+    pub quant: Option<QuantCoreDraft>,
+    #[serde(default)]
+    pub technology_class: bool,
+    /// The model's tripped claim — honored only when it maps to an engine crossing
+    /// or a source-backed finding (Step 6g).
+    #[serde(default)]
+    pub tripped: bool,
+}
+
+/// The model's draft of one action trigger.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TriggerDraft {
+    pub statement: String,
+    /// "add" / "trim" / "sell" (a `role_risk_only` ledger offers trim / sell only).
+    pub family: String,
+    #[serde(default)]
+    pub quant: Option<QuantCoreDraft>,
+    /// The model's fired claim — validated like a tripped falsifier.
+    #[serde(default)]
+    pub fired: bool,
+}
+
+/// The model's draft of one monitor scenario — conditions and a probability lean
+/// only; the engine's scenario price target is stamped by the app, never authored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScenarioDraft {
+    pub conditions: String,
+    pub probability_pct: f64,
+}
+
+/// The model's rewritten thesis ledger (`docs/portfolio-analysis.md` §The position
+/// thesis ledger — interpretation "rewrites the thesis, re-weights the scenarios,
+/// and re-sets the triggers"). The app validates it at the 6g seam: executability,
+/// condition identity / carry, and tripped / fired claims.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LedgerDraft {
+    /// The current thesis (the original thesis is app-frozen at debut, never re-authored).
+    pub thesis: String,
+    pub key_drivers: Vec<KeyDriverDraft>,
+    pub bear: ScenarioDraft,
+    pub base: ScenarioDraft,
+    pub bull: ScenarioDraft,
+    pub what_must_improve: String,
+    pub what_must_not_break: String,
+    pub falsifiers: Vec<FalsifierDraft>,
+    pub triggers: Vec<TriggerDraft>,
+    /// The pre-committed target-weight range (fractions of the portfolio, 0.0–1.0).
+    pub target_weight_low: f64,
+    pub target_weight_high: f64,
+}
+
+/// One key-driver draft (name + the engine series claim, validated app-side).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeyDriverDraft {
+    pub name: String,
+    #[serde(default)]
+    pub series: Option<String>,
+}
+
 /// The model's grammar-constrained output (Ollama native `format`) — the only thing
 /// the 122B authors. Every *number* in the final verdict comes from the engine; this
-/// carries the judgment calls (action, conviction, horizon reads) and the prose. A
-/// schema-valid object is guaranteed by grammar-constrained decoding, so there is no
-/// parse-and-pray path (`docs/local-models.md §Schema-constrained output`).
+/// carries the judgment calls (action, conviction, horizon reads), the prose, and the
+/// rewritten thesis ledger. A schema-valid object is guaranteed by
+/// grammar-constrained decoding, so there is no parse-and-pray path
+/// (`docs/local-models.md §Schema-constrained output`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Interpretation {
     pub action: Action,
@@ -684,6 +1062,97 @@ pub struct Interpretation {
     /// and explains; the engine computed the figure).
     pub price_target_rationale: String,
     pub what_changed: String,
+    /// The rewritten thesis ledger — required; validated at the 6g seam.
+    pub ledger: LedgerDraft,
+}
+
+/// The ledger half of the interpretation schema (`docs/portfolio-analysis.md` §The
+/// position thesis ledger), shared by both branches: the series and comparator
+/// enums are structural, so a grammar-valid draft names only series the engine
+/// actually computes (the app still validates the claim — defense in depth behind
+/// the constraint). A `role_risk_only` ledger's trigger-family enum drops `add`
+/// (its feasible set never offers the add family).
+pub fn ledger_schema(role_risk: bool) -> Value {
+    let series: Vec<&str> = engine::LedgerSeries::ALL.iter().map(|s| s.as_kebab()).collect();
+    // The nullable series enum for a key driver's optional backing series.
+    let mut series_or_null: Vec<Value> = series.iter().map(|s| json!(s)).collect();
+    series_or_null.push(Value::Null);
+    let quant = json!({
+        "type": ["object", "null"],
+        "properties": {
+            "series": { "type": "string", "enum": series },
+            "comparator": { "type": "string", "enum": ["below", "above"] },
+            "threshold": { "type": "number" },
+            "margin": { "type": "number" }
+        },
+        "required": ["series", "comparator", "threshold", "margin"]
+    });
+    let scenario = json!({
+        "type": "object",
+        "properties": {
+            "conditions": { "type": "string" },
+            "probability_pct": { "type": "number" }
+        },
+        "required": ["conditions", "probability_pct"]
+    });
+    let families: Vec<&str> = if role_risk {
+        vec!["trim", "sell"]
+    } else {
+        vec!["add", "trim", "sell"]
+    };
+    json!({
+        "type": "object",
+        "properties": {
+            "thesis": { "type": "string" },
+            "key_drivers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "series": { "type": ["string", "null"], "enum": series_or_null }
+                    },
+                    "required": ["name", "series"]
+                }
+            },
+            "bear": scenario, "base": scenario, "bull": scenario,
+            "what_must_improve": { "type": "string" },
+            "what_must_not_break": { "type": "string" },
+            "falsifiers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "statement": { "type": "string" },
+                        "quant": quant,
+                        "technology_class": { "type": "boolean" },
+                        "tripped": { "type": "boolean" }
+                    },
+                    "required": ["statement", "quant", "technology_class", "tripped"]
+                }
+            },
+            "triggers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "statement": { "type": "string" },
+                        "family": { "type": "string", "enum": families },
+                        "quant": quant,
+                        "fired": { "type": "boolean" }
+                    },
+                    "required": ["statement", "family", "quant", "fired"]
+                }
+            },
+            "target_weight_low": { "type": "number" },
+            "target_weight_high": { "type": "number" }
+        },
+        "required": [
+            "thesis", "key_drivers", "bear", "base", "bull",
+            "what_must_improve", "what_must_not_break",
+            "falsifiers", "triggers", "target_weight_low", "target_weight_high"
+        ]
+    })
 }
 
 /// The JSON Schema handed to Ollama's `format` so the interpretation is structurally
@@ -708,11 +1177,12 @@ pub fn interpretation_schema(feasible: &[Action]) -> Value {
             },
             "financial_summary": { "type": "string" },
             "price_target_rationale": { "type": "string" },
-            "what_changed": { "type": "string" }
+            "what_changed": { "type": "string" },
+            "ledger": ledger_schema(false)
         },
         "required": [
             "action", "conviction", "horizon_outlook",
-            "financial_summary", "price_target_rationale", "what_changed"
+            "financial_summary", "price_target_rationale", "what_changed", "ledger"
         ]
     })
 }
@@ -728,6 +1198,9 @@ pub struct RoleRiskInterpretation {
     /// The vehicle's mandate and the exposure it exists to supply (prose).
     pub role_summary: String,
     pub what_changed: String,
+    /// The rewritten fund ledger — same sections, the branch's two reductions
+    /// enforced at validation (condition-only monitor, trim / sell triggers).
+    pub ledger: LedgerDraft,
 }
 
 /// The reduced action spine a `role_risk_only` holding's feasible set offers —
@@ -735,7 +1208,8 @@ pub struct RoleRiskInterpretation {
 /// (`docs/portfolio-analysis.md` §Portfolio action).
 pub const ROLE_RISK_ACTIONS: [Action; 3] = [Action::SellAll, Action::Trim, Action::Hold];
 
-/// The JSON Schema for [`RoleRiskInterpretation`] — the reduced spine is structural.
+/// The JSON Schema for [`RoleRiskInterpretation`] — the reduced spine is structural,
+/// and so is the ledger's reduced trigger-family enum.
 pub fn role_risk_interpretation_schema() -> Value {
     let actions: Vec<&str> = ROLE_RISK_ACTIONS.iter().map(Action::as_kebab).collect();
     json!({
@@ -743,15 +1217,53 @@ pub fn role_risk_interpretation_schema() -> Value {
         "properties": {
             "action": { "type": "string", "enum": actions },
             "role_summary": { "type": "string" },
-            "what_changed": { "type": "string" }
+            "what_changed": { "type": "string" },
+            "ledger": ledger_schema(true)
         },
-        "required": ["action", "role_summary", "what_changed"]
+        "required": ["action", "role_summary", "what_changed", "ledger"]
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A grammar-valid ledger object in the schema's own labels, for the
+    /// interpretation round-trip tests.
+    fn raw_ledger() -> Value {
+        json!({
+            "thesis": "Durable franchise at a fair multiple.",
+            "key_drivers": [
+                { "name": "margin trajectory", "series": "net-margin" },
+                { "name": "platform stickiness", "series": null }
+            ],
+            "bear": { "conditions": "margins compress", "probability_pct": 20.0 },
+            "base": { "conditions": "trajectory holds", "probability_pct": 55.0 },
+            "bull": { "conditions": "growth re-accelerates", "probability_pct": 25.0 },
+            "what_must_improve": "services mix",
+            "what_must_not_break": "gross margin",
+            "falsifiers": [{
+                "statement": "TTM net margin falls below 15%",
+                "quant": {
+                    "series": "net-margin", "comparator": "below",
+                    "threshold": 0.15, "margin": 0.01
+                },
+                "technology_class": false,
+                "tripped": false
+            }],
+            "triggers": [{
+                "statement": "Trim above 25% of the book",
+                "family": "trim",
+                "quant": {
+                    "series": "portfolio-weight", "comparator": "above",
+                    "threshold": 0.25, "margin": 0.0
+                },
+                "fired": false
+            }],
+            "target_weight_low": 0.03,
+            "target_weight_high": 0.08
+        })
+    }
 
     #[test]
     fn interpretation_round_trips_through_its_schema_labels() {
@@ -763,12 +1275,143 @@ mod tests {
             "horizon_outlook": { "short": "neutral", "mid": "bullish", "long": "bullish" },
             "financial_summary": "Durable margins, light leverage.",
             "price_target_rationale": "Base case tracks the engine's DCF midpoint.",
-            "what_changed": "new holding"
+            "what_changed": "new holding",
+            "ledger": raw_ledger()
         });
         let parsed: Interpretation = serde_json::from_value(raw).unwrap();
         assert_eq!(parsed.action, Action::Add);
         assert_eq!(parsed.conviction, Conviction::High);
         assert_eq!(parsed.horizon_outlook.mid, HorizonRead::Bullish);
+        // The ledger draft decoded structurally: the machine-core claims arrive as
+        // strings for app-side validation, never pre-trusted types.
+        assert_eq!(parsed.ledger.falsifiers.len(), 1);
+        let quant = parsed.ledger.falsifiers[0].quant.as_ref().unwrap();
+        assert_eq!(quant.series, "net-margin");
+        assert_eq!(quant.comparator, "below");
+        assert_eq!(parsed.ledger.key_drivers[1].series, None);
+    }
+
+    #[test]
+    fn ledger_schema_constrains_series_families_and_requires_the_ledger() {
+        // Both interpretation schemas require the rewritten ledger, the quant series
+        // enum is exactly the engine's closed executability surface, and the
+        // role-risk trigger-family enum drops `add` (the reduced spine).
+        let schema = interpretation_schema(&[Action::Hold]);
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(required.contains(&"ledger"), "{required:?}");
+
+        let ledger = &schema["properties"]["ledger"];
+        let series: Vec<&str> = ledger["properties"]["falsifiers"]["items"]["properties"]["quant"]
+            ["properties"]["series"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(series.len(), engine::LedgerSeries::ALL.len());
+        assert!(series.contains(&"net-margin"));
+        assert!(series.contains(&"portfolio-weight"));
+        let families: Vec<&str> = ledger["properties"]["triggers"]["items"]["properties"]
+            ["family"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(families, vec!["add", "trim", "sell"]);
+
+        let role = role_risk_interpretation_schema();
+        let role_required: Vec<&str> = role["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(role_required.contains(&"ledger"), "{role_required:?}");
+        let role_families: Vec<&str> = role["properties"]["ledger"]["properties"]["triggers"]
+            ["items"]["properties"]["family"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(role_families, vec!["trim", "sell"], "no add family on role_risk");
+    }
+
+    #[test]
+    fn verdicts_persisted_before_the_ledger_decode_with_none() {
+        // A pre-ledger run's verdict JSON (no `thesis_ledger` key) decodes cleanly —
+        // the debut path for every holding on the first post-ledger run.
+        let legacy = json!({
+            "symbol": "AAPL",
+            "asset_class": "stock",
+            "disposition": { "status": "not-rated", "reason": "fixture" }
+        });
+        let parsed: HoldingVerdict = serde_json::from_value(legacy).unwrap();
+        assert!(parsed.thesis_ledger.is_none());
+    }
+
+    #[test]
+    fn thesis_ledger_round_trips_with_eval_state() {
+        let ledger = ThesisLedger {
+            branch: LedgerBranch::Priced,
+            original_thesis: "debut thesis".into(),
+            current_thesis: "current thesis".into(),
+            key_drivers: vec![KeyDriver {
+                name: "margins".into(),
+                series: Some(engine::LedgerSeries::NetMargin),
+            }],
+            monitor: vec![MonitorScenario {
+                scenario: ScenarioKind::Base,
+                conditions: "holds".into(),
+                probability_pct: 55.0,
+                engine_target: Some(210.0),
+            }],
+            what_must_improve: "growth".into(),
+            what_must_not_break: "margins".into(),
+            conditions: vec![LedgerCondition {
+                condition_id: "c-1".into(),
+                role: ConditionRole::Falsifier,
+                trigger_family: None,
+                statement: "net margin below 15%".into(),
+                quant: Some(QuantCore {
+                    series: engine::LedgerSeries::NetMargin,
+                    comparator: LedgerComparator::Below,
+                    threshold: 0.15,
+                    margin: 0.01,
+                }),
+                downgraded_reason: None,
+                technology_class: false,
+                tripped: false,
+                supersedes: None,
+                eval_state: Some(ConditionEvalState {
+                    last_observation_id: Some("2026-06-30".into()),
+                    last_value: Some(0.22),
+                    last_evaluated_at: Some("2026-08-03".into()),
+                    breach_streak: 0,
+                    first_breach_at: None,
+                    confirmed_at: None,
+                    acknowledged_observation_id: None,
+                }),
+            }],
+            target_weight_low: 0.03,
+            target_weight_high: 0.08,
+        };
+        let verdict = HoldingVerdict {
+            symbol: "AAPL".into(),
+            asset_class: AssetClass::Stock,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
+            thesis_ledger: Some(ledger.clone()),
+        };
+        let s = serde_json::to_value(&verdict).unwrap();
+        let back: HoldingVerdict = serde_json::from_value(s).unwrap();
+        assert_eq!(back.thesis_ledger, Some(ledger));
     }
 
     #[test]
