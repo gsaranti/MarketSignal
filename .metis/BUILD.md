@@ -447,8 +447,15 @@ live research loop) remain designed, not built.** The load-bearing decisions:
   2026-07-16 — the v2 function over the exposure-priced composite).** The
   intrinsic verdict is a **discriminated union**: the **`priced`** branch is
   the four-part read — deterministic grade (momentum settled out of the
-  letter), first-class forward outlook, bidirectional conviction, portfolio
-  action — and a structurally unpriceable vehicle class returns
+  letter; since the 2026-08-03 shadow-tune computed on a one-basis-per-holding
+  **TTM statement basis** — the four newest quarterly income prints summed, a
+  quarterly balance-sheet leg for debt / equity, SEC company-facts the
+  **same-concept annual fallback**, fund holdings skipping the facts call
+  entirely — under the recentered **`grade-v2`** bands, each audit stamped
+  with its **grade-parameter version** so a recalibration stays attributable;
+  weights and A–F cutoffs untouched, reserved for the normalization slice),
+  first-class forward outlook, bidirectional conviction, portfolio action —
+  and a structurally unpriceable vehicle class returns
   **`role_risk_only`** (no letter / targets / lean / conviction; a reduced
   {sell all, trim, hold} spine) so no fabricated number rides an unpriceable
   fund. The intrinsic verdict stays separated from the portfolio action: the
@@ -460,8 +467,19 @@ live research loop) remain designed, not built.** The load-bearing decisions:
   so "A-grade business, trim because oversized" is expressible (an allocation
   optimizer is **deferred, not adopted**). Capital efficiency tests **total
   return** against a DGS2-anchored, tier-scaled, **three-state hurdle** —
-  only *fails* is dead money (exit-side hysteresis); **new money passes its
-  own base-case admission test**. The persisted per-holding **thesis ledger**
+  only *fails* is dead money (exit-side hysteresis) — and under the
+  **`portfolio-v3`** interpretation contract (2026-08-03) a *fails* read
+  reaches the model as a **weighed exit input**, set against the targets'
+  **typed provenance** (the `TargetMeta` derivation flags — rate-anchored vs
+  current-multiple carry, flat / clamp-flattened driver, dispersion floor —
+  rendered into every priced interpretation, a floor-widened band inheriting
+  its base's signal quality) and the data quality, never an exit instruction;
+  the same contract defines **conviction against the action's decisiveness**,
+  scopes the **house view** to horizon reads / market-setup context (never by
+  itself a per-holding exit reason), and fires a **band-recalibration
+  continuity NOTE** when the prior verdict's stamped grade version differs
+  from the current bands; **new money passes its own base-case admission
+  test**. The persisted per-holding **thesis ledger**
   (typed by verdict branch; observation-identity persistence semantics) is
   evaluated deterministically each run and kept live between runs by an
   engine-only **quick check** (warn-don't-decide attention flags);
@@ -520,62 +538,89 @@ live research loop) remain designed, not built.** The load-bearing decisions:
 
 ## What remains
 
-In order — **the calibration tier first** (settled 2026-08-01, while the first
-live run's dataset is fresh), **then Trade Opportunities** (design settled —
-full strategy audit plus three external review rounds to convergence,
-2026-07-09; the paid FMP key's shapes live-verified 2026-07-16, so
-implementation planning codes against verified shapes). A named, unscheduled **local-suite guided-setup follow-up**
-carries the Settings-slice deferrals: in-app `ollama pull` with Run-Tracker
-progress + `ollama serve` start, an Install-Ollama deep-link (needs an opener
+The queue is governed by the **locked pre-test block** (user decision
+2026-08-02): **no further live runs until the block is fully built** — the
+calibration tier, the two result-review UI micro-slices, and every remaining
+Portfolio depth slice except the live research loop and the held-name refresh
+lane (which rides with it) — then one **single big confirmation run** banks
+all the stacked runtime confirmations (grade-v2 letter distribution and
+whether ordering holds; TTM-basis adoption + the balance-sheet leg live;
+target provenance vs the sell-all cascade; the recalibration NOTE and its
+what-changed attribution; conviction/action pairing; the fails →
+indeterminate action distribution; fund-SEC-skip noise reduction; the fund
+carry-path floor; the data-health render; the reasoning panes; 128 K runner
+stability; distill speed; whether Stooq's PoW gate is permanent). **Trade
+Opportunities waits behind the whole block** (design settled — full strategy
+audit plus three external review rounds to convergence, 2026-07-09; the paid
+FMP key's shapes live-verified 2026-07-16, so implementation planning codes
+against verified shapes).
+
+The **calibration tier is done** — four slices tuned against the first live
+run's persisted dataset (run `3b21ae85`; the run completed 2026-07-31 over a
+real 47-position book with zero mechanical failures — findings in
+`docs/verification/2026-07-31-first-live-portfolio-run.md`; the model-serving
+pre-flight completed 2026-07-28, Ollama pinned v0.32.5 —
+`docs/verification/2026-07-28-m5-preflight.md`):
+
+- the **adapter options-wiring slice** (2026-08-01) — explicit tri-state
+  per-stage `think` (F3 closed — `Some(false)` always serializes, distill
+  runs non-thinking on the verified pinned Ollama), per-mode sampling
+  profiles, per-stage `num_ctx` under the **one-`num_ctx`-per-model** rule
+  (an Ollama `num_ctx` change reloads the resident runner despite
+  `keep_alive`), `keep_alive:-1` residency including the embedder, and the
+  **step-scoped live thinking channel** (F8);
+- the **target-function calibration slice** (2026-08-01, `targets-v3` —
+  F1/F2 closed) — the **NTM consensus read** (the two nearest forward
+  fiscal-year rows blended time-weighted by twelve-month overlap, the
+  selection persisted on the target meta), the **volatility-scaled
+  widen-only dispersion floor** plus the recorded growth-clamp collapse,
+  **Stooq resilience** (typed daily-hits notice, run-wide breaker,
+  politeness pacing, the FMP dated-EOD second rung), and the **run-level
+  data-health roll-up** rendered with an attention state;
+- the **grade-band shadow-tune** (2026-08-03, `grade-v2` — F4/F5 closed) —
+  the sub-score formulas **certified exact** against run `3b21ae85`'s
+  persisted audits before any retune, the statement-input gaps closed (the
+  **TTM statement basis**, the quarterly **balance-sheet leg**, the SEC
+  **same-concept prior-year** annual fallback with latest-filed dedup, the
+  **fund facts-call skip**), the calibration surface refreshed via a
+  user-approved bounded probe, and the recentered bands user-picked off a
+  sweep — **weights and A–F cutoffs deliberately untouched** (no A letters
+  yet — META 84.0 vs the ≥ 85 cutoff — reserved for the sector-aware
+  normalization slice or the big run's evidence); evidence in
+  `docs/verification/2026-08-03-grade-band-shadow-tune.md`;
+- the **interpretation-prompt adjustments slice** (2026-08-03,
+  `portfolio-v3`) — the prompt contract described in §Local analysis suite
+  above (target provenance, the softened dead-money weighing, the conviction
+  definition, house-view scoping, the band-recalibration continuity NOTE).
+
+**Remaining in the block, in order: the depth slices** — the **thesis
+ledger** first (the persisted standing thesis with typed falsifiers /
+triggers and machine-evaluable quantitative conditions is the anchor the
+quick check and selective re-analysis build on), then the **quick check**,
+**selective re-analysis**, the **pre-profit overlay**, **outcome learning**,
+and the **7b construction stage** — with the two small, display-only
+result-review UI fixes (the Portfolio-page polish micro-slice; the
+section-scoped footer + report-nav slice) slotting anywhere between slices
+as breathers. Excluded from the block and still designed-not-built: the
+**live research loop** and the **held-name research refresh lane**; the
+shipped schemas don't preclude them.
+
+Watches and deferrals: **Stooq now serves a JS-PoW interstitial to non-JS
+clients** (observed 2026-08-02 during the FMP light-EOD desk probe, which
+closed the adjustment-basis question — FMP's basis is Stooq's exact
+split-adjusted dividend-unadjusted convention —
+`docs/verification/2026-08-02-fmp-light-eod-adjustment-basis.md`), so the
+FMP dated-EOD rung may be de facto primary; Stooq stays the primary rung by
+user decision, revisited only on the big run's data-health evidence (a
+rung-order slice + FMP re-homing the contingent follow-up). A named,
+unscheduled **local-suite guided-setup follow-up** carries the
+Settings-slice deferrals: in-app `ollama pull` with Run-Tracker progress +
+`ollama serve` start, an Install-Ollama deep-link (needs an opener
 capability), reflecting the run-gate connectivity check in the Settings
-daemon indicator (today it reflects manual tests only — an accepted, recorded
-deviation from `interface.md §Connection status`), and embedder
+daemon indicator (today it reflects manual tests only — an accepted,
+recorded deviation from `interface.md §Connection status`), and embedder
 re-embed-from-content (M5-gated; today an identity change clears the local
-namespaces atomically). The **remaining
-Portfolio depth slices** (thesis ledger, quick check, selective re-analysis,
-held-name refresh lane, pre-profit overlay, outcome learning, the 7b
-construction stage, the live research loop) are designed and not yet sequenced
-in this queue; the shipped schemas don't preclude them. The **model-serving pre-flight completed
-2026-07-28** (Ollama pinned v0.32.5, roster pulled, all checks green —
-`docs/verification/2026-07-28-m5-preflight.md`) and the **first live Portfolio
-run completed 2026-07-31** (dev app, successful over a real 47-position book;
-zero mechanical failures — the spine is live-verified; findings in
-`docs/verification/2026-07-31-first-live-portfolio-run.md`). The live run
-sharpened the queue into three named calibration-tier slices; the first — the
-**adapter options-wiring slice** — **landed 2026-08-01**: explicit tri-state
-per-stage `think` (F3 closed — `Some(false)` always serializes, distill runs
-non-thinking on the verified pinned Ollama), per-mode sampling profiles, and
-per-stage `num_ctx` under a **one-`num_ctx`-per-model** rule (an Ollama
-`num_ctx` change reloads the resident runner despite `keep_alive`, so the
-blank-fast-tier default path shares the 128 K interpretation context),
-`keep_alive:-1` residency including the embedder, plus the **step-scoped live
-thinking channel** (F8) streaming each holding's interpretation reasoning onto
-its own tracker step — two review rounds (internal + Codex) to convergence.
-The second — the **target-function calibration slice** — **landed 2026-08-01**
-(F1/F2 closed): the **NTM consensus read** (the two nearest forward
-fiscal-year rows blend time-weighted by twelve-month overlap, so a
-mostly-reported current year no longer masquerades as the forward driver;
-the selection persisted on the target meta), a **volatility-scaled widen-only
-dispersion floor** plus a recorded growth-clamp collapse (zero scenario
-dispersion no longer degenerates the three-state hurdle into a point test —
-parameter version `targets-v3`, run `3b21ae85` staying the v2 baseline),
-**Stooq resilience** (the 200-HTML daily-hits notice typed at the parse seam,
-a run-wide breaker, politeness pacing, and an FMP dated-EOD second rung for
-the anchor price leg), and the **run-level data-health roll-up** (typed
-aggregate off the audits, persisted with the roll-up, rendered on the
-roll-up card with an attention state) — two internal review rounds to
-approve-with-nits; its live confirmation rides the next calibration run
-(FMP-EOD adjustment basis, the new action distribution, the fund carry-path
-floor).
-Remaining, in order:
-the **grade-band shadow-tune** — zero A/B letters across 44 priced
-holdings (relative ordering sound, absolute levels compressed), opening by
-certifying the sub-score formulas against spec and closing the FMP
-statement-field gaps, tuned against the persisted run (`3b21ae85`, the first
-calibration dataset). Interpretation-prompt adjustments (target provenance in
-the prompt, tilt weighting, conviction definition, house-view scoping) ride
-after those. The two specified result-review UI fixes (the Portfolio-page
-polish micro-slice; the section-scoped footer + report-nav slice) are small,
-display-only, and slot anywhere between slices. Still M5-gated: the fund slice's remaining drafted constants (the
-≥ 70% coverage / US guards, tier premiums, add floors, CIK-cache staleness);
-the FMP paid-key shape checkpoint closed 2026-07-16 (`78df109`).
+namespaces atomically). Still M5-gated: the fund slice's remaining drafted
+constants (the ≥ 70% coverage / US guards, tier premiums, add floors,
+CIK-cache staleness); the FMP paid-key shape checkpoint closed 2026-07-16
+(`78df109`).
