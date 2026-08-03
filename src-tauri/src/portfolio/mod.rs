@@ -645,8 +645,14 @@ pub struct HoldingAudit {
 /// The schema/prompt version stamped on each run's audit, bumped when the
 /// interpretation contract changes so older runs stay legible. v2: the verdict union
 /// (priced / role-risk-only), the engine-bounded feasible action set, the v2
-/// rate-anchored scenario targets, and the rolling-window target rename.
-pub const PROMPT_VERSION: &str = "portfolio-v2";
+/// rate-anchored scenario targets, and the rolling-window target rename. v3: the
+/// interpretation-prompt adjustments (2026-07-31 F6 + the grade-band slice's
+/// versioning finding) — target provenance rendered from the typed `TargetMeta`,
+/// the dead-money tilt softened to a weighed input, conviction defined against the
+/// action's decisiveness, the house view scoped to horizon/market-setup context,
+/// and a band-recalibration continuity note when the prior verdict's
+/// `grade_parameter_version` differs from the current bands.
+pub const PROMPT_VERSION: &str = "portfolio-v3";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

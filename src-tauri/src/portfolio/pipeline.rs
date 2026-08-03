@@ -351,7 +351,13 @@ pub fn interpretation_system_prompt() -> String {
      judgment the numbers don't make: choose the action from the ALLOWED ACTIONS the \
      engine offers (never outside it), set your conviction and the three horizon reads, \
      justify the base-case price target, and write a concise financial summary and a \
-     continuity note. Apply the Market Signal house view and the investor profile. \
+     continuity note. Conviction means your confidence in the overall read — grade, \
+     outlook, and action together — and must match the action's decisiveness: a \
+     decisive action (sell all, add aggressively) requires conviction you actually \
+     hold; if your conviction is low, choose a less decisive allowed action instead. \
+     Use the Market Signal house view for the horizon reads and market-setup context \
+     only — it is a market-level thesis, never by itself a reason to exit a specific \
+     holding. Apply the investor profile. \
      Respond only with the required JSON object."
         .to_string()
 }
@@ -408,7 +414,10 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         p.push_str(&format!("EVIDENCE GAPS: {}\n", r.evidence_gaps.join("; ")));
     }
     if let Some(sections) = &d.house_view.latest_sections {
-        p.push_str(&format!("\nMARKET SIGNAL HOUSE VIEW (latest report):\n{sections}\n"));
+        p.push_str(&format!(
+            "\nMARKET SIGNAL HOUSE VIEW (latest report — scope: market-setup context \
+             only, never by itself a reason to exit this holding):\n{sections}\n"
+        ));
     }
     p.push_str("\nALLOWED ACTIONS: sell-all, trim, hold (the reduced spine — no add family).\n");
     match &d.prior_verdict {
@@ -459,8 +468,9 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     ));
     p.push_str(&format!(
         "RISK TIER: {} (deterministic). CAPITAL-EFFICIENCY READ: {} (hurdle {}; only \
-         `fails` is dead money — it should tilt your standalone read toward exit on \
-         the holding's own merits)\n",
+         `fails` is dead money. A `fails` read is one input to weigh — set it against \
+         the TARGET PROVENANCE below and the data quality: a fails verdict built on \
+         low-signal targets is weak evidence for an exit, not an instruction.)\n",
         e.risk_tier.as_str(),
         format!("{:?}", e.hurdle.state).to_lowercase(),
         e.hurdle
@@ -516,6 +526,53 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         ));
     }
 
+    // How much signal the targets carry — the audit-level derivation flags surfaced
+    // to the model so a low-signal target surface is weighed, not obeyed (the
+    // 2026-07-31 run's F6: the sell-all cascade rode targets the audit already knew
+    // were a current-multiple carry).
+    let t = &e.target_meta;
+    let anchor = if t.rate_anchored {
+        format!(
+            "multiples spread-anchored on {} rate observations",
+            t.anchor_observations
+        )
+    } else if t.current_multiple_carry {
+        "NO anchor history — the current multiple was carried, so the targets hug the \
+         current price and carry little forward signal"
+            .to_string()
+    } else {
+        "raw-percentile fallback (anchor window below the observation floor)".to_string()
+    };
+    p.push_str(&format!("TARGET PROVENANCE: {anchor}; driver: {}", t.driver_rung));
+    if let Some(rows) = t.consensus_rows {
+        p.push_str(if rows >= 2 {
+            " (two-row NTM blend)"
+        } else {
+            " (single forward consensus row)"
+        });
+    }
+    if t.flat_driver {
+        p.push_str("; driver held FLAT across scenarios");
+    }
+    if t.clamp_flattened {
+        p.push_str("; published scenario spread clamp-flattened");
+    }
+    if t.dispersion_floor_applied {
+        p.push_str("; band widened to the volatility dispersion floor");
+    }
+    p.push_str(
+        ".\n  Weigh the targets by this provenance: spread-anchored multiples carry \
+         real signal even with a flat driver (the scenario spread then rides the \
+         anchored multiple range — structural on the fund form). The low-signal \
+         shape is the current-multiple carry with a flat or clamp-flattened driver \
+         — targets that simply hug the current price. A floor-widened band inherits \
+         its base's signal quality: over an anchored base, discount the band's \
+         width, not its level — a `fails` that survives even the widened bull leg \
+         is robust exit evidence; over the low-signal carry shape, the floor only \
+         manufactures width around the current price, and a `fails` there stays \
+         weak exit evidence.\n",
+    );
+
     p.push_str("\nALLOWED ACTIONS (the engine-bounded feasible set — choose within it): ");
     let allowed: Vec<&str> = input.feasible.iter().map(Action::as_kebab).collect();
     p.push_str(&allowed.join(", "));
@@ -537,7 +594,11 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     p.push_str(&format!("\nDISTILLED RESEARCH:\n{}\n", input.distilled));
 
     if let Some(sections) = &d.house_view.latest_sections {
-        p.push_str(&format!("\nMARKET SIGNAL HOUSE VIEW (latest report):\n{sections}\n"));
+        p.push_str(&format!(
+            "\nMARKET SIGNAL HOUSE VIEW (latest report — scope: the horizon reads and \
+             market-setup context only, never by itself a reason to exit this \
+             holding):\n{sections}\n"
+        ));
     }
     if !d.house_view.recent_summaries.is_empty() {
         p.push_str("\nRECENT REPORT STANCES:\n");
@@ -566,10 +627,26 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     p.push_str(&format!("{HORIZON_SHORT}, {HORIZON_MID}, {HORIZON_LONG}.\n"));
 
     match &d.prior_verdict {
-        Some(_) => p.push_str(
-            "\nCONTINUITY: a prior verdict for this holding exists. Keep the verdict firm; \
-             only move grade/action/target if the evidence has materially changed, and say what.\n",
-        ),
+        Some(_) => {
+            p.push_str(
+                "\nCONTINUITY: a prior verdict for this holding exists. Keep the verdict firm; \
+                 only move grade/action/target if the evidence has materially changed, and say what.\n",
+            );
+            // A band recalibration moves letters with no input change; without this
+            // line the model's what-changed would attribute an engine-driven letter
+            // move to company evidence or a self-correction (the grade-band slice's
+            // versioning finding, `docs/verification/2026-08-03-grade-band-shadow-tune.md` §6).
+            if d.prior_grade_parameter_version.as_deref() != Some(engine::GRADE_PARAMETER_VERSION)
+            {
+                p.push_str(
+                    "NOTE: the grade bands were recalibrated since the prior verdict \
+                     (grade parameter version changed), so the letter may have moved \
+                     with no change in the company's inputs. Attribute such a move in \
+                     what_changed to the recalibration — not to company change or a \
+                     self-correction.\n",
+                );
+            }
+        }
         None => p.push_str("\nCONTINUITY: new holding (no prior verdict).\n"),
     }
 
@@ -1003,6 +1080,7 @@ mod tests {
             house_view: HouseView::default(),
             fund: None,
             prior_verdict: None,
+            prior_grade_parameter_version: None,
             sources: vec!["FMP".into()],
         }
     }
@@ -1313,6 +1391,160 @@ mod tests {
             .unwrap();
         assert!(!allowed_line.contains("add"), "{allowed_line}");
         assert!(interpretation_system_prompt().contains("Do NOT invent"));
+
+        // The prompt-adjustments slice (portfolio-v3): target provenance always
+        // renders, the dead-money read is a weighed input (not an instruction), and
+        // the system prompt defines conviction and scopes the house view.
+        assert!(user.contains("TARGET PROVENANCE"), "{user}");
+        assert!(user.contains("one input to weigh"), "{user}");
+        let system = interpretation_system_prompt();
+        assert!(system.contains("Conviction means"), "{system}");
+        assert!(system.contains("horizon reads and market-setup context"), "{system}");
+        assert!(system.contains("never by itself a reason to exit"), "{system}");
+    }
+
+    #[test]
+    fn target_provenance_renders_the_anchored_and_carry_branches() {
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let mut engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let feasible = vec![Action::Hold];
+
+        engine_output.target_meta.rate_anchored = true;
+        engine_output.target_meta.anchor_observations = 40;
+        engine_output.target_meta.current_multiple_carry = false;
+        let anchored = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "",
+            feasible: &feasible,
+        });
+        assert!(anchored.contains("spread-anchored on 40 rate observations"), "{anchored}");
+        // The weighing sentence's signal grammar (two Codex rounds): flat_driver is
+        // hardcoded true on every priced fund and must not read as low-signal; the
+        // low-signal shape is the carry + flat/clamped driver combination; and the
+        // dispersion floor's evidence is conditional — it inherits the base's
+        // provenance (robust over an anchored base, still weak over a carried one,
+        // where the floor merely manufactures width around spot).
+        assert!(anchored.contains("even with a flat driver"), "{anchored}");
+        assert!(
+            anchored.contains("carry with a flat or clamp-flattened driver"),
+            "{anchored}"
+        );
+        assert!(
+            anchored.contains("inherits its base's signal quality"),
+            "{anchored}"
+        );
+        assert!(anchored.contains("discount the band's width, not its level"), "{anchored}");
+        assert!(anchored.contains("stays weak exit evidence"), "{anchored}");
+
+        engine_output.target_meta.rate_anchored = false;
+        engine_output.target_meta.current_multiple_carry = true;
+        engine_output.target_meta.flat_driver = true;
+        engine_output.target_meta.dispersion_floor_applied = true;
+        let carried = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "",
+            feasible: &feasible,
+        });
+        assert!(carried.contains("current multiple was carried"), "{carried}");
+        assert!(carried.contains("driver held FLAT"), "{carried}");
+        assert!(carried.contains("volatility dispersion floor"), "{carried}");
+
+        // Neither anchored nor carried: the raw-percentile fallback branch.
+        engine_output.target_meta.current_multiple_carry = false;
+        let fallback = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "",
+            feasible: &feasible,
+        });
+        assert!(fallback.contains("raw-percentile fallback"), "{fallback}");
+    }
+
+    #[test]
+    fn continuity_notes_a_band_recalibration_only_on_version_mismatch() {
+        let prior = HoldingVerdict {
+            symbol: "AAPL".into(),
+            asset_class: AssetClass::Stock,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::NotRated {
+                reason: "fixture".into(),
+            },
+        };
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let feasible = vec![Action::Hold];
+        let prompt = |d: &HoldingDossier| {
+            interpretation_user_prompt(&InterpretationInput {
+                dossier: d,
+                engine: &engine_output,
+                distilled: "",
+                feasible: &feasible,
+            })
+        };
+
+        // No prior verdict: new holding, no recalibration note.
+        assert!(!prompt(&d).contains("recalibrated"), "no prior verdict");
+
+        // Prior verdict from a pre-stamp run (None = the v1 bands): the note fires —
+        // the exact shape of the first post-tune run over run 3b21ae85's book.
+        d.prior_verdict = Some(prior);
+        d.prior_grade_parameter_version = None;
+        let p = prompt(&d);
+        assert!(p.contains("recalibrated"), "{p}");
+        assert!(p.contains("what_changed"), "{p}");
+
+        // Prior verdict stamped with the current bands: no note.
+        d.prior_grade_parameter_version = Some(engine::GRADE_PARAMETER_VERSION.to_string());
+        assert!(!prompt(&d).contains("recalibrated"), "same-version prior");
+    }
+
+    #[test]
+    fn house_view_blocks_carry_the_scope_line_in_both_prompts() {
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.house_view.latest_sections = Some("Thesis: risk-off.".into());
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let feasible = vec![Action::Hold];
+        let user = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "",
+            feasible: &feasible,
+        });
+        // The scope rides the house-view block header itself, not a floating line.
+        let hv_block = user
+            .split("MARKET SIGNAL HOUSE VIEW")
+            .nth(1)
+            .expect("house-view block present");
+        assert!(
+            hv_block.starts_with(" (latest report — scope:"),
+            "scope on the header: {hv_block}"
+        );
+        assert!(user.contains("never by itself a reason to exit"), "{user}");
+
+        let readout = RoleRiskReadout {
+            class_label: "ex-US equity fund".into(),
+            structural_flag: false,
+            exposure_tilt: vec![],
+            expense_ratio: None,
+            observable_risk: None,
+            evidence_gaps: vec![],
+        };
+        let role = role_risk_user_prompt(&RoleRiskInput {
+            dossier: &d,
+            readout: &readout,
+        });
+        assert!(role.contains("never by itself a reason to exit"), "{role}");
     }
 
     #[test]

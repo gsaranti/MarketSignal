@@ -58,6 +58,12 @@ pub struct HoldingDossier {
     /// The prior run's verdict for this holding (continuity input), or `None` on a
     /// holding the job has not seen before ("new holding").
     pub prior_verdict: Option<HoldingVerdict>,
+    /// The grade-band parameter version the prior verdict's letter was computed under
+    /// (from the prior run's audit row; `None` = a pre-stamp run, i.e. the v1 bands).
+    /// Meaningful only beside `prior_verdict` — the interpretation prompt compares it
+    /// against the current [`crate::portfolio::engine::GRADE_PARAMETER_VERSION`] so a
+    /// band recalibration's letter move is attributed to the retune, not to evidence.
+    pub prior_grade_parameter_version: Option<String>,
     /// The data sources that contributed, for the run's audit record.
     pub sources: Vec<String>,
 }
@@ -175,8 +181,12 @@ pub fn assemble(
     profile: InvestorProfile,
     house_view: HouseView,
     fund: Option<crate::portfolio::fund::FundContext>,
-    prior_verdict: Option<HoldingVerdict>,
+    prior: Option<(HoldingVerdict, Option<String>)>,
 ) -> HoldingDossier {
+    let (prior_verdict, prior_grade_parameter_version) = match prior {
+        Some((verdict, version)) => (Some(verdict), version),
+        None => (None, None),
+    };
     let mut fmp_financials = fmp_financials;
     let ttm_basis = apply_ttm_statement_basis(&mut fmp_financials);
     let financials = merge_financials(fmp_financials, sec_facts, ttm_basis);
@@ -215,6 +225,7 @@ pub fn assemble(
         house_view,
         fund,
         prior_verdict,
+        prior_grade_parameter_version,
         sources,
     }
 }
@@ -299,14 +310,26 @@ pub fn extract_house_view_sections(markdown: &str) -> String {
     out.trim().to_string()
 }
 
-/// Look up the prior run's verdict for one holding (the continuity input). Reads the
+/// Look up the prior run's verdict for one holding (the continuity input), paired
+/// with the grade-band parameter version its letter was computed under (read from the
+/// prior run's audit row; `None` = a pre-stamp run, i.e. the v1 bands). Reads the
 /// latest persisted run and finds the matching symbol; `None` on a first run or a
 /// newly-added holding. Fail-soft — a read error reads as "no prior verdict".
-pub fn prior_verdict_for(conn: &Connection, symbol: &str) -> Option<HoldingVerdict> {
+pub fn prior_verdict_for(
+    conn: &Connection,
+    symbol: &str,
+) -> Option<(HoldingVerdict, Option<String>)> {
     let run = crate::portfolio::store::latest_run(conn).ok().flatten()?;
-    run.verdicts
+    let verdict = run
+        .verdicts
         .into_iter()
-        .find(|v| v.symbol.eq_ignore_ascii_case(symbol))
+        .find(|v| v.symbol.eq_ignore_ascii_case(symbol))?;
+    let grade_parameter_version = run
+        .audit
+        .into_iter()
+        .find(|a| a.symbol.eq_ignore_ascii_case(symbol))
+        .and_then(|a| a.grade_parameter_version);
+    Some((verdict, grade_parameter_version))
 }
 
 #[cfg(test)]
@@ -581,7 +604,57 @@ Watch the 2s10s and the labor prints.
             audit: vec![],
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
-        let prior = prior_verdict_for(&conn, "aapl").expect("case-insensitive match");
+        let (prior, version) = prior_verdict_for(&conn, "aapl").expect("case-insensitive match");
         assert_eq!(prior.symbol, "AAPL");
+        // No audit row for the symbol -> a pre-stamp read (the v1 bands).
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn prior_verdict_lookup_carries_the_stamped_grade_parameter_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        let run = crate::portfolio::PortfolioRun {
+            run_id: "r1".into(),
+            created_at: "2026-08-03T00:00:00Z".into(),
+            holdings: Holdings {
+                positions: vec![],
+                cash: 0.0,
+                account_total: 0.0,
+                source_rows: vec![],
+            },
+            verdicts: vec![HoldingVerdict {
+                symbol: "AAPL".into(),
+                asset_class: AssetClass::Stock,
+                position_change: PositionChange::New,
+                disposition: VerdictDisposition::NotRated {
+                    reason: "fixture".into(),
+                },
+            }],
+            roll_up: crate::portfolio::PortfolioRollUp {
+                graded_count: 0,
+                not_rated_count: 1,
+                insufficient_evidence_count: 0,
+                role_risk_only_count: 0,
+                top_position_weight: 0.0,
+                cash_weight: 0.0,
+                exited: vec![],
+                data_health: None,
+                overview: String::new(),
+            },
+            audit: vec![crate::portfolio::HoldingAudit {
+                symbol: "AAPL".into(),
+                metrics: Default::default(),
+                sources: vec![],
+                model_ids: vec![],
+                prompt_version: crate::portfolio::PROMPT_VERSION.to_string(),
+                degraded_inputs: vec![],
+                target_meta: None,
+                grade_parameter_version: Some("grade-v2".into()),
+            }],
+        };
+        crate::portfolio::store::insert_run(&conn, &run).unwrap();
+        let (_, version) = prior_verdict_for(&conn, "AAPL").expect("verdict present");
+        assert_eq!(version.as_deref(), Some("grade-v2"));
     }
 }
