@@ -2,26 +2,25 @@
 
 ## What happened
 
-**The grade-band shadow-tune slice SHIPPED** (`3a1e2df`, pushed; evidence record `docs/verification/2026-08-03-grade-band-shadow-tune.md`), in the locked order: the sub-score formulas were **certified exact** against run `3b21ae85`'s persisted audits *before* any retune (0 derivation / 0 roll-up mismatches; boundary/imputation/negative-P/E contracts newly pinned), then the statement gaps closed, then the bands moved.
-Two load-bearing discoveries: **F5 was understated** — `total_debt` and `revenue_prior` had *no source at all* (risk = volatility-alone for the whole book, SEC-annual margins produced artifacts like MA quality 8.3) — and **the compression was genuinely in the bands** (clean refreshed inputs still gave 0 A/B under v1).
-Landed: the **TTM statement basis** (one basis per holding, four-quarter sums, SEC annual the wholesale fallback), the **balance-sheet leg** (one light quarterly call per stock), SEC same-concept prior-year revenue (latest-filed row wins), the **fund SEC skip**, and — after a user-approved 93-call probe refreshed the calibration surface — the user-picked **recentered-growth bands as `grade-v2`** with a negative-D/E → 0 guard and a `grade_parameter_version` stamp on every audit (certification harness now version-gated).
-Weights and A–F cutoffs deliberately untouched (reserved for the sector-aware normalization slice).
-Two review rounds to convergence: internal approve-with-nits (fixed), then **Codex changes-requested — all five findings confirmed and fixed with pins**, including a latest-filed SEC dedup regression the slice itself had introduced.
+**The interpretation-prompt adjustments slice SHIPPED** (`91413b4`, pushed) as **`portfolio-v3`** — F6's four settled edits plus the grade-band slice's versioning finding:
+target provenance rendered unconditionally on every priced interpretation from the typed `TargetMeta` (anchored / carry / raw-percentile branches + flat / clamp / floor flags) with a signal-grammar weighing sentence; the dead-money `fails` softened from an exit instruction to a weighed input; conviction defined (matched to the action's decisiveness); the house view scoped to horizon reads / market-setup context in all three prompts; and a band-recalibration continuity NOTE when the prior verdict's stamped `grade_parameter_version` differs from the current bands (`prior_verdict_for` now returns the (verdict, version) pair; new `HoldingDossier.prior_grade_parameter_version`; the `None` pre-stamp case — run `3b21ae85`'s book — fires it).
+Three review rounds to convergence: internal approve-with-nits (fixed), then **two Codex High findings, both confirmed against code and fixed with pins** — round 1: the weighing sentence blanket-discounted structurally-flat fund-form drivers (`flat_driver` is hardcoded true on every priced fund) and floor-widened bands; round 2: round 1's fix overcorrected — **the floor's evidence is conditional, inheriting the base's provenance** (synthetic width around a carried base stays weak exit evidence). Round 3 approved.
+Docs caught up sentence-per-line (portfolio-analysis §The holding verdict + §Starting parameters; portfolio-workflow §Step 6f inputs + the what-changed recalibration third cause).
 
 ## Current state
 
-Tree clean, `3a1e2df` pushed.
-Block queue advances to **interpretation-prompt adjustments** (F6 / follow-up #6 of the 2026-07-31 record): target provenance in the prompt, dead-money tilt softened to a weighed input, conviction defined, house-view scoped — **plus the new finding from this slice: surface `grade_parameter_version` to the prompt**, so the first post-tune run's what-changed doesn't mislabel engine-driven letter moves as external/self-correction.
-Then the depth slices (thesis ledger, quick check, selective re-analysis, pre-profit overlay, outcome learning, 7b construction); the two UI micro-slices slot anywhere as breathers.
-`BUILD.md §What remains` still predates the locked block — catch-up pass when convenient (this slice adds to that debt: grade-v2 / TTM basis / version stamp are uncaptured there and in INDEX).
+Tree clean, `91413b4` pushed.
+The locked pre-test block's prompt/calibration tier is now **done**; the queue advances to the **depth slices** — thesis ledger first, then quick check, selective re-analysis, pre-profit overlay, outcome learning, 7b construction — with the two UI micro-slices (Portfolio-page polish; section-scoped footer + report-nav) slotting anywhere as breathers.
+`BUILD.md §What remains` and INDEX are now **three slices behind** (grade-v2 / TTM basis / version stamp / portfolio-v3 prompt contract all uncaptured) — the catch-up pass is overdue-when-convenient.
+The Step-6f investor-profile divergence (docs say deliberately absent; as-built prompt feeds it, pre-7b interim) was observed and deliberately left untouched in both directions.
 
 ## Open questions
 
-- **Stacked on the single big confirmation run:** grade-v2 letter distribution on the live book (first A/B letters; does ordering hold), TTM-basis adoption + balance-sheet leg live behavior, fund-SEC-skip noise reduction, 128 K runner stability, distill speed, reasoning panes, fails → indeterminate action distribution, fund carry-path floor, data-health render, and whether Stooq's PoW gate is permanent (rung-order slice + FMP re-homing is the contingent follow-up).
-- **No A letters under grade-v2** (META 84.0 grazes the ≥ 85 cutoff) — cutoffs stay reserved; revisit with the normalization slice or the big run's evidence.
+- **Stacked on the single big confirmation run** (now also carrying v3): does target provenance actually break the sell-all cascade; the recalibration NOTE renders on the first post-tune run and what-changed attributes letter moves to the retune; conviction/action pairing improves; grade-v2 letter distribution (first A/B; ordering holds); TTM-basis adoption + balance-sheet leg live; fund-SEC-skip noise reduction; 128 K runner stability; distill speed; reasoning panes; fails → indeterminate action distribution; fund carry-path floor; data-health render; whether Stooq's PoW gate is permanent (rung-order slice + FMP re-homing the contingent follow-up).
+- **No A letters under grade-v2** (META 84.0 vs the ≥ 85 cutoff) — cutoffs stay reserved for the normalization slice or the big run's evidence.
 - **Carried unchanged:** reasoning-pane DOM weight; encrypted portability round-trip; step-17 embedding-failure watch; long/cold-start 600 s stress; local-suite scorecard display; dev-store calibration-run residue (deliberate); Keychain fail-soft candidate; stage-and-swap import hardening; chain both-maps invariant; four-part verdict + bidirectional-conviction bound; §1 open drafts; fraud-producer posture; fund-slice drafted constants.
 
 ## Where to start
 
-`/metis-plan-task` for the **interpretation-prompt adjustments slice**: read `docs/verification/2026-07-31-first-live-portfolio-run.md` §F6 and follow-up #6 first — the four settled edits plus this session's `grade_parameter_version`-in-prompt finding.
-The exported run JSON and refreshed-metrics JSON were session-scratchpad-only; re-export from the dev store if a harness replay is needed.
+`/metis-plan-task` for the **thesis ledger slice** (the first depth slice): read `docs/portfolio-analysis.md §The position thesis ledger` and `docs/portfolio-workflow.md §Step 6a / 6f / 6g` first — the persisted per-holding standing thesis with typed falsifiers/triggers and machine-evaluable quantitative conditions is the anchor the quick check and selective re-analysis slices build on.
+Alternatively, the BUILD/INDEX catch-up pass (three slices of debt) is a good small-session opener.
