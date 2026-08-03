@@ -622,6 +622,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         })
         .collect();
     let distributions = fin.ttm_dividends_per_share.unwrap_or(0.0);
+    let floor = engine::dispersion_floor(vol);
     let scenario = engine::spread_anchored_scenarios(
         spot,
         [implied_eps, implied_eps, implied_eps],
@@ -631,7 +632,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         // The fund driver is deliberately flat, so on the carry path both scenario
         // axes collapse — the shared floor keeps the three-state hurdle honest there
         // too (`docs/portfolio-analysis.md` §Starting parameters).
-        engine::dispersion_floor(vol),
+        floor,
     );
 
     let mut metrics = base_metrics(fin);
@@ -709,7 +710,50 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         // included, an option-overlay flag riding beside it.
         fund_class_label: Some(classification.class_label),
         structural_flag: classification.structural_flag,
+        quick_basis: Some(engine::QuickCheckBasis {
+            spot,
+            drivers: [implied_eps, implied_eps, implied_eps],
+            spread_percentiles: scenario.spread_percentiles,
+            raw_percentiles: scenario.raw_percentiles,
+            forward_dividends: distributions,
+            dispersion_floor: floor,
+            consensus_eps_mid: None,
+        }),
     }))
+}
+
+/// The fund exposure comparators the quick check's fund evidence-event legs read
+/// (`docs/portfolio-analysis.md` §Starting parameters — a material `etf/info`
+/// change; the US share crossing the ≥ 70% guard; a top-sector shift), computed at
+/// full-pass time on **either** verdict branch and persisted on the holding's audit
+/// so the engine-only sweep has a stored side to compare a fresh print against.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FundExposureBasis {
+    /// The deterministic strategy-classification label the pass computed.
+    pub class_label: String,
+    pub expense_ratio: Option<f64>,
+    /// The US country-weight share the ≥ 70% guard read.
+    pub us_share: Option<f64>,
+    /// The largest sector weight `(label, weight)`.
+    pub top_sector: Option<(String, f64)>,
+}
+
+/// Build the [`FundExposureBasis`] from a fund's fresh metadata — shared by the
+/// full pass (persisting the stored side) and the quick check (computing the fresh
+/// side), so the two compare like with like.
+pub fn exposure_basis(fund: &FundData) -> FundExposureBasis {
+    let classification = classify(fund);
+    let top_sector = fund
+        .sector_weights
+        .iter()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .cloned();
+    FundExposureBasis {
+        class_label: classification.class_label,
+        expense_ratio: fund.expense_ratio,
+        us_share: classification.us_share,
+        top_sector,
+    }
 }
 
 /// The top exposure weights for the readout's tilt line, largest first, capped at 5.
@@ -861,6 +905,7 @@ mod tests {
                 .map(|d| DatedValue { date: d.to_string(), value: 0.04 })
                 .collect(),
             history_gap: None,
+            ..Default::default()
         }
     }
 

@@ -756,12 +756,23 @@ impl FredDataSource {
     /// observation — the caller owns the posture (the run-level rate anchors are
     /// **hard-fail** for a full run; `docs/portfolio-analysis.md` §Failure posture).
     pub fn latest_rate_decimal(&self, series_id: &str) -> Result<f64> {
+        self.latest_rate_dated(series_id).map(|d| d.value)
+    }
+
+    /// [`Self::latest_rate_decimal`] with the print's **observation date** attached —
+    /// the as-of date the persisted rate cache records so the engine-only quick
+    /// paths' fail-soft can age it against the drafted rate-cache max age
+    /// (`docs/portfolio-analysis.md` §Starting parameters).
+    pub fn latest_rate_dated(
+        &self,
+        series_id: &str,
+    ) -> Result<crate::portfolio::engine::DatedValue> {
         if self.progress.is_cancelled() {
             anyhow::bail!("rate fetch skipped (run cancelled)");
         }
         self.progress
             .request_started("FRED", "suite-rate", series_id, "Rate anchor");
-        let result = (|| -> Result<f64> {
+        let result = (|| -> Result<crate::portfolio::engine::DatedValue> {
             let (status, body) = self.get(series_id)?;
             if !(200..300).contains(&status) {
                 anyhow::bail!("FRED returned {status} for {series_id}");
@@ -771,8 +782,15 @@ impl FredDataSource {
             parsed
                 .observations
                 .iter()
-                .find_map(|o| o.value.parse::<f64>().ok())
-                .map(|percent| percent / 100.0)
+                .find_map(|o| {
+                    o.value
+                        .parse::<f64>()
+                        .ok()
+                        .map(|percent| crate::portfolio::engine::DatedValue {
+                            date: o.date.clone(),
+                            value: percent / 100.0,
+                        })
+                })
                 .with_context(|| format!("no numeric observation for {series_id}"))
         })();
         match &result {

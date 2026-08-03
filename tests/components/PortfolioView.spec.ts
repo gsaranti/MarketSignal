@@ -11,10 +11,12 @@ import { mount } from "@vue/test-utils";
 import PortfolioView from "../../src/components/PortfolioView.vue";
 import type {
   GradedVerdict,
+  HoldingQuickState,
   HoldingsPull,
   HoldingVerdict,
   PortfolioRun,
   Position,
+  QuickCheckState,
 } from "../../src/types";
 
 function position(symbol: string, over: Partial<Position> = {}): Position {
@@ -176,6 +178,9 @@ const baseProps = {
   busy: false,
   running: false,
   pulling: false,
+  quick: null as QuickCheckState | null,
+  quickChecking: false,
+  historical: false,
 };
 
 function mountView(over: Partial<typeof baseProps> = {}) {
@@ -594,9 +599,11 @@ describe("PortfolioView trigger gating", () => {
       pullBlocked: true,
       pullBlockedReason: "Schwab account not connected.",
     });
-    const [pull, runBtn] = wrapper.findAll(".toolbar-actions button");
+    const [pull, quick, runBtn] = wrapper.findAll(".toolbar-actions button");
     expect(pull.attributes("disabled")).toBeDefined();
     expect(pull.attributes("title")).toContain("Schwab account not connected");
+    expect(quick.attributes("disabled")).toBeDefined();
+    expect(quick.attributes("title")).toContain("daemon endpoint");
     expect(runBtn.attributes("disabled")).toBeDefined();
     expect(runBtn.attributes("title")).toContain("daemon endpoint");
   });
@@ -606,7 +613,7 @@ describe("PortfolioView trigger gating", () => {
       runBlocked: true,
       runBlockedReason: "Not configured: reasoner model.",
     });
-    const [pull, runBtn] = wrapper.findAll(".toolbar-actions button");
+    const [pull, , runBtn] = wrapper.findAll(".toolbar-actions button");
     expect(runBtn.attributes("disabled")).toBeDefined();
     expect(pull.attributes("disabled")).toBeUndefined();
     await pull.trigger("click");
@@ -614,10 +621,105 @@ describe("PortfolioView trigger gating", () => {
     expect(wrapper.emitted("run")).toBeUndefined();
   });
 
-  test("a busy run slot disables both triggers", () => {
+  test("a busy run slot disables every trigger", () => {
     const wrapper = mountView({ busy: true });
     for (const b of wrapper.findAll(".toolbar-actions button")) {
       expect(b.attributes("disabled")).toBeDefined();
     }
+  });
+});
+
+describe("PortfolioView quick check", () => {
+  function quickState(
+    holdings: Partial<HoldingQuickState>[],
+    sweptRunId = "prun-1"
+  ): QuickCheckState {
+    return {
+      swept_run_id: sweptRunId,
+      last_checked_at: "2026-08-03T10:00:00Z",
+      holdings: holdings.map((h) => ({
+        symbol: "AAPL",
+        families: [],
+        flag: null,
+        evidence_events: [],
+        condition_states: [],
+        last_hurdle_state: null,
+        notes: [],
+        ...h,
+      })),
+    };
+  }
+  const flagged = quickState([
+    {
+      symbol: "AAPL",
+      flag: {
+        trigger: "confirmed-falsifier-breach",
+        detail: "confirmed falsifier breach: operating margin below 30%",
+        raised_at: "2026-08-03T10:00:00Z",
+      },
+      evidence_events: [
+        {
+          kind: "earnings-actual",
+          detail: "earnings actual reported 2026-07-30",
+          observed_at: "2026-08-03T10:00:00Z",
+        },
+      ],
+      families: [
+        { family: "market-data", state: "flagged", note: null },
+        { family: "filing", state: "unknown", note: "EDGAR sweep failed" },
+      ],
+    },
+  ]);
+
+  test("the quick-check trigger needs a run to sweep, then emits", async () => {
+    const empty = mountView();
+    const quickBtn = () =>
+      empty.findAll(".toolbar-actions button").at(1)!;
+    expect(quickBtn().attributes("disabled")).toBeDefined();
+    expect(quickBtn().attributes("title")).toContain("Run an analysis first");
+
+    const wrapper = mountView({ run });
+    const btn = wrapper.findAll(".toolbar-actions button").at(1)!;
+    expect(btn.text()).toBe("Quick check");
+    expect(btn.attributes("disabled")).toBeUndefined();
+    await btn.trigger("click");
+    expect(wrapper.emitted("quick-check")).toHaveLength(1);
+  });
+
+  test("a flagged holding carries the amber attention tag plus the quiet badges", () => {
+    const wrapper = mountView({ run, quick: flagged });
+    const card = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
+    const attention = card.find(".dh-attention-tag");
+    expect(attention.exists()).toBe(true);
+    expect(attention.text()).toContain("falsifier breached");
+    expect(attention.attributes("title")).toContain("operating margin below 30%");
+    // The quiet informational badges — never the amber treatment.
+    const quiet = card
+      .findAll(".ana-tag")
+      .filter((t) => !t.classes().includes("dh-attention-tag"));
+    const texts = quiet.map((t) => t.text());
+    expect(texts).toContain("Evidence event");
+    expect(texts).toContain("Sweep degraded");
+    const degraded = quiet.find((t) => t.text() === "Sweep degraded")!;
+    expect(degraded.attributes("title")).toContain("filing");
+    // The unflagged sibling cards carry no overlay.
+    const msft = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "MSFT")!;
+    expect(msft.find(".dh-attention-tag").exists()).toBe(false);
+  });
+
+  test("the overlay applies only to the run it swept and never to a past view", () => {
+    // A state swept against a superseded run renders nothing.
+    const stale = mountView({
+      run,
+      quick: quickState(flagged.holdings, "prun-0"),
+    });
+    expect(stale.find(".dh-attention-tag").exists()).toBe(false);
+    // A historical view renders nothing even when the ids match.
+    const historical = mountView({ run, quick: flagged, historical: true });
+    expect(historical.find(".dh-attention-tag").exists()).toBe(false);
   });
 });

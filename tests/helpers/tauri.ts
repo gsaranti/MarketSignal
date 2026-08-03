@@ -184,6 +184,7 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     check_local_configuration: () => defaultLocalValidation,
     latest_portfolio_run: () => null,
     latest_holdings_pull: () => null,
+    latest_quick_check: () => null,
     list_portfolio_runs: () => [],
     job_status: () => defaultJobStatus,
     list_reports: () => [] as ReportSummary[],

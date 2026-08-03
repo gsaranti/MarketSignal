@@ -769,6 +769,83 @@ async fn generate_portfolio_manual(
     }
 }
 
+/// Run the engine-only Portfolio **quick check** (`docs/portfolio-analysis.md §The
+/// quick check`): the between-run ledger-liveness pass — no model call, no web
+/// research, no Schwab call. The gate is **presence-only**: the local-suite config
+/// presence (which carries the FMP / FRED credential presence) plus the Schwab
+/// connection precondition — the daemon-connectivity probe is deliberately skipped,
+/// so the check runs even configured-but-down (`docs/interface.md §Connection
+/// status`). Holds the single global run slot like any job and streams per-holding
+/// rows to the tracker.
+#[tauri::command]
+async fn run_portfolio_quick_check(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, RunGuard>,
+    cancel: tauri::State<'_, CancelFlag>,
+) -> Result<portfolio::quick_check::QuickCheckState, String> {
+    // Read config on a short-lived connection dropped before the await (a
+    // `rusqlite::Connection` is not `Send`).
+    let cfg = {
+        let conn = open_app_db(&app)?;
+        AppConfig::load(&conn)
+    };
+    // Presence-only gate — no daemon probe: the quick check makes no model call.
+    let report = local_model::local_presence_gate(&cfg);
+    if report.is_blocked {
+        return Err(config::blocked_summary(&report));
+    }
+    // The Schwab connection stays a presence precondition, like everywhere in the
+    // suite, though no Schwab call is made — building the source verifies it.
+    build_holdings_source(&cfg)?;
+
+    let fmp_key = cfg.fmp_api_key.clone().unwrap_or_default();
+    let fred_key = cfg.fred_api_key.clone().unwrap_or_default();
+    let paths = report_paths(&app)?;
+    let guard = guard.inner().clone();
+    let ctx = live_run_context(&app, cancel.inner().0.clone());
+
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fmp = FmpDataSource::new(fmp_key)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let sec = sec::SecEdgarSource::new()
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let cik_cache = paths
+            .db_path
+            .parent()
+            .map(|d| d.join("sec_company_tickers.json"))
+            .unwrap_or_else(|| std::path::PathBuf::from("sec_company_tickers.json"));
+        let cik = sec::load_cik_resolver(&cik_cache, &sec);
+        let fred = crate::fred::FredDataSource::new(fred_key)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let data = portfolio::quick_check::LiveQuickCheckData { fmp, sec, cik, fred };
+        portfolio::quick_check::run_quick_check_job(&data, &paths, &guard, &ctx)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("quick check task failed: {e}"))??;
+
+    match outcome {
+        portfolio::quick_check::QuickCheckJobOutcome::Successful(state) => Ok(*state),
+        portfolio::quick_check::QuickCheckJobOutcome::Failed(msg) => Err(msg),
+        portfolio::quick_check::QuickCheckJobOutcome::Skipped(reason) => Err(reason),
+        portfolio::quick_check::QuickCheckJobOutcome::Cancelled(reason) => Err(reason),
+    }
+}
+
+/// The latest persisted quick-check state for the Portfolio page's card overlay
+/// (attention flags, evidence-event badges, degraded-sweep notes), or `None` when
+/// no quick check has run since the last full pass. Sync: one local SQLite read.
+#[tauri::command]
+fn latest_quick_check(
+    app: tauri::AppHandle,
+) -> Result<Option<portfolio::quick_check::QuickCheckState>, String> {
+    let conn = open_app_db(&app)?;
+    portfolio::store::latest_quick_check(&conn).map_err(|e| e.to_string())
+}
+
 /// The most recent persisted Portfolio Analysis run for the Portfolio page
 /// (`docs/portfolio-analysis.md §Storage and display`), or `None` before the first
 /// run — the frontend renders the empty state. Sync: one local SQLite read.
@@ -1401,6 +1478,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_report_manual,
             generate_portfolio_manual,
+            run_portfolio_quick_check,
+            latest_quick_check,
             latest_portfolio_run,
             list_portfolio_runs,
             get_portfolio_run,

@@ -30,6 +30,7 @@ import type {
   LocalModelSettings,
   PortfolioRun,
   PortfolioRunSummary,
+  QuickCheckState,
   ProgressMessage,
   ProviderCredentialUpdate,
   ReportSummary,
@@ -89,7 +90,7 @@ const cancelRequested = ref(false);
 // page — a portfolio run's log shows in the Portfolio view, a report run's in
 // the report pane (docs/run-tracking.md) — and the footer's determinate /8
 // fill applies only to the report's fixed pipeline.
-const runTraceKind = ref<"report" | "portfolio" | null>(null);
+const runTraceKind = ref<"report" | "portfolio" | "portfolio-quick-check" | null>(null);
 // The Portfolio view's pane toggle, mirroring reportPaneMode: while a portfolio
 // run is in flight (or its log is reopened) the page shows the tracker.
 const portfolioPaneMode = ref<"results" | "tracker">("results");
@@ -349,7 +350,10 @@ function closeRunLog() {
 // "Latest run log" handle). Routes to the run's owning page — the tracker
 // replaces the page whose job is running (docs/run-tracking.md).
 function viewTracker() {
-  if (runTraceKind.value === "portfolio") {
+  if (
+    runTraceKind.value === "portfolio" ||
+    runTraceKind.value === "portfolio-quick-check"
+  ) {
     view.value = "portfolio";
     portfolioPaneMode.value = "tracker";
   } else {
@@ -415,6 +419,11 @@ const portfolioLoadError = ref<string | null>(null);
 const portfolioError = ref<string | null>(null);
 const portfolioRunning = ref(false);
 const pullingHoldings = ref(false);
+// The engine-only quick check (docs/portfolio-analysis.md §The quick check):
+// the latest persisted sweep state (null until one runs; cleared by the next
+// full run) and the in-flight session flag.
+const quickCheck = ref<QuickCheckState | null>(null);
+const quickChecking = ref(false);
 
 // The sidebar's Portfolio-runs history (docs/interface.md §Main Layout): the
 // retained runs' summaries, plus the opened past run when the user selects one
@@ -495,13 +504,15 @@ async function refreshPortfolio() {
   portfolioLoading.value = true;
   portfolioLoadError.value = null;
   try {
-    const [run, pull] = await Promise.all([
+    const [run, pull, quick] = await Promise.all([
       invoke<PortfolioRun | null>("latest_portfolio_run"),
       invoke<HoldingsPull | null>("latest_holdings_pull"),
+      invoke<QuickCheckState | null>("latest_quick_check"),
     ]);
     if (epoch !== portfolioEpoch) return;
     portfolioRun.value = run;
     holdingsPull.value = pull;
+    quickCheck.value = quick;
   } catch (e) {
     if (epoch !== portfolioEpoch) return;
     portfolioLoadError.value = String(e);
@@ -661,6 +672,7 @@ const slotBusy = computed(
   () =>
     generating.value ||
     portfolioRunning.value ||
+    quickChecking.value ||
     pullingHoldings.value ||
     schwabConnecting.value ||
     dataBusy.value !== null ||
@@ -671,8 +683,8 @@ const slotBusy = computed(
 // Connecting takes the single global run slot (schwab_connect holds the RunGuard),
 // so Connect is disabled while any report/job run is in flight; the button reads this.
 const schwabBusy = computed(
-  () => generating.value || portfolioRunning.value || pullingHoldings.value ||
-    dataBusy.value !== null || importConfirmBusy.value ||
+  () => generating.value || portfolioRunning.value || quickChecking.value ||
+    pullingHoldings.value || dataBusy.value !== null || importConfirmBusy.value ||
     (jobStatus.value?.is_running ?? false)
 );
 
@@ -690,6 +702,8 @@ const footerRunningLabel = computed(() => {
     return "Pulling holdings…";
   if (portfolioRunning.value || kind === "portfolio")
     return "Running Portfolio Analysis…";
+  if (quickChecking.value || kind === "portfolio-quick-check")
+    return "Running Portfolio quick check…";
   if (dataBusy.value === "export") return "Exporting data…";
   if (dataBusy.value === "import" || importConfirmBusy.value)
     return "Importing data…";
@@ -1128,6 +1142,39 @@ async function generatePortfolio() {
   }
 }
 
+// The engine-only quick check (docs/portfolio-analysis.md §The quick check):
+// re-evaluates every standing thesis ledger between full runs — no model call,
+// no web research, no Schwab call — raising per-card attention flags and quiet
+// evidence-event badges, never rewriting a verdict. Streams into the shared
+// tracker like any job; the refreshed state lands as the card overlay.
+async function runQuickCheck() {
+  if (localBlocked.value || slotBusy.value) return;
+  quickChecking.value = true;
+  portfolioError.value = null;
+  runTraceKind.value = "portfolio-quick-check";
+  portfolioPaneMode.value = "tracker";
+  cancelRequested.value = false;
+  runTrace.value = null;
+  try {
+    const state = await invoke<QuickCheckState>("run_portfolio_quick_check");
+    quickCheck.value = state;
+    if (portfolioPaneMode.value === "tracker") portfolioPaneMode.value = "results";
+  } catch (e) {
+    if (cancelRequested.value) {
+      // Intentional cancel — the tracker's terminal state carries it.
+    } else if (!runTrace.value) {
+      // Blocked before any event (gate / no prior run): inline on the page.
+      portfolioError.value = String(e);
+      portfolioPaneMode.value = "results";
+    }
+    // Otherwise the tracker's failed terminal state + failed-job warning carry it.
+  } finally {
+    quickChecking.value = false;
+    void refreshJobStatus();
+    void refreshLocalValidation();
+  }
+}
+
 // Standalone view-only holdings pull (docs/portfolio-analysis.md §Triggering):
 // fetches + persists the latest snapshot, never triggers analysis, never
 // becomes the diff baseline. Quick — no tracker; the footer labels the slot.
@@ -1533,7 +1580,8 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
             v-if="
               portfolioPaneMode === 'tracker' &&
               runTrace &&
-              runTraceKind === 'portfolio'
+              (runTraceKind === 'portfolio' ||
+                runTraceKind === 'portfolio-quick-check')
             "
             :trace="runTrace"
             :active="runActive"
@@ -1557,7 +1605,10 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
             :pulling="pullingHoldings"
             :historical="historicalRun !== null"
             :history-error="historicalError"
+            :quick="quickCheck"
+            :quick-checking="quickChecking"
             @run="generatePortfolio"
+            @quick-check="runQuickCheck"
             @pull="pullHoldings"
             @back-to-latest="backToLatestRun"
           />
@@ -1638,7 +1689,11 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
         :blocked="blocked"
         :generating="generating"
         :run-active="
-          runActive || schwabConnecting || pullingHoldings || portfolioRunning
+          runActive ||
+          schwabConnecting ||
+          pullingHoldings ||
+          portfolioRunning ||
+          quickChecking
         "
         :running-label="footerRunningLabel"
         :progress="runProgress"

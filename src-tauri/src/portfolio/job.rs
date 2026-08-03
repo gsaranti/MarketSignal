@@ -119,8 +119,8 @@ pub struct LiveMarketContext {
 
 impl MarketContextSource for LiveMarketContext {
     fn rates(&self) -> Result<crate::portfolio::engine::RateAnchors> {
-        let dgs2 = self.fred.latest_rate_decimal("DGS2")?;
-        let dgs10 = self.fred.latest_rate_decimal("DGS10")?;
+        let dgs2 = self.fred.latest_rate_dated("DGS2")?;
+        let dgs10 = self.fred.latest_rate_dated("DGS10")?;
         let to = chrono::Utc::now().date_naive();
         let from = to - chrono::Duration::days(RATE_HISTORY_LOOKBACK_DAYS);
         // Fail-soft: a failed history request leaves every spread observation
@@ -140,8 +140,10 @@ impl MarketContextSource for LiveMarketContext {
                 ),
             };
         Ok(crate::portfolio::engine::RateAnchors {
-            dgs2,
-            dgs10,
+            dgs2: dgs2.value,
+            dgs10: dgs10.value,
+            dgs2_date: Some(dgs2.date),
+            dgs10_date: Some(dgs10.date),
             dgs10_history,
             history_gap,
         })
@@ -447,8 +449,20 @@ fn run_analysis(
     // (Step 4), computed in the app layer before any model stage — the
     // compute-don't-guess boundary. Fail-soft: an unreadable prior run reads as "no
     // prior snapshot", so every position tags `new`, exactly as a first run does.
-    let prior_holdings = store::latest_run(conn).ok().flatten().map(|r| r.holdings);
+    let prior_run = store::latest_run(conn).ok().flatten();
+    let prior_run_id = prior_run.as_ref().map(|r| r.run_id.clone());
+    let prior_holdings = prior_run.map(|r| r.holdings);
     let holdings_diff = diff::diff_holdings(prior_holdings.as_ref(), &holdings);
+
+    // The quick-check store's fresher condition evaluation states — overlaid onto
+    // each prior ledger before this run evaluates it, so the between-run sweeps'
+    // streaks and acknowledgments chain instead of silently resetting
+    // (`docs/portfolio-analysis.md §The quick check`). Only a state swept against
+    // the same prior run applies.
+    let quick_state = store::latest_quick_check(conn)
+        .ok()
+        .flatten()
+        .filter(|s| Some(&s.swept_run_id) == prior_run_id.as_ref());
 
     let house_view = dossier::load_house_view(conn, &paths.reports_dir);
 
@@ -585,7 +599,16 @@ fn run_analysis(
                 None
             }
         };
-        let prior = dossier::prior_verdict_for(conn, &position.symbol);
+        let mut prior = dossier::prior_verdict_for(conn, &position.symbol);
+        if let (Some((verdict, _)), Some(qs)) = (prior.as_mut(), quick_state.as_ref()) {
+            if let Some(h) = qs
+                .holdings
+                .iter()
+                .find(|h| h.symbol.eq_ignore_ascii_case(&position.symbol))
+            {
+                crate::portfolio::quick_check::overlay_condition_states(verdict, h);
+            }
+        }
         let dossier: HoldingDossier = dossier::assemble(
             position.clone(),
             holdings_diff.delta_for(&position.symbol),
@@ -628,17 +651,32 @@ fn run_analysis(
         deep_history_fallbacks,
         rates.history_gap.is_some(),
     );
+    let created_at = now_rfc3339();
     let run = PortfolioRun {
         run_id: uuid::Uuid::new_v4().to_string(),
-        created_at: now_rfc3339(),
+        created_at: created_at.clone(),
         holdings,
         verdicts,
         roll_up,
         audit: audits,
+        // The persisted rate cache the engine-only quick paths' fail-soft reads
+        // (`docs/portfolio-analysis.md` §The quick check).
+        rate_prints: Some(crate::portfolio::RatePrints {
+            dgs2: rates.dgs2,
+            dgs10: rates.dgs10,
+            dgs2_as_of: rates.dgs2_date.clone(),
+            dgs10_as_of: rates.dgs10_date.clone(),
+            fetched_at: created_at,
+        }),
     };
 
     ctx.step_started("persist", "Persist run");
     store::record_run(conn, &run)?;
+    // The successful full pass consumed every holding's triggering observations in
+    // interpretation / continuity (the acknowledgment stamps ride the 6g seam), so
+    // the quick-check flags, badges, and carried states end with it
+    // (`docs/portfolio-analysis.md §The quick check`).
+    store::clear_quick_check(conn)?;
     ctx.step_finished("persist", "ok", None);
 
     Ok(run)
@@ -828,6 +866,7 @@ mod tests {
                     })
                     .collect(),
                 history_gap: None,
+                ..Default::default()
             })
         }
     }
@@ -847,6 +886,7 @@ mod tests {
                      documented raw-percentile / carry fallback"
                         .to_string(),
                 ),
+                ..Default::default()
             })
         }
     }
@@ -1609,6 +1649,93 @@ mod tests {
         let ids2: Vec<&str> = l2.conditions.iter().map(|c| c.condition_id.as_str()).collect();
         assert_eq!(ids1, ids2, "unchanged cores carry their ids");
         assert!(second.audit[0].ledger_audit.is_some());
+    }
+
+    #[test]
+    fn a_full_run_overlays_quick_check_state_then_consumes_and_clears_it() {
+        use crate::portfolio::quick_check::{HoldingQuickState, QuickCheckState};
+        use crate::portfolio::ConditionEvalState;
+
+        let (_dir, paths) = paths();
+        let guard = RunGuard::default();
+        let run_once = || {
+            match run_portfolio_job(
+                &FixtureHoldingsSource::new(),
+                &StubCompanyData,
+                &StubMarket,
+                &StubAnalyst,
+                &InvestorProfile::default_fixture(),
+                &paths,
+                &guard,
+                &ctx(),
+            )
+            .unwrap()
+            {
+                PortfolioJobOutcome::Successful(r) => *r,
+                other => panic!("expected success, got {other:?}"),
+            }
+        };
+        let first = run_once();
+        let cond_id = first.verdicts[0]
+            .thesis_ledger
+            .as_ref()
+            .and_then(|l| l.conditions.iter().find(|c| c.quant.is_some()))
+            .map(|c| c.condition_id.clone())
+            .expect("the debut ledger carries a quantitative condition");
+        let symbol = first.verdicts[0].symbol.clone();
+
+        // A between-run quick check advanced this condition to a confirmed streak
+        // against the same observation the fixture data will serve again.
+        let conn = storage::open(&paths.db_path).unwrap();
+        store::save_quick_check(
+            &conn,
+            &QuickCheckState {
+                swept_run_id: first.run_id.clone(),
+                last_checked_at: "2026-08-03T00:00:00Z".into(),
+                rate_cache: None,
+                holdings: vec![HoldingQuickState {
+                    symbol: symbol.clone(),
+                    families: vec![],
+                    flag: None,
+                    evidence_events: vec![],
+                    condition_states: vec![(
+                        cond_id.clone(),
+                        ConditionEvalState {
+                            last_observation_id: Some("2026-06-30".into()),
+                            last_value: Some(1.0),
+                            last_evaluated_at: Some("2026-08-03".into()),
+                            breach_streak: 5,
+                            first_breach_at: Some("2026-08-02".into()),
+                            confirmed_at: Some("2026-08-03".into()),
+                            acknowledged_observation_id: None,
+                        },
+                    )],
+                    last_hurdle_state: None,
+                    notes: vec![],
+                }],
+            },
+        )
+        .unwrap();
+
+        let second = run_once();
+        // The overlaid confirmed streak reached the run's evaluation: the carried
+        // condition emits a confirmed crossing, which the 6g seam consumes and
+        // acknowledges — the ack transition's stamp proves the overlay chained
+        // rather than resetting to the blob's older (empty) state.
+        let carried = second.verdicts[0]
+            .thesis_ledger
+            .as_ref()
+            .and_then(|l| l.conditions.iter().find(|c| c.condition_id == cond_id))
+            .expect("the unchanged core carried its id");
+        let st = carried.eval_state.as_ref().expect("evaluation state persisted");
+        assert!(st.breach_streak >= 5, "the overlaid streak chained: {st:?}");
+        assert_eq!(
+            st.acknowledged_observation_id.as_deref(),
+            Some("2026-06-30"),
+            "the full pass stamped the acknowledging observation"
+        );
+        // And the successful pass cleared the between-run store wholesale.
+        assert!(store::latest_quick_check(&conn).unwrap().is_none());
     }
 
     #[test]

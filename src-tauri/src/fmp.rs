@@ -1992,6 +1992,59 @@ mod tests {
     }
 
     #[test]
+    fn quick_check_adapters_round_trip_price_earnings_and_news() {
+        // The quick check's three per-symbol pulls: the bare live price, the
+        // earnings rows (newest first), and the since-filtered symbol news.
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","price":201.5}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","date":"2026-04-30","epsActual":1.61,"epsEstimated":1.55,"revenueActual":96.0e9},
+                          {"symbol":"AAPL","date":"2026-07-30","epsActual":null,"epsEstimated":1.86,"revenueActual":null}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","publishedDate":"2026-08-01 14:13:36","title":"New chip ships","site":"example.com"},
+                          {"symbol":"AAPL","publishedDate":"2026-07-01 09:00:00","title":"Old story","site":"example.com"}]"#,
+            },
+        ]);
+        let src = test_source(&server.base_url);
+        assert_eq!(src.fetch_live_price("AAPL").unwrap(), 201.5);
+        let earnings = src.fetch_symbol_earnings("AAPL").unwrap();
+        assert_eq!(earnings.len(), 2);
+        // Newest first regardless of the feed's order.
+        assert_eq!(earnings[0].date, "2026-07-30");
+        assert_eq!(earnings[1].eps_actual, Some(1.61));
+        // The since filter holds client-side even if the server ignores `from`.
+        let news = src.fetch_symbol_news_since("AAPL", "2026-07-20").unwrap();
+        assert_eq!(news.len(), 1);
+        assert_eq!(news[0].title, "New chip ships");
+        assert_eq!(
+            server.request_paths(),
+            vec!["/quote", "/earnings", "/news/stock"]
+        );
+    }
+
+    #[test]
+    fn quick_check_adapters_error_rather_than_silently_clearing() {
+        // A premium gate / failed call must surface as `Err` — the quick check types
+        // the family `unknown`, never a silent all-clear.
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 402, headers: vec![], body: "Payment Required" },
+            Canned::Reply { status: 402, headers: vec![], body: "Payment Required" },
+        ]);
+        let src = test_source(&server.base_url);
+        assert!(src.fetch_live_price("AAPL").is_err());
+        assert!(src.fetch_symbol_earnings("AAPL").is_err());
+    }
+
+    #[test]
     fn company_financials_degrade_to_gaps_on_premium_and_transport_failures() {
         // Quote 402 (premium gate) then EOD malformed body: both degrade to gaps, never
         // a fabricated level, and the engine grades over what SEC supplies instead.
@@ -3414,6 +3467,18 @@ mod tests {
 
 /// FMP endpoint paths added by the fund slice (all on the `/stable` base).
 const FMP_INCOME_QUARTERLY_PATH: &str = "/income-statement";
+/// Per-symbol earnings rows (actual vs estimate) — the quick check's
+/// new-earnings-actual evidence leg (`docs/portfolio-analysis.md` §Starting
+/// parameters; distinct from the report's market-wide `/earnings-calendar`).
+const FMP_SYMBOL_EARNINGS_PATH: &str = "/earnings";
+/// Symbol-scoped stock news — the quick check's qualifying-news-seed leg, pulled
+/// only for holdings carrying a standing technology-class falsifier.
+const FMP_NEWS_STOCK_SYMBOL_PATH: &str = "/news/stock";
+/// How many per-symbol earnings rows the quick check reads — enough to cover the
+/// window since the last full pass with room to spare.
+const SYMBOL_EARNINGS_LIMIT: &str = "8";
+/// News items requested per tech-flagged holding.
+const SYMBOL_NEWS_LIMIT: &str = "20";
 const FMP_BALANCE_SHEET_PATH: &str = "/balance-sheet-statement";
 const FMP_ANALYST_ESTIMATES_PATH: &str = "/analyst-estimates";
 const FMP_DIVIDENDS_PATH: &str = "/dividends";
@@ -3551,6 +3616,30 @@ impl FmpDataSource {
         }
     }
 
+    /// The strict form of [`Self::fetch_analyst_estimates`] for the quick check's
+    /// revision preflight: a failed retrieval is `Err` (the caller types the family
+    /// `unknown`), while a successful body carrying no forward-dated consensus is an
+    /// honest `Ok(None)` — the typed split the fail-soft gap-list form can't offer
+    /// without string-matching its message text.
+    pub fn fetch_analyst_estimates_strict(
+        &self,
+        symbol: &str,
+    ) -> Result<Option<crate::portfolio::engine::ConsensusEstimate>> {
+        let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+        match self.suite_get(
+            "company-estimates",
+            symbol,
+            "Analyst estimates",
+            FMP_ANALYST_ESTIMATES_PATH,
+            &[("symbol", symbol), ("period", "annual"), ("limit", "6")],
+        ) {
+            Disposition::Value(value) => Ok(consensus_from_value(&value, &today)),
+            Disposition::Gap(reason) => {
+                anyhow::bail!("FMP analyst estimates unavailable ({})", reason.as_str())
+            }
+        }
+    }
+
     /// Trailing-twelve-month dividends per share — the forward-dividend estimate the
     /// twelve-month total return adds. `None` (with no gap) for a non-payer; a failed
     /// call records the gap.
@@ -3596,6 +3685,71 @@ impl FmpDataSource {
             Disposition::Value(value) => dated_eod_from_value(&value),
             Disposition::Gap(reason) => {
                 anyhow::bail!("FMP dated EOD unavailable ({})", reason.as_str())
+            }
+        }
+    }
+
+    /// The bare per-symbol live price — the quick check's per-holding price refresh
+    /// (`docs/portfolio-analysis.md` §The quick check). `Err` on a gate, transport
+    /// failure, or a body carrying no price, so the caller types the family
+    /// `unknown` rather than clearing it silently.
+    pub fn fetch_live_price(&self, symbol: &str) -> Result<f64> {
+        match self.suite_get(
+            "quick-quote",
+            symbol,
+            "Live quote",
+            FMP_QUOTE_PATH,
+            &[("symbol", symbol)],
+        ) {
+            Disposition::Value(value) => company_quote_from_value(&value)
+                .and_then(|q| q.price)
+                .with_context(|| format!("FMP quote carried no price for {symbol}")),
+            Disposition::Gap(reason) => {
+                anyhow::bail!("FMP quote unavailable ({})", reason.as_str())
+            }
+        }
+    }
+
+    /// Per-symbol earnings rows, newest first — the quick check's
+    /// new-earnings-actual evidence leg. `Err` on a failed retrieval (the caller
+    /// types the family `unknown`); an empty list is an honest no-rows read.
+    pub fn fetch_symbol_earnings(&self, symbol: &str) -> Result<Vec<SymbolEarningsRow>> {
+        match self.suite_get(
+            "quick-earnings",
+            symbol,
+            "Earnings rows",
+            FMP_SYMBOL_EARNINGS_PATH,
+            &[("symbol", symbol), ("limit", SYMBOL_EARNINGS_LIMIT)],
+        ) {
+            Disposition::Value(value) => Ok(symbol_earnings_from_value(&value)),
+            Disposition::Gap(reason) => {
+                anyhow::bail!("FMP earnings unavailable ({})", reason.as_str())
+            }
+        }
+    }
+
+    /// Symbol-scoped stock news since `from` (ISO date) — the quick check's
+    /// qualifying-news-seed leg, pulled **only** for holdings carrying a standing
+    /// technology-class falsifier. `Err` on a failed retrieval.
+    pub fn fetch_symbol_news_since(
+        &self,
+        symbol: &str,
+        from: &str,
+    ) -> Result<Vec<SymbolNewsItem>> {
+        match self.suite_get(
+            "quick-news",
+            symbol,
+            "Symbol news",
+            FMP_NEWS_STOCK_SYMBOL_PATH,
+            &[
+                ("symbols", symbol),
+                ("from", from),
+                ("limit", SYMBOL_NEWS_LIMIT),
+            ],
+        ) {
+            Disposition::Value(value) => Ok(symbol_news_from_value(&value, from)),
+            Disposition::Gap(reason) => {
+                anyhow::bail!("FMP news/stock unavailable ({})", reason.as_str())
             }
         }
     }
@@ -3720,6 +3874,78 @@ impl FmpDataSource {
 pub struct BalanceSheetLines {
     pub total_debt: Option<f64>,
     pub total_equity: Option<f64>,
+}
+
+/// One per-symbol earnings row (`fetch_symbol_earnings`) — the announcement date and
+/// the actual-vs-estimate legs the quick check's evidence-event leg reads.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SymbolEarningsRow {
+    /// The announcement date, ISO.
+    pub date: String,
+    pub eps_actual: Option<f64>,
+    pub eps_estimated: Option<f64>,
+    pub revenue_actual: Option<f64>,
+}
+
+/// Shape an FMP `/earnings?symbol=` array body into rows, newest first. A row
+/// without a date is skipped (nothing to key the event on).
+fn symbol_earnings_from_value(value: &Value) -> Vec<SymbolEarningsRow> {
+    let Some(rows) = value.as_array() else {
+        return vec![];
+    };
+    let mut out: Vec<SymbolEarningsRow> = rows
+        .iter()
+        .filter_map(|row| {
+            let date = row.get("date").and_then(Value::as_str)?.to_string();
+            Some(SymbolEarningsRow {
+                date,
+                eps_actual: row.get("epsActual").and_then(Value::as_f64),
+                eps_estimated: row.get("epsEstimated").and_then(Value::as_f64),
+                revenue_actual: row.get("revenueActual").and_then(Value::as_f64),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.date.cmp(&a.date));
+    out
+}
+
+/// One symbol-scoped news item (`fetch_symbol_news_since`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SymbolNewsItem {
+    /// `YYYY-MM-DD HH:MM:SS` as FMP serves it; date-prefix comparable.
+    pub published_date: String,
+    pub title: String,
+    pub site: Option<String>,
+}
+
+/// Shape an FMP `/news/stock?symbols=` array body, keeping items published on or
+/// after `from` (belt and braces over the server-side `from` filter — the leg's
+/// "fresh since the last full pass" test must not lean on a remote filter alone).
+fn symbol_news_from_value(value: &Value, from: &str) -> Vec<SymbolNewsItem> {
+    let Some(rows) = value.as_array() else {
+        return vec![];
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let published_date = row
+                .get("publishedDate")
+                .and_then(Value::as_str)?
+                .to_string();
+            // Date-prefix compare: "2026-08-01 09:30:00" >= "2026-07-20".
+            if published_date.as_str() < from {
+                return None;
+            }
+            Some(SymbolNewsItem {
+                published_date,
+                title: row
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                site: row.get("site").and_then(Value::as_str).map(str::to_string),
+            })
+        })
+        .collect()
 }
 
 /// Shape an FMP `/balance-sheet-statement` array body into [`BalanceSheetLines`] from

@@ -173,6 +173,7 @@ describe("App.vue Tauri boundary", () => {
       "job_status",
       "latest_holdings_pull",
       "latest_portfolio_run",
+      "latest_quick_check",
       "list_portfolio_runs",
       "list_reports",
       "list_research_archive",

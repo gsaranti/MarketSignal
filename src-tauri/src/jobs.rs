@@ -107,6 +107,11 @@ pub enum JobOutcome {
 pub enum RunKind {
     Report,
     Portfolio,
+    /// The engine-only Portfolio quick check (`docs/portfolio-analysis.md §The
+    /// quick check`) — no model call, no web research, no Schwab call, but it
+    /// holds the slot like any job so it can't race a run's own retrieval or
+    /// persistence.
+    PortfolioQuickCheck,
     SchwabConnect,
     /// A standalone, view-only holdings pull (`docs/portfolio-analysis.md
     /// §Triggering`) — a quick Schwab fetch, never an analysis run. It holds the

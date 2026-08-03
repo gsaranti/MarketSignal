@@ -615,6 +615,7 @@ Watch the 2s10s and the labor prints.
                 overview: String::new(),
             },
             audit: vec![],
+            rate_prints: None,
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let (prior, version) = prior_verdict_for(&conn, "aapl").expect("case-insensitive match");
@@ -666,7 +667,10 @@ Watch the 2s10s and the labor prints.
                 target_meta: None,
                 grade_parameter_version: Some("grade-v2".into()),
                 ledger_audit: None,
+                quick_basis: None,
+                fund_exposure: None,
             }],
+            rate_prints: None,
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let (_, version) = prior_verdict_for(&conn, "AAPL").expect("verdict present");

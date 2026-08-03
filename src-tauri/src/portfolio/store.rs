@@ -43,6 +43,64 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+    // The quick check's between-run state (`docs/portfolio-analysis.md §The quick
+    // check`): a single latest row, deliberately separate from `portfolio_runs` —
+    // a quick check must never surface in the run history or become the next full
+    // run's diff baseline / ledger-carry source. Not exported by data portability
+    // (advisory between-run state; it regenerates on the next quick check).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS portfolio_quick_checks (
+            id         INTEGER PRIMARY KEY CHECK (id = 1),
+            checked_at TEXT NOT NULL,
+            state_json TEXT NOT NULL
+        )",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Persist the merged quick-check state, replacing any prior row — latest-only,
+/// like `holdings_pulls`.
+pub fn save_quick_check(
+    conn: &Connection,
+    state: &crate::portfolio::quick_check::QuickCheckState,
+) -> Result<()> {
+    let state_json = serde_json::to_string(state)?;
+    conn.execute(
+        "INSERT INTO portfolio_quick_checks (id, checked_at, state_json)
+         VALUES (1, ?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET
+             checked_at = excluded.checked_at,
+             state_json = excluded.state_json",
+        params![state.last_checked_at, state_json],
+    )?;
+    Ok(())
+}
+
+/// The latest quick-check state, or `None` before any quick check ran (or after a
+/// full pass cleared it).
+pub fn latest_quick_check(
+    conn: &Connection,
+) -> Result<Option<crate::portfolio::quick_check::QuickCheckState>> {
+    let json = conn
+        .query_row(
+            "SELECT state_json FROM portfolio_quick_checks WHERE id = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    match json {
+        Some(j) => Ok(Some(serde_json::from_str(&j)?)),
+        None => Ok(None),
+    }
+}
+
+/// Drop the quick-check state — the successful full pass's clear-and-acknowledge
+/// leg (`docs/portfolio-analysis.md §The quick check`: the pass consumes the
+/// triggering observations, so the flags and accumulated evidence events end with
+/// it).
+pub fn clear_quick_check(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM portfolio_quick_checks", [])?;
     Ok(())
 }
 
@@ -279,7 +337,10 @@ mod tests {
                 degraded_inputs: vec![],
                 grade_parameter_version: None,
                 ledger_audit: None,
+                quick_basis: None,
+                fund_exposure: None,
             }],
+            rate_prints: None,
         }
     }
 
@@ -290,6 +351,61 @@ mod tests {
         insert_run(&conn, &run).unwrap();
         let back = latest_run(&conn).unwrap().unwrap();
         assert_eq!(back, run, "the whole run round-trips");
+    }
+
+    #[test]
+    fn quick_check_basis_and_rate_prints_round_trip() {
+        let conn = mem();
+        let mut run = sample_run("run-1", "2026-08-03T12:00:00Z");
+        run.rate_prints = Some(crate::portfolio::RatePrints {
+            dgs2: 0.04,
+            dgs10: 0.045,
+            dgs2_as_of: Some("2026-08-01".into()),
+            dgs10_as_of: Some("2026-08-01".into()),
+            fetched_at: "2026-08-03T12:00:00Z".into(),
+        });
+        run.audit[0].quick_basis = Some(crate::portfolio::engine::QuickCheckBasis {
+            spot: 195.0,
+            drivers: [6.0, 6.5, 7.0],
+            spread_percentiles: Some([0.002, 0.001, 0.0005]),
+            raw_percentiles: Some([25.0, 28.0, 31.0]),
+            forward_dividends: 1.0,
+            dispersion_floor: 0.05,
+            consensus_eps_mid: Some(6.5),
+        });
+        run.audit[0].fund_exposure = Some(crate::portfolio::fund::FundExposureBasis {
+            class_label: "US equity fund".into(),
+            expense_ratio: Some(0.0009),
+            us_share: Some(0.97),
+            top_sector: Some(("Technology".into(), 0.31)),
+        });
+        insert_run(&conn, &run).unwrap();
+        assert_eq!(latest_run(&conn).unwrap().unwrap(), run);
+    }
+
+    #[test]
+    fn a_pre_basis_blob_decodes_with_absent_quick_fields() {
+        // A run persisted before the quick-check basis existed must decode as the
+        // absent-basis path (`docs/portfolio-analysis.md` §The quick check — the
+        // rate-dependent families read `unknown` until a full run re-persists).
+        let conn = mem();
+        let run = sample_run("run-old", "2026-07-31T00:00:00Z");
+        let mut value = serde_json::to_value(&run).unwrap();
+        value.as_object_mut().unwrap().remove("rate_prints");
+        for audit in value["audit"].as_array_mut().unwrap() {
+            let a = audit.as_object_mut().unwrap();
+            a.remove("quick_basis");
+            a.remove("fund_exposure");
+        }
+        conn.execute(
+            "INSERT INTO portfolio_runs (run_id, created_at, run_json) VALUES (?1, ?2, ?3)",
+            rusqlite::params![run.run_id, run.created_at, value.to_string()],
+        )
+        .unwrap();
+        let back = latest_run(&conn).unwrap().unwrap();
+        assert!(back.rate_prints.is_none());
+        assert!(back.audit[0].quick_basis.is_none());
+        assert!(back.audit[0].fund_exposure.is_none());
     }
 
     #[test]

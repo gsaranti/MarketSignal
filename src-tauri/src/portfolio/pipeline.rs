@@ -139,6 +139,13 @@ pub fn analyze_holding(
     if let Some(gap) = &rates.history_gap {
         degraded.push(gap.clone());
     }
+    // The fund exposure comparators for the quick check's fund evidence-event legs
+    // — computed from the same fresh metadata the pass analyzed, on either verdict
+    // branch (`docs/portfolio-analysis.md` §Starting parameters).
+    let fund_exposure = dossier
+        .fund
+        .as_ref()
+        .map(|f| crate::portfolio::fund::exposure_basis(&f.fund));
     let audit = |metrics, target_meta, ledger_audit| HoldingAudit {
         symbol: symbol.clone(),
         metrics,
@@ -149,6 +156,8 @@ pub fn analyze_holding(
         target_meta,
         grade_parameter_version: Some(engine::GRADE_PARAMETER_VERSION.to_string()),
         ledger_audit,
+        quick_basis: None,
+        fund_exposure: fund_exposure.clone(),
     };
     let abstain = |reason: String, metrics, meta| {
         let verdict = HoldingVerdict {
@@ -414,6 +423,8 @@ pub fn analyze_holding(
         target_meta: Some(engine_output.target_meta.clone()),
         grade_parameter_version: Some(engine::GRADE_PARAMETER_VERSION.to_string()),
         ledger_audit: Some(ledger_audit),
+        quick_basis: engine_output.quick_basis.clone(),
+        fund_exposure: fund_exposure.clone(),
     };
     Ok((verdict, audit_record))
 }
@@ -2077,6 +2088,7 @@ mod tests {
                 })
                 .collect(),
             history_gap: None,
+            ..Default::default()
         }
     }
 
