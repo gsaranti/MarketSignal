@@ -2,29 +2,25 @@
 
 ## What happened
 
-**The thesis ledger slice SHIPPED** (`ecb091a`, pushed, `portfolio-v4`) — the first Portfolio depth slice:
-the persisted per-holding standing thesis, typed by verdict branch (priced full shape; `role_risk_only` condition-only monitor + trim/sell triggers, enforced in schema AND validation),
-with machine-evaluable quantitative conditions over a closed 12-series engine surface (derived cadence; drafted counts 1-filing/2-market-data),
-engine evaluation under the shared persistence semantics (distinct-observation streaks — marks-day / period-end / value-keyed identities, **never calendar-keyed**; no-dated-print reads unevaluable; margin guard; ack transition),
-the prior ledger + crossings rendered into both prompts (the first prior-run content the prompt carries),
-and 6g validation: executability downgrade-not-drop, **order-independent identity carry** (exact-core reservation + global min-cost supersession assignment per (role, family, series) over the complete core), duplicate dedup, tripped/fired claims honored only against confirmed crossings, superseded/closed conditions preserved whole in the typed `LedgerAudit`, engine targets app-stamped into the monitor.
-Ledger rides `HoldingVerdict` in the run blob (pre-ledger runs decode as debut; insufficient-evidence retains it); the Portfolio card gained the kit-faithful ThesisAnchor (3-line clamp + measured reveal).
-Five review rounds to convergence: internal approve-with-nits (all fixed) + four Codex rounds — every finding confirmed against code and fixed — round 5 approved.
-Verified: cargo test 728/0 lib (760 summed), clippy 0 warnings, npm build clean, npm test 40+176.
+**The BUILD/INDEX catch-up SHIPPED and pushed** (`c989033`) — the thesis ledger slice (`ecb091a`, `portfolio-v4`) captured, clearing the one-slice capture debt:
+BUILD's as-built list + Portfolio bullet gained the full ledger contract (verdict-branch typing enforced in schema AND validation; the closed 12-series surface w/ derived cadence + drafted counts; distinct-observation streak identities — marks-day / period-end / value-keyed, never calendar-keyed; no-dated-print unevaluable; margin guard; ack transition; prior ledger + crossings into both prompts; 6g downgrade-not-drop + order-independent identity carry + tripped-claims-vs-confirmed-crossings + typed `LedgerAudit` + app-stamped monitor targets; run-blob persistence w/ debut decode + insufficient-evidence retention; the ThesisAnchor card anchor).
+`§What remains`: the big-run checklist grew the four ledger legs, the queue re-headed at the **quick check**, and the two structural gaps pinned (checkpoint/resume docs-promised-unbuilt; only the ledger legs of the 6g validator exist — the input-delta/what-changed validator unowned).
+INDEX: +1 thesis-ledger slice row (a `BUILD.md §Local analysis suite` pointer deliberately covers the three docs-unpinned refinements) + the suite status paragraph amended.
+All doc-section pointers and engine seam names verified against the repo. Docs-state-only session — no code, no verification due.
 
 ## Current state
 
-Tree clean, `ecb091a` pushed. **BUILD and INDEX are one slice behind** (the thesis ledger uncaptured — catch-up when convenient).
-Queue head advances to the **quick check slice**: the ledger now supplies its anchors — validated quantitative conditions with eval state + cadence tags, stored monitor bands with engine targets, the ack transition, and the engine seams it reuses (`engine::resolve_series`, `engine::evaluate_ledger_conditions`).
+Tree clean, `c989033` pushed. **No capture debt** — BUILD and INDEX are current through the thesis ledger slice.
+Queue head unchanged: the **quick check slice** (its anchors all delivered by the ledger slice — validated conditions w/ eval state + cadence tags, app-stamped monitor bands, the ack transition, `engine::resolve_series` / `engine::evaluate_ledger_conditions`).
 Then selective re-analysis, pre-profit overlay, outcome learning, 7b construction; the two UI micro-slices slot as breathers.
 The Step-6f investor-profile divergence stays deliberately untouched pending 7b.
 
 ## Open questions
 
-- **Big-run confirmation checklist** (`BUILD.md §What remains`) grows ledger legs: debut ledger authorship quality at 47-position scale; live carry/supersession behavior; tripped-claim discipline; the card anchor + clamp render.
-- **Docs-capture candidates** (small as-built refinements docs don't pin): consecutive counts derived from cadence (not model-authored); monitor-level (not per-scenario) goalposts; value-keyed expense-ratio + marks-day weight observation identities.
+- **Big-run confirmation checklist** now lives complete in `BUILD.md §What remains` (the four ledger legs included).
+- **Docs-capture candidates** (three as-built refinements `docs/` still doesn't pin — cadence-derived consecutive counts; monitor-level goalposts; value-keyed expense-ratio + marks-day weight identities): INDEX flags them via the BUILD pointer, but their canonical docs homes remain unwritten.
 - **No A letters under grade-v2** (META 84.0 vs ≥ 85) — cutoffs reserved for the normalization slice or the big run.
-- **Carried unchanged:** reasoning-pane DOM weight; encrypted portability round-trip; step-17 embedding watch; long/cold-start 600 s stress; scorecard display; dev-store residue; Keychain fail-soft; stage-and-swap import; chain both-maps invariant; four-part verdict bound; §1 open drafts; fraud-producer posture; fund-slice drafted constants; checkpoint/resume (docs promise it; unbuilt — ledger persists at run end); metric-level input delta + what-changed validator (only the ledger legs of 6g exist).
+- **Carried unchanged:** reasoning-pane DOM weight; encrypted portability round-trip; step-17 embedding watch; long/cold-start 600 s stress; scorecard display; dev-store residue; Keychain fail-soft; stage-and-swap import; chain both-maps invariant; four-part verdict bound; §1 open drafts; fraud-producer posture; fund-slice drafted constants; checkpoint/resume + the 6g input-delta/what-changed validator (both now pinned in BUILD §What remains, still unbuilt).
 
 ## Where to start
 
