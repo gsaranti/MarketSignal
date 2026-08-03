@@ -321,10 +321,12 @@ identity change clears both local vector namespaces in the same transaction
 as the write; re-embed-from-content stays M5-deferred), the manual daemon
 **Test Connection** (untested / unreachable / model-missing / connected — the
 in-app clear path for the shipped presence warning), and the read-only
-past-run view — two Codex rounds to convergence. **Trade Opportunities and
-the remaining Portfolio depth
-slices (thesis ledger, quick check, selective re-analysis, held-name refresh
-lane, pre-profit overlay, outcome learning, the 7b construction stage, the
+past-run view — two Codex rounds to convergence — and the **thesis ledger
+slice** (2026-08-03, `portfolio-v4`; five review rounds to convergence):
+the persisted per-holding standing thesis, as-built under Portfolio
+Analysis below. **Trade Opportunities and the remaining Portfolio depth
+slices (quick check, selective re-analysis, held-name refresh lane,
+pre-profit overlay, outcome learning, the 7b construction stage, the
 live research loop) remain designed, not built.** The load-bearing decisions:
 
 - **A local-only model layer, distinct from the cloud report (built).** A
@@ -441,8 +443,9 @@ live research loop) remain designed, not built.** The load-bearing decisions:
   - **Only a deep re-evaluation can archive an opportunity; the cheap
     re-derivation never does** — it refreshes the quant read and raises a
     non-destructive attention warning.
-- **Portfolio Analysis (per-holding spine + fund path built; depth slices
-  designed — `docs/portfolio-analysis.md`, `portfolio-workflow.md`; strategy
+- **Portfolio Analysis (per-holding spine + fund path + thesis ledger built;
+  remaining depth slices designed — `docs/portfolio-analysis.md`,
+  `portfolio-workflow.md`; strategy
   audit converged 2026-07-10; the fund-form target methodology settled
   2026-07-16 — the v2 function over the exposure-priced composite).** The
   intrinsic verdict is a **discriminated union**: the **`priced`** branch is
@@ -479,10 +482,34 @@ live research loop) remain designed, not built.** The load-bearing decisions:
   itself a per-holding exit reason), and fires a **band-recalibration
   continuity NOTE** when the prior verdict's stamped grade version differs
   from the current bands; **new money passes its own base-case admission
-  test**. The persisted per-holding **thesis ledger**
-  (typed by verdict branch; observation-identity persistence semantics) is
-  evaluated deterministically each run and kept live between runs by an
-  engine-only **quick check** (warn-don't-decide attention flags);
+  test**. The persisted per-holding **thesis ledger** (built 2026-08-03,
+  `portfolio-v4`) is the standing thesis typed by verdict branch (`priced`
+  full shape; `role_risk_only` a condition-only monitor + trim/sell-only
+  triggers, enforced in the schema **and** at validation), its quantitative
+  falsifiers / triggers machine-evaluable over a **closed 12-series engine
+  surface** (cadence derived from the series; consecutive counts drafted
+  1-filing / 2-market-data) under **distinct-observation streak identities**
+  — market series keyed to the marks' trading day, filing series to the
+  newest period end, the expense ratio to the changed print itself, **never
+  calendar-keyed**; a no-dated-print read is typed unevaluable, with a
+  margin noise guard and an acknowledgment transition blocking re-raise off
+  the examined observation. The prior ledger + confirmed crossings render
+  into both interpretation prompts (the first prior-run content the prompts
+  carry); the model's rewritten ledger (required in both response schemas;
+  it authors no ids, eval state, or target numbers) passes **6g
+  validation** — executability downgrades rather than drops, identity carry
+  is **order-independent** (exact-core reservation, then a global min-cost
+  supersession assignment per (role, family, series) over the complete
+  machine core; trigger families never exchange identity or crossing
+  lineage), tripped/fired claims are honored only against a confirmed
+  crossing on the carried id, superseded/closed conditions are preserved
+  whole in the typed `LedgerAudit`, and monitor targets are app-stamped
+  from the engine scenario set (structurally `None` on `role_risk_only`).
+  The ledger rides `HoldingVerdict` in the run blob (pre-ledger runs decode
+  as the debut path; insufficient-evidence retains it unchanged), anchored
+  on the Portfolio card by the kit's ThesisAnchor (3-line clamp, measured
+  reveal). Between runs it is kept live by an engine-only
+  **quick check** (warn-don't-decide attention flags);
   **selective re-analysis** re-runs a chosen subset under three safety rules
   (force-include on flags / `unknown` degraded sweeps / side reversals /
   deterministic evidence events / a capped held-name research refresh's
@@ -548,8 +575,11 @@ whether ordering holds; TTM-basis adoption + the balance-sheet leg live;
 target provenance vs the sell-all cascade; the recalibration NOTE and its
 what-changed attribution; conviction/action pairing; the fails →
 indeterminate action distribution; fund-SEC-skip noise reduction; the fund
-carry-path floor; the data-health render; the reasoning panes; 128 K runner
-stability; distill speed; whether Stooq's PoW gate is permanent). **Trade
+carry-path floor; debut ledger authorship quality at 47-position scale;
+live condition carry / supersession behavior; tripped-claim discipline; the
+ThesisAnchor + clamp render; the data-health render; the reasoning panes;
+128 K runner stability; distill speed; whether Stooq's PoW gate is
+permanent). **Trade
 Opportunities waits behind the whole block** (design settled — full strategy
 audit plus three external review rounds to convergence, 2026-07-09; the paid
 FMP key's shapes live-verified 2026-07-16, so implementation planning codes
@@ -593,17 +623,27 @@ pre-flight completed 2026-07-28, Ollama pinned v0.32.5 —
   above (target provenance, the softened dead-money weighing, the conviction
   definition, house-view scoping, the band-recalibration continuity NOTE).
 
-**Remaining in the block, in order: the depth slices** — the **thesis
-ledger** first (the persisted standing thesis with typed falsifiers /
-triggers and machine-evaluable quantitative conditions is the anchor the
-quick check and selective re-analysis build on), then the **quick check**,
-**selective re-analysis**, the **pre-profit overlay**, **outcome learning**,
+The **first depth slice is done** — the **thesis ledger** (2026-08-03,
+`portfolio-v4`; as-built contract in §Local analysis suite). It supplies
+the anchors the next slices build on: validated quantitative conditions
+with eval state + cadence tags, app-stamped monitor bands, the
+acknowledgment transition, and the engine seams (`engine::resolve_series`,
+`engine::evaluate_ledger_conditions`).
+
+**Remaining in the block, in order: the depth slices** — the **quick
+check** next (the engine-only between-run pass consuming the ledger's
+condition evaluation directly), then **selective re-analysis**, the
+**pre-profit overlay**, **outcome learning**,
 and the **7b construction stage** — with the two small, display-only
 result-review UI fixes (the Portfolio-page polish micro-slice; the
 section-scoped footer + report-nav slice) slotting anywhere between slices
 as breathers. Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
-shipped schemas don't preclude them.
+shipped schemas don't preclude them. Two structural gaps ride the queue
+rather than any one slice: **checkpoint/resume** stays docs-promised but
+unbuilt (the ledger persists only at run end), and only the **ledger legs
+of the 6g validator** exist — the metric-level input delta / what-changed
+attribution validator remains designed, owned by no shipped slice.
 
 Watches and deferrals: **Stooq now serves a JS-PoW interstitial to non-JS
 clients** (observed 2026-08-02 during the FMP light-EOD desk probe, which
