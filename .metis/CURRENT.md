@@ -2,26 +2,24 @@
 
 ## What happened
 
-**The BUILD/INDEX catch-up SHIPPED and pushed** (`c989033`) — the thesis ledger slice (`ecb091a`, `portfolio-v4`) captured, clearing the one-slice capture debt:
-BUILD's as-built list + Portfolio bullet gained the full ledger contract (verdict-branch typing enforced in schema AND validation; the closed 12-series surface w/ derived cadence + drafted counts; distinct-observation streak identities — marks-day / period-end / value-keyed, never calendar-keyed; no-dated-print unevaluable; margin guard; ack transition; prior ledger + crossings into both prompts; 6g downgrade-not-drop + order-independent identity carry + tripped-claims-vs-confirmed-crossings + typed `LedgerAudit` + app-stamped monitor targets; run-blob persistence w/ debut decode + insufficient-evidence retention; the ThesisAnchor card anchor).
-`§What remains`: the big-run checklist grew the four ledger legs, the queue re-headed at the **quick check**, and the two structural gaps pinned (checkpoint/resume docs-promised-unbuilt; only the ledger legs of the 6g validator exist — the input-delta/what-changed validator unowned).
-INDEX: +1 thesis-ledger slice row (a `BUILD.md §Local analysis suite` pointer deliberately covers the three docs-unpinned refinements) + the suite status paragraph amended.
-All doc-section pointers and engine seam names verified against the repo. Docs-state-only session — no code, no verification due.
+**The quick check slice SHIPPED — merged to `main` as PR #56 (squash `4db77a0`), feature branch deleted.**
+The held diff was committed to `portfolio-quick-check`, then driven through **eight external review rounds to convergence** (18 findings over rounds 1–7, each verified against code/docs before fixing; round 8 approved).
+Load-bearing shapes the rounds added beyond the original slice: per-holding clear on persist (an abstention retains its carried sweep state re-stamped to the new run, its rate cache following the run's prints); the filing re-pull's dividend leg reaching the hurdle under the adapter's **None-with-no-gap = confirmed-non-payer** contract (shared gap-prefix consts, Result-shaped parser, parsed-date windowing); fund-refresh honesty — mandate / label / overlay-flag legs independently gated on what each derives from, `FundExposureBasis.structural_flag` as `Option<bool>` (legacy `None` degrades, never fabricates), blank `etf/info` strings normalized to `None` at the adapter; the typed `unevaluable_series` channel downgrading a claimed clear per family; malformed-200 strictness across the SEC/FMP shapers; portability **format v2** with the versioned closed entry set; `StepStatus` gaining `flagged`/`unknown` (sanctioned amber pair — a noted design-package extension); the report pane excluding both portfolio trace kinds.
+BUILD/INDEX caught up this session — **no capture debt**.
 
 ## Current state
 
-Tree clean, `c989033` pushed. **No capture debt** — BUILD and INDEX are current through the thesis ledger slice.
-Queue head unchanged: the **quick check slice** (its anchors all delivered by the ledger slice — validated conditions w/ eval state + cadence tags, app-stamped monitor bands, the ack transition, `engine::resolve_series` / `engine::evaluate_ledger_conditions`).
-Then selective re-analysis, pre-profit overlay, outcome learning, 7b construction; the two UI micro-slices slot as breathers.
-The Step-6f investor-profile divergence stays deliberately untouched pending 7b.
+`main` at `4db77a0`, tree clean, nothing in flight. Queue head: the **selective re-analysis** slice — the quick check supplies its full force-include surface (per-holding flags, `unknown` degraded families, accumulated unexamined evidence events).
 
 ## Open questions
 
-- **Big-run confirmation checklist** now lives complete in `BUILD.md §What remains` (the four ledger legs included).
-- **Docs-capture candidates** (three as-built refinements `docs/` still doesn't pin — cadence-derived consecutive counts; monitor-level goalposts; value-keyed expense-ratio + marks-day weight identities): INDEX flags them via the BUILD pointer, but their canonical docs homes remain unwritten.
-- **No A letters under grade-v2** (META 84.0 vs ≥ 85) — cutoffs reserved for the normalization slice or the big run.
-- **Carried unchanged:** reasoning-pane DOM weight; encrypted portability round-trip; step-17 embedding watch; long/cold-start 600 s stress; scorecard display; dev-store residue; Keychain fail-soft; stage-and-swap import; chain both-maps invariant; four-part verdict bound; §1 open drafts; fraud-producer posture; fund-slice drafted constants; checkpoint/resume + the 6g input-delta/what-changed validator (both now pinned in BUILD §What remains, still unbuilt).
+- **Docs-capture candidates:** the review rounds' code-enforced-but-docs-unpinned contracts (None-with-no-gap non-payer; mandate-vs-label comparability + blank-metadata normalization; the unevaluable→family downgrade) — plus the carried set: FINRA-leg vacuity vs the 12-series surface; cash-flow re-pull named but unconsumed; breadth-flip sub-leg unbuildable; the ledger slice's three (cadence-derived counts; monitor-level goalposts; value-keyed + marks-day identities). Canonical docs homes still unwritten.
+- **Debut gaps (self-resolve at the big run's persist):** the first sweep reads the rate-anchor family `unknown` (pre-`RatePrints` run) and pre-basis funds read FundInfo `unknown`.
+- **Evidence-event boundary** uses the run's `created_at` — must move to per-holding vintages in the selective slice.
+- `job_status` has no `job_type` filter — quick-check runs move the footer's last-run timestamps (accepted).
+- **No A letters under grade-v2** (META 84.0 vs ≥ 85) — reserved for normalization or the big run.
+- **Carried unchanged:** big-run checklist in BUILD §What remains (now incl. the quick-check legs); reasoning-pane DOM weight; encrypted portability round-trip; step-17 embedding watch; 600 s stress; scorecard display; dev-store residue; Keychain fail-soft; stage-and-swap import; chain both-maps invariant; four-part verdict bound; §1 open drafts; fraud-producer posture; fund-slice drafted constants; checkpoint/resume + the 6g input-delta validator (docs-promised, unbuilt).
 
 ## Where to start
 
-`/metis-plan-task` for the **quick check slice**: read `docs/portfolio-analysis.md §The quick check (engine-only)` and `docs/portfolio-workflow.md §The quick check` first — the engine-only between-run pass over the last run's snapshot and ledgers (typed per-family sweep states `fresh_clear`/`flagged`/`unknown`, the non-destructive attention flag, the quiet evidence-event badge). It consumes the ledger slice's condition evaluation directly; mind that checkpoint/resume and the research loop remain unbuilt.
+Run `/metis-plan-task` for the **selective re-analysis** slice (docs/portfolio-analysis.md §Triggering; portfolio-workflow.md §Step 6, §Step 7b): the chosen-subset re-run under the three mixed-vintage safety rules — force-include off the sweep's flags / `unknown` families / side reversals / evidence events, the carried-action transition rule, over-age add-demotion with `action_source` — plus the per-card selection UI and analysis-vintage stamps. Move the evidence-event boundary to per-holding vintages in the same slice.
