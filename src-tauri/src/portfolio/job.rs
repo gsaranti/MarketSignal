@@ -955,8 +955,15 @@ fn run_analysis(
     ctx.step_started("outcome", "Outcome learning");
     let run_id = uuid::Uuid::new_v4().to_string();
     let run_date: String = created_at.chars().take(10).collect();
-    let mut episodes = match store::load_episodes(conn) {
-        Ok(eps) => eps,
+    let (mut episodes, unreadable_active_symbols) = match store::load_episodes(conn) {
+        Ok(load) => {
+            // A skipped *active* row (unreadable JSON, readable SQL columns)
+            // re-seeds its symbol through the plan's recovery seam; the row
+            // itself is never deleted.
+            let lost =
+                crate::portfolio::outcome::lost_active_symbols(&load.skipped, &load.episodes);
+            (load.episodes, lost)
+        }
         Err(e) => {
             // Store-level failure only — a single bad row is skipped and logged
             // inside the loader, never an error here. Proceeding with an empty
@@ -965,7 +972,7 @@ fn run_analysis(
             eprintln!(
                 "outcome learning: episode store unreadable ({e}) — proceeding with an empty set"
             );
-            Vec::new()
+            (Vec::new(), std::collections::HashSet::new())
         }
     };
     let (alignment_tags, align_changed) = crate::portfolio::outcome::tag_alignment(
@@ -988,6 +995,7 @@ fn run_analysis(
             prior_verdicts: prior_run.as_ref().map(|r| r.verdicts.as_slice()),
             sector_by_symbol: &sector_by_symbol,
             dgs2: Some(rates.dgs2),
+            unreadable_active_symbols,
         },
         &mut episodes,
     );
@@ -2608,7 +2616,7 @@ mod tests {
         assert!(!records.reads.eligibility.eligible, "far below the 30-holding bar");
         {
             let conn = storage::open(&paths.db_path).unwrap();
-            let episodes = store::load_episodes(&conn).unwrap();
+            let episodes = store::load_episodes(&conn).unwrap().episodes;
             assert_eq!(episodes.len(), 2);
             assert!(episodes
                 .iter()
@@ -2625,7 +2633,7 @@ mod tests {
         assert_eq!(records.extended.len(), 2);
         assert_eq!(records.alignment_tags.len(), 2);
         let conn = storage::open(&paths.db_path).unwrap();
-        let episodes = store::load_episodes(&conn).unwrap();
+        let episodes = store::load_episodes(&conn).unwrap().episodes;
         assert_eq!(episodes.len(), 2);
         assert!(episodes.iter().all(|e| e.observations.len() == 1
             && e.observations[0].kind
@@ -2707,7 +2715,7 @@ mod tests {
             records.matured
         );
         let conn = storage::open(&paths.db_path).unwrap();
-        let episodes = store::load_episodes(&conn).unwrap();
+        let episodes = store::load_episodes(&conn).unwrap().episodes;
         let gone = episodes.iter().find(|e| e.symbol == "GONE").unwrap();
         assert_eq!(gone.state, crate::portfolio::outcome::EpisodeState::Matured);
         // The fetched series landed in the shared bar cache.

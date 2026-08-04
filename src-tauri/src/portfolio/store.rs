@@ -92,34 +92,68 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 
 // ---- Outcome-episode store (`docs/portfolio-analysis.md §Outcome learning`) ------
 
+/// A row whose JSON no longer decoded at load, identified by its readable SQL
+/// columns — enough for the recovery seam ([`crate::portfolio::outcome::
+/// lost_active_symbols`]) to re-seed tracking without ever touching the row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkippedEpisodeRow {
+    pub episode_id: String,
+    pub symbol: String,
+    pub anchor_at: String,
+    /// The SQL `state` column value ("active" / "matured").
+    pub state: String,
+}
+
+/// A whole-store episode load: the decodable episodes plus the rows that were
+/// skipped.
+pub struct EpisodeLoad {
+    pub episodes: Vec<crate::portfolio::outcome::DecisionEpisode>,
+    pub skipped: Vec<SkippedEpisodeRow>,
+}
+
 /// Load every decision episode, active and matured, oldest anchor first. A row
-/// whose JSON no longer decodes is **skipped and logged, never a load failure**:
-/// aborting on one corrupt row would hand the job an empty set, whose
-/// never-seeded rule then re-debuts the whole book on every run while the valid
-/// history sits ignored beside the bad row. Bounded by the matured archive's cap
-/// plus the active set (~a year of decision changes), so a whole-store load stays
-/// a modest local parse.
-pub fn load_episodes(
-    conn: &Connection,
-) -> Result<Vec<crate::portfolio::outcome::DecisionEpisode>> {
+/// whose JSON no longer decodes is **skipped, logged, and reported — never a
+/// load failure and never deleted**: aborting on one corrupt row would hand the
+/// job an empty set (whose never-seeded rule then re-debuts the whole book on
+/// every run beside the valid history), while auto-deleting would let a serde
+/// regression silently destroy the store. The skipped rows' readable SQL columns
+/// ride back so the job can re-seed a symbol whose *active* episode was lost.
+/// Bounded by the matured archive's cap plus the active set (~a year of decision
+/// changes), so a whole-store load stays a modest local parse.
+pub fn load_episodes(conn: &Connection) -> Result<EpisodeLoad> {
     let mut stmt = conn.prepare(
-        "SELECT episode_id, episode_json FROM portfolio_outcome_episodes \
-         ORDER BY anchor_at ASC, id ASC",
+        "SELECT episode_id, symbol, anchor_at, state, episode_json \
+         FROM portfolio_outcome_episodes ORDER BY anchor_at ASC, id ASC",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+        ))
     })?;
-    let mut out = Vec::new();
+    let mut episodes = Vec::new();
+    let mut skipped = Vec::new();
     for row in rows {
-        let (episode_id, json) = row?;
+        let (episode_id, symbol, anchor_at, state, json) = row?;
         match serde_json::from_str(&json) {
-            Ok(episode) => out.push(episode),
-            Err(e) => eprintln!(
-                "outcome learning: skipping unreadable episode row {episode_id}: {e}"
-            ),
+            Ok(episode) => episodes.push(episode),
+            Err(e) => {
+                eprintln!(
+                    "outcome learning: skipping unreadable episode row {episode_id}: {e}"
+                );
+                skipped.push(SkippedEpisodeRow {
+                    episode_id,
+                    symbol,
+                    anchor_at,
+                    state,
+                });
+            }
         }
     }
-    Ok(out)
+    Ok(EpisodeLoad { episodes, skipped })
 }
 
 /// Upsert one episode by its stable `episode_id` (open, extend, tag, and label
@@ -715,36 +749,42 @@ mod tests {
         let conn = mem();
         let mut ep = sample_episode("ep-1", "AAPL", "2026-08-04T12:00:00+00:00");
         save_episode(&conn, &ep).unwrap();
-        assert_eq!(load_episodes(&conn).unwrap(), vec![ep.clone()]);
+        assert_eq!(load_episodes(&conn).unwrap().episodes, vec![ep.clone()]);
         // An upsert replaces in place — no duplicate row.
         ep.state = crate::portfolio::outcome::EpisodeState::Matured;
         ep.alignment = Some(crate::portfolio::outcome::ObservedNetAlignment::Aligned);
         save_episode(&conn, &ep).unwrap();
-        let back = load_episodes(&conn).unwrap();
+        let back = load_episodes(&conn).unwrap().episodes;
         assert_eq!(back.len(), 1);
         assert_eq!(back[0], ep);
     }
 
     #[test]
-    fn a_corrupt_episode_row_is_skipped_never_aborting_the_load() {
+    fn a_corrupt_episode_row_is_skipped_reported_and_never_aborts_the_load() {
         // One undecodable row must cost only itself: aborting the whole load
         // would hand the job an empty set, whose never-seeded rule then
-        // re-debuts the entire book on every run beside the bad row.
+        // re-debuts the entire book on every run beside the bad row. The
+        // same-symbol case matters: the corrupt row here is AAPL's *latest
+        // active* episode beside readable older AAPL history, and the reported
+        // skipped row is what lets the plan's recovery seam re-seed the symbol.
         let conn = mem();
-        save_episode(
-            &conn,
-            &sample_episode("ep-good", "AAPL", "2026-08-04T12:00:00+00:00"),
-        )
-        .unwrap();
+        let mut older = sample_episode("ep-old", "AAPL", "2025-08-04T12:00:00+00:00");
+        older.state = crate::portfolio::outcome::EpisodeState::Matured;
+        save_episode(&conn, &older).unwrap();
         conn.execute(
             "INSERT INTO portfolio_outcome_episodes (episode_id, symbol, anchor_at, state, episode_json)
-             VALUES ('ep-bad', 'MSFT', '2026-01-01T00:00:00+00:00', 'active', '{not json')",
+             VALUES ('ep-bad', 'AAPL', '2026-06-01T00:00:00+00:00', 'active', '{not json')",
             [],
         )
         .unwrap();
-        let episodes = load_episodes(&conn).unwrap();
-        assert_eq!(episodes.len(), 1, "the readable row survives the bad one");
-        assert_eq!(episodes[0].episode_id, "ep-good");
+        let load = load_episodes(&conn).unwrap();
+        assert_eq!(load.episodes.len(), 1, "the readable row survives the bad one");
+        assert_eq!(load.episodes[0].episode_id, "ep-old");
+        assert_eq!(load.skipped.len(), 1);
+        assert_eq!(load.skipped[0].episode_id, "ep-bad");
+        assert_eq!(load.skipped[0].symbol, "AAPL");
+        assert_eq!(load.skipped[0].state, "active");
+        assert_eq!(load.skipped[0].anchor_at, "2026-06-01T00:00:00+00:00");
     }
 
     #[test]
@@ -769,6 +809,7 @@ mod tests {
         prune_matured_episodes(&conn, 2).unwrap();
         let ids: Vec<String> = load_episodes(&conn)
             .unwrap()
+            .episodes
             .into_iter()
             .map(|e| e.episode_id)
             .collect();

@@ -181,7 +181,9 @@ pub enum ObservedNetAlignment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OpenReason {
-    /// First analysis of the holding (or first after the machinery landed).
+    /// First analysis of the holding — or the first after the machinery landed,
+    /// or the recovery re-seed after the symbol's active episode row became
+    /// unreadable ([`plan_episodes`]'s two seeding seams).
     Debut,
     BranchFlip,
     ActionChange,
@@ -350,6 +352,16 @@ pub struct ScoredLabel {
     pub entry_price: f64,
     pub end_date: String,
     pub end_price: f64,
+    /// The label-basis close **at or before the anchor date** — the same-session
+    /// counterpart of the snapshot's authoring spot, so authored absolute prices
+    /// (band edges, the bear line) convert into the label basis as
+    /// `price × anchor_close ⁄ authoring_spot`. The next-session entry cannot
+    /// serve this role: it sits an overnight gap away from the spot, which would
+    /// shear the comparison. `None` when the series carried no bar at or before
+    /// the anchor — those labels are excluded from band scoring (the residual
+    /// error of the bridge is intraday quote-vs-close, never a split or a gap).
+    #[serde(default)]
+    pub anchor_close: Option<f64>,
     /// Price-only forward return — the cross-entry common basis.
     pub price_return: f64,
     /// Total return: the window's cash dividends summed without reinvestment over
@@ -872,13 +884,19 @@ pub fn mature_labels(
         // sector legs immediately and never blocks scoring.
         let sector_bench = ep.sector.benchmark.clone();
         let sector_gap = ep.sector.unscorable.clone();
-        // The material-drawdown line in **return space over the authoring spot**
-        // (`bear ⁄ spot − 1`): the authored bear target is an absolute price in
-        // its authoring-time basis, while label-time closes are retroactively
-        // split-adjusted — the same basis bridge target calibration scores
-        // across. No spot recorded (pre-field episodes) leaves the events
-        // unstamped, excluded from the read — never a cross-basis comparison.
-        let bear_return_12m = match &ep.body {
+        // The label-basis close at the decision instant — the split-bridge the
+        // authored absolute prices convert through ([`ScoredLabel::anchor_close`]).
+        let anchor_close = close_at_or_before(&closes, anchor).map(|b| b.value);
+        // The material-drawdown line converted into the **label basis** via that
+        // bridge (`anchor_close × bear ⁄ authoring_spot`): the authored bear
+        // target is an absolute price in its authoring-time basis, label-time
+        // closes are retroactively split-adjusted, and both bridge legs share the
+        // decision instant — anchoring on the next-session entry instead would
+        // inject its overnight gap into the line (an upward gap fabricates a
+        // breach, a downward one hides it). No spot or no anchor bar (pre-field
+        // episodes, a start-uncovered series) leaves the events unstamped,
+        // excluded from the read — never a cross-basis comparison.
+        let bear_line_12m = match &ep.body {
             EpisodeBody::Priced(p) => p
                 .snapshot
                 .price_targets
@@ -886,7 +904,8 @@ pub fn mature_labels(
                 .as_ref()
                 .map(|t| t.bear)
                 .zip(p.snapshot.authoring_spot.filter(|s| *s > 0.0))
-                .map(|(bear, spot)| bear / spot - 1.0),
+                .zip(anchor_close)
+                .map(|((bear, spot), bridge)| bridge * bear / spot),
             EpisodeBody::RoleRiskOnly(_) => None,
         };
 
@@ -986,6 +1005,7 @@ pub fn mature_labels(
                 entry_price: entry.value,
                 end_date: end_bar.date.clone(),
                 end_price: end_bar.value,
+                anchor_close,
                 price_return,
                 total_return,
                 total_return_gap,
@@ -1013,13 +1033,13 @@ pub fn mature_labels(
             // — fields already frozen at the episode's intrinsic vintage: the
             // recorded twelve-month bear target is the material-drawdown line.
             if ep.labels[i].window_months == 12 {
-                if let Some(bear_return) = bear_return_12m {
+                if let Some(bear_line) = bear_line_12m {
                     stamp_lead_times(
                         &mut ep.falsifier_events,
                         &closes,
-                        entry,
+                        &entry.date,
                         w_end,
-                        bear_return,
+                        bear_line,
                     );
                 }
             }
@@ -1070,26 +1090,24 @@ fn drawdown_over(closes: &[DatedValue], entry_date: &str, w_end: NaiveDate) -> f
 
 /// Stamp each unstamped, in-episode falsifier event's signed trading-day distance
 /// to the first within-window close below the bear-case line — deterministic, never
-/// interpretive. The line is evaluated **in return space**: a close breaches when
-/// its return from the entry anchor falls below the authored `bear ⁄ spot − 1`,
-/// so a split between authoring and label time can neither fabricate nor hide a
-/// breach. Positive = confirmed before the breach; explicit
-/// `no-material-drawdown` when no such close occurs by maturity.
+/// interpretive. `bear_line` arrives already converted into the label basis
+/// (`anchor_close × bear ⁄ authoring_spot` — the caller's split-bridge), so the
+/// comparison is the documented absolute one: the first close below the line.
+/// Positive = confirmed before the breach; explicit `no-material-drawdown` when no
+/// such close occurs by maturity.
 fn stamp_lead_times(
     events: &mut [FalsifierEvent],
     closes: &[DatedValue],
-    entry: &DatedValue,
+    entry_date: &str,
     w_end: NaiveDate,
-    bear_return: f64,
+    bear_line: f64,
 ) {
     let end_iso = w_end.format("%Y-%m-%d").to_string();
     let window: Vec<&DatedValue> = closes
         .iter()
-        .filter(|b| b.date.as_str() >= entry.date.as_str() && b.date.as_str() <= end_iso.as_str())
+        .filter(|b| b.date.as_str() >= entry_date && b.date.as_str() <= end_iso.as_str())
         .collect();
-    let breach_idx = window
-        .iter()
-        .position(|b| b.value / entry.value - 1.0 < bear_return);
+    let breach_idx = window.iter().position(|b| b.value < bear_line);
     for ev in events.iter_mut() {
         if ev.post_maturity || ev.lead_time_trading_days.is_some() || ev.no_material_drawdown.is_some()
         {
@@ -1360,6 +1378,27 @@ pub fn episode_decision(
     }
 }
 
+/// The symbols whose **active** episode row was unreadable at load and is not
+/// superseded by a newer readable episode — the recovery-seed set (uppercase).
+/// The `anchor_at` bound is what keeps the flag from becoming a zombie: once a
+/// recovery debut (or any later episode) lands with a newer anchor, the lost row
+/// stops mattering, so a post-maturity re-affirmation can never re-open off it.
+pub fn lost_active_symbols(
+    skipped: &[store::SkippedEpisodeRow],
+    episodes: &[DecisionEpisode],
+) -> HashSet<String> {
+    skipped
+        .iter()
+        .filter(|row| row.state == "active")
+        .filter(|row| {
+            !episodes.iter().any(|e| {
+                e.symbol.eq_ignore_ascii_case(&row.symbol) && e.anchor_at > row.anchor_at
+            })
+        })
+        .map(|row| row.symbol.to_ascii_uppercase())
+        .collect()
+}
+
 /// Inputs to the pure per-run episode planning.
 pub struct PlanInput<'a> {
     pub run_id: &'a str,
@@ -1371,6 +1410,11 @@ pub struct PlanInput<'a> {
     pub sector_by_symbol: &'a HashMap<String, SectorIdentity>,
     /// The run-level DGS2 print, for the snapshot.
     pub dgs2: Option<f64>,
+    /// Symbols whose active episode row was unreadable and unsuperseded
+    /// ([`lost_active_symbols`], uppercase) — a symbol here with no readable
+    /// active episode re-seeds via a debut, so a lost row can't leave the
+    /// current decision untracked until the next state change.
+    pub unreadable_active_symbols: HashSet<String>,
 }
 
 /// What the plan changed.
@@ -1402,18 +1446,29 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
         let vintage = verdict.analyzed_at.as_deref().unwrap_or(input.created_at);
         let is_fresh = vintage == input.created_at;
         let mut decision = episode_decision(prior_v, verdict, is_fresh);
-        // The upgrade seam: a prior run that predates the episode machinery
-        // yields `Extend` for a stable holding, but a symbol with **no episode at
-        // all** was never seeded — that is the "first after the machinery landed"
-        // debut ([`OpenReason::Debut`]), not a post-maturity re-affirmation (which
-        // leaves matured history behind). An abstention still never opens.
+        // Two seeding seams convert an `Extend` into the debut open
+        // ([`OpenReason::Debut`]); an abstention still never opens. **Upgrade**: a
+        // prior run that predates the episode machinery yields `Extend` for a
+        // stable holding, but a symbol with no episode at all was never seeded —
+        // not a post-maturity re-affirmation, which leaves matured history
+        // behind. **Recovery**: a symbol whose active episode row was unreadable
+        // and unsuperseded re-seeds when no readable active episode remains —
+        // otherwise the lost row would leave the current decision untracked
+        // until the next genuine state change (the corrupt row itself is never
+        // deleted).
         if matches!(decision, EpisodeDecision::Extend(_))
             && !matches!(rec_state(verdict), RecState::Abstained)
-            && !episodes
-                .iter()
-                .any(|e| e.symbol.eq_ignore_ascii_case(&verdict.symbol))
         {
-            decision = EpisodeDecision::Open(vec![OpenReason::Debut]);
+            let any_readable = episodes
+                .iter()
+                .any(|e| e.symbol.eq_ignore_ascii_case(&verdict.symbol));
+            let active_readable = episodes.iter().any(|e| {
+                e.state == EpisodeState::Active && e.symbol.eq_ignore_ascii_case(&verdict.symbol)
+            });
+            let lost_active = input.unreadable_active_symbols.contains(&key);
+            if !any_readable || (lost_active && !active_readable) {
+                decision = EpisodeDecision::Open(vec![OpenReason::Debut]);
+            }
         }
         match decision {
             EpisodeDecision::Nothing => {}
@@ -1785,9 +1840,19 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
                 // the band is excluded rather than compared across them.
                 continue;
             };
+            let Some(bridge) = label.anchor_close.filter(|a| *a > 0.0) else {
+                // No anchor-session close on the label: the realized side has no
+                // same-instant bridge to the authoring basis (the next-session
+                // entry sits an overnight gap away), so the band is excluded.
+                continue;
+            };
             let (lo, hi) = (band.bear.min(band.bull), band.bear.max(band.bull));
             let (lo_r, hi_r) = (lo / spot - 1.0, hi / spot - 1.0);
-            let realized_r = label.price_return;
+            // Realized return from the same decision instant: end over the
+            // anchor-session close — both sides of the comparison now share one
+            // anchor, so neither a split nor the overnight gap into the entry
+            // can shear it.
+            let realized_r = label.end_price / bridge - 1.0;
             let acc = by_version
                 .entry(p.snapshot.target_parameter_version.clone())
                 .or_default();
@@ -2038,6 +2103,7 @@ mod tests {
             prior_verdicts: prior,
             sector_by_symbol: sector,
             dgs2: Some(0.04),
+            unreadable_active_symbols: HashSet::new(),
         }
     }
 
@@ -2229,6 +2295,59 @@ mod tests {
         );
         assert!(s.opened.is_empty());
         assert_eq!(episodes.len(), 1, "no MSFT episode was minted");
+    }
+
+    #[test]
+    fn a_lost_active_row_re_seeds_beside_readable_history() {
+        // The corrupt-latest-active case: readable matured AAPL history exists,
+        // so the symbol is "seeded", but the active row carrying the current
+        // decision was unreadable — the recovery seam must re-open tracking.
+        let c1 = "2025-08-04T12:00:00+00:00";
+        let c2 = "2026-08-11T12:00:00+00:00";
+        let mut matured = old_episode("AAPL", c1);
+        matured.state = EpisodeState::Matured;
+        let mut episodes = vec![matured];
+        let skipped = vec![store::SkippedEpisodeRow {
+            episode_id: "ep-bad".into(),
+            symbol: "AAPL".into(),
+            anchor_at: "2026-06-01T00:00:00+00:00".into(),
+            state: "active".into(),
+        }];
+        let lost = lost_active_symbols(&skipped, &episodes);
+        assert!(lost.contains("AAPL"));
+
+        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
+        let same = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c2)];
+        let sector = HashMap::new();
+        let mut input = plan_input("run-2", c2, &same, Some(&prior), &sector);
+        input.unreadable_active_symbols = lost;
+        let s = plan_episodes(&input, &mut episodes);
+        assert_eq!(s.opened.len(), 1, "the lost decision re-enters tracking");
+        assert_eq!(s.opened[0].reasons, vec![OpenReason::Debut]);
+        assert_eq!(episodes.len(), 2);
+
+        // The recovery episode's newer anchor supersedes the lost row: the flag
+        // dies, so a later post-maturity re-affirmation can never re-open off it.
+        assert!(lost_active_symbols(&skipped, &episodes).is_empty());
+
+        // A readable active episode beside a lost row takes the ordinary extend.
+        let mut with_active = vec![old_episode("MSFT", c1)];
+        let skipped_msft = vec![store::SkippedEpisodeRow {
+            episode_id: "ep-bad-2".into(),
+            symbol: "MSFT".into(),
+            anchor_at: "2026-06-01T00:00:00+00:00".into(),
+            state: "active".into(),
+        }];
+        let lost = lost_active_symbols(&skipped_msft, &with_active);
+        assert!(lost.contains("MSFT"));
+        let prior_m = vec![fresh(verdict("MSFT", Action::Hold, (0.03, 0.06)), c1)];
+        let same_m = vec![fresh(verdict("MSFT", Action::Hold, (0.03, 0.06)), c2)];
+        let mut input = plan_input("run-2", c2, &same_m, Some(&prior_m), &sector);
+        input.unreadable_active_symbols = lost;
+        let s = plan_episodes(&input, &mut with_active);
+        assert!(s.opened.is_empty(), "a readable active episode extends as usual");
+        assert_eq!(s.extended, vec!["MSFT".to_string()]);
+        assert_eq!(with_active.len(), 1);
     }
 
     #[test]
@@ -2696,6 +2815,7 @@ mod tests {
             &conn,
             "SPLT",
             &bars(&[
+                ("2025-06-02", 50.0),
                 ("2025-06-03", 50.0),
                 ("2025-09-01", 48.0),
                 ("2026-01-15", 45.0),
@@ -2731,6 +2851,7 @@ mod tests {
             &conn,
             "DEEP",
             &bars(&[
+                ("2025-06-02", 50.0),
                 ("2025-06-03", 50.0),
                 ("2025-09-01", 48.0),
                 ("2026-01-15", 27.0),
@@ -2757,6 +2878,71 @@ mod tests {
             Some(1),
             "confirmed one bar before the breach"
         );
+    }
+
+    #[test]
+    fn lead_time_breaches_key_on_the_anchor_close_not_the_entry_gap() {
+        // Line = anchor_close × bear ⁄ spot = 50 × 60 ⁄ 100 = 30, regardless of
+        // the overnight gap into the entry. A −20% gap-down entry (40) would
+        // make the entry-anchored rule miss the genuine 28-close breach; a
+        // gap-up entry (60) would make it fabricate one from the 32 close.
+        let event = || FalsifierEvent {
+            condition_id: "c-1".into(),
+            confirmed_at: "2025-08-01".into(),
+            confirmation_observation_id: "obs-1".into(),
+            post_maturity: false,
+            lead_time_trading_days: None,
+            no_material_drawdown: None,
+        };
+        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+
+        let conn = mem_conn();
+        store::merge_price_bars(
+            &conn,
+            "GAPD",
+            &bars(&[
+                ("2025-06-02", 50.0),
+                ("2025-06-03", 40.0),
+                ("2025-09-01", 38.0),
+                ("2026-01-15", 28.0),
+                ("2026-06-05", 41.0),
+            ]),
+        )
+        .unwrap();
+        let mut ep = old_episode("GAPD", "2025-06-02T12:00:00+00:00");
+        ep.falsifier_events.push(event());
+        let mut episodes = vec![ep];
+        let mut ctx = SeriesCtx::new(&conn, None);
+        mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
+        let ev = &episodes[0].falsifier_events[0];
+        assert_eq!(ev.no_material_drawdown, Some(false), "the 28 close breaches the 30 line");
+        assert_eq!(ev.lead_time_trading_days, Some(1));
+
+        let conn = mem_conn();
+        store::merge_price_bars(
+            &conn,
+            "GAPU",
+            &bars(&[
+                ("2025-06-02", 50.0),
+                ("2025-06-03", 60.0),
+                ("2025-09-01", 58.0),
+                ("2026-01-15", 32.0),
+                ("2026-06-05", 55.0),
+            ]),
+        )
+        .unwrap();
+        let mut ep = old_episode("GAPU", "2025-06-02T12:00:00+00:00");
+        ep.falsifier_events.push(event());
+        let mut episodes = vec![ep];
+        let mut ctx = SeriesCtx::new(&conn, None);
+        mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
+        let ev = &episodes[0].falsifier_events[0];
+        assert_eq!(
+            ev.no_material_drawdown,
+            Some(true),
+            "32 sits above the 30 line — no fabricated breach off the gap-up entry"
+        );
+        assert!(ev.lead_time_trading_days.is_none());
     }
 
     #[test]
@@ -2800,6 +2986,7 @@ mod tests {
             entry_price: 50.0,
             end_date: "2027-08-04".into(),
             end_price: 50.0 * (1.0 + price_return),
+            anchor_close: Some(50.0),
             price_return,
             total_return,
             total_return_gap: total_return
@@ -2861,6 +3048,35 @@ mod tests {
         // Base error reconstructs the realized price in the authoring basis:
         // 100 × 1.10 = 110 vs base 120.
         assert!((cal.mean_base_signed_error.unwrap() - (110.0 - 120.0) / 120.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn target_calibration_keys_on_the_anchor_close_not_the_entry_gap() {
+        // Anchor-session close 50, a gap-down entry (45), window end 29. From
+        // the decision instant the realized move is −42% — outside the authored
+        // −40% bear edge (60 at spot 100) — while the entry-anchored read
+        // (−35.6%) would have called it inside the band.
+        let mut ep = old_episode("GAP", "2026-08-04T12:00:00+00:00");
+        let mut label = scored_label(29.0 / 45.0 - 1.0, None);
+        label.entry_price = 45.0;
+        label.end_price = 29.0;
+        label.anchor_close = Some(50.0);
+        set_scored(&mut ep, 12, label);
+        let reads = derive_reads(&[ep]);
+        let cal = reads
+            .target_calibration
+            .iter()
+            .find(|t| t.window_months == 12)
+            .unwrap();
+        assert_eq!(cal.scored, 1);
+        assert_eq!(
+            cal.coverage_rate,
+            Some(0.0),
+            "outside the band from the decision instant"
+        );
+        // Base error through the bridge: realized in the authoring basis is
+        // 100 × 29 ⁄ 50 = 58 vs base 120.
+        assert!((cal.mean_base_signed_error.unwrap() - (58.0 - 120.0) / 120.0).abs() < 1e-12);
     }
 
     #[test]
