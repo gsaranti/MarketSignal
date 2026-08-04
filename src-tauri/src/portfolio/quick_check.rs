@@ -1757,6 +1757,7 @@ mod tests {
             quick_basis,
             fund_exposure: None,
             pre_profit: None,
+            hurdle: None,
         }
     }
 
@@ -1791,6 +1792,7 @@ mod tests {
                 dgs10_as_of: Some("2026-07-18".into()),
                 fetched_at: "2026-07-20T00:00:00Z".into(),
             }),
+            outcome: None,
         }
     }
 
@@ -1902,6 +1904,7 @@ mod tests {
                 audit_for("CARRD", Some(basis())),
             ],
             rate_prints: None,
+            outcome: None,
         };
         store::insert_run(&conn, &run).unwrap();
         let mut data = StubData::quiet(195.0, "2026-08-02");

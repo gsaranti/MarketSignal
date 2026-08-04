@@ -43,7 +43,11 @@ use crate::storage;
 /// every new durable local-suite store joins as part of the slice that lands it
 /// (`docs/data-portability.md` §Build-order placement). A v1 archive imports
 /// complete under its own five-entry set (`required_db_entries`).
-pub const FORMAT_VERSION: u32 = 2;
+/// v3 (outcome-learning slice): the `portfolio_outcome_episodes` store (decision
+/// episodes outliving run retention) and the shared `price_bars` cache joined —
+/// the cache moves so imported pending episodes can mature offline. A v2 archive
+/// imports complete at six entries.
+pub const FORMAT_VERSION: u32 = 3;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -53,37 +57,42 @@ const ENC_MAGIC: &[u8; 8] = b"MSDPENC1";
 /// machine, which is what makes report vectors portable at all.
 const REPORT_EMBEDDER_ID: &str = "text-embedding-3-large";
 
-/// The six exported tables, in insert dependency order (reports first, so the
+/// The eight exported tables, in insert dependency order (reports first, so the
 /// vector summaries and snapshots that join on `report_id` land after them).
-const TABLES: [&str; 6] = [
+const TABLES: [&str; 8] = [
     "reports",
     "baseline_snapshots",
     "vector_memory",
     "portfolio_runs",
     "holdings_pulls",
     "portfolio_quick_checks",
+    "portfolio_outcome_episodes",
+    "price_bars",
 ];
 
 /// The tables' zip entry names, same order — what export writes and import
 /// consumes, shared so the two sides can never drift.
-const DB_ENTRY_NAMES: [&str; 6] = [
+const DB_ENTRY_NAMES: [&str; 8] = [
     "db/reports.ndjson",
     "db/baseline_snapshots.ndjson",
     "db/vector_memory.ndjson",
     "db/portfolio_runs.ndjson",
     "db/holdings_pulls.ndjson",
     "db/portfolio_quick_checks.ndjson",
+    "db/portfolio_outcome_episodes.ndjson",
+    "db/price_bars.ndjson",
 ];
 
 /// The db entries an archive's own format version requires — the versioned
 /// closed set (`docs/data-portability.md` §Import flow): a v1 archive predates
-/// the quick-check store, so it is complete at five entries; requiring the
-/// sixth of it would refuse every pre-v2 archive as truncated.
+/// the quick-check store, so it is complete at five entries, and a v2 one
+/// predates the outcome-learning stores, complete at six; requiring a later
+/// format's entries of an older archive would refuse it as truncated.
 fn required_db_entries(format_version: u32) -> &'static [&'static str] {
-    if format_version >= 2 {
-        &DB_ENTRY_NAMES
-    } else {
-        &DB_ENTRY_NAMES[..5]
+    match format_version {
+        v if v >= 3 => &DB_ENTRY_NAMES,
+        2 => &DB_ENTRY_NAMES[..6],
+        _ => &DB_ENTRY_NAMES[..5],
     }
 }
 
@@ -183,6 +192,28 @@ struct QuickCheckRow {
     state_json: String,
 }
 
+/// One outcome decision episode on the wire (`docs/portfolio-analysis.md`
+/// §Outcome learning): durable calibration state that outlives run retention —
+/// an aged-out anchor run cannot regenerate its episodes, so they move whole.
+#[derive(Debug, Serialize, Deserialize)]
+struct OutcomeEpisodeRow {
+    episode_id: String,
+    symbol: String,
+    anchor_at: String,
+    state: String,
+    episode_json: String,
+}
+
+/// One shared price-bar cache row on the wire (`docs/storage.md §Local Analysis
+/// Suite Storage`): public price data, carried so imported pending episodes can
+/// mature offline rather than refetching a year of bars.
+#[derive(Debug, Serialize, Deserialize)]
+struct PriceBarRow {
+    symbol: String,
+    date: String,
+    close: f64,
+}
+
 // ---------------------------------------------------------------------------
 // Command-facing results
 // ---------------------------------------------------------------------------
@@ -255,6 +286,8 @@ pub fn export_archive(
     let runs = read_portfolio_run_rows(&conn)?;
     let pulls = read_holdings_pull_rows(&conn)?;
     let quick_checks = read_quick_check_rows(&conn)?;
+    let episodes = read_outcome_episode_rows(&conn)?;
+    let price_bars = read_price_bar_rows(&conn)?;
     let learnings = vectors.iter().filter(|v| v.kind == "learning").count() as u64;
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -275,6 +308,11 @@ pub fn export_archive(
     row_counts.insert("portfolio_runs".to_string(), runs.len() as u64);
     row_counts.insert("holdings_pulls".to_string(), pulls.len() as u64);
     row_counts.insert("portfolio_quick_checks".to_string(), quick_checks.len() as u64);
+    row_counts.insert(
+        "portfolio_outcome_episodes".to_string(),
+        episodes.len() as u64,
+    );
+    row_counts.insert("price_bars".to_string(), price_bars.len() as u64);
 
     let mut embedders = BTreeMap::new();
     embedders.insert("report".to_string(), REPORT_EMBEDDER_ID.to_string());
@@ -292,13 +330,15 @@ pub fn export_archive(
     // The db/*.ndjson entries join the manifest's checksum inventory alongside
     // the store files, so import can verify every entry — table rows included —
     // before its destructive phase.
-    let db_payloads: [Vec<u8>; 6] = [
+    let db_payloads: [Vec<u8>; 8] = [
         ndjson(&reports)?,
         ndjson(&snapshots)?,
         ndjson(&vectors)?,
         ndjson(&runs)?,
         ndjson(&pulls)?,
         ndjson(&quick_checks)?,
+        ndjson(&episodes)?,
+        ndjson(&price_bars)?,
     ];
 
     let manifest = Manifest {
@@ -480,6 +520,9 @@ pub fn import_archive(
     let run_rows: Vec<PortfolioRunRow> = parse_ndjson(&entries, "db/portfolio_runs.ndjson")?;
     let pull_rows: Vec<HoldingsPullRow> = parse_ndjson(&entries, "db/holdings_pulls.ndjson")?;
     let quick_rows: Vec<QuickCheckRow> = parse_ndjson(&entries, "db/portfolio_quick_checks.ndjson")?;
+    let episode_rows: Vec<OutcomeEpisodeRow> =
+        parse_ndjson(&entries, "db/portfolio_outcome_episodes.ndjson")?;
+    let price_bar_rows: Vec<PriceBarRow> = parse_ndjson(&entries, "db/price_bars.ndjson")?;
 
     // Everything the load will need is decoded and checked HERE, before the
     // destructive phase, so a malformed row can only ever abort an import while
@@ -527,6 +570,24 @@ pub fn import_archive(
             "archive carries {} quick-check rows — the store holds at most one",
             quick_rows.len()
         );
+    }
+    // The outcome stores' schema constraints, mirrored pre-destructively: the
+    // UNIQUE episode_id and the price-bar (symbol, date) primary key.
+    let mut seen_episode_ids = BTreeSet::new();
+    for row in &episode_rows {
+        if !seen_episode_ids.insert(row.episode_id.as_str()) {
+            bail!("archive carries a duplicate outcome episode id {:?}", row.episode_id);
+        }
+    }
+    let mut seen_bar_keys = BTreeSet::new();
+    for row in &price_bar_rows {
+        if !seen_bar_keys.insert((row.symbol.as_str(), row.date.as_str())) {
+            bail!(
+                "archive carries a duplicate price bar for {} on {}",
+                row.symbol,
+                row.date
+            );
+        }
     }
     let mut seen_summary_ids = BTreeSet::new();
     for row in vector_rows.iter().filter(|r| r.kind == "summary") {
@@ -681,6 +742,19 @@ pub fn import_archive(
             params![row.checked_at, row.state_json],
         )?;
     }
+    for row in &episode_rows {
+        tx.execute(
+            "INSERT INTO portfolio_outcome_episodes (episode_id, symbol, anchor_at, state, episode_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![row.episode_id, row.symbol, row.anchor_at, row.state, row.episode_json],
+        )?;
+    }
+    for row in &price_bar_rows {
+        tx.execute(
+            "INSERT INTO price_bars (symbol, date, close) VALUES (?1, ?2, ?3)",
+            params![row.symbol, row.date, row.close],
+        )?;
+    }
     tx.commit()?;
 
     Ok(ImportSummary {
@@ -814,6 +888,40 @@ fn read_quick_check_rows(conn: &Connection) -> Result<Vec<QuickCheckRow>> {
             Ok(QuickCheckRow {
                 checked_at: r.get(0)?,
                 state_json: r.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn read_outcome_episode_rows(conn: &Connection) -> Result<Vec<OutcomeEpisodeRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT episode_id, symbol, anchor_at, state, episode_json
+         FROM portfolio_outcome_episodes ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(OutcomeEpisodeRow {
+                episode_id: r.get(0)?,
+                symbol: r.get(1)?,
+                anchor_at: r.get(2)?,
+                state: r.get(3)?,
+                episode_json: r.get(4)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn read_price_bar_rows(conn: &Connection) -> Result<Vec<PriceBarRow>> {
+    let mut stmt =
+        conn.prepare("SELECT symbol, date, close FROM price_bars ORDER BY symbol, date")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(PriceBarRow {
+                symbol: r.get(0)?,
+                date: r.get(1)?,
+                close: r.get(2)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1165,6 +1273,17 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO portfolio_outcome_episodes (episode_id, symbol, anchor_at, state, episode_json)
+             VALUES ('ep-one', 'AAPL', '2026-07-06T12:00:00Z', 'active', '{\"episode_id\":\"ep-one\"}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO price_bars (symbol, date, close) VALUES ('AAPL', '2026-07-03', 195.25)",
+            [],
+        )
+        .unwrap();
         std::fs::write(paths.archive_dir.join("filed-note.md"), "archived research\n").unwrap();
         std::fs::write(paths.inbox_dir.join("pending-note.txt"), "inbox research\n").unwrap();
         conn.execute(
@@ -1287,6 +1406,24 @@ mod tests {
             )
             .unwrap();
         assert!(state_json.contains("run-one"));
+        // The outcome episode and the price-bar cache ride it too (format v3),
+        // the close surviving the REAL column exactly.
+        let episode_json: String = conn
+            .query_row(
+                "SELECT episode_json FROM portfolio_outcome_episodes WHERE episode_id = 'ep-one'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(episode_json.contains("ep-one"));
+        let close: f64 = conn
+            .query_row(
+                "SELECT close FROM price_bars WHERE symbol = 'AAPL' AND date = '2026-07-03'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(close.to_bits(), 195.25f64.to_bits());
         // markdown_path re-derived against the target's own reports dir, and
         // the body readable through it.
         let markdown_path: String = conn
@@ -1738,6 +1875,90 @@ mod tests {
         let loaded = import_archive(&target, &v1_path, None, false).unwrap();
         assert_eq!(loaded.reports, 2);
         assert_eq!(table_count(&target, "portfolio_quick_checks"), 0);
+    }
+
+    #[test]
+    fn a_v2_archive_without_the_outcome_entries_imports_complete() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None, None).unwrap();
+
+        // Drop the two v3-only entries and their listings. Under the archive's
+        // own (v3) version that is truncation and must refuse…
+        let mut entries = read_archive_entries(&dest);
+        for name in ["db/portfolio_outcome_episodes.ndjson", "db/price_bars.ndjson"] {
+            entries.remove(name);
+        }
+        let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        manifest.files.retain(|f| {
+            f.path != "db/portfolio_outcome_episodes.ndjson" && f.path != "db/price_bars.ndjson"
+        });
+        manifest.row_counts.remove("portfolio_outcome_episodes");
+        manifest.row_counts.remove("price_bars");
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let truncated = source.db_path.parent().unwrap().join("truncated-v3.zip");
+        rebuild_zip(&entries, &truncated);
+        let (_b, target) = temp_store();
+        let err = import_archive(&target, &truncated, None, false).unwrap_err();
+        assert!(err.to_string().contains("missing or not listed"), "{err}");
+
+        // …while a v2 archive is complete at six entries — backward
+        // compatibility by version, never sparse tolerance.
+        manifest.format_version = 2;
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let v2_path = source.db_path.parent().unwrap().join("v2.zip");
+        rebuild_zip(&entries, &v2_path);
+        let (_c, target) = temp_store();
+        let loaded = import_archive(&target, &v2_path, None, false).unwrap();
+        assert_eq!(loaded.reports, 2);
+        assert_eq!(table_count(&target, "portfolio_outcome_episodes"), 0);
+        assert_eq!(table_count(&target, "price_bars"), 0);
+        // The quick-check store — v2's own addition — still rides.
+        assert_eq!(table_count(&target, "portfolio_quick_checks"), 1);
+    }
+
+    #[test]
+    fn duplicate_outcome_rows_are_refused_pre_destructively() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None, None).unwrap();
+
+        // A duplicated episode id — the UNIQUE mirror.
+        let mut entries = read_archive_entries(&dest);
+        let text =
+            String::from_utf8(entries["db/portfolio_outcome_episodes.ndjson"].clone()).unwrap();
+        let doubled = format!("{text}{text}");
+        replace_entry_rechecksummed(
+            &mut entries,
+            "db/portfolio_outcome_episodes.ndjson",
+            doubled.into_bytes(),
+        );
+        let dup_path = source.db_path.parent().unwrap().join("dup-episode.zip");
+        rebuild_zip(&entries, &dup_path);
+        let (_b, target) = temp_store();
+        let err = import_archive(&target, &dup_path, None, false).unwrap_err();
+        assert!(err.to_string().contains("duplicate outcome episode"), "{err}");
+        assert_eq!(table_count(&target, "portfolio_outcome_episodes"), 0);
+
+        // A duplicated (symbol, date) bar — the primary-key mirror.
+        let mut entries = read_archive_entries(&dest);
+        let text = String::from_utf8(entries["db/price_bars.ndjson"].clone()).unwrap();
+        let doubled = format!("{text}{text}");
+        replace_entry_rechecksummed(&mut entries, "db/price_bars.ndjson", doubled.into_bytes());
+        let dup_path = source.db_path.parent().unwrap().join("dup-bar.zip");
+        rebuild_zip(&entries, &dup_path);
+        let (_c, target) = temp_store();
+        let err = import_archive(&target, &dup_path, None, false).unwrap_err();
+        assert!(err.to_string().contains("duplicate price bar"), "{err}");
+        assert_eq!(table_count(&target, "price_bars"), 0);
     }
 
     #[test]

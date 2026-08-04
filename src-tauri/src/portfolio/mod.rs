@@ -21,6 +21,7 @@ pub mod dossier;
 pub mod engine;
 pub mod fund;
 pub mod job;
+pub mod outcome;
 pub mod pipeline;
 pub mod pre_profit;
 pub mod quick_check;
@@ -1057,6 +1058,14 @@ pub struct HoldingAudit {
     /// (`#[serde(default)]`).
     #[serde(default)]
     pub pre_profit: Option<pre_profit::PreProfitOverlay>,
+    /// The full hurdle read behind the verdict's three-state `dead_money` field —
+    /// the scenario total-return distribution plus the tier-scaled hurdle rate,
+    /// persisted so a decision episode's calibration snapshot can freeze the
+    /// hurdle inputs (`docs/portfolio-analysis.md` §Outcome learning). `None` on
+    /// not-rated / abstained / role-risk-only holdings and pre-field runs
+    /// (`#[serde(default)]`).
+    #[serde(default)]
+    pub hurdle: Option<engine::HurdleRead>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the
@@ -1097,6 +1106,13 @@ pub struct PortfolioRun {
     /// the field existed (`#[serde(default)]`).
     #[serde(default)]
     pub rate_prints: Option<RatePrints>,
+    /// This run's outcome-learning records — appended / extended episodes, this
+    /// run's alignment tags, newly matured window labels, and the derived
+    /// scorecard reads (`docs/portfolio-analysis.md` §Outcome learning;
+    /// `docs/portfolio-workflow.md` §Step 7a, §Step 8). `None` on runs persisted
+    /// before the field existed (`#[serde(default)]`).
+    #[serde(default)]
+    pub outcome: Option<outcome::OutcomeRecords>,
 }
 
 /// The persisted run-level rate prints (see [`PortfolioRun::rate_prints`]). The

@@ -57,6 +57,134 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+    // The outcome-learning decision-episode store (`docs/portfolio-analysis.md
+    // §Outcome learning`) — persisted **independent of the 10-run retention** (a
+    // 12-month outcome window can outlive it): active episodes are never evicted;
+    // matured ones freeze under their own cap. Exported by data portability
+    // (format v3); the UNIQUE episode_id is mirrored by an import pre-check.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS portfolio_outcome_episodes (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            episode_id   TEXT NOT NULL UNIQUE,
+            symbol       TEXT NOT NULL,
+            anchor_at    TEXT NOT NULL,
+            state        TEXT NOT NULL,
+            episode_json TEXT NOT NULL
+        )",
+        [],
+    )?;
+    // The shared price-bar cache (`docs/storage.md §Local Analysis Suite Storage`)
+    // — split-adjusted daily closes keyed by symbol, the label-time strict rule's
+    // read/refresh surface. Exported by data portability (format v3) so imported
+    // pending episodes can mature offline; the (symbol, date) primary key is
+    // mirrored by an import pre-check.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS price_bars (
+            symbol TEXT NOT NULL,
+            date   TEXT NOT NULL,
+            close  REAL NOT NULL,
+            PRIMARY KEY (symbol, date)
+        )",
+        [],
+    )?;
+    Ok(())
+}
+
+// ---- Outcome-episode store (`docs/portfolio-analysis.md §Outcome learning`) ------
+
+/// Load every decision episode, active and matured, oldest anchor first. Bounded by
+/// the matured archive's cap plus the active set (~a year of decision changes), so
+/// a whole-store load stays a modest local parse.
+pub fn load_episodes(
+    conn: &Connection,
+) -> Result<Vec<crate::portfolio::outcome::DecisionEpisode>> {
+    let mut stmt = conn.prepare(
+        "SELECT episode_json FROM portfolio_outcome_episodes ORDER BY anchor_at ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(serde_json::from_str(&row?)?);
+    }
+    Ok(out)
+}
+
+/// Upsert one episode by its stable `episode_id` (open, extend, tag, and label
+/// mutations all land through here).
+pub fn save_episode(
+    conn: &Connection,
+    episode: &crate::portfolio::outcome::DecisionEpisode,
+) -> Result<()> {
+    let state = match episode.state {
+        crate::portfolio::outcome::EpisodeState::Active => "active",
+        crate::portfolio::outcome::EpisodeState::Matured => "matured",
+    };
+    let episode_json = serde_json::to_string(episode)?;
+    conn.execute(
+        "INSERT INTO portfolio_outcome_episodes (episode_id, symbol, anchor_at, state, episode_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(episode_id) DO UPDATE SET
+             symbol = excluded.symbol,
+             anchor_at = excluded.anchor_at,
+             state = excluded.state,
+             episode_json = excluded.episode_json",
+        params![episode.episode_id, episode.symbol, episode.anchor_at, state, episode_json],
+    )?;
+    Ok(())
+}
+
+/// Prune **matured** episodes beyond the newest `keep` (by anchor), oldest first —
+/// the matured archive's cap. Active episodes are never evicted: one still
+/// accruing labels is age-bounded, not count-capped.
+pub fn prune_matured_episodes(conn: &Connection, keep: u32) -> Result<()> {
+    conn.execute(
+        "DELETE FROM portfolio_outcome_episodes
+         WHERE state = 'matured' AND id NOT IN (
+             SELECT id FROM portfolio_outcome_episodes
+             WHERE state = 'matured'
+             ORDER BY anchor_at DESC, id DESC
+             LIMIT ?1
+         )",
+        [keep],
+    )?;
+    Ok(())
+}
+
+// ---- Price-bar cache (`docs/storage.md §Local Analysis Suite Storage`) ----------
+
+/// A symbol's cached daily closes, oldest first. Symbols are stored uppercase.
+pub fn load_price_bars(
+    conn: &Connection,
+    symbol: &str,
+) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+    let mut stmt =
+        conn.prepare("SELECT date, close FROM price_bars WHERE symbol = ?1 ORDER BY date ASC")?;
+    let rows = stmt.query_map([symbol.to_ascii_uppercase()], |row| {
+        Ok(crate::portfolio::engine::DatedValue {
+            date: row.get(0)?,
+            value: row.get(1)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// Merge freshly fetched bars into a symbol's cache — a shared date takes the
+/// fresh close (a split-adjusted refetch re-bases history, so newer wins).
+pub fn merge_price_bars(
+    conn: &Connection,
+    symbol: &str,
+    bars: &[crate::portfolio::engine::DatedValue],
+) -> Result<()> {
+    let key = symbol.to_ascii_uppercase();
+    let mut stmt = conn
+        .prepare("INSERT OR REPLACE INTO price_bars (symbol, date, close) VALUES (?1, ?2, ?3)")?;
+    for bar in bars {
+        stmt.execute(params![key, bar.date, bar.value])?;
+    }
     Ok(())
 }
 
@@ -343,8 +471,10 @@ mod tests {
                 quick_basis: None,
                 fund_exposure: None,
                 pre_profit: None,
+                hurdle: None,
             }],
             rate_prints: None,
+            outcome: None,
         }
     }
 
@@ -535,6 +665,100 @@ mod tests {
         let baseline = latest_run(&conn).unwrap().unwrap();
         assert_eq!(baseline, run, "the run snapshot is untouched by a pull");
         assert_eq!(baseline.holdings.positions[0].quantity, 100.0);
+    }
+
+    fn sample_episode(episode_id: &str, symbol: &str, anchor_at: &str) -> crate::portfolio::outcome::DecisionEpisode {
+        use crate::portfolio::outcome::*;
+        DecisionEpisode {
+            episode_id: episode_id.into(),
+            symbol: symbol.into(),
+            anchor_run_id: "run-1".into(),
+            anchor_at: anchor_at.into(),
+            intrinsic_vintage: anchor_at.into(),
+            vintage_fresh: true,
+            action_source: Default::default(),
+            position_change: PositionChange::New,
+            sector: SectorIdentity::resolve(Some("Technology")),
+            opened: vec![OpenReason::Debut],
+            body: EpisodeBody::RoleRiskOnly(RoleRiskEpisode {
+                action: crate::portfolio::Action::Hold,
+                target_weight_low: Some(0.02),
+                target_weight_high: Some(0.05),
+                degraded_inputs: vec![],
+            }),
+            observations: vec![],
+            alignment: None,
+            falsifier_events: vec![],
+            labels: pending_labels(
+                chrono::NaiveDate::parse_from_str(&anchor_at[..10], "%Y-%m-%d").unwrap(),
+            ),
+            state: EpisodeState::Active,
+            self_correction_count: 0,
+        }
+    }
+
+    #[test]
+    fn episodes_round_trip_and_upsert_by_episode_id() {
+        let conn = mem();
+        let mut ep = sample_episode("ep-1", "AAPL", "2026-08-04T12:00:00+00:00");
+        save_episode(&conn, &ep).unwrap();
+        assert_eq!(load_episodes(&conn).unwrap(), vec![ep.clone()]);
+        // An upsert replaces in place — no duplicate row.
+        ep.state = crate::portfolio::outcome::EpisodeState::Matured;
+        ep.alignment = Some(crate::portfolio::outcome::ObservedNetAlignment::Aligned);
+        save_episode(&conn, &ep).unwrap();
+        let back = load_episodes(&conn).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0], ep);
+    }
+
+    #[test]
+    fn matured_pruning_never_evicts_an_active_episode() {
+        let conn = mem();
+        // Three matured (oldest first) + one active older than all of them.
+        save_episode(&conn, &{
+            let mut e = sample_episode("ep-active", "GONE", "2025-01-01T00:00:00+00:00");
+            e.state = crate::portfolio::outcome::EpisodeState::Active;
+            e
+        })
+        .unwrap();
+        for (id, at) in [
+            ("ep-a", "2026-01-01T00:00:00+00:00"),
+            ("ep-b", "2026-02-01T00:00:00+00:00"),
+            ("ep-c", "2026-03-01T00:00:00+00:00"),
+        ] {
+            let mut e = sample_episode(id, "AAPL", at);
+            e.state = crate::portfolio::outcome::EpisodeState::Matured;
+            save_episode(&conn, &e).unwrap();
+        }
+        prune_matured_episodes(&conn, 2).unwrap();
+        let ids: Vec<String> = load_episodes(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.episode_id)
+            .collect();
+        // The oldest matured fell; the active row — older still — survives.
+        assert_eq!(ids, vec!["ep-active", "ep-b", "ep-c"]);
+    }
+
+    #[test]
+    fn price_bars_merge_by_date_and_load_oldest_first() {
+        let conn = mem();
+        let bar = |date: &str, close: f64| crate::portfolio::engine::DatedValue {
+            date: date.into(),
+            value: close,
+        };
+        merge_price_bars(&conn, "aapl", &[bar("2026-08-03", 195.0), bar("2026-08-01", 193.0)])
+            .unwrap();
+        // A re-fetch re-bases a shared date (split adjustment): newer wins.
+        merge_price_bars(&conn, "AAPL", &[bar("2026-08-03", 19.5), bar("2026-08-04", 19.6)])
+            .unwrap();
+        let bars = load_price_bars(&conn, "AAPL").unwrap();
+        assert_eq!(
+            bars,
+            vec![bar("2026-08-01", 193.0), bar("2026-08-03", 19.5), bar("2026-08-04", 19.6)]
+        );
+        assert!(load_price_bars(&conn, "MSFT").unwrap().is_empty());
     }
 
     #[test]

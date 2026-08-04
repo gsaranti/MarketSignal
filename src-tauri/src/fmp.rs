@@ -3563,6 +3563,13 @@ const FMP_BALANCE_SHEET_PATH: &str = "/balance-sheet-statement";
 const FMP_CASH_FLOW_PATH: &str = "/cash-flow-statement";
 const FMP_ANALYST_ESTIMATES_PATH: &str = "/analyst-estimates";
 const FMP_DIVIDENDS_PATH: &str = "/dividends";
+/// The company profile — the outcome episodes' sector-label source
+/// (`docs/portfolio-analysis.md §Outcome learning` — the entry-stamped sector
+/// identity).
+const FMP_PROFILE_PATH: &str = "/profile";
+/// Dividend rows requested for the label-time history pull — a monthly payer over
+/// a 13-month window needs ~15; the margin covers specials.
+const DIVIDEND_HISTORY_LIMIT: &str = "60";
 
 /// The dividend-history gap's stable prefix ([`FmpDataSource::fetch_ttm_dividends`]):
 /// the quick check matches it to tell a failed retrieval (gap recorded, keep the
@@ -3816,6 +3823,50 @@ impl FmpDataSource {
             Disposition::Gap(reason) => {
                 gaps.push(format!("{DIVIDENDS_GAP_PREFIX} ({})", reason.as_str()));
                 None
+            }
+        }
+    }
+
+    /// The profile's sector label for a stock — the outcome episodes'
+    /// entry-stamped sector identity (`docs/portfolio-analysis.md §Outcome
+    /// learning`). Fail-soft: any gate, transport failure, or unreadable body
+    /// returns `None`, which the caller types `sector-unscorable` — never a
+    /// guessed benchmark.
+    pub fn fetch_profile_sector(&self, symbol: &str) -> Option<String> {
+        match self.suite_get(
+            "company-profile",
+            symbol,
+            "Company profile (sector)",
+            FMP_PROFILE_PATH,
+            &[("symbol", symbol)],
+        ) {
+            Disposition::Value(value) => profile_sector_from_value(&value),
+            Disposition::Gap(_) => None,
+        }
+    }
+
+    /// The dated per-share dividend history within `[from, to]` — the outcome
+    /// labels' total-return leg (`docs/portfolio-analysis.md §Outcome learning`:
+    /// the window's cash dividends summed without reinvestment). Strict like the
+    /// TTM read: a malformed or drifted body is `Err` (the caller records the
+    /// labeled price-only fallback), never a silent zero that would read as a
+    /// dividend elimination.
+    pub fn fetch_dividend_history(
+        &self,
+        symbol: &str,
+        from: chrono::NaiveDate,
+        to: chrono::NaiveDate,
+    ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+        match self.suite_get(
+            "company-dividends-history",
+            symbol,
+            "Dividend history (outcome labels)",
+            FMP_DIVIDENDS_PATH,
+            &[("symbol", symbol), ("limit", DIVIDEND_HISTORY_LIMIT)],
+        ) {
+            Disposition::Value(value) => dividend_history_from_value(&value, from, to),
+            Disposition::Gap(reason) => {
+                anyhow::bail!("FMP dividend history unavailable ({})", reason.as_str())
             }
         }
     }
@@ -4348,6 +4399,67 @@ fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<O
     Ok(any.then_some(sum))
 }
 
+/// Extract the sector label from a `/profile` body (array-of-one or bare object).
+/// Pure; `None` on anything malformed, absent, or blank — the caller types the
+/// identity `sector-unscorable`.
+fn profile_sector_from_value(value: &Value) -> Option<String> {
+    let obj = value
+        .as_array()
+        .and_then(|a| a.first())
+        .or(Some(value))
+        .filter(|o| o.is_object())?;
+    obj.get("sector")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// Shape a `/dividends` body into dated per-share amounts within `[from, to]`,
+/// oldest first. Strict like [`ttm_dividends_from_value`]: an unreadable row is
+/// `Err`, never a silent skip — a dropped in-window payment would understate the
+/// total-return label without a trace. Pure.
+fn dividend_history_from_value(
+    value: &Value,
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+    let Some(rows) = value.as_array() else {
+        anyhow::bail!("non-array body — malformed or drifted response");
+    };
+    let mut out: Vec<crate::portfolio::engine::DatedValue> = Vec::new();
+    for row in rows {
+        let Some(date) = row.get("date").and_then(Value::as_str) else {
+            anyhow::bail!("a dividend row carried no date — malformed or drifted response");
+        };
+        let Ok(parsed) = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
+            anyhow::bail!(
+                "a dividend row carried a non-ISO date {date:?} — malformed or drifted response"
+            );
+        };
+        // Window on the PARSED date, never the source text (non-zero-padded
+        // fields compare lexicographically outside the window).
+        if parsed < from || parsed > to {
+            continue;
+        }
+        let amount = row
+            .get("adjDividend")
+            .or_else(|| row.get("dividend"))
+            .and_then(Value::as_f64);
+        let Some(a) = amount else {
+            anyhow::bail!(
+                "an in-window dividend row carried no numeric amount — malformed or drifted response"
+            );
+        };
+        out.push(crate::portfolio::engine::DatedValue {
+            date: parsed.format("%Y-%m-%d").to_string(),
+            value: a,
+        });
+    }
+    out.sort_by(|a, b| a.date.cmp(&b.date));
+    Ok(out)
+}
+
 /// Fill a [`crate::portfolio::fund::FundData`] from an `etf/info` body (array-of-one
 /// or bare object). The expense ratio arrives in **percent units** (0.09 = 9 bps)
 /// and normalizes to a decimal ratio at this seam — live-verified 2026-07-16
@@ -4677,6 +4789,48 @@ mod suite_tests {
         let v: Value =
             serde_json::from_str(r#"[{"date":"2020-01-10","adjDividend":"junk"}]"#).unwrap();
         assert_eq!(ttm_dividends_from_value(&v, today).unwrap(), None);
+    }
+
+    #[test]
+    fn dividend_history_windows_sorts_and_stays_strict() {
+        let from = chrono::NaiveDate::from_ymd_opt(2025, 6, 3).unwrap();
+        let to = chrono::NaiveDate::from_ymd_opt(2026, 6, 3).unwrap();
+        let body = r#"[
+          {"date":"2026-08-10","adjDividend":0.27},
+          {"date":"2026-02-10","dividend":0.25},
+          {"date":"2025-11-10","adjDividend":0.24},
+          {"date":"2025-01-10","adjDividend":0.23}
+        ]"#;
+        let v: Value = serde_json::from_str(body).unwrap();
+        let rows = dividend_history_from_value(&v, from, to).unwrap();
+        // Only the two in-window rows, oldest first.
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].date, "2025-11-10");
+        assert!((rows[1].value - 0.25).abs() < 1e-12);
+        // Strict like the TTM read: an unreadable in-window amount is Err (the
+        // caller records the labeled price-only fallback), never a silent zero.
+        let bad: Value =
+            serde_json::from_str(r#"[{"date":"2025-11-10","adjDividend":"0.24"}]"#).unwrap();
+        assert!(dividend_history_from_value(&bad, from, to).is_err());
+        // An empty body is a genuine non-payer window.
+        let empty: Value = serde_json::from_str("[]").unwrap();
+        assert!(dividend_history_from_value(&empty, from, to).unwrap().is_empty());
+    }
+
+    #[test]
+    fn profile_sector_reads_array_of_one_or_bare_object_fail_soft() {
+        let v: Value =
+            serde_json::from_str(r#"[{"symbol":"AAPL","sector":"Technology"}]"#).unwrap();
+        assert_eq!(profile_sector_from_value(&v).as_deref(), Some("Technology"));
+        let bare: Value = serde_json::from_str(r#"{"sector":"Energy"}"#).unwrap();
+        assert_eq!(profile_sector_from_value(&bare).as_deref(), Some("Energy"));
+        // Absent, blank, or malformed → None (typed sector-unscorable upstream).
+        let blank: Value = serde_json::from_str(r#"[{"sector":"  "}]"#).unwrap();
+        assert_eq!(profile_sector_from_value(&blank), None);
+        let missing: Value = serde_json::from_str(r#"[{"symbol":"AAPL"}]"#).unwrap();
+        assert_eq!(profile_sector_from_value(&missing), None);
+        let junk: Value = serde_json::from_str("42").unwrap();
+        assert_eq!(profile_sector_from_value(&junk), None);
     }
 
     #[test]

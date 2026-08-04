@@ -727,6 +727,7 @@ Watch the 2s10s and the labor prints.
             },
             audit: vec![],
             rate_prints: None,
+            outcome: None,
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let prior = prior_verdict_for(&conn, "aapl").expect("case-insensitive match");
@@ -784,8 +785,10 @@ Watch the 2s10s and the labor prints.
                 quick_basis: None,
                 fund_exposure: None,
                 pre_profit: None,
+                hurdle: None,
             }],
             rate_prints: None,
+            outcome: None,
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let prior = prior_verdict_for(&conn, "AAPL").expect("verdict present");

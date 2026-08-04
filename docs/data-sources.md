@@ -600,7 +600,7 @@ Equity grading is fully covered; the fund path degrades, since constituent look-
 
 | Endpoint path | Cardinality | Portfolio Analysis use |
 | --- | --- | --- |
-| `profile` | per-holding | sector / industry / **beta** / description — classification + risk input |
+| `profile` | per-holding | sector / industry / **beta** / description — classification + risk input; as-built the wired consumer is the outcome episodes' **entry-stamped sector identity** (one fail-soft sector read per fresh-passed stock, mapped to its SPDR benchmark — [§Stooq](#stooq); [portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)) |
 | `income-statement` (+ `-ttm`), `balance-sheet-statement`, `cash-flow-statement` | per-holding | core financial statements — engine fundamentals: the quarterly income prints feed the **TTM statement basis** (four-quarter sums; income/cash-flow TTM derived from the quarterly rows, not a separate `-ttm` call) and the anchor window's trailing driver, the latest **quarterly balance sheet** (one light call) supplies total debt + stockholders' equity ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)) + the pre-profit overlay's operating-income eligibility, liquid resources, cash burn / runway, capex intensity, gross-margin progression, and split-adjusted diluted-share change; re-pulled by the quick check on a fresh filing ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)) |
 | `key-metrics`, `ratios` (+ `…-ttm`) | per-holding | valuation / quality / leverage / margin ratios |
 | `financial-scores` | per-holding | Altman Z + Piotroski → risk / quality forensic input |

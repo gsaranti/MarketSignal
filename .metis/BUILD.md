@@ -610,10 +610,15 @@ built.** The load-bearing decisions:
   caps Low, the letter and targets never move. The full record rides
   `HoldingAudit.pre_profit` (boundary-epsilon-tolerant thresholds; carried
   whole by the selective carry; retained through abstention like the standing
-  ledger), and statement canonicalization is a **shared policy**: the overlay
-  and the TTM basis both sort (period_end, filing_date) descending + dedup,
-  so a served-twice restatement resolves to the latest filing, never wire
-  order. **Outcome
+  ledger), and statement canonicalization is a **shared policy** with a named
+  home — `engine::canonicalize_statements`, applied in place at the
+  `dossier::apply_ttm_statement_basis` choke point (2026-08-04, `eb9295c`), so
+  every statement-consuming engine read — the TTM basis, the driver ladder's
+  growth-clamp trailing prints and share basis, the anchor windows — sees
+  both quarterly statement vecs sorted (period_end, filing_date) descending +
+  period-end-deduped, and a served-twice restatement resolves to the latest
+  filing, never wire order (`pre_profit::statement_inputs` keeps its local
+  sort — order-independence there is a test-pinned standalone contract). **Outcome
   learning** records
   recommendation-state-keyed decision episodes (matured archive +
   calibration-feature snapshot) under engine-computed labels — total-return
@@ -759,11 +764,7 @@ unbuilt (the ledger persists only at run end), and only the **ledger legs
 of the 6g validator** exist — the metric-level input delta / what-changed
 attribution validator remains designed, owned by no shipped slice.
 
-Watches and deferrals: the **target-engine driver ladder still reads raw
-quarterly-income order** (`engine.rs` ~1522 — the growth-clamp trailing
-prints and share basis; the anchor join is date-keyed) — the one remaining
-instance of the wire-order class the pre-profit slice canonicalized, a named
-unscheduled parity cleanup (Codex round-4 note). **Stooq now serves a
+Watches and deferrals: **Stooq now serves a
 JS-PoW interstitial to non-JS clients** (observed 2026-08-02 during the FMP light-EOD desk probe, which
 closed the adjustment-basis question — FMP's basis is Stooq's exact
 split-adjusted dividend-unadjusted convention —

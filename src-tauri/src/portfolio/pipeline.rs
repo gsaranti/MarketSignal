@@ -164,6 +164,7 @@ pub fn analyze_holding(
         quick_basis: None,
         fund_exposure: fund_exposure.clone(),
         pre_profit,
+        hurdle: None,
     };
     let abstain = |reason: String, metrics, meta, pre_profit| {
         let verdict = HoldingVerdict {
@@ -484,6 +485,10 @@ pub fn analyze_holding(
         quick_basis: engine_output.quick_basis.clone(),
         fund_exposure: fund_exposure.clone(),
         pre_profit: pre_profit_overlay,
+        // The full hurdle read persists so a decision episode's calibration
+        // snapshot can freeze the hurdle inputs (`docs/portfolio-analysis.md`
+        // §Outcome learning).
+        hurdle: Some(engine_output.hurdle.clone()),
     };
     Ok((verdict, audit_record))
 }
