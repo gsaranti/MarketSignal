@@ -21,6 +21,7 @@ use crate::local_model::{options, ChatMessage, ChatRequest, LocalModelClient, St
 use crate::portfolio::dossier::HoldingDossier;
 use crate::portfolio::engine::{self, EngineOutput, EngineVerdict, LedgerEvaluation, RateAnchors};
 use crate::portfolio::fund::{self, FundEngineVerdict, RoleRiskReadout};
+use crate::portfolio::pre_profit::{self, PreProfitOverlay};
 use crate::portfolio::{
     interpretation_schema, role_risk_interpretation_schema, Action, ActionSource, ClosedCondition,
     ConditionEvalState, ConditionRole, Conviction, CrossingOutcome, ExposureWeight,
@@ -69,6 +70,10 @@ pub struct InterpretationInput<'a> {
     /// The engine's evaluation of the prior thesis ledger's quantitative conditions
     /// (`None` on a debut — no prior ledger to evaluate).
     pub ledger_eval: Option<&'a LedgerEvaluation>,
+    /// The finalized pre-profit execution / financing overlay — present only when
+    /// the stock actually entered it (`docs/portfolio-workflow.md` §Step 6f: the
+    /// overlay renders with its rule-bounded conviction ceiling and lean set).
+    pub pre_profit: Option<&'a PreProfitOverlay>,
 }
 
 /// What the `role_risk_only` interpretation reads: the dossier plus the engine's
@@ -146,7 +151,7 @@ pub fn analyze_holding(
         .fund
         .as_ref()
         .map(|f| crate::portfolio::fund::exposure_basis(&f.fund));
-    let audit = |metrics, target_meta, ledger_audit| HoldingAudit {
+    let audit = |metrics, target_meta, ledger_audit, pre_profit| HoldingAudit {
         symbol: symbol.clone(),
         metrics,
         sources: dossier.sources.clone(),
@@ -158,8 +163,9 @@ pub fn analyze_holding(
         ledger_audit,
         quick_basis: None,
         fund_exposure: fund_exposure.clone(),
+        pre_profit,
     };
-    let abstain = |reason: String, metrics, meta| {
+    let abstain = |reason: String, metrics, meta, pre_profit| {
         let verdict = HoldingVerdict {
             symbol: symbol.clone(),
             asset_class,
@@ -173,7 +179,10 @@ pub fn analyze_holding(
             analyzed_at: None,
             action_source: ActionSource::ModelChosen,
         };
-        Ok((verdict, audit(metrics, meta, None)))
+        // An abstaining stock still records its overlay (fresh statement leg +
+        // carried observation history) — engine-only state, no model dependency, so
+        // the history survives an abstention like the standing ledger does.
+        Ok((verdict, audit(metrics, meta, None, pre_profit)))
     };
 
     // Eligibility: a non-equity class is never given a fabricated grade.
@@ -189,7 +198,7 @@ pub fn analyze_holding(
             analyzed_at: None,
             action_source: ActionSource::ModelChosen,
         };
-        return Ok((verdict, audit(Default::default(), None, None)));
+        return Ok((verdict, audit(Default::default(), None, None, None)));
     }
 
     // Eligibility: a net-short position is a direction the prescriptive layer doesn't
@@ -211,12 +220,13 @@ pub fn analyze_holding(
             analyzed_at: None,
             action_source: ActionSource::ModelChosen,
         };
-        return Ok((verdict, audit(Default::default(), None, None)));
+        return Ok((verdict, audit(Default::default(), None, None, None)));
     }
 
     // The deterministic engine stage, per branch: the equity engine for a stock, the
     // reduced fund computation (strategy-routed at loop time) for a fund
     // (`docs/portfolio-workflow.md` §Step 6b).
+    let mut pre_profit_overlay: Option<PreProfitOverlay> = None;
     let engine_output = if matches!(
         asset_class,
         crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
@@ -227,6 +237,7 @@ pub fn analyze_holding(
                  input is missing"
                     .to_string(),
                 Default::default(),
+                None,
                 None,
             );
         };
@@ -241,7 +252,7 @@ pub fn analyze_holding(
         match fund::analyze_fund(&inputs) {
             FundEngineVerdict::Priced(out) => out,
             FundEngineVerdict::InsufficientEvidence(reason) => {
-                return abstain(reason, Default::default(), None);
+                return abstain(reason, Default::default(), None, None);
             }
             FundEngineVerdict::RoleRiskOnly(readout) => {
                 // Evaluate the prior fund ledger's quantitative conditions against
@@ -319,24 +330,41 @@ pub fn analyze_holding(
                     analyzed_at: None,
                     action_source: ActionSource::ModelChosen,
                 };
-                return Ok((verdict, audit(Default::default(), None, Some(ledger_audit))));
+                return Ok((verdict, audit(Default::default(), None, Some(ledger_audit), None)));
             }
         }
     } else {
+        // The pre-profit execution / financing overlay's statement leg + observation
+        // merge (`docs/portfolio-workflow.md` §Step 6b / §Step 6e — computed in one
+        // place as-built, since the dormant research producer supplies no candidate
+        // rows between the two seams). Computed for every stock: the eligibility
+        // result persists even when the stock does not enter.
+        pre_profit_overlay = Some(pre_profit::compute_overlay(
+            &dossier.financials,
+            dossier.prior_pre_profit.as_ref(),
+            Vec::new(),
+        ));
         match engine::analyze(&dossier.financials, rates) {
             EngineVerdict::Analyzed(out) => out,
             EngineVerdict::InsufficientEvidence(reason) => {
-                return abstain(reason, Default::default(), None);
+                return abstain(reason, Default::default(), None, pre_profit_overlay);
             }
         }
     };
 
     // The engine bounds the feasible action set from engine-known inputs before the
-    // model picks a rung (`docs/portfolio-analysis.md` §Starting parameters).
+    // model picks a rung (`docs/portfolio-analysis.md` §Starting parameters) — the
+    // pre-profit overlay's action rules join only when the stock actually entered
+    // the overlay (a priced fund carries none).
+    let overlay_rules = pre_profit_overlay
+        .as_ref()
+        .filter(|o| o.is_eligible())
+        .map(|o| &o.consequences);
     let feasible = engine::feasible_actions(
         engine_output.grade,
         &engine_output.hurdle,
         current_weight.unwrap_or(0.0),
+        overlay_rules,
     );
 
     // Evaluate the prior ledger's quantitative falsifiers and triggers against this
@@ -364,6 +392,7 @@ pub fn analyze_holding(
             distilled: &distilled,
             feasible: &feasible,
             ledger_eval: ledger_eval.as_ref(),
+            pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
         })
         .context("interpreting the holding")?;
     // Defense in depth behind the schema constraint: an action outside the
@@ -374,6 +403,21 @@ pub fn analyze_holding(
             interpretation.action,
             feasible
         );
+    }
+    // The overlay's engine-matched conviction ceiling binds after interpretation —
+    // the app, not the model, owns the final value (`docs/portfolio-workflow.md`
+    // §Step 6g; a plain min while no raise machinery exists). Defense in depth
+    // behind the narrowed schema enum; a clamp that actually lowered the value is
+    // recorded on the overlay so the audit can reconstruct it.
+    let ceiling = pre_profit_overlay
+        .as_ref()
+        .filter(|o| o.is_eligible())
+        .and_then(|o| o.consequences.conviction_ceiling);
+    let (conviction, clamped) = pre_profit::clamp_conviction(interpretation.conviction, ceiling);
+    if clamped {
+        if let Some(overlay) = pre_profit_overlay.as_mut() {
+            overlay.clamped_from = Some(interpretation.conviction);
+        }
     }
 
     // The 6g ledger seam: validate the rewrite and stamp the engine's scenario
@@ -400,7 +444,7 @@ pub fn analyze_holding(
         sub_scores: engine_output.sub_scores,
         action: interpretation.action,
         action_sizing,
-        conviction: interpretation.conviction,
+        conviction,
         horizon_outlook: interpretation.horizon_outlook,
         price_targets: engine_output.price_targets.clone(),
         price_target_rationale: interpretation.price_target_rationale,
@@ -439,6 +483,7 @@ pub fn analyze_holding(
         ledger_audit: Some(ledger_audit),
         quick_basis: engine_output.quick_basis.clone(),
         fund_exposure: fund_exposure.clone(),
+        pre_profit: pre_profit_overlay,
     };
     Ok((verdict, audit_record))
 }
@@ -1364,6 +1409,10 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
          weak exit evidence.\n",
     );
 
+    if let Some(overlay) = input.pre_profit {
+        p.push_str(&pre_profit_prompt_section(overlay));
+    }
+
     p.push_str("\nALLOWED ACTIONS (the engine-bounded feasible set — choose within it): ");
     let allowed: Vec<&str> = input.feasible.iter().map(Action::as_kebab).collect();
     p.push_str(&allowed.join(", "));
@@ -1452,6 +1501,97 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
 
 fn opt(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.3}")).unwrap_or_else(|| "(gap)".to_string())
+}
+
+/// Render the finalized pre-profit execution / financing overlay for an eligible
+/// stock's interpretation prompt (`docs/portfolio-workflow.md` §Step 6f): the
+/// engine's states and matched rules, the rule-bounded conviction ceiling the model
+/// must interpret beneath, and — under severe deterioration — the engine-provided
+/// exit-family lean set.
+fn pre_profit_prompt_section(o: &PreProfitOverlay) -> String {
+    use crate::portfolio::pre_profit::{ConvictionCeiling, FinancingState};
+    let i = &o.statement_inputs;
+    let mut p = String::new();
+    p.push_str(
+        "\nPRE-PROFIT EXECUTION / FINANCING OVERLAY (deterministic — conviction / risk / \
+         action context, never a grade component; every number below is engine-computed):\n",
+    );
+    let financing = match o.financing_state {
+        FinancingState::NotBurning => "not-burning (TTM free cash flow non-negative)".to_string(),
+        FinancingState::Unscorable => "unscorable (a required input is missing)".to_string(),
+        state => format!(
+            "{} (runway {} months; liquid resources {}, TTM burn {})",
+            match state {
+                FinancingState::Adequate => "adequate",
+                FinancingState::Watch => "watch",
+                _ => "constrained",
+            },
+            i.runway_months
+                .map(|m| format!("{m:.1}"))
+                .unwrap_or_else(|| "(gap)".to_string()),
+            opt(i.liquid_resources),
+            opt(i.ttm_cash_burn),
+        ),
+    };
+    p.push_str(&format!("- financing state: {financing}\n"));
+    p.push_str(&format!(
+        "- gross margin (latest 2q avg): {} (change vs preceding 2q: {})\n",
+        i.gross_margin_recent_2q
+            .map(|m| format!("{:.1}%", m * 100.0))
+            .unwrap_or_else(|| "(gap)".to_string()),
+        i.gross_margin_change_2q
+            .map(|c| format!("{:+.1}pp", c * 100.0))
+            .unwrap_or_else(|| "(gap)".to_string()),
+    ));
+    p.push_str(&format!(
+        "- diluted shares YoY (split-adjusted): {}\n",
+        i.diluted_share_change_yoy
+            .map(|c| format!("{:+.1}%", c * 100.0))
+            .unwrap_or_else(|| "(gap)".to_string()),
+    ));
+    p.push_str(&format!(
+        "- capex intensity (TTM |capex| / revenue): {}\n",
+        i.ttm_capex_intensity
+            .map(|c| format!("{:.1}%", c * 100.0))
+            .unwrap_or_else(|| "(gap)".to_string()),
+    ));
+    if o.execution.comparable_periods == 0 {
+        p.push_str("- guidance attainment: no validated guidance/actual observation pairs yet\n");
+    } else {
+        p.push_str(&format!(
+            "- guidance attainment: {} comparable period(s), {} miss(es); repeated miss: {}; \
+             material single miss: {}\n",
+            o.execution.comparable_periods,
+            o.execution.misses.len(),
+            if o.execution.repeated_miss { "YES" } else { "no" },
+            if o.execution.material_single_miss { "YES" } else { "no" },
+        ));
+    }
+    p.push_str(&format!(
+        "- severe deterioration (conjunctive): {}\n",
+        if o.severe_deterioration { "YES" } else { "no" }
+    ));
+    if let Some(ceiling) = o.consequences.conviction_ceiling {
+        p.push_str(&format!(
+            "CONVICTION CEILING: at most {} — engine-matched rule(s): {}. Interpret the \
+             execution evidence beneath the ceiling; it is structural and binds after any \
+             raise.\n",
+            match ceiling {
+                ConvictionCeiling::Medium => "medium",
+                ConvictionCeiling::Low => "low",
+            },
+            o.consequences.matched_rules.join("; "),
+        ));
+    }
+    if o.consequences.exit_family_only {
+        p.push_str(
+            "SEVERE DETERIORATION: your action must be one of the engine-provided exit \
+             family {trim, sell-all}; choose and explain which from the validated evidence.\n",
+        );
+    } else if o.consequences.bar_add_family {
+        p.push_str("Note: the add family is barred by the overlay's financing rule.\n");
+    }
+    p
 }
 
 /// Render the thesis-ledger block for either interpretation prompt: the engine
@@ -1826,11 +1966,15 @@ impl HoldingAnalyst for StubAnalyst {
             crate::portfolio::Grade::F => Action::SellAll,
         };
         // The live path's schema constrains the action to the feasible set; the stub
-        // honors the same bound by falling back to hold (always offered).
+        // honors the same bound by falling back to the least-drastic offered rung
+        // (hold is no longer always offered — a severe pre-profit overlay restricts
+        // the set to the exit family).
         let action = if input.feasible.contains(&preferred) {
             preferred
-        } else {
+        } else if input.feasible.contains(&Action::Hold) {
             Action::Hold
+        } else {
+            *input.feasible.last().unwrap_or(&Action::Hold)
         };
         let conviction = match e.grade {
             crate::portfolio::Grade::A | crate::portfolio::Grade::B => Conviction::High,
@@ -2010,7 +2154,14 @@ fn interpret_request(reasoner_model: &str, input: &InterpretationInput) -> ChatR
     // The per-holding schema advertises only the engine-bounded feasible set, so
     // a barred rung is structurally unreachable (`docs/portfolio-analysis.md`
     // §Starting parameters — the feasible-set rule).
-    req.format_schema = Some(interpretation_schema(input.feasible));
+    // The conviction enum narrows structurally beneath a matched pre-profit ceiling,
+    // mirroring the feasible-action narrowing (`docs/portfolio-workflow.md` §Step 6f).
+    req.format_schema = Some(interpretation_schema(
+        input.feasible,
+        input
+            .pre_profit
+            .and_then(|o| o.consequences.conviction_ceiling),
+    ));
     req.think = Some(true);
     req.options = Some(options::thinking_general(NUM_CTX_INTERPRET));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
@@ -2137,6 +2288,7 @@ mod tests {
                 net_income: None,
                 gross_profit: None,
                 cost_of_revenue: None,
+                operating_income: None,
             })
             .collect();
         let daily_closes = ends
@@ -2201,6 +2353,7 @@ mod tests {
             prior_verdict: None,
             prior_grade_parameter_version: None,
             sources: vec!["FMP".into()],
+            prior_pre_profit: None,
         }
     }
 
@@ -2504,6 +2657,7 @@ mod tests {
             distilled: "distilled findings",
             feasible: &feasible,
             ledger_eval: None,
+            pre_profit: None,
         };
         let user = interpretation_user_prompt(&input);
         assert!(user.contains("COMPUTED GRADE"), "{user}");
@@ -2548,6 +2702,7 @@ mod tests {
             distilled: "",
             feasible: &feasible,
             ledger_eval: None,
+            pre_profit: None,
         });
         assert!(anchored.contains("spread-anchored on 40 rate observations"), "{anchored}");
         // The weighing sentence's signal grammar (two Codex rounds): flat_driver is
@@ -2578,6 +2733,7 @@ mod tests {
             distilled: "",
             feasible: &feasible,
             ledger_eval: None,
+            pre_profit: None,
         });
         assert!(carried.contains("current multiple was carried"), "{carried}");
         assert!(carried.contains("driver held FLAT"), "{carried}");
@@ -2591,6 +2747,7 @@ mod tests {
             distilled: "",
             feasible: &feasible,
             ledger_eval: None,
+            pre_profit: None,
         });
         assert!(fallback.contains("raw-percentile fallback"), "{fallback}");
     }
@@ -2621,6 +2778,7 @@ mod tests {
                 distilled: "",
                 feasible: &feasible,
                 ledger_eval: None,
+                pre_profit: None,
             })
         };
 
@@ -2655,6 +2813,7 @@ mod tests {
             distilled: "",
             feasible: &feasible,
             ledger_eval: None,
+            pre_profit: None,
         });
         // The scope rides the house-view block header itself, not a floating line.
         let hv_block = user
@@ -2714,6 +2873,7 @@ mod tests {
                 distilled: "distilled findings",
                 feasible: &feasible,
                 ledger_eval: None,
+                pre_profit: None,
             },
         );
         assert_eq!(interpret.think, Some(true));
@@ -2817,6 +2977,7 @@ mod tests {
             engine_output.grade,
             &engine_output.hurdle,
             19_500.0 / 29_500.0,
+            None,
         );
         if feasible.contains(&Action::AddAggressively) {
             // Fixture drift made the rung feasible — the guard has nothing to reject.
@@ -3748,6 +3909,7 @@ mod tests {
             distilled: "",
             feasible: &feasible,
             ledger_eval: None,
+            pre_profit: None,
         });
         assert!(user.contains("REWRITE THE THESIS LEDGER"), "{user}");
         assert!(interpretation_system_prompt().contains("THESIS LEDGER"));
@@ -3879,5 +4041,219 @@ mod tests {
             Some("2026-08-05"),
             "the consuming pass acknowledges the confirming observation"
         );
+    }
+
+    // ---- The pre-profit execution / financing overlay ----------------------------
+
+    use crate::portfolio::pre_profit::{
+        ConvictionCeiling, MetricKind, ObservationPolarity, ObservationRole, PreProfitObservation,
+    };
+
+    /// An overlay-eligible stock: the strong fixture with negative TTM operating
+    /// income, quarterly cash-flow prints, and balance-sheet cash lines.
+    fn pre_profit_financials() -> CompanyFinancials {
+        let mut fin = strong_financials();
+        for row in &mut fin.quarterly_income {
+            row.operating_income = Some(-2.0e9);
+        }
+        fin.quarterly_cash_flow = fin
+            .quarterly_income
+            .iter()
+            .take(8)
+            .map(|r| crate::portfolio::engine::QuarterlyCashFlowRow {
+                period_end: r.period_end.clone(),
+                filing_date: None,
+                free_cash_flow: Some(-1.0e9),
+                operating_cash_flow: None,
+                capex: Some(-0.5e9),
+            })
+            .collect();
+        fin.cash_and_equivalents = Some(6.0e9);
+        fin.short_term_investments = Some(4.0e9);
+        fin
+    }
+
+    fn pre_profit_observation(
+        role: ObservationRole,
+        value: f64,
+        period: &str,
+    ) -> PreProfitObservation {
+        PreProfitObservation {
+            metric_kind: MetricKind::Deliveries,
+            observation_role: role,
+            polarity: ObservationPolarity::HigherIsBetter,
+            numeric_value: value,
+            units: "units".into(),
+            period: period.into(),
+            issuer_scope: "company".into(),
+            source_url: "https://example.com/ir".into(),
+            published_at: "2026-08-01".into(),
+            confidence: 0.9,
+        }
+    }
+
+    /// A prior overlay whose history carries guidance misses in two distinct
+    /// periods for one metric — the repeated-miss shape.
+    fn prior_overlay_with_repeated_miss() -> crate::portfolio::pre_profit::PreProfitOverlay {
+        let mut prior =
+            crate::portfolio::pre_profit::compute_overlay(&pre_profit_financials(), None, vec![]);
+        prior.observations = vec![
+            pre_profit_observation(ObservationRole::GuidanceLow, 100.0, "2026-Q1"),
+            pre_profit_observation(ObservationRole::Actual, 90.0, "2026-Q1"),
+            pre_profit_observation(ObservationRole::GuidanceLow, 100.0, "2026-Q2"),
+            pre_profit_observation(ObservationRole::Actual, 92.0, "2026-Q2"),
+        ];
+        prior
+    }
+
+    #[test]
+    fn every_stock_records_an_overlay_and_funds_record_none() {
+        // A profitable stock with no operating-income prints: the eligibility result
+        // still persists (unscorable — not entered, gap recorded).
+        let (_, audit) = analyze_holding(
+            &StubAnalyst,
+            &dossier(AssetClass::Stock, strong_financials()),
+            29_500.0,
+            &rates(),
+            "2026-08-03",
+        )
+        .unwrap();
+        let overlay = audit.pre_profit.expect("every stock records an overlay");
+        assert!(!overlay.is_eligible());
+        assert!(matches!(
+            overlay.eligibility,
+            crate::portfolio::pre_profit::PreProfitEligibility::Unscorable { .. }
+        ));
+
+        // A priced fund records none — the overlay is stock surface.
+        let (_, audit) = analyze_holding(
+            &StubAnalyst,
+            &fund_dossier(us_equity_fund()),
+            29_500.0,
+            &rates(),
+            "2026-08-03",
+        )
+        .unwrap();
+        assert!(audit.pre_profit.is_none());
+    }
+
+    #[test]
+    fn eligible_overlay_renders_clamps_and_persists() {
+        let mut d = dossier(AssetClass::Stock, pre_profit_financials());
+        d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
+        let (verdict, audit) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+
+        let overlay = audit.pre_profit.expect("overlay rides the audit");
+        assert!(overlay.is_eligible());
+        assert!(overlay.execution.repeated_miss);
+        assert_eq!(
+            overlay.consequences.conviction_ceiling,
+            Some(ConvictionCeiling::Medium)
+        );
+        // The stub proposed High (A/B grade); the app clamped it beneath the
+        // engine-matched ceiling and recorded the clamp.
+        let VerdictDisposition::Priced(g) = verdict.disposition else {
+            panic!("expected a priced verdict");
+        };
+        assert_eq!(g.conviction, Conviction::Medium);
+        assert_eq!(overlay.clamped_from, Some(Conviction::High));
+        assert!(overlay
+            .consequences
+            .matched_rules
+            .iter()
+            .any(|r| r.contains("repeated-execution-miss")));
+        // The observation history carried through the run.
+        assert_eq!(overlay.observations.len(), 4);
+
+        // The prompt renders the overlay block with the ceiling under the same
+        // input the live call builds.
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let feasible = engine::feasible_actions(
+            engine_output.grade,
+            &engine_output.hurdle,
+            0.05,
+            Some(&overlay.consequences),
+        );
+        let user = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "none",
+            feasible: &feasible,
+            ledger_eval: None,
+            pre_profit: Some(&overlay),
+        });
+        assert!(user.contains("PRE-PROFIT EXECUTION / FINANCING OVERLAY"), "{user}");
+        assert!(user.contains("CONVICTION CEILING: at most medium"), "{user}");
+        assert!(user.contains("repeated-execution-miss"), "{user}");
+    }
+
+    #[test]
+    fn severe_overlay_restricts_the_action_to_the_exit_family() {
+        // Repeated miss + constrained runway (tiny cash against the burn) → the
+        // severe conjunction → the exit-family action set end to end.
+        let mut fin = pre_profit_financials();
+        fin.cash_and_equivalents = Some(1.0e9);
+        fin.short_term_investments = None;
+        let mut d = dossier(AssetClass::Stock, fin);
+        d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
+        let (verdict, audit) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+        let overlay = audit.pre_profit.expect("overlay rides the audit");
+        assert!(overlay.severe_deterioration);
+        assert_eq!(
+            overlay.consequences.conviction_ceiling,
+            Some(ConvictionCeiling::Low)
+        );
+        let VerdictDisposition::Priced(g) = verdict.disposition else {
+            panic!("expected a priced verdict");
+        };
+        assert!(
+            matches!(g.action, Action::Trim | Action::SellAll),
+            "severe deterioration restricts the lean to the exit family, got {:?}",
+            g.action
+        );
+        assert_eq!(g.conviction, Conviction::Low);
+    }
+
+    #[test]
+    fn abstaining_stock_still_records_the_overlay() {
+        // No consensus at all: the engine abstains (no-admissible-driver), but the
+        // overlay record — statement leg + carried history — persists with the
+        // abstention, like the standing ledger does.
+        let mut fin = pre_profit_financials();
+        fin.consensus = None;
+        let mut d = dossier(AssetClass::Stock, fin);
+        d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
+        let (verdict, audit) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+        assert!(matches!(
+            verdict.disposition,
+            VerdictDisposition::InsufficientEvidence { .. }
+        ));
+        let overlay = audit.pre_profit.expect("overlay survives an abstention");
+        assert!(overlay.is_eligible());
+        assert_eq!(overlay.observations.len(), 4, "history carried");
+    }
+
+    #[test]
+    fn pre_overlay_audit_json_decodes_with_a_none_overlay() {
+        // A HoldingAudit persisted before the field existed decodes with `None`
+        // (the `#[serde(default)]` contract the whole-row carry path relies on).
+        let (_, audit) = analyze_holding(
+            &StubAnalyst,
+            &dossier(AssetClass::Stock, strong_financials()),
+            29_500.0,
+            &rates(),
+            "2026-08-03",
+        )
+        .unwrap();
+        let mut json = serde_json::to_value(&audit).unwrap();
+        json.as_object_mut().unwrap().remove("pre_profit");
+        let back: HoldingAudit = serde_json::from_value(json).unwrap();
+        assert!(back.pre_profit.is_none());
     }
 }

@@ -1666,20 +1666,25 @@ impl FmpDataSource {
 
     /// The full **stock** per-symbol surface: the quote + EOD core plus the v2
     /// target surface — quarterly income prints (the anchor window's trailing
-    /// driver source and the TTM statement basis), the latest balance sheet (the
-    /// leverage leg and the P/B denominator), the forward consensus (the driver
-    /// ladder), and the trailing dividends (the total-return leg). Each fail-soft
-    /// with a tagged gap; a missing consensus later abstains the holding under the
-    /// named `no-admissible-driver` floor reason rather than failing here.
+    /// driver source and the TTM statement basis), quarterly cash-flow prints (the
+    /// pre-profit overlay's burn / runway / capex legs), the latest balance sheet
+    /// (the leverage leg, the P/B denominator, and the runway's liquid-resource
+    /// lines), the forward consensus (the driver ladder), and the trailing
+    /// dividends (the total-return leg). Each fail-soft with a tagged gap; a
+    /// missing consensus later abstains the holding under the named
+    /// `no-admissible-driver` floor reason rather than failing here.
     pub fn fetch_company_financials(
         &self,
         symbol: &str,
     ) -> crate::portfolio::engine::CompanyFinancials {
         let mut fin = self.fetch_quote_and_eod(symbol);
         fin.quarterly_income = self.fetch_quarterly_income(symbol, &mut fin.gaps);
+        fin.quarterly_cash_flow = self.fetch_quarterly_cash_flow(symbol, &mut fin.gaps);
         let balance = self.fetch_balance_sheet(symbol, &mut fin.gaps);
         fin.total_debt = balance.total_debt;
         fin.total_equity = balance.total_equity;
+        fin.cash_and_equivalents = balance.cash_and_equivalents;
+        fin.short_term_investments = balance.short_term_investments;
         fin.consensus = self.fetch_analyst_estimates(symbol, &mut fin.gaps);
         fin.ttm_dividends_per_share = self.fetch_ttm_dividends(symbol, &mut fin.gaps);
         fin
@@ -1940,12 +1945,20 @@ mod tests {
                 headers: vec![],
                 body: r#"[{"date":"2026-03-31","filingDate":"2026-05-01","revenue":95.0e9,
                            "epsDiluted":1.55,"weightedAverageShsOutDil":1.5e10,
-                           "netIncome":24.0e9,"grossProfit":44.0e9,"costOfRevenue":51.0e9}]"#,
+                           "netIncome":24.0e9,"grossProfit":44.0e9,"costOfRevenue":51.0e9,
+                           "operatingIncome":29.0e9}]"#,
             },
             Canned::Reply {
                 status: 200,
                 headers: vec![],
-                body: r#"[{"date":"2026-03-31","totalDebt":110.0e9,"totalStockholdersEquity":62.0e9,"totalEquity":63.0e9}]"#,
+                body: r#"[{"date":"2026-03-31","freeCashFlow":20.0e9,
+                           "operatingCashFlow":28.0e9,"capitalExpenditure":-8.0e9}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2026-03-31","totalDebt":110.0e9,"totalStockholdersEquity":62.0e9,"totalEquity":63.0e9,
+                           "cashAndCashEquivalents":30.0e9,"shortTermInvestments":32.0e9}]"#,
             },
             Canned::Reply {
                 status: 200,
@@ -1971,10 +1984,19 @@ mod tests {
         assert_eq!(fin.quarterly_income[0].net_income, Some(24.0e9));
         assert_eq!(fin.quarterly_income[0].gross_profit, Some(44.0e9));
         assert_eq!(fin.quarterly_income[0].cost_of_revenue, Some(51.0e9));
+        assert_eq!(fin.quarterly_income[0].operating_income, Some(29.0e9));
+        // The cash-flow leg parses into its typed rows (the pre-profit surface).
+        assert_eq!(fin.quarterly_cash_flow.len(), 1);
+        assert_eq!(fin.quarterly_cash_flow[0].free_cash_flow, Some(20.0e9));
+        assert_eq!(fin.quarterly_cash_flow[0].operating_cash_flow, Some(28.0e9));
+        assert_eq!(fin.quarterly_cash_flow[0].capex, Some(-8.0e9));
         // The balance sheet fills the leverage leg; equity prefers the
-        // stockholders' (parent-only) line over totalEquity.
+        // stockholders' (parent-only) line over totalEquity. The liquid-resource
+        // lines ride beside them.
         assert_eq!(fin.total_debt, Some(110.0e9));
         assert_eq!(fin.total_equity, Some(62.0e9));
+        assert_eq!(fin.cash_and_equivalents, Some(30.0e9));
+        assert_eq!(fin.short_term_investments, Some(32.0e9));
         assert_eq!(fin.consensus.as_ref().unwrap().eps_mid, Some(6.5));
         assert_eq!(fin.ttm_dividends_per_share, Some(0.26));
         assert!(fin.gaps.is_empty(), "a clean pull records no gap: {:?}", fin.gaps);
@@ -1984,6 +2006,7 @@ mod tests {
                 "/quote",
                 "/historical-price-eod/light",
                 "/income-statement",
+                "/cash-flow-statement",
                 "/balance-sheet-statement",
                 "/analyst-estimates",
                 "/dividends"
@@ -2088,9 +2111,38 @@ mod tests {
         let fin = test_source(&server.base_url).fetch_company_financials("AAPL");
         assert!(fin.current_price.is_none());
         assert!(fin.price_history.is_empty());
-        // Six endpoints, six tagged gaps — the four v2-surface calls degrade the
-        // same way the quote and EOD do.
-        assert_eq!(fin.gaps.len(), 6, "six failed pulls, six gaps: {:?}", fin.gaps);
+        // Seven endpoints, seven tagged gaps — the v2-surface calls and the
+        // pre-profit cash-flow leg degrade the same way the quote and EOD do.
+        assert_eq!(fin.gaps.len(), 7, "seven failed pulls, seven gaps: {:?}", fin.gaps);
+    }
+
+    #[test]
+    fn income_shaping_falls_through_a_null_filing_date_to_the_legacy_spelling() {
+        // A present-but-null `filingDate` must not suppress a valid legacy
+        // `fillingDate` — the restatement tie-break depends on the date surviving.
+        let value: Value = serde_json::from_str(
+            r#"[{"date":"2026-03-31","filingDate":null,"fillingDate":"2026-05-01","revenue":1.0}]"#,
+        )
+        .unwrap();
+        let rows = quarterly_income_from_value(&value);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].filing_date.as_deref(), Some("2026-05-01"));
+    }
+
+    #[test]
+    fn cash_flow_shaping_falls_through_a_null_ocf_to_the_alternate_spelling() {
+        // Numeric-first per key: a present-but-null `operatingCashFlow` must still
+        // fall through to `netCashProvidedByOperatingActivities`, or a derivable
+        // FCF (and with it eligibility / runway) turns unscorable.
+        let value: Value = serde_json::from_str(
+            r#"[{"date":"2026-03-31","freeCashFlow":null,"operatingCashFlow":null,
+                 "netCashProvidedByOperatingActivities":28.0e9,"capitalExpenditure":-8.0e9}]"#,
+        )
+        .unwrap();
+        let rows = quarterly_cash_flow_from_value(&value);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].operating_cash_flow, Some(28.0e9));
+        assert_eq!(rows[0].resolved_free_cash_flow(), Some(20.0e9));
     }
 
     #[test]
@@ -3505,6 +3557,10 @@ const SYMBOL_EARNINGS_LIMIT: &str = "8";
 /// News items requested per tech-flagged holding.
 const SYMBOL_NEWS_LIMIT: &str = "20";
 const FMP_BALANCE_SHEET_PATH: &str = "/balance-sheet-statement";
+/// Quarterly cash-flow statements — the pre-profit overlay's TTM burn / runway /
+/// capex source (`docs/portfolio-analysis.md` §Starting parameters); stock surface
+/// only, like the other statements.
+const FMP_CASH_FLOW_PATH: &str = "/cash-flow-statement";
 const FMP_ANALYST_ESTIMATES_PATH: &str = "/analyst-estimates";
 const FMP_DIVIDENDS_PATH: &str = "/dividends";
 
@@ -3536,6 +3592,10 @@ const FMP_HISTORICAL_SECTOR_PE_PATH: &str = "/historical-sector-pe";
 /// Quarters of income-statement history requested — the v2 anchor window (12) plus
 /// the four extra quarters its oldest TTM print needs.
 const INCOME_QUARTERS_LIMIT: &str = "16";
+
+/// Quarters of cash-flow history requested — the pre-profit TTM window (4) plus a
+/// year of slack so a missing newest print doesn't strand the sum.
+const CASH_FLOW_QUARTERS_LIMIT: &str = "8";
 
 impl FmpDataSource {
     /// One suite GET with a tracker row and the shared fail-soft disposition.
@@ -3623,6 +3683,42 @@ impl FmpDataSource {
             Disposition::Gap(reason) => {
                 gaps.push(format!("FMP balance sheet unavailable ({})", reason.as_str()));
                 BalanceSheetLines::default()
+            }
+        }
+    }
+
+    /// Quarterly cash-flow prints (newest first) — the pre-profit overlay's TTM burn /
+    /// runway / capex-intensity source (`docs/portfolio-analysis.md` §Starting
+    /// parameters). Fail-soft: a gap leaves the list empty with a tagged reason.
+    pub fn fetch_quarterly_cash_flow(
+        &self,
+        symbol: &str,
+        gaps: &mut Vec<String>,
+    ) -> Vec<crate::portfolio::engine::QuarterlyCashFlowRow> {
+        match self.suite_get(
+            "company-cashflow-q",
+            symbol,
+            "Quarterly cash-flow statements",
+            FMP_CASH_FLOW_PATH,
+            &[
+                ("symbol", symbol),
+                ("period", "quarter"),
+                ("limit", CASH_FLOW_QUARTERS_LIMIT),
+            ],
+        ) {
+            Disposition::Value(value) => match quarterly_cash_flow_from_value(&value) {
+                rows if !rows.is_empty() => rows,
+                _ => {
+                    gaps.push("FMP quarterly cash-flow statements were empty".to_string());
+                    vec![]
+                }
+            },
+            Disposition::Gap(reason) => {
+                gaps.push(format!(
+                    "FMP quarterly cash-flow statements unavailable ({})",
+                    reason.as_str()
+                ));
+                vec![]
             }
         }
     }
@@ -3935,11 +4031,15 @@ impl FmpDataSource {
     }
 }
 
-/// The two balance-sheet lines the per-holding pull consumes (`fetch_balance_sheet`).
+/// The balance-sheet lines the per-holding pull consumes (`fetch_balance_sheet`):
+/// the leverage / P/B legs plus the pre-profit runway numerator's liquid-resource
+/// lines (`docs/portfolio-analysis.md` §Starting parameters).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct BalanceSheetLines {
     pub total_debt: Option<f64>,
     pub total_equity: Option<f64>,
+    pub cash_and_equivalents: Option<f64>,
+    pub short_term_investments: Option<f64>,
 }
 
 /// One per-symbol earnings row (`fetch_symbol_earnings`) — the announcement date and
@@ -4035,7 +4135,48 @@ fn balance_sheet_from_value(value: &Value) -> Option<BalanceSheetLines> {
             .get("totalStockholdersEquity")
             .and_then(Value::as_f64)
             .or_else(|| first.get("totalEquity").and_then(Value::as_f64)),
+        cash_and_equivalents: first
+            .get("cashAndCashEquivalents")
+            .and_then(Value::as_f64),
+        short_term_investments: first
+            .get("shortTermInvestments")
+            .and_then(Value::as_f64),
     })
+}
+
+/// Shape quarterly `/cash-flow-statement` rows (newest first) — the pre-profit
+/// overlay's burn / runway / capex source. A row without a period date is skipped.
+fn quarterly_cash_flow_from_value(
+    value: &Value,
+) -> Vec<crate::portfolio::engine::QuarterlyCashFlowRow> {
+    let Some(rows) = value.as_array() else {
+        return vec![];
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let period_end = row.get("date").and_then(Value::as_str)?.to_string();
+            Some(crate::portfolio::engine::QuarterlyCashFlowRow {
+                period_end,
+                filing_date: row
+                    .get("filingDate")
+                    .and_then(Value::as_str)
+                    .or_else(|| row.get("fillingDate").and_then(Value::as_str))
+                    .map(str::to_string),
+                free_cash_flow: row.get("freeCashFlow").and_then(Value::as_f64),
+                // Numeric-first per key (the balance-sheet shaper's rule): a
+                // present-but-null preferred line must still fall through to the
+                // alternate spelling, so the fallback runs after `as_f64`.
+                operating_cash_flow: row
+                    .get("operatingCashFlow")
+                    .and_then(Value::as_f64)
+                    .or_else(|| {
+                        row.get("netCashProvidedByOperatingActivities")
+                            .and_then(Value::as_f64)
+                    }),
+                capex: row.get("capitalExpenditure").and_then(Value::as_f64),
+            })
+        })
+        .collect()
 }
 
 /// Shape quarterly `/income-statement` rows (newest first). Lenient key spellings
@@ -4049,10 +4190,13 @@ fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Q
     rows.iter()
         .filter_map(|row| {
             let period_end = row.get("date").and_then(Value::as_str)?.to_string();
+            // String-first per key (the numeric-first rule's string form): a
+            // present-but-null `filingDate` must still fall through to the legacy
+            // `fillingDate` spelling, or a restated row loses its tie-break date.
             let filing_date = row
                 .get("filingDate")
-                .or_else(|| row.get("fillingDate"))
                 .and_then(Value::as_str)
+                .or_else(|| row.get("fillingDate").and_then(Value::as_str))
                 .map(|s| s.to_string());
             Some(crate::portfolio::engine::QuarterlyIncomeRow {
                 period_end,
@@ -4068,6 +4212,7 @@ fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Q
                 net_income: row.get("netIncome").and_then(Value::as_f64),
                 gross_profit: row.get("grossProfit").and_then(Value::as_f64),
                 cost_of_revenue: row.get("costOfRevenue").and_then(Value::as_f64),
+                operating_income: row.get("operatingIncome").and_then(Value::as_f64),
             })
         })
         .collect()

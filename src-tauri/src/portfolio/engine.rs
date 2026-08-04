@@ -245,6 +245,46 @@ pub struct QuarterlyIncomeRow {
     pub gross_profit: Option<f64>,
     #[serde(default)]
     pub cost_of_revenue: Option<f64>,
+    /// Quarterly operating income — the pre-profit overlay's eligibility leg (TTM
+    /// operating income ≤ 0 — `docs/portfolio-analysis.md` §Starting parameters).
+    /// `#[serde(default)]` keeps rows persisted before the field decodable.
+    #[serde(default)]
+    pub operating_income: Option<f64>,
+}
+
+/// One quarterly cash-flow-statement print (newest first in
+/// [`CompanyFinancials::quarterly_cash_flow`]) — the pre-profit overlay's burn /
+/// runway / capex-intensity source (`docs/portfolio-analysis.md` §Starting
+/// parameters). Fetched only for stocks; the fund surface never pulls statements.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct QuarterlyCashFlowRow {
+    /// Period end, ISO date.
+    pub period_end: String,
+    /// The statement feed's filing date — the canonicalization tie-break when one
+    /// period arrives twice (a restatement): the latest filing wins, never wire
+    /// order. `#[serde(default)]` for pre-field fixtures.
+    #[serde(default)]
+    pub filing_date: Option<String>,
+    /// The feed's reported free cash flow, where present.
+    pub free_cash_flow: Option<f64>,
+    /// Operating cash flow — with capex, the derivation fallback when the feed
+    /// carries no `freeCashFlow` line.
+    pub operating_cash_flow: Option<f64>,
+    /// Capital expenditure as reported (FMP serves it negative — an outflow);
+    /// consumers read its magnitude.
+    pub capex: Option<f64>,
+}
+
+impl QuarterlyCashFlowRow {
+    /// The row's free cash flow: the reported line first, else derived as
+    /// `operating cash flow − |capex|` (sign-tolerant — some sources report capex
+    /// as a positive outflow). `None` when neither resolves.
+    pub fn resolved_free_cash_flow(&self) -> Option<f64> {
+        self.free_cash_flow.or(match (self.operating_cash_flow, self.capex) {
+            (Some(ocf), Some(capex)) => Some(ocf - capex.abs()),
+            _ => None,
+        })
+    }
 }
 
 /// The forward consensus the v2 driver ladder reads (`analyst-estimates`) — the
@@ -308,6 +348,18 @@ pub struct CompanyFinancials {
     /// trailing driver source (needs ~4 extra quarters beyond the window for TTM).
     #[serde(default)]
     pub quarterly_income: Vec<QuarterlyIncomeRow>,
+    /// Trailing quarterly cash-flow prints, newest first — the pre-profit overlay's
+    /// TTM burn / runway / capex legs (`docs/portfolio-analysis.md` §Starting
+    /// parameters). `#[serde(default)]` for pre-field fixtures and stored runs.
+    #[serde(default)]
+    pub quarterly_cash_flow: Vec<QuarterlyCashFlowRow>,
+    /// Balance-sheet liquid-resource lines from the latest quarterly print — the
+    /// pre-profit runway numerator (`liquid resources = cash and cash equivalents +
+    /// short-term investments`). `#[serde(default)]` for pre-field fixtures.
+    #[serde(default)]
+    pub cash_and_equivalents: Option<f64>,
+    #[serde(default)]
+    pub short_term_investments: Option<f64>,
     /// The forward consensus (nearest coming fiscal year) — the v2 driver ladder.
     #[serde(default)]
     pub consensus: Option<ConsensusEstimate>,
@@ -1856,21 +1908,31 @@ pub fn hurdle_read(
 /// (`docs/portfolio-analysis.md` §Starting parameters — the feasible-set rule;
 /// conviction is model-authored, so it can't pre-gate). The add family is offered
 /// only when the new-money admission point test passes, the hurdle isn't `fails`
-/// (dead money drops the family a fortiori at any grade), the grade isn't F, and the
-/// position sits under the concentration cap; *add aggressively* additionally needs
-/// an A/B grade with headroom. Every grade test reads the momentum-free letter.
+/// (dead money drops the family a fortiori at any grade), the grade isn't F, the
+/// position sits under the concentration cap, and no pre-profit overlay rule bars
+/// it (constrained runway / severe deterioration); *add aggressively* additionally
+/// needs an A/B grade with headroom. Severe deterioration restricts the whole set
+/// to the exit family `{trim, sell all}` (as-built the action is the standalone
+/// lean — the 7b construction stage is unbuilt). Every grade test reads the
+/// momentum-free letter.
 pub fn feasible_actions(
     grade: Grade,
     hurdle: &HurdleRead,
     current_weight: f64,
+    overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
 ) -> Vec<Action> {
     use crate::portfolio::HurdleState;
+    if overlay_rules.map(|r| r.exit_family_only).unwrap_or(false) {
+        return vec![Action::SellAll, Action::Trim];
+    }
     let mut set = vec![Action::SellAll, Action::Trim, Action::Hold];
     let dead_money = hurdle.state == HurdleState::Fails;
+    let overlay_bar = overlay_rules.map(|r| r.bar_add_family).unwrap_or(false);
     let add_ok = hurdle.admits_new_money
         && !dead_money
         && grade != Grade::F
-        && current_weight < MAX_SINGLE_WEIGHT;
+        && current_weight < MAX_SINGLE_WEIGHT
+        && !overlay_bar;
     if add_ok {
         set.push(Action::Add);
         if matches!(grade, Grade::A | Grade::B) {
@@ -2043,6 +2105,7 @@ mod tests {
                 net_income: None,
                 gross_profit: None,
                 cost_of_revenue: None,
+                operating_income: None,
             })
             .collect();
         // Dated closes: one per quarter end plus a recent print, rising over time.
@@ -2076,6 +2139,9 @@ mod tests {
             price_history: vec![170.0, 175.0, 180.0, 188.0, 195.0],
             daily_closes,
             quarterly_income,
+            quarterly_cash_flow: vec![],
+            cash_and_equivalents: None,
+            short_term_investments: None,
             consensus: Some(ConsensusEstimate {
                 period_end: "2027-06-30".into(),
                 eps_low: Some(6.0),
@@ -2691,21 +2757,49 @@ mod tests {
             admits_new_money: admits,
         };
         // A clean A-grade with headroom offers the full ladder.
-        let full = feasible_actions(Grade::A, &read(HurdleState::Clears, true), 0.05);
+        let full = feasible_actions(Grade::A, &read(HurdleState::Clears, true), 0.05, None);
         assert!(full.contains(&Action::Add) && full.contains(&Action::AddAggressively));
         // Dead money drops the add family at any grade; hold stays (hysteresis).
-        let dead = feasible_actions(Grade::A, &read(HurdleState::Fails, false), 0.05);
+        let dead = feasible_actions(Grade::A, &read(HurdleState::Fails, false), 0.05, None);
         assert!(!dead.contains(&Action::Add));
         assert!(dead.contains(&Action::Hold));
         // Grade F bars the family; a C-grade passing admission gets add but never
         // add-aggressively (A/B only).
-        assert!(!feasible_actions(Grade::F, &read(HurdleState::Clears, true), 0.05)
+        assert!(!feasible_actions(Grade::F, &read(HurdleState::Clears, true), 0.05, None)
             .contains(&Action::Add));
-        let c = feasible_actions(Grade::C, &read(HurdleState::Indeterminate, true), 0.05);
+        let c = feasible_actions(Grade::C, &read(HurdleState::Indeterminate, true), 0.05, None);
         assert!(c.contains(&Action::Add) && !c.contains(&Action::AddAggressively));
         // At the concentration cap the add family leaves the set.
-        assert!(!feasible_actions(Grade::A, &read(HurdleState::Clears, true), 0.26)
+        assert!(!feasible_actions(Grade::A, &read(HurdleState::Clears, true), 0.26, None)
             .contains(&Action::Add));
+    }
+
+    #[test]
+    fn overlay_rules_bar_the_add_family_and_severe_restricts_to_exits() {
+        use crate::portfolio::pre_profit::OverlayConsequences;
+        let read = |state, admits| HurdleRead {
+            state,
+            hurdle_rate: Some(0.09),
+            tr_bear: None, tr_base: None, tr_bull: None,
+            admits_new_money: admits,
+        };
+        // A constrained-runway bar strips the add family from an otherwise-clean
+        // A-grade; hold survives (the bar is add-side only).
+        let barred = OverlayConsequences {
+            bar_add_family: true,
+            ..Default::default()
+        };
+        let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), 0.05, Some(&barred));
+        assert!(!set.contains(&Action::Add));
+        assert!(set.contains(&Action::Hold));
+        // Severe deterioration restricts the whole set to the exit family.
+        let severe = OverlayConsequences {
+            bar_add_family: true,
+            exit_family_only: true,
+            ..Default::default()
+        };
+        let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), 0.05, Some(&severe));
+        assert_eq!(set, vec![Action::SellAll, Action::Trim]);
     }
 
     #[test]

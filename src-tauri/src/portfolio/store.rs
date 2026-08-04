@@ -342,6 +342,7 @@ mod tests {
                 ledger_audit: None,
                 quick_basis: None,
                 fund_exposure: None,
+                pre_profit: None,
             }],
             rate_prints: None,
         }

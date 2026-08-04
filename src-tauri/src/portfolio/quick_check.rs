@@ -1756,6 +1756,7 @@ mod tests {
             ledger_audit: None,
             quick_basis,
             fund_exposure: None,
+            pre_profit: None,
         }
     }
 
@@ -2166,6 +2167,7 @@ mod tests {
                     net_income: Some(10.0),
                     gross_profit: Some(40.0),
                     cost_of_revenue: Some(60.0),
+                    operating_income: None,
                 })
                 .collect(),
             ..Default::default()
@@ -2639,6 +2641,7 @@ mod tests {
                     net_income: Some(10.0),
                     gross_profit: Some(40.0),
                     cost_of_revenue: Some(60.0),
+                    operating_income: None,
                 })
                 .collect(),
             ..Default::default()
@@ -2717,6 +2720,7 @@ mod tests {
                         net_income: Some(10.0),
                         gross_profit: Some(40.0),
                         cost_of_revenue: Some(60.0),
+                        operating_income: None,
                     })
                     .collect(),
                 // `None` with no gap: the adapter's confirmed non-payer.

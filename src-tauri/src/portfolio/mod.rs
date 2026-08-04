@@ -22,6 +22,7 @@ pub mod engine;
 pub mod fund;
 pub mod job;
 pub mod pipeline;
+pub mod pre_profit;
 pub mod quick_check;
 pub mod store;
 
@@ -1048,6 +1049,14 @@ pub struct HoldingAudit {
     /// holding of either verdict branch; `None` on stocks and pre-field runs.
     #[serde(default)]
     pub fund_exposure: Option<fund::FundExposureBasis>,
+    /// The pre-profit execution / financing overlay record (`docs/portfolio-analysis.md`
+    /// §Starting parameters) — present on every priced stock (the eligibility result
+    /// persists even when the stock does not enter; the period-keyed observation
+    /// history rides here so it survives run retention and the selective carry).
+    /// `None` on funds, `role_risk_only` holdings, and pre-field runs
+    /// (`#[serde(default)]`).
+    #[serde(default)]
+    pub pre_profit: Option<pre_profit::PreProfitOverlay>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the
@@ -1063,8 +1072,12 @@ pub struct HoldingAudit {
 /// (`docs/portfolio-analysis.md` §The position thesis ledger) — the prior ledger and
 /// the engine's condition crossings rendered into the prompt (the first prior-run
 /// content the prompt carries), and the rewritten ledger required in the response,
-/// validated at the 6g seam.
-pub const PROMPT_VERSION: &str = "portfolio-v4";
+/// validated at the 6g seam. v5: the pre-profit execution / financing overlay
+/// (`docs/portfolio-analysis.md` §Starting parameters) — the finalized overlay
+/// rendered into an eligible stock's prompt with its engine-matched conviction
+/// ceiling, the conviction enum structurally narrowed beneath a matched ceiling,
+/// and severe deterioration restricting the offered action set to the exit family.
+pub const PROMPT_VERSION: &str = "portfolio-v5";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -1296,15 +1309,21 @@ pub fn ledger_schema(role_risk: bool) -> Value {
 /// action enum lists only the **engine-bounded feasible set** for this holding
 /// (`docs/portfolio-analysis.md` §Starting parameters — the feasible-set rule: the
 /// prompt states the allowed set; the model chooses within it, enforced structurally
-/// here).
-pub fn interpretation_schema(feasible: &[Action]) -> Value {
+/// here), and the conviction enum narrows beneath a matched pre-profit conviction
+/// ceiling the same way (`docs/portfolio-workflow.md` §Step 6f — the model receives
+/// the ceiling and interprets the execution evidence beneath it).
+pub fn interpretation_schema(
+    feasible: &[Action],
+    conviction_ceiling: Option<pre_profit::ConvictionCeiling>,
+) -> Value {
     let read = json!({ "type": "string", "enum": ["bullish", "neutral", "bearish"] });
     let actions: Vec<&str> = feasible.iter().map(Action::as_kebab).collect();
+    let convictions = pre_profit::allowed_conviction_labels(conviction_ceiling);
     json!({
         "type": "object",
         "properties": {
             "action": { "type": "string", "enum": actions },
-            "conviction": { "type": "string", "enum": ["high", "medium", "low"] },
+            "conviction": { "type": "string", "enum": convictions },
             "horizon_outlook": {
                 "type": "object",
                 "properties": { "short": read, "mid": read, "long": read },
@@ -1431,7 +1450,7 @@ mod tests {
         // Both interpretation schemas require the rewritten ledger, the quant series
         // enum is exactly the engine's closed executability surface, and the
         // role-risk trigger-family enum drops `add` (the reduced spine).
-        let schema = interpretation_schema(&[Action::Hold]);
+        let schema = interpretation_schema(&[Action::Hold], None);
         let required: Vec<&str> = schema["required"]
             .as_array()
             .unwrap()
@@ -1589,7 +1608,7 @@ mod tests {
             Action::Add,
             Action::AddAggressively,
         ];
-        let schema = interpretation_schema(&all);
+        let schema = interpretation_schema(&all, None);
         let required: Vec<&str> = schema["required"]
             .as_array()
             .unwrap()
@@ -1610,7 +1629,7 @@ mod tests {
         // pick a rung the engine barred.
         let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
         assert_eq!(actions.len(), 5);
-        let bounded = interpretation_schema(&[Action::SellAll, Action::Trim, Action::Hold]);
+        let bounded = interpretation_schema(&[Action::SellAll, Action::Trim, Action::Hold], None);
         let bounded_actions = bounded["properties"]["action"]["enum"].as_array().unwrap();
         assert_eq!(bounded_actions.len(), 3);
         assert!(!bounded_actions.iter().any(|a| a == "add"));
