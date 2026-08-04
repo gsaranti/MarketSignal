@@ -111,31 +111,27 @@ impl HoldingDossier {
 /// revenue), else stays an honest gap even when SEC has an annual print. Returns
 /// whether the basis was adopted, so the SEC merge confines itself to fallback.
 pub fn apply_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
-    // Newest-first with the latest filing winning a duplicated period — the shared
-    // canonicalization policy (`pre_profit::statement_inputs` holds the same rule):
-    // a restatement served twice must resolve to the restated print, never to wire
-    // order, or the TTM basis (and with it the letter) would depend on response
-    // ordering.
-    let mut rows: Vec<&crate::portfolio::engine::QuarterlyIncomeRow> =
-        fin.quarterly_income.iter().collect();
-    rows.sort_by(|a, b| {
-        b.period_end
-            .cmp(&a.period_end)
-            .then_with(|| b.filing_date.cmp(&a.filing_date))
-    });
-    rows.dedup_by(|a, b| a.period_end == b.period_end);
+    // Canonicalize the statement rows **in place** first — newest-first with the
+    // latest filing winning a duplicated period (`engine::canonicalize_statements`,
+    // the shared policy): a restatement served twice must resolve to the restated
+    // print, never to wire order, or the TTM basis (and with it the letter) would
+    // depend on response ordering. Every statement-consuming path passes here
+    // before any engine read, so the driver ladder's trailing prints and the
+    // anchor windows inherit the same canonical order.
+    crate::portfolio::engine::canonicalize_statements(fin);
+    let rows = &fin.quarterly_income;
 
     fn sum4(
-        rows: &[&crate::portfolio::engine::QuarterlyIncomeRow],
+        rows: &[crate::portfolio::engine::QuarterlyIncomeRow],
         get: impl Fn(&crate::portfolio::engine::QuarterlyIncomeRow) -> Option<f64>,
     ) -> Option<f64> {
         if rows.len() < 4 {
             return None;
         }
-        rows[..4].iter().map(|r| get(r)).sum()
+        rows[..4].iter().map(get).sum()
     }
-    let ttm_revenue = sum4(&rows, |r| r.revenue);
-    let ttm_net_income = sum4(&rows, |r| r.net_income);
+    let ttm_revenue = sum4(rows, |r| r.revenue);
+    let ttm_net_income = sum4(rows, |r| r.net_income);
     let (Some(_), Some(_)) = (ttm_revenue, ttm_net_income) else {
         return false;
     };
@@ -143,7 +139,7 @@ pub fn apply_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
     // its own from revenue − cost of revenue — mixing reported and derived
     // quarters is fine (same economic line per quarter), a quarter with neither
     // gaps the whole sum.
-    let ttm_gross_profit = sum4(&rows, |r| {
+    let ttm_gross_profit = sum4(rows, |r| {
         r.gross_profit
             .or_else(|| Some(r.revenue? - r.cost_of_revenue?))
     });
@@ -379,7 +375,7 @@ pub fn prior_verdict_for(conn: &Connection, symbol: &str) -> Option<PriorHolding
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portfolio::engine::QuarterlyIncomeRow;
+    use crate::portfolio::engine::{QuarterlyCashFlowRow, QuarterlyIncomeRow};
     use crate::portfolio::{AssetClass, PositionChange, VerdictDisposition};
     use crate::schwab::{Holdings, Position};
 
@@ -638,6 +634,56 @@ Watch the 2s10s and the labor prints.
         assert_eq!(tail, head, "order-independent");
         // Restated 150 + the next three quarters (99 + 98 + 97).
         assert_eq!(tail, Some(150.0 + 99.0 + 98.0 + 97.0));
+    }
+
+    #[test]
+    fn ttm_basis_canonicalizes_the_statement_rows_in_place() {
+        // An out-of-order feed (oldest first): the basis must read the true newest
+        // four — not the wire head — AND leave both statement vecs canonical on the
+        // fin, so every later reader (the driver ladder's trailing prints and share
+        // basis, the anchor windows, the pre-profit leg) inherits the same order.
+        let mut fin = fmp_only();
+        let mut rows = quarters(8, true, false);
+        rows.reverse(); // wire head becomes 2024-09-30
+        fin.quarterly_income = rows;
+        fin.quarterly_cash_flow = vec![
+            QuarterlyCashFlowRow {
+                period_end: "2026-03-31".into(),
+                filing_date: None,
+                free_cash_flow: Some(2.0),
+                operating_cash_flow: None,
+                capex: None,
+            },
+            QuarterlyCashFlowRow {
+                period_end: "2026-06-30".into(),
+                filing_date: None,
+                free_cash_flow: Some(3.0),
+                operating_cash_flow: None,
+                capex: None,
+            },
+        ];
+        assert!(apply_ttm_statement_basis(&mut fin));
+        // The sums read the true newest four quarters, not the reversed head.
+        assert_eq!(fin.revenue, Some(394.0));
+        assert_eq!(fin.revenue_prior, Some(378.0));
+        // And the rows are now canonical in place, on both statements.
+        assert_eq!(fin.quarterly_income[0].period_end, "2026-06-30");
+        assert_eq!(fin.quarterly_income[7].period_end, "2024-09-30");
+        assert_eq!(fin.quarterly_cash_flow[0].period_end, "2026-06-30");
+    }
+
+    #[test]
+    fn statement_rows_canonicalize_even_when_the_basis_is_not_adopted() {
+        // Three quarters cannot sum a TTM, but the rows still canonicalize: the
+        // driver ladder and anchor windows read this fin next, and their order
+        // guarantee must not depend on whether the basis adopted.
+        let mut fin = fmp_only();
+        let mut rows = quarters(3, true, false);
+        rows.reverse();
+        fin.quarterly_income = rows;
+        assert!(!apply_ttm_statement_basis(&mut fin));
+        assert_eq!(fin.quarterly_income[0].period_end, "2026-06-30");
+        assert_eq!(fin.quarterly_income[2].period_end, "2025-12-31");
     }
 
     #[test]

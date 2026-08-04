@@ -372,6 +372,34 @@ pub struct CompanyFinancials {
     pub gaps: Vec<String>,
 }
 
+/// The shared statement canonicalization policy, applied **in place**: quarterly
+/// income and cash-flow rows sort newest-first by `(period_end, filing_date)`
+/// descending and deduplicate by period end, so a duplicated period (a restatement
+/// served twice) resolves to the latest filing — never to wire order. The residual —
+/// equal period AND equal/absent filing dates with different values — keeps the
+/// first-served row.
+///
+/// Called once at the statement choke point (`dossier::apply_ttm_statement_basis`,
+/// which every statement-consuming path passes before any engine read), so the TTM
+/// sums, the driver ladder's growth-clamp trailing prints and share basis, and the
+/// anchor-observation windows all read one canonical order. The pre-profit overlay
+/// (`pre_profit::statement_inputs`) additionally holds the same rule locally — its
+/// order-independence is a standalone, test-pinned contract.
+pub fn canonicalize_statements(fin: &mut CompanyFinancials) {
+    fin.quarterly_income.sort_by(|a, b| {
+        b.period_end
+            .cmp(&a.period_end)
+            .then_with(|| b.filing_date.cmp(&a.filing_date))
+    });
+    fin.quarterly_income.dedup_by(|a, b| a.period_end == b.period_end);
+    fin.quarterly_cash_flow.sort_by(|a, b| {
+        b.period_end
+            .cmp(&a.period_end)
+            .then_with(|| b.filing_date.cmp(&a.filing_date))
+    });
+    fin.quarterly_cash_flow.dedup_by(|a, b| a.period_end == b.period_end);
+}
+
 /// The raw computed metrics behind the sub-scores — recorded on the run's audit so a
 /// verdict's basis is inspectable, and rendered into the interpretation prompt so the
 /// model reasons over real figures. Each is `None` when its inputs were missing.
@@ -2293,6 +2321,62 @@ mod tests {
         fin.consensus.as_mut().unwrap().eps_mid = Some(1.0);
         let drivers = driver_ladder(&fin).unwrap().drivers;
         assert!((drivers[1] - ttm * (1.0 + DRIVER_GROWTH_MIN)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn canonicalize_statements_restores_newest_first_and_resolves_restatements() {
+        // Reversed wire order with the newest income period served twice (a
+        // restatement): canonicalization sorts both statement vecs newest-first
+        // in place and keeps the later-filed print, never the wire head.
+        let mut fin = strong();
+        fin.quarterly_cash_flow = fin
+            .quarterly_income
+            .iter()
+            .take(4)
+            .map(|r| QuarterlyCashFlowRow {
+                period_end: r.period_end.clone(),
+                filing_date: None,
+                free_cash_flow: Some(1.0),
+                operating_cash_flow: None,
+                capex: None,
+            })
+            .collect();
+        let newest = fin.quarterly_income[0].period_end.clone();
+        fin.quarterly_income[0].filing_date = Some("2026-07-01".into());
+        let mut restated = fin.quarterly_income[0].clone();
+        restated.eps_diluted = Some(9.99);
+        restated.filing_date = Some("2026-08-01".into());
+        fin.quarterly_income.reverse();
+        fin.quarterly_income.push(restated); // the restatement arrives at the tail
+        fin.quarterly_cash_flow.reverse();
+
+        canonicalize_statements(&mut fin);
+        assert_eq!(fin.quarterly_income[0].period_end, newest);
+        assert_eq!(fin.quarterly_income[0].eps_diluted, Some(9.99), "latest filing wins");
+        assert_eq!(
+            fin.quarterly_income.iter().filter(|r| r.period_end == newest).count(),
+            1,
+            "the duplicated period deduplicates"
+        );
+        assert_eq!(fin.quarterly_cash_flow[0].period_end, newest);
+    }
+
+    #[test]
+    fn the_driver_ladder_reads_the_canonical_statement_order() {
+        // The wire-order parity guarantee: driver_ladder reads fin order directly,
+        // relying on the choke-point canonicalization upstream. A clamp-tripping
+        // consensus makes the trailing prints observable — a reversed feed left
+        // uncanonicalized would clamp against the OLDEST four quarters instead.
+        let ttm: f64 = 1.55 + 1.54 + 1.53 + 1.52;
+        let mut canonical = strong();
+        canonical.consensus.as_mut().unwrap().eps_mid = Some(20.0);
+        let mut shuffled = canonical.clone();
+        shuffled.quarterly_income.reverse();
+        canonicalize_statements(&mut shuffled);
+        let a = driver_ladder(&canonical).unwrap();
+        let b = driver_ladder(&shuffled).unwrap();
+        assert_eq!(a.drivers, b.drivers);
+        assert!((b.drivers[1] - ttm * (1.0 + DRIVER_GROWTH_MAX)).abs() < 1e-9);
     }
 
     #[test]

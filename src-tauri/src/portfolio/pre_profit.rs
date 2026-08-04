@@ -432,7 +432,8 @@ pub fn compute_overlay(
 /// The statement leg (`docs/portfolio-workflow.md` §Step 6b): every value from
 /// comparable quarterly statements, every missing input a recorded gap. The rows
 /// are canonicalized first — sorted newest-first and deduplicated by period end,
-/// the TTM statement basis's rule (`dossier::apply_ttm_statement_basis`) — so an
+/// the shared statement policy (`engine::canonicalize_statements`) held here
+/// locally so the overlay stays order-independent standalone — so an
 /// out-of-order or duplicated feed response cannot shift the TTM / YoY / 2q
 /// windows.
 fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> StatementInputs {
