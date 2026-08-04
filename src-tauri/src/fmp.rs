@@ -4214,11 +4214,19 @@ fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) {
         fund.gaps.push("FMP etf/info was malformed".to_string());
         return;
     };
-    fund.name = obj.get("name").and_then(Value::as_str).map(str::to_string);
-    fund.asset_class = obj
-        .get("assetClass")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    // Blank / whitespace-only strings normalize to `None` at this seam: the
+    // sweep's comparability gates key on presence, and a blank name or asset
+    // class read as "present" would fabricate a stored-true → fresh-false
+    // overlay clear or a fallback-shaped classification comparison.
+    let clean_str = |key: &str| {
+        obj.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    fund.name = clean_str("name");
+    fund.asset_class = clean_str("assetClass");
     fund.expense_ratio = obj
         .get("expenseRatio")
         .and_then(Value::as_f64)
@@ -4549,6 +4557,23 @@ mod suite_tests {
         assert!((fund.sector_weights[0].1 - 0.325).abs() < 1e-9);
         assert!((fund.country_weights[0].1 - 0.994).abs() < 1e-9);
         assert!(fund.gaps.is_empty(), "{:?}", fund.gaps);
+    }
+
+    #[test]
+    fn fund_info_blank_strings_normalize_to_none() {
+        // "" / whitespace-only name or assetClass reads as absent, never
+        // present: the sweep's comparability gates key on `is_some()`, and a
+        // blank name would fabricate a stored-true → fresh-false overlay clear
+        // while a blank asset class would dodge the degraded-family path.
+        let info = r#"[{"symbol":"VTI","name":"   ","assetClass":"","expenseRatio":0.03}]"#;
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 200, headers: vec![], body: info },
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+        ]);
+        let fund = source(&server.base_url).fetch_fund_data("VTI");
+        assert_eq!(fund.name, None);
+        assert_eq!(fund.asset_class, None);
     }
 
     #[test]

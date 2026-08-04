@@ -79,8 +79,11 @@ const OPTION_OVERLAY_FRAGMENTS: &[&str] = &[
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FundData {
     pub symbol: String,
+    /// Never blank: the adapter normalizes empty / whitespace-only strings to
+    /// `None` (the quick check's comparability gates key on presence).
     pub name: Option<String>,
-    /// The `etf/info` asset-class / mandate string (e.g. "Equity", "Fixed Income").
+    /// The `etf/info` asset-class / mandate string (e.g. "Equity", "Fixed
+    /// Income"). Never blank — same normalization contract as `name`.
     pub asset_class: Option<String>,
     /// Expense ratio as a decimal ratio (0.0009 for 9 bps).
     pub expense_ratio: Option<f64>,
