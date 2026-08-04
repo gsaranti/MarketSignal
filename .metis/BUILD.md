@@ -331,10 +331,13 @@ Analysis below — and the **quick check slice** (2026-08-03, PR #56; eight
 external review rounds to convergence), the engine-only between-run sweep,
 as-built under Portfolio Analysis below — and the **selective re-analysis
 slice** (2026-08-04, PR #57; internal + two Codex rounds to convergence),
-the chosen-subset re-run, as-built under Portfolio Analysis below. **Trade
-Opportunities and the remaining Portfolio depth slices (held-name refresh
-lane, pre-profit overlay, outcome learning, the 7b construction stage, the
-live research loop) remain designed, not built.** The load-bearing decisions:
+the chosen-subset re-run, as-built under Portfolio Analysis below — and the
+**pre-profit overlay slice** (2026-08-04, PR #58; internal + four Codex
+rounds to convergence), the deterministic execution/financing overlay,
+as-built under Portfolio Analysis below. **Trade Opportunities and the
+remaining Portfolio depth slices (held-name refresh lane, outcome learning,
+the 7b construction stage, the live research loop) remain designed, not
+built.** The load-bearing decisions:
 
 - **A local-only model layer, distinct from the cloud report (built).** A
   flexible local-model adapter (`local_model.rs`) calls one **user-installed,
@@ -583,13 +586,34 @@ live research loop) remain designed, not built.** The load-bearing decisions:
   badge family. The **held-name research refresh lane** checks at most two
   otherwise-reused-or-carried holdings per run against one named qualitative
   ledger driver / falsifier and can only force the normal full pass; it never
-  changes a verdict. A deterministic **pre-profit execution / financing
-  overlay** combines statement-derived runway / margin / capex / dilution with
-  app-validated operating observations from research; a first / history-thin
-  pass attempts a bounded latest-four-period backfill, and repeated misses
-  require a material shortfall in the same metric across distinct periods.
-  Severe multi-leg deterioration bounds conviction / actions without changing
-  the letter, and no single metric forces a sale. **Outcome
+  changes a verdict. The **pre-profit execution / financing overlay** (built
+  2026-08-04, PR #58, `portfolio/pre_profit.rs`; prompt contract
+  **portfolio-v5**): every priced stock records an overlay — eligibility
+  (TTM operating income ≤ 0, or no positive forward-EPS consensus with
+  negative TTM FCF; missing inputs = **not entered, gap recorded**) gating a
+  statement leg off the new quarterly cash-flow pull + balance-sheet cash
+  lines — liquid resources (an absent STI line reads zero, recorded), TTM
+  burn, runway months under the 24/12-month financing bands, capex intensity,
+  split-adjusted YoY diluted-share change (FMP's retroactive split adjustment
+  live-verified on NVDA's 10:1), and the two-quarter gross-margin
+  progression. The observation machinery — typed rows, structural validation
+  with typed rejections, period-keyed dedup merge, the ≥5% /
+  ≥2-of-latest-four-periods / ≥20% miss rules, the conjunctive severe state
+  (financing + dilution alone never suffices) — is built **producer-dormant**
+  (research stubbed, candidate list empty; the research-loop slice **must**
+  add holding-identity + source-text validation before activating the
+  producer). Consequences are engine-owned and triple-enforced — schema
+  narrowing of the action AND conviction enums, feasible-set bars
+  (constrained runway / severe strips the add family; severe restricts to
+  {trim, sell all} — action = lean until 7b), and a post-interpretation
+  min-clamp with `clamped_from` recorded; repeated miss caps Medium, severe
+  caps Low, the letter and targets never move. The full record rides
+  `HoldingAudit.pre_profit` (boundary-epsilon-tolerant thresholds; carried
+  whole by the selective carry; retained through abstention like the standing
+  ledger), and statement canonicalization is a **shared policy**: the overlay
+  and the TTM basis both sort (period_end, filing_date) descending + dedup,
+  so a served-twice restatement resolves to the latest filing, never wire
+  order. **Outcome
   learning** records
   recommendation-state-keyed decision episodes (matured archive +
   calibration-feature snapshot) under engine-computed labels — total-return
@@ -653,7 +677,11 @@ scale — and the transition-only `PriceOutsideBand` flag's live behavior:
 leave / re-enter / side-cross flag rates against the stamped authoring
 relation, since the authoring-time-outside design question was settled in
 code 2026-08-03 — the standing state no longer flags; note pre-sweep
-ledgers carry no stamp and read authored-inside until re-analyzed); 128 K
+ledgers carry no stamp and read authored-inside until re-analyzed); the
+first live **pre-profit overlay** read at 47-position scale (eligibility
+rates, financing-state distribution, unscorable-gap rates — including the
+STI-absent-reads-zero liquid-resources convention and the YoY share-change
+quarter-contiguity assumption); 128 K
 runner
 stability; distill speed; whether Stooq's PoW gate is permanent). **Trade
 Opportunities waits behind the whole block** (design settled — full strategy
@@ -699,9 +727,10 @@ pre-flight completed 2026-07-28, Ollama pinned v0.32.5 —
   above (target provenance, the softened dead-money weighing, the conviction
   definition, house-view scoping, the band-recalibration continuity NOTE).
 
-The **first three depth slices are done** — the **thesis ledger**
+The **first four depth slices are done** — the **thesis ledger**
 (2026-08-03, `portfolio-v4`), the **quick check** (2026-08-03, PR #56),
-and **selective re-analysis** (2026-08-04, PR #57) — as-built contracts in
+**selective re-analysis** (2026-08-04, PR #57), and the **pre-profit
+overlay** (2026-08-04, PR #58) — as-built contracts in
 §Local analysis suite. The ledger + sweep supplied the selective
 machinery's triggering surface (validated conditions with eval state +
 cadence tags, app-stamped monitor bands, the acknowledgment transition,
@@ -712,23 +741,30 @@ later slices consume: per-holding vintages (`effective_vintage`), the
 persisted `action_source` vocabulary, and the subset sweep
 (`quick_check::sweep_tail`).
 
-**Remaining in the block, in order: the depth slices** — the **pre-profit
-overlay** next, then **outcome learning** and the **7b construction
-stage** (which picks up the carried-action transition-rule validation —
-toward-hold-only plus the aggregate-validated context trim — over the
-now-persisted `action_source` + vintage stamps) — with the two small,
+**Remaining in the block, in order: the depth slices** — **outcome
+learning** next, then the **7b construction stage** (which picks up the
+carried-action transition-rule validation — toward-hold-only plus the
+aggregate-validated context trim — over the now-persisted `action_source` +
+vintage stamps) — with the two small,
 display-only result-review UI fixes (the Portfolio-page polish
 micro-slice; the section-scoped footer + report-nav slice) slotting
 anywhere between slices as breathers. Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
-shipped schemas don't preclude them. Two structural gaps ride the queue
+shipped schemas don't preclude them — but the research-loop slice **must**
+add holding-identity + source-text observation validation (plus a period-
+normalization hard rule) before activating the pre-profit producer, the
+obligation recorded in `pre_profit.rs`'s validator doc comment. Two structural gaps ride the queue
 rather than any one slice: **checkpoint/resume** stays docs-promised but
 unbuilt (the ledger persists only at run end), and only the **ledger legs
 of the 6g validator** exist — the metric-level input delta / what-changed
 attribution validator remains designed, owned by no shipped slice.
 
-Watches and deferrals: **Stooq now serves a JS-PoW interstitial to non-JS
-clients** (observed 2026-08-02 during the FMP light-EOD desk probe, which
+Watches and deferrals: the **target-engine driver ladder still reads raw
+quarterly-income order** (`engine.rs` ~1522 — the growth-clamp trailing
+prints and share basis; the anchor join is date-keyed) — the one remaining
+instance of the wire-order class the pre-profit slice canonicalized, a named
+unscheduled parity cleanup (Codex round-4 note). **Stooq now serves a
+JS-PoW interstitial to non-JS clients** (observed 2026-08-02 during the FMP light-EOD desk probe, which
 closed the adjustment-basis question — FMP's basis is Stooq's exact
 split-adjusted dividend-unadjusted convention —
 `docs/verification/2026-08-02-fmp-light-eod-adjustment-basis.md`), so the
