@@ -68,12 +68,13 @@ pub const MARKET_BENCHMARK: &str = "^spx";
 /// the label value is the last close at or before the window end either way).
 const COVERAGE_TOLERANCE_DAYS: i64 = 4;
 
-/// Entry-anchor bound: the "next session's close" after the anchor run must land
-/// within this many calendar days of it (long weekend + holiday headroom). A
-/// series whose first post-anchor bar sits beyond the bound never covered the
-/// window's start — a late series start or a partial refresh — so the window
-/// holds pending rather than scoring from a much-later bar as if it were the
-/// entry.
+/// Session-proximity bound around the anchor, in calendar days (long weekend +
+/// holiday headroom). It bounds both anchor-adjacent reads: the "next session's
+/// close" **after** the anchor (the entry) and the anchor-session close **at or
+/// before** it (the basis bridge). A bar beyond the bound on either side is not
+/// an anchor-adjacent session — a late series start, a sparse cache — so the
+/// entry case holds the window pending and the bridge case excludes the
+/// bridge-dependent reads, never a much-later entry or a years-stale bridge.
 const ENTRY_TOLERANCE_DAYS: i64 = 7;
 
 /// Calendar-day pad on fetch ranges, so the entry anchor (the first session after
@@ -746,10 +747,11 @@ impl<'a> SeriesCtx<'a> {
         }
         let needs_fetch = {
             let cached = &self.mem[&key];
-            let covers_start = cached
-                .first()
-                .and_then(|b| parse_iso_date_prefix(&b.date))
-                .is_some_and(|d| d <= from);
+            // Start coverage means an anchor-adjacent bar, not merely any bar
+            // before `from`: a sparse cache whose nearest pre-anchor bar is
+            // years old has a hole at the anchor, and serving it as covered
+            // would hand the callers a stale basis bridge.
+            let covers_start = anchor_session_close(cached, from).is_some();
             !(covers_start && covers_through(cached, through))
         };
         if needs_fetch && !self.fetch_attempted.contains(&key) {
@@ -810,6 +812,18 @@ fn entry_close(closes: &[DatedValue], anchor: NaiveDate) -> Option<&DatedValue> 
     first_close_after(closes, anchor).filter(|b| {
         parse_iso_date_prefix(&b.date)
             .is_some_and(|d| d <= anchor + chrono::Duration::days(ENTRY_TOLERANCE_DAYS))
+    })
+}
+
+/// The anchor-session close — the basis bridge's realized leg
+/// ([`ScoredLabel::anchor_close`]): the last close at or before the anchor,
+/// **bounded by the same [`ENTRY_TOLERANCE_DAYS`]** — a years-old bar from a
+/// sparse cache sits at the anchor's date position but is no decision-instant
+/// close, so it must exclude the bridge-dependent reads rather than scale them.
+fn anchor_session_close(closes: &[DatedValue], anchor: NaiveDate) -> Option<&DatedValue> {
+    close_at_or_before(closes, anchor).filter(|b| {
+        parse_iso_date_prefix(&b.date)
+            .is_some_and(|d| d >= anchor - chrono::Duration::days(ENTRY_TOLERANCE_DAYS))
     })
 }
 
@@ -885,8 +899,9 @@ pub fn mature_labels(
         let sector_bench = ep.sector.benchmark.clone();
         let sector_gap = ep.sector.unscorable.clone();
         // The label-basis close at the decision instant — the split-bridge the
-        // authored absolute prices convert through ([`ScoredLabel::anchor_close`]).
-        let anchor_close = close_at_or_before(&closes, anchor).map(|b| b.value);
+        // authored absolute prices convert through ([`ScoredLabel::anchor_close`]),
+        // session-proximity-bounded like the entry.
+        let anchor_close = anchor_session_close(&closes, anchor).map(|b| b.value);
         // The material-drawdown line converted into the **label basis** via that
         // bridge (`anchor_close × bear ⁄ authoring_spot`): the authored bear
         // target is an absolute price in its authoring-time basis, label-time
@@ -1411,9 +1426,10 @@ pub struct PlanInput<'a> {
     /// The run-level DGS2 print, for the snapshot.
     pub dgs2: Option<f64>,
     /// Symbols whose active episode row was unreadable and unsuperseded
-    /// ([`lost_active_symbols`], uppercase) — a symbol here with no readable
-    /// active episode re-seeds via a debut, so a lost row can't leave the
-    /// current decision untracked until the next state change.
+    /// ([`lost_active_symbols`], uppercase) — a symbol here re-seeds via a
+    /// debut (any readable active is an older predecessor, never the lost
+    /// decision's carrier), so a lost row can't leave the current decision
+    /// untracked until the next state change.
     pub unreadable_active_symbols: HashSet<String>,
 }
 
@@ -1452,21 +1468,19 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
         // stable holding, but a symbol with no episode at all was never seeded —
         // not a post-maturity re-affirmation, which leaves matured history
         // behind. **Recovery**: a symbol whose active episode row was unreadable
-        // and unsuperseded re-seeds when no readable active episode remains —
-        // otherwise the lost row would leave the current decision untracked
-        // until the next genuine state change (the corrupt row itself is never
-        // deleted).
+        // and unsuperseded re-seeds unconditionally — `lost_active` membership
+        // already means nothing readable is newer than the corrupt row, so any
+        // readable active episode is an older predecessor whose forecast stopped
+        // accruing when the lost successor opened; extending it would graft the
+        // current decision onto a forecast it never re-affirmed (the corrupt row
+        // itself is never deleted).
         if matches!(decision, EpisodeDecision::Extend(_))
             && !matches!(rec_state(verdict), RecState::Abstained)
         {
             let any_readable = episodes
                 .iter()
                 .any(|e| e.symbol.eq_ignore_ascii_case(&verdict.symbol));
-            let active_readable = episodes.iter().any(|e| {
-                e.state == EpisodeState::Active && e.symbol.eq_ignore_ascii_case(&verdict.symbol)
-            });
-            let lost_active = input.unreadable_active_symbols.contains(&key);
-            if !any_readable || (lost_active && !active_readable) {
+            if !any_readable || input.unreadable_active_symbols.contains(&key) {
                 decision = EpisodeDecision::Open(vec![OpenReason::Debut]);
             }
         }
@@ -2330,24 +2344,52 @@ mod tests {
         // dies, so a later post-maturity re-affirmation can never re-open off it.
         assert!(lost_active_symbols(&skipped, &episodes).is_empty());
 
-        // A readable active episode beside a lost row takes the ordinary extend.
-        let mut with_active = vec![old_episode("MSFT", c1)];
+        // A readable active episode *older* than the lost row is a predecessor
+        // whose forecast stopped accruing when the lost successor opened —
+        // recovery still re-seeds, and the predecessor absorbs no observation.
+        let mut with_older_active = vec![old_episode("MSFT", c1)];
         let skipped_msft = vec![store::SkippedEpisodeRow {
             episode_id: "ep-bad-2".into(),
             symbol: "MSFT".into(),
             anchor_at: "2026-06-01T00:00:00+00:00".into(),
             state: "active".into(),
         }];
-        let lost = lost_active_symbols(&skipped_msft, &with_active);
+        let lost = lost_active_symbols(&skipped_msft, &with_older_active);
         assert!(lost.contains("MSFT"));
         let prior_m = vec![fresh(verdict("MSFT", Action::Hold, (0.03, 0.06)), c1)];
         let same_m = vec![fresh(verdict("MSFT", Action::Hold, (0.03, 0.06)), c2)];
         let mut input = plan_input("run-2", c2, &same_m, Some(&prior_m), &sector);
         input.unreadable_active_symbols = lost;
-        let s = plan_episodes(&input, &mut with_active);
-        assert!(s.opened.is_empty(), "a readable active episode extends as usual");
-        assert_eq!(s.extended, vec!["MSFT".to_string()]);
-        assert_eq!(with_active.len(), 1);
+        let s = plan_episodes(&input, &mut with_older_active);
+        assert_eq!(
+            s.opened.len(),
+            1,
+            "an older active predecessor never absorbs the lost decision"
+        );
+        assert_eq!(s.opened[0].reasons, vec![OpenReason::Debut]);
+        assert!(with_older_active[0].observations.is_empty());
+        assert_eq!(with_older_active.len(), 2);
+
+        // A readable episode *newer* than the lost row supersedes it entirely:
+        // the flag never forms, and the ordinary extend applies.
+        let c_new = "2026-07-01T12:00:00+00:00";
+        let mut with_newer_active = vec![old_episode("NVDA", c_new)];
+        let skipped_nvda = vec![store::SkippedEpisodeRow {
+            episode_id: "ep-bad-3".into(),
+            symbol: "NVDA".into(),
+            anchor_at: "2026-06-01T00:00:00+00:00".into(),
+            state: "active".into(),
+        }];
+        let lost = lost_active_symbols(&skipped_nvda, &with_newer_active);
+        assert!(lost.is_empty(), "a newer readable episode supersedes the lost row");
+        let prior_n = vec![fresh(verdict("NVDA", Action::Hold, (0.03, 0.06)), c_new)];
+        let same_n = vec![fresh(verdict("NVDA", Action::Hold, (0.03, 0.06)), c2)];
+        let mut input = plan_input("run-2", c2, &same_n, Some(&prior_n), &sector);
+        input.unreadable_active_symbols = lost;
+        let s = plan_episodes(&input, &mut with_newer_active);
+        assert!(s.opened.is_empty());
+        assert_eq!(s.extended, vec!["NVDA".to_string()]);
+        assert_eq!(with_newer_active.len(), 1);
     }
 
     #[test]
@@ -2877,6 +2919,59 @@ mod tests {
             ev.lead_time_trading_days,
             Some(1),
             "confirmed one bar before the breach"
+        );
+    }
+
+    #[test]
+    fn a_stale_pre_anchor_bar_never_serves_as_the_bridge() {
+        // A sparse cache holds a years-old bar, a valid next-session entry, and
+        // window-end coverage. The labels still score (they need no bridge),
+        // but the bridge-dependent reads — band calibration, lead-time
+        // stamping — must exclude rather than scale through the stale close.
+        let conn = mem_conn();
+        store::merge_price_bars(
+            &conn,
+            "SPRS",
+            &bars(&[
+                ("2023-01-10", 80.0),
+                ("2025-06-03", 50.0),
+                ("2025-09-01", 48.0),
+                ("2026-01-15", 45.0),
+                ("2026-06-05", 52.0),
+            ]),
+        )
+        .unwrap();
+        let mut ep = old_episode("SPRS", "2025-06-02T12:00:00+00:00");
+        ep.falsifier_events.push(FalsifierEvent {
+            condition_id: "c-1".into(),
+            confirmed_at: "2025-08-01".into(),
+            confirmation_observation_id: "obs-1".into(),
+            post_maturity: false,
+            lead_time_trading_days: None,
+            no_material_drawdown: None,
+        });
+        let mut episodes = vec![ep];
+        let mut ctx = SeriesCtx::new(&conn, None);
+        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
+        assert!(
+            summary.matured.iter().all(|m| m.outcome == "scored"),
+            "labels score without the bridge"
+        );
+        let scored = scored_for(&episodes[0], 12).expect("scored");
+        assert_eq!(
+            scored.anchor_close, None,
+            "a 2023 bar is no decision-instant bridge"
+        );
+        let ev = &episodes[0].falsifier_events[0];
+        assert!(
+            ev.lead_time_trading_days.is_none() && ev.no_material_drawdown.is_none(),
+            "lead time stays unstamped, excluded from the read"
+        );
+        let reads = derive_reads(&episodes);
+        assert!(
+            reads.target_calibration.iter().all(|t| t.scored == 0),
+            "no band scores through a stale bridge"
         );
     }
 
