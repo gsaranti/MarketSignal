@@ -66,11 +66,11 @@ pub const NOT_RATED_MATERIAL_MIN_WEIGHT: f64 = 0.05;
 /// plan; tight enough that a real breach still trips. Calibratable.
 pub const WEIGHT_EPS: f64 = 0.005;
 
-/// Rounding tolerance for the **per-holding structural** checks — range
-/// ordering, the sell-all zero range, the rung-band bounds. These compare the
-/// model's own proposed numbers against exact engine values (no drift enters),
-/// so the tolerance covers decimal rounding only: a sell-all may not retain
-/// 0.5% of the book, and an inverted range may not pass, under the wide eps.
+/// Rounding tolerance for the **rung-band bound** check alone: the bands are
+/// printed into the prompt at four decimals, so a model echoing a printed edge
+/// can sit half a print-step off the exact engine value. Range ordering and the
+/// sell-all zero range compare the model's own numbers against each other /
+/// against literal zero — no printed value enters — so those checks are exact.
 pub const STRUCT_EPS: f64 = 1e-4;
 
 /// Dollar tolerance for the profile-gated funded-by-trims check.
@@ -300,11 +300,19 @@ pub fn transition_actions(carried: Action) -> (Vec<Action>, bool) {
 
 // ---- OCC option-symbol parsing ---------------------------------------------------
 
+/// One parsed OCC option identity.
+pub struct OccOption {
+    pub root: String,
+    /// Expiry as `YYYY-MM-DD` (OCC dates are post-2000 by construction).
+    pub expiry: String,
+    pub is_call: bool,
+    pub strike: f64,
+}
+
 /// Parse an OCC-format option symbol (root + `YYMMDD` + `C`/`P` + 8-digit
-/// strike × 1000, spaces tolerated) into `(underlying root, call?, strike)`.
-/// `None` on anything else — a consumer then records a typed gap, never a
-/// guessed number.
-pub fn occ_parts(symbol: &str) -> Option<(String, bool, f64)> {
+/// strike × 1000, spaces tolerated). `None` on anything else — a consumer then
+/// records a typed gap, never a guessed number.
+pub fn occ_parts(symbol: &str) -> Option<OccOption> {
     let compact: String = symbol.chars().filter(|c| !c.is_whitespace()).collect();
     if compact.len() < 16 {
         return None;
@@ -321,63 +329,120 @@ pub fn occ_parts(symbol: &str) -> Option<(String, bool, f64)> {
     if strike.len() != 8 || !strike.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    strike
-        .parse::<f64>()
-        .ok()
-        .map(|s| (root.to_string(), cp == "C", s / 1000.0))
+    strike.parse::<f64>().ok().map(|s| OccOption {
+        root: root.to_string(),
+        expiry: format!("20{}-{}-{}", &date[0..2], &date[2..4], &date[4..6]),
+        is_call: cp == "C",
+        strike: s / 1000.0,
+    })
 }
 
 /// The strike alone — the not-rated notional's leg.
 pub fn occ_strike(symbol: &str) -> Option<f64> {
-    occ_parts(symbol).map(|(_, _, strike)| strike)
+    occ_parts(symbol).map(|o| o.strike)
 }
 
 /// Classify the holdings snapshot's same-underlying option overlay for one
-/// equity position (`docs/portfolio-analysis.md` §Portfolio action): each held
-/// OCC option row on the same root reads as a **covered call** (short call over
-/// a long position) or **protective put** (long put over a long position), with
-/// a share-coverage estimate; anything else renders as an unclassified
-/// same-underlying option. `None` when no held option shares the underlying.
+/// equity position (`docs/portfolio-analysis.md` §The per-holding pipeline —
+/// the dossier's typed-overlay contract, honored here from the snapshot's OCC
+/// rows: covered-call / protective-put / collar / other, **a naked or partial
+/// short call never reads as covered**, coverage ratio + strike / expiry
+/// carried; per-leg delta stays unavailable at 7a — no chain read here).
+/// `None` when no held option shares the underlying.
 fn same_underlying_overlay(
     underlying: &crate::schwab::Position,
     positions: &[crate::schwab::Position],
 ) -> Option<String> {
     let shares = underlying.quantity;
+    let legs: Vec<(OccOption, f64)> = positions
+        .iter()
+        .filter(|p| p.asset_class == AssetClass::OptionContract)
+        .filter_map(|p| occ_parts(&p.symbol).map(|o| (o, p.quantity)))
+        .filter(|(o, _)| o.root.eq_ignore_ascii_case(&underlying.symbol))
+        .collect();
+    if legs.is_empty() {
+        return None;
+    }
+    // Aggregate the two hedge-shaped sides; everything else is `other`.
+    let mut short_call = 0.0_f64; // contracts
+    let mut long_put = 0.0_f64;
+    let mut call_leg: Option<&OccOption> = None; // detail shown when single-leg
+    let mut put_leg: Option<&OccOption> = None;
+    let mut other: Vec<String> = Vec::new();
+    for (o, qty) in &legs {
+        match (o.is_call, *qty < 0.0) {
+            (true, true) if shares > 0.0 => {
+                call_leg = if short_call == 0.0 { Some(o) } else { None };
+                short_call += -qty;
+            }
+            (false, false) if shares > 0.0 => {
+                put_leg = if long_put == 0.0 { Some(o) } else { None };
+                long_put += qty;
+            }
+            (is_call, is_short) => other.push(format!(
+                "{} {} ×{:.0}",
+                if is_short { "short" } else { "long" },
+                if is_call { "call" } else { "put" },
+                qty.abs()
+            )),
+        }
+    }
+    let leg_detail = |leg: Option<&OccOption>| -> String {
+        leg.map(|o| format!(" @{:.0} exp {}", o.strike, o.expiry))
+            .unwrap_or_default()
+    };
     let mut notes: Vec<String> = Vec::new();
-    for p in positions {
-        if p.asset_class != AssetClass::OptionContract {
-            continue;
-        }
-        let Some((root, is_call, _)) = occ_parts(&p.symbol) else {
-            continue;
-        };
-        if !root.eq_ignore_ascii_case(&underlying.symbol) {
-            continue;
-        }
-        let label = match (is_call, p.quantity < 0.0, shares > 0.0) {
-            (true, true, true) => "covered call",
-            (false, false, true) => "protective put",
-            _ => "same-underlying option",
-        };
-        let coverage = if shares > 0.0 {
-            format!(
-                ", ~{:.0}% of shares",
-                (p.quantity.abs() * 100.0 / shares * 100.0).round()
-            )
+    if short_call > 0.0 {
+        let call_shares = short_call * 100.0;
+        if call_shares <= shares {
+            notes.push(format!(
+                "covered call ({:.0} contract{}{} over ~{:.0}% of shares)",
+                short_call,
+                if short_call == 1.0 { "" } else { "s" },
+                leg_detail(call_leg),
+                (call_shares / shares * 100.0).round(),
+            ));
         } else {
-            String::new()
-        };
+            // A naked or partial short call must never read as covered.
+            notes.push(format!(
+                "short call only ~{:.0}% covered ({:.0} contract{}{} vs {:.0} shares — the \
+                 remainder is naked)",
+                (shares / call_shares * 100.0).round(),
+                short_call,
+                if short_call == 1.0 { "" } else { "s" },
+                leg_detail(call_leg),
+                shares,
+            ));
+        }
+    }
+    if long_put > 0.0 {
+        let put_shares = long_put * 100.0;
         notes.push(format!(
-            "{label} ({:.0} contract{}{coverage})",
-            p.quantity.abs(),
-            if p.quantity.abs() == 1.0 { "" } else { "s" },
+            "protective put ({:.0} contract{}{} protecting ~{:.0}% of shares)",
+            long_put,
+            if long_put == 1.0 { "" } else { "s" },
+            leg_detail(put_leg),
+            (put_shares / shares * 100.0).min(100.0).round(),
         ));
     }
-    if notes.is_empty() {
-        None
+    let mut rendered = if short_call > 0.0 && long_put > 0.0 {
+        format!("collar: {}", notes.join(" + "))
     } else {
-        Some(notes.join("; "))
+        notes.join("; ")
+    };
+    if !other.is_empty() {
+        let other_note = format!(
+            "other same-underlying leg{}: {} (net delta unscored — no chain read at 7a)",
+            if other.len() == 1 { "" } else { "s" },
+            other.join(", ")
+        );
+        if rendered.is_empty() {
+            rendered = other_note;
+        } else {
+            rendered = format!("{rendered}; {other_note}");
+        }
     }
+    Some(rendered)
 }
 
 // ---- Step 7a: the aggregate builder --------------------------------------------
@@ -1021,13 +1086,13 @@ pub fn validate_construction(
             continue;
         }
         let (low, high) = (proposal.target_weight_low, proposal.target_weight_high);
-        if !(low.is_finite() && high.is_finite()) || low > high + STRUCT_EPS {
+        if !(low.is_finite() && high.is_finite()) || low > high {
             violations.push(Violation::RangeInverted {
                 symbol: row.symbol.clone(),
             });
             continue;
         }
-        if action == Action::SellAll && high > STRUCT_EPS {
+        if action == Action::SellAll && high > 0.0 {
             violations.push(Violation::SellAllNonZeroRange {
                 symbol: row.symbol.clone(),
             });
@@ -2032,7 +2097,8 @@ mod tests {
             HoldingProposalDraft {
                 action: "sell-all".into(),
                 target_weight_low: 0.0,
-                target_weight_high: 0.004,
+                // Below even STRUCT_EPS: the sell-all zero range is exact.
+                target_weight_high: 0.00005,
                 rationale: "x".into(),
                 divergence_cause: None,
                 divergence_note: None,
@@ -2052,7 +2118,8 @@ mod tests {
             "AAA",
             HoldingProposalDraft {
                 action: "hold".into(),
-                target_weight_low: 0.104,
+                // Inverted by less than STRUCT_EPS: ordering is exact.
+                target_weight_low: 0.10005,
                 target_weight_high: 0.100,
                 rationale: "x".into(),
                 divergence_cause: None,
@@ -2751,12 +2818,42 @@ mod tests {
         let positions = vec![equity.clone(), long_put];
         let overlay = same_underlying_overlay(&equity, &positions).unwrap();
         assert!(overlay.contains("protective put"), "{overlay}");
-        // A long call over a long position is neither pattern.
+        // A long call over a long position is neither hedge pattern — `other`.
         let equity2 = position("NVDA", AssetClass::Stock, 40_000.0);
         let long_call = position("NVDA  260117C00900000", AssetClass::OptionContract, 800.0);
         let positions2 = vec![equity2.clone(), long_call];
         let overlay2 = same_underlying_overlay(&equity2, &positions2).unwrap();
-        assert!(overlay2.contains("same-underlying option"), "{overlay2}");
+        assert!(overlay2.contains("other same-underlying leg"), "{overlay2}");
+        assert!(overlay2.contains("long call"), "{overlay2}");
+    }
+
+    #[test]
+    fn a_partial_short_call_never_reads_covered_and_a_collar_combines() {
+        // 2 short contracts (200 shares) over 50 held shares: only ~25% covered
+        // — the doc contract's "a naked short call must never read as covered".
+        let mut equity = position("AAPL", AssetClass::Stock, 10_000.0);
+        equity.quantity = 50.0;
+        let mut short_calls = position("AAPL  260117C00200000", AssetClass::OptionContract, 400.0);
+        short_calls.quantity = -2.0;
+        let positions = vec![equity.clone(), short_calls];
+        let overlay = same_underlying_overlay(&equity, &positions).unwrap();
+        assert!(!overlay.contains("covered call"), "{overlay}");
+        assert!(overlay.contains("short call only ~25% covered"), "{overlay}");
+        assert!(overlay.contains("naked"), "{overlay}");
+        assert!(overlay.contains("@200 exp 2026-01-17"), "{overlay}");
+
+        // A fully covered short call plus a long put over the same shares reads
+        // as one collar, both coverage legs shown.
+        let equity = position("MSFT", AssetClass::Stock, 40_000.0);
+        let mut short_call = position("MSFT  260619C00450000", AssetClass::OptionContract, 900.0);
+        short_call.quantity = -1.0;
+        let mut long_put = position("MSFT  260619P00350000", AssetClass::OptionContract, 700.0);
+        long_put.quantity = 1.0;
+        let positions = vec![equity.clone(), short_call, long_put];
+        let overlay = same_underlying_overlay(&equity, &positions).unwrap();
+        assert!(overlay.starts_with("collar:"), "{overlay}");
+        assert!(overlay.contains("covered call"), "{overlay}");
+        assert!(overlay.contains("protective put"), "{overlay}");
     }
 
     // ---- prompts ---------------------------------------------------------------

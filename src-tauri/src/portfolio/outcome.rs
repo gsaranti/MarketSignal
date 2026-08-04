@@ -1268,7 +1268,13 @@ pub fn tag_alignment(
 /// pre-committed range, never the decided sizing range: even 7b's validated range
 /// is rung-band-anchored to the current weight, so it tracks weight drift —
 /// input movement, not a decision (the drift-free decided range is recorded on
-/// the episode payload instead).
+/// the episode payload instead). A 7b decided-range-only change therefore
+/// *extends* — the as-built narrowing `docs/portfolio-analysis.md §Outcome
+/// learning` documents (miss-not-mint): any absolute comparison of band-anchored
+/// ranges mints episodes from pure weight drift (a re-affirmed mid-band hold on
+/// a +30% runner stops overlapping its anchor range), and a band-relative
+/// comparison needs a material-move threshold no live data yet calibrates —
+/// a named big-run watch, not an oversight.
 #[derive(Debug, Clone, PartialEq)]
 enum RecState {
     Priced {
