@@ -756,7 +756,7 @@ async fn generate_portfolio_manual(
         let quick_data = if selected.is_empty() {
             None
         } else {
-            let qc_fmp = FmpDataSource::new(fmp_key)
+            let qc_fmp = FmpDataSource::new(fmp_key.clone())
                 .map_err(|e| e.to_string())?
                 .with_context(ctx.clone());
             let qc_sec = sec::SecEdgarSource::new()
@@ -779,6 +779,29 @@ async fn generate_portfolio_manual(
             quick_data: qd,
         });
 
+        // The outcome pass's label-time retrieval surface (Stooq rung, FMP
+        // dated-EOD rung, FMP dividends) plus the local embedder for the
+        // matured-read durable learnings (`docs/portfolio-analysis.md` §Outcome
+        // learning). The embedder is best-effort: a client that fails to build
+        // just skips the learning rows, never the run.
+        let out_stooq = stooq::StooqSource::new()
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let out_fmp = FmpDataSource::new(fmp_key)
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        let outcome_prices = portfolio::outcome::LiveOutcomePrices {
+            stooq: out_stooq,
+            fmp: out_fmp,
+        };
+        let outcome_embedder = embedding::LocalEmbedder::new(&endpoint, &roster.embedder).ok();
+        let outcome_sources = portfolio::outcome::OutcomeSources {
+            price: &outcome_prices,
+            embedder: outcome_embedder
+                .as_ref()
+                .map(|e| e as &dyn embedding::Embedder),
+        };
+
         portfolio::job::run_portfolio_job(
             holdings.as_ref(),
             &company,
@@ -786,6 +809,7 @@ async fn generate_portfolio_manual(
             &analyst,
             &profile,
             selective,
+            Some(&outcome_sources),
             &paths,
             &guard,
             &ctx,

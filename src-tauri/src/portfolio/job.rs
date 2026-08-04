@@ -91,6 +91,13 @@ pub trait CompanyDataSource {
     fn sector_pe_history(&self, _sector: &str) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
         Ok(vec![])
     }
+    /// The FMP profile's sector label for a stock — the outcome episodes'
+    /// entry-stamped sector identity (`docs/portfolio-analysis.md §Outcome
+    /// learning`). Fail-soft: `None` types the identity `sector-unscorable`, never
+    /// a guessed benchmark. Defaults to `None` so offline stubs stay small.
+    fn profile_sector(&self, _symbol: &str) -> Option<String> {
+        None
+    }
 }
 
 /// The run-level market-context source (`docs/portfolio-workflow.md` §Step 5): the
@@ -279,6 +286,10 @@ impl CompanyDataSource for LiveCompanyData {
         Ok(rows)
     }
 
+    fn profile_sector(&self, symbol: &str) -> Option<String> {
+        self.fmp.fetch_profile_sector(symbol)
+    }
+
     fn facts(&self, symbol: &str) -> SecData {
         match self.cik.resolve(symbol) {
             // A ticker with no EDGAR mapping: SEC could not be consulted.
@@ -369,6 +380,7 @@ pub fn run_portfolio_job(
     analyst: &dyn HoldingAnalyst,
     profile: &InvestorProfile,
     selective: Option<SelectiveRun<'_>>,
+    outcome_sources: Option<&crate::portfolio::outcome::OutcomeSources<'_>>,
     paths: &ReportPaths,
     guard: &RunGuard,
     ctx: &RunContext,
@@ -408,6 +420,7 @@ pub fn run_portfolio_job(
         analyst,
         profile,
         selective,
+        outcome_sources,
         paths,
         &conn,
         ctx,
@@ -481,6 +494,7 @@ fn run_analysis(
     analyst: &dyn HoldingAnalyst,
     profile: &InvestorProfile,
     selective: Option<SelectiveRun<'_>>,
+    outcome_sources: Option<&crate::portfolio::outcome::OutcomeSources<'_>>,
     paths: &ReportPaths,
     conn: &Connection,
     ctx: &RunContext,
@@ -645,6 +659,15 @@ fn run_analysis(
         Vec<crate::portfolio::fund::SectorPe>,
     > = std::collections::HashMap::new();
 
+    // The entry-stamped sector identities read at this run's fresh passes — one
+    // fail-soft profile call per fresh-passed stock (`docs/portfolio-analysis.md`
+    // §Outcome learning); a fund is a multi-sector vehicle by construction, typed
+    // `sector-unscorable` without a profile call.
+    let mut sector_by_symbol: std::collections::HashMap<
+        String,
+        crate::portfolio::outcome::SectorIdentity,
+    > = std::collections::HashMap::new();
+
     for position in &holdings.positions {
         // A selective run analyzes only the work-list; everything else carries
         // its prior verdict forward vintage-stamped (appended after the loop).
@@ -668,6 +691,16 @@ fn run_analysis(
             position.asset_class,
             crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
         );
+        if position.asset_class.is_gradeable() {
+            let identity = if is_fund {
+                crate::portfolio::outcome::SectorIdentity::unscorable("multi-sector vehicle (fund)")
+            } else {
+                crate::portfolio::outcome::SectorIdentity::resolve(
+                    company_data.profile_sector(&position.symbol).as_deref(),
+                )
+            };
+            sector_by_symbol.insert(position.symbol.to_ascii_uppercase(), identity);
+        }
         let mut fmp_financials = if is_fund {
             company_data.fund_financials(&position.symbol)
         } else {
@@ -912,8 +945,76 @@ fn run_analysis(
         deep_history_fallbacks,
         rates.history_gap.is_some(),
     );
+    // ---- Outcome learning (`docs/portfolio-workflow.md` §Step 7a / §Step 8) ----
+    // The deterministic outcome half: tag active episodes' net alignment from this
+    // run's diff, refresh label-time price series through the shared bar cache and
+    // record any newly due window labels (fail-soft — a failed retrieval leaves a
+    // label pending, never a run failure), then append-or-extend this run's
+    // decision episodes and derive the scorecard reads, all landing on the run
+    // blob's outcome records.
+    ctx.step_started("outcome", "Outcome learning");
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let run_date: String = created_at.chars().take(10).collect();
+    let (mut episodes, unreadable_active_symbols) = match store::load_episodes(conn) {
+        Ok(load) => {
+            // A skipped *active* row (unreadable JSON, readable SQL columns)
+            // re-seeds its symbol through the plan's recovery seam; the row
+            // itself is never deleted.
+            let lost =
+                crate::portfolio::outcome::lost_active_symbols(&load.skipped, &load.episodes);
+            (load.episodes, lost)
+        }
+        Err(e) => {
+            // Store-level failure only — a single bad row is skipped and logged
+            // inside the loader, never an error here. Proceeding with an empty
+            // set re-debuts the whole book (the never-seeded-symbol rule); this
+            // log line is what makes that state diagnosable rather than silent.
+            eprintln!(
+                "outcome learning: episode store unreadable ({e}) — proceeding with an empty set"
+            );
+            (Vec::new(), std::collections::HashSet::new())
+        }
+    };
+    let (alignment_tags, align_changed) = crate::portfolio::outcome::tag_alignment(
+        &mut episodes,
+        prior_run_id.as_deref(),
+        &holdings,
+        &holdings_diff,
+    );
+    let mut series_ctx =
+        crate::portfolio::outcome::SeriesCtx::new(conn, outcome_sources.map(|s| s.price));
+    let label_summary =
+        crate::portfolio::outcome::mature_labels(&mut episodes, &mut series_ctx, today, &run_date);
+    drop(series_ctx);
+    let plan = crate::portfolio::outcome::plan_episodes(
+        &crate::portfolio::outcome::PlanInput {
+            run_id: &run_id,
+            created_at: &created_at,
+            verdicts: &verdicts,
+            audits: &audits,
+            prior_verdicts: prior_run.as_ref().map(|r| r.verdicts.as_slice()),
+            sector_by_symbol: &sector_by_symbol,
+            dgs2: Some(rates.dgs2),
+            unreadable_active_symbols,
+        },
+        &mut episodes,
+    );
+    let reads = crate::portfolio::outcome::derive_reads(&episodes);
+    let outcome_records = crate::portfolio::outcome::OutcomeRecords {
+        opened: plan.opened,
+        extended: plan.extended,
+        alignment_tags,
+        matured: label_summary.matured,
+        pending_coverage: label_summary.pending_coverage,
+        reads,
+    };
+    let mut changed_episodes = align_changed;
+    changed_episodes.extend(label_summary.changed);
+    changed_episodes.extend(plan.changed);
+    ctx.step_finished("outcome", "ok", None);
+
     let run = PortfolioRun {
-        run_id: uuid::Uuid::new_v4().to_string(),
+        run_id,
         created_at: created_at.clone(),
         holdings,
         verdicts,
@@ -928,10 +1029,53 @@ fn run_analysis(
             dgs10_as_of: rates.dgs10_date.clone(),
             fetched_at: created_at.clone(),
         }),
+        outcome: Some(outcome_records),
     };
 
     ctx.step_started("persist", "Persist run");
-    store::record_run(conn, &run)?;
+    // One transaction: the run row and the episode mutations it claims land (and
+    // prune) together, so a failed write can never leave the episode store
+    // claiming a run that was never persisted.
+    let tx = conn.unchecked_transaction()?;
+    store::insert_run(&tx, &run)?;
+    for ep in episodes
+        .iter()
+        .filter(|e| changed_episodes.contains(&e.episode_id))
+    {
+        store::save_episode(&tx, ep)?;
+    }
+    store::prune_runs(&tx, crate::portfolio::PORTFOLIO_RUN_RETENTION)?;
+    store::prune_matured_episodes(&tx, crate::portfolio::outcome::MATURED_ARCHIVE_CAP)?;
+    tx.commit()?;
+
+    // Matured reads embed as durable learnings in the Portfolio memory partition —
+    // best-effort: a failed or invalid embedding costs the memory row (logged),
+    // never the persisted run (`docs/portfolio-analysis.md` §Outcome learning).
+    if let (Some(sources), Some(records)) = (outcome_sources, run.outcome.as_ref()) {
+        if let Some(embedder) = sources.embedder {
+            if let Some(text) = crate::portfolio::outcome::matured_learning_text(records, &run_date)
+            {
+                match embedder.embed(&text) {
+                    Ok(vector) => {
+                        if let Err(e) = crate::vector_memory::insert_memory(
+                            conn,
+                            crate::vector_memory::MemoryKind::Learning,
+                            crate::vector_memory::MemoryNamespace::Portfolio,
+                            None,
+                            &text,
+                            &vector,
+                            &created_at,
+                        ) {
+                            eprintln!("outcome learning: durable-learning insert failed: {e}");
+                        }
+                    }
+                    Err(e) => eprintln!(
+                        "outcome learning: matured-read embedding failed (learning row skipped): {e}"
+                    ),
+                }
+            }
+        }
+    }
     // The successful full pass consumed each analyzed holding's triggering
     // observations in interpretation / continuity (the acknowledgment stamps ride
     // the 6g seam), so those holdings' quick-check flags, badges, and carried
@@ -1463,6 +1607,7 @@ mod tests {
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
             None,
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1513,6 +1658,7 @@ mod tests {
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
             None,
+            None,
             &recovered_paths,
             &guard,
             &ctx(),
@@ -1538,6 +1684,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             &unrecovered_paths,
             &RunGuard::default(),
@@ -1565,6 +1712,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             &paths,
             &guard,
@@ -1602,6 +1750,7 @@ mod tests {
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
             None,
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1632,6 +1781,7 @@ mod tests {
             &HistoryGapMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             &paths,
             &guard,
@@ -1695,6 +1845,7 @@ mod tests {
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
             None,
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1755,6 +1906,7 @@ mod tests {
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
             None,
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1791,6 +1943,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             &paths,
             &guard,
@@ -1856,6 +2009,7 @@ mod tests {
             &analyst,
             &InvestorProfile::default_fixture(),
             None,
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1907,6 +2061,7 @@ mod tests {
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
             None,
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1934,6 +2089,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 None,
                 &paths,
                 &guard,
@@ -1992,6 +2148,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 None,
                 &paths,
                 &guard,
@@ -2088,6 +2245,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 None,
                 &paths,
                 &guard,
@@ -2197,6 +2355,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 None,
                 &paths,
                 &guard,
@@ -2355,6 +2514,7 @@ mod tests {
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
             None,
+            None,
             paths,
             &RunGuard::default(),
             &ctx(),
@@ -2382,6 +2542,7 @@ mod tests {
                 selected: selected.iter().map(|s| s.to_string()).collect(),
                 quick_data: quick,
             }),
+            None,
             paths,
             &RunGuard::default(),
             &ctx(),
@@ -2391,6 +2552,186 @@ mod tests {
             PortfolioJobOutcome::Successful(run) => *run,
             other => panic!("expected success, got {other:?}"),
         }
+    }
+
+    /// Synthetic weekday closes through today (per-symbol offset), so a backdated
+    /// episode's windows are all coverable in-run; no dividends.
+    struct SyntheticOutcomePrices;
+
+    impl crate::portfolio::outcome::OutcomePriceSource for SyntheticOutcomePrices {
+        fn daily_closes(
+            &self,
+            symbol: &str,
+            from: chrono::NaiveDate,
+            to: chrono::NaiveDate,
+        ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+            use chrono::Datelike;
+            let offset = symbol.len() as f64;
+            let mut out = Vec::new();
+            let mut d = from;
+            let mut i = 0f64;
+            while d <= to {
+                if d.weekday().number_from_monday() <= 5 {
+                    out.push(crate::portfolio::engine::DatedValue {
+                        date: d.format("%Y-%m-%d").to_string(),
+                        value: 100.0 + offset + i * 0.1,
+                    });
+                }
+                i += 1.0;
+                d += chrono::Duration::days(1);
+            }
+            Ok(out)
+        }
+        fn dividend_history(
+            &self,
+            _symbol: &str,
+            _from: chrono::NaiveDate,
+            _to: chrono::NaiveDate,
+        ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+            Ok(vec![])
+        }
+    }
+
+    /// A fixed-vector embedder for the matured-learning leg.
+    struct FixedEmbedder;
+
+    impl crate::embedding::Embedder for FixedEmbedder {
+        fn embed(&self, _text: &str) -> Result<Vec<f32>> {
+            Ok(vec![0.1, 0.2, 0.3, 0.4])
+        }
+    }
+
+    #[test]
+    fn outcome_episodes_open_then_extend_across_runs() {
+        let (_dir, paths) = paths();
+        // Run 1: both stocks debut an episode; nothing is due to mature.
+        let first = full_run(&paths, two_stocks());
+        let records = first.outcome.as_ref().expect("outcome records on the run");
+        assert_eq!(records.opened.len(), 2);
+        assert!(records
+            .opened
+            .iter()
+            .all(|o| o.reasons == vec![crate::portfolio::outcome::OpenReason::Debut]));
+        assert!(records.matured.is_empty(), "fresh anchors: nothing due");
+        assert!(!records.reads.eligibility.eligible, "far below the 30-holding bar");
+        {
+            let conn = storage::open(&paths.db_path).unwrap();
+            let episodes = store::load_episodes(&conn).unwrap().episodes;
+            assert_eq!(episodes.len(), 2);
+            assert!(episodes
+                .iter()
+                .all(|e| e.state == crate::portfolio::outcome::EpisodeState::Active
+                    && e.vintage_fresh));
+        }
+
+        // Run 2, same book and deterministic stub verdicts: the recommendation
+        // state is unchanged, so both episodes extend (no new anchor) and this
+        // run's diff tags them.
+        let second = full_run(&paths, two_stocks());
+        let records = second.outcome.as_ref().unwrap();
+        assert!(records.opened.is_empty(), "a re-affirmation never mints an episode");
+        assert_eq!(records.extended.len(), 2);
+        assert_eq!(records.alignment_tags.len(), 2);
+        let conn = storage::open(&paths.db_path).unwrap();
+        let episodes = store::load_episodes(&conn).unwrap().episodes;
+        assert_eq!(episodes.len(), 2);
+        assert!(episodes.iter().all(|e| e.observations.len() == 1
+            && e.observations[0].kind
+                == crate::portfolio::outcome::ObservationKind::Reaffirmed));
+        assert!(episodes.iter().all(|e| e.alignment.is_some()));
+    }
+
+    #[test]
+    fn a_backdated_episode_matures_in_run_and_embeds_a_learning() {
+        let (_dir, paths) = paths();
+        // Seed an old active episode for a symbol not in the book — an exited
+        // name's labels must still mature (the pass is independent of the
+        // holdings work-list).
+        let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
+        let anchor = chrono::NaiveDate::parse_from_str(&anchor_at[..10], "%Y-%m-%d").unwrap();
+        {
+            let conn = storage::open(&paths.db_path).unwrap();
+            storage::init_schema(&conn).unwrap();
+            let episode = crate::portfolio::outcome::DecisionEpisode {
+                episode_id: "ep-gone".into(),
+                symbol: "GONE".into(),
+                anchor_run_id: "run-old".into(),
+                anchor_at: anchor_at.clone(),
+                intrinsic_vintage: anchor_at.clone(),
+                vintage_fresh: true,
+                action_source: Default::default(),
+                position_change: crate::portfolio::PositionChange::New,
+                sector: crate::portfolio::outcome::SectorIdentity::resolve(Some("Technology")),
+                opened: vec![crate::portfolio::outcome::OpenReason::Debut],
+                body: crate::portfolio::outcome::EpisodeBody::RoleRiskOnly(
+                    crate::portfolio::outcome::RoleRiskEpisode {
+                        action: crate::portfolio::Action::Hold,
+                        target_weight_low: Some(0.02),
+                        target_weight_high: Some(0.05),
+                        degraded_inputs: vec![],
+                    },
+                ),
+                observations: vec![],
+                alignment: None,
+                falsifier_events: vec![],
+                labels: crate::portfolio::outcome::pending_labels(anchor),
+                state: crate::portfolio::outcome::EpisodeState::Active,
+                self_correction_count: 0,
+            };
+            store::save_episode(&conn, &episode).unwrap();
+        }
+        let prices = SyntheticOutcomePrices;
+        let embedder = FixedEmbedder;
+        let sources = crate::portfolio::outcome::OutcomeSources {
+            price: &prices,
+            embedder: Some(&embedder),
+        };
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            Some(&sources),
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        let run = match outcome {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+        let records = run.outcome.as_ref().unwrap();
+        assert_eq!(
+            records
+                .matured
+                .iter()
+                .filter(|m| m.symbol == "GONE" && m.outcome == "scored")
+                .count(),
+            4,
+            "all four backdated windows scored: {:?}",
+            records.matured
+        );
+        let conn = storage::open(&paths.db_path).unwrap();
+        let episodes = store::load_episodes(&conn).unwrap().episodes;
+        let gone = episodes.iter().find(|e| e.symbol == "GONE").unwrap();
+        assert_eq!(gone.state, crate::portfolio::outcome::EpisodeState::Matured);
+        // The fetched series landed in the shared bar cache.
+        assert!(!store::load_price_bars(&conn, "GONE").unwrap().is_empty());
+        assert!(!store::load_price_bars(&conn, "^SPX").unwrap().is_empty());
+        // The matured reads embedded as one durable learning in the Portfolio
+        // namespace.
+        let learnings: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM vector_memory
+                 WHERE namespace = 'portfolio' AND kind = 'learning'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(learnings, 1);
     }
 
     fn verdict<'a>(run: &'a PortfolioRun, symbol: &str) -> &'a HoldingVerdict {
