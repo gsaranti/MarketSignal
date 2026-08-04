@@ -74,6 +74,7 @@ export interface JobStatus {
   running_kind:
     | "report"
     | "portfolio"
+    | "portfolio-quick-check"
     | "schwab-connect"
     | "holdings-pull"
     | "data-portability"
@@ -556,6 +557,76 @@ export interface PortfolioRun {
   audit: unknown[];
 }
 
+// --- Portfolio quick check ---------------------------------------------------
+// The engine-only between-run sweep's persisted state, returned by
+// `latest_quick_check` (docs/portfolio-analysis.md §The quick check). Rendered
+// as the Portfolio page's card overlay: the amber attention flag, the quiet
+// evidence-event badge, and the degraded-sweep note. Cleared by the next
+// successful full run, so `null` is the common state.
+
+export type SweepFamily =
+  | "market-data"
+  | "filing"
+  | "revision"
+  | "earnings"
+  | "news-seed"
+  | "fund-info"
+  | "rate-anchor";
+
+export type SweepState = "fresh-clear" | "flagged" | "unknown";
+
+export interface FamilySweep {
+  family: SweepFamily;
+  state: SweepState;
+  note?: string | null;
+}
+
+export type FlagTrigger =
+  | "confirmed-falsifier-breach"
+  | "fired-trigger"
+  | "hurdle-newly-fails"
+  | "price-outside-band";
+
+export interface AttentionFlag {
+  trigger: FlagTrigger;
+  detail: string;
+  raised_at: string;
+}
+
+export type EvidenceEventKind =
+  | "earnings-actual"
+  | "material-filing"
+  | "revision-move"
+  | "news-seed"
+  | "fund-info-change"
+  | "exposure-shift";
+
+export interface EvidenceEvent {
+  kind: EvidenceEventKind;
+  detail: string;
+  observed_at: string;
+}
+
+export interface HoldingQuickState {
+  symbol: string;
+  families: FamilySweep[];
+  flag?: AttentionFlag | null;
+  evidence_events: EvidenceEvent[];
+  // Engine evaluation state per condition id — persisted for the next run,
+  // never rendered.
+  condition_states: unknown[];
+  last_hurdle_state?: string | null;
+  notes: string[];
+}
+
+export interface QuickCheckState {
+  // The full run the sweep ran against — the overlay applies only while this
+  // matches the rendered run.
+  swept_run_id: string;
+  last_checked_at: string;
+  holdings: HoldingQuickState[];
+}
+
 // One sidebar row of the Portfolio-runs history, returned by
 // `list_portfolio_runs` (docs/interface.md §Main Layout — the shared-history
 // sidebar's run list). Light by design: identity, timestamp, and the two counts
@@ -628,7 +699,18 @@ export interface TrackerRequest {
   detail: string | null;
 }
 
-export type StepStatus = "pending" | "running" | "ok" | "failed" | "cancelled";
+// `flagged` / `unknown` are the quick check's per-holding sweep outcomes
+// (docs/portfolio-analysis.md §The quick check): the step completed, but the
+// sweep raised an attention flag / could not vouch for a signal family — the
+// tracker renders them as completed-with-outcome, never as a failure.
+export type StepStatus =
+  | "pending"
+  | "running"
+  | "ok"
+  | "failed"
+  | "cancelled"
+  | "flagged"
+  | "unknown";
 
 // One pipeline step in the tracker. `requests` carries the baseline step's
 // per-series rows; `agentText` accumulates the main-agent step's streamed report;

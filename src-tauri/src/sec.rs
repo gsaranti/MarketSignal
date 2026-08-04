@@ -32,6 +32,12 @@ fn company_facts_path(cik10: &str) -> String {
     format!("/api/xbrl/companyfacts/CIK{cik10}.json")
 }
 
+/// The submissions endpoint serving a filer's recent-filings index — the quick
+/// check's EDGAR filing sweep (`docs/portfolio-analysis.md` §The quick check).
+fn submissions_path(cik10: &str) -> String {
+    format!("/submissions/CIK{cik10}.json")
+}
+
 /// The latest annual values pulled from a company's XBRL facts — each `None` when the
 /// concept was not reported (or could not be resolved). Deliberately a small set: the
 /// lines the engine cross-checks against FMP.
@@ -299,6 +305,84 @@ impl SecEdgarSource {
         }
         result
     }
+
+    /// A filer's recent filings from the submissions index, newest first — the quick
+    /// check's per-stock EDGAR filing sweep. `Err` on transport / non-2xx / parse
+    /// failure so the caller types the filing family `unknown` rather than reading a
+    /// failed sweep as no-new-filings.
+    pub fn fetch_recent_filings(&self, cik10: &str) -> Result<Vec<RecentFiling>> {
+        if self.progress.is_cancelled() {
+            anyhow::bail!("SEC submissions fetch skipped (run cancelled)");
+        }
+        let url = format!("{}{}", self.base_url, submissions_path(cik10));
+        self.progress
+            .request_started("SEC", "submissions", cik10, "SEC recent filings");
+        let result = (|| -> Result<Vec<RecentFiling>> {
+            let (status, body) =
+                crate::http_retry::send_with_retry("SEC", || self.http.get(&url))?;
+            if !(200..300).contains(&status) {
+                anyhow::bail!("SEC submissions returned {status}");
+            }
+            let value: Value =
+                serde_json::from_str(&body).context("parsing SEC submissions")?;
+            recent_filings_from_value(&value)
+        })();
+        match &result {
+            Ok(_) => self.progress.request_finished(
+                "SEC",
+                "submissions",
+                cik10,
+                "SEC recent filings",
+                "ok",
+                None,
+            ),
+            Err(e) => self.progress.request_finished(
+                "SEC",
+                "submissions",
+                cik10,
+                "SEC recent filings",
+                "failed",
+                Some(e.to_string()),
+            ),
+        }
+        result
+    }
+}
+
+/// One recent filing from the submissions index.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecentFiling {
+    /// The form type as EDGAR reports it (`10-Q`, `8-K`, `10-K/A`, `4`, …).
+    pub form: String,
+    /// The filing date, ISO.
+    pub filing_date: String,
+}
+
+/// Shape the submissions body's `filings.recent` parallel arrays (`form[i]` ↔
+/// `filingDate[i]`) into rows, newest first as EDGAR serves them. Rows whose legs
+/// don't pair are skipped, never fabricated. A body without the `filings.recent`
+/// arrays is malformed or drifted (the submissions schema always carries them,
+/// empty arrays included, for every filer) — `Err`, never an empty success, so
+/// the sweep types the filing family `unknown` instead of reading
+/// "no new filings" off a body it couldn't interpret.
+fn recent_filings_from_value(value: &Value) -> Result<Vec<RecentFiling>> {
+    let recent = &value["filings"]["recent"];
+    let (Some(forms), Some(dates)) = (recent["form"].as_array(), recent["filingDate"].as_array())
+    else {
+        anyhow::bail!(
+            "SEC submissions body lacked the filings.recent arrays — malformed or drifted response"
+        );
+    };
+    Ok(forms
+        .iter()
+        .zip(dates.iter())
+        .filter_map(|(form, date)| {
+            Some(RecentFiling {
+                form: form.as_str()?.to_string(),
+                filing_date: date.as_str()?.to_string(),
+            })
+        })
+        .collect())
 }
 
 /// Candidate GAAP concept names for revenue — the tag changed across taxonomy
@@ -478,6 +562,54 @@ mod tests {
         let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
         let err = sec.fetch_company_facts("0000000000").unwrap_err();
         assert!(err.to_string().contains("404"), "{err}");
+    }
+
+    #[test]
+    fn recent_filings_round_trip_the_submissions_parallel_arrays() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"cik":"320193","filings":{"recent":{
+                "form":["4","10-Q","8-K"],
+                "filingDate":["2026-08-01","2026-07-31","2026-07-30"],
+                "accessionNumber":["a","b","c"]
+            }}}"#,
+        }]);
+        let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
+        let filings = sec.fetch_recent_filings("0000320193").unwrap();
+        assert_eq!(filings.len(), 3);
+        assert_eq!(filings[0].form, "4");
+        assert_eq!(filings[1].form, "10-Q");
+        assert_eq!(filings[1].filing_date, "2026-07-31");
+        assert_eq!(
+            server.request_paths(),
+            vec!["/submissions/CIK0000320193.json".to_string()]
+        );
+    }
+
+    #[test]
+    fn recent_filings_error_on_non_2xx_never_reading_as_no_new_filings() {
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 404,
+            headers: vec![],
+            body: "not found",
+        }]);
+        let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
+        assert!(sec.fetch_recent_filings("0000000000").is_err());
+    }
+
+    #[test]
+    fn recent_filings_error_on_a_200_missing_the_recent_arrays() {
+        // Valid JSON without `filings.recent` is schema drift or a malformed
+        // response — `Err`, never an empty "no new filings" success.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"cik":"320193","name":"Apple Inc."}"#,
+        }]);
+        let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
+        let err = sec.fetch_recent_filings("0000320193").unwrap_err();
+        assert!(err.to_string().contains("filings.recent"), "{err}");
     }
 
     fn tickers_body() -> &'static str {

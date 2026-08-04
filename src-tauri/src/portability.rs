@@ -39,7 +39,11 @@ use crate::storage;
 /// The archive's own format version, stamped in the manifest. Import rejects an
 /// archive newer than it understands; the DB schema itself carries no version
 /// marker, which is exactly why the archive stamps one.
-pub const FORMAT_VERSION: u32 = 1;
+/// v2 (quick-check slice): the `portfolio_quick_checks` store joined the archive —
+/// every new durable local-suite store joins as part of the slice that lands it
+/// (`docs/data-portability.md` §Build-order placement). A v1 archive imports
+/// complete under its own five-entry set (`required_db_entries`).
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -49,25 +53,39 @@ const ENC_MAGIC: &[u8; 8] = b"MSDPENC1";
 /// machine, which is what makes report vectors portable at all.
 const REPORT_EMBEDDER_ID: &str = "text-embedding-3-large";
 
-/// The five exported tables, in insert dependency order (reports first, so the
+/// The six exported tables, in insert dependency order (reports first, so the
 /// vector summaries and snapshots that join on `report_id` land after them).
-const TABLES: [&str; 5] = [
+const TABLES: [&str; 6] = [
     "reports",
     "baseline_snapshots",
     "vector_memory",
     "portfolio_runs",
     "holdings_pulls",
+    "portfolio_quick_checks",
 ];
 
 /// The tables' zip entry names, same order — what export writes and import
 /// consumes, shared so the two sides can never drift.
-const DB_ENTRY_NAMES: [&str; 5] = [
+const DB_ENTRY_NAMES: [&str; 6] = [
     "db/reports.ndjson",
     "db/baseline_snapshots.ndjson",
     "db/vector_memory.ndjson",
     "db/portfolio_runs.ndjson",
     "db/holdings_pulls.ndjson",
+    "db/portfolio_quick_checks.ndjson",
 ];
+
+/// The db entries an archive's own format version requires — the versioned
+/// closed set (`docs/data-portability.md` §Import flow): a v1 archive predates
+/// the quick-check store, so it is complete at five entries; requiring the
+/// sixth of it would refuse every pre-v2 archive as truncated.
+fn required_db_entries(format_version: u32) -> &'static [&'static str] {
+    if format_version >= 2 {
+        &DB_ENTRY_NAMES
+    } else {
+        &DB_ENTRY_NAMES[..5]
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Archive shapes
@@ -155,6 +173,16 @@ struct HoldingsPullRow {
     holdings_json: String,
 }
 
+/// The single-row quick-check store on the wire (`docs/portfolio-analysis.md`
+/// §The quick check): the between-run attention flags, evidence events, and
+/// condition evaluation state — durable analytical state (flags and breach
+/// streaks do not regenerate), so it moves with the corpus.
+#[derive(Debug, Serialize, Deserialize)]
+struct QuickCheckRow {
+    checked_at: String,
+    state_json: String,
+}
+
 // ---------------------------------------------------------------------------
 // Command-facing results
 // ---------------------------------------------------------------------------
@@ -226,6 +254,7 @@ pub fn export_archive(
     let vectors = read_vector_rows(&conn)?;
     let runs = read_portfolio_run_rows(&conn)?;
     let pulls = read_holdings_pull_rows(&conn)?;
+    let quick_checks = read_quick_check_rows(&conn)?;
     let learnings = vectors.iter().filter(|v| v.kind == "learning").count() as u64;
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -245,6 +274,7 @@ pub fn export_archive(
     row_counts.insert("vector_memory".to_string(), vectors.len() as u64);
     row_counts.insert("portfolio_runs".to_string(), runs.len() as u64);
     row_counts.insert("holdings_pulls".to_string(), pulls.len() as u64);
+    row_counts.insert("portfolio_quick_checks".to_string(), quick_checks.len() as u64);
 
     let mut embedders = BTreeMap::new();
     embedders.insert("report".to_string(), REPORT_EMBEDDER_ID.to_string());
@@ -262,12 +292,13 @@ pub fn export_archive(
     // The db/*.ndjson entries join the manifest's checksum inventory alongside
     // the store files, so import can verify every entry — table rows included —
     // before its destructive phase.
-    let db_payloads: [Vec<u8>; 5] = [
+    let db_payloads: [Vec<u8>; 6] = [
         ndjson(&reports)?,
         ndjson(&snapshots)?,
         ndjson(&vectors)?,
         ndjson(&runs)?,
         ndjson(&pulls)?,
+        ndjson(&quick_checks)?,
     ];
 
     let manifest = Manifest {
@@ -428,14 +459,16 @@ pub fn import_archive(
         }
     }
     let verified: BTreeSet<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
-    // Every table entry must be present AND manifest-vouched. An export always
-    // writes all five, so a missing one is truncation or tampering, not a
-    // sparse store — and without this check a dropped entry+listing pair would
-    // silently import that table as zero rows (`parse_ndjson` tolerates
-    // absence only for entries a future format may add). The manifest loop
-    // above already guarantees a *listed* entry exists and checksums, so
-    // membership in `verified` covers both legs.
-    for name in DB_ENTRY_NAMES {
+    // Every table entry the archive's own format version requires must be
+    // present AND manifest-vouched. An export always writes its version's full
+    // set, so a missing one is truncation or tampering, not a sparse store —
+    // and without this check a dropped entry+listing pair would silently
+    // import that table as zero rows (`parse_ndjson` tolerates absence only
+    // for entries a later format added — how a v1 archive's absent quick-check
+    // entry reads as empty rather than refused). The manifest loop above
+    // already guarantees a *listed* entry exists and checksums, so membership
+    // in `verified` covers both legs.
+    for name in required_db_entries(manifest.format_version) {
         if !verified.contains(name) {
             bail!("archive entry {name} is missing or not listed in the manifest — it cannot be verified");
         }
@@ -446,6 +479,7 @@ pub fn import_archive(
     let vector_rows: Vec<VectorRow> = parse_ndjson(&entries, "db/vector_memory.ndjson")?;
     let run_rows: Vec<PortfolioRunRow> = parse_ndjson(&entries, "db/portfolio_runs.ndjson")?;
     let pull_rows: Vec<HoldingsPullRow> = parse_ndjson(&entries, "db/holdings_pulls.ndjson")?;
+    let quick_rows: Vec<QuickCheckRow> = parse_ndjson(&entries, "db/portfolio_quick_checks.ndjson")?;
 
     // Everything the load will need is decoded and checked HERE, before the
     // destructive phase, so a malformed row can only ever abort an import while
@@ -486,6 +520,12 @@ pub fn import_archive(
         bail!(
             "archive carries {} holdings pulls — the store holds at most one",
             pull_rows.len()
+        );
+    }
+    if quick_rows.len() > 1 {
+        bail!(
+            "archive carries {} quick-check rows — the store holds at most one",
+            quick_rows.len()
         );
     }
     let mut seen_summary_ids = BTreeSet::new();
@@ -635,6 +675,12 @@ pub fn import_archive(
             params![row.pulled_at, row.holdings_json],
         )?;
     }
+    for row in &quick_rows {
+        tx.execute(
+            "INSERT INTO portfolio_quick_checks (id, checked_at, state_json) VALUES (1, ?1, ?2)",
+            params![row.checked_at, row.state_json],
+        )?;
+    }
     tx.commit()?;
 
     Ok(ImportSummary {
@@ -754,6 +800,20 @@ fn read_holdings_pull_rows(conn: &Connection) -> Result<Vec<HoldingsPullRow>> {
             Ok(HoldingsPullRow {
                 pulled_at: r.get(0)?,
                 holdings_json: r.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn read_quick_check_rows(conn: &Connection) -> Result<Vec<QuickCheckRow>> {
+    let mut stmt =
+        conn.prepare("SELECT checked_at, state_json FROM portfolio_quick_checks WHERE id = 1")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(QuickCheckRow {
+                checked_at: r.get(0)?,
+                state_json: r.get(1)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1098,6 +1158,13 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO portfolio_quick_checks (id, checked_at, state_json)
+             VALUES (1, '2026-07-07T09:00:00Z',
+                     '{\"swept_run_id\":\"run-one\",\"last_checked_at\":\"2026-07-07T09:00:00Z\",\"holdings\":[]}')",
+            [],
+        )
+        .unwrap();
         std::fs::write(paths.archive_dir.join("filed-note.md"), "archived research\n").unwrap();
         std::fs::write(paths.inbox_dir.join("pending-note.txt"), "inbox research\n").unwrap();
         conn.execute(
@@ -1211,6 +1278,15 @@ mod tests {
         assert_eq!(loaded.skipped_reports, 0);
 
         let conn = storage::open(&target.db_path).unwrap();
+        // The quick-check between-run state rides the archive (format v2).
+        let state_json: String = conn
+            .query_row(
+                "SELECT state_json FROM portfolio_quick_checks WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(state_json.contains("run-one"));
         // markdown_path re-derived against the target's own reports dir, and
         // the body readable through it.
         let markdown_path: String = conn
@@ -1602,7 +1678,7 @@ mod tests {
 
         // Drop BOTH the entry and its manifest listing — without the
         // required-tables check this would import vector_memory as silently
-        // zero rows (an export always writes all five entries).
+        // zero rows (an export always writes its version's full entry set).
         let mut entries = read_archive_entries(&dest);
         entries.remove("db/vector_memory.ndjson");
         let mut manifest: Manifest =
@@ -1619,6 +1695,49 @@ mod tests {
         let err = import_archive(&target, &missing_path, None, false).unwrap_err();
         assert!(err.to_string().contains("missing or not listed"), "{err}");
         assert_eq!(table_count(&target, "vector_memory"), 0);
+    }
+
+    #[test]
+    fn a_v1_archive_without_the_quick_check_entry_imports_complete() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None, None).unwrap();
+
+        // Drop the v2-only quick-check entry and its listing. Under the
+        // archive's own (v2) version that is truncation and must refuse…
+        let mut entries = read_archive_entries(&dest);
+        entries.remove("db/portfolio_quick_checks.ndjson");
+        let mut manifest: Manifest =
+            serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        manifest
+            .files
+            .retain(|f| f.path != "db/portfolio_quick_checks.ndjson");
+        manifest.row_counts.remove("portfolio_quick_checks");
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let truncated = source.db_path.parent().unwrap().join("truncated.zip");
+        rebuild_zip(&entries, &truncated);
+        let (_b, target) = temp_store();
+        let err = import_archive(&target, &truncated, None, false).unwrap_err();
+        assert!(err.to_string().contains("missing or not listed"), "{err}");
+
+        // …while a v1 archive is complete at five entries — backward
+        // compatibility by version, never sparse tolerance
+        // (`docs/data-portability.md` §Import flow).
+        manifest.format_version = 1;
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let v1_path = source.db_path.parent().unwrap().join("v1.zip");
+        rebuild_zip(&entries, &v1_path);
+        let (_c, target) = temp_store();
+        let loaded = import_archive(&target, &v1_path, None, false).unwrap();
+        assert_eq!(loaded.reports, 2);
+        assert_eq!(table_count(&target, "portfolio_quick_checks"), 0);
     }
 
     #[test]

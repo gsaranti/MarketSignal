@@ -2,11 +2,14 @@
 import { computed, onBeforeUnmount, ref } from "vue";
 import { localDateTime } from "../format";
 import type {
+  FlagTrigger,
+  HoldingQuickState,
   HoldingsPull,
   HoldingVerdict,
   PortfolioConviction,
   PortfolioRun,
   Position,
+  QuickCheckState,
 } from "../types";
 
 // The Portfolio page (docs/portfolio-analysis.md §Storage and display,
@@ -46,11 +49,18 @@ const props = defineProps<{
   // A past-run OPEN failure — its own channel so it never renders under the
   // "Couldn't run" label; App clears it on the next selection / back-to-latest.
   historyError?: string | null;
+  // The latest quick-check state (docs/portfolio-analysis.md §The quick check)
+  // — the card overlay's source: attention flags, evidence-event badges,
+  // degraded-sweep notes. Null when no quick check has run since the last full
+  // pass; applied only while it swept the rendered (latest) run.
+  quick?: QuickCheckState | null;
+  quickChecking?: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "run"): void;
   (e: "pull"): void;
+  (e: "quick-check"): void;
   (e: "back-to-latest"): void;
 }>();
 
@@ -83,6 +93,78 @@ const pullTitle = computed(() => {
   if (props.busy) return "Another job is running";
   return "Fetch current positions without running the analysis";
 });
+
+// The quick check shares the run trigger's presence gate (it skips only the
+// daemon-connectivity probe, which the frontend lock never carried anyway —
+// docs/interface.md §Connection status) and needs a run to sweep.
+const quickDisabled = computed(
+  () => runDisabled.value || props.run === null
+);
+const quickTitle = computed(() => {
+  if (isHistorical.value)
+    return "Viewing a past analysis — go back to the latest run to run jobs";
+  if (props.runBlocked)
+    return props.runBlockedReason ?? "Local-suite configuration is incomplete";
+  if (props.busy) return "Another job is running";
+  if (props.run === null) return "Run an analysis first — there is no thesis ledger to check yet";
+  return "Re-check every standing thesis ledger against fresh data — engine-only, no model call";
+});
+
+// ---- Quick-check card overlay -------------------------------------------------
+// Applied only on the latest live view: the flags describe the latest vintage,
+// and only a state swept against the rendered run is honest to overlay.
+const quickOverlayActive = computed(
+  () =>
+    !isHistorical.value &&
+    props.quick != null &&
+    props.run !== null &&
+    props.quick.swept_run_id === props.run.run_id
+);
+const quickBySymbol = computed(() => {
+  const map = new Map<string, HoldingQuickState>();
+  if (!quickOverlayActive.value) return map;
+  for (const h of props.quick!.holdings) map.set(h.symbol.toUpperCase(), h);
+  return map;
+});
+function quickFor(symbol: string): HoldingQuickState | null {
+  return quickBySymbol.value.get(symbol.toUpperCase()) ?? null;
+}
+const FLAG_LABELS: Record<FlagTrigger, string> = {
+  "confirmed-falsifier-breach": "falsifier breached",
+  "fired-trigger": "trigger fired",
+  "hurdle-newly-fails": "hurdle newly fails",
+  "price-outside-band": "price outside band",
+};
+function flagLabel(trigger: FlagTrigger): string {
+  return FLAG_LABELS[trigger] ?? trigger;
+}
+function flagTitle(h: HoldingQuickState): string {
+  const flag = h.flag!;
+  return `${flag.detail} — raised ${fmtStamp(flag.raised_at)}; a full or selective analysis over this holding clears it`;
+}
+// The quiet evidence-event badge: the count carries in the text, the details in
+// the title (never the amber action color — docs/interface.md).
+function eventBadge(h: HoldingQuickState): { text: string; title: string } | null {
+  if (h.evidence_events.length === 0) return null;
+  const n = h.evidence_events.length;
+  return {
+    text: n === 1 ? "Evidence event" : `Evidence events ×${n}`,
+    title: h.evidence_events.map((e) => e.detail).join(" · "),
+  };
+}
+// The degraded-sweep note: names the families the sweep couldn't check.
+function degradedBadge(h: HoldingQuickState): { text: string; title: string } | null {
+  const unknown = h.families.filter((f) => f.state === "unknown");
+  if (unknown.length === 0) return null;
+  const names = unknown.map((f) => f.family.replace(/-/g, " ")).join(", ");
+  return {
+    text: "Sweep degraded",
+    title: `Couldn't verify: ${names}. ${unknown
+      .map((f) => f.note)
+      .filter(Boolean)
+      .join(" · ")}`,
+  };
+}
 
 // ---- Formatting ---------------------------------------------------------------
 
@@ -581,6 +663,15 @@ const keyFigures = computed(() => {
         </button>
         <button
           type="button"
+          class="btn btn-secondary"
+          :disabled="quickDisabled"
+          :title="quickTitle"
+          @click="emit('quick-check')"
+        >
+          {{ quickChecking ? "Checking…" : "Quick check" }}
+        </button>
+        <button
+          type="button"
           class="btn btn-primary"
           :disabled="runDisabled"
           :title="runTitle"
@@ -860,6 +951,26 @@ const keyFigures = computed(() => {
                     <span v-if="noLongerHeld(v.symbol)" class="ana-tag"
                       >No longer held</span
                     >
+                    <template v-if="quickFor(v.symbol)">
+                      <span
+                        v-if="quickFor(v.symbol)!.flag"
+                        class="ana-tag dh-attention-tag"
+                        :title="flagTitle(quickFor(v.symbol)!)"
+                        >Attention — {{ flagLabel(quickFor(v.symbol)!.flag!.trigger) }}</span
+                      >
+                      <span
+                        v-if="eventBadge(quickFor(v.symbol)!)"
+                        class="ana-tag"
+                        :title="eventBadge(quickFor(v.symbol)!)!.title"
+                        >{{ eventBadge(quickFor(v.symbol)!)!.text }}</span
+                      >
+                      <span
+                        v-if="degradedBadge(quickFor(v.symbol)!)"
+                        class="ana-tag"
+                        :title="degradedBadge(quickFor(v.symbol)!)!.title"
+                        >{{ degradedBadge(quickFor(v.symbol)!)!.text }}</span
+                      >
+                    </template>
                   </div>
                   <p class="hc-reason">{{ v.disposition.reason }}</p>
                 </div>
@@ -890,6 +1001,26 @@ const keyFigures = computed(() => {
                         <span v-if="noLongerHeld(v.symbol)" class="ana-tag"
                           >No longer held</span
                         >
+                        <template v-if="quickFor(v.symbol)">
+                          <span
+                            v-if="quickFor(v.symbol)!.flag"
+                            class="ana-tag dh-attention-tag"
+                            :title="flagTitle(quickFor(v.symbol)!)"
+                            >Attention — {{ flagLabel(quickFor(v.symbol)!.flag!.trigger) }}</span
+                          >
+                          <span
+                            v-if="eventBadge(quickFor(v.symbol)!)"
+                            class="ana-tag"
+                            :title="eventBadge(quickFor(v.symbol)!)!.title"
+                            >{{ eventBadge(quickFor(v.symbol)!)!.text }}</span
+                          >
+                          <span
+                            v-if="degradedBadge(quickFor(v.symbol)!)"
+                            class="ana-tag"
+                            :title="degradedBadge(quickFor(v.symbol)!)!.title"
+                            >{{ degradedBadge(quickFor(v.symbol)!)!.text }}</span
+                          >
+                        </template>
                       </div>
                       <div class="hc-name">
                         {{ positionFor(v.symbol)?.description ?? "" }}
@@ -1047,6 +1178,26 @@ const keyFigures = computed(() => {
                         <span v-if="noLongerHeld(v.symbol)" class="ana-tag"
                           >No longer held</span
                         >
+                        <template v-if="quickFor(v.symbol)">
+                          <span
+                            v-if="quickFor(v.symbol)!.flag"
+                            class="ana-tag dh-attention-tag"
+                            :title="flagTitle(quickFor(v.symbol)!)"
+                            >Attention — {{ flagLabel(quickFor(v.symbol)!.flag!.trigger) }}</span
+                          >
+                          <span
+                            v-if="eventBadge(quickFor(v.symbol)!)"
+                            class="ana-tag"
+                            :title="eventBadge(quickFor(v.symbol)!)!.title"
+                            >{{ eventBadge(quickFor(v.symbol)!)!.text }}</span
+                          >
+                          <span
+                            v-if="degradedBadge(quickFor(v.symbol)!)"
+                            class="ana-tag"
+                            :title="degradedBadge(quickFor(v.symbol)!)!.title"
+                            >{{ degradedBadge(quickFor(v.symbol)!)!.text }}</span
+                          >
+                        </template>
                       </div>
                       <div class="hc-name">
                         {{ positionFor(v.symbol)?.description ?? "" }}

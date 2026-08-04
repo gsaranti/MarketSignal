@@ -22,6 +22,7 @@ pub mod engine;
 pub mod fund;
 pub mod job;
 pub mod pipeline;
+pub mod quick_check;
 pub mod store;
 
 use serde::{Deserialize, Serialize};
@@ -934,6 +935,19 @@ pub struct HoldingAudit {
     /// (`#[serde(default)]`).
     #[serde(default)]
     pub ledger_audit: Option<LedgerAudit>,
+    /// The stored closed-form re-anchor basis for the engine-only quick paths
+    /// (`docs/portfolio-analysis.md` §The quick check) — the anchor-window spread
+    /// percentiles, drivers, and comparators the last full pass computed. `None` on
+    /// not-rated / abstained / role-risk-only holdings and on runs persisted before
+    /// the field existed (`#[serde(default)]` — those runs' rate-dependent quick
+    /// families read `unknown` until a full run re-persists).
+    #[serde(default)]
+    pub quick_basis: Option<engine::QuickCheckBasis>,
+    /// The fund exposure comparators for the quick check's fund evidence-event legs
+    /// (`docs/portfolio-analysis.md` §Starting parameters) — present on a fund
+    /// holding of either verdict branch; `None` on stocks and pre-field runs.
+    #[serde(default)]
+    pub fund_exposure: Option<fund::FundExposureBasis>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the
@@ -963,6 +977,27 @@ pub struct PortfolioRun {
     pub verdicts: Vec<HoldingVerdict>,
     pub roll_up: PortfolioRollUp,
     pub audit: Vec<HoldingAudit>,
+    /// The run-level `DGS2` / `DGS10` prints the targets and hurdles were computed
+    /// from, with their as-of dates — the persisted rate cache the engine-only quick
+    /// paths' fail-soft reads (`docs/portfolio-analysis.md` §The quick check;
+    /// §Starting parameters, rate-cache max age). `None` on runs persisted before
+    /// the field existed (`#[serde(default)]`).
+    #[serde(default)]
+    pub rate_prints: Option<RatePrints>,
+}
+
+/// The persisted run-level rate prints (see [`PortfolioRun::rate_prints`]). The
+/// as-of dates are the prints' FRED observation dates; `fetched_at` is the run
+/// timestamp, the age fallback where a source carried no observation date.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RatePrints {
+    pub dgs2: f64,
+    pub dgs10: f64,
+    #[serde(default)]
+    pub dgs2_as_of: Option<String>,
+    #[serde(default)]
+    pub dgs10_as_of: Option<String>,
+    pub fetched_at: String,
 }
 
 // ---- The model's schema-constrained interpretation ---------------------------

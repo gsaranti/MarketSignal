@@ -173,6 +173,7 @@ describe("App.vue Tauri boundary", () => {
       "job_status",
       "latest_holdings_pull",
       "latest_portfolio_run",
+      "latest_quick_check",
       "list_portfolio_runs",
       "list_reports",
       "list_research_archive",
@@ -997,6 +998,40 @@ describe("App.vue portfolio wiring", () => {
     const portfolio = wrapper.findComponent(PortfolioView);
     expect(portfolio.exists()).toBe(true);
     expect(portfolio.props("run")).toEqual(samplePortfolioRun);
+    wrapper.unmount();
+  });
+
+  test("a quick check's trace never renders on the report pane left in tracker mode", async () => {
+    // The gap this pins: a failed report run leaves the report pane in tracker
+    // mode; a quick check then replaces the shared trace. The report pane's
+    // kind gate must exclude the quick-check kind like the portfolio kind —
+    // otherwise the sweep's tracker would appear on the report page.
+    const pending = deferred<unknown>();
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({ run_portfolio_quick_check: () => pending.promise })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const emit = emitterFor(tauri.listen, "job-progress");
+    emit({ run_id: "R1", seq: 1, kind: "run-started", label: "Weekly run" });
+    wrapper.findComponent(JobStatusPanel).vm.$emit("view-tracker");
+    await flushPromises();
+    expect(wrapper.findComponent(JobTrackerView).exists()).toBe(true);
+    emit({ run_id: "R1", seq: 2, kind: "run-finished", status: "failed" });
+    await flushPromises();
+
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+    wrapper.findComponent(PortfolioView).vm.$emit("quick-check");
+    await flushPromises();
+    emit({ run_id: "QC1", seq: 1, kind: "run-started", label: "Portfolio quick check" });
+    await flushPromises();
+
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "report");
+    await flushPromises();
+    expect(wrapper.findComponent(JobTrackerView).exists()).toBe(false);
+    expect(wrapper.findComponent(LatestReportView).exists()).toBe(true);
     wrapper.unmount();
   });
 

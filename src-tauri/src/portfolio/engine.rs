@@ -202,6 +202,14 @@ pub struct DatedValue {
 pub struct RateAnchors {
     pub dgs2: f64,
     pub dgs10: f64,
+    /// The prints' observation dates (ISO), where the source carried them — the
+    /// as-of dates the persisted rate cache records for the quick paths' fail-soft
+    /// (`docs/portfolio-analysis.md` §Starting parameters, rate-cache max age).
+    /// `None` on fixtures and pre-field runs (`#[serde(default)]`).
+    #[serde(default)]
+    pub dgs2_date: Option<String>,
+    #[serde(default)]
+    pub dgs10_date: Option<String>,
     /// Dated `DGS10` observations covering the trailing anchor window plus alignment
     /// slack, sorted oldest-first.
     pub dgs10_history: Vec<DatedValue>,
@@ -429,6 +437,9 @@ pub struct EngineOutput {
     /// the priced path; always false for a stock) — card-visible, and it barred the
     /// Low risk tier.
     pub structural_flag: bool,
+    /// The stored closed-form re-anchor basis the engine-only quick paths read
+    /// (`docs/portfolio-analysis.md` §The quick check) — persisted on the audit.
+    pub quick_basis: Option<QuickCheckBasis>,
 }
 
 /// What the engine resolved to: an analysis, or an explicit abstention when the
@@ -683,6 +694,11 @@ pub struct LedgerEvaluation {
     pub crossings: Vec<crate::portfolio::ConditionCrossing>,
     /// "condition '<statement>': <reason>" lines for series unresolvable this run.
     pub unevaluable: Vec<String>,
+    /// The same unresolvable conditions' series, typed — the quick check maps each
+    /// to its signal family so a claimed `fresh_clear` downgrades to `unknown`
+    /// (an allowed condition the sweep could not resolve means the family cannot
+    /// vouch for the carried verdict).
+    pub unevaluable_series: Vec<LedgerSeries>,
     /// Updated evaluation state per evaluated condition id (unevaluated conditions
     /// keep their carried state).
     pub updated_states: Vec<(String, crate::portfolio::ConditionEvalState)>,
@@ -702,16 +718,39 @@ pub fn evaluate_ledger_conditions(
     portfolio_weight: Option<f64>,
     run_date: &str,
 ) -> LedgerEvaluation {
+    evaluate_ledger_conditions_gated(ledger, metrics, fin, portfolio_weight, run_date, |_| true)
+}
+
+/// The cadence-gated form of [`evaluate_ledger_conditions`] — the engine-only quick
+/// check's entry (`docs/portfolio-analysis.md` §The quick check): market-data
+/// conditions evaluate on every pass, filing-cadence conditions only when a fresh
+/// observation of their series landed, so `allow` filters by series. A gated-out
+/// condition is **skipped whole** — no unevaluable note, no state update — its
+/// carried state simply stands (a skipped family is vouched for by the retrieval
+/// that found no new observation, which is the caller's sweep-state concern, not an
+/// evaluation failure).
+pub fn evaluate_ledger_conditions_gated(
+    ledger: &crate::portfolio::ThesisLedger,
+    metrics: &ComputedMetrics,
+    fin: &CompanyFinancials,
+    portfolio_weight: Option<f64>,
+    run_date: &str,
+    allow: impl Fn(LedgerSeries) -> bool,
+) -> LedgerEvaluation {
     use crate::portfolio::{ConditionCrossing, ConditionEvalState, CrossingOutcome};
 
     let mut out = LedgerEvaluation::default();
     for cond in &ledger.conditions {
         let Some(quant) = &cond.quant else { continue };
+        if !allow(quant.series) {
+            continue;
+        }
         let resolved = match resolve_series(quant.series, metrics, fin, portfolio_weight) {
             Ok(r) => r,
             Err(reason) => {
                 out.unevaluable
                     .push(format!("condition '{}': {reason}", cond.statement));
+                out.unevaluable_series.push(quant.series);
                 continue;
             }
         };
@@ -871,6 +910,7 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
         low_confidence_grade,
         fund_class_label: None,
         structural_flag: false,
+        quick_basis: Some(bundle.basis),
     }))
 }
 
@@ -1054,6 +1094,14 @@ pub struct ScenarioSet {
     pub current_multiple_carry: bool,
     /// True when the bear/bull band was widened to the dispersion-floor half-spread.
     pub dispersion_floor_applied: bool,
+    /// The spread percentile surface behind the multiples, `[bear (P75), base (P50),
+    /// bull (P25)]` — present only on the rate-anchored path. Persisted (via
+    /// [`QuickCheckBasis`]) so the engine-only quick paths can re-anchor closed-form
+    /// on a fresh DGS10 without re-estimating the window.
+    pub spread_percentiles: Option<[f64; 3]>,
+    /// The direct raw-multiple percentiles `[bear (P25), base (P50), bull (P75)]` —
+    /// present whenever any driver-admissible quarter existed.
+    pub raw_percentiles: Option<[f64; 3]>,
 }
 
 /// What the v2 wrapper resolved to: a computed bundle, or the named
@@ -1066,12 +1114,44 @@ pub enum TargetOutcome {
 }
 
 /// The v2 function's full output: the persisted targets plus the scenario set (the
-/// hurdle's input) and the derivation record.
+/// hurdle's input), the derivation record, and the stored quick-path basis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TargetBundle {
     pub targets: PriceTargets,
     pub scenario: ScenarioSet,
     pub meta: TargetMeta,
+    /// The closed-form re-anchor basis the run persists for the engine-only quick
+    /// paths (`docs/portfolio-analysis.md` §The quick check).
+    pub basis: QuickCheckBasis,
+}
+
+/// The stored basis the engine-only quick paths re-anchor against
+/// (`docs/portfolio-analysis.md` §The quick check: the v2 scenario multiples
+/// re-anchored closed-form on the fresh DGS10 against the **stored** anchor-window
+/// percentiles and **stored** drivers from the last full pass — no re-estimation).
+/// Persisted per priced holding on the run's audit record; every field is what the
+/// full pass actually computed, never re-derived at quick-check time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuickCheckBasis {
+    /// The run-time price the targets were computed from — also the price the
+    /// stored valuation multiples (P/E, P/S, P/B) were read at, so a quick pass can
+    /// re-scale them to a fresh print without re-fetching statements.
+    pub spot: f64,
+    /// `[bear, base, bull]` per-share drivers the full pass settled on.
+    pub drivers: [f64; 3],
+    #[serde(default)]
+    pub spread_percentiles: Option<[f64; 3]>,
+    #[serde(default)]
+    pub raw_percentiles: Option<[f64; 3]>,
+    /// The forward-dividend (fund: distribution) leg of the twelve-month total return.
+    pub forward_dividends: f64,
+    /// The volatility-scaled dispersion floor the full pass applied.
+    pub dispersion_floor: f64,
+    /// The NTM consensus EPS mid the run read (`None` where no consensus existed) —
+    /// the quick check's revision-preflight comparator
+    /// (`docs/portfolio-analysis.md` §Starting parameters, the large-revision-move leg).
+    #[serde(default)]
+    pub consensus_eps_mid: Option<f64>,
 }
 
 /// The latest value in a dated, oldest-first series on or before `date` (ISO dates
@@ -1124,44 +1204,91 @@ pub fn spread_anchored_scenarios(
     let raws: Vec<f64> = observations.iter().map(|o| o.raw_multiple).collect();
     let n_spread = spreads.len();
     let n_raw = raws.len();
-    let mut degenerate = 0usize;
-    let mut current_multiple_carry = false;
 
-    let multiples: [f64; 3] = if n_spread >= MIN_ANCHOR_OBSERVATIONS {
-        // Inverse mapping in the spread domain; the raw fallback maps direct.
-        let spread_ps = [
+    let spread_ps = (n_spread >= MIN_ANCHOR_OBSERVATIONS).then(|| {
+        [
             percentile(&spreads, 0.75), // bear
             percentile(&spreads, 0.50), // base
             percentile(&spreads, 0.25), // bull
-        ];
-        let raw_ps = [
+        ]
+    });
+    let raw_ps = (n_raw >= 1).then(|| {
+        [
             percentile(&raws, 0.25), // bear
             percentile(&raws, 0.50), // base
             percentile(&raws, 0.75), // bull
-        ];
-        let mut ms = [0.0; 3];
-        for s in 0..3 {
-            let denom = spread_ps[s] + dgs10_now;
-            if denom < DEGENERATE_DENOMINATOR_EPS {
-                degenerate += 1;
-                ms[s] = raw_ps[s];
-            } else {
-                ms[s] = 1.0 / denom;
-            }
-        }
-        ms
-    } else if n_raw >= 1 {
-        [
-            percentile(&raws, 0.25),
-            percentile(&raws, 0.50),
-            percentile(&raws, 0.75),
         ]
-    } else {
-        // No anchor history at all: carry the spot's own multiple on the base driver,
-        // so scenario spread comes from driver dispersion alone — recorded.
-        current_multiple_carry = true;
-        let carry = spot / drivers[1];
-        [carry, carry, carry]
+    });
+
+    let mut set = scenarios_from_surfaces(
+        spot,
+        drivers,
+        spread_ps,
+        raw_ps,
+        // The carry multiple is the spot's own multiple on the base driver — at
+        // full-run time the live spot IS the basis spot.
+        spot / drivers[1],
+        dgs10_now,
+        forward_income_per_share,
+        dispersion_floor,
+    );
+    set.anchor_observations = n_spread;
+    set.raw_observations = n_raw;
+    set
+}
+
+/// The shared v2 finishing core over the **percentile surfaces** — multiples
+/// (inverse spread map with the degenerate guard; direct raw fallback; the
+/// current-multiple carry), scenario prices, the defensive monotonicity repair, the
+/// dispersion floor, and total returns. Called by [`spread_anchored_scenarios`] on
+/// the live window and by [`reanchor_scenarios`] on a stored basis, so the quick
+/// paths' closed-form re-anchor is the same arithmetic, never a re-implementation.
+#[allow(clippy::too_many_arguments)] // each is one leg of the stored basis, documented on `QuickCheckBasis`
+fn scenarios_from_surfaces(
+    spot: f64,
+    drivers: [f64; 3],
+    spread_ps: Option<[f64; 3]>,
+    raw_ps: Option<[f64; 3]>,
+    carry_multiple: f64,
+    dgs10_now: f64,
+    forward_income_per_share: f64,
+    dispersion_floor: f64,
+) -> ScenarioSet {
+    let mut degenerate = 0usize;
+    let mut current_multiple_carry = false;
+
+    let multiples: [f64; 3] = match (spread_ps, raw_ps) {
+        (Some(spread_ps), raw_ps) => {
+            // Inverse mapping in the spread domain; the raw fallback maps direct.
+            // The rate-anchored path always has raw percentiles too (every
+            // spread-admissible quarter is driver-admissible), so the degenerate
+            // guard's fallback is real history; a stored basis missing them keeps
+            // the reciprocal (recorded via `degenerate_scenarios` staying zero).
+            let mut ms = [0.0; 3];
+            for s in 0..3 {
+                let denom = spread_ps[s] + dgs10_now;
+                if denom < DEGENERATE_DENOMINATOR_EPS {
+                    if let Some(raw_ps) = raw_ps {
+                        degenerate += 1;
+                        ms[s] = raw_ps[s];
+                    } else {
+                        ms[s] = 1.0 / denom.max(DEGENERATE_DENOMINATOR_EPS);
+                    }
+                } else {
+                    ms[s] = 1.0 / denom;
+                }
+            }
+            ms
+        }
+        (None, Some(raw_ps)) => raw_ps,
+        (None, None) => {
+            // No anchor history at all: the caller's carry multiple (the full pass's
+            // spot over its base driver — a *stored* multiple on the re-anchor path,
+            // never the fresh print's), so scenario spread comes from driver
+            // dispersion alone — recorded.
+            current_multiple_carry = true;
+            [carry_multiple, carry_multiple, carry_multiple]
+        }
     };
 
     let mut prices = [
@@ -1203,14 +1330,43 @@ pub fn spread_anchored_scenarios(
         tr_bear: tr(prices[0]),
         tr_base: tr(prices[1]),
         tr_bull: tr(prices[2]),
-        rate_anchored: n_spread >= MIN_ANCHOR_OBSERVATIONS,
-        anchor_observations: n_spread,
-        raw_observations: n_raw,
+        rate_anchored: spread_ps.is_some(),
+        anchor_observations: 0,
+        raw_observations: 0,
         degenerate_scenarios: degenerate,
         monotonicity_repaired,
         current_multiple_carry,
         dispersion_floor_applied,
+        spread_percentiles: spread_ps,
+        raw_percentiles: raw_ps,
     }
+}
+
+/// The engine-only quick paths' **closed-form re-anchor**
+/// (`docs/portfolio-analysis.md` §The quick check): the stored spread percentiles
+/// and drivers from the last full pass, re-anchored on the fresh `DGS10`, with the
+/// total returns measured from the **fresh** price — one extra FRED print, no
+/// re-estimation, no new heavy retrieval. The ledger's authored monitor band is
+/// deliberately **not** derived from this — the re-anchor serves the hurdle read
+/// only.
+pub fn reanchor_scenarios(
+    basis: &QuickCheckBasis,
+    fresh_spot: f64,
+    dgs10_now: f64,
+) -> ScenarioSet {
+    scenarios_from_surfaces(
+        fresh_spot,
+        basis.drivers,
+        basis.spread_percentiles,
+        basis.raw_percentiles,
+        // The carry path re-uses the *stored* multiple (the full pass's spot over
+        // its base driver) — a fresh-spot carry would make the target track the
+        // live price and hollow the total return.
+        basis.spot / basis.drivers[1],
+        dgs10_now,
+        basis.forward_dividends,
+        basis.dispersion_floor,
+    )
 }
 
 /// The volatility-scaled minimum scenario half-spread (decimal, on the price axis):
@@ -1423,14 +1579,25 @@ pub fn scenario_targets_v2(
 
     let observations = stock_anchor_observations(fin, rates, read.use_eps);
     let forward_dividends = fin.ttm_dividends_per_share.unwrap_or(0.0);
+    let floor = dispersion_floor(m.return_volatility);
     let scenario = spread_anchored_scenarios(
         spot,
         read.drivers,
         &observations,
         rates.dgs10,
         forward_dividends,
-        dispersion_floor(m.return_volatility),
+        floor,
     );
+
+    let basis = QuickCheckBasis {
+        spot,
+        drivers: read.drivers,
+        spread_percentiles: scenario.spread_percentiles,
+        raw_percentiles: scenario.raw_percentiles,
+        forward_dividends,
+        dispersion_floor: floor,
+        consensus_eps_mid: fin.consensus.as_ref().and_then(|c| c.eps_mid),
+    };
 
     let targets = build_price_targets(spot, &scenario, m, read.rung, read.flat_driver);
     let meta = TargetMeta {
@@ -1457,6 +1624,7 @@ pub fn scenario_targets_v2(
         targets,
         scenario,
         meta,
+        basis,
     }))
 }
 
@@ -1855,6 +2023,7 @@ mod tests {
             dgs10: 0.045,
             dgs10_history: history,
             history_gap: None,
+            ..Default::default()
         }
     }
 
@@ -2377,6 +2546,7 @@ mod tests {
             rate_anchored: true, anchor_observations: 12, raw_observations: 12,
             degenerate_scenarios: 0, monotonicity_repaired: false,
             current_multiple_carry: false, dispersion_floor_applied: false,
+            spread_percentiles: None, raw_percentiles: None,
         };
         // Hurdle = dgs2 0.04 + medium 0.05 = 0.09.
         let clears = hurdle_read(&scenario(0.10, 0.15, 0.20), 0.04, RiskTier::Medium);
@@ -2395,6 +2565,120 @@ mod tests {
         let admit = hurdle_read(&scenario(0.02, 0.12, 0.20), 0.04, RiskTier::Medium);
         assert_eq!(admit.state, HurdleState::Indeterminate);
         assert!(admit.admits_new_money);
+    }
+
+    #[test]
+    fn reanchor_reproduces_the_live_computation_at_the_same_inputs() {
+        // The quick paths' closed-form re-anchor over the stored basis must be the
+        // same arithmetic as the live v2 computation — at an unchanged spot and
+        // DGS10 the scenario prices and total returns are identical.
+        let fin = strong();
+        let rates = rates();
+        let m = compute_metrics(&fin);
+        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m) {
+            TargetOutcome::Computed(b) => b,
+            TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
+        };
+        assert!(bundle.scenario.rate_anchored, "fixture is rate-anchored");
+        assert!(bundle.basis.spread_percentiles.is_some());
+        assert!((bundle.basis.spot - 195.0).abs() < 1e-12);
+        assert_eq!(bundle.basis.consensus_eps_mid, Some(6.5));
+
+        let re = reanchor_scenarios(&bundle.basis, 195.0, rates.dgs10);
+        for (a, b) in [
+            (re.bear, bundle.scenario.bear),
+            (re.base, bundle.scenario.base),
+            (re.bull, bundle.scenario.bull),
+            (re.tr_bear, bundle.scenario.tr_bear),
+            (re.tr_base, bundle.scenario.tr_base),
+            (re.tr_bull, bundle.scenario.tr_bull),
+        ] {
+            assert!((a - b).abs() < 1e-9, "re-anchor drifted: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn reanchor_moves_multiples_with_the_fresh_dgs10_and_trs_with_the_fresh_spot() {
+        let fin = strong();
+        let rates = rates();
+        let m = compute_metrics(&fin);
+        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m) {
+            TargetOutcome::Computed(b) => b,
+            TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
+        };
+        // A higher DGS10 widens every reciprocal denominator → cheaper multiples →
+        // lower scenario prices (the closed form `1/(spread + DGS10)`).
+        let tighter = reanchor_scenarios(&bundle.basis, 195.0, rates.dgs10 + 0.01);
+        assert!(tighter.base < bundle.scenario.base);
+        // A lower fresh price raises the total returns against the same targets.
+        let cheaper = reanchor_scenarios(&bundle.basis, 150.0, rates.dgs10);
+        assert!(cheaper.tr_base > bundle.scenario.tr_base);
+        // The carry path re-uses the *stored* multiple: with no percentile surface
+        // at all, the target must stay put while the fresh spot moves the TR — a
+        // fresh-spot carry would pin the TR to the dividend leg alone.
+        let carry_basis = QuickCheckBasis {
+            spread_percentiles: None,
+            raw_percentiles: None,
+            ..bundle.basis.clone()
+        };
+        let carried = reanchor_scenarios(&carry_basis, 150.0, rates.dgs10);
+        assert!(carried.current_multiple_carry);
+        // Stored carry multiple = 195 / base driver; base price = driver × that = 195.
+        assert!((carried.base - 195.0).abs() < 1e-6);
+        assert!(carried.tr_base > 0.25, "TR measured from the fresh 150 spot");
+    }
+
+    #[test]
+    fn gated_evaluation_skips_disallowed_series_whole() {
+        use crate::portfolio::{
+            ConditionRole, LedgerBranch, LedgerComparator, LedgerCondition, QuantCore,
+            ThesisLedger,
+        };
+        let cond = |id: &str, series: LedgerSeries| LedgerCondition {
+            condition_id: id.into(),
+            role: ConditionRole::Falsifier,
+            trigger_family: None,
+            statement: format!("{id} statement"),
+            quant: Some(QuantCore {
+                series,
+                comparator: LedgerComparator::Below,
+                threshold: 1_000.0, // always breached — every value sits below
+                margin: 0.0,
+            }),
+            downgraded_reason: None,
+            technology_class: false,
+            tripped: false,
+            supersedes: None,
+            eval_state: None,
+        };
+        let ledger = ThesisLedger {
+            branch: LedgerBranch::Priced,
+            original_thesis: String::new(),
+            current_thesis: String::new(),
+            key_drivers: vec![],
+            monitor: vec![],
+            what_must_improve: String::new(),
+            what_must_not_break: String::new(),
+            conditions: vec![
+                cond("c-price", LedgerSeries::Price),
+                cond("c-margin", LedgerSeries::NetMargin),
+            ],
+            target_weight_low: 0.0,
+            target_weight_high: 0.1,
+        };
+        let fin = strong();
+        let m = compute_metrics(&fin);
+        // Market-data only: the filing condition is skipped whole — no unevaluable
+        // note, no state update — its carried state simply stands.
+        let gated = evaluate_ledger_conditions_gated(&ledger, &m, &fin, Some(0.05), "2026-08-03", |s| {
+            s.cadence() == crate::portfolio::ConditionCadence::MarketData
+        });
+        assert!(gated.updated_states.iter().any(|(id, _)| id == "c-price"));
+        assert!(!gated.updated_states.iter().any(|(id, _)| id == "c-margin"));
+        assert!(gated.unevaluable.is_empty());
+        // The ungated form still evaluates both.
+        let full = evaluate_ledger_conditions(&ledger, &m, &fin, Some(0.05), "2026-08-03");
+        assert!(full.updated_states.iter().any(|(id, _)| id == "c-margin"));
     }
 
     #[test]

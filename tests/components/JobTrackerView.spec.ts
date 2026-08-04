@@ -117,6 +117,31 @@ test("each step shows its status word and the marker icon for its outcome", () =
   expect(steps[4].find(".step-marker").findComponent(Icon).props("name")).toBe("warning");
 });
 
+test("the quick check's sweep outcomes render as completed-with-outcome, never failure or not-started", () => {
+  // flagged -> amber warning marker + "Flagged"; unknown -> quiet hollow marker
+  // (no icon) + "Unknown". The visible status word carries each outcome, and
+  // neither falls back to the screen-reader "Not started" branch.
+  const sweep: RunTrace = deepFreeze({
+    runId: "qc-1",
+    label: "Portfolio quick check",
+    terminal: null,
+    steps: [
+      { key: "check-aapl", label: "Check AAPL", status: "flagged", detail: null, agentText: "", agentThinking: "", requests: [] },
+      { key: "check-msft", label: "Check MSFT", status: "unknown", detail: null, agentText: "", agentThinking: "", requests: [] },
+    ],
+  });
+  const wrapper = mount(JobTrackerView, {
+    props: { trace: sweep, active: false, cancelRequested: false },
+  });
+  const steps = wrapper.findAll(".step");
+  expect(steps[0].find(".step-status").text()).toBe("Flagged");
+  expect(steps[0].find(".step-marker").findComponent(Icon).props("name")).toBe("warning");
+  expect(steps[1].find(".step-status").text()).toBe("Unknown");
+  expect(steps[1].find(".step-marker").findComponent(Icon).exists()).toBe(false);
+  expect(steps[0].find(".sr-only").exists()).toBe(false);
+  expect(steps[1].find(".sr-only").exists()).toBe(false);
+});
+
 test("a failure/stop detail renders on the steps that didn't complete cleanly, not on clean ones", () => {
   const wrapper = mount(JobTrackerView, {
     props: { trace: activeTrace, active: true, cancelRequested: false },

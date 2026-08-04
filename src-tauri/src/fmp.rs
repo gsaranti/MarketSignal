@@ -1992,6 +1992,84 @@ mod tests {
     }
 
     #[test]
+    fn quick_check_adapters_round_trip_price_earnings_and_news() {
+        // The quick check's three per-symbol pulls: the bare live price, the
+        // earnings rows (newest first), and the since-filtered symbol news.
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","price":201.5}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","date":"2026-04-30","epsActual":1.61,"epsEstimated":1.55,"revenueActual":96.0e9},
+                          {"symbol":"AAPL","date":"2026-07-30","epsActual":null,"epsEstimated":1.86,"revenueActual":null}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","publishedDate":"2026-08-01 14:13:36","title":"New chip ships","site":"example.com"},
+                          {"symbol":"AAPL","publishedDate":"2026-07-01 09:00:00","title":"Old story","site":"example.com"}]"#,
+            },
+        ]);
+        let src = test_source(&server.base_url);
+        assert_eq!(src.fetch_live_price("AAPL").unwrap(), 201.5);
+        let earnings = src.fetch_symbol_earnings("AAPL").unwrap();
+        assert_eq!(earnings.len(), 2);
+        // Newest first regardless of the feed's order.
+        assert_eq!(earnings[0].date, "2026-07-30");
+        assert_eq!(earnings[1].eps_actual, Some(1.61));
+        // The since filter holds client-side even if the server ignores `from`.
+        let news = src.fetch_symbol_news_since("AAPL", "2026-07-20").unwrap();
+        assert_eq!(news.len(), 1);
+        assert_eq!(news[0].title, "New chip ships");
+        assert_eq!(
+            server.request_paths(),
+            vec!["/quote", "/earnings", "/news/stock"]
+        );
+    }
+
+    #[test]
+    fn quick_check_adapters_error_rather_than_silently_clearing() {
+        // A premium gate / failed call must surface as `Err` — the quick check types
+        // the family `unknown`, never a silent all-clear.
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 402, headers: vec![], body: "Payment Required" },
+            Canned::Reply { status: 402, headers: vec![], body: "Payment Required" },
+        ]);
+        let src = test_source(&server.base_url);
+        assert!(src.fetch_live_price("AAPL").is_err());
+        assert!(src.fetch_symbol_earnings("AAPL").is_err());
+    }
+
+    #[test]
+    fn quick_check_adapters_error_on_a_malformed_200_body() {
+        // A non-array 200 (schema drift, an error object the gate didn't catch)
+        // must surface as `Err`, never read as "no new evidence" — earnings,
+        // news, and the strict consensus read alike; the fail-soft dividends
+        // read records its gap, so a malformed body can never be mistaken for
+        // a confirmed non-payer (a dividend elimination) downstream.
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 200, headers: vec![], body: r#"{"message":"maintenance"}"# },
+            Canned::Reply { status: 200, headers: vec![], body: r#"{"message":"maintenance"}"# },
+            Canned::Reply { status: 200, headers: vec![], body: r#"{"message":"maintenance"}"# },
+            Canned::Reply { status: 200, headers: vec![], body: r#"{"message":"maintenance"}"# },
+        ]);
+        let src = test_source(&server.base_url);
+        assert!(src.fetch_symbol_earnings("AAPL").is_err());
+        assert!(src.fetch_symbol_news_since("AAPL", "2026-07-20").is_err());
+        assert!(src.fetch_analyst_estimates_strict("AAPL").is_err());
+        let mut gaps = Vec::new();
+        assert!(src.fetch_ttm_dividends("AAPL", &mut gaps).is_none());
+        assert!(
+            gaps.iter().any(|g| g.starts_with(DIVIDENDS_GAP_PREFIX)),
+            "{gaps:?}"
+        );
+    }
+
+    #[test]
     fn company_financials_degrade_to_gaps_on_premium_and_transport_failures() {
         // Quote 402 (premium gate) then EOD malformed body: both degrade to gaps, never
         // a fabricated level, and the engine grades over what SEC supplies instead.
@@ -3414,9 +3492,41 @@ mod tests {
 
 /// FMP endpoint paths added by the fund slice (all on the `/stable` base).
 const FMP_INCOME_QUARTERLY_PATH: &str = "/income-statement";
+/// Per-symbol earnings rows (actual vs estimate) — the quick check's
+/// new-earnings-actual evidence leg (`docs/portfolio-analysis.md` §Starting
+/// parameters; distinct from the report's market-wide `/earnings-calendar`).
+const FMP_SYMBOL_EARNINGS_PATH: &str = "/earnings";
+/// Symbol-scoped stock news — the quick check's qualifying-news-seed leg, pulled
+/// only for holdings carrying a standing technology-class falsifier.
+const FMP_NEWS_STOCK_SYMBOL_PATH: &str = "/news/stock";
+/// How many per-symbol earnings rows the quick check reads — enough to cover the
+/// window since the last full pass with room to spare.
+const SYMBOL_EARNINGS_LIMIT: &str = "8";
+/// News items requested per tech-flagged holding.
+const SYMBOL_NEWS_LIMIT: &str = "20";
 const FMP_BALANCE_SHEET_PATH: &str = "/balance-sheet-statement";
 const FMP_ANALYST_ESTIMATES_PATH: &str = "/analyst-estimates";
 const FMP_DIVIDENDS_PATH: &str = "/dividends";
+
+/// The dividend-history gap's stable prefix ([`FmpDataSource::fetch_ttm_dividends`]):
+/// the quick check matches it to tell a failed retrieval (gap recorded, keep the
+/// stored payout leg) from a genuine non-payer (`None` with no gap — a real
+/// dividend elimination that must reach the hurdle as zero).
+pub const DIVIDENDS_GAP_PREFIX: &str = "FMP dividends unavailable";
+
+/// Stable prefixes of the fund-weightings gap messages
+/// ([`FmpDataSource::fetch_fund_data`]): the quick check treats these legs as
+/// bearing on **equity** funds alone — no series in the closed ledger surface
+/// reads exposure, so a non-equity fund's empty equity weightings are the
+/// expected shape, never a failed leg
+/// (`docs/portfolio-analysis.md` §Evidence floor, §The quick check).
+pub const FUND_SECTOR_WEIGHTS_GAP_PREFIX: &str = "FMP sector weightings";
+pub const FUND_COUNTRY_WEIGHTS_GAP_PREFIX: &str = "FMP country weightings";
+
+/// The `etf/info` gap's stable prefix ([`FmpDataSource::fetch_fund_data`]): the
+/// quick check's coarse mandate comparison runs only when this leg is healthy —
+/// an unreadable mandate could fake an asset-class transition.
+pub const FUND_INFO_GAP_PREFIX: &str = "FMP etf/info";
 const FMP_ETF_INFO_PATH: &str = "/etf/info";
 const FMP_ETF_SECTOR_WEIGHTS_PATH: &str = "/etf/sector-weightings";
 const FMP_ETF_COUNTRY_WEIGHTS_PATH: &str = "/etf/country-weightings";
@@ -3551,6 +3661,39 @@ impl FmpDataSource {
         }
     }
 
+    /// The strict form of [`Self::fetch_analyst_estimates`] for the quick check's
+    /// revision preflight: a failed retrieval is `Err` (the caller types the family
+    /// `unknown`), while a successful body carrying no forward-dated consensus is an
+    /// honest `Ok(None)` — the typed split the fail-soft gap-list form can't offer
+    /// without string-matching its message text.
+    pub fn fetch_analyst_estimates_strict(
+        &self,
+        symbol: &str,
+    ) -> Result<Option<crate::portfolio::engine::ConsensusEstimate>> {
+        let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+        match self.suite_get(
+            "company-estimates",
+            symbol,
+            "Analyst estimates",
+            FMP_ANALYST_ESTIMATES_PATH,
+            &[("symbol", symbol), ("period", "annual"), ("limit", "6")],
+        ) {
+            Disposition::Value(value) => {
+                // Strict shape check: a malformed 200 must surface as a failed
+                // retrieval (family `unknown`), never read as "no consensus".
+                if !value.is_array() {
+                    anyhow::bail!(
+                        "FMP analyst estimates returned a non-array body — malformed or drifted response"
+                    );
+                }
+                Ok(consensus_from_value(&value, &today))
+            }
+            Disposition::Gap(reason) => {
+                anyhow::bail!("FMP analyst estimates unavailable ({})", reason.as_str())
+            }
+        }
+    }
+
     /// Trailing-twelve-month dividends per share — the forward-dividend estimate the
     /// twelve-month total return adds. `None` (with no gap) for a non-payer; a failed
     /// call records the gap.
@@ -3563,9 +3706,19 @@ impl FmpDataSource {
             FMP_DIVIDENDS_PATH,
             &[("symbol", symbol), ("limit", "12")],
         ) {
-            Disposition::Value(value) => ttm_dividends_from_value(&value, today),
+            // Any unreadable body — non-array, a dateless row, an in-window row
+            // with a non-numeric amount — must record the gap: `None` with no
+            // gap is the confirmed-non-payer contract, and a drifted body must
+            // never read as a dividend elimination downstream.
+            Disposition::Value(value) => match ttm_dividends_from_value(&value, today) {
+                Ok(v) => v,
+                Err(e) => {
+                    gaps.push(format!("{DIVIDENDS_GAP_PREFIX} ({e})"));
+                    None
+                }
+            },
             Disposition::Gap(reason) => {
-                gaps.push(format!("FMP dividends unavailable ({})", reason.as_str()));
+                gaps.push(format!("{DIVIDENDS_GAP_PREFIX} ({})", reason.as_str()));
                 None
             }
         }
@@ -3600,6 +3753,71 @@ impl FmpDataSource {
         }
     }
 
+    /// The bare per-symbol live price — the quick check's per-holding price refresh
+    /// (`docs/portfolio-analysis.md` §The quick check). `Err` on a gate, transport
+    /// failure, or a body carrying no price, so the caller types the family
+    /// `unknown` rather than clearing it silently.
+    pub fn fetch_live_price(&self, symbol: &str) -> Result<f64> {
+        match self.suite_get(
+            "quick-quote",
+            symbol,
+            "Live quote",
+            FMP_QUOTE_PATH,
+            &[("symbol", symbol)],
+        ) {
+            Disposition::Value(value) => company_quote_from_value(&value)
+                .and_then(|q| q.price)
+                .with_context(|| format!("FMP quote carried no price for {symbol}")),
+            Disposition::Gap(reason) => {
+                anyhow::bail!("FMP quote unavailable ({})", reason.as_str())
+            }
+        }
+    }
+
+    /// Per-symbol earnings rows, newest first — the quick check's
+    /// new-earnings-actual evidence leg. `Err` on a failed retrieval (the caller
+    /// types the family `unknown`); an empty list is an honest no-rows read.
+    pub fn fetch_symbol_earnings(&self, symbol: &str) -> Result<Vec<SymbolEarningsRow>> {
+        match self.suite_get(
+            "quick-earnings",
+            symbol,
+            "Earnings rows",
+            FMP_SYMBOL_EARNINGS_PATH,
+            &[("symbol", symbol), ("limit", SYMBOL_EARNINGS_LIMIT)],
+        ) {
+            Disposition::Value(value) => symbol_earnings_from_value(&value),
+            Disposition::Gap(reason) => {
+                anyhow::bail!("FMP earnings unavailable ({})", reason.as_str())
+            }
+        }
+    }
+
+    /// Symbol-scoped stock news since `from` (ISO date) — the quick check's
+    /// qualifying-news-seed leg, pulled **only** for holdings carrying a standing
+    /// technology-class falsifier. `Err` on a failed retrieval.
+    pub fn fetch_symbol_news_since(
+        &self,
+        symbol: &str,
+        from: &str,
+    ) -> Result<Vec<SymbolNewsItem>> {
+        match self.suite_get(
+            "quick-news",
+            symbol,
+            "Symbol news",
+            FMP_NEWS_STOCK_SYMBOL_PATH,
+            &[
+                ("symbols", symbol),
+                ("from", from),
+                ("limit", SYMBOL_NEWS_LIMIT),
+            ],
+        ) {
+            Disposition::Value(value) => symbol_news_from_value(&value, from),
+            Disposition::Gap(reason) => {
+                anyhow::bail!("FMP news/stock unavailable ({})", reason.as_str())
+            }
+        }
+    }
+
     /// The per-fund metadata surface: `etf/info` plus the sector / country
     /// weightings (`docs/portfolio-analysis.md` §Asset eligibility). Each endpoint
     /// fail-softs to a tagged gap on the returned record.
@@ -3618,7 +3836,7 @@ impl FmpDataSource {
             Disposition::Value(value) => fund_info_into(&value, &mut fund),
             Disposition::Gap(reason) => fund
                 .gaps
-                .push(format!("FMP etf/info unavailable ({})", reason.as_str())),
+                .push(format!("{FUND_INFO_GAP_PREFIX} unavailable ({})", reason.as_str())),
         }
         match self.suite_get(
             "fund-sectors",
@@ -3630,11 +3848,12 @@ impl FmpDataSource {
             Disposition::Value(value) => {
                 fund.sector_weights = weights_from_value(&value, "sector");
                 if fund.sector_weights.is_empty() {
-                    fund.gaps.push("FMP sector weightings were empty".to_string());
+                    fund.gaps
+                        .push(format!("{FUND_SECTOR_WEIGHTS_GAP_PREFIX} were empty"));
                 }
             }
             Disposition::Gap(reason) => fund.gaps.push(format!(
-                "FMP sector weightings unavailable ({})",
+                "{FUND_SECTOR_WEIGHTS_GAP_PREFIX} unavailable ({})",
                 reason.as_str()
             )),
         }
@@ -3648,11 +3867,12 @@ impl FmpDataSource {
             Disposition::Value(value) => {
                 fund.country_weights = weights_from_value(&value, "country");
                 if fund.country_weights.is_empty() {
-                    fund.gaps.push("FMP country weightings were empty".to_string());
+                    fund.gaps
+                        .push(format!("{FUND_COUNTRY_WEIGHTS_GAP_PREFIX} were empty"));
                 }
             }
             Disposition::Gap(reason) => fund.gaps.push(format!(
-                "FMP country weightings unavailable ({})",
+                "{FUND_COUNTRY_WEIGHTS_GAP_PREFIX} unavailable ({})",
                 reason.as_str()
             )),
         }
@@ -3720,6 +3940,84 @@ impl FmpDataSource {
 pub struct BalanceSheetLines {
     pub total_debt: Option<f64>,
     pub total_equity: Option<f64>,
+}
+
+/// One per-symbol earnings row (`fetch_symbol_earnings`) — the announcement date and
+/// the actual-vs-estimate legs the quick check's evidence-event leg reads.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SymbolEarningsRow {
+    /// The announcement date, ISO.
+    pub date: String,
+    pub eps_actual: Option<f64>,
+    pub eps_estimated: Option<f64>,
+    pub revenue_actual: Option<f64>,
+}
+
+/// Shape an FMP `/earnings?symbol=` array body into rows, newest first. A row
+/// without a date is skipped (nothing to key the event on). A non-array 200 body
+/// is schema drift or a malformed response — `Err`, never an empty success, so
+/// the quick check types the family `unknown` rather than reading "no new
+/// evidence" off a body it couldn't interpret.
+fn symbol_earnings_from_value(value: &Value) -> Result<Vec<SymbolEarningsRow>> {
+    let Some(rows) = value.as_array() else {
+        anyhow::bail!("FMP earnings returned a non-array body — malformed or drifted response");
+    };
+    let mut out: Vec<SymbolEarningsRow> = rows
+        .iter()
+        .filter_map(|row| {
+            let date = row.get("date").and_then(Value::as_str)?.to_string();
+            Some(SymbolEarningsRow {
+                date,
+                eps_actual: row.get("epsActual").and_then(Value::as_f64),
+                eps_estimated: row.get("epsEstimated").and_then(Value::as_f64),
+                revenue_actual: row.get("revenueActual").and_then(Value::as_f64),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.date.cmp(&a.date));
+    Ok(out)
+}
+
+/// One symbol-scoped news item (`fetch_symbol_news_since`).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SymbolNewsItem {
+    /// `YYYY-MM-DD HH:MM:SS` as FMP serves it; date-prefix comparable.
+    pub published_date: String,
+    pub title: String,
+    pub site: Option<String>,
+}
+
+/// Shape an FMP `/news/stock?symbols=` array body, keeping items published on or
+/// after `from` (belt and braces over the server-side `from` filter — the leg's
+/// "fresh since the last full pass" test must not lean on a remote filter alone).
+/// A non-array 200 body is `Err`, never an empty success (see
+/// [`symbol_earnings_from_value`]).
+fn symbol_news_from_value(value: &Value, from: &str) -> Result<Vec<SymbolNewsItem>> {
+    let Some(rows) = value.as_array() else {
+        anyhow::bail!("FMP news/stock returned a non-array body — malformed or drifted response");
+    };
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            let published_date = row
+                .get("publishedDate")
+                .and_then(Value::as_str)?
+                .to_string();
+            // Date-prefix compare: "2026-08-01 09:30:00" >= "2026-07-20".
+            if published_date.as_str() < from {
+                return None;
+            }
+            Some(SymbolNewsItem {
+                published_date,
+                title: row
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                site: row.get("site").and_then(Value::as_str).map(str::to_string),
+            })
+        })
+        .collect())
 }
 
 /// Shape an FMP `/balance-sheet-statement` array body into [`BalanceSheetLines`] from
@@ -3863,27 +4161,46 @@ fn consensus_from_value(
 /// paid and a future declaration would inflate the trailing-return leg. `None` when
 /// no row lands in the window (a non-payer, or a stale record) — the total-return
 /// leg then adds nothing rather than a fabricated yield.
-fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Option<f64> {
-    let rows = value.as_array()?;
-    let cutoff = (today - Duration::days(365)).format("%Y-%m-%d").to_string();
-    let today_str = today.format("%Y-%m-%d").to_string();
+fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<Option<f64>> {
+    let Some(rows) = value.as_array() else {
+        anyhow::bail!("non-array body — malformed or drifted response");
+    };
+    let cutoff = today - Duration::days(365);
     let mut sum = 0.0;
     let mut any = false;
     for row in rows {
-        let date = row.get("date").and_then(Value::as_str).unwrap_or_default();
-        if date < cutoff.as_str() || date > today_str.as_str() {
+        // A row the parser cannot read is `Err`, never a silent skip: `Ok(None)`
+        // must mean the body affirmatively shows no trailing dividends — a
+        // missing or unparseable date can't be windowed, and an in-window row
+        // whose amount is non-numeric (a string-typed "0.26") would otherwise
+        // masquerade as a confirmed dividend elimination downstream.
+        let Some(date) = row.get("date").and_then(Value::as_str) else {
+            anyhow::bail!("a dividend row carried no date — malformed or drifted response");
+        };
+        let Ok(parsed) = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
+            anyhow::bail!(
+                "a dividend row carried a non-ISO date {date:?} — malformed or drifted response"
+            );
+        };
+        // Window on the PARSED date, never the source text: chrono accepts
+        // non-zero-padded fields ("2026-5-10"), which compare lexicographically
+        // outside the window and would silently drop an in-window payment.
+        if parsed < cutoff || parsed > today {
             continue;
         }
         let amount = row
             .get("adjDividend")
             .or_else(|| row.get("dividend"))
             .and_then(Value::as_f64);
-        if let Some(a) = amount {
-            sum += a;
-            any = true;
-        }
+        let Some(a) = amount else {
+            anyhow::bail!(
+                "an in-window dividend row carried no numeric amount — malformed or drifted response"
+            );
+        };
+        sum += a;
+        any = true;
     }
-    any.then_some(sum)
+    Ok(any.then_some(sum))
 }
 
 /// Fill a [`crate::portfolio::fund::FundData`] from an `etf/info` body (array-of-one
@@ -3897,11 +4214,19 @@ fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) {
         fund.gaps.push("FMP etf/info was malformed".to_string());
         return;
     };
-    fund.name = obj.get("name").and_then(Value::as_str).map(str::to_string);
-    fund.asset_class = obj
-        .get("assetClass")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    // Blank / whitespace-only strings normalize to `None` at this seam: the
+    // sweep's comparability gates key on presence, and a blank name or asset
+    // class read as "present" would fabricate a stored-true → fresh-false
+    // overlay clear or a fallback-shaped classification comparison.
+    let clean_str = |key: &str| {
+        obj.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    fund.name = clean_str("name");
+    fund.asset_class = clean_str("assetClass");
     fund.expense_ratio = obj
         .get("expenseRatio")
         .and_then(Value::as_f64)
@@ -4167,14 +4492,46 @@ mod suite_tests {
         ]"#;
         let value: Value = serde_json::from_str(body).unwrap();
         let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
-        let ttm = ttm_dividends_from_value(&value, today).unwrap();
+        let ttm = ttm_dividends_from_value(&value, today).unwrap().unwrap();
         assert!(
             (ttm - 0.51).abs() < 1e-9,
             "{ttm}: the 2024 row is outside the window and the future row is excluded"
         );
         // No rows in the window → None, never a fabricated yield.
         let stale: Value = serde_json::from_str(r#"[{"date":"2020-01-01","dividend":1.0}]"#).unwrap();
-        assert!(ttm_dividends_from_value(&stale, today).is_none());
+        assert!(ttm_dividends_from_value(&stale, today).unwrap().is_none());
+    }
+
+    #[test]
+    fn ttm_dividends_reject_unreadable_rows_rather_than_reading_non_payer() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
+        // An in-window row with a string-typed amount is unreadable — `Err`,
+        // never `None` (which downstream reads as a confirmed non-payer, i.e. a
+        // dividend elimination).
+        let v: Value =
+            serde_json::from_str(r#"[{"date":"2026-05-10","adjDividend":"0.26"}]"#).unwrap();
+        assert!(ttm_dividends_from_value(&v, today).is_err());
+        // A dateless row cannot be windowed — likewise.
+        let v: Value = serde_json::from_str(r#"[{"adjDividend":0.26}]"#).unwrap();
+        assert!(ttm_dividends_from_value(&v, today).is_err());
+        // A non-ISO date compares lexicographically as out-of-window — it must
+        // error, never slide into a false non-payer.
+        let v: Value =
+            serde_json::from_str(r#"[{"date":"not-a-date","adjDividend":0.26}]"#).unwrap();
+        assert!(ttm_dividends_from_value(&v, today).is_err());
+        // A non-zero-padded (but real) date parses and windows on the PARSED
+        // value — as text it sorts after today and would silently drop the
+        // in-window payment.
+        let v: Value =
+            serde_json::from_str(r#"[{"date":"2026-5-10","adjDividend":0.26}]"#).unwrap();
+        assert_eq!(ttm_dividends_from_value(&v, today).unwrap(), Some(0.26));
+        // An affirmatively empty body is the real non-payer…
+        let v: Value = serde_json::from_str("[]").unwrap();
+        assert_eq!(ttm_dividends_from_value(&v, today).unwrap(), None);
+        // …and junk on an out-of-window row is irrelevant, not a failure.
+        let v: Value =
+            serde_json::from_str(r#"[{"date":"2020-01-10","adjDividend":"junk"}]"#).unwrap();
+        assert_eq!(ttm_dividends_from_value(&v, today).unwrap(), None);
     }
 
     #[test]
@@ -4200,6 +4557,23 @@ mod suite_tests {
         assert!((fund.sector_weights[0].1 - 0.325).abs() < 1e-9);
         assert!((fund.country_weights[0].1 - 0.994).abs() < 1e-9);
         assert!(fund.gaps.is_empty(), "{:?}", fund.gaps);
+    }
+
+    #[test]
+    fn fund_info_blank_strings_normalize_to_none() {
+        // "" / whitespace-only name or assetClass reads as absent, never
+        // present: the sweep's comparability gates key on `is_some()`, and a
+        // blank name would fabricate a stored-true → fresh-false overlay clear
+        // while a blank asset class would dodge the degraded-family path.
+        let info = r#"[{"symbol":"VTI","name":"   ","assetClass":"","expenseRatio":0.03}]"#;
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 200, headers: vec![], body: info },
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+        ]);
+        let fund = source(&server.base_url).fetch_fund_data("VTI");
+        assert_eq!(fund.name, None);
+        assert_eq!(fund.asset_class, None);
     }
 
     #[test]
