@@ -379,7 +379,7 @@ mod tests {
             expense_ratio: Some(0.0009),
             us_share: Some(0.97),
             top_sector: Some(("Technology".into(), 0.31)),
-            structural_flag: false,
+            structural_flag: Some(false),
         });
         insert_run(&conn, &run).unwrap();
         assert_eq!(latest_run(&conn).unwrap().unwrap(), run);

@@ -741,8 +741,12 @@ pub struct FundExposureBasis {
     /// so the sweep can see a flag transition that changes no label
     /// (`docs/portfolio-analysis.md` §Starting parameters, the every-fund
     /// asset-class-change leg: a structural-flag reclassification counts).
+    /// `None` on a basis persisted before the field existed — an unknown legacy
+    /// state, never a default `false`, which would fabricate a false→true event
+    /// on a genuinely flagged fund's first post-upgrade sweep (and hide a real
+    /// true→false transition); the sweep compares only against a stored value.
     #[serde(default)]
-    pub structural_flag: bool,
+    pub structural_flag: Option<bool>,
 }
 
 /// Build the [`FundExposureBasis`] from a fund's fresh metadata — shared by the
@@ -760,7 +764,7 @@ pub fn exposure_basis(fund: &FundData) -> FundExposureBasis {
         expense_ratio: fund.expense_ratio,
         us_share: classification.us_share,
         top_sector,
-        structural_flag: classification.structural_flag,
+        structural_flag: Some(classification.structural_flag),
     }
 }
 

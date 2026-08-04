@@ -922,21 +922,31 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 }
                 (None, None) => false,
             };
+            let info_leg_healthy = !fresh_fund
+                .gaps
+                .iter()
+                .any(|g| g.starts_with(crate::fmp::FUND_INFO_GAP_PREFIX));
+            // Every label derives from the asset-class string, so the label-level
+            // comparison additionally requires it: an omitted `assetClass`
+            // reshapes the label to "fund with unresolved strategy class" —
+            // retrieval damage, not a mandate change.
             let class_comparable = relevant_gaps_clean
+                && fresh_fund.asset_class.is_some()
                 && (!equity_fund || (!weightings_degraded && !us_degraded));
             // The coarse mandate family (equity vs not) derives from `etf/info`
             // alone, so a real asset-class transition — a stored equity fund
             // freshly reporting Fixed Income — fires **for every fund** even
             // while the weightings-shaped label refinement is degraded (the
-            // every-fund asset-class-change contract). Only a degraded
-            // `etf/info` leg suppresses it: an unreadable mandate could fake
-            // the transition ("fund with unresolved strategy class" is not an
-            // equity label).
-            let mandate_comparable = fresh_fund.asset_class.is_some()
-                && !fresh_fund
-                    .gaps
-                    .iter()
-                    .any(|g| g.starts_with(crate::fmp::FUND_INFO_GAP_PREFIX));
+            // every-fund asset-class-change contract). Only an unreadable
+            // mandate suppresses it — and that reads the family degraded, never
+            // a silent clear.
+            let mandate_comparable = info_leg_healthy && fresh_fund.asset_class.is_some();
+            if info_leg_healthy && fresh_fund.asset_class.is_none() {
+                degraded.push(
+                    "asset class unreadable this sweep — the mandate leg was not checked"
+                        .to_string(),
+                );
+            }
             let is_equity_label = |l: &str| l.contains("equity");
             let mandate_moved = mandate_comparable
                 && is_equity_label(&stored.class_label)
@@ -944,12 +954,25 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             // The structural (option-overlay) flag keeps its class routing, so a
             // flag transition changes no label — it is its own change leg of the
             // every-fund contract (a structural-flag reclassification counts).
-            // The flag reads from the fund's *name* plus asset class, so it is
-            // checkable only while the info leg is healthy and a name came back
-            // — a missing name would fake a flag-clear.
-            let flag_comparable = mandate_comparable && fresh_fund.name.is_some();
-            let flag_moved =
-                flag_comparable && stored.structural_flag != fresh_exposure.structural_flag;
+            // The flag reads from the fund's *name* blob, so it stays checkable
+            // when only the asset class is missing — but needs a healthy info
+            // leg, a returned name (a missing one would fake a flag-clear), AND
+            // a stored value: a legacy basis persisted before the field reads
+            // `None`, and comparing a fabricated default would invent (or hide)
+            // a transition.
+            let flag_comparable = info_leg_healthy && fresh_fund.name.is_some();
+            let flag_moved = match stored.structural_flag {
+                Some(stored_flag) => {
+                    flag_comparable && Some(stored_flag) != fresh_exposure.structural_flag
+                }
+                None => {
+                    degraded.push(
+                        "stored basis predates the overlay-flag leg — it was not checked"
+                            .to_string(),
+                    );
+                    false
+                }
+            };
             if fresh_fund.name.is_none() {
                 degraded.push(
                     "fund name unreadable this sweep — the overlay-flag leg was not checked"
@@ -960,6 +983,10 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 || flag_moved
                 || (class_comparable && stored.class_label != fresh_exposure.class_label);
             if expense_moved || class_moved {
+                let flag_text = |f: Option<bool>| match f {
+                    Some(b) => b.to_string(),
+                    None => "unknown".to_string(),
+                };
                 events.push(event(
                     EvidenceEventKind::FundInfoChange,
                     format!(
@@ -969,8 +996,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                         fresh_exposure.class_label,
                         stored.expense_ratio,
                         fresh_exposure.expense_ratio,
-                        stored.structural_flag,
-                        fresh_exposure.structural_flag
+                        flag_text(stored.structural_flag),
+                        flag_text(fresh_exposure.structural_flag)
                     ),
                     inp.now,
                 ));
@@ -1951,7 +1978,7 @@ mod tests {
             expense_ratio: Some(0.001),
             us_share: Some(0.75),
             top_sector: Some(("Technology".into(), 0.30)),
-            structural_flag: false,
+            structural_flag: Some(false),
         });
         let mut run = sample_run(verdict, audit);
         run.holdings.positions[0].asset_class = AssetClass::MutualFund;
@@ -2037,7 +2064,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
-                structural_flag: false,
+                structural_flag: Some(false),
             })),
         )
         .unwrap();
@@ -2083,7 +2110,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: None,
                 top_sector: None,
-                structural_flag: false,
+                structural_flag: Some(false),
             })),
         )
         .unwrap();
@@ -2127,7 +2154,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
-                structural_flag: false,
+                structural_flag: Some(false),
             })),
         )
         .unwrap();
@@ -2174,7 +2201,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
-                structural_flag: false,
+                structural_flag: Some(false),
             })),
         )
         .unwrap();
@@ -2205,6 +2232,109 @@ mod tests {
             .find(|f| f.family == SweepFamily::FundInfo)
             .unwrap();
         assert_eq!(fam.state, SweepState::FreshClear, "{:?}", fam.note);
+    }
+
+    #[test]
+    fn a_missing_asset_class_degrades_but_the_overlay_leg_still_reads_from_the_name() {
+        // etf/info returns a usable name but no assetClass (which records no
+        // gap): the mandate and label legs cannot be checked — the family
+        // degrades — while the overlay flag, read from the name blob, still
+        // detects a real covered-call transition.
+        let conn = mem();
+        store::insert_run(
+            &conn,
+            &fund_run(Some(fund::FundExposureBasis {
+                class_label: "US equity fund".into(),
+                expense_ratio: Some(0.001),
+                us_share: Some(0.75),
+                top_sector: Some(("Technology".into(), 0.30)),
+                structural_flag: Some(false),
+            })),
+        )
+        .unwrap();
+        let mut stub = StubData::quiet(200.0, "2026-08-01");
+        stub.fund = FundData {
+            symbol: "BONDX".into(),
+            name: Some("Fixture Covered Call ETF".into()),
+            asset_class: None,
+            expense_ratio: Some(0.001),
+            aum: None,
+            nav: None,
+            sector_weights: vec![("Technology".into(), 0.30)],
+            country_weights: vec![("United States".into(), 0.75)],
+            gaps: vec![],
+        };
+        let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        let h = &s.holdings[0];
+        let change = h
+            .evidence_events
+            .iter()
+            .find(|e| e.kind == EvidenceEventKind::FundInfoChange)
+            .expect("the flag transition fires off the name");
+        assert!(
+            change.detail.contains("overlay flag false → true"),
+            "{}",
+            change.detail
+        );
+        let fam = h
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::FundInfo)
+            .unwrap();
+        assert_eq!(fam.state, SweepState::Unknown);
+        assert!(
+            fam.note.as_ref().unwrap().contains("asset class unreadable"),
+            "{:?}",
+            fam.note
+        );
+    }
+
+    #[test]
+    fn a_legacy_basis_without_the_flag_degrades_instead_of_fabricating_a_transition() {
+        // A basis persisted before the flag field decodes `None`: comparing a
+        // fabricated default would invent a false→true event on a genuinely
+        // flagged fund (or hide a real clear) — the leg degrades instead.
+        let conn = mem();
+        store::insert_run(
+            &conn,
+            &fund_run(Some(fund::FundExposureBasis {
+                class_label: "US equity fund".into(),
+                expense_ratio: Some(0.001),
+                us_share: Some(0.75),
+                top_sector: Some(("Technology".into(), 0.30)),
+                structural_flag: None,
+            })),
+        )
+        .unwrap();
+        let mut stub = StubData::quiet(200.0, "2026-08-01");
+        stub.fund = FundData {
+            symbol: "BONDX".into(),
+            name: Some("Fixture Covered Call ETF".into()),
+            asset_class: Some("Equity".into()),
+            expense_ratio: Some(0.001),
+            aum: None,
+            nav: None,
+            sector_weights: vec![("Technology".into(), 0.30)],
+            country_weights: vec![("United States".into(), 0.75)],
+            gaps: vec![],
+        };
+        let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        let h = &s.holdings[0];
+        assert!(h.evidence_events.is_empty(), "{:?}", h.evidence_events);
+        let fam = h
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::FundInfo)
+            .unwrap();
+        assert_eq!(fam.state, SweepState::Unknown);
+        assert!(
+            fam.note
+                .as_ref()
+                .unwrap()
+                .contains("predates the overlay-flag leg"),
+            "{:?}",
+            fam.note
+        );
     }
 
     #[test]
