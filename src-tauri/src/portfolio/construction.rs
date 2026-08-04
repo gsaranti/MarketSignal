@@ -363,21 +363,22 @@ fn same_underlying_overlay(
     if legs.is_empty() {
         return None;
     }
-    // Aggregate the two hedge-shaped sides; everything else is `other`.
+    // Aggregate the two hedge-shaped sides, keeping every leg's strike / expiry
+    // (the doc contract is per-leg); everything else is `other`.
     let mut short_call = 0.0_f64; // contracts
     let mut long_put = 0.0_f64;
-    let mut call_leg: Option<&OccOption> = None; // detail shown when single-leg
-    let mut put_leg: Option<&OccOption> = None;
+    let mut call_legs: Vec<(&OccOption, f64)> = Vec::new();
+    let mut put_legs: Vec<(&OccOption, f64)> = Vec::new();
     let mut other: Vec<String> = Vec::new();
     for (o, qty) in &legs {
         match (o.is_call, *qty < 0.0) {
             (true, true) if shares > 0.0 => {
-                call_leg = if short_call == 0.0 { Some(o) } else { None };
                 short_call += -qty;
+                call_legs.push((o, -qty));
             }
             (false, false) if shares > 0.0 => {
-                put_leg = if long_put == 0.0 { Some(o) } else { None };
-                long_put += qty;
+                long_put += *qty;
+                put_legs.push((o, *qty));
             }
             (is_call, is_short) => other.push(format!(
                 "{} {} ×{:.0}",
@@ -387,9 +388,23 @@ fn same_underlying_overlay(
             )),
         }
     }
-    let leg_detail = |leg: Option<&OccOption>| -> String {
-        leg.map(|o| format!(" @{:.0} exp {}", o.strike, o.expiry))
-            .unwrap_or_default()
+    // Strikes render exactly (OCC encodes to the tenth of a cent) — never
+    // rounded to a fabricated whole dollar.
+    let fmt_strike = |s: f64| -> String {
+        let t = format!("{s:.2}");
+        t.trim_end_matches('0').trim_end_matches('.').to_string()
+    };
+    let side_detail = |side: &[(&OccOption, f64)]| -> String {
+        match side {
+            [(o, _)] => format!(" @{} exp {}", fmt_strike(o.strike), o.expiry),
+            _ => {
+                let per: Vec<String> = side
+                    .iter()
+                    .map(|(o, q)| format!("{q:.0}×@{} exp {}", fmt_strike(o.strike), o.expiry))
+                    .collect();
+                format!(" [{}]", per.join(", "))
+            }
+        }
     };
     let mut notes: Vec<String> = Vec::new();
     if short_call > 0.0 {
@@ -399,7 +414,7 @@ fn same_underlying_overlay(
                 "covered call ({:.0} contract{}{} over ~{:.0}% of shares)",
                 short_call,
                 if short_call == 1.0 { "" } else { "s" },
-                leg_detail(call_leg),
+                side_detail(&call_legs),
                 (call_shares / shares * 100.0).round(),
             ));
         } else {
@@ -410,7 +425,7 @@ fn same_underlying_overlay(
                 (shares / call_shares * 100.0).round(),
                 short_call,
                 if short_call == 1.0 { "" } else { "s" },
-                leg_detail(call_leg),
+                side_detail(&call_legs),
                 shares,
             ));
         }
@@ -421,7 +436,7 @@ fn same_underlying_overlay(
             "protective put ({:.0} contract{}{} protecting ~{:.0}% of shares)",
             long_put,
             if long_put == 1.0 { "" } else { "s" },
-            leg_detail(put_leg),
+            side_detail(&put_legs),
             (put_shares / shares * 100.0).min(100.0).round(),
         ));
     }
@@ -934,7 +949,10 @@ impl std::fmt::Display for Violation {
                 )
             }
             Violation::RangeInverted { symbol } => {
-                write!(f, "{symbol}: target_weight_low exceeds target_weight_high")
+                write!(
+                    f,
+                    "{symbol}: target-weight range inverted or negative (0 ≤ low ≤ high required)"
+                )
             }
             Violation::RangeOutsideRungBand { symbol, action, low, high, band } => write!(
                 f,
@@ -1086,7 +1104,7 @@ pub fn validate_construction(
             continue;
         }
         let (low, high) = (proposal.target_weight_low, proposal.target_weight_high);
-        if !(low.is_finite() && high.is_finite()) || low > high {
+        if !(low.is_finite() && high.is_finite()) || low > high || low < 0.0 {
             violations.push(Violation::RangeInverted {
                 symbol: row.symbol.clone(),
             });
@@ -1532,8 +1550,8 @@ pub fn construction_schema(spine: &[SizingSpineRow]) -> Value {
                 "type": "object",
                 "properties": {
                     "action": { "type": "string", "enum": offered },
-                    "target_weight_low": { "type": "number" },
-                    "target_weight_high": { "type": "number" },
+                    "target_weight_low": { "type": "number", "minimum": 0 },
+                    "target_weight_high": { "type": "number", "minimum": 0 },
                     "rationale": { "type": "string" },
                     "divergence_cause": { "type": ["string", "null"], "enum": cause_or_null },
                     "divergence_note": { "type": ["string", "null"] },
@@ -2854,6 +2872,67 @@ mod tests {
         assert!(overlay.starts_with("collar:"), "{overlay}");
         assert!(overlay.contains("covered call"), "{overlay}");
         assert!(overlay.contains("protective put"), "{overlay}");
+    }
+
+    #[test]
+    fn a_multi_leg_ladder_keeps_every_strike_and_fractional_strikes_render_exactly() {
+        // Two short-call legs at different strikes / expiries over 200 shares:
+        // the per-leg contract keeps both, and the 447.5 strike is never
+        // rounded to a fabricated whole dollar.
+        let mut equity = position("AAPL", AssetClass::Stock, 40_000.0);
+        equity.quantity = 200.0;
+        let mut near = position("AAPL  260117C00447500", AssetClass::OptionContract, 400.0);
+        near.quantity = -1.0;
+        let mut far = position("AAPL  260320C00500000", AssetClass::OptionContract, 300.0);
+        far.quantity = -1.0;
+        let positions = vec![equity.clone(), near, far];
+        let overlay = same_underlying_overlay(&equity, &positions).unwrap();
+        assert!(overlay.contains("covered call"), "{overlay}");
+        assert!(overlay.contains("1×@447.5 exp 2026-01-17"), "{overlay}");
+        assert!(overlay.contains("1×@500 exp 2026-03-20"), "{overlay}");
+        assert!(overlay.contains("~100% of shares"), "{overlay}");
+    }
+
+    #[test]
+    fn a_negative_sell_all_range_is_rejected() {
+        // [-0.00005, -0.00005] passes ordering, the high > 0 sell-all check,
+        // and the band tolerance — the exact non-negativity check must trip.
+        let spine = vec![spine_row("AAA", 0.10, vec![Action::SellAll, Action::Trim, Action::Hold])];
+        let holdings = Holdings {
+            cash: 90_000.0,
+            account_total: 100_000.0,
+            ..holdings_for(&spine, 0.0)
+        };
+        let agg = agg_for(spine);
+        let negative = draft_for(vec![(
+            "AAA",
+            HoldingProposalDraft {
+                action: "sell-all".into(),
+                target_weight_low: -0.00005,
+                target_weight_high: -0.00005,
+                rationale: "x".into(),
+                divergence_cause: None,
+                divergence_note: None,
+                changed_attribution: None,
+                changed_cause: None,
+                changed_note: None,
+            },
+        )]);
+        let violations =
+            validate_construction(&negative, &agg, &holdings, &InvestorProfile::default_fixture())
+                .unwrap_err();
+        assert!(violations
+            .iter()
+            .any(|v| matches!(v, Violation::RangeInverted { symbol } if symbol == "AAA")));
+        // The schema also grammar-bars negatives at decode.
+        let schema = construction_schema(&agg_for(vec![spine_row(
+            "AAA",
+            0.10,
+            vec![Action::Hold],
+        )]).spine);
+        let props = &schema["properties"]["holdings"]["properties"]["AAA"]["properties"];
+        assert_eq!(props["target_weight_low"]["minimum"], 0);
+        assert_eq!(props["target_weight_high"]["minimum"], 0);
     }
 
     // ---- prompts ---------------------------------------------------------------
