@@ -4172,12 +4172,18 @@ fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<O
     for row in rows {
         // A row the parser cannot read is `Err`, never a silent skip: `Ok(None)`
         // must mean the body affirmatively shows no trailing dividends — a
-        // dateless row can't be windowed, and an in-window row whose amount is
-        // non-numeric (a string-typed "0.26") would otherwise masquerade as a
+        // missing or non-ISO date can't be windowed (a junk string compares
+        // lexicographically as out-of-window), and an in-window row whose amount
+        // is non-numeric (a string-typed "0.26") would otherwise masquerade as a
         // confirmed dividend elimination downstream.
         let Some(date) = row.get("date").and_then(Value::as_str) else {
             anyhow::bail!("a dividend row carried no date — malformed or drifted response");
         };
+        if chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() {
+            anyhow::bail!(
+                "a dividend row carried a non-ISO date {date:?} — malformed or drifted response"
+            );
+        }
         if date < cutoff.as_str() || date > today_str.as_str() {
             continue;
         }
@@ -4498,6 +4504,11 @@ mod suite_tests {
         assert!(ttm_dividends_from_value(&v, today).is_err());
         // A dateless row cannot be windowed — likewise.
         let v: Value = serde_json::from_str(r#"[{"adjDividend":0.26}]"#).unwrap();
+        assert!(ttm_dividends_from_value(&v, today).is_err());
+        // A non-ISO date compares lexicographically as out-of-window — it must
+        // error, never slide into a false non-payer.
+        let v: Value =
+            serde_json::from_str(r#"[{"date":"not-a-date","adjDividend":0.26}]"#).unwrap();
         assert!(ttm_dividends_from_value(&v, today).is_err());
         // An affirmatively empty body is the real non-payer…
         let v: Value = serde_json::from_str("[]").unwrap();

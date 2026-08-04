@@ -736,6 +736,13 @@ pub struct FundExposureBasis {
     pub us_share: Option<f64>,
     /// The largest sector weight `(label, weight)`.
     pub top_sector: Option<(String, f64)>,
+    /// The structural path-dependency flag the classification carried (an
+    /// option-overlay vehicle keeps its class routing but is flagged) — persisted
+    /// so the sweep can see a flag transition that changes no label
+    /// (`docs/portfolio-analysis.md` §Starting parameters, the every-fund
+    /// asset-class-change leg: a structural-flag reclassification counts).
+    #[serde(default)]
+    pub structural_flag: bool,
 }
 
 /// Build the [`FundExposureBasis`] from a fund's fresh metadata — shared by the
@@ -753,6 +760,7 @@ pub fn exposure_basis(fund: &FundData) -> FundExposureBasis {
         expense_ratio: fund.expense_ratio,
         us_share: classification.us_share,
         top_sector,
+        structural_flag: classification.structural_flag,
     }
 }
 

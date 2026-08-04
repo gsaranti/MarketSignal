@@ -941,17 +941,36 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             let mandate_moved = mandate_comparable
                 && is_equity_label(&stored.class_label)
                     != is_equity_label(&fresh_exposure.class_label);
+            // The structural (option-overlay) flag keeps its class routing, so a
+            // flag transition changes no label — it is its own change leg of the
+            // every-fund contract (a structural-flag reclassification counts).
+            // The flag reads from the fund's *name* plus asset class, so it is
+            // checkable only while the info leg is healthy and a name came back
+            // — a missing name would fake a flag-clear.
+            let flag_comparable = mandate_comparable && fresh_fund.name.is_some();
+            let flag_moved =
+                flag_comparable && stored.structural_flag != fresh_exposure.structural_flag;
+            if fresh_fund.name.is_none() {
+                degraded.push(
+                    "fund name unreadable this sweep — the overlay-flag leg was not checked"
+                        .to_string(),
+                );
+            }
             let class_moved = mandate_moved
+                || flag_moved
                 || (class_comparable && stored.class_label != fresh_exposure.class_label);
             if expense_moved || class_moved {
                 events.push(event(
                     EvidenceEventKind::FundInfoChange,
                     format!(
-                        "etf/info changed: class '{}' → '{}', expense {:?} → {:?}",
+                        "etf/info changed: class '{}' → '{}', expense {:?} → {:?}, \
+                         overlay flag {} → {}",
                         stored.class_label,
                         fresh_exposure.class_label,
                         stored.expense_ratio,
-                        fresh_exposure.expense_ratio
+                        fresh_exposure.expense_ratio,
+                        stored.structural_flag,
+                        fresh_exposure.structural_flag
                     ),
                     inp.now,
                 ));
@@ -1932,6 +1951,7 @@ mod tests {
             expense_ratio: Some(0.001),
             us_share: Some(0.75),
             top_sector: Some(("Technology".into(), 0.30)),
+            structural_flag: false,
         });
         let mut run = sample_run(verdict, audit);
         run.holdings.positions[0].asset_class = AssetClass::MutualFund;
@@ -2017,6 +2037,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
+                structural_flag: false,
             })),
         )
         .unwrap();
@@ -2062,6 +2083,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: None,
                 top_sector: None,
+                structural_flag: false,
             })),
         )
         .unwrap();
@@ -2105,6 +2127,7 @@ mod tests {
                 expense_ratio: Some(0.001),
                 us_share: Some(0.75),
                 top_sector: Some(("Technology".into(), 0.30)),
+                structural_flag: false,
             })),
         )
         .unwrap();
@@ -2135,6 +2158,53 @@ mod tests {
             .find(|f| f.family == SweepFamily::FundInfo)
             .unwrap();
         assert_eq!(fam.state, SweepState::Unknown);
+    }
+
+    #[test]
+    fn an_overlay_flag_transition_fires_the_change_event_with_no_label_change() {
+        // A US equity fund newly reading covered-call: the structural flag flips
+        // while the class label stays "US equity fund" — the every-fund contract
+        // counts a structural-flag reclassification, so the event must fire off
+        // the persisted flag, not the label.
+        let conn = mem();
+        store::insert_run(
+            &conn,
+            &fund_run(Some(fund::FundExposureBasis {
+                class_label: "US equity fund".into(),
+                expense_ratio: Some(0.001),
+                us_share: Some(0.75),
+                top_sector: Some(("Technology".into(), 0.30)),
+                structural_flag: false,
+            })),
+        )
+        .unwrap();
+        let mut stub = StubData::quiet(200.0, "2026-08-01");
+        stub.fund = FundData {
+            symbol: "BONDX".into(),
+            name: Some("Fixture Covered Call ETF".into()),
+            asset_class: Some("Equity".into()),
+            expense_ratio: Some(0.001),
+            aum: None,
+            nav: None,
+            sector_weights: vec![("Technology".into(), 0.30)],
+            country_weights: vec![("United States".into(), 0.75)],
+            gaps: vec![],
+        };
+        let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        let h = &s.holdings[0];
+        let change = h
+            .evidence_events
+            .iter()
+            .find(|e| e.kind == EvidenceEventKind::FundInfoChange)
+            .expect("the flag transition fires the change event");
+        assert!(change.detail.contains("overlay flag false → true"), "{}", change.detail);
+        // Clean data throughout — the family still vouches.
+        let fam = h
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::FundInfo)
+            .unwrap();
+        assert_eq!(fam.state, SweepState::FreshClear, "{:?}", fam.note);
     }
 
     #[test]
