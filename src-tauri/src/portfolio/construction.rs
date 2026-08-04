@@ -354,22 +354,24 @@ fn same_underlying_overlay(
     positions: &[crate::schwab::Position],
 ) -> Option<String> {
     let shares = underlying.quantity;
+    // Zero-net rows survive holdings normalization by design — a zero leg is
+    // no exposure, so it never enters the overlay.
     let legs: Vec<(OccOption, f64)> = positions
         .iter()
         .filter(|p| p.asset_class == AssetClass::OptionContract)
         .filter_map(|p| occ_parts(&p.symbol).map(|o| (o, p.quantity)))
-        .filter(|(o, _)| o.root.eq_ignore_ascii_case(&underlying.symbol))
+        .filter(|(o, q)| *q != 0.0 && o.root.eq_ignore_ascii_case(&underlying.symbol))
         .collect();
     if legs.is_empty() {
         return None;
     }
     // Aggregate the two hedge-shaped sides, keeping every leg's strike / expiry
-    // (the doc contract is per-leg); everything else is `other`.
+    // (the doc contract is per-leg); everything else is `other`, per-leg too.
     let mut short_call = 0.0_f64; // contracts
     let mut long_put = 0.0_f64;
     let mut call_legs: Vec<(&OccOption, f64)> = Vec::new();
     let mut put_legs: Vec<(&OccOption, f64)> = Vec::new();
-    let mut other: Vec<String> = Vec::new();
+    let mut other_legs: Vec<(&OccOption, f64)> = Vec::new();
     for (o, qty) in &legs {
         match (o.is_call, *qty < 0.0) {
             (true, true) if shares > 0.0 => {
@@ -380,18 +382,13 @@ fn same_underlying_overlay(
                 long_put += *qty;
                 put_legs.push((o, *qty));
             }
-            (is_call, is_short) => other.push(format!(
-                "{} {} ×{:.0}",
-                if is_short { "short" } else { "long" },
-                if is_call { "call" } else { "put" },
-                qty.abs()
-            )),
+            _ => other_legs.push((o, *qty)),
         }
     }
-    // Strikes render exactly (OCC encodes to the tenth of a cent) — never
-    // rounded to a fabricated whole dollar.
+    // Strikes render exactly (OCC encodes strikes × 1000 — thousandths of a
+    // dollar) — never rounded to a fabricated value.
     let fmt_strike = |s: f64| -> String {
-        let t = format!("{s:.2}");
+        let t = format!("{s:.3}");
         t.trim_end_matches('0').trim_end_matches('.').to_string()
     };
     let side_detail = |side: &[(&OccOption, f64)]| -> String {
@@ -432,12 +429,19 @@ fn same_underlying_overlay(
     }
     if long_put > 0.0 {
         let put_shares = long_put * 100.0;
+        // Coverage is never capped: puts beyond the held count are net bearish
+        // exposure, not hedge, and must read as such.
+        let excess = if put_shares > shares {
+            " — protection beyond the held count is net bearish exposure, not hedge"
+        } else {
+            ""
+        };
         notes.push(format!(
-            "protective put ({:.0} contract{}{} protecting ~{:.0}% of shares)",
+            "protective put ({:.0} contract{}{} protecting ~{:.0}% of shares{excess})",
             long_put,
             if long_put == 1.0 { "" } else { "s" },
             side_detail(&put_legs),
-            (put_shares / shares * 100.0).min(100.0).round(),
+            (put_shares / shares * 100.0).round(),
         ));
     }
     let mut rendered = if short_call > 0.0 && long_put > 0.0 {
@@ -445,17 +449,34 @@ fn same_underlying_overlay(
     } else {
         notes.join("; ")
     };
-    if !other.is_empty() {
+    if !other_legs.is_empty() {
+        let per: Vec<String> = other_legs
+            .iter()
+            .map(|(o, q)| {
+                format!(
+                    "{} {} ×{:.0} @{} exp {}",
+                    if *q < 0.0 { "short" } else { "long" },
+                    if o.is_call { "call" } else { "put" },
+                    q.abs(),
+                    fmt_strike(o.strike),
+                    o.expiry
+                )
+            })
+            .collect();
         let other_note = format!(
             "other same-underlying leg{}: {} (net delta unscored — no chain read at 7a)",
-            if other.len() == 1 { "" } else { "s" },
-            other.join(", ")
+            if other_legs.len() == 1 { "" } else { "s" },
+            per.join(", ")
         );
         if rendered.is_empty() {
             rendered = other_note;
         } else {
             rendered = format!("{rendered}; {other_note}");
         }
+    }
+    // Post-filter the sides can't all be empty, but never emit a blank overlay.
+    if rendered.is_empty() {
+        return None;
     }
     Some(rendered)
 }
@@ -2842,7 +2863,42 @@ mod tests {
         let positions2 = vec![equity2.clone(), long_call];
         let overlay2 = same_underlying_overlay(&equity2, &positions2).unwrap();
         assert!(overlay2.contains("other same-underlying leg"), "{overlay2}");
-        assert!(overlay2.contains("long call"), "{overlay2}");
+        // `other` legs keep their per-leg detail too — a January and a June
+        // call must not read identically.
+        assert!(overlay2.contains("long call ×100 @900 exp 2026-01-17"), "{overlay2}");
+    }
+
+    #[test]
+    fn zero_net_legs_never_render_and_edge_details_stay_exact() {
+        // A zero-net option row (retained by holdings normalization) is no
+        // exposure: alone it yields no overlay at all — never `×0` or a blank.
+        let equity = position("AAPL", AssetClass::Stock, 10_000.0);
+        let mut zero_put = position("AAPL  260117P00150000", AssetClass::OptionContract, 0.0);
+        zero_put.quantity = 0.0;
+        let mut zero_call = position("AAPL  260117C00250000", AssetClass::OptionContract, 0.0);
+        zero_call.quantity = 0.0;
+        let positions = vec![equity.clone(), zero_put, zero_call];
+        assert!(same_underlying_overlay(&equity, &positions).is_none());
+
+        // A thousandth-dollar OCC strike renders exactly (44.375, never 44.38).
+        let mut equity = position("XYZ", AssetClass::Stock, 10_000.0);
+        equity.quantity = 100.0;
+        let mut call = position("XYZ   260117C00044375", AssetClass::OptionContract, 200.0);
+        call.quantity = -1.0;
+        let positions = vec![equity.clone(), call];
+        let overlay = same_underlying_overlay(&equity, &positions).unwrap();
+        assert!(overlay.contains("@44.375"), "{overlay}");
+
+        // Puts beyond the held count read uncapped, flagged as net bearish
+        // exposure rather than silently clamped to 100%.
+        let mut equity = position("MSFT", AssetClass::Stock, 40_000.0);
+        equity.quantity = 100.0;
+        let mut puts = position("MSFT  260619P00350000", AssetClass::OptionContract, 900.0);
+        puts.quantity = 3.0;
+        let positions = vec![equity.clone(), puts];
+        let overlay = same_underlying_overlay(&equity, &positions).unwrap();
+        assert!(overlay.contains("~300% of shares"), "{overlay}");
+        assert!(overlay.contains("net bearish exposure"), "{overlay}");
     }
 
     #[test]
