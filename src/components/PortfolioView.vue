@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { localDate, localDateTime } from "../format";
 import type {
+  ActionWhatChanged,
   FlagTrigger,
   HoldingQuickState,
   HoldingsPull,
@@ -587,6 +588,43 @@ const ACTION_LABELS: Record<string, string> = {
   add: "Add",
   "add-aggressively": "Add aggressively",
 };
+
+const LEAN_TITLE =
+  "The standalone action lean — what the action would be if the holding stood " +
+  "alone; the final action reflects the whole book (concentration, overlap, cash)";
+
+// Whether a priced verdict's final action diverged from its standalone lean —
+// the visible intrinsic-vs-portfolio split. Absent lean (pre-construction runs)
+// reads as equal to the action.
+function leanDiverged(g: { action: string; lean?: string | null }): boolean {
+  return g.lean != null && g.lean !== g.action;
+}
+
+// The action half of the what-changed audit, rendered as one line.
+const CAUSE_LABELS: Record<string, string> = {
+  "became-oversized": "became oversized",
+  "overlap-emerged": "an overlap emerged",
+  "cash-freed": "cash was freed",
+};
+function actionChangeLine(wc: ActionWhatChanged): string {
+  const base =
+    wc.attribution === "moved-intrinsic"
+      ? "moved with the intrinsic verdict"
+      : wc.cause
+        ? `moved on portfolio context (${CAUSE_LABELS[wc.cause] ?? wc.cause})`
+        : "moved on portfolio context";
+  return wc.note ? `${base} — ${wc.note}` : base;
+}
+
+// The construction view's external-funding line: net new dollars = buys −
+// disposition proceeds; a negative value is net cash raised, not funding.
+function fundingLine(funding: number | null): string | null {
+  if (funding === null) return null;
+  if (Math.abs(funding) < 1) return "no net new dollars";
+  return funding > 0
+    ? `${fmtMoney(funding)} of external funding implied`
+    : `${fmtMoney(-funding)} net cash raised`;
+}
 
 const CONVICTION_LEVEL: Record<PortfolioConviction, number> = {
   low: 1,
@@ -1288,6 +1326,12 @@ const keyFigures = computed(() => {
                         }}</span
                       >
                     </div>
+                    <p
+                      v-if="v.disposition.action_sizing.sizing_rationale"
+                      class="hc-prose hc-rationale"
+                    >
+                      {{ v.disposition.action_sizing.sizing_rationale }}
+                    </p>
                     <dl class="hc-kv">
                       <dt>Weight</dt>
                       <dd>
@@ -1305,6 +1349,13 @@ const keyFigures = computed(() => {
                   <div class="hc-foot-main">
                     <span class="hc-kicker">What changed · since last run</span>
                     <p class="hc-changed">{{ v.disposition.what_changed }}</p>
+                    <p
+                      v-if="v.disposition.action_what_changed"
+                      class="hc-changed hc-changed-action"
+                    >
+                      Action
+                      {{ actionChangeLine(v.disposition.action_what_changed) }}
+                    </p>
                   </div>
                   <span class="ana-tag" :title="'Position vs. prior run'"
                     >Position: {{ CHANGE_LABELS[v.position_change] }}</span
@@ -1571,7 +1622,22 @@ const keyFigures = computed(() => {
                           )
                         }}</span
                       >
+                      <!-- The intrinsic-vs-portfolio split made visible: the
+                           standalone lean beside the final action, only when
+                           they diverge (a quiet tag in the badge family). -->
+                      <span
+                        v-if="leanDiverged(v.disposition)"
+                        class="ana-tag hc-lean-tag"
+                        :title="LEAN_TITLE"
+                        >Lean: {{ ACTION_LABELS[v.disposition.lean!] }}</span
+                      >
                     </div>
+                    <p
+                      v-if="v.disposition.action_sizing.sizing_rationale"
+                      class="hc-prose hc-rationale"
+                    >
+                      {{ v.disposition.action_sizing.sizing_rationale }}
+                    </p>
                     <dl class="hc-kv">
                       <dt>Weight</dt>
                       <dd>
@@ -1671,6 +1737,13 @@ const keyFigures = computed(() => {
                   <div class="hc-foot-main">
                     <span class="hc-kicker">What changed · since last run</span>
                     <p class="hc-changed">{{ v.disposition.what_changed }}</p>
+                    <p
+                      v-if="v.disposition.action_what_changed"
+                      class="hc-changed hc-changed-action"
+                    >
+                      Action
+                      {{ actionChangeLine(v.disposition.action_what_changed) }}
+                    </p>
                   </div>
                   <span class="ana-tag" :title="'Position vs. prior run'"
                     >Position: {{ CHANGE_LABELS[v.position_change] }}</span
@@ -1701,6 +1774,42 @@ const keyFigures = computed(() => {
                 >
                 {{ run.roll_up.data_health.summary }}
               </p>
+            </div>
+            <!-- The construction call's validated portfolio-level view — absent
+                 on runs persisted before the construction stage existed. -->
+            <div v-if="run.roll_up.construction" class="rollup-construction">
+              <span class="hc-kicker">Construction · portfolio view</span>
+              <dl class="hc-kv rollup-construction-kv">
+                <dt>Risk posture</dt>
+                <dd>{{ run.roll_up.construction.risk_posture }}</dd>
+                <dt>Deployment</dt>
+                <dd>{{ run.roll_up.construction.deployment_stance }}</dd>
+                <dt>Concentration</dt>
+                <dd>{{ run.roll_up.construction.concentration_read }}</dd>
+                <template
+                  v-if="
+                    fundingLine(run.roll_up.construction.external_funding) !==
+                    null
+                  "
+                >
+                  <dt>Funding</dt>
+                  <dd>
+                    {{ fundingLine(run.roll_up.construction.external_funding) }}
+                  </dd>
+                </template>
+              </dl>
+              <p
+                v-if="run.roll_up.construction.closed_positions_note"
+                class="hc-prose rollup-construction-note"
+              >
+                {{ run.roll_up.construction.closed_positions_note }}
+              </p>
+              <span
+                v-if="run.roll_up.construction.retried"
+                class="ana-tag rollup-retried-tag"
+                title="The construction synthesis validated on its single named-violation re-run"
+                >Validated on re-run</span
+              >
             </div>
             <div v-if="run.roll_up.exited.length > 0" class="rollup-exited">
               <span class="hc-kicker">Positions closed since last run</span>
@@ -2494,6 +2603,22 @@ const keyFigures = computed(() => {
   overflow-wrap: anywhere;
 }
 
+/* The action half of the what-changed audit, under the intrinsic line. */
+.hc-changed-action {
+  margin-top: var(--s-2);
+}
+
+/* The standalone-lean divergence tag, in the quiet badge family beside the
+   action word. */
+.hc-lean-tag {
+  align-self: center;
+}
+
+/* The construction call's sizing rationale under the action line. */
+.hc-rationale {
+  margin: var(--s-2) 0 0;
+}
+
 .hc-foot .ana-tag {
   flex-shrink: 0;
   margin-top: 2px;
@@ -2525,6 +2650,31 @@ const keyFigures = computed(() => {
 
 .rollup-datahealth .hc-kicker {
   margin-bottom: var(--s-2);
+}
+
+/* The construction call's portfolio-level view — same seam treatment as the
+   data-health row above it. */
+.rollup-construction {
+  padding: var(--s-4) var(--s-5);
+  border-top: 1px solid var(--hairline-soft);
+}
+
+.rollup-construction .hc-kicker {
+  margin-bottom: var(--s-2);
+}
+
+.rollup-construction-kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rollup-construction-note {
+  margin-top: var(--s-3);
+}
+
+.rollup-retried-tag {
+  margin-top: var(--s-3);
+  display: inline-block;
 }
 
 .dh-line {

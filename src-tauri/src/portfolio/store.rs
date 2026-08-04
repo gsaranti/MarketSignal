@@ -495,6 +495,8 @@ mod tests {
                 action_source: Default::default(),
             }],
             roll_up: PortfolioRollUp {
+                aggregates: None,
+                construction: None,
                 role_risk_only_count: 0,
                 graded_count: 0,
                 not_rated_count: 1,

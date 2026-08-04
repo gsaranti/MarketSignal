@@ -30,7 +30,7 @@ use crate::portfolio::{
     LedgerComparator, LedgerDraft, MonitorScenario, PositionChange, PositionDelta, PriceTarget,
     QuantCore, QuantCoreDraft, RoleRiskInterpretation, RoleRiskVerdict, ScenarioDraft,
     ScenarioKind, ThesisLedger, TriggerDraft, TriggerFamily, VerdictDisposition, HORIZON_LONG,
-    HORIZON_MID, HORIZON_SHORT, PROMPT_VERSION, ROLE_RISK_ACTIONS,
+    HORIZON_MID, HORIZON_SHORT, PROMPT_VERSION,
 };
 
 /// The condensed findings the research stage produces — the compact object the
@@ -59,14 +59,16 @@ pub fn research(_dossier: &HoldingDossier) -> ResearchFindings {
 }
 
 /// What the interpretation stage reads: the dossier, the engine's computed analysis,
-/// the distilled research findings, and the **engine-bounded feasible action set**
-/// the model must choose within (`docs/portfolio-analysis.md` §Starting parameters).
-/// The model reasons over *this* — evidence, not a gathering transcript.
+/// the distilled research findings, and the **intrinsic lean set** the model
+/// authors the standalone lean within — the full ladder, restricted only by severe
+/// pre-profit deterioration (`docs/portfolio-analysis.md` §Intrinsic verdict; the
+/// feasible-set bars are construction-side). The model reasons over *this* —
+/// evidence, not a gathering transcript.
 pub struct InterpretationInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub engine: &'a EngineOutput,
     pub distilled: &'a str,
-    pub feasible: &'a [Action],
+    pub lean_set: &'a [Action],
     /// The engine's evaluation of the prior thesis ledger's quantitative conditions
     /// (`None` on a debut — no prior ledger to evaluate).
     pub ledger_eval: Option<&'a LedgerEvaluation>,
@@ -85,6 +87,19 @@ pub struct RoleRiskInput<'a> {
     pub ledger_eval: Option<&'a LedgerEvaluation>,
 }
 
+/// What the run-level **portfolio construction** call reads
+/// (`docs/portfolio-workflow.md` §Step 7b): the Step-7a aggregates + spine, the
+/// exited names, the house view, and the investor profile — plus, on the single
+/// re-run, the named violations of the failed first attempt.
+pub struct ConstructionInput<'a> {
+    pub aggregates: &'a crate::portfolio::construction::BookAggregates,
+    pub exited: &'a [crate::portfolio::ExitedPosition],
+    pub house_view: &'a crate::portfolio::dossier::HouseView,
+    pub profile: &'a crate::portfolio::InvestorProfile,
+    /// `Some` only on the named-violation re-run.
+    pub violations: Option<String>,
+}
+
 /// The model-backed stages of the pipeline, behind a trait so the orchestration is
 /// stub-driven offline and daemon-driven live. The research stage is a deterministic
 /// app-layer function ([`research`]) this slice, not part of the trait.
@@ -96,9 +111,19 @@ pub trait HoldingAnalyst {
     /// verdict judgment (the 122B reasoner in thinking mode, live).
     fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation>;
     /// Author the union's other branch for a structurally unpriceable vehicle: the
-    /// role read and an action from the reduced spine
-    /// (`docs/portfolio-analysis.md` §Intrinsic verdict).
+    /// role read (no action — that arises at construction;
+    /// `docs/portfolio-analysis.md` §Intrinsic verdict).
     fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation>;
+    /// The run-level **portfolio construction** synthesis
+    /// (`docs/portfolio-workflow.md` §Step 7b): reconcile every holding's
+    /// standalone lean against the Step-7a aggregates into its final action +
+    /// target-weight range plus the portfolio-level view (the 122B reasoner in
+    /// thinking mode, live). The caller validates the draft and re-runs once with
+    /// any violations named.
+    fn construct(
+        &self,
+        input: &ConstructionInput,
+    ) -> Result<crate::portfolio::construction::ConstructionDraft>;
     /// The model ids this analyst used, for the run's audit record.
     fn model_ids(&self) -> Vec<String>;
 }
@@ -272,8 +297,13 @@ pub fn analyze_holding(
                         run_date,
                     )
                 });
-                // The union's other branch: the model authors the role read; the
-                // reduced {sell all, trim, hold} spine is structural in the schema.
+                // The union's other branch: the model authors the role read only —
+                // the branch carries no standalone lean, so its action arises
+                // wholly at the 7b construction stage from the reduced spine
+                // (`docs/portfolio-analysis.md` §Portfolio action). A provisional
+                // *hold* stands in until construction overwrites it inside this
+                // same pass (construction is fail-hard, so the placeholder never
+                // persists).
                 let interpretation = analyst
                     .interpret_role_risk(&RoleRiskInput {
                         dossier,
@@ -281,12 +311,6 @@ pub fn analyze_holding(
                         ledger_eval: ledger_eval.as_ref(),
                     })
                     .context("interpreting the role/risk holding")?;
-                if !ROLE_RISK_ACTIONS.contains(&interpretation.action) {
-                    anyhow::bail!(
-                        "role_risk_only action {:?} outside the reduced spine",
-                        interpretation.action
-                    );
-                }
                 // The 6g ledger seam: validate the rewrite — executability,
                 // condition identity / carry, tripped / fired claims, the branch's
                 // reductions (condition-only monitor, trim / sell triggers).
@@ -299,7 +323,7 @@ pub fn analyze_holding(
                     dossier.financials.current_price,
                 );
                 let action_sizing = engine::size_action(
-                    interpretation.action,
+                    Action::Hold,
                     &dossier.position,
                     &dossier.profile,
                     account_total,
@@ -323,9 +347,10 @@ pub fn analyze_holding(
                         observable_risk: readout.observable_risk,
                         structural_flag: readout.structural_flag,
                         evidence_gaps: readout.evidence_gaps.clone(),
-                        action: interpretation.action,
+                        action: Action::Hold,
                         action_sizing,
                         what_changed: interpretation.what_changed,
+                        action_what_changed: None,
                     })),
                     thesis_ledger: Some(ledger),
                     analyzed_at: None,
@@ -353,20 +378,17 @@ pub fn analyze_holding(
         }
     };
 
-    // The engine bounds the feasible action set from engine-known inputs before the
-    // model picks a rung (`docs/portfolio-analysis.md` §Starting parameters) — the
-    // pre-profit overlay's action rules join only when the stock actually entered
-    // the overlay (a priced fund carries none).
+    // The set the model authors the **standalone lean** within — the intrinsic
+    // bars alone: the full ladder, restricted only by severe pre-profit
+    // deterioration (`docs/portfolio-analysis.md` §Intrinsic verdict — the lean is
+    // set before portfolio constraints; the feasible-set bars are construction-side
+    // rules, re-derived and applied at the 7b stage). The overlay's rules join only
+    // when the stock actually entered the overlay (a priced fund carries none).
     let overlay_rules = pre_profit_overlay
         .as_ref()
         .filter(|o| o.is_eligible())
         .map(|o| &o.consequences);
-    let feasible = engine::feasible_actions(
-        engine_output.grade,
-        &engine_output.hurdle,
-        current_weight.unwrap_or(0.0),
-        overlay_rules,
-    );
+    let lean_set = engine::lean_actions(overlay_rules);
 
     // Evaluate the prior ledger's quantitative falsifiers and triggers against this
     // run's computed surface — the crossings interpretation reads
@@ -391,18 +413,18 @@ pub fn analyze_holding(
             dossier,
             engine: &engine_output,
             distilled: &distilled,
-            feasible: &feasible,
+            lean_set: &lean_set,
             ledger_eval: ledger_eval.as_ref(),
             pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
         })
         .context("interpreting the holding")?;
-    // Defense in depth behind the schema constraint: an action outside the
-    // engine-bounded set never persists.
-    if !feasible.contains(&interpretation.action) {
+    // Defense in depth behind the schema constraint: a lean outside the
+    // intrinsic-bar set never persists.
+    if !lean_set.contains(&interpretation.action) {
         anyhow::bail!(
-            "interpretation chose {:?} outside the engine-bounded feasible set {:?}",
+            "interpretation chose {:?} outside the intrinsic lean set {:?}",
             interpretation.action,
-            feasible
+            lean_set
         );
     }
     // The overlay's engine-matched conviction ceiling binds after interpretation —
@@ -443,7 +465,11 @@ pub fn analyze_holding(
     let graded = GradedVerdict {
         grade: engine_output.grade,
         sub_scores: engine_output.sub_scores,
+        // The 6f rung is the standalone lean; the final action provisionally
+        // equals it until the 7b construction stage overwrites it inside this
+        // same pass (`docs/portfolio-analysis.md` §The holding verdict).
         action: interpretation.action,
+        lean: Some(interpretation.action),
         action_sizing,
         conviction,
         horizon_outlook: interpretation.horizon_outlook,
@@ -457,6 +483,7 @@ pub fn analyze_holding(
         structural_flag: engine_output.structural_flag,
         financial_summary: interpretation.financial_summary,
         what_changed: interpretation.what_changed,
+        action_what_changed: None,
     };
     let verdict = HoldingVerdict {
         symbol: symbol.clone(),
@@ -1177,16 +1204,21 @@ pub fn interpretation_system_prompt() -> String {
      valuation multiples, the risk tier, the capital-efficiency read, and the scenario \
      price targets — has already been computed deterministically and is given to you. \
      Do NOT invent or alter any number: read them from the analysis. Your job is the \
-     judgment the numbers don't make: choose the action from the ALLOWED ACTIONS the \
-     engine offers (never outside it), set your conviction and the three horizon reads, \
-     justify the base-case price target, and write a concise financial summary and a \
-     continuity note. Conviction means your confidence in the overall read — grade, \
-     outlook, and action together — and must match the action's decisiveness: a \
-     decisive action (sell all, add aggressively) requires conviction you actually \
-     hold; if your conviction is low, choose a less decisive allowed action instead. \
+     judgment the numbers don't make: choose the STANDALONE ACTION LEAN — the action \
+     this holding would earn if it stood alone, a pure read of grade, conviction, \
+     upside/downside, and risk, with NO portfolio context (the final portfolio action \
+     is set later, at portfolio construction, with the whole book in view) — from the \
+     ALLOWED LEANS offered (never outside them), set your conviction and the three \
+     horizon reads, justify the base-case price target, and write a concise financial \
+     summary and a continuity note. Conviction means your confidence in the overall \
+     read — grade, outlook, and lean together — and must match the lean's \
+     decisiveness: a decisive lean (sell all, add aggressively) requires conviction \
+     you actually hold; if your conviction is low, choose a less decisive allowed \
+     lean instead. \
      Use the Market Signal house view for the horizon reads and market-setup context \
      only — it is a market-level thesis, never by itself a reason to exit a specific \
-     holding. Apply the investor profile. \
+     holding. The lean is profile-independent: read the investor profile as context \
+     for the prose, never as a reason to move the lean. \
      You also maintain the position's THESIS LEDGER — the persisted standing thesis \
      with monitorable falsifiers and pre-committed action triggers: test the prior \
      ledger against this run's evidence and the engine's deterministic condition \
@@ -1201,11 +1233,12 @@ pub fn role_risk_system_prompt() -> String {
     "You are a disciplined portfolio analyst assessing one holding whose vehicle \
      class this pipeline is structurally unable to price (a bond or commodity fund, \
      an ex-US fund, a leveraged/inverse vehicle, or a fund without usable weightings). \
-     Do NOT produce a grade, price target, or conviction — none exists for this \
-     branch. Your job: describe the vehicle's role — the mandate and the exposure it \
-     exists to supply, read in isolation — and choose an action from the reduced \
-     ladder (sell-all / trim / hold) with the rationale limited to portfolio role and \
-     risk. Read the engine's exposure, expense, and risk figures; never invent one. \
+     Do NOT produce a grade, price target, conviction, or action — none exists for \
+     this branch here (its action is set later, at portfolio construction, from the \
+     reduced sell-all / trim / hold ladder with the whole book in view). Your job: \
+     describe the vehicle's role — the mandate and the exposure it exists to supply, \
+     read in isolation — and write the continuity note. Read the engine's exposure, \
+     expense, and risk figures; never invent one. \
      You also maintain the holding's THESIS LEDGER (fund-flavored drivers; \
      condition-only monitor; trim/sell triggers only) — test the prior ledger against \
      this run's evidence and rewrite it per the instructions in the prompt. \
@@ -1255,7 +1288,10 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
              only, never by itself a reason to exit this holding):\n{sections}\n"
         ));
     }
-    p.push_str("\nALLOWED ACTIONS: sell-all, trim, hold (the reduced spine — no add family).\n");
+    p.push_str(
+        "\nACTION: none here — this branch's action is set at portfolio construction \
+         from the reduced spine (sell-all / trim / hold; no add family).\n",
+    );
     match &d.prior_verdict {
         Some(_) => p.push_str(
             "\nCONTINUITY: a prior verdict for this holding exists. Keep the read firm; \
@@ -1418,8 +1454,11 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         p.push_str(&pre_profit_prompt_section(overlay));
     }
 
-    p.push_str("\nALLOWED ACTIONS (the engine-bounded feasible set — choose within it): ");
-    let allowed: Vec<&str> = input.feasible.iter().map(Action::as_kebab).collect();
+    p.push_str(
+        "\nALLOWED LEANS (choose the standalone lean within this set; the final \
+         portfolio action is set at construction): ",
+    );
+    let allowed: Vec<&str> = input.lean_set.iter().map(Action::as_kebab).collect();
     p.push_str(&allowed.join(", "));
     p.push('\n');
 
@@ -1970,16 +2009,16 @@ impl HoldingAnalyst for StubAnalyst {
             crate::portfolio::Grade::D => Action::Trim,
             crate::portfolio::Grade::F => Action::SellAll,
         };
-        // The live path's schema constrains the action to the feasible set; the stub
+        // The live path's schema constrains the lean to the intrinsic set; the stub
         // honors the same bound by falling back to the least-drastic offered rung
-        // (hold is no longer always offered — a severe pre-profit overlay restricts
-        // the set to the exit family).
-        let action = if input.feasible.contains(&preferred) {
+        // (hold is not always offered — a severe pre-profit overlay restricts the
+        // set to the exit family).
+        let action = if input.lean_set.contains(&preferred) {
             preferred
-        } else if input.feasible.contains(&Action::Hold) {
+        } else if input.lean_set.contains(&Action::Hold) {
             Action::Hold
         } else {
-            *input.feasible.last().unwrap_or(&Action::Hold)
+            *input.lean_set.last().unwrap_or(&Action::Hold)
         };
         let conviction = match e.grade {
             crate::portfolio::Grade::A | crate::portfolio::Grade::B => Conviction::High,
@@ -2028,7 +2067,6 @@ impl HoldingAnalyst for StubAnalyst {
 
     fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
         Ok(RoleRiskInterpretation {
-            action: Action::Hold,
             role_summary: format!(
                 "{} supplying {} exposure; held for its portfolio role.",
                 input.readout.class_label,
@@ -2049,6 +2087,66 @@ impl HoldingAnalyst for StubAnalyst {
                 &input.dossier.position.symbol,
                 true,
             ),
+        })
+    }
+
+    fn construct(
+        &self,
+        input: &ConstructionInput,
+    ) -> Result<crate::portfolio::construction::ConstructionDraft> {
+        use crate::portfolio::construction::{ConstructionDraft, HoldingProposalDraft};
+        // The stub's construction is the deterministic echo: re-affirm each
+        // holding's standalone read inside its allowed set — the carried action
+        // for a carried row, the lean where the feasible set still offers it,
+        // continuity (the prior action) or *hold* otherwise — at the engine's
+        // rung band. It exercises the validate-and-merge seam without ever
+        // proposing a violation; the violation paths are rogue-stub territory.
+        let mut holdings = std::collections::BTreeMap::new();
+        for row in &input.aggregates.spine {
+            let action = if row.carried {
+                row.prior_action.unwrap_or(Action::Hold)
+            } else if let Some(lean) = row.lean.filter(|l| row.offered.contains(l)) {
+                lean
+            } else if let Some(prior) = row.prior_action.filter(|p| row.offered.contains(p)) {
+                prior
+            } else if row.offered.contains(&Action::Hold) {
+                Action::Hold
+            } else {
+                *row.offered.last().unwrap_or(&Action::Hold)
+            };
+            let (low, high) = engine::rung_band(action, row.current_weight);
+            // The only stub path that changes an action against its baseline is a
+            // moved intrinsic read (a moved lean, or a feasible set that dropped
+            // the prior rung) — the context causes need aggregates the stub
+            // doesn't reason over.
+            let changed = row.prior_action.is_some_and(|p| p != action);
+            holdings.insert(
+                row.symbol.clone(),
+                HoldingProposalDraft {
+                    action: action.as_kebab().to_string(),
+                    target_weight_low: low,
+                    target_weight_high: high,
+                    rationale: "Stub construction: the standalone read at the engine band."
+                        .to_string(),
+                    divergence_cause: None,
+                    divergence_note: None,
+                    changed_attribution: changed.then(|| "moved-intrinsic".to_string()),
+                    changed_cause: None,
+                    changed_note: changed
+                        .then(|| "the intrinsic read moved since the prior run".to_string()),
+                },
+            );
+        }
+        Ok(ConstructionDraft {
+            holdings,
+            risk_posture: "Balanced (stub read).".to_string(),
+            deployment_stance: "No reallocation proposed (stub).".to_string(),
+            concentration_read: "No concentration breaches (stub).".to_string(),
+            closed_positions_note: (!input.exited.is_empty()).then(|| {
+                let names: Vec<&str> =
+                    input.exited.iter().map(|e| e.symbol.as_str()).collect();
+                format!("Positions closed since last run: {}.", names.join(", "))
+            }),
         })
     }
 
@@ -2156,13 +2254,13 @@ fn interpret_request(reasoner_model: &str, input: &InterpretationInput) -> ChatR
             ChatMessage::user(interpretation_user_prompt(input)),
         ],
     );
-    // The per-holding schema advertises only the engine-bounded feasible set, so
-    // a barred rung is structurally unreachable (`docs/portfolio-analysis.md`
-    // §Starting parameters — the feasible-set rule).
+    // The per-holding schema advertises only the intrinsic lean set (the full
+    // ladder; severe deterioration restricts to the exit family), so a barred rung
+    // is structurally unreachable (`docs/portfolio-analysis.md` §Intrinsic verdict).
     // The conviction enum narrows structurally beneath a matched pre-profit ceiling,
-    // mirroring the feasible-action narrowing (`docs/portfolio-workflow.md` §Step 6f).
+    // mirroring the lean-set narrowing (`docs/portfolio-workflow.md` §Step 6f).
     req.format_schema = Some(interpretation_schema(
-        input.feasible,
+        input.lean_set,
         input
             .pre_profit
             .and_then(|o| o.consequences.conviction_ceiling),
@@ -2189,6 +2287,40 @@ fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
     req
 }
+
+/// Build the portfolio-construction request: thinking on, the per-holding-narrowed
+/// construction schema, and the **shared** interpret context size — the
+/// one-`num_ctx`-per-model rule (an Ollama `num_ctx` change reloads the resident
+/// runner, `docs/local-model-operations.md §The num_ctx trap`), so the run-level
+/// call must not bounce the runner between sizes. On prompt overrun the sanctioned
+/// response is compressing the per-holding digests, never a `num_ctx` change.
+fn construction_request(reasoner_model: &str, input: &ConstructionInput) -> ChatRequest {
+    let mut req = ChatRequest::new(
+        reasoner_model,
+        vec![
+            ChatMessage::system(crate::portfolio::construction::construction_system_prompt()),
+            ChatMessage::user(crate::portfolio::construction::construction_user_prompt(
+                input.aggregates,
+                input.exited,
+                input.house_view.latest_sections.as_deref(),
+                input.profile,
+                input.violations.as_deref(),
+            )),
+        ],
+    );
+    req.format_schema = Some(crate::portfolio::construction::construction_schema(
+        &input.aggregates.spine,
+    ));
+    req.think = Some(true);
+    req.options = Some(options::thinking_general(NUM_CTX_INTERPRET));
+    req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
+    req
+}
+
+/// The construction call's tracker step key — the run-level counterpart of
+/// [`crate::portfolio::holding_step_key`], shared by the job's step row and the
+/// streamed reasoning.
+pub const CONSTRUCTION_STEP_KEY: &str = "construction";
 
 impl HoldingAnalyst for LocalAnalyst {
     fn distill(&self, dossier: &HoldingDossier, findings: &ResearchFindings) -> Result<String> {
@@ -2220,6 +2352,21 @@ impl HoldingAnalyst for LocalAnalyst {
         let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
         serde_json::from_str(&resp.content)
             .with_context(|| format!("parsing role/risk interpretation JSON: {}", resp.content))
+    }
+
+    fn construct(
+        &self,
+        input: &ConstructionInput,
+    ) -> Result<crate::portfolio::construction::ConstructionDraft> {
+        let req = construction_request(&self.reasoner_model, input);
+        // Stream step-scoped like interpretation: the whole-book reconciliation is
+        // the run's longest single call, and its reasoning lands on the
+        // "Portfolio construction" step rather than a minutes-long quiet stretch.
+        let resp = self
+            .client
+            .chat_streaming(&req, StreamRole::Step(CONSTRUCTION_STEP_KEY))?;
+        serde_json::from_str(&resp.content)
+            .with_context(|| format!("parsing construction JSON: {}", resp.content))
     }
 
     fn model_ids(&self) -> Vec<String> {
@@ -2660,7 +2807,7 @@ mod tests {
             dossier: &d,
             engine: &engine_output,
             distilled: "distilled findings",
-            feasible: &feasible,
+            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         };
@@ -2669,11 +2816,11 @@ mod tests {
         assert!(user.contains("SUB-SCORES"), "{user}");
         assert!(user.contains("NOT a grade input"), "options proxy is flagged: {user}");
         assert!(user.contains("RISK TIER"), "{user}");
-        // The engine-bounded feasible set is stated, and a barred rung isn't listed.
-        assert!(user.contains("ALLOWED ACTIONS"), "{user}");
+        // The intrinsic lean set is stated, and a barred rung isn't listed.
+        assert!(user.contains("ALLOWED LEANS"), "{user}");
         let allowed_line = user
             .lines()
-            .find(|l| l.contains("ALLOWED ACTIONS"))
+            .find(|l| l.contains("ALLOWED LEANS"))
             .unwrap();
         assert!(!allowed_line.contains("add"), "{allowed_line}");
         assert!(interpretation_system_prompt().contains("Do NOT invent"));
@@ -2705,7 +2852,7 @@ mod tests {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            feasible: &feasible,
+            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -2736,7 +2883,7 @@ mod tests {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            feasible: &feasible,
+            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -2750,7 +2897,7 @@ mod tests {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            feasible: &feasible,
+            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -2781,7 +2928,7 @@ mod tests {
                 dossier: d,
                 engine: &engine_output,
                 distilled: "",
-                feasible: &feasible,
+                lean_set: &feasible,
                 ledger_eval: None,
                 pre_profit: None,
             })
@@ -2816,7 +2963,7 @@ mod tests {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            feasible: &feasible,
+            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -2876,7 +3023,7 @@ mod tests {
                 dossier: &d,
                 engine: &engine_output,
                 distilled: "distilled findings",
-                feasible: &feasible,
+                lean_set: &feasible,
                 ledger_eval: None,
                 pre_profit: None,
             },
@@ -2942,8 +3089,13 @@ mod tests {
     }
 
     #[test]
-    fn feasible_set_violation_is_rejected_in_depth() {
-        // An analyst that ignores the feasible set must not persist its action.
+    fn the_lean_set_admits_the_full_ladder_and_construction_owns_the_bars() {
+        // Under the 7b split the 6f rung is the standalone lean, authored over the
+        // intrinsic bars alone — a dead-money read no longer bars an add-family
+        // *lean* (the feasible-set bar binds at construction instead), so an
+        // analyst choosing add-aggressively on a dead-money name persists it as
+        // the lean. The engine-bar divergence is then construction's to stamp
+        // (`crate::portfolio::construction`).
         struct RogueAnalyst;
         impl HoldingAnalyst for RogueAnalyst {
             fn distill(&self, _d: &HoldingDossier, _f: &ResearchFindings) -> Result<String> {
@@ -2967,12 +3119,19 @@ mod tests {
             fn interpret_role_risk(&self, _input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
                 unreachable!()
             }
+            fn construct(
+                &self,
+                _input: &ConstructionInput,
+            ) -> Result<crate::portfolio::construction::ConstructionDraft> {
+                unreachable!("per-holding test — construction never runs")
+            }
             fn model_ids(&self) -> Vec<String> {
                 vec!["rogue".into()]
             }
         }
         // The strong fixture reads dead-money under the conservative flat anchor
-        // (base target below spot), so add-aggressively is outside the feasible set.
+        // (base target below spot), so add-aggressively is outside the *feasible*
+        // set — but inside the lean set, so 6f accepts it.
         let d = dossier(AssetClass::Stock, strong_financials());
         let engine_output = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,
@@ -2984,13 +3143,19 @@ mod tests {
             19_500.0 / 29_500.0,
             None,
         );
-        if feasible.contains(&Action::AddAggressively) {
-            // Fixture drift made the rung feasible — the guard has nothing to reject.
-            return;
+        assert!(
+            !feasible.contains(&Action::AddAggressively),
+            "fixture drift: the rung must be feasibility-barred for this test"
+        );
+        let (verdict, _) =
+            analyze_holding(&RogueAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+        match &verdict.disposition {
+            VerdictDisposition::Priced(g) => {
+                assert_eq!(g.lean, Some(Action::AddAggressively));
+                assert_eq!(g.action, Action::AddAggressively, "provisional until 7b");
+            }
+            other => panic!("expected priced, got {other:?}"),
         }
-        let err =
-            analyze_holding(&RogueAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap_err();
-        assert!(err.to_string().contains("feasible"), "{err}");
     }
 
     #[test]
@@ -3912,7 +4077,7 @@ mod tests {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            feasible: &feasible,
+            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -4187,7 +4352,7 @@ mod tests {
             dossier: &d,
             engine: &engine_output,
             distilled: "none",
-            feasible: &feasible,
+            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: Some(&overlay),
         });

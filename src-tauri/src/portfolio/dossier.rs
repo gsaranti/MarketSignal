@@ -715,6 +715,8 @@ Watch the 2s10s and the labor prints.
                 action_source: Default::default(),
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
+                aggregates: None,
+                construction: None,
                 graded_count: 0,
                 not_rated_count: 1,
                 insufficient_evidence_count: 0,
@@ -762,6 +764,8 @@ Watch the 2s10s and the labor prints.
                 action_source: Default::default(),
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
+                aggregates: None,
+                construction: None,
                 graded_count: 0,
                 not_rated_count: 1,
                 insufficient_evidence_count: 0,

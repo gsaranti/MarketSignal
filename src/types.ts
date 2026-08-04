@@ -405,12 +405,31 @@ export interface ActionSizing {
   target_weight_high: number;
   est_share_delta: number | null;
   est_dollar_delta: number | null;
+  // The construction call's validated sizing rationale (the card's action
+  // rationale line) — absent on pre-construction runs and engine-band sizing.
+  sizing_rationale?: string | null;
+}
+
+// The action half of the what-changed audit, authored and app-validated at the
+// 7b construction stage (docs/portfolio-analysis.md §What changed): a changed
+// action traces to a moved intrinsic verdict or a moved portfolio context —
+// null when the action did not change, and on pre-construction runs.
+export interface ActionWhatChanged {
+  attribution: "moved-intrinsic" | "moved-context";
+  cause?: "became-oversized" | "overlap-emerged" | "cash-freed" | null;
+  note: string;
 }
 
 export interface GradedVerdict {
   grade: PortfolioGrade;
   sub_scores: SubScores;
+  // The final portfolio action, set at construction with the whole book in view.
   action: PortfolioAction;
+  // The standalone action lean — what the action would be if the holding stood
+  // alone, authored at interpretation before portfolio constraints. Absent on
+  // pre-construction runs (reads as equal to the action). A lean differing from
+  // the action is the visible intrinsic-vs-portfolio split.
+  lean?: PortfolioAction | null;
   action_sizing: ActionSizing;
   conviction: PortfolioConviction;
   horizon_outlook: HorizonOutlook;
@@ -431,7 +450,11 @@ export interface GradedVerdict {
   fund_class_label: string | null;
   structural_flag: boolean;
   financial_summary: string;
+  // The intrinsic half of the what-changed audit (authored at interpretation).
   what_changed: string;
+  // The action half, authored at construction — absent when unchanged and on
+  // pre-construction runs.
+  action_what_changed?: ActionWhatChanged | null;
 }
 
 // One exposure weight (a sector or country label and its fraction of the fund).
@@ -451,9 +474,13 @@ export interface RoleRiskVerdict {
   observable_risk: number | null;
   structural_flag: boolean;
   evidence_gaps: string[];
+  // Set wholly at construction from the reduced {sell-all, trim, hold} spine —
+  // this branch carries no standalone lean.
   action: PortfolioAction;
   action_sizing: ActionSizing;
   what_changed: string;
+  // The action half of the what-changed audit — same contract as the priced branch.
+  action_what_changed?: ActionWhatChanged | null;
 }
 
 // Internally tagged on `status` (serde `tag = "status"`): the analyzed verdict is
@@ -547,6 +574,109 @@ export interface DataHealth {
   summary: string;
 }
 
+// One holding's action-sizing spine row (docs/portfolio-workflow.md §Step 7a) —
+// the engine-known decision surface the construction call chose within,
+// persisted with the roll-up for auditability. Not rendered by the Portfolio
+// page in this slice.
+export interface SizingSpineRow {
+  symbol: string;
+  asset_class: AssetClass;
+  branch: "priced" | "role-risk";
+  current_weight: number;
+  market_value: number;
+  current_price: number | null;
+  concentration_headroom: number;
+  upside_downside: number | null;
+  dead_money: HurdleState | null;
+  unrealized_pl: number | null;
+  risk_tier: RiskTier | null;
+  grade: PortfolioGrade | null;
+  conviction: PortfolioConviction | null;
+  lean: PortfolioAction | null;
+  prior_lean: PortfolioAction | null;
+  prior_action: PortfolioAction | null;
+  position_change: PositionChange;
+  carried: boolean;
+  over_age: boolean;
+  rule_demoted: boolean;
+  pre_profit_rule: string | null;
+  // Dormant wiring — structurally false until a forensic event producer lands.
+  hard_forensic_bar: boolean;
+  sector: string | null;
+  // The construction-allowed action set: feasible (fresh) / transition (carried)
+  // / the reduced spine (fresh role-risk).
+  offered: PortfolioAction[];
+  context_trim_carveout: boolean;
+  tax_note: string | null;
+  // role_risk_only decision inputs (null/empty on priced): 7b is that branch's
+  // sole action author, so the verdict's reads ride the spine.
+  class_label: string | null;
+  role_summary: string | null;
+  expense_drag: number | null;
+  observable_risk: number | null;
+  structural_flag: boolean;
+  exposure_tilt: ExposureWeight[];
+  evidence_gaps: string[];
+  // Same-underlying option-overlay read (covered call / protective put +
+  // coverage), classified from the snapshot's OCC option rows; both branches.
+  option_overlay: string | null;
+}
+
+// One sector row of the whole-book exposure table (direct + fund-folded).
+export interface SectorExposureRow {
+  sector: string;
+  direct_weight: number;
+  fund_weight: number;
+  holdings: string[];
+}
+
+// A sector-level overlap cluster — holdings sharing one exposure above the
+// threshold, so they size down together.
+export interface OverlapCluster {
+  sector: string;
+  combined_weight: number;
+  symbols: string[];
+}
+
+// A not-rated position's risk/exposure contribution — market value + signed
+// notional where derivable; the unsourceable analytics ride as typed gaps.
+export interface NotRatedContribution {
+  symbol: string;
+  asset_class: AssetClass;
+  weight: number;
+  market_value: number;
+  signed_notional: number | null;
+  material: boolean;
+  gaps: string[];
+}
+
+// The Step-7a whole-book aggregates + per-holding spine, persisted with the
+// roll-up (docs/portfolio-analysis.md §Portfolio roll-up and construction).
+export interface BookAggregates {
+  spine: SizingSpineRow[];
+  sector_exposure: SectorExposureRow[];
+  unknown_sector_weight: number;
+  overlap_clusters: OverlapCluster[];
+  not_rated: NotRatedContribution[];
+  cash_weight: number;
+  top_position_weight: number;
+  correlation_note: string;
+}
+
+// The validated portfolio-level view the 7b construction call produced — the
+// roll-up card's synthesis half (docs/portfolio-workflow.md §Step 7b). The
+// external-funding line is app-computed by the joint-feasibility solve: net new
+// dollars = buys − disposition proceeds; a negative value is net cash raised.
+export interface ConstructionView {
+  risk_posture: string;
+  deployment_stance: string;
+  concentration_read: string;
+  closed_positions_note?: string | null;
+  external_funding: number | null;
+  implied_total: number | null;
+  retried: boolean;
+}
+
 export interface PortfolioRollUp {
   graded_count: number;
   not_rated_count: number;
@@ -559,6 +689,11 @@ export interface PortfolioRollUp {
   exited: ExitedPosition[];
   // Absent on runs persisted before the field existed.
   data_health?: DataHealth | null;
+  // The Step-7a aggregates + per-holding spine the construction call chose
+  // within — persisted for auditability; the page renders only the view today.
+  aggregates?: BookAggregates | null;
+  // The construction call's portfolio-level view — absent on pre-construction runs.
+  construction?: ConstructionView | null;
   overview: string;
 }
 

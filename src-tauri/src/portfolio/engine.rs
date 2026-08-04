@@ -166,8 +166,10 @@ const ADD_FLOOR_WEIGHT: f64 = 0.015;
 const ADD_AGGRESSIVE_FLOOR_WEIGHT: f64 = 0.03;
 
 /// Concentration cap: a single position is not steered above this share of the
-/// account, and at-or-above it the add family leaves the feasible set.
-const MAX_SINGLE_WEIGHT: f64 = 0.25;
+/// account, and at-or-above it the add family leaves the feasible set. Crate-public:
+/// the construction stage's joint-feasibility check enforces the same cap on the
+/// implied post-action book ([`crate::portfolio::construction`]).
+pub(crate) const MAX_SINGLE_WEIGHT: f64 = 0.25;
 
 // -- Thesis-ledger persistence semantics (`docs/portfolio-analysis.md` §The position
 //    thesis ledger; the suite's shared condition-identity contract's drafted
@@ -1932,6 +1934,30 @@ pub fn hurdle_read(
     }
 }
 
+/// The action set the 6f interpretation authors the **standalone lean** within —
+/// the intrinsic bars alone (`docs/portfolio-analysis.md` §Intrinsic verdict: the
+/// lean is "a pure read … set before portfolio constraints", profile-independent):
+/// the full ladder, restricted to the exit family `{sell all, trim}` only by
+/// severe pre-profit deterioration ("severe deterioration *additionally* restricts
+/// the intrinsic standalone lean" — §Starting parameters, the one intrinsic-side
+/// bar). Every other bar — the admission test, grade-F, the concentration cap,
+/// dead money, a constrained-runway overlay — is a construction-side rule, applied
+/// in [`feasible_actions`] and consumed at the 7b stage.
+pub fn lean_actions(
+    overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
+) -> Vec<Action> {
+    if overlay_rules.map(|r| r.exit_family_only).unwrap_or(false) {
+        return vec![Action::SellAll, Action::Trim];
+    }
+    vec![
+        Action::SellAll,
+        Action::Trim,
+        Action::Hold,
+        Action::Add,
+        Action::AddAggressively,
+    ]
+}
+
 /// Bound the feasible action set from engine-known inputs only
 /// (`docs/portfolio-analysis.md` §Starting parameters — the feasible-set rule;
 /// conviction is model-authored, so it can't pre-gate). The add family is offered
@@ -1940,9 +1966,11 @@ pub fn hurdle_read(
 /// position sits under the concentration cap, and no pre-profit overlay rule bars
 /// it (constrained runway / severe deterioration); *add aggressively* additionally
 /// needs an A/B grade with headroom. Severe deterioration restricts the whole set
-/// to the exit family `{trim, sell all}` (as-built the action is the standalone
-/// lean — the 7b construction stage is unbuilt). Every grade test reads the
-/// momentum-free letter.
+/// to the exit family `{trim, sell all}`. Consumed at the **7b construction
+/// stage**: this set bounds the final action a fresh holding's construction rung
+/// may take (a carried holding is bounded by the transition-allowed set instead —
+/// [`crate::portfolio::construction`]). Every grade test reads the momentum-free
+/// letter.
 pub fn feasible_actions(
     grade: Grade,
     hurdle: &HurdleRead,
@@ -2042,12 +2070,21 @@ pub fn size_action(
     } else {
         0.0
     };
+    let (target_low, target_high) = rung_band(action, current_weight);
+    sizing_from_range(target_low, target_high, position, profile, account_total)
+}
 
-    // Per-rung multiplicative target around the current weight (a simple, legible
-    // ladder; concentration is bounded by the cap below). The add-family rungs carry
-    // **absolute target floors** — the multiplier band or the floor, whichever is
-    // higher (`docs/portfolio-analysis.md` §Starting parameters: pure current-weight
-    // multipliers perpetuate historical accidents) — while trim / hold stay relative.
+/// The engine's target-weight band for one action rung at a current weight — the
+/// single home for the per-rung multiplier ladder, shared by [`size_action`] and
+/// the construction stage's range validation (a model-proposed range must sit
+/// inside its rung's band — `docs/portfolio-workflow.md` §Step 7b).
+///
+/// Per-rung multiplicative target around the current weight (a simple, legible
+/// ladder; concentration is bounded by the cap). The add-family rungs carry
+/// **absolute target floors** — the multiplier band or the floor, whichever is
+/// higher (`docs/portfolio-analysis.md` §Starting parameters: pure current-weight
+/// multipliers perpetuate historical accidents) — while trim / hold stay relative.
+pub fn rung_band(action: Action, current_weight: f64) -> (f64, f64) {
     let (low_mult, high_mult, floor) = match action {
         Action::SellAll => (0.0, 0.0, 0.0),
         Action::Trim => (0.4, 0.7, 0.0),
@@ -2055,10 +2092,23 @@ pub fn size_action(
         Action::Add => (1.2, 1.6, ADD_FLOOR_WEIGHT),
         Action::AddAggressively => (1.6, 2.2, ADD_AGGRESSIVE_FLOOR_WEIGHT),
     };
-    let target_low = (current_weight * low_mult).max(floor).min(MAX_SINGLE_WEIGHT);
-    let target_high = (current_weight * high_mult).max(floor).min(MAX_SINGLE_WEIGHT);
-    let target_mid = (target_low + target_high) / 2.0;
+    let low = (current_weight * low_mult).max(floor).min(MAX_SINGLE_WEIGHT);
+    let high = (current_weight * high_mult).max(floor).min(MAX_SINGLE_WEIGHT);
+    (low, high)
+}
 
+/// Derive the deterministic share/dollar deltas for a target-weight range — the
+/// delta reaches the range's midpoint against the current account total. Shared by
+/// [`size_action`] (the engine band) and the construction merge (the model's
+/// validated range): however the range was chosen, the delta math has one home.
+pub fn sizing_from_range(
+    target_low: f64,
+    target_high: f64,
+    position: &Position,
+    profile: &InvestorProfile,
+    account_total: f64,
+) -> ActionSizing {
+    let target_mid = (target_low + target_high) / 2.0;
     let (est_dollar_delta, est_share_delta) = match position.current_price {
         Some(price) if account_total > 0.0 && price > 0.0 => {
             let target_value = target_mid * account_total;
@@ -2080,6 +2130,7 @@ pub fn size_action(
         target_weight_high: target_high,
         est_share_delta,
         est_dollar_delta,
+        sizing_rationale: None,
     }
 }
 
