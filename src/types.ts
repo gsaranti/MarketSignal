@@ -490,6 +490,9 @@ export interface ThesisLedger {
   conditions: unknown[];
   target_weight_low: number;
   target_weight_high: number;
+  // Spot's relationship to the monitor band at authoring — app-stamped; absent
+  // on pre-stamp ledgers and wherever no band exists (role-risk-only, no spot).
+  authored_band_relation?: "inside" | "below-band" | "above-band" | null;
 }
 
 // How a verdict's action came to be — the canonical vocabulary from

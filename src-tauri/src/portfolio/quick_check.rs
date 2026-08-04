@@ -305,8 +305,10 @@ impl QuickCheckDataSource for LiveQuickCheckData {
 // ---- The job lifecycle -------------------------------------------------------
 
 /// The `job_runs.job_type` slug for quick checks, distinct from the full run's
-/// `portfolio_analysis` so the two histories stay separable.
-const QUICK_CHECK_JOB: &str = "portfolio_quick_check";
+/// `portfolio_analysis` so the two histories stay separable. `pub(crate)` because
+/// `jobs::job_status` excludes these rows from the footer's last-run stamps — an
+/// engine-only sweep is not the analysis freshness the footer reports.
+pub(crate) const QUICK_CHECK_JOB: &str = "portfolio_quick_check";
 
 /// Human title for the run tracker header.
 const RUN_LABEL: &str = "Portfolio Quick Check";
@@ -1458,14 +1460,37 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             if let (Some(bear), Some(bull)) = (target(ScenarioKind::Bear), target(ScenarioKind::Bull))
             {
                 let (lo, hi) = (bear.min(bull), bear.max(bull));
-                if *price < lo || *price > hi {
-                    flags.push(AttentionFlag {
-                        trigger: FlagTrigger::PriceOutsideBand,
-                        detail: format!(
+                // The flag fires on a *change* in spot's relationship to the frozen
+                // band, never on the standing state: a band authored with spot
+                // already outside was an examined observation (the model wrote the
+                // ledger seeing it), so re-raising it every sweep — and force-
+                // including the holding on every selective run — is noise. A
+                // pre-stamp ledger reads as authored-inside, today's behavior.
+                let current = crate::portfolio::BandRelation::of(*price, bear, bull);
+                let authored = ledger
+                    .authored_band_relation
+                    .unwrap_or(crate::portfolio::BandRelation::Inside);
+                if current != authored {
+                    let detail = match (authored, current) {
+                        (crate::portfolio::BandRelation::Inside, _) => format!(
                             "price {price:.2} outside the ledger's bear–bull band \
                              [{lo:.2}, {hi:.2}] — the scenario read is stale in a way \
                              worth a fresh look"
                         ),
+                        (_, crate::portfolio::BandRelation::Inside) => format!(
+                            "price {price:.2} re-entered the ledger's bear–bull band \
+                             [{lo:.2}, {hi:.2}] it was authored outside — the scenario \
+                             read is stale in a way worth a fresh look"
+                        ),
+                        _ => format!(
+                            "price {price:.2} crossed to the other side of the ledger's \
+                             bear–bull band [{lo:.2}, {hi:.2}] — the scenario read is \
+                             stale in a way worth a fresh look"
+                        ),
+                    };
+                    flags.push(AttentionFlag {
+                        trigger: FlagTrigger::PriceOutsideBand,
+                        detail,
                         raised_at: inp.now.to_string(),
                     });
                     flagged_families.insert(SweepFamily::MarketData);
@@ -1643,6 +1668,7 @@ mod tests {
             conditions,
             target_weight_low: 0.02,
             target_weight_high: 0.08,
+            authored_band_relation: None,
         }
     }
 
@@ -1972,6 +1998,44 @@ mod tests {
         store::clear_quick_check(&conn).unwrap();
         let s = run_quick_check(&StubData::quiet(200.0, "2026-08-01"), &conn, &noop_ctx()).unwrap();
         assert!(s.holdings[0].flag.is_none());
+    }
+
+    #[test]
+    fn authored_outside_band_flags_only_on_a_relation_change() {
+        // A band authored with spot already outside it was an examined observation
+        // (the model wrote the ledger seeing it): the standing state must not flag —
+        // and force-include the holding on every selective run — sweep after sweep.
+        let insert = |conn: &rusqlite::Connection, authored| {
+            let mut verdict = priced_verdict("AAPL", vec![]);
+            if let Some(l) = verdict.thesis_ledger.as_mut() {
+                l.authored_band_relation = Some(authored);
+            }
+            store::insert_run(conn, &sample_run(verdict, audit_for("AAPL", Some(basis())))).unwrap();
+        };
+
+        // Band [150, 260] authored with spot below; 140 stays below — same
+        // relation, no flag.
+        let conn = mem();
+        insert(&conn, crate::portfolio::BandRelation::BelowBand);
+        let s = run_quick_check(&StubData::quiet(140.0, "2026-08-01"), &conn, &noop_ctx()).unwrap();
+        assert!(
+            s.holdings[0].flag.is_none(),
+            "the authored-outside standing state never flags"
+        );
+
+        // Re-entering the band IS a relation change: flags.
+        let s = run_quick_check(&StubData::quiet(200.0, "2026-08-02"), &conn, &noop_ctx()).unwrap();
+        let flag = s.holdings[0].flag.as_ref().expect("band re-entry flags");
+        assert_eq!(flag.trigger, FlagTrigger::PriceOutsideBand);
+        assert!(flag.detail.contains("re-entered"));
+
+        // Crossing to the other side of the band is too (authored above, now below).
+        let conn = mem();
+        insert(&conn, crate::portfolio::BandRelation::AboveBand);
+        let s = run_quick_check(&StubData::quiet(140.0, "2026-08-01"), &conn, &noop_ctx()).unwrap();
+        let flag = s.holdings[0].flag.as_ref().expect("side cross flags");
+        assert_eq!(flag.trigger, FlagTrigger::PriceOutsideBand);
+        assert!(flag.detail.contains("other side"));
     }
 
     #[test]

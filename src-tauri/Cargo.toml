@@ -29,7 +29,10 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip is load-bearing: persisted run blobs are JSON text, and without
+# it the parse can drift floats 1 ulp, so carried numerics could never be compared
+# exactly (store.rs pins the guarantee with a test).
+serde_json = { version = "1", features = ["float_roundtrip"] }
 rusqlite = { version = "0.40.0", features = ["bundled"] }
 uuid = { version = "1.23.2", features = ["v4"] }
 chrono = { version = "0.4.44", features = ["serde"] }

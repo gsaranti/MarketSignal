@@ -2248,9 +2248,10 @@ mod tests {
     // ---- Selective re-analysis (`docs/portfolio-analysis.md` §Triggering) ----
 
     /// The tail sweep's retrieval stub for selective-run tests: quiet by default
-    /// (every leg succeeds, nothing fires — the stub's 170 price sits inside the
-    /// fixture verdict's stored bear–bull band, whose engine targets lie below
-    /// the 195 marks), with per-symbol overrides exercising the force-include
+    /// (every leg succeeds, nothing fires — the stub's 195 price matches the
+    /// authoring-time marks, so spot's relationship to the stored bear–bull band
+    /// is unchanged since the ledger was authored and the transition-only band
+    /// flag stays silent), with per-symbol overrides exercising the force-include
     /// legs. Its `rates` leg is deliberately unreachable: the in-run sweep reads
     /// the run's own fresh prints, never a second FRED call.
     #[derive(Default)]
@@ -2273,7 +2274,7 @@ mod tests {
             }
             let price = match self.crash_price {
                 Some((s, p)) if s.eq_ignore_ascii_case(symbol) => p,
-                _ => 170.0,
+                _ => 195.0,
             };
             let today = chrono::Utc::now().date_naive();
             Ok((
@@ -2441,8 +2442,9 @@ mod tests {
             msft.action_source,
             crate::portfolio::ActionSource::ModelChosen
         );
-        // The carried disposition is the prior verdict's (compared on its stable
-        // fields — the store's JSON round-trip can drift floats by an ulp).
+        // The carried disposition is the prior verdict's. Carried numerics compare
+        // exactly: serde_json's `float_roundtrip` feature makes the store's JSON
+        // round-trip bit-exact (store.rs pins it), so drift here is a real bug.
         match (&msft.disposition, &verdict(&first, "MSFT").disposition) {
             (
                 crate::portfolio::VerdictDisposition::Priced(carried),
@@ -2452,6 +2454,8 @@ mod tests {
                 assert_eq!(carried.action, prior.action);
                 assert_eq!(carried.conviction, prior.conviction);
                 assert_eq!(carried.what_changed, prior.what_changed);
+                assert_eq!(carried.price_targets, prior.price_targets);
+                assert_eq!(carried.sub_scores, prior.sub_scores);
             }
             other => panic!("expected carried priced verdicts, got {other:?}"),
         }

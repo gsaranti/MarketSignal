@@ -535,4 +535,32 @@ mod tests {
         assert_eq!(baseline, run, "the run snapshot is untouched by a pull");
         assert_eq!(baseline.holdings.positions[0].quantity, 100.0);
     }
+
+    #[test]
+    fn json_float_round_trip_is_bit_exact() {
+        // Every store in this module persists its value as serde_json text, so a
+        // carried numeric survives runs only as print → parse. Without serde_json's
+        // `float_roundtrip` feature the parse can drift 1 ulp — which is why
+        // carried-verdict tests once had to avoid exact comparison. The feature is
+        // load-bearing in Cargo.toml; this pins it so a dependency edit can't
+        // silently reopen the drift.
+        let mut checked = 0usize;
+        let mut check = |v: f64| {
+            let s = serde_json::to_string(&v).unwrap();
+            let back: f64 = serde_json::from_str(&s).unwrap();
+            assert_eq!(v.to_bits(), back.to_bits(), "float drift on {v:?} via {s}");
+            checked += 1;
+        };
+        for i in 1..5000u32 {
+            let f = f64::from(i);
+            check(f.sqrt());
+            check(f.ln() * 1e-7);
+            check(1.0 / f);
+            check(f * std::f64::consts::PI);
+        }
+        for v in [5e-324, 2.225_073_858_507_201_4e-308, f64::MAX, 0.1, 2.0 / 3.0] {
+            check(v);
+        }
+        assert!(checked > 0);
+    }
 }

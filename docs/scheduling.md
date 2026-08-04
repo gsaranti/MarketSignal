@@ -84,6 +84,8 @@ The application displays:
 - last cancelled run
 - skipped job events
 
+The engine-only Portfolio quick check is excluded from every "last X" stamp above: a between-run sweep is not the analysis freshness these timestamps report, and a failed quick check still surfaces through the failed-jobs warning ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)).
+
 ## Generating a Report
 
 The user starts a report from the application's report-generation control.

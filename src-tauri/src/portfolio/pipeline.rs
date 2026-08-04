@@ -284,6 +284,7 @@ pub fn analyze_holding(
                     ledger_eval.as_ref(),
                     LedgerBranch::RoleRiskOnly,
                     None,
+                    dossier.financials.current_price,
                 );
                 let action_sizing = engine::size_action(
                     interpretation.action,
@@ -384,6 +385,7 @@ pub fn analyze_holding(
         ledger_eval.as_ref(),
         LedgerBranch::Priced,
         engine_output.price_targets.twelve_month.as_ref(),
+        dossier.financials.current_price,
     );
 
     // Merge engine numbers + model judgment into the verdict; size the action.
@@ -794,7 +796,9 @@ fn validate_condition(
 /// §Step 6g). The app owns everything structural: condition ids and what carries
 /// across the rewrite (decided here, never asserted by the model), the
 /// executability downgrades, the tripped / fired validation against the engine's
-/// crossings, the engine scenario targets stamped into the monitor, the branch's
+/// crossings, the engine scenario targets stamped into the monitor (with spot's
+/// authoring-time band relation beside them, so the quick check's outside-band
+/// flag fires on a change rather than the standing state), the branch's
 /// reductions, and the acknowledgment stamp on each consumed confirmed crossing.
 pub fn validate_ledger_rewrite(
     draft: &LedgerDraft,
@@ -802,6 +806,7 @@ pub fn validate_ledger_rewrite(
     evaluation: Option<&LedgerEvaluation>,
     branch: LedgerBranch,
     engine_targets: Option<&PriceTarget>,
+    spot: Option<f64>,
 ) -> (ThesisLedger, LedgerAudit) {
     // Structural, not conventional: a `role_risk_only` monitor is condition-only —
     // no engine scenario target exists on that branch — regardless of what the
@@ -1082,6 +1087,14 @@ pub fn validate_ledger_rewrite(
         std::mem::swap(&mut low, &mut high);
     }
 
+    // Spot's authoring-time relation to the stamped band — `None` wherever no band
+    // exists (the role_risk branch forced `engine_targets` to `None` above, and a
+    // missing spot stamps nothing rather than guessing).
+    let authored_band_relation = match (spot, engine_targets) {
+        (Some(spot), Some(t)) => Some(crate::portfolio::BandRelation::of(spot, t.bear, t.bull)),
+        _ => None,
+    };
+
     let current_thesis = draft.thesis.trim().to_string();
     let ledger = ThesisLedger {
         branch,
@@ -1099,6 +1112,7 @@ pub fn validate_ledger_rewrite(
         conditions,
         target_weight_low: low,
         target_weight_high: high,
+        authored_band_relation,
     };
     (ledger, audit)
 }
@@ -2924,6 +2938,7 @@ mod tests {
             ],
             target_weight_low: 0.02,
             target_weight_high: 0.10,
+            authored_band_relation: None,
         }
     }
 
@@ -2937,7 +2952,7 @@ mod tests {
             methodology: "m".into(),
         };
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, Some(&targets));
+            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, Some(&targets), None);
         assert_eq!(ledger.branch, LedgerBranch::Priced);
         assert_eq!(ledger.original_thesis, ledger.current_thesis, "frozen at debut");
         assert_eq!(ledger.conditions.len(), 2);
@@ -2962,6 +2977,28 @@ mod tests {
         assert_eq!(target_of(ScenarioKind::Bull), Some(240.0));
         assert!(audit.downgraded.is_empty());
         assert!(audit.rejected_claims.is_empty());
+        // No spot passed → no authoring-time band relation stamped.
+        assert!(ledger.authored_band_relation.is_none());
+    }
+
+    #[test]
+    fn rewrite_stamps_spots_authoring_time_band_relation() {
+        let draft = stub_ledger_draft(None, "AAPL", false);
+        let targets = PriceTarget {
+            base: 210.0,
+            bear: 180.0,
+            bull: 240.0,
+            methodology: "m".into(),
+        };
+        let relation_at = |spot: f64| {
+            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, Some(&targets), Some(spot))
+                .0
+                .authored_band_relation
+        };
+        use crate::portfolio::BandRelation;
+        assert_eq!(relation_at(200.0), Some(BandRelation::Inside));
+        assert_eq!(relation_at(150.0), Some(BandRelation::BelowBand));
+        assert_eq!(relation_at(300.0), Some(BandRelation::AboveBand));
     }
 
     #[test]
@@ -2974,7 +3011,7 @@ mod tests {
             margin: 0.0,
         });
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, None);
+            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, None, None);
         let f = ledger
             .conditions
             .iter()
@@ -2999,7 +3036,7 @@ mod tests {
         // Re-word the quantitative falsifier; the machine core is untouched.
         draft.falsifiers[0].statement = "The price collapses more than 40% (reworded)".into();
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
         let f = ledger
             .conditions
             .iter()
@@ -3024,7 +3061,7 @@ mod tests {
         // Edit the falsifier's threshold: same series + role, changed core.
         draft.falsifiers[0].quant.as_mut().unwrap().threshold = -0.50;
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
         let f = ledger
             .conditions
             .iter()
@@ -3097,7 +3134,7 @@ mod tests {
             },
         ];
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
         let unchanged = ledger
             .conditions
             .iter()
@@ -3155,7 +3192,7 @@ mod tests {
             let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
             draft.falsifiers = order.iter().map(|t| falsifier(*t)).collect();
             let (ledger, audit) =
-                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
             let ancestor_of = |threshold: f64| {
                 ledger
                     .conditions
@@ -3231,7 +3268,7 @@ mod tests {
             let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
             draft.falsifiers = order.iter().map(|t| falsifier(*t)).collect();
             let (ledger, _) =
-                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
             let ancestor_of = |threshold: f64| {
                 ledger
                     .conditions
@@ -3318,7 +3355,7 @@ mod tests {
             let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
             draft.triggers = order.iter().map(|f| trigger(f)).collect();
             let (ledger, audit) =
-                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
             let by_family = |family: TriggerFamily| {
                 ledger
                     .conditions
@@ -3384,7 +3421,7 @@ mod tests {
             fired: false,
         }];
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
         let trim = ledger
             .conditions
             .iter()
@@ -3424,7 +3461,7 @@ mod tests {
             tripped: false,
         }];
         let (ledger, _) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
         let edited = ledger
             .conditions
             .iter()
@@ -3439,7 +3476,7 @@ mod tests {
         let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
         draft.triggers.clear();
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
         assert!(!ledger.conditions.iter().any(|c| c.condition_id == "trig-1"));
         assert!(
             audit
@@ -3461,7 +3498,7 @@ mod tests {
         // No engine crossing at all: both claims cleared and logged — the ledger
         // cannot be quietly rewritten to fit a new verdict.
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
         assert!(ledger.conditions.iter().all(|c| !c.tripped));
         assert_eq!(audit.rejected_claims.len(), 2, "{:?}", audit.rejected_claims);
 
@@ -3496,6 +3533,7 @@ mod tests {
             Some(&eval),
             LedgerBranch::Priced,
             None,
+            None,
         );
         let f = ledger
             .conditions
@@ -3526,7 +3564,7 @@ mod tests {
             fired: false,
         });
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::RoleRiskOnly, None);
+            validate_ledger_rewrite(&draft, None, None, LedgerBranch::RoleRiskOnly, None, None);
         assert_eq!(ledger.branch, LedgerBranch::RoleRiskOnly);
         assert!(
             ledger.monitor.iter().all(|m| m.engine_target.is_none()),
@@ -3564,8 +3602,11 @@ mod tests {
             None,
             LedgerBranch::RoleRiskOnly,
             Some(&targets),
+            Some(195.0),
         );
         assert!(ledger.monitor.iter().all(|m| m.engine_target.is_none()));
+        // The branch guard strips the band relation with the targets: no band, no stamp.
+        assert!(ledger.authored_band_relation.is_none());
     }
 
     #[test]
@@ -3600,7 +3641,7 @@ mod tests {
             .retain(|f| f.quant.as_ref().map(|q| q.threshold) != Some(-0.60));
         draft.falsifiers.push(dup);
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
         assert_eq!(audit.duplicates.len(), 1, "{:?}", audit.duplicates);
         // Exactly one -0.40 condition persists, carrying its id; keep-2 was
         // closed (removed by the rewrite), never superseded by the duplicate.
@@ -3631,7 +3672,7 @@ mod tests {
             .clone();
         draft.falsifiers.push(dup);
         let (_, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
         assert_eq!(audit.duplicates.len(), 1, "{:?}", audit.duplicates);
     }
 
@@ -3640,7 +3681,7 @@ mod tests {
         let mut draft = stub_ledger_draft(None, "AAPL", false);
         draft.target_weight_low = 0.5;
         draft.target_weight_high = 0.1;
-        let (ledger, _) = validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, None);
+        let (ledger, _) = validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, None, None);
         assert_eq!(
             (ledger.target_weight_low, ledger.target_weight_high),
             (0.1, 0.5),
@@ -3648,7 +3689,7 @@ mod tests {
         );
         draft.target_weight_low = -0.2;
         draft.target_weight_high = 3.0;
-        let (ledger, _) = validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, None);
+        let (ledger, _) = validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, None, None);
         assert_eq!((ledger.target_weight_low, ledger.target_weight_high), (0.0, 1.0));
     }
 

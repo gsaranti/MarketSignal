@@ -752,6 +752,34 @@ pub struct MonitorScenario {
     pub engine_target: Option<f64>,
 }
 
+/// Spot's relationship to the monitor's bear–bull band. Stamped onto the ledger at
+/// authoring (beside the engine targets) so the quick check's `PriceOutsideBand`
+/// flag fires on a *change* in the relationship, never on the standing state — a
+/// band authored with spot already outside was an examined observation (the model
+/// wrote the ledger seeing it), not news worth re-raising every sweep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BandRelation {
+    Inside,
+    BelowBand,
+    AboveBand,
+}
+
+impl BandRelation {
+    /// Classify spot against the band, order-insensitive to which target sits
+    /// higher (the inverse spread mapping can put bear above bull).
+    pub fn of(spot: f64, bear: f64, bull: f64) -> Self {
+        let (lo, hi) = (bear.min(bull), bear.max(bull));
+        if spot < lo {
+            BandRelation::BelowBand
+        } else if spot > hi {
+            BandRelation::AboveBand
+        } else {
+            BandRelation::Inside
+        }
+    }
+}
+
 /// One key driver — a variable the thesis actually depends on, tied where possible to
 /// an engine-tracked series so the next run can read whether it moved.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -786,6 +814,11 @@ pub struct ThesisLedger {
     /// The pre-committed target-weight range (fractions of the portfolio, 0.0–1.0).
     pub target_weight_low: f64,
     pub target_weight_high: f64,
+    /// Spot's relationship to the monitor band at authoring — app-stamped beside
+    /// the engine targets; `None` on pre-stamp ledgers (read as authored-inside)
+    /// and wherever no band exists (`role_risk_only`, missing spot).
+    #[serde(default)]
+    pub authored_band_relation: Option<BandRelation>,
 }
 
 /// One engine-detected condition crossing (`docs/portfolio-analysis.md` §The
@@ -1531,6 +1564,7 @@ mod tests {
             }],
             target_weight_low: 0.03,
             target_weight_high: 0.08,
+            authored_band_relation: None,
         };
         let verdict = HoldingVerdict {
             symbol: "AAPL".into(),

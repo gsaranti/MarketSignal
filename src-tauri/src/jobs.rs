@@ -387,7 +387,9 @@ pub fn dismiss_warning_category(conn: &Connection, kind: WarningKind, dismiss_id
 /// whether a run is in flight now — and, when one is, which kind of workflow
 /// holds the slot, so the footer's running label matches the actual work.
 /// Timestamps are the canonical UTC RFC3339 strings; the frontend renders them
-/// in local time.
+/// in local time. The engine-only Portfolio quick check is excluded from every
+/// "last X" stamp — a between-run sweep is not the analysis freshness the footer
+/// reports, and its failures still surface through the failed-jobs warning.
 #[derive(Debug, Clone, Serialize)]
 pub struct JobStatus {
     pub is_running: bool,
@@ -408,8 +410,8 @@ pub fn job_status(conn: &Connection, guard: &RunGuard) -> Result<JobStatus> {
         Ok(conn
             .query_row(
                 "SELECT finished_at, detail FROM job_runs
-                 WHERE state = ?1 ORDER BY id DESC LIMIT 1",
-                params![state],
+                 WHERE state = ?1 AND job_type != ?2 ORDER BY id DESC LIMIT 1",
+                params![state, crate::portfolio::quick_check::QUICK_CHECK_JOB],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
             )
             .optional()?)
@@ -512,6 +514,45 @@ mod tests {
         assert!(st.last_failed_at.is_some());
         assert_eq!(st.last_failure_detail.as_deref(), Some("provider 500"));
         assert!(st.last_skipped_at.is_some());
+    }
+
+    #[test]
+    fn job_status_ignores_quick_check_rows() {
+        // The engine-only quick check must not move the footer's last-run stamps:
+        // "last successful run" reads as analysis freshness, and a between-run
+        // sweep is not that. Its failures reach the user through the failed-jobs
+        // warning instead (`failure_warning` has no job_type filter).
+        let conn = mem();
+        record_run(
+            &conn,
+            &JobRun {
+                job_type: crate::portfolio::quick_check::QUICK_CHECK_JOB,
+                state: JobState::Successful,
+                started_at: "2026-06-02T09:00:00Z",
+                finished_at: "2026-06-02T09:00:05Z",
+                report_id: None,
+                detail: None,
+            },
+        )
+        .unwrap();
+        let st = job_status(&conn, &RunGuard::default()).unwrap();
+        assert!(st.last_successful_at.is_none(), "a sweep is not a run the footer reports");
+        // A real workflow's stamp still surfaces, unshadowed by a later sweep.
+        insert(&conn, JobState::Successful, None);
+        record_run(
+            &conn,
+            &JobRun {
+                job_type: crate::portfolio::quick_check::QUICK_CHECK_JOB,
+                state: JobState::Successful,
+                started_at: "2026-06-03T09:00:00Z",
+                finished_at: "2026-06-03T09:00:05Z",
+                report_id: None,
+                detail: None,
+            },
+        )
+        .unwrap();
+        let st = job_status(&conn, &RunGuard::default()).unwrap();
+        assert_eq!(st.last_successful_at.as_deref(), Some("2026-06-01T09:05:00Z"));
     }
 
     #[test]

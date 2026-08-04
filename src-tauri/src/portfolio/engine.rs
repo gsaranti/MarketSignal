@@ -2665,6 +2665,7 @@ mod tests {
             ],
             target_weight_low: 0.0,
             target_weight_high: 0.1,
+            authored_band_relation: None,
         };
         let fin = strong();
         let m = compute_metrics(&fin);
@@ -3238,6 +3239,7 @@ mod tests {
             conditions,
             target_weight_low: 0.0,
             target_weight_high: 0.1,
+            authored_band_relation: None,
         }
     }
 

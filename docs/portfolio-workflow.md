@@ -396,7 +396,7 @@ A **run is never a report**: a row appears only on persisted success, so a cance
 
 ## The quick check (engine-only)
 
-**Type:** Computed (engine) + API retrieval (the per-holding price refresh, the run-level `DGS2` and `DGS10` prints, the conditional once-per-run FINRA short-interest file, and the per-asset-type evidence re-pulls — the full retrieval recipe is canonical in [portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)).
+**Type:** Computed (engine) + API retrieval (the per-holding price refresh, the run-level `DGS2` and `DGS10` prints, the conditional once-per-run FINRA short-interest file (as-built dormant — see the canonical recipe), and the per-asset-type evidence re-pulls — the full retrieval recipe is canonical in [portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)).
 **No model call, no web research, no Schwab call.**
 
 A separate, cheap control that keeps the thesis ledgers live between full runs: it loads the **last run's holdings snapshot and ledgers** (no Schwab pull — it tests theses, not the book), refreshes prices, the `DGS2` and `DGS10` prints, and the per-asset-type evidence legs, evaluates every ledger's machine-checkable conditions under the shared persistence contract, re-derives the **total-return hurdle** (the v2 scenario multiples re-anchored on the fresh `DGS10` against the last full pass's stored percentiles and drivers — the canonical quick-path basis in [portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)) and **scenario-band** reads on priced verdicts, and raises **attention flags** and quiet **evidence-event badges** — never rewriting any model-authored content.
