@@ -334,10 +334,13 @@ slice** (2026-08-04, PR #57; internal + two Codex rounds to convergence),
 the chosen-subset re-run, as-built under Portfolio Analysis below — and the
 **pre-profit overlay slice** (2026-08-04, PR #58; internal + four Codex
 rounds to convergence), the deterministic execution/financing overlay,
-as-built under Portfolio Analysis below. **Trade Opportunities and the
-remaining Portfolio depth slices (held-name refresh lane, outcome learning,
-the 7b construction stage, the live research loop) remain designed, not
-built.** The load-bearing decisions:
+as-built under Portfolio Analysis below — and the **outcome-learning
+slice** (2026-08-04, PR #59; internal + four Codex rounds to convergence),
+the recommendation-state-keyed decision-episode machinery, as-built under
+Portfolio Analysis below. **Trade Opportunities and the remaining
+Portfolio depth slices (held-name refresh lane, the 7b construction stage,
+the live research loop) remain designed, not built.** The load-bearing
+decisions:
 
 - **A local-only model layer, distinct from the cloud report (built).** A
   flexible local-model adapter (`local_model.rs`) calls one **user-installed,
@@ -619,12 +622,37 @@ built.** The load-bearing decisions:
   period-end-deduped, and a served-twice restatement resolves to the latest
   filing, never wire order (`pre_profit::statement_inputs` keeps its local
   sort — order-independence there is a test-pinned standalone contract). **Outcome
-  learning** records
-  recommendation-state-keyed decision episodes (matured archive +
-  calibration-feature snapshot) under engine-computed labels — total-return
-  primary, price-only common basis, each derived read on a declared basis and
-  cohort layer, intrinsic calibration keyed on the standalone lean, never the
-  construction-shaped final action — feeding a propose-only calibration.
+  learning** (built 2026-08-04, PR #59, `portfolio/outcome.rs`; internal +
+  four Codex rounds to convergence): branch-typed decision episodes carrying
+  the calibration-feature snapshot open on **observable state changes only**
+  — debut (incl. the upgrade and lost-active-row re-seed seams), branch
+  flip, action change, weight-range change, rule demotion; the
+  standing-thesis leg and the self-correction read ship **dormant** behind
+  the unbuilt 6g attribution validator — extend the **latest** active
+  episode on re-affirmation / carry / abstention, and persist in their own
+  store independent of the 10-run retention (matured archive capped;
+  per-row fail-soft load — an unreadable row is skipped and reported, never
+  deleted). Engine-computed 1/3/6/12-month labels read through the shared
+  `price_bars` cache: session-proximity-bounded next-session entry,
+  total-return primary off a label-time dividends re-pull (a failed pull =
+  the labeled price-only fallback), typed price-coverage / terminal
+  closures past the shared grace — and every authored-price comparison
+  (band calibration, the falsifier lead-time line) crosses bases through
+  the **anchor-close bridge** (`anchor-session close × price ⁄ authoring
+  spot`), split- and gap-safe, **excluded rather than guessed** when the
+  spot or anchor bar is missing. Derived reads are unique-holding-counted —
+  lean-keyed cohorts (vintage-fresh, model-chosen; rule-demoted and
+  role-risk their own classes; a missing TR leg quotes price-only, the
+  labeled-mix rule), target calibration split per parameter version
+  (return-space Winkler interval score), falsifier lead times, and the
+  typed below-bar eligibility record (proposal statistics deferred behind
+  the ≥ 30-unique-matured-holdings bar) — intrinsic calibration keyed on
+  the standalone lean, never the construction-shaped final action, feeding
+  a propose-only calibration. Alignment tags come from the next run's
+  deterministic diff; sector identity is entry-stamped via a fail-soft FMP
+  `/profile` read + the static sector→SPDR map; the run's records ride
+  `PortfolioRun.outcome`, and the episode store + price-bar cache join
+  portability as **format v3**.
   Funds are strategy-classified at loop time and routed (exposure-priced
   proxy valuation for ≥70%-US equity funds; their structurally absent quality
   axis uses the shared neutral-50 imputation; honest gaps elsewhere).
@@ -686,7 +714,9 @@ ledgers carry no stamp and read authored-inside until re-analyzed); the
 first live **pre-profit overlay** read at 47-position scale (eligibility
 rates, financing-state distribution, unscorable-gap rates — including the
 STI-absent-reads-zero liquid-resources convention and the YoY share-change
-quarter-contiguity assumption); 128 K
+quarter-contiguity assumption); the first live **outcome-learning** pass
+(episode-debut volume at 47-position scale, sector-resolution rates
+through the fail-soft profile read, the below-bar eligibility note); 128 K
 runner
 stability; distill speed; whether Stooq's PoW gate is permanent). **Trade
 Opportunities waits behind the whole block** (design settled — full strategy
@@ -732,10 +762,11 @@ pre-flight completed 2026-07-28, Ollama pinned v0.32.5 —
   above (target provenance, the softened dead-money weighing, the conviction
   definition, house-view scoping, the band-recalibration continuity NOTE).
 
-The **first four depth slices are done** — the **thesis ledger**
+The **first five depth slices are done** — the **thesis ledger**
 (2026-08-03, `portfolio-v4`), the **quick check** (2026-08-03, PR #56),
-**selective re-analysis** (2026-08-04, PR #57), and the **pre-profit
-overlay** (2026-08-04, PR #58) — as-built contracts in
+**selective re-analysis** (2026-08-04, PR #57), the **pre-profit
+overlay** (2026-08-04, PR #58), and **outcome learning** (2026-08-04,
+PR #59) — as-built contracts in
 §Local analysis suite. The ledger + sweep supplied the selective
 machinery's triggering surface (validated conditions with eval state +
 cadence tags, app-stamped monitor bands, the acknowledgment transition,
@@ -744,13 +775,16 @@ the engine seams — `engine::resolve_series`,
 `engine::reanchor_scenarios`); the selective slice adds the seams the
 later slices consume: per-holding vintages (`effective_vintage`), the
 persisted `action_source` vocabulary, and the subset sweep
-(`quick_check::sweep_tail`).
+(`quick_check::sweep_tail`); the outcome slice adds the episode store +
+`HoldingAudit.hurdle` snapshot the calibration-proposal slice will
+consume, and reserves the episode `lean` / `lean_divergence` pair so 7b
+diverges lean from final action without an episode-schema migration.
 
-**Remaining in the block, in order: the depth slices** — **outcome
-learning** next, then the **7b construction stage** (which picks up the
+**Remaining in the block: the 7b construction stage** (which picks up the
 carried-action transition-rule validation — toward-hold-only plus the
 aggregate-validated context trim — over the now-persisted `action_source` +
-vintage stamps) — with the two small,
+vintage stamps, and diverges the episode `lean` from the final action over
+the reserved `lean_divergence`) — with the two small,
 display-only result-review UI fixes (the Portfolio-page polish
 micro-slice; the section-scoped footer + report-nav slice) slotting
 anywhere between slices as breathers. Excluded from the block and still designed-not-built: the
@@ -762,7 +796,9 @@ obligation recorded in `pre_profit.rs`'s validator doc comment. Two structural g
 rather than any one slice: **checkpoint/resume** stays docs-promised but
 unbuilt (the ledger persists only at run end), and only the **ledger legs
 of the 6g validator** exist — the metric-level input delta / what-changed
-attribution validator remains designed, owned by no shipped slice.
+attribution validator remains designed, owned by no shipped slice, and now
+also gates the outcome slice's dormant legs (the standing-thesis creation
+leg and the self-correction read).
 
 Watches and deferrals: **Stooq now serves a
 JS-PoW interstitial to non-JS clients** (observed 2026-08-02 during the FMP light-EOD desk probe, which
