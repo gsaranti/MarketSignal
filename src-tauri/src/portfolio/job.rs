@@ -958,8 +958,10 @@ fn run_analysis(
     let mut episodes = match store::load_episodes(conn) {
         Ok(eps) => eps,
         Err(e) => {
-            // A corrupt store must be visible: silently defaulting would re-debut
-            // the whole book while the unreadable rows sit orphaned.
+            // A corrupt store must be visible: proceeding with an empty set
+            // re-debuts the whole book (the never-seeded-symbol rule) while the
+            // unreadable rows sit orphaned — this log line is what makes that
+            // state diagnosable rather than silent.
             eprintln!(
                 "outcome learning: episode store unreadable ({e}) — proceeding with an empty set"
             );

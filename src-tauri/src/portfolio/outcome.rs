@@ -68,6 +68,14 @@ pub const MARKET_BENCHMARK: &str = "^spx";
 /// the label value is the last close at or before the window end either way).
 const COVERAGE_TOLERANCE_DAYS: i64 = 4;
 
+/// Entry-anchor bound: the "next session's close" after the anchor run must land
+/// within this many calendar days of it (long weekend + holiday headroom). A
+/// series whose first post-anchor bar sits beyond the bound never covered the
+/// window's start — a late series start or a partial refresh — so the window
+/// holds pending rather than scoring from a much-later bar as if it were the
+/// entry.
+const ENTRY_TOLERANCE_DAYS: i64 = 7;
+
 /// Calendar-day pad on fetch ranges, so the entry anchor (the first session after
 /// the run) and month-end joins never sit exactly on a fetch boundary.
 const FETCH_PAD_DAYS: i64 = 7;
@@ -252,6 +260,15 @@ pub struct CalibrationSnapshot {
     pub hurdle: Option<HurdleRead>,
     /// The run-level DGS2 print the hurdle was anchored on.
     pub dgs2: Option<f64>,
+    /// The authoring-time spot the targets were computed from (the quick-check
+    /// basis's print). Target calibration scores bands **in return space over
+    /// this spot**: the authored band is an absolute price in the authoring-time
+    /// basis, while label-time closes are retroactively split-adjusted, so a
+    /// price-space comparison would shear across a split. `None` (pre-field, or
+    /// no basis persisted) excludes the episode from band scoring rather than
+    /// comparing across bases.
+    #[serde(default)]
+    pub authoring_spot: Option<f64>,
     /// Cap signals in force at the decision (the pre-profit overlay's matched
     /// rules; empty when none).
     pub cap_signals: Vec<String>,
@@ -481,9 +498,9 @@ pub struct CohortStat {
     /// The cohort key (an action rung's kebab label, or a class name).
     pub key: String,
     pub unique_holdings: usize,
-    /// Mean absolute total return — the primary ordering read (falls back to the
-    /// price-only mean per episode where the TR leg was unavailable; a labeled mix
-    /// is still a mix, so the price-only mean rides beside it).
+    /// Mean absolute total return — the primary ordering read (quotes the
+    /// price-only return per label where the TR leg was unavailable; a labeled mix
+    /// is still a mix, so the pure price-only mean rides beside it).
     pub mean_total_return: Option<f64>,
     pub mean_price_return: Option<f64>,
     /// Price-only relative spreads — the regime-controlled diagnostic.
@@ -506,23 +523,34 @@ pub struct CohortWindowRead {
     pub rule_demoted: Option<CohortStat>,
 }
 
-/// Target calibration for one band window (1- and 12-month bands score at their
-/// matching windows; the 3- and 6-month labels serve the cohort reads).
+/// Target calibration for one band window and one target-function version
+/// (1- and 12-month bands score at their matching windows; the 3- and 6-month
+/// labels serve the cohort reads). Reads are **split by the snapshot's target
+/// parameter version** — the function is versioned exactly so calibration never
+/// mixes bases (`docs/portfolio-analysis.md §Starting parameters`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TargetCalibrationRead {
     pub window_months: u32,
+    /// The target-function parameter version this read aggregates (`None` groups
+    /// pre-version episodes).
+    #[serde(default)]
+    pub parameter_version: Option<String>,
     /// Bands scored (vintage-fresh episodes whose window scored and whose snapshot
-    /// carried the matching band).
+    /// carried the matching band plus the authoring spot).
     pub scored: usize,
     /// Fraction of realized prices inside the bear–bull band, vs the declared
     /// nominal ([`NOMINAL_BAND_COVERAGE`]).
     pub coverage_rate: Option<f64>,
     pub nominal_coverage: f64,
     /// Mean interval (Winkler) score at the nominal level — calibration and
-    /// sharpness together; lower is better, ungameable by width.
+    /// sharpness together; lower is better, ungameable by width. Scored **in
+    /// return space over the authoring spot** (band edges as returns vs the
+    /// price-only label), so scores are split-safe and comparable across price
+    /// levels.
     pub mean_interval_score: Option<f64>,
     /// Mean signed base-case error `(realized − base) / base` — the systematic-bias
-    /// read on the scenario engine.
+    /// read on the scenario engine (realized reconstructed in the authoring basis
+    /// via `spot × (1 + price_return)`).
     pub mean_base_signed_error: Option<f64>,
 }
 
@@ -763,6 +791,16 @@ fn first_close_after(closes: &[DatedValue], date: NaiveDate) -> Option<&DatedVal
     closes.iter().find(|b| b.date.as_str() > iso.as_str())
 }
 
+/// The window's entry reference: the first close after the anchor, **bounded by
+/// [`ENTRY_TOLERANCE_DAYS`]** — a first bar beyond the bound is a series that
+/// never covered the start, not a next-session close.
+fn entry_close(closes: &[DatedValue], anchor: NaiveDate) -> Option<&DatedValue> {
+    first_close_after(closes, anchor).filter(|b| {
+        parse_iso_date_prefix(&b.date)
+            .is_some_and(|d| d <= anchor + chrono::Duration::days(ENTRY_TOLERANCE_DAYS))
+    })
+}
+
 // ---- The label engine ---------------------------------------------------------------
 
 /// The interval (Winkler) score for a central `(1 − alpha)` interval `[lo, hi]`
@@ -825,7 +863,7 @@ pub fn mature_labels(
             continue;
         };
         let closes = ctx.series(&ep.symbol, anchor, furthest).to_vec();
-        let entry = first_close_after(&closes, anchor).cloned();
+        let entry = entry_close(&closes, anchor).cloned();
         // One dividends pull per episode serves every scoring window (the
         // furthest due end bounds the span) — never one request per window.
         let mut episode_divs: Option<std::result::Result<Vec<DatedValue>, String>> = None;
@@ -859,10 +897,11 @@ pub fn mature_labels(
             if !holding_covered {
                 if past_grace {
                     // The grace doubles as the transient-vs-disappearance
-                    // discriminator: a series that once resolved but stopped is
-                    // conservatively terminal; one that never resolved takes the
-                    // price-coverage state.
-                    let outcome = if closes.is_empty() {
+                    // discriminator: a series alive at the entry that stopped
+                    // before the window end is conservatively terminal; one that
+                    // never covered the start (empty, or first bar beyond the
+                    // entry bound) takes the price-coverage state.
+                    let outcome = if entry.is_none() {
                         LabelOutcome::PriceCoverageUnscorable
                     } else {
                         LabelOutcome::TerminalUnscorable
@@ -992,12 +1031,13 @@ pub fn mature_labels(
 }
 
 /// A benchmark's own price-only window return, on its own next-session entry
-/// anchor. `None` when the series doesn't cover the window.
+/// anchor (the same [`ENTRY_TOLERANCE_DAYS`] bound as the holding leg). `None`
+/// when the series doesn't cover the window at either end.
 fn bench_return(closes: &[DatedValue], anchor: NaiveDate, w_end: NaiveDate) -> Option<f64> {
     if !covers_through(closes, w_end) {
         return None;
     }
-    let entry = first_close_after(closes, anchor)?;
+    let entry = entry_close(closes, anchor)?;
     let end = close_at_or_before(closes, w_end)?;
     Some(end.value / entry.value - 1.0)
 }
@@ -1329,10 +1369,12 @@ pub struct PlanSummary {
 
 /// Append-or-extend this run's decision episodes in place
 /// (`docs/portfolio-workflow.md §Step 8`): open on an observable
-/// recommendation-state change, extend the active episode on a re-affirmation /
-/// carry / abstention, record nothing post-maturity, and attach this run's
-/// confirmed falsifier crossings to the episode carrying the condition (the latest
-/// matured episode, typed post-maturity, when none is active).
+/// recommendation-state change — including the never-seeded debut of a symbol
+/// with no episode at all (the upgrade seam) — extend the **latest** active
+/// episode on a re-affirmation / carry / abstention, record nothing
+/// post-maturity, and attach this run's confirmed falsifier crossings to the
+/// latest active episode (the latest matured episode, typed post-maturity, when
+/// none is active).
 pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>) -> PlanSummary {
     let mut summary = PlanSummary {
         opened: Vec::new(),
@@ -1346,12 +1388,34 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
             .and_then(|pv| pv.iter().find(|v| v.symbol.eq_ignore_ascii_case(&verdict.symbol)));
         let vintage = verdict.analyzed_at.as_deref().unwrap_or(input.created_at);
         let is_fresh = vintage == input.created_at;
-        match episode_decision(prior_v, verdict, is_fresh) {
+        let mut decision = episode_decision(prior_v, verdict, is_fresh);
+        // The upgrade seam: a prior run that predates the episode machinery
+        // yields `Extend` for a stable holding, but a symbol with **no episode at
+        // all** was never seeded — that is the "first after the machinery landed"
+        // debut ([`OpenReason::Debut`]), not a post-maturity re-affirmation (which
+        // leaves matured history behind). An abstention still never opens.
+        if matches!(decision, EpisodeDecision::Extend(_))
+            && !matches!(rec_state(verdict), RecState::Abstained)
+            && !episodes
+                .iter()
+                .any(|e| e.symbol.eq_ignore_ascii_case(&verdict.symbol))
+        {
+            decision = EpisodeDecision::Open(vec![OpenReason::Debut]);
+        }
+        match decision {
             EpisodeDecision::Nothing => {}
             EpisodeDecision::Extend(kind) => {
+                // Attach to the **latest** active episode: an older episode still
+                // maturing stopped accruing observations when the state change
+                // opened its successor (`docs/portfolio-analysis.md §Outcome
+                // learning` — "the old one stops accruing").
                 if let Some(ep) = episodes
                     .iter_mut()
-                    .find(|e| e.state == EpisodeState::Active && e.symbol.eq_ignore_ascii_case(&verdict.symbol))
+                    .filter(|e| {
+                        e.state == EpisodeState::Active
+                            && e.symbol.eq_ignore_ascii_case(&verdict.symbol)
+                    })
+                    .max_by(|a, b| a.anchor_at.cmp(&b.anchor_at))
                 {
                     ep.observations.push(EpisodeObservation {
                         run_id: input.run_id.to_string(),
@@ -1405,6 +1469,9 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                             dead_money: g.dead_money,
                             hurdle: audit.and_then(|a| a.hurdle.clone()),
                             dgs2: input.dgs2,
+                            authoring_spot: audit
+                                .and_then(|a| a.quick_basis.as_ref())
+                                .map(|b| b.spot),
                             cap_signals: audit
                                 .and_then(|a| a.pre_profit.as_ref())
                                 .filter(|pp| pp.is_eligible())
@@ -1479,12 +1546,18 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
             }
             let confirmed_at: String = input.created_at.chars().take(10).collect();
             let (target, post_maturity) = {
+                // The latest active episode carries the current ledger's
+                // conditions; older still-maturing episodes' forecasts predate
+                // them.
                 let active = episodes
-                    .iter_mut()
-                    .position(|e| {
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| {
                         e.state == EpisodeState::Active
                             && e.symbol.eq_ignore_ascii_case(&audit.symbol)
-                    });
+                    })
+                    .max_by(|(_, a), (_, b)| a.anchor_at.cmp(&b.anchor_at))
+                    .map(|(i, _)| i);
                 match active {
                     Some(i) => (Some(i), false),
                     None => (
@@ -1562,7 +1635,17 @@ fn cohort_stat(key: &str, members: &[(&DecisionEpisode, &ScoredLabel)]) -> Optio
                 Some(xs.iter().sum::<f64>() / xs.len() as f64)
             }
         };
-        if let Some(v) = mean(labels.iter().filter_map(|l| l.total_return).collect()) {
+        // The primary mean quotes price-only where a label's total-return leg was
+        // unavailable (`docs/portfolio-analysis.md §Outcome learning` — "any
+        // comparison with a missing total-return leg quotes price-only") — a
+        // labeled mix, never a silently shrunk population; the pure price-only
+        // mean rides beside it.
+        if let Some(v) = mean(
+            labels
+                .iter()
+                .map(|l| l.total_return.unwrap_or(l.price_return))
+                .collect(),
+        ) {
             tr.push(v);
         }
         if let Some(v) = mean(labels.iter().map(|l| l.price_return).collect()) {
@@ -1656,12 +1739,19 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
     }
 
     // Target calibration: each band at its matching window, vintage-fresh bands
-    // only, scored on the price-only label.
+    // only, scored on the price-only label — in return space over the authoring
+    // spot (split-safe), split per target-function parameter version (bases
+    // never mix).
+    #[derive(Default)]
+    struct BandAcc {
+        scores: Vec<f64>,
+        hits: usize,
+        base_errors: Vec<f64>,
+    }
     let mut target_calibration = Vec::new();
     for months in [1u32, 12u32] {
-        let mut scores = Vec::new();
-        let mut hits = 0usize;
-        let mut base_errors = Vec::new();
+        let mut by_version: std::collections::BTreeMap<Option<String>, BandAcc> =
+            std::collections::BTreeMap::new();
         for ep in episodes {
             if !ep.vintage_fresh {
                 continue;
@@ -1677,26 +1767,47 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
                 _ => p.snapshot.price_targets.twelve_month.as_ref(),
             };
             let Some(band) = band else { continue };
+            let Some(spot) = p.snapshot.authoring_spot.filter(|s| *s > 0.0) else {
+                // No authoring spot recorded: the bases can't be reconciled, so
+                // the band is excluded rather than compared across them.
+                continue;
+            };
             let (lo, hi) = (band.bear.min(band.bull), band.bear.max(band.bull));
-            let realized = label.end_price;
-            if realized >= lo && realized <= hi {
-                hits += 1;
+            let (lo_r, hi_r) = (lo / spot - 1.0, hi / spot - 1.0);
+            let realized_r = label.price_return;
+            let acc = by_version
+                .entry(p.snapshot.target_parameter_version.clone())
+                .or_default();
+            if realized_r >= lo_r && realized_r <= hi_r {
+                acc.hits += 1;
             }
-            scores.push(interval_score(lo, hi, realized, 1.0 - NOMINAL_BAND_COVERAGE));
+            acc.scores
+                .push(interval_score(lo_r, hi_r, realized_r, 1.0 - NOMINAL_BAND_COVERAGE));
             if band.base != 0.0 {
-                base_errors.push((realized - band.base) / band.base);
+                let realized_authoring_basis = spot * (1.0 + realized_r);
+                acc.base_errors
+                    .push((realized_authoring_basis - band.base) / band.base);
             }
         }
-        let n = scores.len();
-        target_calibration.push(TargetCalibrationRead {
-            window_months: months,
-            scored: n,
-            coverage_rate: (n > 0).then(|| hits as f64 / n as f64),
-            nominal_coverage: NOMINAL_BAND_COVERAGE,
-            mean_interval_score: (n > 0).then(|| scores.iter().sum::<f64>() / n as f64),
-            mean_base_signed_error: (!base_errors.is_empty())
-                .then(|| base_errors.iter().sum::<f64>() / base_errors.len() as f64),
-        });
+        if by_version.is_empty() {
+            // Keep the per-window read present (scored: 0) so an empty store
+            // still reports the window rather than omitting it.
+            by_version.insert(None, BandAcc::default());
+        }
+        for (version, acc) in by_version {
+            let n = acc.scores.len();
+            target_calibration.push(TargetCalibrationRead {
+                window_months: months,
+                parameter_version: version,
+                scored: n,
+                coverage_rate: (n > 0).then(|| acc.hits as f64 / n as f64),
+                nominal_coverage: NOMINAL_BAND_COVERAGE,
+                mean_interval_score: (n > 0).then(|| acc.scores.iter().sum::<f64>() / n as f64),
+                mean_base_signed_error: (!acc.base_errors.is_empty()).then(|| {
+                    acc.base_errors.iter().sum::<f64>() / acc.base_errors.len() as f64
+                }),
+            });
+        }
     }
 
     let falsifier_lead_times = episodes
@@ -2072,6 +2183,107 @@ mod tests {
     }
 
     #[test]
+    fn a_pre_outcome_prior_run_seeds_a_debut_episode() {
+        // The upgrade seam: the prior run predates the episode machinery, so the
+        // store is empty while a prior verdict exists. An unchanged
+        // recommendation must still seed the symbol's debut episode — otherwise
+        // stable holdings stay outside outcome learning until their
+        // recommendation happens to change.
+        let c1 = "2026-08-04T12:00:00+00:00";
+        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
+        let c2 = "2026-08-11T12:00:00+00:00";
+        let same = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c2)];
+        let sector = HashMap::new();
+        let mut episodes = Vec::new();
+        let s = plan_episodes(
+            &plan_input("run-2", c2, &same, Some(&prior), &sector),
+            &mut episodes,
+        );
+        assert_eq!(s.opened.len(), 1, "the never-seeded symbol debuts");
+        assert_eq!(s.opened[0].reasons, vec![OpenReason::Debut]);
+        assert!(s.extended.is_empty());
+        assert_eq!(episodes.len(), 1);
+
+        // An abstained current verdict still never opens, seeded or not.
+        let mut abstained = verdict("MSFT", Action::Hold, (0.03, 0.06));
+        abstained.disposition = VerdictDisposition::InsufficientEvidence {
+            reason: "thin".into(),
+        };
+        let prior_msft = vec![fresh(verdict("MSFT", Action::Hold, (0.03, 0.06)), c1)];
+        let s = plan_episodes(
+            &plan_input("run-2", c2, &[abstained], Some(&prior_msft), &sector),
+            &mut episodes,
+        );
+        assert!(s.opened.is_empty());
+        assert_eq!(episodes.len(), 1, "no MSFT episode was minted");
+    }
+
+    #[test]
+    fn extensions_and_crossings_attach_to_the_latest_active_episode() {
+        // An action change opens a successor while the older episode keeps
+        // maturing — both active. Re-affirmations and falsifier crossings must
+        // land on the latest episode (the current recommendation / ledger), not
+        // the oldest still-labeling one.
+        let c1 = "2026-08-04T12:00:00+00:00";
+        let hold = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
+        let sector = HashMap::new();
+        let mut episodes = Vec::new();
+        plan_episodes(&plan_input("run-1", c1, &hold, None, &sector), &mut episodes);
+        let c2 = "2026-08-11T12:00:00+00:00";
+        let trim = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c2)];
+        plan_episodes(
+            &plan_input("run-2", c2, &trim, Some(&hold), &sector),
+            &mut episodes,
+        );
+        assert_eq!(episodes.len(), 2);
+        assert!(episodes.iter().all(|e| e.state == EpisodeState::Active));
+
+        let c3 = "2026-08-18T12:00:00+00:00";
+        let trim_again = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c3)];
+        let audit = HoldingAudit {
+            symbol: "AAPL".into(),
+            metrics: Default::default(),
+            sources: vec![],
+            model_ids: vec![],
+            prompt_version: "portfolio-v5".into(),
+            degraded_inputs: vec![],
+            target_meta: None,
+            grade_parameter_version: None,
+            ledger_audit: Some(crate::portfolio::LedgerAudit {
+                crossings: vec![crate::portfolio::ConditionCrossing {
+                    condition_id: "c-1".into(),
+                    statement: "margin below 15%".into(),
+                    role: crate::portfolio::ConditionRole::Falsifier,
+                    outcome: crate::portfolio::CrossingOutcome::Confirmed,
+                    observed_value: 0.12,
+                    threshold: 0.15,
+                    observation_id: "2026-06-30".into(),
+                }],
+                ..Default::default()
+            }),
+            quick_basis: None,
+            fund_exposure: None,
+            pre_profit: None,
+            hurdle: None,
+        };
+        let audits = vec![audit];
+        let mut input = plan_input("run-3", c3, &trim_again, Some(&trim), &sector);
+        input.audits = &audits;
+        let s = plan_episodes(&input, &mut episodes);
+        assert_eq!(s.extended, vec!["AAPL".to_string()]);
+        assert!(
+            episodes[0].observations.is_empty(),
+            "the older episode stopped accruing at the state change"
+        );
+        assert_eq!(episodes[1].observations.len(), 1);
+        assert!(
+            episodes[0].falsifier_events.is_empty(),
+            "the crossing belongs to the episode carrying the current ledger"
+        );
+        assert_eq!(episodes[1].falsifier_events.len(), 1);
+    }
+
+    #[test]
     fn confirmed_falsifier_crossings_attach_to_the_carrying_episode() {
         let c1 = "2026-08-04T12:00:00+00:00";
         let verdicts = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
@@ -2280,6 +2492,7 @@ mod tests {
                     dead_money: Some(HurdleState::Indeterminate),
                     hurdle: None,
                     dgs2: Some(0.04),
+                    authoring_spot: Some(100.0),
                     cap_signals: vec![],
                     grade_parameter_version: Some("grade-v2".into()),
                     target_parameter_version: Some("targets-v3".into()),
@@ -2388,6 +2601,44 @@ mod tests {
     }
 
     #[test]
+    fn a_late_starting_series_never_scores_a_late_entry() {
+        // A cached series that starts well after the anchor (a partial refresh, a
+        // late series start) reaches the window end but never covered the start:
+        // the window must hold pending — then close price-coverage-unscorable —
+        // rather than score a months-late bar as the "next session" entry.
+        let conn = mem_conn();
+        store::merge_price_bars(
+            &conn,
+            "LATE",
+            &bars(&[("2026-07-01", 100.0), ("2026-12-31", 110.0)]),
+        )
+        .unwrap();
+        let mut episodes = vec![old_episode("LATE", "2026-05-01T12:00:00+00:00")];
+        let mut ctx = SeriesCtx::new(&conn, None);
+        let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-06-15");
+        assert!(summary.matured.is_empty(), "a late entry never scores");
+        assert_eq!(summary.pending_coverage, vec!["LATE".to_string()]);
+        // Past the grace it closes as never-covered, not terminal.
+        let mut ctx = SeriesCtx::new(&conn, None);
+        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
+        assert_eq!(summary.matured.len(), 1);
+        assert_eq!(summary.matured[0].outcome, "price-coverage-unscorable");
+    }
+
+    #[test]
+    fn a_benchmark_series_starting_late_never_supplies_a_return() {
+        let closes = bars(&[("2026-07-01", 100.0), ("2026-12-31", 110.0)]);
+        let anchor = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+        let w_end = NaiveDate::from_ymd_opt(2026, 12, 20).unwrap();
+        assert_eq!(bench_return(&closes, anchor, w_end), None);
+        // The same series with a timely start supplies one.
+        let timely = bars(&[("2026-05-04", 100.0), ("2026-12-31", 110.0)]);
+        assert!(bench_return(&timely, anchor, w_end).is_some());
+    }
+
+    #[test]
     fn lead_time_stamps_against_the_bear_line_when_the_12_month_window_scores() {
         let conn = mem_conn();
         let anchor_at = (chrono::Utc::now() - chrono::Duration::days(430)).to_rfc3339();
@@ -2454,5 +2705,100 @@ mod tests {
         assert!(cal.mean_interval_score.is_some());
         assert!(!reads.eligibility.eligible, "2 of 30: below the bar");
         assert!(reads.eligibility.note.contains("below the proposal eligibility bar"));
+    }
+
+    fn scored_label(price_return: f64, total_return: Option<f64>) -> ScoredLabel {
+        ScoredLabel {
+            entry_date: "2026-08-05".into(),
+            entry_price: 50.0,
+            end_date: "2027-08-04".into(),
+            end_price: 50.0 * (1.0 + price_return),
+            price_return,
+            total_return,
+            total_return_gap: total_return
+                .is_none()
+                .then(|| "total-return leg unavailable — price-only label".into()),
+            max_drawdown: -0.1,
+            vs_market: None,
+            market_leg_gap: None,
+            vs_sector: None,
+            sector_leg_gap: None,
+            labeled_at: "2027-08-04".into(),
+        }
+    }
+
+    fn set_scored(ep: &mut DecisionEpisode, months: u32, label: ScoredLabel) {
+        let slot = ep
+            .labels
+            .iter_mut()
+            .find(|l| l.window_months == months)
+            .unwrap();
+        slot.outcome = LabelOutcome::Scored(Box::new(label));
+    }
+
+    #[test]
+    fn a_missing_total_return_leg_quotes_price_only_in_the_primary_mean() {
+        // The labeled-mix rule: a label whose TR leg failed contributes its
+        // price-only return to the primary mean — the population never silently
+        // shrinks below the reported holding count.
+        let anchor = "2026-08-04T12:00:00+00:00";
+        let mut with_tr = old_episode("AAPL", anchor);
+        set_scored(&mut with_tr, 12, scored_label(0.05, Some(0.10)));
+        let mut without_tr = old_episode("MSFT", anchor);
+        set_scored(&mut without_tr, 12, scored_label(0.20, None));
+        let reads = derive_reads(&[with_tr, without_tr]);
+        let twelve = reads.cohorts.iter().find(|c| c.window_months == 12).unwrap();
+        let hold = twelve.lean_cohorts.iter().find(|c| c.key == "hold").unwrap();
+        assert_eq!(hold.unique_holdings, 2);
+        assert!((hold.mean_total_return.unwrap() - 0.15).abs() < 1e-12);
+        assert!((hold.mean_price_return.unwrap() - 0.125).abs() < 1e-12);
+    }
+
+    #[test]
+    fn target_calibration_is_split_safe_across_a_retroactive_adjustment() {
+        // Authored at spot 100 (band 60–160); a 2:1 split then re-bases the whole
+        // label-time series, so the window scores entry 50 → end 55 (+10%).
+        // Price-space comparison would read 55 against the 60–160 band — a false
+        // miss; return space over the authoring spot reads +10% inside
+        // [−40%, +60%].
+        let mut ep = old_episode("SPLT", "2026-08-04T12:00:00+00:00");
+        set_scored(&mut ep, 12, scored_label(0.10, None));
+        let reads = derive_reads(&[ep]);
+        let cal = reads
+            .target_calibration
+            .iter()
+            .find(|t| t.window_months == 12)
+            .unwrap();
+        assert_eq!(cal.scored, 1);
+        assert_eq!(cal.coverage_rate, Some(1.0), "no false miss across the split");
+        // Base error reconstructs the realized price in the authoring basis:
+        // 100 × 1.10 = 110 vs base 120.
+        assert!((cal.mean_base_signed_error.unwrap() - (110.0 - 120.0) / 120.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn target_calibration_never_mixes_parameter_versions() {
+        let anchor = "2026-08-04T12:00:00+00:00";
+        let mut v3 = old_episode("AAPL", anchor);
+        set_scored(&mut v3, 12, scored_label(0.10, None));
+        let mut v2 = old_episode("MSFT", anchor);
+        if let EpisodeBody::Priced(p) = &mut v2.body {
+            p.snapshot.target_parameter_version = Some("targets-v2".into());
+        }
+        set_scored(&mut v2, 12, scored_label(0.10, None));
+        let reads = derive_reads(&[v3, v2]);
+        let twelve: Vec<_> = reads
+            .target_calibration
+            .iter()
+            .filter(|t| t.window_months == 12)
+            .collect();
+        assert_eq!(twelve.len(), 2, "one read per parameter version");
+        assert!(twelve.iter().all(|t| t.scored == 1));
+        let versions: Vec<_> = twelve
+            .iter()
+            .map(|t| t.parameter_version.as_deref())
+            .collect();
+        assert!(versions.contains(&Some("targets-v2")));
+        assert!(versions.contains(&Some("targets-v3")));
     }
 }
