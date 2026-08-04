@@ -676,6 +676,10 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     // -- Stock legs ------------------------------------------------------------
     let mut new_filing = false;
     let mut statements: Option<CompanyFinancials> = None;
+    // The filing re-pull's dividend leg, captured before condition evaluation
+    // consumes the refresh: the hurdle's payout leg refreshes on filing cadence
+    // (`docs/portfolio-analysis.md` §The quick check).
+    let mut filing_dividends: Option<f64> = None;
     if is_stock {
         match inp.data.recent_filings(&symbol) {
             FilingSweep::NoCik => families.push(FamilySweep {
@@ -699,6 +703,7 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                             && MATERIAL_FORMS.iter().any(|m| f.form.starts_with(m))
                     })
                     .collect();
+                let mut refresh_gapped = false;
                 if let Some(newest) = fresh_material.first() {
                     new_filing = true;
                     events.push(event(
@@ -711,12 +716,30 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                     // condition reads, not just the fact of the filing.
                     let mut fin = inp.data.statements_refresh(&symbol);
                     crate::portfolio::dossier::apply_ttm_statement_basis(&mut fin);
+                    filing_dividends = fin.ttm_dividends_per_share;
+                    refresh_gapped = fin.quarterly_income.is_empty();
                     statements = Some(fin);
                 }
-                families.push(FamilySweep {
-                    family: SweepFamily::Filing,
-                    state: SweepState::FreshClear,
-                    note: None,
+                // A filing landed but the value re-pull came back empty: the
+                // fact of the filing is recorded (the event above), yet the
+                // filing-cadence conditions could not be evaluated against it —
+                // the family cannot vouch, so it degrades rather than clears.
+                families.push(if refresh_gapped {
+                    FamilySweep {
+                        family: SweepFamily::Filing,
+                        state: SweepState::Unknown,
+                        note: Some(
+                            "a new filing landed but the statement re-pull carried \
+                             no quarterly income — its conditions were not evaluated"
+                                .to_string(),
+                        ),
+                    }
+                } else {
+                    FamilySweep {
+                        family: SweepFamily::Filing,
+                        state: SweepState::FreshClear,
+                        note: None,
+                    }
                 });
             }
         }
@@ -842,12 +865,23 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
         } else {
             fund_metrics_expense = fresh_fund.expense_ratio;
             let fresh_exposure = fund::exposure_basis(&fresh_fund);
+            // Legs the stored basis expects but this refresh couldn't supply:
+            // a missing fresh print is a non-observation, never a zero or a
+            // "change" — those legs degrade the family instead of fabricating
+            // an evidence event.
+            let mut degraded: Vec<&str> = Vec::new();
             if let Some(stored) = inp.audit.and_then(|a| a.fund_exposure.as_ref()) {
                 // Material `etf/info` change: the expense ratio moving, or the
-                // strategy-classification routing changing.
+                // strategy-classification routing changing. A print appearing
+                // where none was stored is a real change; a stored print the
+                // refresh couldn't read is a degraded leg.
                 let expense_moved = match (stored.expense_ratio, fresh_exposure.expense_ratio) {
                     (Some(a), Some(b)) => (a - b).abs() > EXPENSE_EPS,
-                    (None, Some(_)) | (Some(_), None) => true,
+                    (None, Some(_)) => true,
+                    (Some(_), None) => {
+                        degraded.push("expense ratio");
+                        false
+                    }
                     (None, None) => false,
                 };
                 if expense_moved || stored.class_label != fresh_exposure.class_label {
@@ -868,46 +902,68 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 let equity_fund = stored.class_label.contains("equity")
                     || fresh_exposure.class_label.contains("equity");
                 if equity_fund {
-                    if let (Some(a), Some(b)) = (stored.us_share, fresh_exposure.us_share) {
-                        let crossed = (a >= US_EXPOSURE_GUARD) != (b >= US_EXPOSURE_GUARD);
-                        if crossed {
-                            events.push(event(
-                                EvidenceEventKind::ExposureShift,
-                                format!(
-                                    "US share crossed the {:.0}% guard: {:.0}% → {:.0}%",
-                                    US_EXPOSURE_GUARD * 100.0,
-                                    a * 100.0,
-                                    b * 100.0
-                                ),
-                                inp.now,
-                            ));
+                    match (stored.us_share, fresh_exposure.us_share) {
+                        (Some(a), Some(b)) => {
+                            let crossed = (a >= US_EXPOSURE_GUARD) != (b >= US_EXPOSURE_GUARD);
+                            if crossed {
+                                events.push(event(
+                                    EvidenceEventKind::ExposureShift,
+                                    format!(
+                                        "US share crossed the {:.0}% guard: {:.0}% → {:.0}%",
+                                        US_EXPOSURE_GUARD * 100.0,
+                                        a * 100.0,
+                                        b * 100.0
+                                    ),
+                                    inp.now,
+                                ));
+                            }
                         }
+                        (Some(_), None) => degraded.push("US-share read"),
+                        _ => {}
                     }
                     if let Some((label, stored_w)) = &stored.top_sector {
-                        let fresh_w = fresh_fund
-                            .sector_weights
-                            .iter()
-                            .find(|(l, _)| l == label)
-                            .map(|(_, w)| *w)
-                            .unwrap_or(0.0);
-                        if (fresh_w - stored_w).abs() >= TOP_SECTOR_SHIFT {
-                            events.push(event(
-                                EvidenceEventKind::ExposureShift,
-                                format!(
-                                    "top sector {label} moved {:.0}% → {:.0}%",
-                                    stored_w * 100.0,
-                                    fresh_w * 100.0
-                                ),
-                                inp.now,
-                            ));
+                        if fresh_fund.sector_weights.is_empty() {
+                            degraded.push("sector weightings");
+                        } else {
+                            // A successful weightings read missing the stored
+                            // top sector is a real observation (the sector left
+                            // the fund's weightings) — zero is honest here.
+                            let fresh_w = fresh_fund
+                                .sector_weights
+                                .iter()
+                                .find(|(l, _)| l == label)
+                                .map(|(_, w)| *w)
+                                .unwrap_or(0.0);
+                            if (fresh_w - stored_w).abs() >= TOP_SECTOR_SHIFT {
+                                events.push(event(
+                                    EvidenceEventKind::ExposureShift,
+                                    format!(
+                                        "top sector {label} moved {:.0}% → {:.0}%",
+                                        stored_w * 100.0,
+                                        fresh_w * 100.0
+                                    ),
+                                    inp.now,
+                                ));
+                            }
                         }
                     }
                 }
             }
-            families.push(FamilySweep {
-                family: SweepFamily::FundInfo,
-                state: SweepState::FreshClear,
-                note: None,
+            families.push(if degraded.is_empty() {
+                FamilySweep {
+                    family: SweepFamily::FundInfo,
+                    state: SweepState::FreshClear,
+                    note: None,
+                }
+            } else {
+                FamilySweep {
+                    family: SweepFamily::FundInfo,
+                    state: SweepState::Unknown,
+                    note: Some(format!(
+                        "fund refresh could not supply: {} — those legs were not checked",
+                        degraded.join(", ")
+                    )),
+                }
             });
         }
     }
@@ -1034,7 +1090,16 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     if priced {
         match (basis, inp.rates, inp.price) {
             (Some(b), Some(r), Some((price, _))) => {
-                let scenario = engine::reanchor_scenarios(b, *price, r.dgs10);
+                // The payout leg refreshes on filing cadence (`docs/portfolio-analysis.md`
+                // §The quick check): a new filing's dividend re-pull replaces the
+                // stored forward-dividend leg, so a filing-driven payout change can
+                // reach the hurdle; drivers and percentiles stay the stored basis
+                // (no re-estimation). A gapped dividend read keeps the stored leg.
+                let mut hurdle_basis = b.clone();
+                if let Some(d) = filing_dividends {
+                    hurdle_basis.forward_dividends = d;
+                }
+                let scenario = engine::reanchor_scenarios(&hurdle_basis, *price, r.dgs10);
                 let tier = match &inp.verdict.disposition {
                     VerdictDisposition::Priced(g) => g.risk_tier,
                     _ => None,

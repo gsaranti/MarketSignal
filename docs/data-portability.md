@@ -31,6 +31,7 @@ Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 | `vector_memory` | Report summaries **and durable learnings** — the long-term semantic memory. Durable learnings are the point: they survive report deletion and are the accumulated edge. |
 | `portfolio_runs` | Local-suite run history (retention 10). Nascent today, but durable once the suite runs live. |
 | `holdings_pulls` | The single latest view-only holdings snapshot. |
+| `portfolio_quick_checks` | The quick check's between-run state (format v2) — attention flags, unexamined evidence events, condition evaluation streaks. Durable analytical state: flags and breach streaks do not regenerate on the next sweep. |
 
 **Exported — filesystem stores:**
 
@@ -69,6 +70,7 @@ market-signal-export-YYYY-MM-DD.zip
     vector_memory.ndjson     content + embedding + namespace + kind + report_id
     portfolio_runs.ndjson
     holdings_pulls.ndjson
+    portfolio_quick_checks.ndjson   format v2+
   reports/                   the canonical Markdown bodies
   research-archive/          processed source documents
   research-inbox/            pending source documents
@@ -126,7 +128,7 @@ The **Import** action in the same Settings section:
 1. Tauri **open** dialog picks a `.zip`.
 2. If the container is encrypted, it decrypts with the Data section's shared passphrase field; absent or wrong, import stops with a typed error asking for it (no dedicated prompt dialog — retrying reopens the picker).
 3. Read and validate the manifest: reject a format version newer than this build understands; verify every entry's size + checksum, and never consume bytes the manifest doesn't list.
-   Every table entry **the archive's own format version requires** (five in format v1) must be **present and manifest-listed** — a truncated archive is refused, never imported as a sparse store, while an older archive imports complete under *its* version's entry set (backward compatibility by version, never sparse tolerance).
+   Every table entry **the archive's own format version requires** (five in format v1; six in v2, which added the quick-check store with its landing slice) must be **present and manifest-listed** — a truncated archive is refused, never imported as a sparse store, while an older archive imports complete under *its* version's entry set (backward compatibility by version, never sparse tolerance).
    All row-level validation — NDJSON parse, embedding decode, the schema's uniqueness/cardinality — also runs here, **before any destructive step**, so a bad archive can only abort while the store is untouched.
    Reading the archive is itself bounded: entries unpack under a total-size ceiling (4 GiB — generous by orders of magnitude over a real corpus), and `manifest.json` — which is read before that ceiling can apply — carries its own smaller bound (16 MiB), so a crafted zip can't demand unbounded memory through either read.
 4. Determine whether the target store is **empty** (no reports, no learnings, no portfolio runs):

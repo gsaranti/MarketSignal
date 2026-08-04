@@ -672,11 +672,38 @@ fn run_analysis(
 
     ctx.step_started("persist", "Persist run");
     store::record_run(conn, &run)?;
-    // The successful full pass consumed every holding's triggering observations in
-    // interpretation / continuity (the acknowledgment stamps ride the 6g seam), so
-    // the quick-check flags, badges, and carried states end with it
-    // (`docs/portfolio-analysis.md §The quick check`).
-    store::clear_quick_check(conn)?;
+    // The successful full pass consumed each analyzed holding's triggering
+    // observations in interpretation / continuity (the acknowledgment stamps ride
+    // the 6g seam), so those holdings' quick-check flags, badges, and carried
+    // states end with it — but clearing is **per successful pass**, never
+    // wholesale: an `insufficient-evidence` exit is not a successful pass
+    // (`docs/portfolio-analysis.md` §Evidence floor — the attention flag and
+    // unexamined events survive it), so an abstaining holding's carried state is
+    // retained, re-stamped to the new run so the next sweep chains from it
+    // instead of superseding it (`docs/portfolio-analysis.md §The quick check`).
+    let abstained: std::collections::HashSet<&str> = run
+        .verdicts
+        .iter()
+        .filter(|v| {
+            matches!(
+                v.disposition,
+                crate::portfolio::VerdictDisposition::InsufficientEvidence { .. }
+            )
+        })
+        .map(|v| v.symbol.as_str())
+        .collect();
+    let retained = store::latest_quick_check(conn)?.and_then(|mut s| {
+        s.holdings
+            .retain(|h| abstained.contains(h.symbol.as_str()));
+        (!s.holdings.is_empty()).then(|| {
+            s.swept_run_id = run.run_id.clone();
+            s
+        })
+    });
+    match &retained {
+        Some(s) => store::save_quick_check(conn, s)?,
+        None => store::clear_quick_check(conn)?,
+    }
     ctx.step_finished("persist", "ok", None);
 
     Ok(run)
@@ -1734,8 +1761,112 @@ mod tests {
             Some("2026-06-30"),
             "the full pass stamped the acknowledging observation"
         );
-        // And the successful pass cleared the between-run store wholesale.
+        // And the successful pass — every holding analyzed, none abstaining —
+        // left nothing to retain, so the between-run store cleared.
         assert!(store::latest_quick_check(&conn).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_abstaining_holding_retains_its_quick_check_state_through_a_full_run() {
+        use crate::portfolio::quick_check::{
+            AttentionFlag, FlagTrigger, HoldingQuickState, QuickCheckState,
+        };
+
+        let (_dir, paths) = paths();
+        let guard = RunGuard::default();
+        let book = || {
+            FixtureHoldingsSource::with_holdings(holdings_of(vec![
+                stock("AAA", 10.0, 1_000.0),
+                stock("BBB", 10.0, 1_000.0),
+            ]))
+        };
+        let run = |company: &dyn CompanyDataSource| {
+            match run_portfolio_job(
+                &book(),
+                company,
+                &StubMarket,
+                &StubAnalyst,
+                &InvestorProfile::default_fixture(),
+                &paths,
+                &guard,
+                &ctx(),
+            )
+            .unwrap()
+            {
+                PortfolioJobOutcome::Successful(r) => *r,
+                other => panic!("expected success, got {other:?}"),
+            }
+        };
+        let first = run(&StubCompanyData);
+
+        // A between-run quick check flagged both holdings.
+        let conn = storage::open(&paths.db_path).unwrap();
+        let entry = |symbol: &str| HoldingQuickState {
+            symbol: symbol.into(),
+            families: vec![],
+            flag: Some(AttentionFlag {
+                trigger: FlagTrigger::PriceOutsideBand,
+                detail: "price crossed outside the monitor band".into(),
+                raised_at: "2026-08-03T00:00:00Z".into(),
+            }),
+            evidence_events: vec![],
+            condition_states: vec![],
+            last_hurdle_state: None,
+            notes: vec![],
+        };
+        store::save_quick_check(
+            &conn,
+            &QuickCheckState {
+                swept_run_id: first.run_id.clone(),
+                last_checked_at: "2026-08-03T00:00:00Z".into(),
+                rate_cache: None,
+                holdings: vec![entry("AAA"), entry("BBB")],
+            },
+        )
+        .unwrap();
+
+        // The next full run: BBB's floor-bearing inputs are gone, so it exits
+        // `insufficient-evidence` — an abstention, not a successful pass over it.
+        struct AbstainBbb;
+        impl CompanyDataSource for AbstainBbb {
+            fn financials(&self, symbol: &str) -> CompanyFinancials {
+                if symbol == "BBB" {
+                    CompanyFinancials {
+                        symbol: symbol.to_string(),
+                        ..CompanyFinancials::default()
+                    }
+                } else {
+                    StubCompanyData.financials(symbol)
+                }
+            }
+            fn facts(&self, _symbol: &str) -> SecData {
+                SecData::default()
+            }
+        }
+        let second = run(&AbstainBbb);
+        assert!(
+            second.verdicts.iter().any(|v| v.symbol == "BBB"
+                && matches!(
+                    v.disposition,
+                    crate::portfolio::VerdictDisposition::InsufficientEvidence { .. }
+                )),
+            "BBB abstained this run"
+        );
+
+        // AAA's successful pass consumed its carried state; BBB's abstention is
+        // not a successful pass (`docs/portfolio-analysis.md` §Evidence floor),
+        // so its flag survives, re-stamped to the new run so the next sweep
+        // chains from it rather than superseding it.
+        let retained = store::latest_quick_check(&conn)
+            .unwrap()
+            .expect("the abstaining holding's state survives the full run");
+        assert_eq!(retained.swept_run_id, second.run_id);
+        assert_eq!(retained.holdings.len(), 1);
+        assert_eq!(retained.holdings[0].symbol, "BBB");
+        assert!(
+            retained.holdings[0].flag.is_some(),
+            "the attention flag survived the abstention"
+        );
     }
 
     #[test]

@@ -699,7 +699,18 @@ export interface TrackerRequest {
   detail: string | null;
 }
 
-export type StepStatus = "pending" | "running" | "ok" | "failed" | "cancelled";
+// `flagged` / `unknown` are the quick check's per-holding sweep outcomes
+// (docs/portfolio-analysis.md §The quick check): the step completed, but the
+// sweep raised an attention flag / could not vouch for a signal family — the
+// tracker renders them as completed-with-outcome, never as a failure.
+export type StepStatus =
+  | "pending"
+  | "running"
+  | "ok"
+  | "failed"
+  | "cancelled"
+  | "flagged"
+  | "unknown";
 
 // One pipeline step in the tracker. `requests` carries the baseline step's
 // per-series rows; `agentText` accumulates the main-agent step's streamed report;

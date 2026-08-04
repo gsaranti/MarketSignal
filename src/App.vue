@@ -1547,14 +1547,16 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           <!-- While a run is in flight (or its terminal log is reopened) the pane
                shows the tracker in place of a report; selecting any report row
                flips reportPaneMode back to "report". Kind-gated like the
-               Portfolio branch, so a portfolio run's trace never renders here
+               Portfolio branch — excluding BOTH portfolio kinds, so neither a
+               portfolio run's nor a quick check's trace ever renders here
                (e.g. a failed report run left the pane in tracker mode, then a
-               portfolio run replaced the trace). -->
+               portfolio job replaced the trace). -->
           <JobTrackerView
             v-if="
               reportPaneMode === 'tracker' &&
               runTrace &&
-              runTraceKind !== 'portfolio'
+              runTraceKind !== 'portfolio' &&
+              runTraceKind !== 'portfolio-quick-check'
             "
             :trace="runTrace"
             :active="runActive"

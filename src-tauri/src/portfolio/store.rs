@@ -46,8 +46,9 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     // The quick check's between-run state (`docs/portfolio-analysis.md §The quick
     // check`): a single latest row, deliberately separate from `portfolio_runs` —
     // a quick check must never surface in the run history or become the next full
-    // run's diff baseline / ledger-carry source. Not exported by data portability
-    // (advisory between-run state; it regenerates on the next quick check).
+    // run's diff baseline / ledger-carry source. Exported by data portability
+    // (format v2): its flags and breach streaks are durable analytical state that
+    // does not regenerate on the next sweep.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS portfolio_quick_checks (
             id         INTEGER PRIMARY KEY CHECK (id = 1),

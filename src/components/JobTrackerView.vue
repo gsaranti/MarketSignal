@@ -72,6 +72,12 @@ function stepStatusText(status: StepStatus): string {
       return "Failed";
     case "cancelled":
       return "Stopped";
+    // The quick check's per-holding sweep outcomes: completed-with-outcome,
+    // named in text so neither leans on the marker (or its color) alone.
+    case "flagged":
+      return "Flagged";
+    case "unknown":
+      return "Unknown";
     default:
       return ""; // ok / pending carry their meaning through the marker alone
   }
@@ -202,11 +208,17 @@ watch(contentSignature, async () => {
             <span class="step-marker" :data-status="step.status" aria-hidden="true">
               <Icon v-if="step.status === 'ok'" name="check" :size="13" />
               <Icon
-                v-else-if="step.status === 'failed' || step.status === 'cancelled'"
+                v-else-if="
+                  step.status === 'failed' ||
+                  step.status === 'cancelled' ||
+                  step.status === 'flagged'
+                "
                 name="warning"
                 :size="13"
               />
-              <!-- running / pending use a CSS box (filled vs hollow) -->
+              <!-- running / pending / unknown use a CSS box (filled, hollow
+                   hairline, hollow ink) — the visible status text carries
+                   unknown's meaning, never the marker alone -->
             </span>
             <span class="step-label">{{ step.label }}</span>
             <span v-if="stepStatusText(step.status)" class="step-status">{{
@@ -442,6 +454,19 @@ watch(contentSignature, async () => {
 .step-marker[data-status="cancelled"] {
   color: var(--accent-text);
 }
+/* The quick check's sweep outcomes. Flagged reuses the sanctioned grade-D
+   "amber" pair's text token (the Portfolio attention-flag treatment); unknown
+   stays quiet — a hollow ink box, its meaning carried by the status text. */
+.step-marker[data-status="flagged"] {
+  color: var(--grade-d-tx);
+}
+.step-marker[data-status="unknown"]::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ink-3);
+}
 
 .step-label {
   font-family: var(--font-sans);
@@ -468,6 +493,9 @@ watch(contentSignature, async () => {
 .step[data-status="failed"] .step-status,
 .step[data-status="cancelled"] .step-status {
   color: var(--accent-text);
+}
+.step[data-status="flagged"] .step-status {
+  color: var(--grade-d-tx);
 }
 
 .step-detail {

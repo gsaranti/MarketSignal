@@ -794,18 +794,18 @@ async fn run_portfolio_quick_check(
     if report.is_blocked {
         return Err(config::blocked_summary(&report));
     }
-    // The Schwab connection stays a presence precondition, like everywhere in the
-    // suite, though no Schwab call is made — building the source verifies it.
-    build_holdings_source(&cfg)?;
-
-    let fmp_key = cfg.fmp_api_key.clone().unwrap_or_default();
-    let fred_key = cfg.fred_api_key.clone().unwrap_or_default();
     let paths = report_paths(&app)?;
     let guard = guard.inner().clone();
     let ctx = live_run_context(&app, cancel.inner().0.clone());
 
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let fmp = FmpDataSource::new(fmp_key)
+        // The Schwab connection stays a presence precondition, like everywhere in
+        // the suite, though no Schwab call is made — building the source verifies
+        // it. Inside the blocking task because the check reads the Keychain
+        // (`build_holdings_source`'s contract) and must not stall the async
+        // command executor.
+        build_holdings_source(&cfg)?;
+        let fmp = FmpDataSource::new(cfg.fmp_api_key.clone().unwrap_or_default())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let sec = sec::SecEdgarSource::new()
@@ -817,7 +817,7 @@ async fn run_portfolio_quick_check(
             .map(|d| d.join("sec_company_tickers.json"))
             .unwrap_or_else(|| std::path::PathBuf::from("sec_company_tickers.json"));
         let cik = sec::load_cik_resolver(&cik_cache, &sec);
-        let fred = crate::fred::FredDataSource::new(fred_key)
+        let fred = crate::fred::FredDataSource::new(cfg.fred_api_key.clone().unwrap_or_default())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let data = portfolio::quick_check::LiveQuickCheckData { fmp, sec, cik, fred };
