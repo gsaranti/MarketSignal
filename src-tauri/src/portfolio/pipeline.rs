@@ -22,7 +22,7 @@ use crate::portfolio::dossier::HoldingDossier;
 use crate::portfolio::engine::{self, EngineOutput, EngineVerdict, LedgerEvaluation, RateAnchors};
 use crate::portfolio::fund::{self, FundEngineVerdict, RoleRiskReadout};
 use crate::portfolio::{
-    interpretation_schema, role_risk_interpretation_schema, Action, ClosedCondition,
+    interpretation_schema, role_risk_interpretation_schema, Action, ActionSource, ClosedCondition,
     ConditionEvalState, ConditionRole, Conviction, CrossingOutcome, ExposureWeight,
     FalsifierDraft, GradedVerdict, HoldingAudit, HoldingVerdict, HorizonOutlook, HorizonRead,
     Interpretation, KeyDriver, KeyDriverDraft, LedgerAudit, LedgerBranch, LedgerCondition,
@@ -168,6 +168,10 @@ pub fn analyze_holding(
             // A below-floor exit retains the standing ledger unchanged — Steps
             // 6c–6f never ran for it (`docs/portfolio-workflow.md` §Step 6b).
             thesis_ledger: prior_ledger.cloned(),
+            // Vintages are the job layer's concern: it stamps a fresh pass with the
+            // run's `created_at` and preserves an abstention's prior vintage.
+            analyzed_at: None,
+            action_source: ActionSource::ModelChosen,
         };
         Ok((verdict, audit(metrics, meta, None)))
     };
@@ -182,6 +186,8 @@ pub fn analyze_holding(
                 reason: format!("{} is not graded by the equity pipeline", asset_class.label()),
             },
             thesis_ledger: None,
+            analyzed_at: None,
+            action_source: ActionSource::ModelChosen,
         };
         return Ok((verdict, audit(Default::default(), None, None)));
     }
@@ -202,6 +208,8 @@ pub fn analyze_holding(
                     .to_string(),
             },
             thesis_ledger: None,
+            analyzed_at: None,
+            action_source: ActionSource::ModelChosen,
         };
         return Ok((verdict, audit(Default::default(), None, None)));
     }
@@ -307,6 +315,8 @@ pub fn analyze_holding(
                         what_changed: interpretation.what_changed,
                     })),
                     thesis_ledger: Some(ledger),
+                    analyzed_at: None,
+                    action_source: ActionSource::ModelChosen,
                 };
                 return Ok((verdict, audit(Default::default(), None, Some(ledger_audit))));
             }
@@ -407,6 +417,8 @@ pub fn analyze_holding(
         position_change,
         disposition: VerdictDisposition::Priced(Box::new(graded)),
         thesis_ledger: Some(ledger),
+        analyzed_at: None,
+        action_source: ActionSource::ModelChosen,
     };
     // The engine's own gap notes (tier-input gaps, the fund composite's uncovered
     // share, an option-overlay structural flag) join the audit's degraded inputs —
@@ -2579,6 +2591,8 @@ mod tests {
                 reason: "fixture".into(),
             },
             thesis_ledger: None,
+            analyzed_at: None,
+            action_source: Default::default(),
         };
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let engine_output = match engine::analyze(&d.financials, &rates()) {
@@ -3740,6 +3754,8 @@ mod tests {
             position_change: PositionChange::Unchanged,
             disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
             thesis_ledger: Some(prior_with_conditions()),
+            analyzed_at: None,
+            action_source: Default::default(),
         });
         let (v2, _) =
             analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();

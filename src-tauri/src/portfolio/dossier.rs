@@ -602,6 +602,8 @@ Watch the 2s10s and the labor prints.
                     reason: "fixture".into(),
                 },
                 thesis_ledger: None,
+                analyzed_at: None,
+                action_source: Default::default(),
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
                 graded_count: 0,
@@ -645,6 +647,8 @@ Watch the 2s10s and the labor prints.
                     reason: "fixture".into(),
                 },
                 thesis_ledger: None,
+                analyzed_at: None,
+                action_source: Default::default(),
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
                 graded_count: 0,

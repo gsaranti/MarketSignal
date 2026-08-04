@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
-import { localDateTime } from "../format";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { localDate, localDateTime } from "../format";
 import type {
   FlagTrigger,
   HoldingQuickState,
@@ -58,7 +58,9 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: "run"): void;
+  // With a payload, the run is a selective re-analysis over those symbols
+  // (docs/portfolio-analysis.md §Triggering); without one, the whole book.
+  (e: "run", selected?: string[]): void;
   (e: "pull"): void;
   (e: "quick-check"): void;
   (e: "back-to-latest"): void;
@@ -75,6 +77,50 @@ const pullDisabled = computed(
   () => isHistorical.value || props.pullBlocked || props.busy
 );
 
+// ---- Selective re-analysis selection (docs/portfolio-analysis.md §Triggering)
+// Per-card selection driving the selective run — view-local UI state, never
+// persisted, reset when the rendered run changes (a new run is a new selection
+// context). Design-package note: the analytical register defines no selection
+// control, so this extends it minimally — a hairline 2px-radius box beside the
+// ticker (checked = accent fill, the actionable state), the register's shared
+// focus-visible ring — recorded as an extension, not silently invented.
+const selected = ref<Set<string>>(new Set());
+const selectionActive = computed(() => selected.value.size > 0);
+const selectionDisabled = computed(
+  () => isHistorical.value || props.busy || props.run === null
+);
+const allSelected = computed(
+  () =>
+    props.run !== null &&
+    props.run.verdicts.length > 0 &&
+    selected.value.size === props.run.verdicts.length
+);
+function isSelected(symbol: string): boolean {
+  return selected.value.has(symbol.toUpperCase());
+}
+function toggleSelect(symbol: string) {
+  const next = new Set(selected.value);
+  const key = symbol.toUpperCase();
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  selected.value = next;
+}
+function selectAll() {
+  selected.value = new Set(
+    (props.run?.verdicts ?? []).map((v) => v.symbol.toUpperCase())
+  );
+}
+function clearSelection() {
+  selected.value = new Set();
+}
+watch(
+  () => props.run?.run_id,
+  () => clearSelection()
+);
+function onRun() {
+  emit("run", selectionActive.value ? [...selected.value] : undefined);
+}
+
 // The disabled reason, surfaced as the button title so the lock is explicable
 // in place (the warning band carries the full items).
 const runTitle = computed(() => {
@@ -83,6 +129,8 @@ const runTitle = computed(() => {
   if (props.runBlocked)
     return props.runBlockedReason ?? "Local-suite configuration is incomplete";
   if (props.busy) return "Another job is running";
+  if (selectionActive.value)
+    return "Re-analyze the selected holdings — the safety sweep checks the rest and force-includes anything it can't vouch for";
   return "Pull fresh holdings and run the analysis";
 });
 const pullTitle = computed(() => {
@@ -165,6 +213,39 @@ function degradedBadge(h: HoldingQuickState): { text: string; title: string } | 
       .join(" · ")}`,
   };
 }
+
+// ---- Analysis-vintage stamp (docs/portfolio-analysis.md §Triggering) ---------
+// A verdict whose analyzed_at is older than the run's created_at was not
+// re-analyzed by that run — a selective run's carry, or an abstention holding
+// its prior vintage — the stamp the card shows. Over-age mirrors the engine's
+// 28-day carry boundary (job.rs OVER_AGE_DAYS — recalibrate both together);
+// quiet informational tags, never the amber action color.
+const OVER_AGE_DAYS = 28;
+function carriedStamp(
+  v: HoldingVerdict
+): { text: string; title: string } | null {
+  const run = props.run;
+  if (!run || !v.analyzed_at || v.analyzed_at === run.created_at) return null;
+  const ageDays =
+    (Date.parse(run.created_at) - Date.parse(v.analyzed_at)) / 86_400_000;
+  if (!Number.isFinite(ageDays)) return null;
+  const when = localDate(v.analyzed_at);
+  return ageDays > OVER_AGE_DAYS
+    ? {
+        text: `Stale · analyzed ${when}`,
+        title:
+          "Standing on a full pass older than the ~4-week research window — select it to refresh the analysis",
+      }
+    : {
+        text: `Carried · analyzed ${when}`,
+        title: "Standing on an earlier full pass — not re-analyzed this run",
+      };
+}
+function demoted(v: HoldingVerdict): boolean {
+  return v.action_source === "rule-demoted";
+}
+const DEMOTED_TITLE =
+  "An over-age carried add action was rule-demoted to hold — a labeled, rule-based weaken, not fresh analysis";
 
 // ---- Formatting ---------------------------------------------------------------
 
@@ -675,9 +756,15 @@ const keyFigures = computed(() => {
           class="btn btn-primary"
           :disabled="runDisabled"
           :title="runTitle"
-          @click="emit('run')"
+          @click="onRun"
         >
-          {{ running ? "Running analysis…" : "Run analysis" }}
+          {{
+            running
+              ? "Running analysis…"
+              : selectionActive
+                ? `Analyze ${selected.size} selected`
+                : "Run analysis"
+          }}
         </button>
       </div>
     </div>
@@ -907,26 +994,59 @@ const keyFigures = computed(() => {
         </section>
 
         <template v-if="run">
-          <!-- Sort bar: display-only card-stack reorder; aria-pressed toggles,
-               never aria-sort (reserved for the grid heads). -->
-          <div
-            v-if="run.verdicts.length > 1"
-            class="ana-sortbar"
-            role="group"
-            aria-label="Sort holdings"
-          >
-            <span class="ana-sortbar-label" aria-hidden="true">Sort</span>
-            <button
-              v-for="k in SORT_KEYS"
-              :key="k.key"
-              type="button"
-              :aria-pressed="sort.key === k.key"
-              :data-dir="sort.key === k.key ? sort.dir : undefined"
-              :aria-label="sortButtonName(k.key, k.label)"
-              @click="pickSort(k.key)"
+          <!-- Stack controls: the sort bar beside the selection controls (the
+               row owns the shared spacing so the two don't each guess). -->
+          <div class="stack-controls">
+            <!-- Sort bar: display-only card-stack reorder; aria-pressed toggles,
+                 never aria-sort (reserved for the grid heads). -->
+            <div
+              v-if="run.verdicts.length > 1"
+              class="ana-sortbar"
+              role="group"
+              aria-label="Sort holdings"
             >
-              {{ k.label }}
-            </button>
+              <span class="ana-sortbar-label" aria-hidden="true">Sort</span>
+              <button
+                v-for="k in SORT_KEYS"
+                :key="k.key"
+                type="button"
+                :aria-pressed="sort.key === k.key"
+                :data-dir="sort.key === k.key ? sort.dir : undefined"
+                :aria-label="sortButtonName(k.key, k.label)"
+                @click="pickSort(k.key)"
+              >
+                {{ k.label }}
+              </button>
+            </div>
+            <!-- Selection controls (docs/portfolio-analysis.md §Triggering):
+                 select-all / clear beside a live count; the per-card boxes
+                 drive the same set. Hidden on a read-only past run. -->
+            <div
+              v-if="!isHistorical"
+              class="hc-selectbar"
+              role="group"
+              aria-label="Selective re-analysis selection"
+            >
+              <span class="hc-selectbar-count" aria-live="polite">{{
+                selectionActive ? `${selected.size} selected` : ""
+              }}</span>
+              <button
+                type="button"
+                class="hc-reveal hc-selectbar-btn"
+                :disabled="selectionDisabled || allSelected"
+                @click="selectAll"
+              >
+                Select all
+              </button>
+              <button
+                type="button"
+                class="hc-reveal hc-selectbar-btn"
+                :disabled="selectionDisabled || !selectionActive"
+                @click="clearSelection"
+              >
+                Clear
+              </button>
+            </div>
           </div>
 
           <!-- The holding-card stack -->
@@ -946,8 +1066,29 @@ const keyFigures = computed(() => {
               >
                 <div class="hc-reduced-main">
                   <div class="hc-idline">
+                    <label
+                      v-if="!isHistorical"
+                      class="hc-select"
+                      :title="`Select ${v.symbol} for selective re-analysis`"
+                    >
+                      <input
+                        type="checkbox"
+                        class="hc-select-input"
+                        :checked="isSelected(v.symbol)"
+                        :disabled="selectionDisabled"
+                        :aria-label="`Select ${v.symbol} for re-analysis`"
+                        @change="toggleSelect(v.symbol)"
+                      />
+                      <span class="hc-select-box" aria-hidden="true"></span>
+                    </label>
                     <span class="ana-ticker">{{ v.symbol }}</span>
                     <span class="hc-class">{{ classLabel(v) }}</span>
+                    <span
+                      v-if="carriedStamp(v)"
+                      class="ana-tag"
+                      :title="carriedStamp(v)!.title"
+                      >{{ carriedStamp(v)!.text }}</span
+                    >
                     <span v-if="noLongerHeld(v.symbol)" class="ana-tag"
                       >No longer held</span
                     >
@@ -993,8 +1134,29 @@ const keyFigures = computed(() => {
                   <div class="hc-id">
                     <div class="hc-id-text">
                       <div class="hc-idline">
+                        <label
+                          v-if="!isHistorical"
+                          class="hc-select"
+                          :title="`Select ${v.symbol} for selective re-analysis`"
+                        >
+                          <input
+                            type="checkbox"
+                            class="hc-select-input"
+                            :checked="isSelected(v.symbol)"
+                            :disabled="selectionDisabled"
+                            :aria-label="`Select ${v.symbol} for re-analysis`"
+                            @change="toggleSelect(v.symbol)"
+                          />
+                          <span class="hc-select-box" aria-hidden="true"></span>
+                        </label>
                         <span class="ana-ticker">{{ v.symbol }}</span>
                         <span class="hc-class">{{ classLabel(v) }}</span>
+                        <span
+                          v-if="carriedStamp(v)"
+                          class="ana-tag"
+                          :title="carriedStamp(v)!.title"
+                          >{{ carriedStamp(v)!.text }}</span
+                        >
                         <span v-if="v.disposition.structural_flag" class="ana-tag"
                           >Structurally path-dependent</span
                         >
@@ -1161,8 +1323,32 @@ const keyFigures = computed(() => {
                     >
                     <div class="hc-id-text">
                       <div class="hc-idline">
+                        <label
+                          v-if="!isHistorical"
+                          class="hc-select"
+                          :title="`Select ${v.symbol} for selective re-analysis`"
+                        >
+                          <input
+                            type="checkbox"
+                            class="hc-select-input"
+                            :checked="isSelected(v.symbol)"
+                            :disabled="selectionDisabled"
+                            :aria-label="`Select ${v.symbol} for re-analysis`"
+                            @change="toggleSelect(v.symbol)"
+                          />
+                          <span class="hc-select-box" aria-hidden="true"></span>
+                        </label>
                         <span class="ana-ticker">{{ v.symbol }}</span>
                         <span class="hc-class">{{ classLabel(v) }}</span>
+                        <span
+                          v-if="carriedStamp(v)"
+                          class="ana-tag"
+                          :title="carriedStamp(v)!.title"
+                          >{{ carriedStamp(v)!.text }}</span
+                        >
+                        <span v-if="demoted(v)" class="ana-tag" :title="DEMOTED_TITLE"
+                          >Add demoted to hold</span
+                        >
                         <span
                           v-if="v.disposition.low_confidence_grade"
                           class="ana-tag"
@@ -1691,7 +1877,7 @@ const keyFigures = computed(() => {
    caps at 980px); the pane itself keeps scrolling behavior. */
 .strip,
 .current-holdings,
-.ana-sortbar,
+.stack-controls,
 .card-stack,
 .rollup {
   max-width: 980px;
@@ -1784,9 +1970,125 @@ const keyFigures = computed(() => {
   margin-left: var(--s-2);
 }
 
-/* ---- Sort bar (design package .ana-sortbar; spacing only here) ---- */
-.ana-sortbar {
+/* ---- Stack controls: the sort bar + the selection controls on one row (the
+   row owns the inter-control spacing and the stack gap). ---- */
+.stack-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--s-3) var(--s-5);
   margin-bottom: var(--s-4);
+}
+
+/* Sort bar (design package .ana-sortbar; spacing owned by .stack-controls). */
+
+/* Selection controls (docs/portfolio-analysis.md §Triggering). The count and
+   the two link-buttons share the register's tracked-caps voice; the buttons
+   reuse the kit Reveal posture. A disabled reveal has no package treatment —
+   extended here as the sort bar's dimmed-inactive opacity (noted extension). */
+.hc-selectbar {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+  margin-left: auto;
+}
+
+.hc-selectbar-count {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.hc-selectbar-btn {
+  margin-top: 0;
+}
+
+.hc-selectbar-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.hc-selectbar-btn:disabled:hover {
+  color: var(--ink-3);
+}
+
+/* Per-card selection box (docs/portfolio-analysis.md §Triggering). The
+   register defines no selection control — extended minimally and noted: a
+   hairline 14px box at radius 2px inside a 24px hit target, checked = accent
+   fill with a paper check (accent marks the actionable selection), the shared
+   accent focus-visible ring. The box border uses --ink-3 (AA-cleared), not the
+   sub-3:1 hairline, so the control boundary meets the UI-contrast floor. */
+.hc-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -5px 0;
+  align-self: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.hc-select-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  margin: 0;
+  cursor: inherit;
+}
+
+.hc-select:has(.hc-select-input:disabled) {
+  cursor: default;
+}
+
+.hc-select-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--ink-3);
+  border-radius: 2px;
+  background: transparent;
+  transition: background 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.hc-select-input:checked + .hc-select-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.hc-select-input:checked + .hc-select-box::after {
+  content: "";
+  width: 8px;
+  height: 4px;
+  border-left: 2px solid var(--paper);
+  border-bottom: 2px solid var(--paper);
+  transform: rotate(-45deg) translateY(-1px);
+}
+
+.hc-select-input:focus-visible + .hc-select-box {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.hc-select-input:disabled + .hc-select-box {
+  opacity: 0.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hc-select-box {
+    transition: none;
+  }
 }
 
 /* ---- Holding cards ---- */

@@ -433,9 +433,6 @@ pub fn run_quick_check(
         .context("no Portfolio Analysis run exists yet — nothing to quick-check")?;
     let now = now_rfc3339();
     let today = now.chars().take(10).collect::<String>();
-    // The last full pass's date — the "since the last full pass" boundary the
-    // evidence-event legs read (selective vintages arrive with a later slice).
-    let last_pass_date = run.created_at.chars().take(10).collect::<String>();
 
     // The prior quick-check state chains streaks / flags — but only against the
     // same run; a newer full run supersedes it wholesale.
@@ -488,10 +485,11 @@ pub fn run_quick_check(
         }
     };
 
-    // Sweep-eligible holdings: an analyzed verdict or a standing ledger. The
-    // price pass runs first so portfolio weights can be recomputed over the whole
-    // fresh book (unswept positions ride their last marks).
-    let swept: Vec<(&crate::schwab::Position, &HoldingVerdict, Option<&HoldingAudit>)> = run
+    // Sweep-eligible holdings, each with its **own** last-full-pass boundary —
+    // per holding, not per run: a verdict a selective run carried forward keeps
+    // its older vintage, so the evidence-event legs still look back to the pass
+    // that actually examined it (`docs/portfolio-analysis.md` §Triggering).
+    let targets: Vec<SweepTarget<'_>> = run
         .holdings
         .positions
         .iter()
@@ -500,90 +498,32 @@ pub fn run_quick_check(
                 .verdicts
                 .iter()
                 .find(|v| v.symbol.eq_ignore_ascii_case(&p.symbol))?;
-            let eligible = verdict.thesis_ledger.is_some()
-                || matches!(
-                    verdict.disposition,
-                    VerdictDisposition::Priced(_) | VerdictDisposition::RoleRiskOnly(_)
-                );
-            eligible.then(|| {
-                (
-                    p,
-                    verdict,
-                    run.audit
-                        .iter()
-                        .find(|a| a.symbol.eq_ignore_ascii_case(&p.symbol)),
-                )
+            sweep_eligible(verdict).then(|| SweepTarget {
+                position: p,
+                verdict,
+                audit: run
+                    .audit
+                    .iter()
+                    .find(|a| a.symbol.eq_ignore_ascii_case(&p.symbol)),
+                last_pass_date: vintage_date(verdict, &run.created_at),
             })
         })
         .collect();
 
-    let mut prices: std::collections::HashMap<String, (f64, Vec<DatedValue>)> =
-        std::collections::HashMap::new();
-    let mut price_errors: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for (position, _, _) in &swept {
-        if ctx.is_cancelled() {
-            anyhow::bail!("run cancelled");
-        }
-        match data.price_and_closes(&position.symbol) {
-            Ok(pc) => {
-                prices.insert(position.symbol.clone(), pc);
-            }
-            Err(e) => {
-                price_errors.insert(position.symbol.clone(), e.to_string());
-            }
-        }
-    }
-    // Fresh book total: swept positions at fresh marks, everything else (and any
-    // failed refresh) at its last persisted value; cash unchanged.
-    let fresh_total: f64 = run.holdings.cash
-        + run
-            .holdings
-            .positions
-            .iter()
-            .map(|p| match prices.get(&p.symbol) {
-                Some((price, _)) if p.quantity != 0.0 => p.quantity * price,
-                _ => p.market_value,
-            })
-            .sum::<f64>();
-
-    let mut holdings_state: Vec<HoldingQuickState> = Vec::with_capacity(swept.len());
-    for (position, verdict, audit) in &swept {
-        if ctx.is_cancelled() {
-            anyhow::bail!("run cancelled");
-        }
-        let step_key = holding_step_key(&position.symbol);
-        ctx.step_started(step_key.clone(), format!("Check {}", position.symbol));
-        let prior_holding = prior_state
-            .as_ref()
-            .and_then(|s| s.holdings.iter().find(|h| h.symbol == position.symbol));
-        let fresh_weight = prices.get(&position.symbol).and_then(|(price, _)| {
-            (fresh_total > 0.0 && position.quantity != 0.0)
-                .then(|| (position.quantity * price) / fresh_total)
-        });
-        let state = sweep_holding(SweepInputs {
+    let holdings_state = sweep_targets(
+        SweepPass {
             data,
-            position,
-            verdict,
-            audit: *audit,
-            prior: prior_holding,
-            price: prices.get(&position.symbol),
-            price_error: price_errors.get(&position.symbol).map(String::as_str),
-            fresh_weight,
+            targets,
+            all_positions: &run.holdings.positions,
+            cash: run.holdings.cash,
+            prior_state: prior_state.as_ref(),
             rates: rates.as_ref(),
             rate_note: rate_note.as_deref(),
-            last_pass_date: &last_pass_date,
-            today: &today,
             now: &now,
-        });
-        let status = match (&state.flag, state.families.iter().any(|f| f.state == SweepState::Unknown)) {
-            (Some(_), _) => "flagged",
-            (None, true) => "unknown",
-            (None, false) => "ok",
-        };
-        ctx.step_finished(step_key, status, None);
-        holdings_state.push(state);
-    }
+            today: &today,
+        },
+        ctx,
+    )?;
 
     let state = QuickCheckState {
         swept_run_id: run.run_id.clone(),
@@ -601,6 +541,189 @@ pub fn run_quick_check(
     store::save_quick_check(conn, &state)?;
     ctx.step_finished("persist", "ok", None);
     Ok(state)
+}
+
+/// Whether a verdict is sweep-eligible: an analyzed disposition or a standing
+/// ledger (an insufficient-evidence exit retains its ledger, which the sweep
+/// keeps evaluating).
+fn sweep_eligible(verdict: &HoldingVerdict) -> bool {
+    verdict.thesis_ledger.is_some()
+        || matches!(
+            verdict.disposition,
+            VerdictDisposition::Priced(_) | VerdictDisposition::RoleRiskOnly(_)
+        )
+}
+
+/// A verdict's effective last-full-pass **date** (YYYY-MM-DD) inside the run
+/// whose `created_at` is given — the per-holding "since the last full pass"
+/// boundary ([`crate::portfolio::effective_vintage`]).
+fn vintage_date(verdict: &HoldingVerdict, run_created_at: &str) -> String {
+    crate::portfolio::effective_vintage(verdict, run_created_at)
+        .chars()
+        .take(10)
+        .collect()
+}
+
+/// One holding's sweep assignment: the position whose quantity and fresh mark the
+/// weight read uses, its verdict + audit from the run being swept, and the
+/// holding's own last-full-pass boundary date.
+pub struct SweepTarget<'a> {
+    pub position: &'a crate::schwab::Position,
+    pub verdict: &'a HoldingVerdict,
+    pub audit: Option<&'a HoldingAudit>,
+    pub last_pass_date: String,
+}
+
+/// One sweep pass over a set of targets — the core both the standalone quick
+/// check and a selective run's in-run tail sweep execute.
+struct SweepPass<'a> {
+    data: &'a dyn QuickCheckDataSource,
+    targets: Vec<SweepTarget<'a>>,
+    /// The whole book the fresh total is computed over: swept positions at fresh
+    /// marks, everything else (and any failed refresh) at its last value.
+    all_positions: &'a [crate::schwab::Position],
+    cash: f64,
+    prior_state: Option<&'a QuickCheckState>,
+    rates: Option<&'a RatePrints>,
+    rate_note: Option<&'a str>,
+    now: &'a str,
+    today: &'a str,
+}
+
+/// Sweep every target: the price pass first (so portfolio weights recompute over
+/// the whole fresh book), then the per-holding evidence legs and condition
+/// evaluation, merged with each holding's carried quick-check state.
+fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQuickState>> {
+    let mut prices: std::collections::HashMap<String, (f64, Vec<DatedValue>)> =
+        std::collections::HashMap::new();
+    let mut price_errors: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for target in &pass.targets {
+        if ctx.is_cancelled() {
+            anyhow::bail!("run cancelled");
+        }
+        match pass.data.price_and_closes(&target.position.symbol) {
+            Ok(pc) => {
+                prices.insert(target.position.symbol.clone(), pc);
+            }
+            Err(e) => {
+                price_errors.insert(target.position.symbol.clone(), e.to_string());
+            }
+        }
+    }
+    // Fresh book total: swept positions at fresh marks, everything else (and any
+    // failed refresh) at its last persisted value; cash unchanged.
+    let fresh_total: f64 = pass.cash
+        + pass
+            .all_positions
+            .iter()
+            .map(|p| match prices.get(&p.symbol) {
+                Some((price, _)) if p.quantity != 0.0 => p.quantity * price,
+                _ => p.market_value,
+            })
+            .sum::<f64>();
+
+    let mut holdings_state: Vec<HoldingQuickState> = Vec::with_capacity(pass.targets.len());
+    for target in &pass.targets {
+        if ctx.is_cancelled() {
+            anyhow::bail!("run cancelled");
+        }
+        let position = target.position;
+        let step_key = holding_step_key(&position.symbol);
+        ctx.step_started(step_key.clone(), format!("Check {}", position.symbol));
+        let prior_holding = pass
+            .prior_state
+            .and_then(|s| s.holdings.iter().find(|h| h.symbol == position.symbol));
+        let fresh_weight = prices.get(&position.symbol).and_then(|(price, _)| {
+            (fresh_total > 0.0 && position.quantity != 0.0)
+                .then(|| (position.quantity * price) / fresh_total)
+        });
+        let state = sweep_holding(SweepInputs {
+            data: pass.data,
+            position,
+            verdict: target.verdict,
+            audit: target.audit,
+            prior: prior_holding,
+            price: prices.get(&position.symbol),
+            price_error: price_errors.get(&position.symbol).map(String::as_str),
+            fresh_weight,
+            rates: pass.rates,
+            rate_note: pass.rate_note,
+            last_pass_date: &target.last_pass_date,
+            today: pass.today,
+            now: pass.now,
+        });
+        let status = match (&state.flag, state.families.iter().any(|f| f.state == SweepState::Unknown)) {
+            (Some(_), _) => "flagged",
+            (None, true) => "unknown",
+            (None, false) => "ok",
+        };
+        ctx.step_finished(step_key, status, None);
+        holdings_state.push(state);
+    }
+    Ok(holdings_state)
+}
+
+/// The in-run sweep a **selective run** executes over its unselected tail before
+/// the per-holding loop (`docs/portfolio-analysis.md` §Triggering — the first
+/// mixed-vintage safety rule). Positions come from the run's **fresh Step-2
+/// pull** (current quantities, so weight-read conditions test the real book);
+/// verdicts, audits, and ledgers come from the prior run being carried; each
+/// holding's evidence-event boundary is its own effective vintage. The caller
+/// owns persistence — the run's persist seam retains carried holdings' states
+/// re-stamped to the new run.
+pub struct TailSweep<'a> {
+    pub data: &'a dyn QuickCheckDataSource,
+    pub prior_run: &'a crate::portfolio::PortfolioRun,
+    /// The current book (the fresh pull) — weights and marks read from here.
+    pub current_positions: &'a [crate::schwab::Position],
+    pub cash: f64,
+    /// Uppercased symbols of the unselected tail to sweep.
+    pub tail: &'a std::collections::HashSet<String>,
+    pub prior_state: Option<&'a QuickCheckState>,
+    /// The run's fresh rate prints (a full run hard-fails without them).
+    pub rates: RatePrints,
+}
+
+pub fn sweep_tail(input: TailSweep<'_>, ctx: &RunContext) -> Result<Vec<HoldingQuickState>> {
+    let now = now_rfc3339();
+    let today = now.chars().take(10).collect::<String>();
+    let targets: Vec<SweepTarget<'_>> = input
+        .current_positions
+        .iter()
+        .filter(|p| input.tail.contains(&p.symbol.to_ascii_uppercase()))
+        .filter_map(|p| {
+            let verdict = input
+                .prior_run
+                .verdicts
+                .iter()
+                .find(|v| v.symbol.eq_ignore_ascii_case(&p.symbol))?;
+            sweep_eligible(verdict).then(|| SweepTarget {
+                position: p,
+                verdict,
+                audit: input
+                    .prior_run
+                    .audit
+                    .iter()
+                    .find(|a| a.symbol.eq_ignore_ascii_case(&p.symbol)),
+                last_pass_date: vintage_date(verdict, &input.prior_run.created_at),
+            })
+        })
+        .collect();
+    sweep_targets(
+        SweepPass {
+            data: input.data,
+            targets,
+            all_positions: input.current_positions,
+            cash: input.cash,
+            prior_state: input.prior_state,
+            rates: Some(&input.rates),
+            rate_note: None,
+            now: &now,
+            today: &today,
+        },
+        ctx,
+    )
 }
 
 /// Whether a cached rate print is young enough for the quick paths' fail-soft —
@@ -1569,6 +1692,8 @@ mod tests {
                 what_changed: "fixture".into(),
             })),
             thesis_ledger: Some(ledger(conditions)),
+            analyzed_at: None,
+            action_source: Default::default(),
         }
     }
 
@@ -1707,6 +1832,80 @@ mod tests {
         fn rates(&self) -> Result<(DatedValue, DatedValue)> {
             self.rates.clone().map_err(|e| anyhow::anyhow!(e))
         }
+    }
+
+    #[test]
+    fn the_evidence_event_boundary_is_per_holding_not_per_run() {
+        // Two holdings in one run: FRESH was analyzed by the run itself; CARRD
+        // rides vintage-stamped from an older pass (a selective run's carry). An
+        // earnings actual dated between the two vintages is an unexamined event
+        // for the carried holding only — the boundary is each holding's own
+        // last full pass, never the run's `created_at`.
+        let conn = mem();
+        let mut fresh = priced_verdict("FRESH", vec![]);
+        fresh.analyzed_at = Some("2026-08-01T00:00:00Z".into());
+        let mut carried = priced_verdict("CARRD", vec![]);
+        carried.analyzed_at = Some("2026-07-20T00:00:00Z".into());
+        let run = PortfolioRun {
+            run_id: "run-mixed".into(),
+            created_at: "2026-08-01T00:00:00Z".into(),
+            holdings: Holdings {
+                positions: vec![
+                    position("FRESH", AssetClass::Stock),
+                    position("CARRD", AssetClass::Stock),
+                ],
+                cash: 10_000.0,
+                account_total: 49_000.0,
+                source_rows: vec![],
+            },
+            verdicts: vec![fresh, carried],
+            roll_up: PortfolioRollUp {
+                graded_count: 2,
+                not_rated_count: 0,
+                insufficient_evidence_count: 0,
+                role_risk_only_count: 0,
+                top_position_weight: 0.4,
+                cash_weight: 0.2,
+                exited: vec![],
+                data_health: None,
+                overview: "fixture".into(),
+            },
+            audit: vec![
+                audit_for("FRESH", Some(basis())),
+                audit_for("CARRD", Some(basis())),
+            ],
+            rate_prints: None,
+        };
+        store::insert_run(&conn, &run).unwrap();
+        let mut data = StubData::quiet(195.0, "2026-08-02");
+        data.earnings = Ok(vec![SymbolEarningsRow {
+            date: "2026-07-25".into(),
+            eps_actual: Some(2.10),
+            eps_estimated: Some(2.00),
+            revenue_actual: None,
+        }]);
+        let state = run_quick_check(&data, &conn, &noop_ctx()).unwrap();
+        let by = |sym: &str| {
+            state
+                .holdings
+                .iter()
+                .find(|h| h.symbol == sym)
+                .unwrap_or_else(|| panic!("{sym} swept"))
+        };
+        assert!(
+            by("CARRD")
+                .evidence_events
+                .iter()
+                .any(|e| e.kind == EvidenceEventKind::EarningsActual),
+            "the carried holding's older vintage sees the event"
+        );
+        assert!(
+            !by("FRESH")
+                .evidence_events
+                .iter()
+                .any(|e| e.kind == EvidenceEventKind::EarningsActual),
+            "the fresh holding's own vintage bounds its event window"
+        );
     }
 
     #[test]
@@ -1971,6 +2170,8 @@ mod tests {
                 },
             )),
             thesis_ledger: Some(fund_ledger),
+            analyzed_at: None,
+            action_source: Default::default(),
         };
         let mut audit = audit_for("BONDX", None);
         audit.fund_exposure = Some(fund::FundExposureBasis {
@@ -2046,6 +2247,8 @@ mod tests {
                 },
             )),
             thesis_ledger: Some(fund_ledger),
+            analyzed_at: None,
+            action_source: Default::default(),
         };
         let mut audit = audit_for("BONDX", None);
         audit.fund_exposure = exposure;

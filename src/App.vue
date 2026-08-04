@@ -1100,10 +1100,13 @@ async function disconnectSchwab() {
 
 // Run the Portfolio Analysis job (docs/portfolio-analysis.md §Triggering — the
 // one-touch trigger: it pulls fresh holdings itself, never reusing a standalone
-// pull). Mirrors generate(): the run streams into the shared tracker, which
-// replaces the Portfolio page while it runs; a gate block (no run-started ever
-// arrives) surfaces as the page's inline error, never a persistent warning.
-async function generatePortfolio() {
+// pull). With a per-card selection the run is a selective re-analysis: the
+// backend sweeps the unselected tail and force-includes anything it can't
+// vouch for, carrying the rest vintage-stamped. Mirrors generate(): the run
+// streams into the shared tracker, which replaces the Portfolio page while it
+// runs; a gate block (no run-started ever arrives) surfaces as the page's
+// inline error, never a persistent warning.
+async function generatePortfolio(selected?: string[]) {
   if (localBlocked.value || slotBusy.value) return;
   portfolioRunning.value = true;
   portfolioError.value = null;
@@ -1112,7 +1115,9 @@ async function generatePortfolio() {
   cancelRequested.value = false;
   runTrace.value = null;
   try {
-    const run = await invoke<PortfolioRun>("generate_portfolio_manual");
+    const run = await invoke<PortfolioRun>("generate_portfolio_manual", {
+      selected: selected && selected.length > 0 ? selected : null,
+    });
     // The inline result is fresher than any read already in flight — invalidate
     // them so a slow pre-run read can't clobber it.
     portfolioEpoch++;

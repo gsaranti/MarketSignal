@@ -303,7 +303,8 @@ describe("PortfolioView verdict cards", () => {
 
   test("target methodology is a keyboard-operable disclosure", async () => {
     const wrapper = mountView({ run });
-    const reveal = wrapper.findAll(".hc-reveal")[0];
+    // Scoped to the card: the selection bar reuses the reveal primitive above the stack.
+    const reveal = wrapper.findAll(".holding-card .hc-reveal")[0];
     expect(reveal.attributes("aria-expanded")).toBe("false");
     expect(wrapper.text()).not.toContain("v2 spread-anchored multiples");
     await reveal.trigger("click");
@@ -721,5 +722,106 @@ describe("PortfolioView quick check", () => {
     // A historical view renders nothing even when the ids match.
     const historical = mountView({ run, quick: flagged, historical: true });
     expect(historical.find(".dh-attention-tag").exists()).toBe(false);
+  });
+});
+
+describe("PortfolioView selective re-analysis", () => {
+  const boxFor = (wrapper: ReturnType<typeof mountView>, sym: string) =>
+    wrapper
+      .findAll(".hc-select-input")
+      .find(
+        (b) => b.attributes("aria-label") === `Select ${sym} for re-analysis`
+      )!;
+
+  test("per-card selection retitles the Run trigger and rides the run emit", async () => {
+    const wrapper = mountView({ run });
+    // Every card variant is selectable — graded, abstained, and not-rated alike.
+    expect(wrapper.findAll(".hc-select-input")).toHaveLength(4);
+    await boxFor(wrapper, "AAPL").setValue(true);
+    await boxFor(wrapper, "XYZ").setValue(true);
+    const runBtn = wrapper.find(".toolbar-actions .btn-primary");
+    expect(runBtn.text()).toBe("Analyze 2 selected");
+    await runBtn.trigger("click");
+    const emitted = wrapper.emitted("run");
+    expect(emitted).toHaveLength(1);
+    expect([...(emitted![0][0] as string[])].sort()).toEqual(["AAPL", "XYZ"]);
+  });
+
+  test("without a selection the run emit carries no payload", async () => {
+    const wrapper = mountView({ run });
+    await wrapper.find(".toolbar-actions .btn-primary").trigger("click");
+    expect(wrapper.emitted("run")![0][0]).toBeUndefined();
+  });
+
+  test("select all and clear drive the whole stack", async () => {
+    const wrapper = mountView({ run });
+    const [selectAllBtn, clearBtn] = wrapper.findAll(".hc-selectbar-btn");
+    await selectAllBtn.trigger("click");
+    expect(wrapper.find(".toolbar-actions .btn-primary").text()).toBe(
+      "Analyze 4 selected"
+    );
+    expect(wrapper.find(".hc-selectbar-count").text()).toBe("4 selected");
+    await clearBtn.trigger("click");
+    expect(wrapper.find(".toolbar-actions .btn-primary").text()).toBe(
+      "Run analysis"
+    );
+    expect(wrapper.find(".hc-selectbar-count").text()).toBe("");
+  });
+
+  test("the selection resets when the rendered run changes", async () => {
+    const wrapper = mountView({ run });
+    await boxFor(wrapper, "AAPL").setValue(true);
+    expect(wrapper.find(".toolbar-actions .btn-primary").text()).toContain(
+      "selected"
+    );
+    await wrapper.setProps({ run: { ...run, run_id: "prun-2" } });
+    expect(wrapper.find(".toolbar-actions .btn-primary").text()).toBe(
+      "Run analysis"
+    );
+  });
+
+  test("selection is absent on a historical view and disabled while busy", () => {
+    const hist = mountView({ run, historical: true });
+    expect(hist.findAll(".hc-select-input")).toHaveLength(0);
+    expect(hist.find(".hc-selectbar").exists()).toBe(false);
+    const busy = mountView({ run, busy: true });
+    for (const b of busy.findAll(".hc-select-input")) {
+      expect(b.attributes("disabled")).toBeDefined();
+    }
+  });
+
+  test("a carried verdict shows its vintage stamp — stale past the carry window — and the demotion tag", () => {
+    const carriedRun: PortfolioRun = {
+      ...run,
+      verdicts: [
+        // Carried 6 days back: the quiet vintage stamp.
+        verdict(
+          "MSFT",
+          { status: "priced", ...graded() },
+          { analyzed_at: "2026-06-25T12:00:00Z" }
+        ),
+        // Carried 61 days back with a demoted add: stale + the demotion tag.
+        verdict(
+          "AAPL",
+          { status: "priced", ...graded({ action: "hold" }) },
+          { analyzed_at: "2026-05-01T12:00:00Z", action_source: "rule-demoted" }
+        ),
+        // Stamped with the run's own created_at: no stamp at all.
+        verdict(
+          "XYZ",
+          { status: "insufficient-evidence", reason: "thin" },
+          { analyzed_at: run.created_at }
+        ),
+      ],
+    };
+    const wrapper = mountView({ run: carriedRun });
+    const tags = wrapper.findAll(".ana-tag").map((t) => t.text());
+    expect(tags.some((t) => t.startsWith("Carried · analyzed"))).toBe(true);
+    expect(tags.some((t) => t.startsWith("Stale · analyzed"))).toBe(true);
+    expect(tags).toContain("Add demoted to hold");
+    const xyzCard = wrapper
+      .findAll(".holding-card")
+      .find((c) => c.text().includes("XYZ"))!;
+    expect(xyzCard.text()).not.toContain("analyzed");
   });
 });
