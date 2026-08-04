@@ -3465,6 +3465,7 @@ mod tests {
                 observation_id: "2026-07-16".into(),
             }],
             unevaluable: vec![],
+            unevaluable_series: vec![],
             updated_states: vec![(
                 "keep-1".into(),
                 ConditionEvalState {
@@ -3660,6 +3661,7 @@ mod tests {
                 observation_id: "2026-07-16".into(),
             }],
             unevaluable: vec!["condition 'x': net margin is a gap this run".into()],
+            unevaluable_series: vec![engine::LedgerSeries::NetMargin],
             updated_states: vec![],
         };
         let s = ledger_prompt_section(Some(&prior), Some(&eval), false);

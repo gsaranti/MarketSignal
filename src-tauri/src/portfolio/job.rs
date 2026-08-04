@@ -697,6 +697,10 @@ fn run_analysis(
             .retain(|h| abstained.contains(h.symbol.as_str()));
         (!s.holdings.is_empty()).then(|| {
             s.swept_run_id = run.run_id.clone();
+            // The retained sweep predates this run, so its rate cache must not
+            // shadow the fresher prints this run just fetched — the next sweep's
+            // fail-soft prefers the prior state's cache over the run blob's.
+            s.rate_cache = run.rate_prints.clone();
             s
         })
     });
@@ -1867,6 +1871,9 @@ mod tests {
             retained.holdings[0].flag.is_some(),
             "the attention flag survived the abstention"
         );
+        // The retained sweep predates the run: its rate cache follows the run's
+        // fresher prints so a later FRED failure never falls back past them.
+        assert_eq!(retained.rate_cache, second.rate_prints);
     }
 
     #[test]

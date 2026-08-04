@@ -703,7 +703,7 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                             && MATERIAL_FORMS.iter().any(|m| f.form.starts_with(m))
                     })
                     .collect();
-                let mut refresh_gapped = false;
+                let mut refresh_gaps: Vec<String> = Vec::new();
                 if let Some(newest) = fresh_material.first() {
                     new_filing = true;
                     events.push(event(
@@ -716,29 +716,43 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                     // condition reads, not just the fact of the filing.
                     let mut fin = inp.data.statements_refresh(&symbol);
                     crate::portfolio::dossier::apply_ttm_statement_basis(&mut fin);
-                    filing_dividends = fin.ttm_dividends_per_share;
-                    refresh_gapped = fin.quarterly_income.is_empty();
+                    // The payout leg: a `None` dividends read with **no recorded
+                    // gap** is the adapter's confirmed non-payer, so a dividend
+                    // elimination reaches the hurdle as zero; a failed retrieval
+                    // (gap recorded) keeps the stored leg instead.
+                    let dividends_failed = fin
+                        .gaps
+                        .iter()
+                        .any(|g| g.starts_with(crate::fmp::DIVIDENDS_GAP_PREFIX));
+                    if !dividends_failed {
+                        filing_dividends = Some(fin.ttm_dividends_per_share.unwrap_or(0.0));
+                    }
+                    refresh_gaps = fin.gaps.clone();
+                    if fin.quarterly_income.is_empty() && refresh_gaps.is_empty() {
+                        refresh_gaps.push("no quarterly income".to_string());
+                    }
                     statements = Some(fin);
                 }
-                // A filing landed but the value re-pull came back empty: the
-                // fact of the filing is recorded (the event above), yet the
-                // filing-cadence conditions could not be evaluated against it —
-                // the family cannot vouch, so it degrades rather than clears.
-                families.push(if refresh_gapped {
-                    FamilySweep {
-                        family: SweepFamily::Filing,
-                        state: SweepState::Unknown,
-                        note: Some(
-                            "a new filing landed but the statement re-pull carried \
-                             no quarterly income — its conditions were not evaluated"
-                                .to_string(),
-                        ),
-                    }
-                } else {
+                // A filing landed but a leg of the value re-pull failed
+                // (statements, balance sheet, or dividends): the fact of the
+                // filing is recorded (the event above), yet the sweep could not
+                // fully evaluate it — the family cannot vouch, so it degrades
+                // rather than clears.
+                families.push(if refresh_gaps.is_empty() {
                     FamilySweep {
                         family: SweepFamily::Filing,
                         state: SweepState::FreshClear,
                         note: None,
+                    }
+                } else {
+                    FamilySweep {
+                        family: SweepFamily::Filing,
+                        state: SweepState::Unknown,
+                        note: Some(format!(
+                            "a new filing landed but the statement re-pull was \
+                             incomplete ({}) — the sweep could not fully evaluate it",
+                            refresh_gaps.join("; ")
+                        )),
                     }
                 });
             }
@@ -862,89 +876,133 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                     fresh_fund.gaps.join("; ")
                 )),
             });
-        } else {
+        } else if let Some(stored) = inp.audit.and_then(|a| a.fund_exposure.as_ref()) {
             fund_metrics_expense = fresh_fund.expense_ratio;
             let fresh_exposure = fund::exposure_basis(&fresh_fund);
+            let equity_fund = stored.class_label.contains("equity")
+                || fresh_exposure.class_label.contains("equity");
             // Legs the stored basis expects but this refresh couldn't supply:
             // a missing fresh print is a non-observation, never a zero or a
             // "change" — those legs degrade the family instead of fabricating
-            // an evidence event.
-            let mut degraded: Vec<&str> = Vec::new();
-            if let Some(stored) = inp.audit.and_then(|a| a.fund_exposure.as_ref()) {
-                // Material `etf/info` change: the expense ratio moving, or the
-                // strategy-classification routing changing. A print appearing
-                // where none was stored is a real change; a stored print the
-                // refresh couldn't read is a degraded leg.
-                let expense_moved = match (stored.expense_ratio, fresh_exposure.expense_ratio) {
-                    (Some(a), Some(b)) => (a - b).abs() > EXPENSE_EPS,
-                    (None, Some(_)) => true,
-                    (Some(_), None) => {
-                        degraded.push("expense ratio");
-                        false
-                    }
-                    (None, None) => false,
-                };
-                if expense_moved || stored.class_label != fresh_exposure.class_label {
-                    events.push(event(
-                        EvidenceEventKind::FundInfoChange,
-                        format!(
-                            "etf/info changed: class '{}' → '{}', expense {:?} → {:?}",
-                            stored.class_label,
-                            fresh_exposure.class_label,
-                            stored.expense_ratio,
-                            fresh_exposure.expense_ratio
-                        ),
-                        inp.now,
-                    ));
+            // an evidence event. Endpoint gaps ride into the degraded list —
+            // but the weightings legs bear on **equity** funds alone (no series
+            // in the closed ledger surface reads exposure), so a bond or
+            // commodity fund's empty equity weightings are its expected shape,
+            // never a degraded sweep.
+            let weightings_gap = |g: &&String| {
+                g.starts_with(crate::fmp::FUND_SECTOR_WEIGHTS_GAP_PREFIX)
+                    || g.starts_with(crate::fmp::FUND_COUNTRY_WEIGHTS_GAP_PREFIX)
+            };
+            let mut degraded: Vec<String> = fresh_fund
+                .gaps
+                .iter()
+                .filter(|g| equity_fund || !weightings_gap(g))
+                .cloned()
+                .collect();
+            let relevant_gaps_clean = degraded.is_empty();
+            let weightings_degraded =
+                fresh_fund.sector_weights.is_empty() && stored.top_sector.is_some();
+            let us_degraded = stored.us_share.is_some() && fresh_exposure.us_share.is_none();
+            // Material `etf/info` change: the expense ratio moving, or the
+            // strategy-classification routing changing. A print appearing
+            // where none was stored is a real change; a stored print the
+            // refresh couldn't read is a degraded leg. The class-label
+            // comparison runs only on a relevantly-ungapped refresh whose
+            // exposure inputs are intact where the label depends on them — a
+            // failed weightings or US-share leg reshapes an equity fund's
+            // *derived* class ("equity fund without usable weightings"), which
+            // is retrieval damage, not a mandate change; a non-equity label
+            // derives from `etf/info` alone.
+            let expense_moved = match (stored.expense_ratio, fresh_exposure.expense_ratio) {
+                (Some(a), Some(b)) => (a - b).abs() > EXPENSE_EPS,
+                (None, Some(_)) => true,
+                (Some(_), None) => {
+                    degraded.push("expense ratio unreadable this sweep".to_string());
+                    false
                 }
-                // Exposure shift (equity funds, either branch): the US-guard
-                // crossing in either direction, or a top-sector move.
-                let equity_fund = stored.class_label.contains("equity")
-                    || fresh_exposure.class_label.contains("equity");
-                if equity_fund {
-                    match (stored.us_share, fresh_exposure.us_share) {
-                        (Some(a), Some(b)) => {
-                            let crossed = (a >= US_EXPOSURE_GUARD) != (b >= US_EXPOSURE_GUARD);
-                            if crossed {
-                                events.push(event(
-                                    EvidenceEventKind::ExposureShift,
-                                    format!(
-                                        "US share crossed the {:.0}% guard: {:.0}% → {:.0}%",
-                                        US_EXPOSURE_GUARD * 100.0,
-                                        a * 100.0,
-                                        b * 100.0
-                                    ),
-                                    inp.now,
-                                ));
-                            }
+                (None, None) => false,
+            };
+            let class_comparable = relevant_gaps_clean
+                && (!equity_fund || (!weightings_degraded && !us_degraded));
+            // The coarse mandate family (equity vs not) derives from `etf/info`
+            // alone, so a real asset-class transition — a stored equity fund
+            // freshly reporting Fixed Income — fires **for every fund** even
+            // while the weightings-shaped label refinement is degraded (the
+            // every-fund asset-class-change contract). Only a degraded
+            // `etf/info` leg suppresses it: an unreadable mandate could fake
+            // the transition ("fund with unresolved strategy class" is not an
+            // equity label).
+            let mandate_comparable = fresh_fund.asset_class.is_some()
+                && !fresh_fund
+                    .gaps
+                    .iter()
+                    .any(|g| g.starts_with(crate::fmp::FUND_INFO_GAP_PREFIX));
+            let is_equity_label = |l: &str| l.contains("equity");
+            let mandate_moved = mandate_comparable
+                && is_equity_label(&stored.class_label)
+                    != is_equity_label(&fresh_exposure.class_label);
+            let class_moved = mandate_moved
+                || (class_comparable && stored.class_label != fresh_exposure.class_label);
+            if expense_moved || class_moved {
+                events.push(event(
+                    EvidenceEventKind::FundInfoChange,
+                    format!(
+                        "etf/info changed: class '{}' → '{}', expense {:?} → {:?}",
+                        stored.class_label,
+                        fresh_exposure.class_label,
+                        stored.expense_ratio,
+                        fresh_exposure.expense_ratio
+                    ),
+                    inp.now,
+                ));
+            }
+            // Exposure shift (equity funds, either branch): the US-guard
+            // crossing in either direction, or a top-sector move.
+            if equity_fund {
+                match (stored.us_share, fresh_exposure.us_share) {
+                    (Some(a), Some(b)) => {
+                        let crossed = (a >= US_EXPOSURE_GUARD) != (b >= US_EXPOSURE_GUARD);
+                        if crossed {
+                            events.push(event(
+                                EvidenceEventKind::ExposureShift,
+                                format!(
+                                    "US share crossed the {:.0}% guard: {:.0}% → {:.0}%",
+                                    US_EXPOSURE_GUARD * 100.0,
+                                    a * 100.0,
+                                    b * 100.0
+                                ),
+                                inp.now,
+                            ));
                         }
-                        (Some(_), None) => degraded.push("US-share read"),
-                        _ => {}
                     }
-                    if let Some((label, stored_w)) = &stored.top_sector {
-                        if fresh_fund.sector_weights.is_empty() {
-                            degraded.push("sector weightings");
-                        } else {
-                            // A successful weightings read missing the stored
-                            // top sector is a real observation (the sector left
-                            // the fund's weightings) — zero is honest here.
-                            let fresh_w = fresh_fund
-                                .sector_weights
-                                .iter()
-                                .find(|(l, _)| l == label)
-                                .map(|(_, w)| *w)
-                                .unwrap_or(0.0);
-                            if (fresh_w - stored_w).abs() >= TOP_SECTOR_SHIFT {
-                                events.push(event(
-                                    EvidenceEventKind::ExposureShift,
-                                    format!(
-                                        "top sector {label} moved {:.0}% → {:.0}%",
-                                        stored_w * 100.0,
-                                        fresh_w * 100.0
-                                    ),
-                                    inp.now,
-                                ));
-                            }
+                    (Some(_), None) => {
+                        degraded.push("US-share read unreadable this sweep".to_string())
+                    }
+                    _ => {}
+                }
+                if let Some((label, stored_w)) = &stored.top_sector {
+                    if fresh_fund.sector_weights.is_empty() {
+                        degraded.push("sector weightings unreadable this sweep".to_string());
+                    } else {
+                        // A successful weightings read missing the stored
+                        // top sector is a real observation (the sector left
+                        // the fund's weightings) — zero is honest here.
+                        let fresh_w = fresh_fund
+                            .sector_weights
+                            .iter()
+                            .find(|(l, _)| l == label)
+                            .map(|(_, w)| *w)
+                            .unwrap_or(0.0);
+                        if (fresh_w - stored_w).abs() >= TOP_SECTOR_SHIFT {
+                            events.push(event(
+                                EvidenceEventKind::ExposureShift,
+                                format!(
+                                    "top sector {label} moved {:.0}% → {:.0}%",
+                                    stored_w * 100.0,
+                                    fresh_w * 100.0
+                                ),
+                                inp.now,
+                            ));
                         }
                     }
                 }
@@ -961,9 +1019,24 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                     state: SweepState::Unknown,
                     note: Some(format!(
                         "fund refresh could not supply: {} — those legs were not checked",
-                        degraded.join(", ")
+                        degraded.join("; ")
                     )),
                 }
+            });
+        } else {
+            // No stored comparator (a pre-basis run): none of the fund change
+            // legs can be evaluated, so the family cannot vouch — the
+            // degraded-sweep state, never a claimed clear. Self-resolves when
+            // the next full run persists the exposure basis.
+            fund_metrics_expense = fresh_fund.expense_ratio;
+            families.push(FamilySweep {
+                family: SweepFamily::FundInfo,
+                state: SweepState::Unknown,
+                note: Some(
+                    "no stored exposure basis from the last full pass — the fund \
+                     change legs were not evaluated"
+                        .to_string(),
+                ),
             });
         }
     }
@@ -1081,6 +1154,46 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             match condition_states.iter_mut().find(|(cid, _)| *cid == id) {
                 Some(entry) => entry.1 = st,
                 None => condition_states.push((id, st)),
+            }
+        }
+
+        // An allowed condition the sweep could not resolve (a missing statement
+        // line, a sub-4-quarter TTM basis, an absent stored ratio): the mapped
+        // family cannot vouch for the carried verdict, so a claimed clear
+        // downgrades to `unknown` — a failed leg is typed, never a silent clear
+        // (`docs/portfolio-analysis.md` §The quick check). The market family
+        // records no clear entry, so it gains an `unknown` one.
+        let unresolved: std::collections::HashSet<SweepFamily> = eval
+            .unevaluable_series
+            .iter()
+            .map(|s| match s.cadence() {
+                ConditionCadence::MarketData => SweepFamily::MarketData,
+                ConditionCadence::Filing => {
+                    if is_fund {
+                        SweepFamily::FundInfo
+                    } else {
+                        SweepFamily::Filing
+                    }
+                }
+            })
+            .collect();
+        for fam in unresolved {
+            let note = "a ledger condition on this family could not be resolved this sweep";
+            match families.iter_mut().find(|f| f.family == fam) {
+                Some(entry) => {
+                    if entry.state == SweepState::FreshClear {
+                        entry.state = SweepState::Unknown;
+                        entry.note = Some(match entry.note.take() {
+                            Some(n) => format!("{n}; {note}"),
+                            None => note.to_string(),
+                        });
+                    }
+                }
+                None => families.push(FamilySweep {
+                    family: fam,
+                    state: SweepState::Unknown,
+                    note: Some(note.to_string()),
+                }),
             }
         }
     }
@@ -1853,6 +1966,331 @@ mod tests {
             .find(|(id, _)| id == "c-exp")
             .unwrap();
         assert_eq!(st.breach_streak, 1);
+    }
+
+    /// The BONDX role-risk fund fixture with a parameterized stored exposure basis.
+    fn fund_run(exposure: Option<fund::FundExposureBasis>) -> PortfolioRun {
+        let mut fund_ledger = ledger(vec![]);
+        fund_ledger.branch = LedgerBranch::RoleRiskOnly;
+        for m in &mut fund_ledger.monitor {
+            m.engine_target = None;
+        }
+        let verdict = HoldingVerdict {
+            symbol: "BONDX".into(),
+            asset_class: AssetClass::MutualFund,
+            position_change: Default::default(),
+            disposition: VerdictDisposition::RoleRiskOnly(Box::new(
+                crate::portfolio::RoleRiskVerdict {
+                    class_label: "US equity fund".into(),
+                    role_summary: "fixture".into(),
+                    exposure_tilt: vec![],
+                    expense_drag: Some(0.001),
+                    observable_risk: None,
+                    structural_flag: false,
+                    evidence_gaps: vec![],
+                    action: crate::portfolio::Action::Hold,
+                    action_sizing: crate::portfolio::ActionSizing {
+                        target_weight_low: 0.0,
+                        target_weight_high: 0.1,
+                        est_share_delta: None,
+                        est_dollar_delta: None,
+                    },
+                    what_changed: "fixture".into(),
+                },
+            )),
+            thesis_ledger: Some(fund_ledger),
+        };
+        let mut audit = audit_for("BONDX", None);
+        audit.fund_exposure = exposure;
+        let mut run = sample_run(verdict, audit);
+        run.holdings.positions[0].asset_class = AssetClass::MutualFund;
+        run
+    }
+
+    #[test]
+    fn a_partial_fund_refresh_degrades_to_unknown_never_fabricating_change_events() {
+        let conn = mem();
+        store::insert_run(
+            &conn,
+            &fund_run(Some(fund::FundExposureBasis {
+                class_label: "US equity fund".into(),
+                expense_ratio: Some(0.001),
+                us_share: Some(0.75),
+                top_sector: Some(("Technology".into(), 0.30)),
+            })),
+        )
+        .unwrap();
+
+        // Weightings failed: the fresh derivation reads "equity fund without
+        // usable weightings" — retrieval damage, not a mandate change — and the
+        // stored top sector / US share have no fresh side. No event may fire.
+        let mut stub = StubData::quiet(200.0, "2026-08-01");
+        stub.fund = FundData {
+            symbol: "BONDX".into(),
+            name: Some("Fixture Fund".into()),
+            asset_class: Some("Equity".into()),
+            expense_ratio: Some(0.001), // unchanged
+            aum: None,
+            nav: None,
+            sector_weights: vec![],
+            country_weights: vec![],
+            gaps: vec!["FMP weightings unavailable (transport)".into()],
+        };
+        let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        let h = &s.holdings[0];
+        assert!(h.evidence_events.is_empty(), "{:?}", h.evidence_events);
+        assert!(h.flag.is_none());
+        let fam = h
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::FundInfo)
+            .unwrap();
+        assert_eq!(fam.state, SweepState::Unknown);
+    }
+
+    #[test]
+    fn a_non_equity_fund_is_not_degraded_by_its_empty_equity_weightings() {
+        // A bond fund's empty equity weightings are its expected shape — the
+        // weightings legs bear on equity funds alone, so the recorded endpoint
+        // gaps must not read the family unknown (which would force-include the
+        // fund into every selective run forever).
+        let conn = mem();
+        store::insert_run(
+            &conn,
+            &fund_run(Some(fund::FundExposureBasis {
+                class_label: "bond fund".into(),
+                expense_ratio: Some(0.001),
+                us_share: None,
+                top_sector: None,
+            })),
+        )
+        .unwrap();
+        let mut stub = StubData::quiet(200.0, "2026-08-01");
+        stub.fund = FundData {
+            symbol: "BONDX".into(),
+            name: Some("Fixture Bond Fund".into()),
+            asset_class: Some("Fixed Income".into()),
+            expense_ratio: Some(0.001),
+            aum: None,
+            nav: None,
+            sector_weights: vec![],
+            country_weights: vec![],
+            gaps: vec![
+                format!("{} were empty", crate::fmp::FUND_SECTOR_WEIGHTS_GAP_PREFIX),
+                format!("{} were empty", crate::fmp::FUND_COUNTRY_WEIGHTS_GAP_PREFIX),
+            ],
+        };
+        let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        let h = &s.holdings[0];
+        assert!(h.evidence_events.is_empty(), "{:?}", h.evidence_events);
+        let fam = h
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::FundInfo)
+            .unwrap();
+        assert_eq!(fam.state, SweepState::FreshClear, "{:?}", fam.note);
+    }
+
+    #[test]
+    fn a_mandate_transition_fires_for_every_fund_even_with_degraded_weightings() {
+        // A stored US equity fund freshly reports Fixed Income. The coarse
+        // mandate family derives from `etf/info` alone, so the change event
+        // must fire even though the (now empty) equity-weight endpoints record
+        // gaps that keep the label-level comparison off.
+        let conn = mem();
+        store::insert_run(
+            &conn,
+            &fund_run(Some(fund::FundExposureBasis {
+                class_label: "US equity fund".into(),
+                expense_ratio: Some(0.001),
+                us_share: Some(0.75),
+                top_sector: Some(("Technology".into(), 0.30)),
+            })),
+        )
+        .unwrap();
+        let mut stub = StubData::quiet(200.0, "2026-08-01");
+        stub.fund = FundData {
+            symbol: "BONDX".into(),
+            name: Some("Fixture Fund".into()),
+            asset_class: Some("Fixed Income".into()),
+            expense_ratio: Some(0.001),
+            aum: None,
+            nav: None,
+            sector_weights: vec![],
+            country_weights: vec![],
+            gaps: vec![
+                format!("{} were empty", crate::fmp::FUND_SECTOR_WEIGHTS_GAP_PREFIX),
+                format!("{} were empty", crate::fmp::FUND_COUNTRY_WEIGHTS_GAP_PREFIX),
+            ],
+        };
+        let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        let h = &s.holdings[0];
+        let kinds: Vec<EvidenceEventKind> = h.evidence_events.iter().map(|e| e.kind).collect();
+        assert!(kinds.contains(&EvidenceEventKind::FundInfoChange), "{kinds:?}");
+        // The degraded weighting legs still read the family unknown — the
+        // transition sweep force-includes rather than silently clearing.
+        let fam = h
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::FundInfo)
+            .unwrap();
+        assert_eq!(fam.state, SweepState::Unknown);
+    }
+
+    #[test]
+    fn an_unresolvable_filing_condition_downgrades_the_filing_family() {
+        let conn = mem();
+        let mut cond = price_condition("c-margin", ConditionRole::Falsifier, 0.20);
+        cond.statement = "net margin below 20%".into();
+        cond.quant = Some(QuantCore {
+            series: LedgerSeries::NetMargin,
+            comparator: LedgerComparator::Below,
+            threshold: 0.20,
+            margin: 0.0,
+        });
+        let verdict = priced_verdict("AAPL", vec![cond]);
+        store::insert_run(&conn, &sample_run(verdict, audit_for("AAPL", Some(basis()))))
+            .unwrap();
+
+        // A new filing whose re-pull returns only three quarters: the TTM basis
+        // cannot form, so the margin condition is unresolvable — the filing
+        // family must not claim a clear it could not check.
+        let mut stub = StubData::quiet(200.0, "2026-08-01");
+        stub.filings = FilingSweep::Filings(vec![RecentFiling {
+            form: "10-Q".into(),
+            filing_date: "2026-07-30".into(),
+        }]);
+        stub.statements = CompanyFinancials {
+            symbol: "AAPL".into(),
+            quarterly_income: (0..3)
+                .map(|i| engine::QuarterlyIncomeRow {
+                    period_end: format!("2026-0{}-30", 6 - i),
+                    filing_date: None,
+                    revenue: Some(100.0),
+                    eps_diluted: Some(1.0),
+                    diluted_shares: Some(100.0),
+                    net_income: Some(10.0),
+                    gross_profit: Some(40.0),
+                    cost_of_revenue: Some(60.0),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        let h = &s.holdings[0];
+        let filing = h
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::Filing)
+            .unwrap();
+        assert_eq!(filing.state, SweepState::Unknown, "{:?}", filing.note);
+        assert!(h.flag.is_none());
+        // The human note channel still names the specific condition.
+        assert!(h.notes.iter().any(|n| n.contains("unevaluable")));
+    }
+
+    #[test]
+    fn a_fund_without_a_stored_exposure_basis_reads_unknown_not_clear() {
+        // A pre-basis run has no comparator: none of the fund change legs can be
+        // evaluated, so the family must not claim a clear it never checked.
+        let conn = mem();
+        store::insert_run(&conn, &fund_run(None)).unwrap();
+        let mut stub = StubData::quiet(200.0, "2026-08-01");
+        stub.fund = FundData {
+            symbol: "BONDX".into(),
+            name: Some("Fixture Fund".into()),
+            asset_class: Some("Equity".into()),
+            expense_ratio: Some(0.001),
+            aum: None,
+            nav: None,
+            sector_weights: vec![("Technology".into(), 0.30)],
+            country_weights: vec![("United States".into(), 0.75)],
+            gaps: vec![],
+        };
+        let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        let fam = s.holdings[0]
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::FundInfo)
+            .cloned()
+            .unwrap();
+        assert_eq!(fam.state, SweepState::Unknown);
+        assert!(fam.note.unwrap().contains("no stored exposure basis"));
+        assert!(s.holdings[0].evidence_events.is_empty());
+    }
+
+    #[test]
+    fn a_dividend_elimination_reaches_the_hurdle_but_a_failed_pull_keeps_the_stored_leg() {
+        // Basis tuned so the payout leg decides the hurdle: targets 120/143/168
+        // (drivers × raw percentiles), fresh price 160, hurdle 0.04 + 0.05 = 0.09.
+        // Stored 26.0 payout → tr_bull = (168+26)/160 − 1 ≈ 0.21 (indeterminate);
+        // eliminated to zero → tr_bull = 0.05 < 0.09 → newly fails.
+        let dividend_basis = || {
+            let mut b = basis();
+            b.spread_percentiles = None;
+            b.raw_percentiles = Some([20.0, 22.0, 24.0]);
+            b.forward_dividends = 26.0;
+            b
+        };
+        let filing_stub = || {
+            let mut stub = StubData::quiet(160.0, "2026-08-01");
+            stub.filings = FilingSweep::Filings(vec![RecentFiling {
+                form: "10-Q".into(),
+                filing_date: "2026-07-30".into(),
+            }]);
+            stub.statements = CompanyFinancials {
+                symbol: "AAPL".into(),
+                quarterly_income: (0..4)
+                    .map(|i| engine::QuarterlyIncomeRow {
+                        period_end: format!("2026-0{}-30", 6 - i),
+                        filing_date: None,
+                        revenue: Some(100.0),
+                        eps_diluted: Some(1.0),
+                        diluted_shares: Some(100.0),
+                        net_income: Some(10.0),
+                        gross_profit: Some(40.0),
+                        cost_of_revenue: Some(60.0),
+                    })
+                    .collect(),
+                // `None` with no gap: the adapter's confirmed non-payer.
+                ttm_dividends_per_share: None,
+                ..Default::default()
+            };
+            stub
+        };
+
+        // A clean re-pull with no dividends is an elimination — the hurdle
+        // newly fails on the zeroed payout leg.
+        let conn = mem();
+        let verdict = priced_verdict("AAPL", vec![]);
+        store::insert_run(&conn, &sample_run(verdict, audit_for("AAPL", Some(dividend_basis()))))
+            .unwrap();
+        let s = run_quick_check(&filing_stub(), &conn, &noop_ctx()).unwrap();
+        let flag = s.holdings[0]
+            .flag
+            .as_ref()
+            .expect("the elimination newly fails the hurdle");
+        assert_eq!(flag.trigger, FlagTrigger::HurdleNewlyFails);
+
+        // The same read with a recorded dividend gap is a failed retrieval —
+        // the stored payout leg stands (no flag) and the filing family reads
+        // `unknown` (the re-pull was incomplete).
+        let conn = mem();
+        let verdict = priced_verdict("AAPL", vec![]);
+        store::insert_run(&conn, &sample_run(verdict, audit_for("AAPL", Some(dividend_basis()))))
+            .unwrap();
+        let mut stub = filing_stub();
+        stub.statements.gaps =
+            vec![format!("{} (transport)", crate::fmp::DIVIDENDS_GAP_PREFIX)];
+        let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
+        let h = &s.holdings[0];
+        assert!(h.flag.is_none(), "the stored payout leg stands: {:?}", h.flag);
+        let filing = h
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::Filing)
+            .unwrap();
+        assert_eq!(filing.state, SweepState::Unknown);
     }
 
     #[test]

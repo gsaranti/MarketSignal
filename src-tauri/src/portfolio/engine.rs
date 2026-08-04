@@ -694,6 +694,11 @@ pub struct LedgerEvaluation {
     pub crossings: Vec<crate::portfolio::ConditionCrossing>,
     /// "condition '<statement>': <reason>" lines for series unresolvable this run.
     pub unevaluable: Vec<String>,
+    /// The same unresolvable conditions' series, typed — the quick check maps each
+    /// to its signal family so a claimed `fresh_clear` downgrades to `unknown`
+    /// (an allowed condition the sweep could not resolve means the family cannot
+    /// vouch for the carried verdict).
+    pub unevaluable_series: Vec<LedgerSeries>,
     /// Updated evaluation state per evaluated condition id (unevaluated conditions
     /// keep their carried state).
     pub updated_states: Vec<(String, crate::portfolio::ConditionEvalState)>,
@@ -745,6 +750,7 @@ pub fn evaluate_ledger_conditions_gated(
             Err(reason) => {
                 out.unevaluable
                     .push(format!("condition '{}': {reason}", cond.statement));
+                out.unevaluable_series.push(quant.series);
                 continue;
             }
         };

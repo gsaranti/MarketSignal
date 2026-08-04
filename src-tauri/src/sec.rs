@@ -325,7 +325,7 @@ impl SecEdgarSource {
             }
             let value: Value =
                 serde_json::from_str(&body).context("parsing SEC submissions")?;
-            Ok(recent_filings_from_value(&value))
+            recent_filings_from_value(&value)
         })();
         match &result {
             Ok(_) => self.progress.request_finished(
@@ -360,14 +360,20 @@ pub struct RecentFiling {
 
 /// Shape the submissions body's `filings.recent` parallel arrays (`form[i]` ↔
 /// `filingDate[i]`) into rows, newest first as EDGAR serves them. Rows whose legs
-/// don't pair are skipped, never fabricated.
-fn recent_filings_from_value(value: &Value) -> Vec<RecentFiling> {
+/// don't pair are skipped, never fabricated. A body without the `filings.recent`
+/// arrays is malformed or drifted (the submissions schema always carries them,
+/// empty arrays included, for every filer) — `Err`, never an empty success, so
+/// the sweep types the filing family `unknown` instead of reading
+/// "no new filings" off a body it couldn't interpret.
+fn recent_filings_from_value(value: &Value) -> Result<Vec<RecentFiling>> {
     let recent = &value["filings"]["recent"];
     let (Some(forms), Some(dates)) = (recent["form"].as_array(), recent["filingDate"].as_array())
     else {
-        return vec![];
+        anyhow::bail!(
+            "SEC submissions body lacked the filings.recent arrays — malformed or drifted response"
+        );
     };
-    forms
+    Ok(forms
         .iter()
         .zip(dates.iter())
         .filter_map(|(form, date)| {
@@ -376,7 +382,7 @@ fn recent_filings_from_value(value: &Value) -> Vec<RecentFiling> {
                 filing_date: date.as_str()?.to_string(),
             })
         })
-        .collect()
+        .collect())
 }
 
 /// Candidate GAAP concept names for revenue — the tag changed across taxonomy
@@ -590,6 +596,20 @@ mod tests {
         }]);
         let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
         assert!(sec.fetch_recent_filings("0000000000").is_err());
+    }
+
+    #[test]
+    fn recent_filings_error_on_a_200_missing_the_recent_arrays() {
+        // Valid JSON without `filings.recent` is schema drift or a malformed
+        // response — `Err`, never an empty "no new filings" success.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"cik":"320193","name":"Apple Inc."}"#,
+        }]);
+        let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
+        let err = sec.fetch_recent_filings("0000320193").unwrap_err();
+        assert!(err.to_string().contains("filings.recent"), "{err}");
     }
 
     fn tickers_body() -> &'static str {
