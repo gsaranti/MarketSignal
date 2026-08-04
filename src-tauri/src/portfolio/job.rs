@@ -958,10 +958,10 @@ fn run_analysis(
     let mut episodes = match store::load_episodes(conn) {
         Ok(eps) => eps,
         Err(e) => {
-            // A corrupt store must be visible: proceeding with an empty set
-            // re-debuts the whole book (the never-seeded-symbol rule) while the
-            // unreadable rows sit orphaned — this log line is what makes that
-            // state diagnosable rather than silent.
+            // Store-level failure only — a single bad row is skipped and logged
+            // inside the loader, never an error here. Proceeding with an empty
+            // set re-debuts the whole book (the never-seeded-symbol rule); this
+            // log line is what makes that state diagnosable rather than silent.
             eprintln!(
                 "outcome learning: episode store unreadable ({e}) — proceeding with an empty set"
             );

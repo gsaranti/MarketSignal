@@ -92,19 +92,32 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 
 // ---- Outcome-episode store (`docs/portfolio-analysis.md §Outcome learning`) ------
 
-/// Load every decision episode, active and matured, oldest anchor first. Bounded by
-/// the matured archive's cap plus the active set (~a year of decision changes), so
-/// a whole-store load stays a modest local parse.
+/// Load every decision episode, active and matured, oldest anchor first. A row
+/// whose JSON no longer decodes is **skipped and logged, never a load failure**:
+/// aborting on one corrupt row would hand the job an empty set, whose
+/// never-seeded rule then re-debuts the whole book on every run while the valid
+/// history sits ignored beside the bad row. Bounded by the matured archive's cap
+/// plus the active set (~a year of decision changes), so a whole-store load stays
+/// a modest local parse.
 pub fn load_episodes(
     conn: &Connection,
 ) -> Result<Vec<crate::portfolio::outcome::DecisionEpisode>> {
     let mut stmt = conn.prepare(
-        "SELECT episode_json FROM portfolio_outcome_episodes ORDER BY anchor_at ASC, id ASC",
+        "SELECT episode_id, episode_json FROM portfolio_outcome_episodes \
+         ORDER BY anchor_at ASC, id ASC",
     )?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     let mut out = Vec::new();
     for row in rows {
-        out.push(serde_json::from_str(&row?)?);
+        let (episode_id, json) = row?;
+        match serde_json::from_str(&json) {
+            Ok(episode) => out.push(episode),
+            Err(e) => eprintln!(
+                "outcome learning: skipping unreadable episode row {episode_id}: {e}"
+            ),
+        }
     }
     Ok(out)
 }
@@ -710,6 +723,28 @@ mod tests {
         let back = load_episodes(&conn).unwrap();
         assert_eq!(back.len(), 1);
         assert_eq!(back[0], ep);
+    }
+
+    #[test]
+    fn a_corrupt_episode_row_is_skipped_never_aborting_the_load() {
+        // One undecodable row must cost only itself: aborting the whole load
+        // would hand the job an empty set, whose never-seeded rule then
+        // re-debuts the entire book on every run beside the bad row.
+        let conn = mem();
+        save_episode(
+            &conn,
+            &sample_episode("ep-good", "AAPL", "2026-08-04T12:00:00+00:00"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO portfolio_outcome_episodes (episode_id, symbol, anchor_at, state, episode_json)
+             VALUES ('ep-bad', 'MSFT', '2026-01-01T00:00:00+00:00', 'active', '{not json')",
+            [],
+        )
+        .unwrap();
+        let episodes = load_episodes(&conn).unwrap();
+        assert_eq!(episodes.len(), 1, "the readable row survives the bad one");
+        assert_eq!(episodes[0].episode_id, "ep-good");
     }
 
     #[test]

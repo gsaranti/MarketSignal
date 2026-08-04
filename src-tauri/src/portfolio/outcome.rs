@@ -872,13 +872,21 @@ pub fn mature_labels(
         // sector legs immediately and never blocks scoring.
         let sector_bench = ep.sector.benchmark.clone();
         let sector_gap = ep.sector.unscorable.clone();
-        let bear_line_12m = match &ep.body {
+        // The material-drawdown line in **return space over the authoring spot**
+        // (`bear ⁄ spot − 1`): the authored bear target is an absolute price in
+        // its authoring-time basis, while label-time closes are retroactively
+        // split-adjusted — the same basis bridge target calibration scores
+        // across. No spot recorded (pre-field episodes) leaves the events
+        // unstamped, excluded from the read — never a cross-basis comparison.
+        let bear_return_12m = match &ep.body {
             EpisodeBody::Priced(p) => p
                 .snapshot
                 .price_targets
                 .twelve_month
                 .as_ref()
-                .map(|t| t.bear),
+                .map(|t| t.bear)
+                .zip(p.snapshot.authoring_spot.filter(|s| *s > 0.0))
+                .map(|(bear, spot)| bear / spot - 1.0),
             EpisodeBody::RoleRiskOnly(_) => None,
         };
 
@@ -1005,13 +1013,13 @@ pub fn mature_labels(
             // — fields already frozen at the episode's intrinsic vintage: the
             // recorded twelve-month bear target is the material-drawdown line.
             if ep.labels[i].window_months == 12 {
-                if let Some(bear) = bear_line_12m {
+                if let Some(bear_return) = bear_return_12m {
                     stamp_lead_times(
                         &mut ep.falsifier_events,
                         &closes,
-                        &entry.date,
+                        entry,
                         w_end,
-                        bear,
+                        bear_return,
                     );
                 }
             }
@@ -1062,21 +1070,26 @@ fn drawdown_over(closes: &[DatedValue], entry_date: &str, w_end: NaiveDate) -> f
 
 /// Stamp each unstamped, in-episode falsifier event's signed trading-day distance
 /// to the first within-window close below the bear-case line — deterministic, never
-/// interpretive. Positive = confirmed before the breach; explicit
+/// interpretive. The line is evaluated **in return space**: a close breaches when
+/// its return from the entry anchor falls below the authored `bear ⁄ spot − 1`,
+/// so a split between authoring and label time can neither fabricate nor hide a
+/// breach. Positive = confirmed before the breach; explicit
 /// `no-material-drawdown` when no such close occurs by maturity.
 fn stamp_lead_times(
     events: &mut [FalsifierEvent],
     closes: &[DatedValue],
-    entry_date: &str,
+    entry: &DatedValue,
     w_end: NaiveDate,
-    bear_line: f64,
+    bear_return: f64,
 ) {
     let end_iso = w_end.format("%Y-%m-%d").to_string();
     let window: Vec<&DatedValue> = closes
         .iter()
-        .filter(|b| b.date.as_str() >= entry_date && b.date.as_str() <= end_iso.as_str())
+        .filter(|b| b.date.as_str() >= entry.date.as_str() && b.date.as_str() <= end_iso.as_str())
         .collect();
-    let breach_idx = window.iter().position(|b| b.value < bear_line);
+    let breach_idx = window
+        .iter()
+        .position(|b| b.value / entry.value - 1.0 < bear_return);
     for ev in events.iter_mut() {
         if ev.post_maturity || ev.lead_time_trading_days.is_some() || ev.no_material_drawdown.is_some()
         {
@@ -2670,6 +2683,80 @@ mod tests {
         let reads = derive_reads(&episodes);
         assert_eq!(reads.falsifier_lead_times.len(), 1);
         assert!(reads.falsifier_lead_times[0].no_material_drawdown);
+    }
+
+    #[test]
+    fn falsifier_lead_times_are_split_safe_across_a_retroactive_adjustment() {
+        // Authored at spot 100 with bear target 60 (a −40% line); a 2:1 split
+        // then re-bases the label-time series around 50. Price-space comparison
+        // would read every close below 60 as an instant false breach; return
+        // space reads the −10% dip as no material drawdown.
+        let conn = mem_conn();
+        store::merge_price_bars(
+            &conn,
+            "SPLT",
+            &bars(&[
+                ("2025-06-03", 50.0),
+                ("2025-09-01", 48.0),
+                ("2026-01-15", 45.0),
+                ("2026-06-05", 52.0),
+            ]),
+        )
+        .unwrap();
+        let mut ep = old_episode("SPLT", "2025-06-02T12:00:00+00:00");
+        ep.falsifier_events.push(FalsifierEvent {
+            condition_id: "c-1".into(),
+            confirmed_at: "2025-08-01".into(),
+            confirmation_observation_id: "obs-1".into(),
+            post_maturity: false,
+            lead_time_trading_days: None,
+            no_material_drawdown: None,
+        });
+        let mut episodes = vec![ep];
+        let mut ctx = SeriesCtx::new(&conn, None);
+        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
+        let ev = &episodes[0].falsifier_events[0];
+        assert_eq!(
+            ev.no_material_drawdown,
+            Some(true),
+            "no false breach across the split"
+        );
+        assert!(ev.lead_time_trading_days.is_none());
+
+        // A genuine −46% close still breaches, with the confirmation's positive
+        // lead over the later breach bar.
+        let conn = mem_conn();
+        store::merge_price_bars(
+            &conn,
+            "DEEP",
+            &bars(&[
+                ("2025-06-03", 50.0),
+                ("2025-09-01", 48.0),
+                ("2026-01-15", 27.0),
+                ("2026-06-05", 52.0),
+            ]),
+        )
+        .unwrap();
+        let mut ep = old_episode("DEEP", "2025-06-02T12:00:00+00:00");
+        ep.falsifier_events.push(FalsifierEvent {
+            condition_id: "c-1".into(),
+            confirmed_at: "2025-08-01".into(),
+            confirmation_observation_id: "obs-1".into(),
+            post_maturity: false,
+            lead_time_trading_days: None,
+            no_material_drawdown: None,
+        });
+        let mut episodes = vec![ep];
+        let mut ctx = SeriesCtx::new(&conn, None);
+        mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
+        let ev = &episodes[0].falsifier_events[0];
+        assert_eq!(ev.no_material_drawdown, Some(false));
+        assert_eq!(
+            ev.lead_time_trading_days,
+            Some(1),
+            "confirmed one bar before the breach"
+        );
     }
 
     #[test]
