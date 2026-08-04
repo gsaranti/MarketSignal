@@ -71,7 +71,10 @@ Three stores, by responsibility (`docs/storage.md`):
   same-day reruns distinct; exports drop the suffix), plus the `/research-inbox`
   and `/research-archive` folders.
 - **SQLite** — report records, metadata, job history, warning state, per-report
-  baseline snapshots, and the vector-memory table.
+  baseline snapshots, and the vector-memory table. Structured blobs persist as
+  serde_json text, and the crate's **`float_roundtrip` feature is load-bearing**
+  (2026-08-03): round-trips are bit-exact, so carried numerics compare exactly
+  (a store test pins the guarantee against a silent dependency edit).
 - **Vector memory** — one embedding per report summary and per durable learning
   (`text-embedding-3-large`), each an atomic unit (no chunking). It lives as a
   `vector_memory` table inside the same SQLite database, with exact brute-force
@@ -525,7 +528,12 @@ live research loop) remain designed, not built.** The load-bearing decisions:
   (`engine::reanchor_scenarios` over the stored `QuickCheckBasis`
   percentiles / drivers; the filing re-pull's dividend leg refreshes the
   payout under the adapter's None-with-no-gap = confirmed-non-payer
-  contract), and the price outside the **frozen** monitor band —
+  contract), and — since the 2026-08-03 open-questions sweep — a **change
+  in spot's relation to the frozen monitor band** (inside / below / above,
+  tested against the authoring-time relation 6g stamps beside the engine
+  targets, `ThesisLedger.authored_band_relation`; leave / re-enter /
+  side-cross flags, an authored-outside standing state never re-flags, a
+  pre-stamp ledger reads authored-inside) —
   merge-not-replace flag carry with eval-state chaining sweep-to-sweep,
   equity + fund evidence-event legs (the fund mandate / label /
   overlay-flag comparisons independently gated on what each actually
@@ -538,7 +546,10 @@ live research loop) remain designed, not built.** The load-bearing decisions:
   clearing is **per successful pass** — an abstention retains its
   carried state re-stamped to the new run, its rate cache following the
   run's prints. The store rides data portability as **format v2**
-  (versioned closed entry set). Deliberate reductions, all surfaced: FMP
+  (versioned closed entry set); quick-check job rows are excluded from the
+  footer's last-run stamps (`job_status` filters `portfolio_quick_check` —
+  a sweep is not analysis freshness; failures still reach the failed-jobs
+  warning). Deliberate reductions, all surfaced: FMP
   quote + dated-EOD (no Stooq cache exists), no cash-flow re-pull, no
   breadth-flip sub-leg, material filings = 10-K/10-Q/8-K prefix, the
   FINRA leg structurally unreachable (no short-interest series in the
@@ -638,9 +649,12 @@ degraded-note render, the card overlay) and the debut-gap self-resolution
 (the rate-anchor and pre-basis fund families read `unknown` until the big
 run re-persists); the first live **selective run** (selection UI, the
 in-run tail sweep, carried-card vintage / stale / demotion render at
-scale — and whether the `PriceOutsideBand` flag on an
-authoring-time-outside band is signal or noise, since such a holding
-force-includes on every selective run until re-analyzed); 128 K runner
+scale — and the transition-only `PriceOutsideBand` flag's live behavior:
+leave / re-enter / side-cross flag rates against the stamped authoring
+relation, since the authoring-time-outside design question was settled in
+code 2026-08-03 — the standing state no longer flags; note pre-sweep
+ledgers carry no stamp and read authored-inside until re-analyzed); 128 K
+runner
 stability; distill speed; whether Stooq's PoW gate is permanent). **Trade
 Opportunities waits behind the whole block** (design settled — full strategy
 audit plus three external review rounds to convergence, 2026-07-09; the paid

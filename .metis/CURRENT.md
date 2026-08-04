@@ -11,21 +11,20 @@
 5. **Docs-capture pass cleared the whole backlog** — monitor-level goalposts, streak observation identities, None-with-no-gap non-payer, no-cash-flow-re-pull truth, FINRA leg recorded dormant, `unevaluable_series` family downgrade, fund-comparison gating + blank-metadata normalization, breadth-flip sub-leg marked inert; the consecutive-count constants were found already pinned (trade-opportunities.md §The opportunity).
 One Codex round: **approve, no code findings**; the one Low docs nit (FINRA row present-tense clause) fixed.
 Verified: cargo 811/0, clippy 0, npm build clean, 40 node + 188 vitest.
+**BUILD/INDEX caught up in-session — no capture debt**: BUILD's quick-check bullet carries the transition-only band contract (+ `authored_band_relation`) and the footer-stamp exclusion, the SQLite bullet pins `float_roundtrip` as load-bearing, the big-run checklist's `PriceOutsideBand` leg is reworded design-question→runtime-watch (leave / re-enter / side-cross flag rates; pre-stamp ledgers read authored-inside until re-analyzed), and INDEX's job-status / quick-check-slice / quick-check-concept rows are amended.
 
 ## Current state
 
-`main` at `56e5be5`, pushed, tree clean, nothing in flight.
-**Capture debt: BUILD/INDEX are one session behind** — BUILD's quick-check bullet still describes the outside-band trigger as state-based and its big-run checklist still carries `PriceOutsideBand` as an open design question (now answered in code; the leg becomes a runtime watch: the transition flag's live behavior, incl. re-entry flags, at 47-position scale); the footer-stamp exclusion and the float_roundtrip load-bearing feature are also uncaptured. INDEX's quick-check/selective rows need small amends.
+`main` at `56e5be5` (+ this session-end and the catch-up), pushed, tree clean, nothing in flight.
 Queue head unchanged: the **pre-profit overlay** slice.
 
 ## Open questions
 
 - **Debut gaps (self-resolve at the big run's persist):** first sweep reads the rate-anchor family `unknown` (pre-`RatePrints`) and pre-basis funds read FundInfo `unknown`.
 - **No A letters under grade-v2** (META 84.0 vs ≥ 85) — reserved for normalization or the big run.
-- **Carried unchanged:** big-run checklist in BUILD §What remains (the `PriceOutsideBand` leg now a runtime watch, per capture debt above); reasoning-pane DOM weight; encrypted portability round-trip; step-17 embedding watch; 600 s stress; scorecard display; dev-store residue; Keychain fail-soft; stage-and-swap import; chain both-maps invariant; four-part verdict bound; §1 open drafts; fraud-producer posture; fund-slice drafted constants; checkpoint/resume + the 6g input-delta validator (docs-promised, unbuilt).
+- **Carried unchanged:** big-run checklist in BUILD §What remains (the `PriceOutsideBand` leg now a runtime watch); reasoning-pane DOM weight; encrypted portability round-trip; step-17 embedding watch; 600 s stress; scorecard display; dev-store residue; Keychain fail-soft; stage-and-swap import; chain both-maps invariant; four-part verdict bound; §1 open drafts; fraud-producer posture; fund-slice drafted constants; checkpoint/resume + the 6g input-delta validator (docs-promised, unbuilt).
 
 ## Where to start
 
-Run the small **BUILD/INDEX catch-up** first: fold the transition-only band flag (+ `authored_band_relation`), the footer-stamp exclusion, and the float_roundtrip pin into BUILD's as-built bullets, reword the big-run checklist's `PriceOutsideBand` leg from design question to runtime watch, and amend INDEX's quick-check/selective rows.
-Then `/metis-plan-task` for the **pre-profit overlay** slice (docs/portfolio-analysis.md §The per-holding pipeline, §Starting parameters; portfolio-workflow.md §Step 6b–6g, §Step 7a) — the deterministic execution/financing overlay with the ≥5% / ≥2-period / ≥20% miss rules, conjunctive severe state, and Medium/Low caps + add-bar consequences.
-The two display-only UI micro-slices remain available as breathers.
+Run `/metis-plan-task` for the **pre-profit overlay** slice (docs/portfolio-analysis.md §The per-holding pipeline, §Starting parameters; portfolio-workflow.md §Step 6b–6g, §Step 7a): the deterministic execution/financing overlay — statement-derived runway / margin / capex / dilution plus app-validated period-keyed operating observations, the bounded latest-four-period backfill on a first/history-thin pass, the ≥5% / ≥2-period / ≥20% miss rules, the conjunctive severe state, and the Medium/Low caps + add-bar consequences validated at 6g/7a.
+The two display-only UI micro-slices (Portfolio-page polish; section-scoped footer + report-nav) remain available as breathers.
