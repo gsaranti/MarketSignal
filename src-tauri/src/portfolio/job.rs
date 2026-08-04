@@ -1049,48 +1049,16 @@ fn run_analysis(
         }
     };
     validated.view.retried = retried;
-    // Merge the validated result onto the verdicts: the final action, the
-    // range-derived sizing (deltas recomputed deterministically — one home,
-    // `engine::sizing_from_range`), and the action half of the what-changed audit.
-    let mut lean_divergence_by_symbol: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for v in &mut verdicts {
-        let key = v.symbol.to_ascii_uppercase();
-        let Some(vh) = validated.actions.get(&key) else {
-            continue;
-        };
-        let Some(position) = holdings
-            .positions
-            .iter()
-            .find(|p| p.symbol.eq_ignore_ascii_case(&v.symbol))
-        else {
-            continue;
-        };
-        let mut sizing = crate::portfolio::engine::sizing_from_range(
-            vh.target_weight_low,
-            vh.target_weight_high,
-            position,
-            profile,
-            holdings.account_total,
-        );
-        sizing.sizing_rationale = Some(vh.rationale.clone());
-        match &mut v.disposition {
-            crate::portfolio::VerdictDisposition::Priced(g) => {
-                g.action = vh.action;
-                g.action_sizing = sizing;
-                g.action_what_changed = vh.what_changed.clone();
-            }
-            crate::portfolio::VerdictDisposition::RoleRiskOnly(r) => {
-                r.action = vh.action;
-                r.action_sizing = sizing;
-                r.action_what_changed = vh.what_changed.clone();
-            }
-            _ => {}
-        }
-        if let Some(d) = &vh.lean_divergence {
-            lean_divergence_by_symbol.insert(key, d.clone());
-        }
-    }
+    // Merge the validated result onto the verdicts — the final action, the
+    // range-derived sizing, the action-half audit, the rule-demotion restore,
+    // and the carried-stale-lean stamp (`construction::merge_validated_actions`).
+    let lean_divergence_by_symbol = crate::portfolio::construction::merge_validated_actions(
+        &mut verdicts,
+        &validated.actions,
+        &holdings,
+        profile,
+        &carried_symbols,
+    );
     let construction_view = validated.view.clone();
     ctx.step_finished(construction_step, "ok", None);
 

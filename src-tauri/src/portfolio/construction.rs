@@ -34,9 +34,9 @@ use serde_json::{json, Value};
 use crate::portfolio::engine;
 use crate::portfolio::outcome::DecisionEpisode;
 use crate::portfolio::{
-    Action, ActionAttribution, ActionWhatChanged, AssetClass, ContextCause, Conviction,
-    ExitedPosition, Grade, HoldingAudit, HoldingVerdict, HurdleState, InvestorProfile,
-    PositionChange, RiskTier, VerdictDisposition,
+    Action, ActionAttribution, ActionSource, ActionWhatChanged, AssetClass, ContextCause,
+    Conviction, ExitedPosition, ExposureWeight, Grade, HoldingAudit, HoldingVerdict,
+    HurdleState, InvestorProfile, PositionChange, RiskTier, VerdictDisposition,
 };
 use crate::schwab::Holdings;
 
@@ -60,11 +60,18 @@ pub const OVERSIZED_MIN_WEIGHT: f64 = 0.15;
 /// (`docs/portfolio-analysis.md` §Starting parameters — drafted ≥ 5%).
 pub const NOT_RATED_MATERIAL_MIN_WEIGHT: f64 = 0.05;
 
-/// Float / rounding tolerance for the joint-feasibility weight checks (fractions
-/// of the book). Wide enough for the model's rounded weights and the implied-book
-/// drift of a roughly balanced plan; tight enough that a real range or cap breach
-/// still trips. Calibratable.
+/// Drift tolerance for the **implied-book** weight checks (fractions of the
+/// book): the implied post-action weights carry the solve's mid-of-range drift,
+/// so these comparisons need real slack. Wide enough for a roughly balanced
+/// plan; tight enough that a real breach still trips. Calibratable.
 pub const WEIGHT_EPS: f64 = 0.005;
+
+/// Rounding tolerance for the **per-holding structural** checks — range
+/// ordering, the sell-all zero range, the rung-band bounds. These compare the
+/// model's own proposed numbers against exact engine values (no drift enters),
+/// so the tolerance covers decimal rounding only: a sell-all may not retain
+/// 0.5% of the book, and an inverted range may not pass, under the wide eps.
+pub const STRUCT_EPS: f64 = 1e-4;
 
 /// Dollar tolerance for the profile-gated funded-by-trims check.
 const DOLLAR_EPS: f64 = 1.0;
@@ -143,6 +150,37 @@ pub struct SizingSpineRow {
     /// The tax framing note (profile-driven, by P/L sign); `None` when the
     /// profile is not tax-sensitive or the P/L is unknown.
     pub tax_note: Option<String>,
+    /// `role_risk_only` decision inputs (all `None` / empty on `priced`): this
+    /// branch's action is authored **wholly at 7b** ([`crate::portfolio::RoleRiskVerdict`]),
+    /// so the verdict's engine + model reads must reach the construction call —
+    /// the deterministic classification label and the model's role read…
+    #[serde(default)]
+    pub class_label: Option<String>,
+    #[serde(default)]
+    pub role_summary: Option<String>,
+    /// …the expense ratio as an annual return headwind (fraction), where reported…
+    #[serde(default)]
+    pub expense_drag: Option<f64>,
+    /// …annualized realized volatility (fraction), where computable…
+    #[serde(default)]
+    pub observable_risk: Option<f64>,
+    /// …the structurally-path-dependent flag (leveraged / inverse / option-overlay
+    /// vehicles)…
+    #[serde(default)]
+    pub structural_flag: bool,
+    /// …the top exposure weights (sector or country; capped at three)…
+    #[serde(default)]
+    pub exposure_tilt: Vec<ExposureWeight>,
+    /// …and the typed evidence gaps — this branch's confidence surface.
+    #[serde(default)]
+    pub evidence_gaps: Vec<String>,
+    /// The same-underlying option-overlay read (`docs/portfolio-analysis.md`
+    /// §Portfolio action — a covered call caps the upside the targets imply; a
+    /// protective put trims the downside), classified deterministically from the
+    /// holdings snapshot's OCC option rows with a share-coverage estimate. Both
+    /// branches carry it; `None` when no held option shares the underlying.
+    #[serde(default)]
+    pub option_overlay: Option<String>,
 }
 
 /// One sector row of the whole-book exposure table: direct (stock) weight plus the
@@ -260,17 +298,18 @@ pub fn transition_actions(carried: Action) -> (Vec<Action>, bool) {
     (set, carveout)
 }
 
-// ---- OCC option-symbol notional ------------------------------------------------
+// ---- OCC option-symbol parsing ---------------------------------------------------
 
-/// Parse the strike out of an OCC-format option symbol (root + `YYMMDD` + `C`/`P` +
-/// 8-digit strike × 1000, spaces tolerated). `None` on anything else — the notional
-/// then rides as a typed gap, never a guessed number.
-pub fn occ_strike(symbol: &str) -> Option<f64> {
+/// Parse an OCC-format option symbol (root + `YYMMDD` + `C`/`P` + 8-digit
+/// strike × 1000, spaces tolerated) into `(underlying root, call?, strike)`.
+/// `None` on anything else — a consumer then records a typed gap, never a
+/// guessed number.
+pub fn occ_parts(symbol: &str) -> Option<(String, bool, f64)> {
     let compact: String = symbol.chars().filter(|c| !c.is_whitespace()).collect();
     if compact.len() < 16 {
         return None;
     }
-    let (_, tail) = compact.split_at(compact.len() - 15);
+    let (root, tail) = compact.split_at(compact.len() - 15);
     let (date, rest) = tail.split_at(6);
     let (cp, strike) = rest.split_at(1);
     if !date.chars().all(|c| c.is_ascii_digit()) {
@@ -282,7 +321,63 @@ pub fn occ_strike(symbol: &str) -> Option<f64> {
     if strike.len() != 8 || !strike.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    strike.parse::<f64>().ok().map(|s| s / 1000.0)
+    strike
+        .parse::<f64>()
+        .ok()
+        .map(|s| (root.to_string(), cp == "C", s / 1000.0))
+}
+
+/// The strike alone — the not-rated notional's leg.
+pub fn occ_strike(symbol: &str) -> Option<f64> {
+    occ_parts(symbol).map(|(_, _, strike)| strike)
+}
+
+/// Classify the holdings snapshot's same-underlying option overlay for one
+/// equity position (`docs/portfolio-analysis.md` §Portfolio action): each held
+/// OCC option row on the same root reads as a **covered call** (short call over
+/// a long position) or **protective put** (long put over a long position), with
+/// a share-coverage estimate; anything else renders as an unclassified
+/// same-underlying option. `None` when no held option shares the underlying.
+fn same_underlying_overlay(
+    underlying: &crate::schwab::Position,
+    positions: &[crate::schwab::Position],
+) -> Option<String> {
+    let shares = underlying.quantity;
+    let mut notes: Vec<String> = Vec::new();
+    for p in positions {
+        if p.asset_class != AssetClass::OptionContract {
+            continue;
+        }
+        let Some((root, is_call, _)) = occ_parts(&p.symbol) else {
+            continue;
+        };
+        if !root.eq_ignore_ascii_case(&underlying.symbol) {
+            continue;
+        }
+        let label = match (is_call, p.quantity < 0.0, shares > 0.0) {
+            (true, true, true) => "covered call",
+            (false, false, true) => "protective put",
+            _ => "same-underlying option",
+        };
+        let coverage = if shares > 0.0 {
+            format!(
+                ", ~{:.0}% of shares",
+                (p.quantity.abs() * 100.0 / shares * 100.0).round()
+            )
+        } else {
+            String::new()
+        };
+        notes.push(format!(
+            "{label} ({:.0} contract{}{coverage})",
+            p.quantity.abs(),
+            if p.quantity.abs() == 1.0 { "" } else { "s" },
+        ));
+    }
+    if notes.is_empty() {
+        None
+    } else {
+        Some(notes.join("; "))
+    }
 }
 
 // ---- Step 7a: the aggregate builder --------------------------------------------
@@ -468,6 +563,14 @@ pub fn build_aggregates(inp: &AggregateInputs<'_>) -> BookAggregates {
                     offered,
                     context_trim_carveout: carveout,
                     tax_note: tax_note(inp.profile, position.market_value - position.cost_basis),
+                    class_label: None,
+                    role_summary: None,
+                    expense_drag: None,
+                    observable_risk: None,
+                    structural_flag: false,
+                    exposure_tilt: Vec::new(),
+                    evidence_gaps: Vec::new(),
+                    option_overlay: same_underlying_overlay(position, &inp.holdings.positions),
                 });
             }
             VerdictDisposition::RoleRiskOnly(r) => {
@@ -508,6 +611,14 @@ pub fn build_aggregates(inp: &AggregateInputs<'_>) -> BookAggregates {
                     offered,
                     context_trim_carveout: carveout,
                     tax_note: tax_note(inp.profile, position.market_value - position.cost_basis),
+                    class_label: Some(r.class_label.clone()),
+                    role_summary: Some(r.role_summary.clone()),
+                    expense_drag: r.expense_drag,
+                    observable_risk: r.observable_risk,
+                    structural_flag: r.structural_flag,
+                    exposure_tilt: r.exposure_tilt.iter().take(3).cloned().collect(),
+                    evidence_gaps: r.evidence_gaps.clone(),
+                    option_overlay: same_underlying_overlay(position, &inp.holdings.positions),
                 });
             }
             VerdictDisposition::NotRated { .. } => {
@@ -910,20 +1021,20 @@ pub fn validate_construction(
             continue;
         }
         let (low, high) = (proposal.target_weight_low, proposal.target_weight_high);
-        if !(low.is_finite() && high.is_finite()) || low > high + WEIGHT_EPS {
+        if !(low.is_finite() && high.is_finite()) || low > high + STRUCT_EPS {
             violations.push(Violation::RangeInverted {
                 symbol: row.symbol.clone(),
             });
             continue;
         }
-        if action == Action::SellAll && high > WEIGHT_EPS {
+        if action == Action::SellAll && high > STRUCT_EPS {
             violations.push(Violation::SellAllNonZeroRange {
                 symbol: row.symbol.clone(),
             });
             continue;
         }
         let band = engine::rung_band(action, row.current_weight);
-        if low < band.0 - WEIGHT_EPS || high > band.1 + WEIGHT_EPS {
+        if low < band.0 - STRUCT_EPS || high > band.1 + STRUCT_EPS {
             violations.push(Violation::RangeOutsideRungBand {
                 symbol: row.symbol.clone(),
                 action,
@@ -1234,6 +1345,94 @@ pub fn validate_construction(
     })
 }
 
+// ---- The construction merge ----------------------------------------------------
+
+/// Merge the validated construction result onto the run's verdicts: the final
+/// action, the range-derived sizing (deltas recomputed deterministically — one
+/// home, [`engine::sizing_from_range`]), and the action half of the what-changed
+/// audit. Returns the per-symbol divergence-from-lean records for the outcome
+/// episodes (uppercase symbol → line).
+///
+/// Two per-row rules ride the merge:
+/// - **A construction-moved action is a model decision.** Where a carried action
+///   had been rule-demoted (the over-age add → hold rule) and the model validly
+///   moved it off the demoted rung (the context-trim carve-out), the demotion
+///   stamp no longer describes the final action — `action_source` restores to
+///   `model-chosen`, so the rule-demoted episode class holds only actions a rule
+///   actually set (`docs/portfolio-analysis.md` §Outcome learning).
+/// - **A carried row's stale lean is stamped, never left ambiguous.** Carried
+///   rows skip divergence validation (their lean was authored at an older
+///   vintage), so where the stale lean differs from the final action the app
+///   stamps a typed `carried-stale-lean` record — keeping `None` = matched on
+///   the episode's `lean_divergence` contract.
+pub fn merge_validated_actions(
+    verdicts: &mut [HoldingVerdict],
+    actions: &HashMap<String, ValidatedHolding>,
+    holdings: &Holdings,
+    profile: &InvestorProfile,
+    carried: &HashSet<String>,
+) -> HashMap<String, String> {
+    let mut lean_divergence_by_symbol: HashMap<String, String> = HashMap::new();
+    for v in verdicts.iter_mut() {
+        let key = v.symbol.to_ascii_uppercase();
+        let Some(vh) = actions.get(&key) else {
+            continue;
+        };
+        let Some(position) = holdings
+            .positions
+            .iter()
+            .find(|p| p.symbol.eq_ignore_ascii_case(&v.symbol))
+        else {
+            continue;
+        };
+        let mut sizing = engine::sizing_from_range(
+            vh.target_weight_low,
+            vh.target_weight_high,
+            position,
+            profile,
+            holdings.account_total,
+        );
+        sizing.sizing_rationale = Some(vh.rationale.clone());
+        let pre = match &mut v.disposition {
+            VerdictDisposition::Priced(g) => {
+                let pre = g.action;
+                g.action = vh.action;
+                g.action_sizing = sizing;
+                g.action_what_changed = vh.what_changed.clone();
+                Some(pre)
+            }
+            VerdictDisposition::RoleRiskOnly(r) => {
+                let pre = r.action;
+                r.action = vh.action;
+                r.action_sizing = sizing;
+                r.action_what_changed = vh.what_changed.clone();
+                Some(pre)
+            }
+            _ => None,
+        };
+        if v.action_source == ActionSource::RuleDemoted
+            && pre.is_some_and(|p| p != vh.action)
+        {
+            v.action_source = ActionSource::ModelChosen;
+        }
+        if let Some(d) = &vh.lean_divergence {
+            lean_divergence_by_symbol.insert(key, d.clone());
+        } else if carried.contains(&key) {
+            if let VerdictDisposition::Priced(g) = &v.disposition {
+                if g.lean.is_some_and(|l| l != vh.action) {
+                    lean_divergence_by_symbol.insert(
+                        key,
+                        "carried-stale-lean: lean authored at an older vintage — not \
+                         reconciled against this run's aggregates"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+    lean_divergence_by_symbol
+}
+
 fn parse_action(s: &str) -> Option<Action> {
     match s.trim() {
         "sell-all" => Some(Action::SellAll),
@@ -1318,11 +1517,14 @@ pub fn construction_system_prompt() -> String {
      reconcile each holding's lean against the whole-book aggregates — concentration, \
      sector exposure and overlap clusters, cash, the not-rated positions' exposure — \
      into its FINAL ACTION and a target portfolio-weight range, and write the \
-     portfolio-level view. Rules you must hold: choose each action only from that \
-     holding's ALLOWED set (a carried holding's set enforces the transition rule — \
-     toward hold only, plus a context trim that needs a real concentration or overlap \
-     reason). Keep each target-weight range inside the action's engine band, and \
-     propose weights that can hold SIMULTANEOUSLY — the app solves the implied \
+     portfolio-level view. Express every target weight as a DECIMAL FRACTION of the \
+     book (write 0.065 for 6.5%). Rules you must hold: choose each action only from \
+     that holding's ALLOWED set (a carried holding's set enforces the transition \
+     rule — toward hold only, plus a context trim that needs a real concentration or \
+     overlap reason). Each allowed action is listed with its engine band as a \
+     fraction range — keep target_weight_low/high inside the chosen action's band \
+     (a sell-all range is 0–0) — and propose weights that can hold SIMULTANEOUSLY, \
+     each under the single-position concentration cap: the app solves the implied \
      post-action book and rejects a jointly infeasible plan. Where your final action \
      departs a holding's lean, say why with a divergence_cause from the vocabulary; \
      where an action changed against its baseline, attribute it (moved-intrinsic or \
@@ -1349,6 +1551,13 @@ fn spine_digest(row: &SizingSpineRow) -> String {
     if let Some(l) = row.lean {
         parts.push(format!("lean {}", l.as_kebab()));
     }
+    // The moved-intrinsic attribution's comparison baseline — the model can't
+    // attribute a change to a moved lean it can't see.
+    if let (false, Some(p)) = (row.carried, row.prior_lean) {
+        if row.lean != Some(p) {
+            parts.push(format!("prior lean {}", p.as_kebab()));
+        }
+    }
     if let Some(u) = row.upside_downside {
         parts.push(format!("12m base {:+.1}%", u * 100.0));
     }
@@ -1365,6 +1574,37 @@ fn spine_digest(row: &SizingSpineRow) -> String {
     }
     if let Some(s) = &row.sector {
         parts.push(format!("sector {s}"));
+    }
+    // The role_risk_only decision surface — 7b is this branch's sole action
+    // author, so the verdict's reads ride the digest.
+    if let Some(cl) = &row.class_label {
+        parts.push(format!("class: {cl}"));
+    }
+    if let Some(rs) = &row.role_summary {
+        parts.push(format!("role: {rs}"));
+    }
+    if let Some(e) = row.expense_drag {
+        parts.push(format!("expense drag {:.2}%/yr", e * 100.0));
+    }
+    if let Some(v) = row.observable_risk {
+        parts.push(format!("realized vol {:.0}%", v * 100.0));
+    }
+    if row.structural_flag {
+        parts.push("structurally path-dependent".to_string());
+    }
+    if !row.exposure_tilt.is_empty() {
+        let tilt: Vec<String> = row
+            .exposure_tilt
+            .iter()
+            .map(|w| format!("{} {:.0}%", w.label, w.weight * 100.0))
+            .collect();
+        parts.push(format!("tilt: {}", tilt.join(", ")));
+    }
+    if !row.evidence_gaps.is_empty() {
+        parts.push(format!("evidence gaps: {}", row.evidence_gaps.join("; ")));
+    }
+    if let Some(o) = &row.option_overlay {
+        parts.push(format!("overlay: {o}"));
     }
     if row.carried {
         parts.push(format!(
@@ -1388,7 +1628,18 @@ fn spine_digest(row: &SizingSpineRow) -> String {
     if let Some(t) = &row.tax_note {
         parts.push(format!("tax: {t}"));
     }
-    let offered: Vec<&str> = row.offered.iter().map(Action::as_kebab).collect();
+    // Each allowed action with its engine band at this row's current weight, as
+    // decimal fractions of the book — the numeric bounds the contract holds the
+    // model to (`docs/portfolio-workflow.md` §Step 7b: the model must not guess
+    // the bands it is validated against).
+    let offered: Vec<String> = row
+        .offered
+        .iter()
+        .map(|a| {
+            let (lo, hi) = engine::rung_band(*a, row.current_weight);
+            format!("{} {:.4}\u{2013}{:.4}", a.as_kebab(), lo, hi)
+        })
+        .collect();
     parts.push(format!("ALLOWED [{}]", offered.join(", ")));
     if row.context_trim_carveout {
         parts.push("trim allowed only with a became-oversized / overlap-emerged attribution".into());
@@ -1414,9 +1665,12 @@ pub fn construction_user_prompt(
         ));
     }
     p.push_str(&format!(
-        "PORTFOLIO: cash {:.1}% of the book; largest position {:.1}%.\n",
+        "PORTFOLIO: cash {:.1}% of the book; largest position {:.1}%; \
+         single-position concentration cap {:.0}% ({:.2} as a fraction).\n",
         agg.cash_weight * 100.0,
-        agg.top_position_weight * 100.0
+        agg.top_position_weight * 100.0,
+        engine::MAX_SINGLE_WEIGHT * 100.0,
+        engine::MAX_SINGLE_WEIGHT,
     ));
     if !agg.sector_exposure.is_empty() {
         p.push_str("\nSECTOR EXPOSURE (direct + fund-folded):\n");
@@ -1546,6 +1800,14 @@ mod tests {
             pre_profit_rule: None,
             hard_forensic_bar: false,
             sector: Some("Technology".into()),
+            class_label: None,
+            role_summary: None,
+            expense_drag: None,
+            observable_risk: None,
+            structural_flag: false,
+            exposure_tilt: Vec::new(),
+            evidence_gaps: Vec::new(),
+            option_overlay: None,
             offered,
             context_trim_carveout: false,
             tax_note: None,
@@ -1751,6 +2013,61 @@ mod tests {
         // The Display text names the band, so the re-run can fix it.
         let text = violations[0].to_string();
         assert!(text.contains("engine band"), "{text}");
+    }
+
+    #[test]
+    fn structural_checks_use_the_tight_epsilon_not_the_drift_tolerance() {
+        // A sell-all retaining 0.4% of the book and a range inverted by 0.4%
+        // both sat inside the implied-book drift tolerance (0.5%); the
+        // per-holding structural checks trip on anything past decimal rounding.
+        let spine = vec![spine_row("AAA", 0.10, vec![Action::SellAll, Action::Trim, Action::Hold])];
+        let holdings = Holdings {
+            cash: 90_000.0,
+            account_total: 100_000.0,
+            ..holdings_for(&spine, 0.0)
+        };
+        let agg = agg_for(spine);
+        let sell_all_residue = draft_for(vec![(
+            "AAA",
+            HoldingProposalDraft {
+                action: "sell-all".into(),
+                target_weight_low: 0.0,
+                target_weight_high: 0.004,
+                rationale: "x".into(),
+                divergence_cause: None,
+                divergence_note: None,
+                changed_attribution: None,
+                changed_cause: None,
+                changed_note: None,
+            },
+        )]);
+        let violations =
+            validate_construction(&sell_all_residue, &agg, &holdings, &InvestorProfile::default_fixture())
+                .unwrap_err();
+        assert!(violations
+            .iter()
+            .any(|v| matches!(v, Violation::SellAllNonZeroRange { symbol } if symbol == "AAA")));
+
+        let inverted = draft_for(vec![(
+            "AAA",
+            HoldingProposalDraft {
+                action: "hold".into(),
+                target_weight_low: 0.104,
+                target_weight_high: 0.100,
+                rationale: "x".into(),
+                divergence_cause: None,
+                divergence_note: None,
+                changed_attribution: None,
+                changed_cause: None,
+                changed_note: None,
+            },
+        )]);
+        let violations =
+            validate_construction(&inverted, &agg, &holdings, &InvestorProfile::default_fixture())
+                .unwrap_err();
+        assert!(violations
+            .iter()
+            .any(|v| matches!(v, Violation::RangeInverted { symbol } if symbol == "AAA")));
     }
 
     #[test]
@@ -2331,6 +2648,117 @@ mod tests {
         assert!((agg.unknown_sector_weight - 0.20).abs() < 1e-9);
     }
 
+    #[test]
+    fn role_risk_rows_carry_their_decision_surface_and_overlays_classify() {
+        use crate::portfolio::{ActionSizing, RoleRiskVerdict};
+        let role_risk = HoldingVerdict {
+            symbol: "BND".into(),
+            asset_class: AssetClass::Etf,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::RoleRiskOnly(Box::new(RoleRiskVerdict {
+                class_label: "bond fund".into(),
+                role_summary: "core fixed-income sleeve".into(),
+                exposure_tilt: vec![
+                    ExposureWeight { label: "Treasuries".into(), weight: 0.6 },
+                    ExposureWeight { label: "Corporates".into(), weight: 0.25 },
+                    ExposureWeight { label: "MBS".into(), weight: 0.1 },
+                    ExposureWeight { label: "Cash".into(), weight: 0.05 },
+                ],
+                expense_drag: Some(0.0035),
+                observable_risk: Some(0.06),
+                structural_flag: false,
+                evidence_gaps: vec!["no constituent look-through".into()],
+                action: Action::Hold,
+                action_sizing: ActionSizing {
+                    target_weight_low: 0.0,
+                    target_weight_high: 0.0,
+                    est_share_delta: None,
+                    est_dollar_delta: None,
+                    sizing_rationale: None,
+                },
+                what_changed: String::new(),
+                action_what_changed: None,
+            })),
+            thesis_ledger: None,
+            analyzed_at: None,
+            action_source: ActionSource::ModelChosen,
+        };
+        let equity = merge_verdict("AAPL", Action::Hold, Some(Action::Hold), ActionSource::ModelChosen);
+        let verdicts = vec![role_risk, equity];
+        // A short call on the held equity — 1 contract over 100 shares. The
+        // option position needs no verdict to classify: the overlay scans the
+        // snapshot's positions directly.
+        let mut short_call = position("AAPL  260117C00200000", AssetClass::OptionContract, 500.0);
+        short_call.quantity = -1.0;
+        let holdings = Holdings {
+            positions: vec![
+                position("BND", AssetClass::Etf, 10_000.0),
+                position("AAPL", AssetClass::Stock, 20_000.0),
+                short_call,
+            ],
+            cash: 69_500.0,
+            account_total: 100_000.0,
+            source_rows: vec![],
+        };
+        let carried = HashSet::new();
+        let over_age = HashSet::new();
+        let stock_sectors = HashMap::new();
+        let fund_weights = HashMap::new();
+        let agg = build_aggregates(&AggregateInputs {
+            holdings: &holdings,
+            verdicts: &verdicts,
+            audits: &[],
+            prior_verdicts: None,
+            carried: &carried,
+            over_age: &over_age,
+            stock_sectors: &stock_sectors,
+            fund_sector_weights: &fund_weights,
+            episodes: &[],
+            profile: &InvestorProfile::default_fixture(),
+        });
+
+        let bnd = agg.spine.iter().find(|r| r.symbol == "BND").unwrap();
+        assert_eq!(bnd.branch, SpineBranch::RoleRisk);
+        assert_eq!(bnd.class_label.as_deref(), Some("bond fund"));
+        assert_eq!(bnd.role_summary.as_deref(), Some("core fixed-income sleeve"));
+        assert_eq!(bnd.expense_drag, Some(0.0035));
+        assert_eq!(bnd.observable_risk, Some(0.06));
+        assert_eq!(bnd.exposure_tilt.len(), 3, "tilt capped at three");
+        assert_eq!(bnd.evidence_gaps.len(), 1);
+        let digest = spine_digest(bnd);
+        assert!(digest.contains("class: bond fund"), "{digest}");
+        assert!(digest.contains("role: core fixed-income sleeve"), "{digest}");
+        assert!(digest.contains("expense drag 0.35%/yr"), "{digest}");
+        assert!(digest.contains("realized vol 6%"), "{digest}");
+        assert!(digest.contains("tilt: Treasuries 60%, Corporates 25%, MBS 10%"), "{digest}");
+        assert!(digest.contains("evidence gaps: no constituent look-through"), "{digest}");
+
+        // The equity row reads the covered call: 1 contract × 100 over 100
+        // shares (the fixture's quantity) = ~100% of shares.
+        let aapl = agg.spine.iter().find(|r| r.symbol == "AAPL").unwrap();
+        let overlay = aapl.option_overlay.as_deref().unwrap();
+        assert!(overlay.contains("covered call"), "{overlay}");
+        assert!(overlay.contains("~100% of shares"), "{overlay}");
+        assert!(spine_digest(aapl).contains("overlay: covered call"));
+        // The fund shares no underlying with the option.
+        assert!(bnd.option_overlay.is_none());
+    }
+
+    #[test]
+    fn a_long_put_over_a_long_position_reads_protective() {
+        let equity = position("MSFT", AssetClass::Stock, 40_000.0);
+        let long_put = position("MSFT  260117P00300000", AssetClass::OptionContract, 800.0);
+        let positions = vec![equity.clone(), long_put];
+        let overlay = same_underlying_overlay(&equity, &positions).unwrap();
+        assert!(overlay.contains("protective put"), "{overlay}");
+        // A long call over a long position is neither pattern.
+        let equity2 = position("NVDA", AssetClass::Stock, 40_000.0);
+        let long_call = position("NVDA  260117C00900000", AssetClass::OptionContract, 800.0);
+        let positions2 = vec![equity2.clone(), long_call];
+        let overlay2 = same_underlying_overlay(&equity2, &positions2).unwrap();
+        assert!(overlay2.contains("same-underlying option"), "{overlay2}");
+    }
+
     // ---- prompts ---------------------------------------------------------------
 
     #[test]
@@ -2339,6 +2767,7 @@ mod tests {
         assert!(sys.contains("STANDALONE ACTION LEAN"));
         assert!(sys.contains("toward hold only"));
         assert!(sys.contains("SIMULTANEOUSLY"));
+        assert!(sys.contains("DECIMAL FRACTION"));
 
         let mut row = spine_row("AAA", 0.18, vec![Action::SellAll, Action::Trim, Action::Hold]);
         row.tax_note = Some("taxable gain if realized".into());
@@ -2358,7 +2787,14 @@ mod tests {
         let profile = InvestorProfile::default_fixture();
         let p = construction_user_prompt(&agg, &exited, Some("House view text"), &profile, None);
         assert!(p.contains("- AAA:"));
-        assert!(p.contains("ALLOWED [sell-all, trim, hold]"));
+        // Each allowed action carries its numeric engine band at the row's
+        // current weight (0.18): the model is validated against these bounds,
+        // so it must see them.
+        assert!(
+            p.contains("ALLOWED [sell-all 0.0000\u{2013}0.0000, trim 0.0720\u{2013}0.1260, hold 0.1620\u{2013}0.1980]"),
+            "{p}"
+        );
+        assert!(p.contains("single-position concentration cap 25% (0.25 as a fraction)"));
         assert!(p.contains("OVERLAP CLUSTERS"));
         assert!(p.contains("GONE"));
         assert!(p.contains("House view text"));
@@ -2374,5 +2810,151 @@ mod tests {
         );
         assert!(retry.starts_with("VALIDATION FAILURE"));
         assert!(retry.contains("outside its allowed set"));
+    }
+
+    // ---- the construction merge ---------------------------------------------------
+
+    fn merge_verdict(
+        symbol: &str,
+        action: Action,
+        lean: Option<Action>,
+        source: ActionSource,
+    ) -> HoldingVerdict {
+        use crate::portfolio::{
+            ActionSizing, GradedVerdict, HoldingVerdict, HorizonOutlook, HorizonRead,
+            OptionsSignal, PriceTargets, SubScores,
+        };
+        HoldingVerdict {
+            symbol: symbol.into(),
+            asset_class: AssetClass::Stock,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::Priced(Box::new(GradedVerdict {
+                grade: Grade::B,
+                sub_scores: SubScores { quality: 70.0, valuation: 60.0, momentum: 55.0, risk: 65.0 },
+                action,
+                lean,
+                action_sizing: ActionSizing {
+                    target_weight_low: 0.0,
+                    target_weight_high: 0.0,
+                    est_share_delta: None,
+                    est_dollar_delta: None,
+                    sizing_rationale: None,
+                },
+                conviction: Conviction::Medium,
+                horizon_outlook: HorizonOutlook {
+                    short: HorizonRead::Neutral,
+                    mid: HorizonRead::Neutral,
+                    long: HorizonRead::Neutral,
+                },
+                price_targets: PriceTargets { one_month: None, twelve_month: None },
+                price_target_rationale: String::new(),
+                options_signal: OptionsSignal {
+                    put_call_volume: None,
+                    put_call_open_interest: None,
+                    implied_volatility: None,
+                    iv_skew: None,
+                },
+                risk_tier: Some(RiskTier::Medium),
+                dead_money: Some(HurdleState::Indeterminate),
+                low_confidence_grade: false,
+                fund_class_label: None,
+                structural_flag: false,
+                financial_summary: String::new(),
+                what_changed: String::new(),
+                action_what_changed: None,
+            })),
+            thesis_ledger: None,
+            analyzed_at: None,
+            action_source: source,
+        }
+    }
+
+    fn merge_fixture(action: Action) -> (Holdings, HashMap<String, ValidatedHolding>) {
+        let holdings = Holdings {
+            positions: vec![position("AAA", AssetClass::Stock, 10_000.0)],
+            cash: 90_000.0,
+            account_total: 100_000.0,
+            source_rows: vec![],
+        };
+        let actions: HashMap<String, ValidatedHolding> = [(
+            "AAA".to_string(),
+            ValidatedHolding {
+                action,
+                target_weight_low: 0.04,
+                target_weight_high: 0.07,
+                rationale: "concentration".into(),
+                what_changed: None,
+                lean_divergence: None,
+            },
+        )]
+        .into();
+        (holdings, actions)
+    }
+
+    #[test]
+    fn merge_restores_model_chosen_when_construction_moves_a_demoted_action() {
+        // The over-age demoted hold, moved to trim by a validated carve-out:
+        // the final action is a model decision, so the demotion stamp no longer
+        // applies — and the carried stale lean (add ≠ trim) gets the app stamp.
+        let (holdings, actions) = merge_fixture(Action::Trim);
+        let mut verdicts = vec![merge_verdict(
+            "AAA",
+            Action::Hold,
+            Some(Action::Add),
+            ActionSource::RuleDemoted,
+        )];
+        let carried: HashSet<String> = ["AAA".to_string()].into();
+        let profile = InvestorProfile::default_fixture();
+        let divergence =
+            merge_validated_actions(&mut verdicts, &actions, &holdings, &profile, &carried);
+        let v = &verdicts[0];
+        assert_eq!(v.action_source, ActionSource::ModelChosen);
+        match &v.disposition {
+            VerdictDisposition::Priced(g) => {
+                assert_eq!(g.action, Action::Trim);
+                assert_eq!(g.action_sizing.target_weight_low, 0.04);
+                assert_eq!(g.action_sizing.sizing_rationale.as_deref(), Some("concentration"));
+            }
+            _ => panic!("expected priced"),
+        }
+        assert!(divergence.get("AAA").unwrap().starts_with("carried-stale-lean:"));
+    }
+
+    #[test]
+    fn merge_keeps_rule_demoted_on_a_reaffirmed_demoted_hold() {
+        // Construction re-affirms the demoted hold: no model decision moved the
+        // action, so the demotion stamp stands; the stale lean still stamps.
+        let (holdings, actions) = merge_fixture(Action::Hold);
+        let mut verdicts = vec![merge_verdict(
+            "AAA",
+            Action::Hold,
+            Some(Action::Add),
+            ActionSource::RuleDemoted,
+        )];
+        let carried: HashSet<String> = ["AAA".to_string()].into();
+        let profile = InvestorProfile::default_fixture();
+        let divergence =
+            merge_validated_actions(&mut verdicts, &actions, &holdings, &profile, &carried);
+        assert_eq!(verdicts[0].action_source, ActionSource::RuleDemoted);
+        assert!(divergence.get("AAA").unwrap().starts_with("carried-stale-lean:"));
+    }
+
+    #[test]
+    fn merge_stamps_nothing_for_a_fresh_matched_row() {
+        // A fresh row whose validated divergence is `None` (matched) stays
+        // unstamped — `None` = matched holds on the episode contract.
+        let (holdings, actions) = merge_fixture(Action::Hold);
+        let mut verdicts = vec![merge_verdict(
+            "AAA",
+            Action::Hold,
+            Some(Action::Hold),
+            ActionSource::ModelChosen,
+        )];
+        let carried: HashSet<String> = HashSet::new();
+        let profile = InvestorProfile::default_fixture();
+        let divergence =
+            merge_validated_actions(&mut verdicts, &actions, &holdings, &profile, &carried);
+        assert!(divergence.is_empty());
+        assert_eq!(verdicts[0].action_source, ActionSource::ModelChosen);
     }
 }

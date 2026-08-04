@@ -608,6 +608,18 @@ export interface SizingSpineRow {
   offered: PortfolioAction[];
   context_trim_carveout: boolean;
   tax_note: string | null;
+  // role_risk_only decision inputs (null/empty on priced): 7b is that branch's
+  // sole action author, so the verdict's reads ride the spine.
+  class_label: string | null;
+  role_summary: string | null;
+  expense_drag: number | null;
+  observable_risk: number | null;
+  structural_flag: boolean;
+  exposure_tilt: ExposureWeight[];
+  evidence_gaps: string[];
+  // Same-underlying option-overlay read (covered call / protective put +
+  // coverage), classified from the snapshot's OCC option rows; both branches.
+  option_overlay: string | null;
 }
 
 // One sector row of the whole-book exposure table (direct + fund-folded).
