@@ -64,8 +64,25 @@ pub struct HoldingDossier {
     /// against the current [`crate::portfolio::engine::GRADE_PARAMETER_VERSION`] so a
     /// band recalibration's letter move is attributed to the retune, not to evidence.
     pub prior_grade_parameter_version: Option<String>,
+    /// The prior run's pre-profit overlay record (from the audit row) — the
+    /// period-keyed observation history accumulates through it
+    /// (`docs/portfolio-analysis.md` §Starting parameters). `None` on a debut, a
+    /// pre-overlay run, or a fund.
+    pub prior_pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
     /// The data sources that contributed, for the run's audit record.
     pub sources: Vec<String>,
+}
+
+/// The prior run's carry-over for one holding, read off the latest persisted run:
+/// the verdict (continuity input) plus the audit-row legs the next pass consumes.
+#[derive(Debug, Clone)]
+pub struct PriorHolding {
+    pub verdict: HoldingVerdict,
+    /// The grade-band parameter version the prior letter was computed under
+    /// (`None` = a pre-stamp run, i.e. the v1 bands).
+    pub grade_parameter_version: Option<String>,
+    /// The prior pre-profit overlay record — the observation history's carry path.
+    pub pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
 }
 
 impl HoldingDossier {
@@ -94,9 +111,18 @@ impl HoldingDossier {
 /// revenue), else stays an honest gap even when SEC has an annual print. Returns
 /// whether the basis was adopted, so the SEC merge confines itself to fallback.
 pub fn apply_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
+    // Newest-first with the latest filing winning a duplicated period — the shared
+    // canonicalization policy (`pre_profit::statement_inputs` holds the same rule):
+    // a restatement served twice must resolve to the restated print, never to wire
+    // order, or the TTM basis (and with it the letter) would depend on response
+    // ordering.
     let mut rows: Vec<&crate::portfolio::engine::QuarterlyIncomeRow> =
         fin.quarterly_income.iter().collect();
-    rows.sort_by(|a, b| b.period_end.cmp(&a.period_end));
+    rows.sort_by(|a, b| {
+        b.period_end
+            .cmp(&a.period_end)
+            .then_with(|| b.filing_date.cmp(&a.filing_date))
+    });
     rows.dedup_by(|a, b| a.period_end == b.period_end);
 
     fn sum4(
@@ -193,11 +219,11 @@ pub fn assemble(
     profile: InvestorProfile,
     house_view: HouseView,
     fund: Option<crate::portfolio::fund::FundContext>,
-    prior: Option<(HoldingVerdict, Option<String>)>,
+    prior: Option<PriorHolding>,
 ) -> HoldingDossier {
-    let (prior_verdict, prior_grade_parameter_version) = match prior {
-        Some((verdict, version)) => (Some(verdict), version),
-        None => (None, None),
+    let (prior_verdict, prior_grade_parameter_version, prior_pre_profit) = match prior {
+        Some(p) => (Some(p.verdict), p.grade_parameter_version, p.pre_profit),
+        None => (None, None, None),
     };
     let mut fmp_financials = fmp_financials;
     let ttm_basis = apply_ttm_statement_basis(&mut fmp_financials);
@@ -238,6 +264,7 @@ pub fn assemble(
         fund,
         prior_verdict,
         prior_grade_parameter_version,
+        prior_pre_profit,
         sources,
     }
 }
@@ -322,26 +349,31 @@ pub fn extract_house_view_sections(markdown: &str) -> String {
     out.trim().to_string()
 }
 
-/// Look up the prior run's verdict for one holding (the continuity input), paired
-/// with the grade-band parameter version its letter was computed under (read from the
-/// prior run's audit row; `None` = a pre-stamp run, i.e. the v1 bands). Reads the
+/// Look up the prior run's carry-over for one holding (the continuity input): the
+/// verdict plus the audit-row legs — the grade-band parameter version its letter
+/// was computed under (`None` = a pre-stamp run, i.e. the v1 bands) and the
+/// pre-profit overlay record whose observation history accumulates. Reads the
 /// latest persisted run and finds the matching symbol; `None` on a first run or a
 /// newly-added holding. Fail-soft — a read error reads as "no prior verdict".
-pub fn prior_verdict_for(
-    conn: &Connection,
-    symbol: &str,
-) -> Option<(HoldingVerdict, Option<String>)> {
+pub fn prior_verdict_for(conn: &Connection, symbol: &str) -> Option<PriorHolding> {
     let run = crate::portfolio::store::latest_run(conn).ok().flatten()?;
     let verdict = run
         .verdicts
         .into_iter()
         .find(|v| v.symbol.eq_ignore_ascii_case(symbol))?;
-    let grade_parameter_version = run
+    let audit_row = run
         .audit
         .into_iter()
-        .find(|a| a.symbol.eq_ignore_ascii_case(symbol))
-        .and_then(|a| a.grade_parameter_version);
-    Some((verdict, grade_parameter_version))
+        .find(|a| a.symbol.eq_ignore_ascii_case(symbol));
+    let (grade_parameter_version, pre_profit) = match audit_row {
+        Some(a) => (a.grade_parameter_version, a.pre_profit),
+        None => (None, None),
+    };
+    Some(PriorHolding {
+        verdict,
+        grade_parameter_version,
+        pre_profit,
+    })
 }
 
 #[cfg(test)]
@@ -415,6 +447,7 @@ mod tests {
                     eps_diluted: None,
                     diluted_shares: None,
                     net_income: Some(0.22 * revenue),
+                    operating_income: None,
                     gross_profit: gross_profit.then_some(0.45 * revenue),
                     cost_of_revenue: cost_of_revenue.then_some(0.55 * revenue),
                 }
@@ -578,6 +611,36 @@ Watch the 2s10s and the labor prints.
     }
 
     #[test]
+    fn ttm_basis_resolves_conflicting_duplicate_periods_to_the_latest_filing() {
+        // The newest quarter served twice with different prints (a restatement):
+        // the later-filed row must set the TTM basis in either arrival order —
+        // the letter cannot depend on response ordering.
+        let base = |order_restated_first: bool| {
+            let mut rows = quarters(8, true, false);
+            rows[0].filing_date = Some("2026-07-01".into());
+            let mut restated = rows[0].clone();
+            restated.revenue = Some(150.0);
+            restated.filing_date = Some("2026-08-01".into());
+            if order_restated_first {
+                rows.insert(0, restated);
+            } else {
+                rows.push(restated);
+            }
+            let mut fin = CompanyFinancials {
+                quarterly_income: rows,
+                ..CompanyFinancials::default()
+            };
+            assert!(apply_ttm_statement_basis(&mut fin));
+            fin.revenue
+        };
+        let tail = base(false);
+        let head = base(true);
+        assert_eq!(tail, head, "order-independent");
+        // Restated 150 + the next three quarters (99 + 98 + 97).
+        assert_eq!(tail, Some(150.0 + 99.0 + 98.0 + 97.0));
+    }
+
+    #[test]
     fn prior_verdict_lookup_reads_the_latest_run() {
         let conn = Connection::open_in_memory().unwrap();
         storage::init_schema(&conn).unwrap();
@@ -620,10 +683,11 @@ Watch the 2s10s and the labor prints.
             rate_prints: None,
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
-        let (prior, version) = prior_verdict_for(&conn, "aapl").expect("case-insensitive match");
-        assert_eq!(prior.symbol, "AAPL");
+        let prior = prior_verdict_for(&conn, "aapl").expect("case-insensitive match");
+        assert_eq!(prior.verdict.symbol, "AAPL");
         // No audit row for the symbol -> a pre-stamp read (the v1 bands).
-        assert_eq!(version, None);
+        assert_eq!(prior.grade_parameter_version, None);
+        assert!(prior.pre_profit.is_none());
     }
 
     #[test]
@@ -673,11 +737,12 @@ Watch the 2s10s and the labor prints.
                 ledger_audit: None,
                 quick_basis: None,
                 fund_exposure: None,
+                pre_profit: None,
             }],
             rate_prints: None,
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
-        let (_, version) = prior_verdict_for(&conn, "AAPL").expect("verdict present");
-        assert_eq!(version.as_deref(), Some("grade-v2"));
+        let prior = prior_verdict_for(&conn, "AAPL").expect("verdict present");
+        assert_eq!(prior.grade_parameter_version.as_deref(), Some("grade-v2"));
     }
 }

@@ -756,11 +756,11 @@ fn run_analysis(
         // insufficient-evidence exit below, since an abstention is not a full pass
         // and the evidence-event boundary must not silently advance past events no
         // pass examined (`docs/portfolio-analysis.md` §Evidence floor).
-        let prior_vintage = prior.as_ref().map(|(v, _)| {
-            crate::portfolio::effective_vintage(v, prior_created_at.as_deref().unwrap_or(""))
+        let prior_vintage = prior.as_ref().map(|p| {
+            crate::portfolio::effective_vintage(&p.verdict, prior_created_at.as_deref().unwrap_or(""))
                 .to_string()
         });
-        if let Some((verdict, _)) = prior.as_mut() {
+        if let Some(verdict) = prior.as_mut().map(|p| &mut p.verdict) {
             // The freshest condition evaluation states win: a force-included
             // holding's in-run tail sweep already chained from the persisted
             // store, so its states supersede the store's; a selected holding
@@ -1262,6 +1262,7 @@ mod tests {
                         gross_profit: None,
                         cost_of_revenue: None,
                         diluted_shares: Some(1.5e10),
+                        operating_income: None,
                     })
                     .collect(),
                 consensus: Some(ConsensusEstimate {
@@ -2460,13 +2461,18 @@ mod tests {
             other => panic!("expected carried priced verdicts, got {other:?}"),
         }
         // The carried audit row rides along — the stored re-anchor basis must
-        // survive the carry or the next sweep reads the holding `unknown`.
+        // survive the carry or the next sweep reads the holding `unknown`, and the
+        // pre-profit overlay record (the observation history's home) rides with it.
         let msft_audit = second
             .audit
             .iter()
             .find(|a| a.symbol == "MSFT")
             .expect("carried audit row");
         assert!(msft_audit.quick_basis.is_some());
+        assert!(
+            msft_audit.pre_profit.is_some(),
+            "the overlay record survives the whole-row audit carry"
+        );
         // The roll-up ran over the mixed-vintage verdicts.
         assert_eq!(second.roll_up.graded_count, 2);
         // The carried holding's sweep state is retained, re-stamped to the new
