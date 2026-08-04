@@ -326,8 +326,10 @@ slice** (2026-08-03, `portfolio-v4`; five review rounds to convergence):
 the persisted per-holding standing thesis, as-built under Portfolio
 Analysis below — and the **quick check slice** (2026-08-03, PR #56; eight
 external review rounds to convergence), the engine-only between-run sweep,
-as-built under Portfolio Analysis below. **Trade Opportunities and the
-remaining Portfolio depth slices (selective re-analysis, held-name refresh
+as-built under Portfolio Analysis below — and the **selective re-analysis
+slice** (2026-08-04, PR #57; internal + two Codex rounds to convergence),
+the chosen-subset re-run, as-built under Portfolio Analysis below. **Trade
+Opportunities and the remaining Portfolio depth slices (held-name refresh
 lane, pre-profit overlay, outcome learning, the 7b construction stage, the
 live research loop) remain designed, not built.** The load-bearing decisions:
 
@@ -541,11 +543,33 @@ live research loop) remain designed, not built.** The load-bearing decisions:
   breadth-flip sub-leg, material filings = 10-K/10-Q/8-K prefix, the
   FINRA leg structurally unreachable (no short-interest series in the
   closed 12-series surface).
-  **Selective re-analysis** re-runs a chosen subset under three safety rules
-  (force-include on flags / `unknown` degraded sweeps / side reversals /
-  deterministic evidence events / a capped held-name research refresh's
-  material update, the carried-action transition rule, over-age
-  add-demotion). The **held-name research refresh lane** checks at most two
+  **Selective re-analysis** (built 2026-08-04, PR #57): Run analysis with a
+  per-card selection analyzes the work-list — selection ∪ new-since-last-run
+  ∪ no-prior-verdict, side reversals (`PositionDelta::side_reversed`),
+  over-age exit-family carries, plus the **in-run tail sweep's** flags /
+  `unknown` families / unexamined evidence events (the quick-check core made
+  subset-capable, `quick_check::sweep_tail`; it reuses the run's fresh rate
+  prints, no second FRED call) — and carries the rest forward
+  **vintage-stamped**: `HoldingVerdict.analyzed_at` (a fresh pass stamps the
+  run's `created_at`; an insufficient-evidence exit preserves its prior
+  vintage), with the **evidence-event boundary now the per-holding vintage**,
+  never the run's `created_at`, in the standalone quick check too. A carried
+  verdict keeps its ledger with the sweep's eval states overlaid, its prior
+  audit row whole (`quick_basis` / `fund_exposure` survive the carry), its
+  `position_change` refreshed from this run's diff, and its **action sizing
+  recomputed at current weights** on both branches (sizing is engine
+  context, never carried stale); an over-age carried add-family action
+  rule-demotes to *hold*, stamped **`action_source: rule-demoted`** (the
+  canonical `model-chosen` / `rule-demoted` vocabulary, persisted on every
+  verdict). The persist seam retains carried holdings' sweep state
+  re-stamped to the new run, beside the abstention retention. Deliberate
+  waits: the transition rule's model-facing validation (incl. the
+  context-trim carve-out) rides the 7b stage — with no construction call,
+  carried actions only re-affirm or demote toward hold, so the rule holds by
+  construction — and the refresh-lane force-include leg rides its lane.
+  Frontend: per-card selection + select-all/clear, the "Analyze N selected"
+  trigger, carried / stale vintage tags and the demotion tag in the quiet
+  badge family. The **held-name research refresh lane** checks at most two
   otherwise-reused-or-carried holdings per run against one named qualitative
   ledger driver / falsifier and can only force the normal full pass; it never
   changes a verdict. A deterministic **pre-profit execution / financing
@@ -612,8 +636,12 @@ ThesisAnchor + clamp render; the data-health render; the reasoning panes;
 the first live quick-check sweep at 47-position scale (flag / badge /
 degraded-note render, the card overlay) and the debut-gap self-resolution
 (the rate-anchor and pre-basis fund families read `unknown` until the big
-run re-persists); 128 K runner stability; distill speed; whether Stooq's
-PoW gate is permanent). **Trade
+run re-persists); the first live **selective run** (selection UI, the
+in-run tail sweep, carried-card vintage / stale / demotion render at
+scale — and whether the `PriceOutsideBand` flag on an
+authoring-time-outside band is signal or noise, since such a holding
+force-includes on every selective run until re-analyzed); 128 K runner
+stability; distill speed; whether Stooq's PoW gate is permanent). **Trade
 Opportunities waits behind the whole block** (design settled — full strategy
 audit plus three external review rounds to convergence, 2026-07-09; the paid
 FMP key's shapes live-verified 2026-07-16, so implementation planning codes
@@ -657,25 +685,27 @@ pre-flight completed 2026-07-28, Ollama pinned v0.32.5 —
   above (target provenance, the softened dead-money weighing, the conviction
   definition, house-view scoping, the band-recalibration continuity NOTE).
 
-The **first two depth slices are done** — the **thesis ledger**
-(2026-08-03, `portfolio-v4`) and the **quick check** (2026-08-03, PR #56),
-as-built contracts in §Local analysis suite. Together they supply the
-selective slice's full triggering surface: validated quantitative
-conditions with eval state + cadence tags, app-stamped monitor bands, the
-acknowledgment transition, the engine seams (`engine::resolve_series`,
+The **first three depth slices are done** — the **thesis ledger**
+(2026-08-03, `portfolio-v4`), the **quick check** (2026-08-03, PR #56),
+and **selective re-analysis** (2026-08-04, PR #57) — as-built contracts in
+§Local analysis suite. The ledger + sweep supplied the selective
+machinery's triggering surface (validated conditions with eval state +
+cadence tags, app-stamped monitor bands, the acknowledgment transition,
+the engine seams — `engine::resolve_series`,
 `engine::evaluate_ledger_conditions[_gated]`,
-`engine::reanchor_scenarios`), and the sweep's per-holding flags,
-`unknown` degraded families, and accumulated unexamined evidence events.
+`engine::reanchor_scenarios`); the selective slice adds the seams the
+later slices consume: per-holding vintages (`effective_vintage`), the
+persisted `action_source` vocabulary, and the subset sweep
+(`quick_check::sweep_tail`).
 
-**Remaining in the block, in order: the depth slices** — **selective
-re-analysis** next (force-include off the sweep's flags / `unknown`
-families / evidence events; the evidence-event boundary must move from
-the run's `created_at` to per-holding vintages with it), then the
-**pre-profit overlay**, **outcome learning**,
-and the **7b construction stage** — with the two small, display-only
-result-review UI fixes (the Portfolio-page polish micro-slice; the
-section-scoped footer + report-nav slice) slotting anywhere between slices
-as breathers. Excluded from the block and still designed-not-built: the
+**Remaining in the block, in order: the depth slices** — the **pre-profit
+overlay** next, then **outcome learning** and the **7b construction
+stage** (which picks up the carried-action transition-rule validation —
+toward-hold-only plus the aggregate-validated context trim — over the
+now-persisted `action_source` + vintage stamps) — with the two small,
+display-only result-review UI fixes (the Portfolio-page polish
+micro-slice; the section-scoped footer + report-nav slice) slotting
+anywhere between slices as breathers. Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
 shipped schemas don't preclude them. Two structural gaps ride the queue
 rather than any one slice: **checkpoint/resume** stays docs-promised but
