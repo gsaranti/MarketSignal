@@ -825,3 +825,102 @@ describe("PortfolioView selective re-analysis", () => {
     expect(xyzCard.text()).not.toContain("analyzed");
   });
 });
+
+describe("PortfolioView construction stage", () => {
+  // A run shaped by the 7b construction stage: a lean divergence, a sizing
+  // rationale, the action half of the what-changed audit, and the roll-up's
+  // portfolio-level view.
+  const constructedRun: PortfolioRun = {
+    ...run,
+    verdicts: [
+      // Final trim diverging from a hold lean, with the construction rationale
+      // and a context-attributed action change.
+      verdict("MSFT", {
+        status: "priced",
+        ...graded({
+          action: "trim",
+          lean: "hold",
+          action_sizing: {
+            target_weight_low: 0.2,
+            target_weight_high: 0.35,
+            est_share_delta: null,
+            est_dollar_delta: -6_000,
+            sizing_rationale: "Trim the oversized sleeve toward the band.",
+          },
+          action_what_changed: {
+            attribution: "moved-context",
+            cause: "became-oversized",
+            note: "50% of the book after the rally",
+          },
+        }),
+      }),
+      // Lean equal to the action: no divergence tag.
+      verdict("AAPL", {
+        status: "priced",
+        ...graded({ action: "hold", lean: "hold" }),
+      }),
+    ],
+    roll_up: {
+      ...run.roll_up,
+      construction: {
+        risk_posture: "Balanced, equity-heavy.",
+        deployment_stance: "Trim MSFT to fund nothing — raise cash.",
+        concentration_read: "MSFT breaches the single-position comfort band.",
+        closed_positions_note: "TSLA exited since the last run.",
+        external_funding: -6_000,
+        implied_total: 60_000,
+        retried: true,
+      },
+    },
+  };
+
+  test("a diverged lean renders the quiet tag; a matching lean renders none", () => {
+    const wrapper = mountView({ run: constructedRun });
+    const msft = wrapper
+      .findAll(".holding-card")
+      .find((c) => c.text().includes("MSFT"))!;
+    const tag = msft.find(".hc-lean-tag");
+    expect(tag.exists()).toBe(true);
+    expect(tag.text()).toBe("Lean: Hold");
+    const aapl = wrapper
+      .findAll(".holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
+    expect(aapl.find(".hc-lean-tag").exists()).toBe(false);
+  });
+
+  test("the sizing rationale and the action half of what-changed render", () => {
+    const wrapper = mountView({ run: constructedRun });
+    const msft = wrapper
+      .findAll(".holding-card")
+      .find((c) => c.text().includes("MSFT"))!;
+    expect(msft.find(".hc-rationale").text()).toContain("oversized sleeve");
+    const actionLine = msft.find(".hc-changed-action");
+    expect(actionLine.exists()).toBe(true);
+    expect(actionLine.text()).toContain("moved on portfolio context");
+    expect(actionLine.text()).toContain("became oversized");
+    expect(actionLine.text()).toContain("50% of the book");
+  });
+
+  test("the roll-up renders the portfolio view with the funding line and re-run tag", () => {
+    const wrapper = mountView({ run: constructedRun });
+    const rollup = wrapper.find(".rollup");
+    const view = rollup.find(".rollup-construction");
+    expect(view.exists()).toBe(true);
+    expect(view.text()).toContain("Balanced, equity-heavy.");
+    expect(view.text()).toContain("Trim MSFT to fund nothing");
+    // Negative external funding reads as net cash raised, never "funding".
+    expect(view.text()).toContain("net cash raised");
+    expect(view.text()).not.toContain("external funding implied");
+    expect(view.text()).toContain("TSLA exited since the last run.");
+    expect(view.find(".rollup-retried-tag").exists()).toBe(true);
+  });
+
+  test("a pre-construction run renders no lean tag and no construction section", () => {
+    // The base fixture predates the construction stage (no lean, no view) —
+    // the serde-default back-compat contract, mirrored in the render.
+    const wrapper = mountView({ run });
+    expect(wrapper.find(".hc-lean-tag").exists()).toBe(false);
+    expect(wrapper.find(".hc-rationale").exists()).toBe(false);
+    expect(wrapper.find(".rollup-construction").exists()).toBe(false);
+  });
+});

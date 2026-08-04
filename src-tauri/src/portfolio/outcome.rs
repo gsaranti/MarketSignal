@@ -285,13 +285,15 @@ pub struct CalibrationSnapshot {
 pub struct PricedEpisode {
     /// The final portfolio action.
     pub action: Action,
-    /// The standalone lean. **As-built equal to the action** — the 7b construction
-    /// stage is unbuilt, so the 6f action *is* the lean (`engine.rs`
-    /// `feasible_actions`); the field exists so the 7b slice diverges them without
-    /// an episode-schema migration.
+    /// The standalone lean — the 6f-authored intrinsic rung the construction
+    /// stage reconciled (`docs/portfolio-analysis.md §Outcome learning`: the
+    /// intrinsic calibration reads key on this, never the construction-shaped
+    /// final action). Equal to the action on a pre-construction verdict, whose
+    /// action *was* the lean.
     pub lean: Action,
-    /// The divergence-from-lean rationale (the action half's attribution category)
-    /// once 7b can diverge them; `None` = matched.
+    /// The divergence-from-lean rationale where the final action departed the
+    /// lean — the validated context cause (`portfolio-context (…)`) or the
+    /// app-stamped engine bar (`engine-bar: …`); `None` = matched.
     #[serde(default)]
     pub lean_divergence: Option<String>,
     /// The ledger's pre-committed target-weight range — the construction read's
@@ -1431,6 +1433,11 @@ pub struct PlanInput<'a> {
     /// decision's carrier), so a lost row can't leave the current decision
     /// untracked until the next state change.
     pub unreadable_active_symbols: HashSet<String>,
+    /// The construction stage's divergence-from-lean records (uppercase symbol →
+    /// the validated cause line — `docs/portfolio-analysis.md §Outcome learning`:
+    /// the divergence rationale is a per-episode fact, never a join against an
+    /// audit record that ages out). Empty on runs with no divergences.
+    pub lean_divergence_by_symbol: &'a HashMap<String, String>,
 }
 
 /// What the plan changed.
@@ -1538,8 +1545,10 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                 let body = match &verdict.disposition {
                     VerdictDisposition::Priced(g) => EpisodeBody::Priced(Box::new(PricedEpisode {
                         action: g.action,
-                        lean: g.action,
-                        lean_divergence: None,
+                        // The standalone lean — pre-construction verdicts carry
+                        // no lean field, and their action *was* the lean.
+                        lean: g.lean.unwrap_or(g.action),
+                        lean_divergence: input.lean_divergence_by_symbol.get(&key).cloned(),
                         target_weight_low: ledger_weights(verdict).map(|w| w.0),
                         target_weight_high: ledger_weights(verdict).map(|w| w.1),
                         snapshot: CalibrationSnapshot {
@@ -2026,11 +2035,14 @@ mod tests {
                 risk: 65.0,
             },
             action,
+            lean: Some(action),
+            action_what_changed: None,
             action_sizing: ActionSizing {
                 target_weight_low: 0.04,
                 target_weight_high: 0.06,
                 est_share_delta: None,
                 est_dollar_delta: None,
+                sizing_rationale: None,
             },
             conviction: Conviction::Medium,
             horizon_outlook: HorizonOutlook {
@@ -2102,6 +2114,11 @@ mod tests {
         v
     }
 
+    fn empty_divergence() -> &'static HashMap<String, String> {
+        static EMPTY: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
+        EMPTY.get_or_init(HashMap::new)
+    }
+
     fn plan_input<'a>(
         run_id: &'a str,
         created_at: &'a str,
@@ -2116,6 +2133,7 @@ mod tests {
             audits: &[],
             prior_verdicts: prior,
             sector_by_symbol: sector,
+            lean_divergence_by_symbol: empty_divergence(),
             dgs2: Some(0.04),
             unreadable_active_symbols: HashSet::new(),
         }
