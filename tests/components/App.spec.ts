@@ -1001,6 +1001,31 @@ describe("App.vue portfolio wiring", () => {
     wrapper.unmount();
   });
 
+  test("a run emit's selection payload reaches the invoke; none sends null", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({ generate_portfolio_manual: () => samplePortfolioRun })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+
+    // A selective run: the per-card selection rides the emit into the command.
+    wrapper.findComponent(PortfolioView).vm.$emit("run", ["AAPL", "MSFT"]);
+    await flushPromises();
+    expect(tauri.invoke).toHaveBeenCalledWith("generate_portfolio_manual", {
+      selected: ["AAPL", "MSFT"],
+    });
+
+    // No selection: the whole-book run, selected explicitly null.
+    wrapper.findComponent(PortfolioView).vm.$emit("run");
+    await flushPromises();
+    expect(tauri.invoke).toHaveBeenCalledWith("generate_portfolio_manual", {
+      selected: null,
+    });
+    wrapper.unmount();
+  });
+
   test("a quick check's trace never renders on the report pane left in tracker mode", async () => {
     // The gap this pins: a failed report run leaves the report pane in tracker
     // mode; a quick check then replaces the shared trace. The report pane's

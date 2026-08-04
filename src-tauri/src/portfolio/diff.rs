@@ -244,6 +244,26 @@ mod tests {
     }
 
     #[test]
+    fn side_reversal_predicate_reads_the_sign_flip_at_any_magnitude() {
+        // The selective-run force-include reads this predicate off the diff's
+        // delta (`docs/portfolio-analysis.md` §Triggering) — a flip must register
+        // at equal magnitude too, where the size-based classification alone
+        // could miss it.
+        let prior = holdings(vec![pos("XYZ", 100.0), pos("AAPL", 100.0)]);
+        let current = holdings(vec![pos("XYZ", -100.0), pos("AAPL", 140.0)]);
+        let diff = diff_holdings(Some(&prior), &current);
+        assert!(diff.delta_for("XYZ").side_reversed(-100.0), "long → short at equal magnitude");
+        assert!(!diff.delta_for("AAPL").side_reversed(140.0), "a same-side add is no reversal");
+        let short_to_long = diff_holdings(
+            Some(&holdings(vec![pos("XYZ", -50.0)])),
+            &holdings(vec![pos("XYZ", 10.0)]),
+        );
+        assert!(short_to_long.delta_for("XYZ").side_reversed(10.0), "short → long at unequal magnitude");
+        // No prior counterpart: nothing to reverse from.
+        assert!(!diff_holdings(None, &current).delta_for("XYZ").side_reversed(-100.0));
+    }
+
+    #[test]
     fn symbol_matching_is_case_insensitive() {
         let prior = holdings(vec![pos("aapl", 100.0)]);
         let current = holdings(vec![pos("AAPL", 130.0)]);

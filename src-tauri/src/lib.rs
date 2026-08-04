@@ -679,6 +679,7 @@ async fn generate_portfolio_manual(
     app: tauri::AppHandle,
     guard: tauri::State<'_, RunGuard>,
     cancel: tauri::State<'_, CancelFlag>,
+    selected: Option<Vec<String>>,
 ) -> Result<portfolio::PortfolioRun, String> {
     // Read config on a short-lived connection dropped before the await (a
     // `rusqlite::Connection` is not `Send`).
@@ -715,7 +716,7 @@ async fn generate_portfolio_manual(
             roster.reasoner.clone(),
             roster.fast.clone(),
         );
-        let fmp = FmpDataSource::new(fmp_key)
+        let fmp = FmpDataSource::new(fmp_key.clone())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let sec = sec::SecEdgarSource::new()
@@ -746,12 +747,45 @@ async fn generate_portfolio_manual(
         // prompt.
         let holdings: Box<dyn schwab::HoldingsSource> = build_holdings_source(&cfg)?;
 
+        // A per-card selection makes this a **selective re-analysis**
+        // (`docs/portfolio-analysis.md` §Triggering): the in-run safety sweep over
+        // the unselected tail needs the quick check's engine-only retrieval surface
+        // (FMP + SEC + FRED — no model, no Schwab call), so it is built only when a
+        // selection is active. An empty selection runs the whole book.
+        let selected = selected.unwrap_or_default();
+        let quick_data = if selected.is_empty() {
+            None
+        } else {
+            let qc_fmp = FmpDataSource::new(fmp_key)
+                .map_err(|e| e.to_string())?
+                .with_context(ctx.clone());
+            let qc_sec = sec::SecEdgarSource::new()
+                .map_err(|e| e.to_string())?
+                .with_context(ctx.clone());
+            let qc_cik = sec::load_cik_resolver(&cik_cache, &qc_sec);
+            let qc_fred =
+                crate::fred::FredDataSource::new(cfg.fred_api_key.clone().unwrap_or_default())
+                    .map_err(|e| e.to_string())?
+                    .with_context(ctx.clone());
+            Some(portfolio::quick_check::LiveQuickCheckData {
+                fmp: qc_fmp,
+                sec: qc_sec,
+                cik: qc_cik,
+                fred: qc_fred,
+            })
+        };
+        let selective = quick_data.as_ref().map(|qd| portfolio::job::SelectiveRun {
+            selected: selected.clone(),
+            quick_data: qd,
+        });
+
         portfolio::job::run_portfolio_job(
             holdings.as_ref(),
             &company,
             &market,
             &analyst,
             &profile,
+            selective,
             &paths,
             &guard,
             &ctx,

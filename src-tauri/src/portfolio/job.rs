@@ -312,6 +312,51 @@ pub enum PortfolioJobOutcome {
     Cancelled(String),
 }
 
+/// A **selective re-analysis** request (`docs/portfolio-analysis.md` §Triggering):
+/// the user's per-card selection plus the retrieval surface the in-run safety sweep
+/// over the unselected tail needs — bundled so a selective run without its sweep
+/// source is unrepresentable (the sweep is the first of the three mixed-vintage
+/// safety rules, never optional). `None` — or an empty selection, or no prior run
+/// to carry from — runs the whole book.
+pub struct SelectiveRun<'a> {
+    /// The selected symbols (case-insensitive; silently intersected with the
+    /// current book — a selected symbol no longer held is an exited position).
+    pub selected: Vec<String>,
+    /// The engine-only retrieval surface for the tail sweep.
+    pub quick_data: &'a dyn crate::portfolio::quick_check::QuickCheckDataSource,
+}
+
+/// The over-age boundary for a carried verdict — aligned with the suite's ~4-week
+/// research-freshness window (`docs/portfolio-analysis.md` §Triggering; §Starting
+/// parameters — drafted). Beyond it a carried exit-family action force-includes
+/// and a carried add-family action rule-demotes to *hold*. Mirrored by the
+/// card-facing stale badge (`src/components/PortfolioView.vue` `OVER_AGE_DAYS`)
+/// — recalibrating one means recalibrating both.
+const OVER_AGE_DAYS: i64 = 28;
+
+/// Whether a vintage timestamp is over-age against `today`. An unparseable
+/// vintage reads over-age — the conservative resolution, since the stale-carry
+/// rules exist to keep an unverifiable strong action from standing.
+fn over_age(vintage: &str, today: chrono::NaiveDate) -> bool {
+    match vintage
+        .get(..10)
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+    {
+        Some(d) => (today - d).num_days() > OVER_AGE_DAYS,
+        None => true,
+    }
+}
+
+/// The action a carried verdict would stand on — `None` where the disposition
+/// carries no action (not-rated / insufficient-evidence).
+fn carried_action(verdict: &HoldingVerdict) -> Option<crate::portfolio::Action> {
+    match &verdict.disposition {
+        crate::portfolio::VerdictDisposition::Priced(g) => Some(g.action),
+        crate::portfolio::VerdictDisposition::RoleRiskOnly(r) => Some(r.action),
+        _ => None,
+    }
+}
+
 /// Run one Portfolio Analysis job end to end with the lifecycle contract. Returns
 /// `Err` only on an infrastructure failure (the database); a failed analysis is a
 /// normal `Ok(Failed)`. The model/persistence half is **fail-hard** (a model error
@@ -323,6 +368,7 @@ pub fn run_portfolio_job(
     market: &dyn MarketContextSource,
     analyst: &dyn HoldingAnalyst,
     profile: &InvestorProfile,
+    selective: Option<SelectiveRun<'_>>,
     paths: &ReportPaths,
     guard: &RunGuard,
     ctx: &RunContext,
@@ -361,6 +407,7 @@ pub fn run_portfolio_job(
         market,
         analyst,
         profile,
+        selective,
         paths,
         &conn,
         ctx,
@@ -433,6 +480,7 @@ fn run_analysis(
     market: &dyn MarketContextSource,
     analyst: &dyn HoldingAnalyst,
     profile: &InvestorProfile,
+    selective: Option<SelectiveRun<'_>>,
     paths: &ReportPaths,
     conn: &Connection,
     ctx: &RunContext,
@@ -451,8 +499,8 @@ fn run_analysis(
     // prior snapshot", so every position tags `new`, exactly as a first run does.
     let prior_run = store::latest_run(conn).ok().flatten();
     let prior_run_id = prior_run.as_ref().map(|r| r.run_id.clone());
-    let prior_holdings = prior_run.map(|r| r.holdings);
-    let holdings_diff = diff::diff_holdings(prior_holdings.as_ref(), &holdings);
+    let prior_created_at = prior_run.as_ref().map(|r| r.created_at.clone());
+    let holdings_diff = diff::diff_holdings(prior_run.as_ref().map(|r| &r.holdings), &holdings);
 
     // The quick-check store's fresher condition evaluation states — overlaid onto
     // each prior ledger before this run evaluates it, so the between-run sweeps'
@@ -482,6 +530,102 @@ fn run_analysis(
         }
     };
 
+    // ---- Selective work-list (`docs/portfolio-analysis.md` §Triggering) ------
+    // The initial work-list is the selection plus every holding new since the
+    // last run; the safety sweep and the deterministic legs below then expand it
+    // with every force-inclusion. `None` = the whole-book run — including a
+    // selective request with an empty selection or no prior run to carry from.
+    let today = chrono::Utc::now().date_naive();
+    let mut swept_tail: std::collections::HashMap<
+        String,
+        crate::portfolio::quick_check::HoldingQuickState,
+    > = std::collections::HashMap::new();
+    let work_list: Option<std::collections::HashSet<String>> = match (&selective, &prior_run) {
+        (Some(sel), Some(prior)) if !sel.selected.is_empty() => {
+            let book: std::collections::HashSet<String> = holdings
+                .positions
+                .iter()
+                .map(|p| p.symbol.to_ascii_uppercase())
+                .collect();
+            let mut work: std::collections::HashSet<String> = sel
+                .selected
+                .iter()
+                .map(|s| s.to_ascii_uppercase())
+                .filter(|s| book.contains(s))
+                .collect();
+            // The deterministic force-include legs that need no retrieval: a
+            // holding new since the last run (no verdict to carry), a position
+            // whose net side reversed (thesis-changing by construction — no
+            // carried verdict survives it), and an over-age carried exit-family
+            // action (re-analysis is the only honest resolution; the add family
+            // is rule-demoted at carry instead, and over-age holds stand).
+            for p in &holdings.positions {
+                let key = p.symbol.to_ascii_uppercase();
+                if work.contains(&key) {
+                    continue;
+                }
+                let delta = holdings_diff.delta_for(&p.symbol);
+                let prior_verdict = prior
+                    .verdicts
+                    .iter()
+                    .find(|v| v.symbol.eq_ignore_ascii_case(&p.symbol));
+                let force = delta.change == crate::portfolio::PositionChange::New
+                    || delta.side_reversed(p.quantity)
+                    // A current position with no prior verdict has nothing to
+                    // carry, whatever the diff says.
+                    || prior_verdict.is_none()
+                    || prior_verdict.is_some_and(|v| {
+                        over_age(crate::portfolio::effective_vintage(v, &prior.created_at), today)
+                            && carried_action(v).is_some_and(|a| a.is_exit_family())
+                    });
+                if force {
+                    work.insert(key);
+                }
+            }
+            // The first mixed-vintage safety rule: the engine-only quick check
+            // over the unselected tail. A flag, an `unknown` family (the sweep
+            // could not vouch), or an unexamined evidence event force-includes.
+            let tail: std::collections::HashSet<String> = holdings
+                .positions
+                .iter()
+                .map(|p| p.symbol.to_ascii_uppercase())
+                .filter(|k| !work.contains(k))
+                .collect();
+            let states = crate::portfolio::quick_check::sweep_tail(
+                crate::portfolio::quick_check::TailSweep {
+                    data: sel.quick_data,
+                    prior_run: prior,
+                    current_positions: &holdings.positions,
+                    cash: holdings.cash,
+                    tail: &tail,
+                    prior_state: quick_state.as_ref(),
+                    rates: crate::portfolio::RatePrints {
+                        dgs2: rates.dgs2,
+                        dgs10: rates.dgs10,
+                        dgs2_as_of: rates.dgs2_date.clone(),
+                        dgs10_as_of: rates.dgs10_date.clone(),
+                        fetched_at: now_rfc3339(),
+                    },
+                },
+                ctx,
+            )?;
+            for h in states {
+                let key = h.symbol.to_ascii_uppercase();
+                let force = h.flag.is_some()
+                    || h.families
+                        .iter()
+                        .any(|f| f.state == crate::portfolio::quick_check::SweepState::Unknown)
+                    || !h.evidence_events.is_empty();
+                if force {
+                    work.insert(key.clone());
+                }
+                swept_tail.insert(key, h);
+            }
+            Some(work)
+        }
+        _ => None,
+    };
+
     let mut verdicts: Vec<HoldingVerdict> = Vec::with_capacity(holdings.positions.len());
     let mut audits: Vec<HoldingAudit> = Vec::with_capacity(holdings.positions.len());
 
@@ -502,6 +646,14 @@ fn run_analysis(
     > = std::collections::HashMap::new();
 
     for position in &holdings.positions {
+        // A selective run analyzes only the work-list; everything else carries
+        // its prior verdict forward vintage-stamped (appended after the loop).
+        if work_list
+            .as_ref()
+            .is_some_and(|w| !w.contains(&position.symbol.to_ascii_uppercase()))
+        {
+            continue;
+        }
         if ctx.is_cancelled() {
             anyhow::bail!("run cancelled");
         }
@@ -600,12 +752,26 @@ fn run_analysis(
             }
         };
         let mut prior = dossier::prior_verdict_for(conn, &position.symbol);
-        if let (Some((verdict, _)), Some(qs)) = (prior.as_mut(), quick_state.as_ref()) {
-            if let Some(h) = qs
-                .holdings
-                .iter()
-                .find(|h| h.symbol.eq_ignore_ascii_case(&position.symbol))
-            {
+        // The prior verdict's effective analysis vintage — preserved on an
+        // insufficient-evidence exit below, since an abstention is not a full pass
+        // and the evidence-event boundary must not silently advance past events no
+        // pass examined (`docs/portfolio-analysis.md` §Evidence floor).
+        let prior_vintage = prior.as_ref().map(|(v, _)| {
+            crate::portfolio::effective_vintage(v, prior_created_at.as_deref().unwrap_or(""))
+                .to_string()
+        });
+        if let Some((verdict, _)) = prior.as_mut() {
+            // The freshest condition evaluation states win: a force-included
+            // holding's in-run tail sweep already chained from the persisted
+            // store, so its states supersede the store's; a selected holding
+            // (never tail-swept) still overlays the store's.
+            if let Some(h) = swept_tail.get(&position.symbol.to_ascii_uppercase()) {
+                crate::portfolio::quick_check::overlay_condition_states(verdict, h);
+            } else if let Some(h) = quick_state.as_ref().and_then(|qs| {
+                qs.holdings
+                    .iter()
+                    .find(|h| h.symbol.eq_ignore_ascii_case(&position.symbol))
+            }) {
                 crate::portfolio::quick_check::overlay_condition_states(verdict, h);
             }
         }
@@ -635,11 +801,106 @@ fn run_analysis(
         // engine-internal state, never rendered; a card-facing date must convert to
         // local per the project's date convention.
         let run_date = now_rfc3339().chars().take(10).collect::<String>();
-        let (verdict, audit) =
+        let (mut verdict, audit) =
             analyze_holding(analyst, &dossier, holdings.account_total, &rates, &run_date)?;
+        if matches!(
+            verdict.disposition,
+            crate::portfolio::VerdictDisposition::InsufficientEvidence { .. }
+        ) {
+            verdict.analyzed_at = prior_vintage;
+        }
         ctx.step_finished(step_key, "ok", None);
         verdicts.push(verdict);
         audits.push(audit);
+    }
+
+    let created_at = now_rfc3339();
+    // Stamp each fresh pass's analysis vintage with the run's own `created_at`
+    // (`docs/portfolio-analysis.md` §Triggering — carried verdicts ride
+    // vintage-stamped, so a fresh one must be distinguishable). An abstention
+    // already carries its preserved prior vintage from the loop.
+    for v in &mut verdicts {
+        if !matches!(
+            v.disposition,
+            crate::portfolio::VerdictDisposition::InsufficientEvidence { .. }
+        ) {
+            v.analyzed_at = Some(created_at.clone());
+        }
+    }
+
+    // ---- Carried verdicts (a selective run's unselected tail) ----------------
+    // Each carries its prior intrinsic verdict and ledger forward vintage-stamped
+    // (`docs/portfolio-analysis.md` §Triggering), with the tail sweep's fresher
+    // condition evaluation states overlaid so streaks and acknowledgments chain,
+    // its position-change tag refreshed from this run's diff, and its prior audit
+    // row carried whole — the stored `quick_basis` / `fund_exposure` comparators
+    // must survive the carry or the next sweep reads the holding `unknown`. The
+    // over-age rule resolves per action family: a carried add-family action
+    // rule-demotes to *hold*, stamped `action_source: rule-demoted` (exit-family
+    // carries were force-included above; over-age holds stand).
+    let mut carried_symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let (Some(work), Some(prior)) = (&work_list, &prior_run) {
+        for position in &holdings.positions {
+            let key = position.symbol.to_ascii_uppercase();
+            if work.contains(&key) {
+                continue;
+            }
+            let Some(prior_verdict) = prior
+                .verdicts
+                .iter()
+                .find(|v| v.symbol.eq_ignore_ascii_case(&position.symbol))
+            else {
+                continue; // unreachable: no prior verdict force-includes above
+            };
+            let mut carried = prior_verdict.clone();
+            let vintage =
+                crate::portfolio::effective_vintage(prior_verdict, &prior.created_at).to_string();
+            carried.analyzed_at = Some(vintage.clone());
+            carried.position_change = holdings_diff.delta_for(&position.symbol).change;
+            if let Some(h) = swept_tail.get(&key) {
+                crate::portfolio::quick_check::overlay_condition_states(&mut carried, h);
+            }
+            // The intrinsic *action* carries; its **sizing is engine context,
+            // recomputed at current weights** like the rest of the roll-up
+            // (`docs/portfolio-analysis.md` §Triggering — the roll-up re-runs
+            // over the mixed-vintage verdicts at current weights), so a carried
+            // card never shows today's weight beside the prior book's target
+            // band or share/dollar adjustment. The over-age add-family demotion
+            // lands first, so the demoted *hold* is what gets sized.
+            let stale = over_age(&vintage, today);
+            match &mut carried.disposition {
+                crate::portfolio::VerdictDisposition::Priced(g) => {
+                    if stale && g.action.is_add_family() {
+                        g.action = crate::portfolio::Action::Hold;
+                        carried.action_source = crate::portfolio::ActionSource::RuleDemoted;
+                    }
+                    g.action_sizing = crate::portfolio::engine::size_action(
+                        g.action,
+                        position,
+                        profile,
+                        holdings.account_total,
+                    );
+                }
+                crate::portfolio::VerdictDisposition::RoleRiskOnly(r) => {
+                    r.action_sizing = crate::portfolio::engine::size_action(
+                        r.action,
+                        position,
+                        profile,
+                        holdings.account_total,
+                    );
+                }
+                _ => {}
+            }
+            if let Some(prior_audit) = prior
+                .audit
+                .iter()
+                .find(|a| a.symbol.eq_ignore_ascii_case(&position.symbol))
+            {
+                audits.push(prior_audit.clone());
+            }
+            carried_symbols.insert(key);
+            verdicts.push(carried);
+        }
     }
 
     let roll_up = build_roll_up(
@@ -651,7 +912,6 @@ fn run_analysis(
         deep_history_fallbacks,
         rates.history_gap.is_some(),
     );
-    let created_at = now_rfc3339();
     let run = PortfolioRun {
         run_id: uuid::Uuid::new_v4().to_string(),
         created_at: created_at.clone(),
@@ -666,7 +926,7 @@ fn run_analysis(
             dgs10: rates.dgs10,
             dgs2_as_of: rates.dgs2_date.clone(),
             dgs10_as_of: rates.dgs10_date.clone(),
-            fetched_at: created_at,
+            fetched_at: created_at.clone(),
         }),
     };
 
@@ -681,32 +941,55 @@ fn run_analysis(
     // unexamined events survive it), so an abstaining holding's carried state is
     // retained, re-stamped to the new run so the next sweep chains from it
     // instead of superseding it (`docs/portfolio-analysis.md §The quick check`).
-    let abstained: std::collections::HashSet<&str> = run
-        .verdicts
-        .iter()
-        .filter(|v| {
-            matches!(
-                v.disposition,
-                crate::portfolio::VerdictDisposition::InsufficientEvidence { .. }
-            )
-        })
-        .map(|v| v.symbol.as_str())
-        .collect();
-    let retained = store::latest_quick_check(conn)?.and_then(|mut s| {
-        s.holdings
-            .retain(|h| abstained.contains(h.symbol.as_str()));
-        (!s.holdings.is_empty()).then(|| {
-            s.swept_run_id = run.run_id.clone();
-            // The retained sweep predates this run, so its rate cache must not
+    // A selective run widens the retention the same way: a carried holding got no
+    // full pass either, so its sweep state — freshly merged by the in-run tail
+    // sweep where one ran — is retained re-stamped to the new run rather than
+    // cleared (`docs/portfolio-analysis.md` §Triggering).
+    let store_state = store::latest_quick_check(conn)?;
+    let mut retained_holdings: Vec<crate::portfolio::quick_check::HoldingQuickState> = Vec::new();
+    for v in &run.verdicts {
+        let key = v.symbol.to_ascii_uppercase();
+        let abstained = matches!(
+            v.disposition,
+            crate::portfolio::VerdictDisposition::InsufficientEvidence { .. }
+        );
+        if !abstained && !carried_symbols.contains(&key) {
+            continue;
+        }
+        // The in-run sweep's merged state is the freshest; the persisted store row
+        // covers a holding the sweep did not cover (a selected holding that
+        // abstained, or a full run's abstention).
+        if let Some(h) = swept_tail.get(&key) {
+            retained_holdings.push(h.clone());
+        } else if let Some(h) = store_state
+            .as_ref()
+            .and_then(|s| s.holdings.iter().find(|h| h.symbol.eq_ignore_ascii_case(&v.symbol)))
+        {
+            retained_holdings.push(h.clone());
+        }
+    }
+    if retained_holdings.is_empty() {
+        store::clear_quick_check(conn)?;
+    } else {
+        let state = crate::portfolio::quick_check::QuickCheckState {
+            swept_run_id: run.run_id.clone(),
+            // The in-run tail sweep is itself a quick-check evaluation; with none
+            // (a full run retaining an abstention) the store's own timestamp holds.
+            last_checked_at: if swept_tail.is_empty() {
+                store_state
+                    .as_ref()
+                    .map(|s| s.last_checked_at.clone())
+                    .unwrap_or_else(|| created_at.clone())
+            } else {
+                created_at.clone()
+            },
+            // The retained states predate this run, so their rate cache must not
             // shadow the fresher prints this run just fetched — the next sweep's
             // fail-soft prefers the prior state's cache over the run blob's.
-            s.rate_cache = run.rate_prints.clone();
-            s
-        })
-    });
-    match &retained {
-        Some(s) => store::save_quick_check(conn, s)?,
-        None => store::clear_quick_check(conn)?,
+            rate_cache: run.rate_prints.clone(),
+            holdings: retained_holdings,
+        };
+        store::save_quick_check(conn, &state)?;
     }
     ctx.step_finished("persist", "ok", None);
 
@@ -1178,6 +1461,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1227,6 +1511,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             &recovered_paths,
             &guard,
             &ctx(),
@@ -1252,6 +1537,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             &unrecovered_paths,
             &RunGuard::default(),
             &ctx(),
@@ -1278,6 +1564,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1313,6 +1600,7 @@ mod tests {
             &FailingMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1343,6 +1631,7 @@ mod tests {
             &HistoryGapMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1404,6 +1693,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1463,6 +1753,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1499,6 +1790,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1562,6 +1854,7 @@ mod tests {
             &market,
             &analyst,
             &InvestorProfile::default_fixture(),
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1612,6 +1905,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -1639,6 +1933,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 &paths,
                 &guard,
                 &ctx(),
@@ -1696,6 +1991,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 &paths,
                 &guard,
                 &ctx(),
@@ -1791,6 +2087,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 &paths,
                 &guard,
                 &ctx(),
@@ -1856,6 +2153,18 @@ mod tests {
                 )),
             "BBB abstained this run"
         );
+        // The abstention preserves its prior analysis vintage — the evidence-event
+        // boundary must not advance past events no pass examined — while the
+        // successful pass stamps the run's own `created_at`.
+        let vintage_of = |sym: &str| {
+            second
+                .verdicts
+                .iter()
+                .find(|v| v.symbol == sym)
+                .and_then(|v| v.analyzed_at.as_deref())
+        };
+        assert_eq!(vintage_of("BBB"), Some(first.created_at.as_str()));
+        assert_eq!(vintage_of("AAA"), Some(second.created_at.as_str()));
 
         // AAA's successful pass consumed its carried state; BBB's abstention is
         // not a successful pass (`docs/portfolio-analysis.md` §Evidence floor),
@@ -1887,6 +2196,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 &paths,
                 &guard,
                 &ctx(),
@@ -1933,5 +2243,474 @@ mod tests {
             "the exit is noted in the overview: {}",
             second.roll_up.overview
         );
+    }
+
+    // ---- Selective re-analysis (`docs/portfolio-analysis.md` §Triggering) ----
+
+    /// The tail sweep's retrieval stub for selective-run tests: quiet by default
+    /// (every leg succeeds, nothing fires — the stub's 170 price sits inside the
+    /// fixture verdict's stored bear–bull band, whose engine targets lie below
+    /// the 195 marks), with per-symbol overrides exercising the force-include
+    /// legs. Its `rates` leg is deliberately unreachable: the in-run sweep reads
+    /// the run's own fresh prints, never a second FRED call.
+    #[derive(Default)]
+    struct SelectiveQuickData {
+        crash_price: Option<(&'static str, f64)>,
+        fail_price: Option<&'static str>,
+        earnings_date: Option<String>,
+    }
+    impl crate::portfolio::quick_check::QuickCheckDataSource for SelectiveQuickData {
+        fn price_and_closes(
+            &self,
+            symbol: &str,
+        ) -> Result<(f64, Vec<crate::portfolio::engine::DatedValue>)> {
+            use crate::portfolio::engine::DatedValue;
+            if self
+                .fail_price
+                .is_some_and(|s| s.eq_ignore_ascii_case(symbol))
+            {
+                anyhow::bail!("simulated price outage");
+            }
+            let price = match self.crash_price {
+                Some((s, p)) if s.eq_ignore_ascii_case(symbol) => p,
+                _ => 170.0,
+            };
+            let today = chrono::Utc::now().date_naive();
+            Ok((
+                price,
+                vec![
+                    DatedValue {
+                        date: (today - chrono::Duration::days(30))
+                            .format("%Y-%m-%d")
+                            .to_string(),
+                        value: 190.0,
+                    },
+                    DatedValue {
+                        date: today.format("%Y-%m-%d").to_string(),
+                        value: price,
+                    },
+                ],
+            ))
+        }
+        fn recent_filings(&self, _symbol: &str) -> crate::portfolio::quick_check::FilingSweep {
+            crate::portfolio::quick_check::FilingSweep::Filings(vec![])
+        }
+        fn statements_refresh(&self, _symbol: &str) -> CompanyFinancials {
+            CompanyFinancials::default()
+        }
+        fn consensus(
+            &self,
+            _symbol: &str,
+        ) -> Result<Option<crate::portfolio::engine::ConsensusEstimate>> {
+            Ok(Some(crate::portfolio::engine::ConsensusEstimate {
+                eps_mid: Some(6.5),
+                ..Default::default()
+            }))
+        }
+        fn earnings(&self, _symbol: &str) -> Result<Vec<crate::fmp::SymbolEarningsRow>> {
+            Ok(self
+                .earnings_date
+                .iter()
+                .map(|d| crate::fmp::SymbolEarningsRow {
+                    date: d.clone(),
+                    eps_actual: Some(2.0),
+                    eps_estimated: Some(1.9),
+                    revenue_actual: None,
+                })
+                .collect())
+        }
+        fn news_since(
+            &self,
+            _symbol: &str,
+            _from: &str,
+        ) -> Result<Vec<crate::fmp::SymbolNewsItem>> {
+            Ok(vec![])
+        }
+        fn fund_data(&self, _symbol: &str) -> crate::portfolio::fund::FundData {
+            Default::default()
+        }
+        fn rates(
+            &self,
+        ) -> Result<(
+            crate::portfolio::engine::DatedValue,
+            crate::portfolio::engine::DatedValue,
+        )> {
+            anyhow::bail!("the in-run sweep reads the run's own prints, never FRED")
+        }
+    }
+
+    /// Two small equity positions whose weights stay under the stub ledger's 25%
+    /// trim trigger at both the persisted marks and the sweep's quiet price.
+    fn two_stocks() -> Holdings {
+        holdings_of(vec![stock("AAPL", 20.0, 3_900.0), stock("MSFT", 20.0, 3_900.0)])
+    }
+
+    fn full_run(paths: &ReportPaths, holdings: Holdings) -> PortfolioRun {
+        match run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings),
+            &StubCompanyData,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap()
+        {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    fn selective_run(
+        paths: &ReportPaths,
+        holdings: Holdings,
+        selected: &[&str],
+        quick: &SelectiveQuickData,
+    ) -> PortfolioRun {
+        match run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings),
+            &StubCompanyData,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            Some(SelectiveRun {
+                selected: selected.iter().map(|s| s.to_string()).collect(),
+                quick_data: quick,
+            }),
+            paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap()
+        {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    fn verdict<'a>(run: &'a PortfolioRun, symbol: &str) -> &'a HoldingVerdict {
+        run.verdicts
+            .iter()
+            .find(|v| v.symbol.eq_ignore_ascii_case(symbol))
+            .unwrap_or_else(|| panic!("{symbol} in run"))
+    }
+
+    /// Re-persist the latest run with one verdict doctored — the prior-run shapes
+    /// (an old vintage, a carried action) the selective tests need.
+    fn doctor_latest_run(paths: &ReportPaths, symbol: &str, f: impl FnOnce(&mut HoldingVerdict)) {
+        let conn = storage::open(&paths.db_path).unwrap();
+        let mut run = store::latest_run(&conn).unwrap().unwrap();
+        let v = run
+            .verdicts
+            .iter_mut()
+            .find(|v| v.symbol.eq_ignore_ascii_case(symbol))
+            .unwrap();
+        f(v);
+        run.run_id = format!("{}-d", run.run_id);
+        run.created_at = now_rfc3339();
+        store::insert_run(&conn, &run).unwrap();
+    }
+
+    fn days_ago(n: i64) -> String {
+        (chrono::Utc::now() - chrono::Duration::days(n)).to_rfc3339()
+    }
+
+    #[test]
+    fn a_selective_run_carries_the_unselected_tail_vintage_stamped() {
+        let (_dir, paths) = paths();
+        let first = full_run(&paths, two_stocks());
+        let second = selective_run(
+            &paths,
+            two_stocks(),
+            &["AAPL"],
+            &SelectiveQuickData::default(),
+        );
+        assert_eq!(second.verdicts.len(), 2);
+        // The selected holding got a fresh pass; the tail carried, stamped with
+        // the pass that actually produced its verdict.
+        assert_eq!(
+            verdict(&second, "AAPL").analyzed_at.as_deref(),
+            Some(second.created_at.as_str())
+        );
+        let msft = verdict(&second, "MSFT");
+        assert_eq!(msft.analyzed_at.as_deref(), Some(first.created_at.as_str()));
+        assert_eq!(
+            msft.action_source,
+            crate::portfolio::ActionSource::ModelChosen
+        );
+        // The carried disposition is the prior verdict's (compared on its stable
+        // fields — the store's JSON round-trip can drift floats by an ulp).
+        match (&msft.disposition, &verdict(&first, "MSFT").disposition) {
+            (
+                crate::portfolio::VerdictDisposition::Priced(carried),
+                crate::portfolio::VerdictDisposition::Priced(prior),
+            ) => {
+                assert_eq!(carried.grade, prior.grade);
+                assert_eq!(carried.action, prior.action);
+                assert_eq!(carried.conviction, prior.conviction);
+                assert_eq!(carried.what_changed, prior.what_changed);
+            }
+            other => panic!("expected carried priced verdicts, got {other:?}"),
+        }
+        // The carried audit row rides along — the stored re-anchor basis must
+        // survive the carry or the next sweep reads the holding `unknown`.
+        let msft_audit = second
+            .audit
+            .iter()
+            .find(|a| a.symbol == "MSFT")
+            .expect("carried audit row");
+        assert!(msft_audit.quick_basis.is_some());
+        // The roll-up ran over the mixed-vintage verdicts.
+        assert_eq!(second.roll_up.graded_count, 2);
+        // The carried holding's sweep state is retained, re-stamped to the new
+        // run; the fresh-passed holding's is cleared per holding.
+        let conn = storage::open(&paths.db_path).unwrap();
+        let qc = store::latest_quick_check(&conn)
+            .unwrap()
+            .expect("carried sweep state retained");
+        assert_eq!(qc.swept_run_id, second.run_id);
+        assert!(qc.holdings.iter().any(|h| h.symbol == "MSFT"));
+        assert!(!qc.holdings.iter().any(|h| h.symbol == "AAPL"));
+    }
+
+    #[test]
+    fn a_tail_sweep_flag_forces_the_holding_into_the_work_list() {
+        let (_dir, paths) = paths();
+        full_run(&paths, two_stocks());
+        // MSFT's price crashes far outside its stored bear–bull band: the sweep
+        // flags it, so the selective run must re-analyze it despite no selection.
+        let second = selective_run(
+            &paths,
+            two_stocks(),
+            &["AAPL"],
+            &SelectiveQuickData {
+                crash_price: Some(("MSFT", 5.0)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            verdict(&second, "MSFT").analyzed_at.as_deref(),
+            Some(second.created_at.as_str()),
+            "a flagged holding is force-included, never carried"
+        );
+        // Every holding got a full pass, so nothing is retained.
+        let conn = storage::open(&paths.db_path).unwrap();
+        assert!(store::latest_quick_check(&conn).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_unknown_sweep_family_forces_the_holding_into_the_work_list() {
+        let (_dir, paths) = paths();
+        full_run(&paths, two_stocks());
+        // MSFT's price retrieval fails: the sweep cannot vouch for the carried
+        // verdict, and a verdict the sweep couldn't check never stands on its
+        // silence — the degraded-sweep force-include.
+        let second = selective_run(
+            &paths,
+            two_stocks(),
+            &["AAPL"],
+            &SelectiveQuickData {
+                fail_price: Some("MSFT"),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            verdict(&second, "MSFT").analyzed_at.as_deref(),
+            Some(second.created_at.as_str())
+        );
+    }
+
+    #[test]
+    fn an_unexamined_evidence_event_since_the_holdings_own_vintage_forces_inclusion() {
+        let (_dir, paths) = paths();
+        full_run(&paths, two_stocks());
+        // MSFT's last full pass was 10 days ago; an earnings actual landed 5 days
+        // ago. The per-holding boundary makes it an unexamined event.
+        doctor_latest_run(&paths, "MSFT", |v| {
+            v.analyzed_at = Some(days_ago(10));
+        });
+        let second = selective_run(
+            &paths,
+            two_stocks(),
+            &["AAPL"],
+            &SelectiveQuickData {
+                earnings_date: Some(days_ago(5).chars().take(10).collect()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            verdict(&second, "MSFT").analyzed_at.as_deref(),
+            Some(second.created_at.as_str()),
+            "an unexamined evidence event force-includes"
+        );
+    }
+
+    #[test]
+    fn an_over_age_carried_add_action_is_rule_demoted_to_hold() {
+        let (_dir, paths) = paths();
+        full_run(&paths, two_stocks());
+        let old = days_ago(40);
+        doctor_latest_run(&paths, "MSFT", |v| {
+            v.analyzed_at = Some(old.clone());
+            if let crate::portfolio::VerdictDisposition::Priced(g) = &mut v.disposition {
+                g.action = crate::portfolio::Action::Add;
+                g.action_sizing.est_share_delta = Some(10.0);
+                g.action_sizing.est_dollar_delta = Some(1_950.0);
+            }
+        });
+        let second = selective_run(
+            &paths,
+            two_stocks(),
+            &["AAPL"],
+            &SelectiveQuickData::default(),
+        );
+        let msft = verdict(&second, "MSFT");
+        assert_eq!(
+            msft.analyzed_at.as_deref(),
+            Some(old.as_str()),
+            "the demotion is a labeled weaken on the carried verdict, not a fresh pass"
+        );
+        assert_eq!(
+            msft.action_source,
+            crate::portfolio::ActionSource::RuleDemoted
+        );
+        match &msft.disposition {
+            crate::portfolio::VerdictDisposition::Priced(g) => {
+                assert_eq!(g.action, crate::portfolio::Action::Hold);
+                // The demoted hold is re-sized at current weights — the stale
+                // add band never survives the demotion.
+                let w = 3_900.0 / second.holdings.account_total;
+                assert!(
+                    (g.action_sizing.target_weight_low - 0.9 * w).abs() < 1e-12
+                        && (g.action_sizing.target_weight_high - 1.1 * w).abs() < 1e-12,
+                    "hold band re-anchored on today's weight: {:?}",
+                    g.action_sizing
+                );
+                assert!(
+                    g.action_sizing.est_dollar_delta.unwrap().abs() < 1e-6,
+                    "a hold at current weight implies no adjustment: {:?}",
+                    g.action_sizing
+                );
+            }
+            other => panic!("expected a priced carry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_carried_verdicts_sizing_recomputes_at_current_weights() {
+        let (_dir, paths) = paths();
+        full_run(&paths, two_stocks());
+        // The user trimmed MSFT between runs — a same-side decrease, which
+        // force-includes nothing. The carried action stands, but its sizing is
+        // engine context and must read today's book, not the prior run's
+        // (`docs/portfolio-analysis.md` §Triggering — current weights).
+        let trimmed = holdings_of(vec![
+            stock("AAPL", 20.0, 3_900.0),
+            stock("MSFT", 10.0, 1_950.0),
+        ]);
+        let second = selective_run(&paths, trimmed, &["AAPL"], &SelectiveQuickData::default());
+        let msft = verdict(&second, "MSFT");
+        assert_ne!(
+            msft.analyzed_at.as_deref(),
+            Some(second.created_at.as_str()),
+            "MSFT was carried, not re-analyzed"
+        );
+        assert_eq!(msft.position_change, PositionChange::Decreased);
+        let w = 1_950.0 / second.holdings.account_total;
+        match &msft.disposition {
+            crate::portfolio::VerdictDisposition::Priced(g) => {
+                assert_eq!(g.action, crate::portfolio::Action::Hold);
+                assert!(
+                    (g.action_sizing.target_weight_low - 0.9 * w).abs() < 1e-12
+                        && (g.action_sizing.target_weight_high - 1.1 * w).abs() < 1e-12,
+                    "band re-anchored on today's weight: {:?}",
+                    g.action_sizing
+                );
+                assert!(
+                    g.action_sizing.est_dollar_delta.unwrap().abs() < 1e-6
+                        && g.action_sizing.est_share_delta.unwrap().abs() < 1e-6,
+                    "a carried hold at current weight implies no adjustment: {:?}",
+                    g.action_sizing
+                );
+            }
+            other => panic!("expected a priced carry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_over_age_carried_exit_action_is_force_included_not_demoted() {
+        let (_dir, paths) = paths();
+        full_run(&paths, two_stocks());
+        doctor_latest_run(&paths, "MSFT", |v| {
+            v.analyzed_at = Some(days_ago(40));
+            if let crate::portfolio::VerdictDisposition::Priced(g) = &mut v.disposition {
+                g.action = crate::portfolio::Action::Trim;
+            }
+        });
+        let second = selective_run(
+            &paths,
+            two_stocks(),
+            &["AAPL"],
+            &SelectiveQuickData::default(),
+        );
+        assert_eq!(
+            verdict(&second, "MSFT").analyzed_at.as_deref(),
+            Some(second.created_at.as_str()),
+            "an over-age exit-family carry earns re-analysis, never a demotion"
+        );
+        assert_eq!(
+            verdict(&second, "MSFT").action_source,
+            crate::portfolio::ActionSource::ModelChosen
+        );
+    }
+
+    #[test]
+    fn a_side_reversal_re_enters_as_what_it_now_is() {
+        let (_dir, paths) = paths();
+        full_run(&paths, two_stocks());
+        // MSFT flipped net long → net short at equal magnitude since its verdict:
+        // thesis-changing by construction, so no carried verdict survives it.
+        let flipped = holdings_of(vec![
+            stock("AAPL", 20.0, 3_900.0),
+            stock("MSFT", -20.0, -3_900.0),
+        ]);
+        let second = selective_run(&paths, flipped, &["AAPL"], &SelectiveQuickData::default());
+        let msft = verdict(&second, "MSFT");
+        assert_eq!(msft.analyzed_at.as_deref(), Some(second.created_at.as_str()));
+        assert!(
+            matches!(
+                &msft.disposition,
+                crate::portfolio::VerdictDisposition::NotRated { reason }
+                    if reason.contains("net short")
+            ),
+            "a long→short flip re-enters as the not-rated short it now is: {:?}",
+            msft.disposition
+        );
+    }
+
+    #[test]
+    fn an_empty_selection_or_missing_prior_run_runs_the_whole_book() {
+        let (_dir, paths) = paths();
+        // No prior run: a selective request degrades to the whole-book run
+        // (everything is new — there is nothing to carry).
+        let first = selective_run(
+            &paths,
+            two_stocks(),
+            &["AAPL"],
+            &SelectiveQuickData::default(),
+        );
+        assert_eq!(first.verdicts.len(), 2);
+        for v in &first.verdicts {
+            assert_eq!(v.analyzed_at.as_deref(), Some(first.created_at.as_str()));
+        }
+        // An empty selection is the whole-book run too.
+        let second = selective_run(&paths, two_stocks(), &[], &SelectiveQuickData::default());
+        assert_eq!(second.verdicts.len(), 2);
+        for v in &second.verdicts {
+            assert_eq!(v.analyzed_at.as_deref(), Some(second.created_at.as_str()));
+        }
     }
 }

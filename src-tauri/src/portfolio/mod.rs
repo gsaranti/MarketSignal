@@ -204,6 +204,23 @@ impl PositionDelta {
             prior_cost_basis: None,
         }
     }
+
+    /// Whether the position's net side reversed versus the prior snapshot (a
+    /// long↔short flip) — thesis-changing by construction, so no carried verdict
+    /// survives it: a selective run force-includes the holding
+    /// (`docs/portfolio-analysis.md` §Asset eligibility, §Triggering). `false`
+    /// with no prior counterpart (nothing to reverse from) and on a flat side
+    /// (a zero quantity has no side).
+    pub fn side_reversed(&self, current_quantity: f64) -> bool {
+        match self.prior_quantity {
+            Some(prior) => {
+                prior != 0.0
+                    && current_quantity != 0.0
+                    && prior.is_sign_positive() != current_quantity.is_sign_positive()
+            }
+            None => false,
+        }
+    }
 }
 
 /// A position present in the prior run's snapshot but absent now — an exited
@@ -284,6 +301,35 @@ impl Action {
             Action::AddAggressively => "add-aggressively",
         }
     }
+
+    /// Whether the rung sits on the add side of the ladder — the family the
+    /// over-age rule demotes on a carried verdict (`docs/portfolio-analysis.md`
+    /// §Triggering).
+    pub fn is_add_family(&self) -> bool {
+        matches!(self, Action::Add | Action::AddAggressively)
+    }
+
+    /// Whether the rung sits on the exit side of the ladder — the family an
+    /// over-age carry force-includes rather than demotes (`docs/portfolio-analysis.md`
+    /// §Triggering).
+    pub fn is_exit_family(&self) -> bool {
+        matches!(self, Action::SellAll | Action::Trim)
+    }
+}
+
+/// How a verdict's action came to be — the canonical two-value vocabulary from
+/// `docs/portfolio-analysis.md` §Outcome learning: **`model-chosen`** (a model
+/// pass actually chose it — every verdict before selective re-analysis, and the
+/// default a pre-field run decodes to) or **`rule-demoted`** (an over-age
+/// carried add-family action rule-demoted to *hold* at the roll-up — a labeled
+/// rule-based weaken that stays out of the pooled outcome cohorts, so the hold
+/// cohort measures only holds a model actually chose; §Triggering).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ActionSource {
+    #[default]
+    ModelChosen,
+    RuleDemoted,
 }
 
 /// The deterministic risk tier (`docs/portfolio-analysis.md` §Starting parameters —
@@ -829,6 +875,27 @@ pub struct HoldingVerdict {
     /// — the debut path).
     #[serde(default)]
     pub thesis_ledger: Option<ThesisLedger>,
+    /// The holding's **analysis vintage** — the UTC RFC3339 timestamp of the full
+    /// pass that produced this verdict (`docs/portfolio-analysis.md` §Triggering:
+    /// carried verdicts ride vintage-stamped). A selective run stamps fresh verdicts
+    /// with its own `created_at` and materializes a carried verdict's prior vintage,
+    /// so `None` survives only on verdicts persisted by their own analyzing run
+    /// before the field existed — where the run's `created_at` is the honest
+    /// fallback ([`effective_vintage`]).
+    #[serde(default)]
+    pub analyzed_at: Option<String>,
+    /// How the action came to be ([`ActionSource`]) — `model-chosen` unless the
+    /// over-age rule demoted a carried add-family action.
+    #[serde(default)]
+    pub action_source: ActionSource,
+}
+
+/// A verdict's effective analysis vintage: its own `analyzed_at` stamp, else the
+/// `created_at` of the run it rides in (correct for pre-field runs, whose every
+/// verdict was produced by its own run — a carried verdict is always stamped at
+/// carry time, so the fallback never mis-dates one).
+pub fn effective_vintage<'a>(verdict: &'a HoldingVerdict, run_created_at: &'a str) -> &'a str {
+    verdict.analyzed_at.as_deref().unwrap_or(run_created_at)
 }
 
 // ---- Run-level aggregate (persisted per run) ---------------------------------
@@ -1389,6 +1456,34 @@ mod tests {
         });
         let parsed: HoldingVerdict = serde_json::from_value(legacy).unwrap();
         assert!(parsed.thesis_ledger.is_none());
+        // The selective-slice fields decode from the same legacy JSON: no vintage
+        // stamp (the verdict's vintage is its own run's `created_at`) and the
+        // default model-chosen action source.
+        assert!(parsed.analyzed_at.is_none());
+        assert_eq!(parsed.action_source, ActionSource::ModelChosen);
+        assert_eq!(
+            effective_vintage(&parsed, "2026-07-31T12:00:00+00:00"),
+            "2026-07-31T12:00:00+00:00",
+            "a pre-field verdict's effective vintage is its run's created_at"
+        );
+    }
+
+    #[test]
+    fn a_stamped_vintage_wins_over_the_run_date() {
+        let stamped = json!({
+            "symbol": "AAPL",
+            "asset_class": "stock",
+            "disposition": { "status": "not-rated", "reason": "fixture" },
+            "analyzed_at": "2026-07-01T09:00:00+00:00",
+            "action_source": "rule-demoted"
+        });
+        let parsed: HoldingVerdict = serde_json::from_value(stamped).unwrap();
+        assert_eq!(
+            effective_vintage(&parsed, "2026-08-03T12:00:00+00:00"),
+            "2026-07-01T09:00:00+00:00",
+            "a carried verdict keeps its own vintage inside a newer run"
+        );
+        assert_eq!(parsed.action_source, ActionSource::RuleDemoted);
     }
 
     #[test]
@@ -1443,6 +1538,8 @@ mod tests {
             position_change: PositionChange::Unchanged,
             disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
             thesis_ledger: Some(ledger.clone()),
+            analyzed_at: None,
+            action_source: Default::default(),
         };
         let s = serde_json::to_value(&verdict).unwrap();
         let back: HoldingVerdict = serde_json::from_value(s).unwrap();

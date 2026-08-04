@@ -316,6 +316,8 @@ mod tests {
                     reason: "fixture".into(),
                 },
                 thesis_ledger: None,
+                analyzed_at: None,
+                action_source: Default::default(),
             }],
             roll_up: PortfolioRollUp {
                 role_risk_only_count: 0,

@@ -492,6 +492,12 @@ export interface ThesisLedger {
   target_weight_high: number;
 }
 
+// How a verdict's action came to be — the canonical vocabulary from
+// docs/portfolio-analysis.md §Outcome learning: model-chosen (a model pass
+// actually chose it — the default) or rule-demoted (an over-age carried
+// add-family action demoted to hold at the roll-up — §Triggering).
+export type ActionSource = "model-chosen" | "rule-demoted";
+
 export interface HoldingVerdict {
   symbol: string;
   asset_class: AssetClass;
@@ -500,6 +506,13 @@ export interface HoldingVerdict {
   // The holding's thesis ledger — the card's "why we hold this view" anchor.
   // Absent on not-rated positions and on runs persisted before the ledger.
   thesis_ledger?: ThesisLedger | null;
+  // The analysis vintage (UTC RFC3339) of the full pass that produced this
+  // verdict — differs from the run's created_at on a verdict a selective run
+  // carried forward; absent on runs persisted before the field (their vintage
+  // is the run's created_at).
+  analyzed_at?: string | null;
+  // Absent on pre-field runs (reads as model-chosen).
+  action_source?: ActionSource | null;
 }
 
 // A position present last run but absent now — surfaced in the roll-up only,
