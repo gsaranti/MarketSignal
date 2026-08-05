@@ -1079,7 +1079,8 @@ fn run_analysis(
     );
     roll_up.aggregates = Some(aggregates);
     roll_up.construction = Some(construction_view);
-    // ---- Outcome learning (`docs/portfolio-workflow.md` §Step 7a / §Step 8) ----
+    // ---- Outcome-learning pass — after the 7b merge, persists with Step 8
+    // (`docs/portfolio-workflow.md` §Step 7a outcome-pass paragraphs / §Step 8) ----
     // The deterministic outcome half: tag active episodes' net alignment from this
     // run's diff, refresh label-time price series through the shared bar cache and
     // record any newly due window labels (fail-soft — a failed retrieval leaves a

@@ -35,10 +35,10 @@ Per-step progress, per-request rows, and token/reasoning output stream to the ru
 | Step | Stage | Type | Model |
 |---|---|---|---|
 | 1 | Job start & gate | Computed | — |
-| 2 | Load holdings & fetch option chains | API retrieval (Schwab) + Computed | — |
+| 2 | Load holdings (option chains fetch per holding at 6a) | API retrieval (Schwab) + Computed | — |
 | 3 | Classify asset eligibility | Computed | — |
 | 4 | Holdings change diff | Computed | — |
-| 5 | Load shared context (house view, profile, run-level FRED/CFTC/Stooq) | Computed (local read) + API retrieval | — |
+| 5 | Load shared context (house view, profile, run-level FRED rates; commodity/CFTC/benchmark context designed) | Computed (local read) + API retrieval (FRED) | — |
 | 6 | **Per-holding analysis loop** (per eligible holding, checkpointed) | mixed — see 6a–6g | 122B + embedder |
 | 6a | Dossier assembly | API retrieval + Local-model (embedding) + Computed | Qwen3-Embedding-4B · fixed |
 | 6b | Deterministic financial analysis | Computed (engine) | — |
@@ -47,8 +47,9 @@ Per-step progress, per-request rows, and token/reasoning output stream to the ru
 | 6e | Deterministic target refinement | Computed (engine) | — |
 | 6f | Interpretation & grading — intrinsic verdict + ledger rewrite | Local-model call (thinking) | Qwen3.5-122B · thinking |
 | 6g | Continuity check, ledger validation & checkpoint | Computed | — |
-| 7a | Whole-book aggregates & sizing-spine inputs | Computed (engine) + API retrieval (label-time Stooq bars + dividends) | — |
+| 7a | Whole-book aggregates & sizing-spine inputs | Computed (engine) | — |
 | 7b | Portfolio construction — final actions + roll-up | Local-model call (thinking) | Qwen3.5-122B · thinking |
+| — | Outcome-learning pass (after 7b; persists with Step 8) | Computed (engine) + API retrieval (label-time Stooq bars + dividends) | — |
 | 8 | Persist run & audit + memory embeddings | Computed (persist) + Local-model (embedding) | Qwen3-Embedding-4B · fixed |
 | 9 | Render Portfolio page & update UI | Computed (frontend) | — |
 
@@ -69,7 +70,7 @@ Missing **configuration** (the Ollama endpoint or a roster id unset, Schwab not 
 A live **local-model connectivity** failure caught here at the run-gate (daemon unreachable, a rostered model not pulled) blocks the attempt **inline**, not as a persistent warning; Schwab *API* reachability is **not** tested at this step — there is no external API call here, so a Schwab outage surfaces at the Step-2 holdings fetch, not the run-gate.
 Manual-import holdings do **not** satisfy the Schwab gate.
 
-## Step 2: Load Holdings and Fetch Option Chains
+## Step 2: Load Holdings
 
 **Type:** API retrieval (Schwab) + Computed (snapshot assembly — the holdings-normalization step).
 No model.
@@ -111,13 +112,13 @@ The diff is the application's, not the model's.
 
 ## Step 5: Load Shared Context
 
-**Type:** Computed (local read — house view, investor profile) + API retrieval (run-level FRED / CFTC / Stooq / CBOE / FMP gold quote).
+**Type:** Computed (local read — house view, investor profile) + API retrieval (run-level FRED rates; the CFTC / Stooq-benchmark / CBOE / FMP-gold context loads are designed, landing with their consumers).
 No model.
 
 Three things are loaded **once per run and shared across every holding**, not re-requested per symbol:
 - the **Market Signal house view** — the latest report's Thesis, Investment Strategy, and Forward Outlook sections plus recent report summaries (`thesis_stance`, `forward_outlook_themes`, `key_risks`), loaded **deterministically** from the report store (retrieve-don't-dump — never by vector-searching the report's memory; see [local-models.md §Context-memory discipline](local-models.md#context-memory-discipline)).
   The report's **creation date** rides into the dossier so every downstream stage knows how old the thesis is, and a **freshness window applies**: if the latest report is older than **one week** (a pinned default), the house view is **omitted and recorded as a gap** rather than fed as current — a month-old thesis is not today's, and the data-honesty stance treats a stale input as absent, not current (the same posture the report takes on a stale data series).
-  The holding is still graded on its fundamentals, research, and profile; it simply carries no house-view anchor that run;
+  The holding is still graded on its fundamentals and research; it simply carries no house-view anchor that run;
 - the **investor profile** (risk tolerance, horizon, objective, tax sensitivity, available cash / buying power — see [configuration.md](configuration.md)) — supplied to **Step 7b construction only**; the intrinsic loop never sees it ([portfolio-analysis.md §Intrinsic verdict](portfolio-analysis.md#intrinsic-verdict));
 - run-level market context — the **risk-free rates** (FRED `DGS10` / `DGS2`: `DGS10` anchors the engine's scenario-target function — the v2 rate-anchored multiple — and `DGS2` the capital-efficiency hurdle, the suite's short-end anchor mirroring Trade Opportunities' entry-threshold anchor — [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable); the full run additionally loads the **anchor-window `DGS10` history** the v2 percentiles join against — one date-ranged request per run, retained as dated observations, the acquisition rule on the DGS10 row ([data-sources.md §Portfolio Analysis — endpoint surface](data-sources.md#portfolio-analysis--endpoint-surface)); a rate retrieval still failing after the shared bounded retries **hard-fails the run here, before any per-holding work** — the canonical rate-anchor rule, [portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture)), and — designed, landing with their consumers (as-built this step loads the rate anchors alone) — **cyclical commodity prices** for commodity-linked holdings (FRED daily energy plus the suite-shared monthly IMF metals — [data-sources.md §Trade Opportunities — endpoint surface](data-sources.md#trade-opportunities--endpoint-surface) — and gold via FMP `quote` `GCUSD`), the **CBOE daily put/call statistics** (an optional, fail-soft **venue-level options-sentiment backdrop** — broad-market context, never a per-name signal — [data-sources.md §CBOE](data-sources.md#cboe)), the **Stooq sector / market benchmark series** the input delta's technology-event pre-flag reads (the outcome-learning labels fetch their own benchmark closes at label time), and **CFTC Commitments-of-Traders positioning** on the bellwether contracts, which a commodity / macro **fund** holding maps onto for an underlying-positioning read.
 
@@ -371,8 +372,8 @@ The response schema is **narrowed per holding**, mirroring the 6f narrowing: eac
 
 **Type:** Computed (persist the verdicts, roll-up, holdings snapshot, and audit record) + Local-model call (embeddings for continuity).
 
-The application persists the run: each holding's verdict, the per-holding **thesis ledger** (carried forward to seed the next run's continuity check), each priced stock's **pre-profit overlay record** (the eligibility read for every priced stock — a priced fund carries none; period-keyed execution observations and derived state where entered), the roll-up, the **holdings snapshot it ran against** (the next run diffs against this), and the **run audit record** that makes the run traceable — sources and retrieval timestamps, distilled findings, computed metrics and derived reads, the conviction decomposition, the input delta and what-changed attribution, every held-name refresh selection / result, the price-target methodology, model ids and quantizations, prompt/schema version, degraded-input flags, and each holding's research-reuse decision — with the field set specified once in [storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage).
-It also **appends or extends** this run's **decision episodes** in the outcome-episode store and attaches any Step-6g-confirmed falsifier events to the episode that carried their condition — creation, extension, event, and vintage semantics per the canonical contract ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)) — and records the Step-7a matured labels and derived scorecard reads with the audit record, the matured reads additionally embedding as **durable learnings** in the job's memory partition ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)).
+The application persists the run: each holding's verdict, the per-holding **thesis ledger** (carried forward to seed the next run's continuity check), each priced stock's **pre-profit overlay record** (the eligibility read for every priced stock — a priced fund carries none; period-keyed execution observations and derived state where entered), the roll-up, the **holdings snapshot it ran against** (the next run diffs against this), and the **run audit record** that makes the run traceable — in the **full design**: sources and retrieval timestamps, distilled findings, computed metrics and derived reads, the conviction decomposition, the input delta and what-changed attribution, every held-name refresh selection / result, the price-target methodology, model ids and quantizations, prompt/schema version, degraded-input flags, and each holding's research-reuse decision — with the field set **and its as-built wired subset** specified once in [storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage).
+It also **appends or extends** this run's **decision episodes** in the outcome-episode store and attaches any Step-6g-confirmed falsifier events to the episode that carried their condition — creation, extension, event, and vintage semantics per the canonical contract ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)) — and records the outcome-learning pass's matured labels and derived scorecard reads with the audit record, the matured reads additionally embedding as **durable learnings** in the job's memory partition ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)).
 Retention keeps the last N runs; the episode store and its matured archive persist independently of that window ([storage.md](storage.md)).
 
 #### Local-model call — Run-result embeddings (Qwen3-Embedding-4B, fixed)
