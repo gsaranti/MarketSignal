@@ -17,6 +17,7 @@ import type {
   PortfolioRun,
   Position,
   QuickCheckState,
+  ThesisLedger,
 } from "../../src/types";
 
 function position(symbol: string, over: Partial<Position> = {}): Position {
@@ -82,6 +83,43 @@ function verdict(
     asset_class: "stock",
     position_change: "unchanged",
     disposition,
+    ...over,
+  };
+}
+
+// A full priced-branch thesis ledger; override for the role-risk condition-only
+// shape (branch + null engine targets).
+function ledger(over: Partial<ThesisLedger> = {}): ThesisLedger {
+  return {
+    branch: "priced",
+    original_thesis: "Original thesis.",
+    current_thesis: "Compounding platform with durable pricing power.",
+    key_drivers: [{ name: "services growth", series: null }],
+    monitor: [
+      {
+        scenario: "bear",
+        conditions: "Services growth stalls below 5%",
+        probability_pct: 20,
+        engine_target: 150,
+      },
+      {
+        scenario: "base",
+        conditions: "Services compounding holds",
+        probability_pct: 55,
+        engine_target: 210,
+      },
+      {
+        scenario: "bull",
+        conditions: "Margin expansion resumes",
+        probability_pct: 25,
+        engine_target: 280,
+      },
+    ],
+    what_must_improve: "Hardware upgrade cycle re-accelerates",
+    what_must_not_break: "Services attach rate holds above 30%",
+    conditions: [],
+    target_weight_low: 0.05,
+    target_weight_high: 0.08,
     ...over,
   };
 }
@@ -273,6 +311,174 @@ describe("PortfolioView historical mode", () => {
     expect(alert.text()).toContain("Couldn't open the run");
     expect(alert.text()).toContain("run row unreadable");
     expect(alert.text()).not.toContain("Couldn't run");
+  });
+});
+
+describe("PortfolioView setup tile and thesis monitor", () => {
+  // B10: momentum is the market-setup read, outside the letter — its tile sits
+  // set apart behind the divider, never among the three letter inputs.
+  test("momentum renders as the set-apart Setup tile, not a letter input", () => {
+    const wrapper = mountView({ run });
+    // Both priced fixtures share sub_scores; the first block stands for all.
+    const scores = wrapper.find(".hc-subscores");
+    const labels = scores.findAll(".hc-sub-label").map((l) => l.text());
+    expect(labels).toEqual(["quality", "valuation", "risk", "Setup"]);
+    const setup = scores.find(".hc-sub-setup");
+    expect(setup.find(".hc-sub-value").text()).toBe("62");
+    // The outside-the-letter explanation is always visible — never hover-only
+    // (Codex P2): the caption line serves every modality with one copy source.
+    expect(wrapper.find(".hc-setup-note").text()).toBe(
+      "Setup — market-setup read, outside the letter"
+    );
+    expect(setup.attributes("title")).toBeUndefined();
+  });
+
+  // B13: the ledger's bear/base/bull monitor renders as the card's scenario
+  // strip with the app-stamped engine targets and the monitor-level goalposts.
+  test("the thesis monitor renders scenarios, targets, and goalposts on a priced card", () => {
+    const monRun: PortfolioRun = {
+      ...run,
+      verdicts: [
+        verdict(
+          "AAPL",
+          { status: "priced", ...graded() },
+          { thesis_ledger: ledger() }
+        ),
+      ],
+    };
+    const wrapper = mountView({ run: monRun });
+    const cells = wrapper.findAll(".hc-scenario");
+    expect(cells).toHaveLength(3);
+    expect(cells.map((c) => c.find(".hc-kicker").text())).toEqual([
+      "bear",
+      "base",
+      "bull",
+    ]);
+    expect(cells[1].find(".hc-scenario-prob").text()).toBe("55%");
+    expect(cells[1].find(".hc-scenario-target").text()).toContain("210");
+    expect(cells[2].text()).toContain("Margin expansion resumes");
+    const goals = wrapper.find(".hc-goalposts");
+    expect(goals.text()).toContain("Must improve");
+    expect(goals.text()).toContain("Hardware upgrade cycle re-accelerates");
+    expect(goals.text()).toContain("Must not break");
+    expect(goals.text()).toContain("Services attach rate holds above 30%");
+  });
+
+  test("a role-risk card renders the condition-only monitor without target cells", () => {
+    const roleRun: PortfolioRun = {
+      ...run,
+      holdings: {
+        positions: [
+          position("BND", {
+            asset_class: "etf",
+            cost_basis: 9_000,
+            market_value: 10_000,
+          }),
+        ],
+        cash: 0,
+        account_total: 10_000,
+      },
+      verdicts: [
+        verdict(
+          "BND",
+          {
+            status: "role-risk-only",
+            class_label: "bond fund",
+            role_summary: "Core fixed-income sleeve.",
+            exposure_tilt: [],
+            expense_drag: null,
+            observable_risk: null,
+            structural_flag: false,
+            evidence_gaps: [],
+            action: "hold",
+            action_sizing: {
+              target_weight_low: 0.9,
+              target_weight_high: 1.1,
+              est_share_delta: null,
+              est_dollar_delta: null,
+            },
+            what_changed: "new holding",
+          },
+          {
+            asset_class: "etf",
+            thesis_ledger: ledger({
+              branch: "role-risk-only",
+              monitor: [
+                {
+                  scenario: "bear",
+                  conditions: "Duration losses exceed the income cushion",
+                  probability_pct: 30,
+                  engine_target: null,
+                },
+                {
+                  scenario: "base",
+                  conditions: "Carry accrues; rates range-bound",
+                  probability_pct: 70,
+                  engine_target: null,
+                },
+              ],
+            }),
+          }
+        ),
+      ],
+      roll_up: { ...run.roll_up, graded_count: 0, role_risk_only_count: 1 },
+    };
+    const wrapper = mountView({ run: roleRun });
+    const cells = wrapper.findAll(".hc-scenario");
+    expect(cells).toHaveLength(2);
+    expect(cells[0].text()).toContain("Duration losses exceed the income cushion");
+    // Structurally null targets: no target element renders on this branch.
+    expect(wrapper.find(".hc-scenario-target").exists()).toBe(false);
+  });
+
+  test("no ledger means no monitor block; a partial monitor renders what exists", () => {
+    // The base fixtures carry no thesis_ledger (pre-ledger/debut shape).
+    const bare = mountView({ run });
+    expect(bare.find(".hc-monitor").exists()).toBe(false);
+    // One authored scenario and empty goalposts: the cell renders, the
+    // goalpost list drops.
+    const partialRun: PortfolioRun = {
+      ...run,
+      verdicts: [
+        verdict(
+          "AAPL",
+          { status: "priced", ...graded() },
+          {
+            thesis_ledger: ledger({
+              monitor: [
+                {
+                  scenario: "base",
+                  conditions: "Services compounding holds",
+                  probability_pct: 60,
+                  engine_target: 200,
+                },
+              ],
+              what_must_improve: "",
+              what_must_not_break: "",
+            }),
+          }
+        ),
+      ],
+    };
+    const wrapper = mountView({ run: partialRun });
+    expect(wrapper.findAll(".hc-scenario")).toHaveLength(1);
+    expect(wrapper.find(".hc-goalposts").exists()).toBe(false);
+  });
+
+  test("the monitor renders on a historical view — it is run content, not live state", () => {
+    const monRun: PortfolioRun = {
+      ...run,
+      verdicts: [
+        verdict(
+          "AAPL",
+          { status: "priced", ...graded() },
+          { thesis_ledger: ledger() }
+        ),
+      ],
+    };
+    const wrapper = mountView({ run: monRun, historical: true });
+    expect(wrapper.find(".hc-monitor").exists()).toBe(true);
+    expect(wrapper.findAll(".hc-scenario")).toHaveLength(3);
   });
 });
 

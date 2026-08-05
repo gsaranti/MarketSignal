@@ -666,6 +666,18 @@ const CHANGE_LABELS: Record<string, string> = {
   unchanged: "Unchanged",
 };
 
+// The three grade inputs, in tile order. Momentum is deliberately not here:
+// it is the market-setup read in the conviction context, outside the letter
+// (docs/portfolio-analysis.md §Starting parameters), so its tile renders set
+// apart behind a divider. The kit's SubScores still shows it undifferentiated —
+// a recorded deviation (B10 ruling, 2026-08-05), not drift to revert.
+const LETTER_SUBSCORES = ["quality", "valuation", "risk"] as const;
+
+// Always-visible beneath the tile row — the outside-the-letter explanation
+// must not be hover-only (Codex P2, ruled 2026-08-05): one copy source serves
+// pointer, keyboard, low-vision, and screen-reader users alike.
+const SETUP_NOTE = "Setup — market-setup read, outside the letter";
+
 function gradeClass(grade: string): string {
   return grade.toLowerCase();
 }
@@ -1409,6 +1421,56 @@ const keyFigures = computed(() => {
                   </div>
                 </div>
 
+                <!-- Thesis monitor (B13), condition-only on this branch: the
+                     role-risk ledger's scenarios carry no engine target
+                     (structurally null — docs/portfolio-analysis.md §The
+                     position thesis ledger), so the target line drops. -->
+                <div
+                  v-if="v.thesis_ledger && v.thesis_ledger.monitor.length > 0"
+                  class="hc-monitor"
+                >
+                  <div class="hc-monitor-grid">
+                    <div
+                      v-for="s in v.thesis_ledger.monitor"
+                      :key="s.scenario"
+                      class="hc-scenario"
+                    >
+                      <div class="hc-scenario-head">
+                        <span class="hc-kicker">{{ s.scenario }}</span>
+                        <span class="ana-num hc-scenario-prob"
+                          >{{ Math.round(s.probability_pct) }}%</span
+                        >
+                      </div>
+                      <span
+                        v-if="s.engine_target !== null"
+                        class="ana-num hc-scenario-target"
+                        >{{ moneyExact.format(s.engine_target) }}</span
+                      >
+                      <p class="hc-scenario-note">{{ s.conditions }}</p>
+                    </div>
+                  </div>
+                  <dl
+                    v-if="
+                      v.thesis_ledger.what_must_improve ||
+                      v.thesis_ledger.what_must_not_break
+                    "
+                    class="hc-goalposts"
+                  >
+                    <template v-if="v.thesis_ledger.what_must_improve">
+                      <dt class="hc-kicker">Must improve</dt>
+                      <dd class="hc-goalpost-text">
+                        {{ v.thesis_ledger.what_must_improve }}
+                      </dd>
+                    </template>
+                    <template v-if="v.thesis_ledger.what_must_not_break">
+                      <dt class="hc-kicker">Must not break</dt>
+                      <dd class="hc-goalpost-text">
+                        {{ v.thesis_ledger.what_must_not_break }}
+                      </dd>
+                    </template>
+                  </dl>
+                </div>
+
                 <footer class="hc-foot">
                   <div class="hc-foot-main">
                     <span class="hc-kicker">What changed · since last run</span>
@@ -1584,18 +1646,28 @@ const keyFigures = computed(() => {
                 <div class="hc-body">
                   <div class="hc-col hc-col-intrinsic">
                     <span class="hc-kicker">Intrinsic verdict</span>
+                    <!-- Letter inputs, then — set apart behind a hairline —
+                         the market-setup read (momentum), which is context
+                         for conviction and never a grade input (B10). -->
                     <div class="hc-subscores">
                       <div
-                        v-for="(score, name) in v.disposition.sub_scores"
+                        v-for="name in LETTER_SUBSCORES"
                         :key="name"
                         class="hc-sub"
                       >
                         <span class="hc-sub-label">{{ name }}</span>
                         <span class="ana-num hc-sub-value">{{
-                          Math.round(score)
+                          Math.round(v.disposition.sub_scores[name])
+                        }}</span>
+                      </div>
+                      <div class="hc-sub hc-sub-setup">
+                        <span class="hc-sub-label">Setup</span>
+                        <span class="ana-num hc-sub-value">{{
+                          Math.round(v.disposition.sub_scores.momentum)
                         }}</span>
                       </div>
                     </div>
+                    <p class="hc-setup-note">{{ SETUP_NOTE }}</p>
                     <dl class="hc-kv">
                       <dt>Conviction</dt>
                       <dd>
@@ -1822,6 +1894,59 @@ const keyFigures = computed(() => {
                       </template>
                     </dl>
                   </div>
+                </div>
+
+                <!-- Thesis monitor (B13): the ledger's bear/base/bull scenarios
+                     with the app-stamped engine targets, plus the monitor-level
+                     goalposts — rendered straight from the continuity-validated
+                     ledger (docs/portfolio-analysis.md §The position thesis
+                     ledger). Kit fidelity: Portfolio.jsx Scenarios; the goalpost
+                     lines extend the kit (recorded deviation, B13 ruling
+                     2026-08-05). Renders whatever scenarios exist. -->
+                <div
+                  v-if="v.thesis_ledger && v.thesis_ledger.monitor.length > 0"
+                  class="hc-monitor"
+                >
+                  <div class="hc-monitor-grid">
+                    <div
+                      v-for="s in v.thesis_ledger.monitor"
+                      :key="s.scenario"
+                      class="hc-scenario"
+                    >
+                      <div class="hc-scenario-head">
+                        <span class="hc-kicker">{{ s.scenario }}</span>
+                        <span class="ana-num hc-scenario-prob"
+                          >{{ Math.round(s.probability_pct) }}%</span
+                        >
+                      </div>
+                      <span
+                        v-if="s.engine_target !== null"
+                        class="ana-num hc-scenario-target"
+                        >{{ moneyExact.format(s.engine_target) }}</span
+                      >
+                      <p class="hc-scenario-note">{{ s.conditions }}</p>
+                    </div>
+                  </div>
+                  <dl
+                    v-if="
+                      v.thesis_ledger.what_must_improve ||
+                      v.thesis_ledger.what_must_not_break
+                    "
+                    class="hc-goalposts"
+                  >
+                    <template v-if="v.thesis_ledger.what_must_improve">
+                      <dt class="hc-kicker">Must improve</dt>
+                      <dd class="hc-goalpost-text">
+                        {{ v.thesis_ledger.what_must_improve }}
+                      </dd>
+                    </template>
+                    <template v-if="v.thesis_ledger.what_must_not_break">
+                      <dt class="hc-kicker">Must not break</dt>
+                      <dd class="hc-goalpost-text">
+                        {{ v.thesis_ledger.what_must_not_break }}
+                      </dd>
+                    </template>
+                  </dl>
                 </div>
 
                 <!-- Financial analysis — model prose over engine numbers. -->
@@ -2466,7 +2591,27 @@ const keyFigures = computed(() => {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0 var(--s-2);
-  margin-bottom: var(--s-4);
+  margin-bottom: var(--s-2);
+}
+
+/* The set-apart market-setup tile (B10): a hairline seam divides it from the
+   three letter inputs so it never reads as a fourth grade input. The seam is
+   supplementary — the always-visible .hc-setup-note caption carries the
+   meaning for every modality (hairlines in this system sit far below the 3:1
+   boundary floor by design). */
+.hc-sub-setup {
+  border-left: 1px solid var(--hairline-soft);
+  padding-left: var(--s-3);
+}
+
+/* The caption rides the card's quiet note register (the kit's health-note
+   treatment); the tile row above keeps only a tight gap to it. */
+.hc-setup-note {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-3);
+  margin: 0 0 var(--s-4);
 }
 
 .hc-sub-label {
@@ -2623,6 +2768,91 @@ const keyFigures = computed(() => {
 
 .hc-summary .hc-kicker {
   margin-bottom: var(--s-2);
+}
+
+/* Thesis monitor (B13) — the kit's Scenarios strip (Portfolio.jsx): a
+   hairline-topped three-cell row, each scenario a kicker + probability over
+   the engine target and its defining conditions; the cells keep the kit's
+   tighter padding register. The goalpost lines below extend the kit
+   (recorded deviation). */
+.hc-monitor {
+  border-top: 1px solid var(--hairline-soft);
+}
+
+.hc-monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.hc-scenario {
+  min-width: 0;
+  padding: var(--s-3) var(--s-4);
+}
+
+.hc-scenario + .hc-scenario {
+  border-left: 1px solid var(--hairline-soft);
+}
+
+.hc-scenario-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s-3);
+  margin-bottom: var(--s-2);
+}
+
+.hc-scenario-prob {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.hc-scenario-target {
+  display: block;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.hc-scenario-note {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-3);
+  margin: var(--s-1) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.hc-goalposts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: var(--s-4);
+  row-gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-top: 1px solid var(--hairline-soft);
+}
+
+.hc-goalpost-text {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The monitor strip stacks with the body: cell seams rotate from vertical
+   hairlines to horizontal ones. Kept AFTER the base rules above — a media
+   query adds no cascade priority, so these overrides must win by source
+   order (the hazard the .hc-col-intrinsic !important works around). */
+@media (max-width: 760px) {
+  .hc-monitor-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hc-scenario + .hc-scenario {
+    border-left: 0;
+    border-top: 1px solid var(--hairline-soft);
+  }
 }
 
 /* The card's standing-thesis anchor (the thesis ledger's current thesis),
