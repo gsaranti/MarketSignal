@@ -3827,21 +3827,29 @@ impl FmpDataSource {
         }
     }
 
-    /// The profile's sector label for a stock — the outcome episodes'
-    /// entry-stamped sector identity (`docs/portfolio-analysis.md §Outcome
-    /// learning`). Fail-soft: any gate, transport failure, or unreadable body
-    /// returns `None`, which the caller types `sector-unscorable` — never a
-    /// guessed benchmark.
-    pub fn fetch_profile_sector(&self, symbol: &str) -> Option<String> {
+    /// The profile's identity fields for a stock — one fetch feeding the
+    /// listing-resolution guard (issuer name / exchange —
+    /// `docs/portfolio-analysis.md §Asset eligibility`) and the outcome episodes'
+    /// entry-stamped sector identity. Fail-soft, split three ways: a resolved
+    /// body; a definitive 2xx no-such-symbol (`Unresolved` — FMP answered and
+    /// knows no profile); or any gate, transport failure, or unreadable body
+    /// (`Unverified` — never mistaken for a missing listing).
+    pub fn fetch_profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
+        use crate::portfolio::listing::ProfileLookup;
         match self.suite_get(
             "company-profile",
             symbol,
-            "Company profile (sector)",
+            "Company profile (identity)",
             FMP_PROFILE_PATH,
             &[("symbol", symbol)],
         ) {
-            Disposition::Value(value) => profile_sector_from_value(&value),
-            Disposition::Gap(_) => None,
+            Disposition::Value(value) => match profile_identity_from_value(&value) {
+                Some(identity) => ProfileLookup::Resolved(identity),
+                None => ProfileLookup::Unresolved,
+            },
+            Disposition::Gap(reason) => {
+                ProfileLookup::Unverified(format!("FMP profile unavailable ({})", reason.as_str()))
+            }
         }
     }
 
@@ -4407,20 +4415,29 @@ fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<O
     Ok(any.then_some(sum))
 }
 
-/// Extract the sector label from a `/profile` body (array-of-one or bare object).
-/// Pure; `None` on anything malformed, absent, or blank — the caller types the
-/// identity `sector-unscorable`.
-fn profile_sector_from_value(value: &Value) -> Option<String> {
+/// Extract the identity fields from a `/profile` body (array-of-one or bare
+/// object). Pure; `None` means the body carried no profile object at all — FMP's
+/// definitive no-such-symbol shape — while a present object with blank or missing
+/// fields resolves with those fields `None` (the guard types them unverifiable,
+/// never unresolved, and the sector consumer types `sector-unscorable`).
+fn profile_identity_from_value(value: &Value) -> Option<crate::portfolio::listing::ProfileIdentity> {
     let obj = value
         .as_array()
         .and_then(|a| a.first())
         .or(Some(value))
         .filter(|o| o.is_object())?;
-    obj.get("sector")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
+    let field = |key: &str| {
+        obj.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    Some(crate::portfolio::listing::ProfileIdentity {
+        company_name: field("companyName"),
+        exchange: field("exchange"),
+        sector: field("sector"),
+    })
 }
 
 /// Shape a `/dividends` body into dated per-share amounts within `[from, to]`,
@@ -4913,19 +4930,38 @@ mod suite_tests {
     }
 
     #[test]
-    fn profile_sector_reads_array_of_one_or_bare_object_fail_soft() {
-        let v: Value =
-            serde_json::from_str(r#"[{"symbol":"AAPL","sector":"Technology"}]"#).unwrap();
-        assert_eq!(profile_sector_from_value(&v).as_deref(), Some("Technology"));
+    fn profile_identity_reads_array_of_one_or_bare_object() {
+        let v: Value = serde_json::from_str(
+            r#"[{"symbol":"AAPL","companyName":"Apple Inc.","exchange":"NASDAQ","sector":"Technology"}]"#,
+        )
+        .unwrap();
+        let identity = profile_identity_from_value(&v).unwrap();
+        assert_eq!(identity.company_name.as_deref(), Some("Apple Inc."));
+        assert_eq!(identity.exchange.as_deref(), Some("NASDAQ"));
+        assert_eq!(identity.sector.as_deref(), Some("Technology"));
         let bare: Value = serde_json::from_str(r#"{"sector":"Energy"}"#).unwrap();
-        assert_eq!(profile_sector_from_value(&bare).as_deref(), Some("Energy"));
-        // Absent, blank, or malformed → None (typed sector-unscorable upstream).
-        let blank: Value = serde_json::from_str(r#"[{"sector":"  "}]"#).unwrap();
-        assert_eq!(profile_sector_from_value(&blank), None);
-        let missing: Value = serde_json::from_str(r#"[{"symbol":"AAPL"}]"#).unwrap();
-        assert_eq!(profile_sector_from_value(&missing), None);
+        assert_eq!(
+            profile_identity_from_value(&bare).unwrap().sector.as_deref(),
+            Some("Energy")
+        );
+    }
+
+    #[test]
+    fn profile_identity_distinguishes_empty_body_from_blank_fields() {
+        // The definitive no-such-symbol shape: a body with no profile object at all.
+        let empty: Value = serde_json::from_str("[]").unwrap();
+        assert_eq!(profile_identity_from_value(&empty), None);
         let junk: Value = serde_json::from_str("42").unwrap();
-        assert_eq!(profile_sector_from_value(&junk), None);
+        assert_eq!(profile_identity_from_value(&junk), None);
+        // A present object with blank / missing fields resolves — the fields read
+        // `None` (unverifiable upstream), never a missing-listing signal.
+        let blank: Value =
+            serde_json::from_str(r#"[{"symbol":"AAPL","companyName":"  ","sector":"  "}]"#)
+                .unwrap();
+        let identity = profile_identity_from_value(&blank).unwrap();
+        assert_eq!(identity.company_name, None);
+        assert_eq!(identity.exchange, None);
+        assert_eq!(identity.sector, None);
     }
 
     #[test]

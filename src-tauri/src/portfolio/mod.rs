@@ -22,6 +22,7 @@ pub mod dossier;
 pub mod engine;
 pub mod fund;
 pub mod job;
+pub mod listing;
 pub mod outcome;
 pub mod pipeline;
 pub mod pre_profit;

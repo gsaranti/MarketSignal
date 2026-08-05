@@ -176,6 +176,15 @@ pub fn analyze_holding(
     if let Some(gap) = &rates.history_gap {
         degraded.push(gap.clone());
     }
+    // The listing-resolution guard's unverified outcome: the holding proceeds —
+    // an FMP outage must never mass-not-rate a book — but the unverified identity
+    // cross-check is a recorded degraded input
+    // (`docs/portfolio-analysis.md` §Asset eligibility).
+    if let Some(crate::portfolio::listing::ListingResolution::Unverified { detail }) =
+        &dossier.listing
+    {
+        degraded.push(format!("listing-resolution guard unverified — {detail}"));
+    }
     // The fund exposure comparators for the quick check's fund evidence-event legs
     // — computed from the same fresh metadata the pass analyzed, on either verdict
     // branch (`docs/portfolio-analysis.md` §Starting parameters).
@@ -254,6 +263,54 @@ pub fn analyze_holding(
             action_source: ActionSource::ModelChosen,
         };
         return Ok((verdict, audit(Default::default(), None, None, None)));
+    }
+
+    // Eligibility: the loop-time listing-resolution guard, stocks only
+    // (`docs/portfolio-analysis.md` §Asset eligibility). No canonical FMP
+    // resolution or a non-US primary listing is a structural can't-grade — the
+    // US-only data plan has no honest statement surface for it; a
+    // resolved-but-conflicting issuer identity is the evidence floor's
+    // conflicting-identity arm — a data problem, possibly transient — so a
+    // wrong-issuer mapping can never grade the wrong company's financials.
+    if matches!(asset_class, crate::portfolio::AssetClass::Stock) {
+        let unsupported = match &dossier.listing {
+            Some(crate::portfolio::listing::ListingResolution::Unresolved) => Some(
+                "unsupported listing — no canonical FMP resolution for this symbol".to_string(),
+            ),
+            Some(crate::portfolio::listing::ListingResolution::NonUs { exchange }) => {
+                Some(format!(
+                    "unsupported listing — primary listing on {exchange}, outside the \
+                     US-listed surface the suite's data plan covers"
+                ))
+            }
+            _ => None,
+        };
+        if let Some(reason) = unsupported {
+            let verdict = HoldingVerdict {
+                symbol: symbol.clone(),
+                asset_class,
+                position_change,
+                disposition: VerdictDisposition::NotRated { reason },
+                thesis_ledger: None,
+                analyzed_at: None,
+                action_source: ActionSource::ModelChosen,
+            };
+            return Ok((verdict, audit(Default::default(), None, None, None)));
+        }
+        if let Some(crate::portfolio::listing::ListingResolution::Conflict { fmp_name }) =
+            &dossier.listing
+        {
+            return abstain(
+                format!(
+                    "conflicting identity — FMP resolves this symbol to \"{fmp_name}\", \
+                     which does not match the account's \"{}\"",
+                    dossier.position.description
+                ),
+                Default::default(),
+                None,
+                None,
+            );
+        }
     }
 
     // The deterministic engine stage, per branch: the equity engine for a stock, the
@@ -2607,6 +2664,7 @@ mod tests {
             prior_grade_parameter_version: None,
             sources: vec!["FMP".into()],
             prior_pre_profit: None,
+            listing: None,
         }
     }
 
@@ -2855,6 +2913,93 @@ mod tests {
             }
             other => panic!("expected not-rated, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_unsupported_listing_is_not_rated_with_that_reason() {
+        use crate::portfolio::listing::ListingResolution;
+        // Strong financials prove the gate routes before the engine could grade —
+        // no resolution and a non-US primary listing are structural can't-grades
+        // (`docs/portfolio-analysis.md` §Asset eligibility).
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.listing = Some(ListingResolution::Unresolved);
+        let (verdict, _audit) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-04").unwrap();
+        match verdict.disposition {
+            VerdictDisposition::NotRated { reason } => {
+                assert!(reason.contains("unsupported listing"), "{reason}");
+            }
+            other => panic!("expected not-rated, got {other:?}"),
+        }
+
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.listing = Some(ListingResolution::NonUs { exchange: "LSE".into() });
+        let (verdict, _audit) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-04").unwrap();
+        match verdict.disposition {
+            VerdictDisposition::NotRated { reason } => {
+                assert!(
+                    reason.contains("unsupported listing") && reason.contains("LSE"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected not-rated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_conflicting_identity_abstains_and_retains_the_prior_ledger() {
+        use crate::portfolio::listing::ListingResolution;
+        // The evidence floor's conflicting-identity arm: a wrong-issuer mapping
+        // must never grade the wrong company's financials — and like every
+        // abstention, the standing ledger rides through unchanged.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.listing = Some(ListingResolution::Conflict {
+            fmp_name: "Zenith Mining Corp".into(),
+        });
+        d.prior_verdict = Some(HoldingVerdict {
+            symbol: "AAPL".into(),
+            asset_class: AssetClass::Stock,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
+            thesis_ledger: Some(prior_with_conditions()),
+            analyzed_at: None,
+            action_source: Default::default(),
+        });
+        let (verdict, _audit) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-04").unwrap();
+        match &verdict.disposition {
+            VerdictDisposition::InsufficientEvidence { reason } => {
+                assert!(
+                    reason.contains("conflicting identity") && reason.contains("Zenith"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected insufficient-evidence, got {other:?}"),
+        }
+        assert_eq!(verdict.thesis_ledger, Some(prior_with_conditions()));
+    }
+
+    #[test]
+    fn an_unverified_guard_proceeds_and_records_the_degraded_input() {
+        use crate::portfolio::listing::ListingResolution;
+        // An FMP outage must never mass-not-rate a book: the holding grades
+        // normally with the unverified cross-check recorded as a degraded input.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.listing = Some(ListingResolution::Unverified {
+            detail: "FMP profile unavailable (unavailable)".into(),
+        });
+        let (verdict, audit) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-04").unwrap();
+        assert!(matches!(verdict.disposition, VerdictDisposition::Priced(_)));
+        assert!(
+            audit
+                .degraded_inputs
+                .iter()
+                .any(|g| g.contains("listing-resolution guard unverified")),
+            "{:?}",
+            audit.degraded_inputs
+        );
     }
 
     #[test]

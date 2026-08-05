@@ -69,6 +69,13 @@ pub struct HoldingDossier {
     /// (`docs/portfolio-analysis.md` §Starting parameters). `None` on a debut, a
     /// pre-overlay run, or a fund.
     pub prior_pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
+    /// The loop-time listing-resolution guard's outcome for a stock
+    /// (`docs/portfolio-analysis.md` §Asset eligibility) — computed at gather time,
+    /// routed by `analyze_holding` beside the eligibility gates. `None` on a fund
+    /// (the guard is stocks-only); a stock always carries `Some` — offline stubs
+    /// ride the trait default's `Unverified`, which proceeds with a recorded
+    /// degraded input, never a terminal outcome.
+    pub listing: Option<crate::portfolio::listing::ListingResolution>,
     /// The data sources that contributed, for the run's audit record.
     pub sources: Vec<String>,
 }
@@ -216,6 +223,7 @@ pub fn assemble(
     house_view: HouseView,
     fund: Option<crate::portfolio::fund::FundContext>,
     prior: Option<PriorHolding>,
+    listing: Option<crate::portfolio::listing::ListingResolution>,
 ) -> HoldingDossier {
     let (prior_verdict, prior_grade_parameter_version, prior_pre_profit) = match prior {
         Some(p) => (Some(p.verdict), p.grade_parameter_version, p.pre_profit),
@@ -261,6 +269,7 @@ pub fn assemble(
         prior_verdict,
         prior_grade_parameter_version,
         prior_pre_profit,
+        listing,
         sources,
     }
 }
@@ -695,6 +704,7 @@ Watch the 2s10s and the labor prints.
             Some(&chain),
             InvestorProfile::default_fixture(),
             HouseView::default(),
+            None,
             None,
             None,
         );

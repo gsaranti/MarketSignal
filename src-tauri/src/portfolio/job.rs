@@ -93,12 +93,16 @@ pub trait CompanyDataSource {
     fn sector_pe_history(&self, _sector: &str) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
         Ok(vec![])
     }
-    /// The FMP profile's sector label for a stock — the outcome episodes'
-    /// entry-stamped sector identity (`docs/portfolio-analysis.md §Outcome
-    /// learning`). Fail-soft: `None` types the identity `sector-unscorable`, never
-    /// a guessed benchmark. Defaults to `None` so offline stubs stay small.
-    fn profile_sector(&self, _symbol: &str) -> Option<String> {
-        None
+    /// The FMP profile lookup for a stock — one fetch feeding the
+    /// listing-resolution guard (issuer name / exchange —
+    /// `docs/portfolio-analysis.md §Asset eligibility`) and the outcome episodes'
+    /// entry-stamped sector identity. Fail-soft: the `Unverified` default lets an
+    /// offline stub proceed ungated with a recorded degraded input — never a
+    /// fabricated resolution, and the sector identity types `sector-unscorable`.
+    fn profile_identity(&self, _symbol: &str) -> crate::portfolio::listing::ProfileLookup {
+        crate::portfolio::listing::ProfileLookup::Unverified(
+            "profile source not wired".to_string(),
+        )
     }
 }
 
@@ -288,8 +292,8 @@ impl CompanyDataSource for LiveCompanyData {
         Ok(rows)
     }
 
-    fn profile_sector(&self, symbol: &str) -> Option<String> {
-        self.fmp.fetch_profile_sector(symbol)
+    fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
+        self.fmp.fetch_profile_identity(symbol)
     }
 
     fn facts(&self, symbol: &str) -> SecData {
@@ -703,17 +707,55 @@ fn run_analysis(
             position.asset_class,
             crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
         );
-        if position.asset_class.is_gradeable() {
-            let identity = if is_fund {
-                crate::portfolio::outcome::SectorIdentity::unscorable("multi-sector vehicle (fund)")
-            } else {
-                crate::portfolio::outcome::SectorIdentity::resolve(
-                    company_data.profile_sector(&position.symbol).as_deref(),
-                )
+        let is_stock = matches!(position.asset_class, crate::portfolio::AssetClass::Stock);
+        // One profile fetch per fresh-passed stock, feeding both the loop-time
+        // listing-resolution guard (`docs/portfolio-analysis.md` §Asset eligibility)
+        // and the entry-stamped sector identity; a fund is a multi-sector vehicle by
+        // construction, typed `sector-unscorable` without a profile call.
+        let listing = if is_stock {
+            let lookup = company_data.profile_identity(&position.symbol);
+            let sector = match &lookup {
+                crate::portfolio::listing::ProfileLookup::Resolved(p) => p.sector.clone(),
+                _ => None,
             };
-            sector_by_symbol.insert(position.symbol.to_ascii_uppercase(), identity);
-        }
-        let mut fmp_financials = if is_fund {
+            sector_by_symbol.insert(
+                position.symbol.to_ascii_uppercase(),
+                crate::portfolio::outcome::SectorIdentity::resolve(sector.as_deref()),
+            );
+            Some(crate::portfolio::listing::resolve_listing(
+                &position.symbol,
+                &position.description,
+                &lookup,
+            ))
+        } else {
+            if is_fund {
+                sector_by_symbol.insert(
+                    position.symbol.to_ascii_uppercase(),
+                    crate::portfolio::outcome::SectorIdentity::unscorable(
+                        "multi-sector vehicle (fund)",
+                    ),
+                );
+            }
+            None
+        };
+        // A guard-terminal stock (unsupported listing / conflicting identity) skips
+        // the remaining per-symbol retrieval — no statement, SEC, history, or chain
+        // pull is spent on a holding the guard already routed; `analyze_holding`
+        // routes on the resolution before touching the (empty) financials.
+        let guard_terminal = matches!(
+            &listing,
+            Some(
+                crate::portfolio::listing::ListingResolution::Unresolved
+                    | crate::portfolio::listing::ListingResolution::NonUs { .. }
+                    | crate::portfolio::listing::ListingResolution::Conflict { .. }
+            )
+        );
+        let mut fmp_financials = if guard_terminal {
+            CompanyFinancials {
+                symbol: position.symbol.clone(),
+                ..Default::default()
+            }
+        } else if is_fund {
             company_data.fund_financials(&position.symbol)
         } else {
             company_data.financials(&position.symbol)
@@ -722,7 +764,7 @@ fn run_analysis(
         // the reduced path (quality is imputed, valuation composite-priced), and the
         // trust entity behind an ETF routinely 404s the facts API — pure gap noise
         // on the audit (the 2026-07-31 run's QQQ finding, F5).
-        let sec_data = if is_fund {
+        let sec_data = if is_fund || guard_terminal {
             SecData::default()
         } else {
             company_data.facts(&position.symbol)
@@ -730,7 +772,11 @@ fn run_analysis(
         fmp_financials.gaps.extend(sec_data.gaps);
         // Deep dated history (Stooq, FMP dated-EOD fallback) for the anchor join and
         // drawdown reads.
-        let (deep_closes, deep_gaps) = company_data.deep_price_history(&position.symbol);
+        let (deep_closes, deep_gaps) = if guard_terminal {
+            (vec![], vec![])
+        } else {
+            company_data.deep_price_history(&position.symbol)
+        };
         if !deep_gaps.is_empty() {
             deep_history_failures += 1;
             if !deep_closes.is_empty() {
@@ -791,13 +837,17 @@ fn run_analysis(
         // recorded in the manifest so it reaches the audit and prompt rather than reading
         // as "no options listed" (`docs/schwab-integration.md §Failure posture`). Never a
         // whole-job failure; the error carries status/context only, never a token.
-        let chain = match holdings_source.option_chain(&position.symbol) {
-            Ok(chain) => chain,
-            Err(e) => {
-                fmp_financials
-                    .gaps
-                    .push(format!("Option chain unavailable for {}: {e}", position.symbol));
-                None
+        let chain = if guard_terminal {
+            None
+        } else {
+            match holdings_source.option_chain(&position.symbol) {
+                Ok(chain) => chain,
+                Err(e) => {
+                    fmp_financials
+                        .gaps
+                        .push(format!("Option chain unavailable for {}: {e}", position.symbol));
+                    None
+                }
             }
         };
         let mut prior = dossier::prior_verdict_for(conn, &position.symbol);
@@ -834,6 +884,7 @@ fn run_analysis(
             house_view.clone(),
             fund_ctx,
             prior,
+            listing,
         );
 
         // Cancellation checkpoint between the (now-complete) data gather and the model
@@ -1858,6 +1909,157 @@ mod tests {
             account_total,
             source_rows: vec![],
         }
+    }
+
+    /// A stub resolving one symbol to a non-US (PNK) listing — and refusing to
+    /// serve its statements or SEC facts, the guard-terminal skip's tripwire.
+    struct NonUsListingData;
+    impl CompanyDataSource for NonUsListingData {
+        fn financials(&self, symbol: &str) -> CompanyFinancials {
+            assert_ne!(
+                symbol, "NTDOF",
+                "a guard-terminal stock must not fetch statements"
+            );
+            StubCompanyData.financials(symbol)
+        }
+        fn facts(&self, symbol: &str) -> SecData {
+            assert_ne!(symbol, "NTDOF", "a guard-terminal stock must not hit SEC");
+            StubCompanyData.facts(symbol)
+        }
+        fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
+            use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
+            if symbol == "NTDOF" {
+                ProfileLookup::Resolved(ProfileIdentity {
+                    company_name: Some("Nintendo Co., Ltd.".into()),
+                    exchange: Some("PNK".into()),
+                    sector: Some("Communication Services".into()),
+                })
+            } else {
+                ProfileLookup::Unverified("profile source not wired".into())
+            }
+        }
+    }
+
+    #[test]
+    fn a_non_us_listing_is_not_rated_and_skips_the_statement_fetch() {
+        let (_dir, paths) = paths();
+        let holdings = holdings_of(vec![
+            stock("AAPL", 20.0, 3_900.0),
+            stock("NTDOF", 100.0, 1_000.0),
+        ]);
+        let run = match run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings),
+            &NonUsListingData,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap()
+        {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+        let ntdof = run
+            .verdicts
+            .iter()
+            .find(|v| v.symbol == "NTDOF")
+            .expect("NTDOF verdict");
+        match &ntdof.disposition {
+            crate::portfolio::VerdictDisposition::NotRated { reason } => {
+                assert!(
+                    reason.contains("unsupported listing") && reason.contains("PNK"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected not-rated, got {other:?}"),
+        }
+        // The sibling stock still grades normally through the unverified default
+        // (no guard input is never a terminal outcome).
+        let aapl = run
+            .verdicts
+            .iter()
+            .find(|v| v.symbol == "AAPL")
+            .expect("AAPL verdict");
+        assert!(matches!(
+            aapl.disposition,
+            crate::portfolio::VerdictDisposition::Priced(_)
+        ));
+    }
+
+    #[test]
+    fn a_conflict_abstention_preserves_the_prior_vintage_and_ledger() {
+        // Run 1 grades MSFT fully; run 2's profile read resolves the symbol to a
+        // different issuer — the conflict abstains, retains the standing ledger,
+        // and keeps the prior full pass's vintage (an abstention is not a pass).
+        struct ConflictData;
+        impl CompanyDataSource for ConflictData {
+            fn financials(&self, symbol: &str) -> CompanyFinancials {
+                assert_ne!(
+                    symbol, "MSFT",
+                    "a guard-terminal stock must not fetch statements"
+                );
+                StubCompanyData.financials(symbol)
+            }
+            fn facts(&self, symbol: &str) -> SecData {
+                assert_ne!(symbol, "MSFT", "a guard-terminal stock must not hit SEC");
+                StubCompanyData.facts(symbol)
+            }
+            fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
+                use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
+                if symbol == "MSFT" {
+                    ProfileLookup::Resolved(ProfileIdentity {
+                        company_name: Some("Zenith Mining Corp".into()),
+                        exchange: Some("NYSE".into()),
+                        sector: None,
+                    })
+                } else {
+                    ProfileLookup::Unverified("profile source not wired".into())
+                }
+            }
+        }
+        let (_dir, paths) = paths();
+        let first = full_run(&paths, two_stocks());
+        let second = match run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &ConflictData,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap()
+        {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+        let msft = verdict(&second, "MSFT");
+        assert!(
+            matches!(
+                &msft.disposition,
+                crate::portfolio::VerdictDisposition::InsufficientEvidence { reason }
+                    if reason.contains("conflicting identity")
+            ),
+            "{:?}",
+            msft.disposition
+        );
+        assert_eq!(
+            msft.analyzed_at.as_deref(),
+            Some(first.created_at.as_str()),
+            "the abstention preserves the prior full pass's vintage"
+        );
+        assert!(
+            msft.thesis_ledger.is_some(),
+            "the standing ledger rides through the conflict abstention"
+        );
     }
 
     #[test]
