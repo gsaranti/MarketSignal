@@ -296,6 +296,22 @@ function weightOf(pos: Position | null): number | null {
   return pos.market_value / total;
 }
 
+// The card header's position facts, each falling to "—" when the pull left
+// the input unreported (cash rows carry no cost basis; some vehicles no price).
+function priceOf(pos: Position | null): number | null {
+  return pos?.current_price ?? null;
+}
+function costBasisOf(pos: Position | null): number | null {
+  if (!pos || pos.cost_basis <= 0) return null;
+  return pos.cost_basis;
+}
+// The across-orders average cost per share — the netted book-level cost total
+// over the netted quantity, never a share-weighted average of source rows.
+function avgCostOf(pos: Position | null): number | null {
+  if (!pos || pos.cost_basis <= 0 || pos.quantity <= 0) return null;
+  return pos.cost_basis / pos.quantity;
+}
+
 // Unrealized P/L from the two Schwab-reported totals. A position with no
 // reported cost basis (cash, typically) has an undefined gain.
 function gainOf(pos: Position | null): number | null {
@@ -649,9 +665,18 @@ function gradeClass(grade: string): string {
   return grade.toLowerCase();
 }
 
-// The target-weight band as a compact percent range.
+// The target-weight band as a compact percent range. Sub-2% bands keep one
+// decimal on both endpoints — integer rounding turned a 0.27–0.48% trim band
+// into "0–0%", which reads as a sell-all.
 function weightBand(low: number, high: number): string {
-  return `${(low * 100).toFixed(0)}–${(high * 100).toFixed(0)}%`;
+  const digits = high * 100 < 2 ? 1 : 0;
+  return `${(low * 100).toFixed(digits)}–${(high * 100).toFixed(digits)}%`;
+}
+
+// Hold's band is a stay-put range (0.9×–1.1× current weight), so it reads
+// "maintain"; the adjusting actions keep the movement-implying "to".
+function bandVerb(action: string): string {
+  return action === "hold" ? "maintain" : "to";
 }
 
 // Whether a graded verdict's options signal carries anything to show.
@@ -1227,18 +1252,48 @@ const keyFigures = computed(() => {
                       </div>
                     </div>
                   </div>
-                  <div class="hc-unrealized">
-                    <span class="hc-kicker">Unrealized</span>
-                    <span
-                      v-if="gainOf(positionFor(v.symbol)) !== null"
-                      class="dir hc-gain"
-                      :class="dirOf(gainOf(positionFor(v.symbol)))"
-                    >
-                      {{ fmtSigned(gainOf(positionFor(v.symbol))!) }}
-                      ({{ fmtPct(gainPctOf(positionFor(v.symbol))!) }})
-                    </span>
-                    <span v-else class="ana-num hc-gain-none">—</span>
-                  </div>
+                  <!-- The position block: the account facts the verdict is
+                       read against — price, the across-orders average cost,
+                       the netted cost basis — so the unrealized figure sits
+                       on its base (2026-07-31 run review, F9). -->
+                  <dl class="hc-kv hc-position">
+                    <dt class="hc-kicker">Price</dt>
+                    <dd>
+                      <span class="ana-num">{{
+                        priceOf(positionFor(v.symbol)) !== null
+                          ? fmtMoney(priceOf(positionFor(v.symbol))!)
+                          : "—"
+                      }}</span>
+                    </dd>
+                    <dt class="hc-kicker">Avg cost</dt>
+                    <dd>
+                      <span class="ana-num">{{
+                        avgCostOf(positionFor(v.symbol)) !== null
+                          ? fmtMoney(avgCostOf(positionFor(v.symbol))!)
+                          : "—"
+                      }}</span>
+                    </dd>
+                    <dt class="hc-kicker">Cost basis</dt>
+                    <dd>
+                      <span class="ana-num">{{
+                        costBasisOf(positionFor(v.symbol)) !== null
+                          ? fmtMoney(costBasisOf(positionFor(v.symbol))!)
+                          : "—"
+                      }}</span>
+                    </dd>
+                    <dt class="hc-kicker">Unrealized</dt>
+                    <dd>
+                      <span
+                        v-if="gainOf(positionFor(v.symbol)) !== null"
+                        class="dir hc-gain"
+                        :class="dirOf(gainOf(positionFor(v.symbol)))"
+                      >
+                        {{ fmtSigned(gainOf(positionFor(v.symbol))!) }}
+                        ({{ fmtPct(gainPctOf(positionFor(v.symbol))!) }})
+                      </span>
+                      <span v-else class="ana-num hc-gain-none">—</span>
+                    </dd>
+                  </dl>
                 </header>
 
                 <!-- The card's anchor: the ledger's standing thesis, rendered
@@ -1317,7 +1372,7 @@ const keyFigures = computed(() => {
                         ACTION_LABELS[v.disposition.action]
                       }}</span>
                       <span class="hc-action-band"
-                        >to
+                        >{{ bandVerb(v.disposition.action) }}
                         {{
                           weightBand(
                             v.disposition.action_sizing.target_weight_low,
@@ -1441,18 +1496,48 @@ const keyFigures = computed(() => {
                       </div>
                     </div>
                   </div>
-                  <div class="hc-unrealized">
-                    <span class="hc-kicker">Unrealized</span>
-                    <span
-                      v-if="gainOf(positionFor(v.symbol)) !== null"
-                      class="dir hc-gain"
-                      :class="dirOf(gainOf(positionFor(v.symbol)))"
-                    >
-                      {{ fmtSigned(gainOf(positionFor(v.symbol))!) }}
-                      ({{ fmtPct(gainPctOf(positionFor(v.symbol))!) }})
-                    </span>
-                    <span v-else class="ana-num hc-gain-none">—</span>
-                  </div>
+                  <!-- The position block: the account facts the verdict is
+                       read against — price, the across-orders average cost,
+                       the netted cost basis — so the unrealized figure sits
+                       on its base (2026-07-31 run review, F9). -->
+                  <dl class="hc-kv hc-position">
+                    <dt class="hc-kicker">Price</dt>
+                    <dd>
+                      <span class="ana-num">{{
+                        priceOf(positionFor(v.symbol)) !== null
+                          ? fmtMoney(priceOf(positionFor(v.symbol))!)
+                          : "—"
+                      }}</span>
+                    </dd>
+                    <dt class="hc-kicker">Avg cost</dt>
+                    <dd>
+                      <span class="ana-num">{{
+                        avgCostOf(positionFor(v.symbol)) !== null
+                          ? fmtMoney(avgCostOf(positionFor(v.symbol))!)
+                          : "—"
+                      }}</span>
+                    </dd>
+                    <dt class="hc-kicker">Cost basis</dt>
+                    <dd>
+                      <span class="ana-num">{{
+                        costBasisOf(positionFor(v.symbol)) !== null
+                          ? fmtMoney(costBasisOf(positionFor(v.symbol))!)
+                          : "—"
+                      }}</span>
+                    </dd>
+                    <dt class="hc-kicker">Unrealized</dt>
+                    <dd>
+                      <span
+                        v-if="gainOf(positionFor(v.symbol)) !== null"
+                        class="dir hc-gain"
+                        :class="dirOf(gainOf(positionFor(v.symbol)))"
+                      >
+                        {{ fmtSigned(gainOf(positionFor(v.symbol))!) }}
+                        ({{ fmtPct(gainPctOf(positionFor(v.symbol))!) }})
+                      </span>
+                      <span v-else class="ana-num hc-gain-none">—</span>
+                    </dd>
+                  </dl>
                 </header>
 
                 <!-- The card's anchor: the ledger's standing thesis, rendered
@@ -1614,7 +1699,7 @@ const keyFigures = computed(() => {
                         ACTION_LABELS[v.disposition.action]
                       }}</span>
                       <span class="hc-action-band"
-                        >to
+                        >{{ bandVerb(v.disposition.action) }}
                         {{
                           weightBand(
                             v.disposition.action_sizing.target_weight_low,
@@ -1998,21 +2083,26 @@ const keyFigures = computed(() => {
   margin-bottom: var(--s-6);
 }
 
-/* Key-figure strip wraps on narrow windows rather than crushing the figures.
-   Every cell draws its own top+left hairline, shifted -1px so row-leading and
-   column-leading seams tuck under the container border (overflow clips them) —
-   otherwise a wrapped row's first cell would keep a stray inner hairline. */
+/* Key-figure strip wraps on narrow windows rather than crushing the figures —
+   a wrap-safe extension of the kit's single-row .keyfig (grid-auto-flow:
+   column; the package defines no wrapping variant). The hairline lattice is
+   the 1px flex gap over the container's hairline background, cells repainting
+   paper, so every seam survives wrapping — the per-cell border idiom left
+   row-one cells above a partial row with no bottom rule and boxed the
+   orphaned cell. Flex, not grid: a partial final row stretches to fill,
+   leaving no empty track to expose the lattice background. */
 .strip.keyfig {
-  grid-auto-flow: row;
-  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  background: var(--hairline-soft);
   overflow: hidden;
 }
 
-.strip.keyfig > .kf,
-.strip.keyfig > .kf:first-child {
-  border-left: 1px solid var(--hairline-soft);
-  border-top: 1px solid var(--hairline-soft);
-  margin: -1px 0 0 -1px;
+.strip.keyfig > .kf {
+  flex: 1 1 110px;
+  border-left: 0;
+  background: var(--paper);
 }
 
 /* ---- Current holdings (the standalone pull) ---- */
@@ -2310,7 +2400,13 @@ const keyFigures = computed(() => {
   white-space: nowrap;
 }
 
-.hc-unrealized {
+/* The header's position block rides the hc-kv primitive, right-aligned:
+   both columns hug, labels reuse the kicker treatment via the dt class. */
+.hc-position {
+  grid-template-columns: max-content max-content;
+  justify-content: end;
+  align-items: baseline;
+  row-gap: var(--s-1);
   text-align: right;
   flex-shrink: 0;
 }

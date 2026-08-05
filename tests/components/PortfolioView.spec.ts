@@ -423,11 +423,124 @@ describe("PortfolioView verdict cards", () => {
     expect(wrapper.text()).toContain("Core fixed-income sleeve");
     expect(wrapper.text()).toContain("no on-plan duration/credit surface");
     expect(wrapper.text()).toContain("Hold");
+    // The reduced spine's hold reads "maintain" too — the branch duplicates
+    // the action line, so the wording is pinned on both copies.
+    expect(
+      wrapper.find(".hc-action-band").text().replace(/\s+/g, " ")
+    ).toBe("maintain 90–110%");
     // No letter, no targets — the branch never renders priced placeholders.
     expect(wrapper.find(".hc-grade").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("12-mo target");
     // The key-figure strip counts the branch in its own tile.
     expect(wrapper.text()).toContain("Role/risk");
+  });
+
+  test("the header position block carries price, avg cost, and cost basis beside the gain", () => {
+    // AAPL: price 120, avg cost 14,000 / 100 = 140, cost basis 14,000.
+    const moneyExact = new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 2,
+    });
+    const money = new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 0,
+    });
+    const wrapper = mountView({ run });
+    const aapl = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
+    const block = aapl.find(".hc-position");
+    expect(block.exists()).toBe(true);
+    const text = block.text();
+    expect(text).toContain("Price");
+    expect(text).toContain("Avg cost");
+    expect(text).toContain("Cost basis");
+    expect(text).toContain("Unrealized");
+    expect(text).toContain(moneyExact.format(120));
+    expect(text).toContain(moneyExact.format(140));
+    expect(text).toContain(money.format(14_000));
+  });
+
+  test("unreported position inputs render as dashes, never fabricated numbers", () => {
+    const bare: PortfolioRun = {
+      ...run,
+      holdings: {
+        positions: [position("AAPL", { cost_basis: 0, current_price: null })],
+        cash: 0,
+        account_total: 12_000,
+      },
+      verdicts: [verdict("AAPL", { status: "priced", ...graded() })],
+    };
+    const wrapper = mountView({ run: bare });
+    const cells = wrapper.findAll(".hc-position dd").map((d) => d.text());
+    expect(cells).toEqual(["—", "—", "—", "—"]);
+  });
+
+  test("a net-short position renders the reduced card — never a position block", () => {
+    // The position block's cost guards assume long rows: the engine short-circuits
+    // any net-short position to not-rated before class routing (pipeline.rs
+    // eligibility), so no full-card branch ever pairs with a signed-negative
+    // position row. Pin that seam: if short routing ever changes, this fails
+    // before the block silently dashes a legitimate short's cost figures.
+    const shortRun: PortfolioRun = {
+      ...run,
+      holdings: {
+        positions: [
+          position("XYZ", {
+            quantity: -40,
+            cost_basis: -4_000,
+            market_value: -4_800,
+            current_price: 120,
+          }),
+        ],
+        cash: 0,
+        account_total: 10_000,
+      },
+      verdicts: [
+        verdict("XYZ", {
+          status: "not-rated",
+          reason: "held net short — the ladder's long-side semantics don't apply",
+        }),
+      ],
+    };
+    const wrapper = mountView({ run: shortRun });
+    expect(wrapper.text()).toContain("held net short");
+    expect(wrapper.find(".hc-position").exists()).toBe(false);
+    expect(wrapper.find(".hc-grade").exists()).toBe(false);
+  });
+
+  test("hold reads 'maintain', adjusting actions keep 'to', sub-2% bands keep a decimal", () => {
+    const wrapper = mountView({ run });
+    // AAPL holds at 10–20%; MSFT trims to the same band.
+    const bands = wrapper
+      .findAll(".hc-action-band")
+      .map((b) => b.text().replace(/\s+/g, " "));
+    expect(bands).toContain("maintain 10–20%");
+    expect(bands).toContain("to 10–20%");
+    // A sub-1% trim band keeps its decimal — never the "0–0%" sell-all read.
+    const tiny: PortfolioRun = {
+      ...run,
+      verdicts: [
+        verdict("AAPL", {
+          status: "priced",
+          ...graded({
+            action: "trim",
+            action_sizing: {
+              target_weight_low: 0.0027,
+              target_weight_high: 0.0048,
+              est_share_delta: null,
+              est_dollar_delta: null,
+            },
+          }),
+        }),
+      ],
+    };
+    const tinyWrapper = mountView({ run: tiny });
+    expect(
+      tinyWrapper.find(".hc-action-band").text().replace(/\s+/g, " ")
+    ).toBe("to 0.3–0.5%");
   });
 });
 
