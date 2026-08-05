@@ -435,7 +435,11 @@ load-bearing decisions:
   the report. (Built with the fund slice: FMP / FRED presence joins the
   local gate through the shared missing-credentials category —
   `portfolio-workflow.md §Step 1`.) Both jobs are personalized by a **fixed default investor-profile
-  preset** (user config deferred) that frames the prescription, never which
+  preset** (user config deferred; aligned as-built to the documented posture
+  2026-08-05, B7 — a typed profit-maximization `objective`, the medium-to-high
+  default represented as the aggressive rung, and **one shared Rust label
+  source** rendering both the 7b prompt line and the read-only Settings
+  block's backend-composed rows) that frames the prescription, never which
   holdings or ideas qualify — nor the intrinsic verdict (profile-independence
   is declared **and input-isolation-enforced** since 2026-08-04: the 6f
   intrinsic prompt carries no profile — it enters at 7b construction only,
@@ -845,8 +849,8 @@ episode-schema migration, exactly as reserved).
 **The pre-test block is built; the 2026-08-04 B-ruling batch (piece-2
 record §Rulings, `a5992f4`) queued five further pre-run slices — B12
 (the context-fit instrumentation) landed same day, B3 (the
-listing-resolution guard) landed 2026-08-05, three remain: B7
-investor-profile alignment, B10 momentum-tile differentiation, B13
+listing-resolution guard) and B7 (the investor-profile alignment) landed
+2026-08-05, two remain: B10 momentum-tile differentiation, B13
 monitor render.** The
 last result-review UI fix, the **section-scoped footer + report-nav
 slice**, landed 2026-08-04 (`c9b660e`, direct to main): `jobs::JobStatus`
@@ -866,8 +870,8 @@ price / avg cost / cost basis under the unrealized figure, sub-2%
 weight-band decimal precision, and Hold's "maintain" phrasing; one Codex
 round, the short-position finding disputed on engine-reachability
 evidence — net-short is not-rated pre-routing, so no full card pairs with
-a signed row — with its regression-case half adopted.) Next: the three
-remaining B-ruled slices (B7, then the B10+B13 pair), then the single big
+a signed row — with its regression-case half adopted.) Next: the remaining
+B-ruled pair (B10+B13, plausibly one UI slice), then the single big
 confirmation run banks the
 stacked runtime confirmations above. Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
