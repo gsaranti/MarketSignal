@@ -489,9 +489,10 @@ impl LocalModelClient {
     }
 }
 
-/// Which channels a streamed local chat surfaces to the tracker — mirrors the cloud
-/// `model_agent::StreamRole`. All roles accumulate the full envelope (the parse
-/// source of truth); they differ in what they *stream*.
+/// Which channels a streamed local chat surfaces to the tracker — a superset of the
+/// cloud `model_agent::StreamRole` (`Main` / `Analyst` shared; `Step` and `Silent`
+/// are local-only). All roles accumulate the full envelope (the parse source of
+/// truth); they differ in what they *stream*.
 #[derive(Debug, Clone, Copy)]
 pub enum StreamRole<'a> {
     /// Stream the decoded content (`agent_token`) and reasoning (`agent_thinking`).

@@ -4255,8 +4255,8 @@ fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Q
                 revenue: row.get("revenue").and_then(Value::as_f64),
                 eps_diluted: row
                     .get("epsDiluted")
-                    .or_else(|| row.get("epsdiluted"))
-                    .and_then(Value::as_f64),
+                    .and_then(Value::as_f64)
+                    .or_else(|| row.get("epsdiluted").and_then(Value::as_f64)),
                 diluted_shares: row
                     .get("weightedAverageShsOutDil")
                     .and_then(Value::as_f64),
@@ -4292,16 +4292,22 @@ fn consensus_from_value(
             .unwrap_or_default()
             .to_string()
     };
+    // Numeric-first per key (the balance-sheet shaper's rule): a present-but-null
+    // stable key must still fall through to the legacy spelling.
     let field = |row: &Value, stable: &str, legacy: &str| {
         row.get(stable)
-            .or_else(|| row.get(legacy))
             .and_then(Value::as_f64)
+            .or_else(|| row.get(legacy).and_then(Value::as_f64))
     };
     let mut forward: Vec<&Value> = rows
         .iter()
         .filter(|r| date_of(r).as_str() >= today)
         .collect();
     forward.sort_by_key(|r| date_of(r));
+    // One row per fiscal-period date: a duplicated period must not masquerade as
+    // near + far — the blend would re-read the same year at both weights and
+    // exclude the true following fiscal year while recording `periods_used = 2`.
+    forward.dedup_by_key(|r| date_of(r));
     let near: &Value = forward.first()?;
     let far: Option<&&Value> = forward.get(1);
 
@@ -4384,10 +4390,12 @@ fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<O
         if parsed < cutoff || parsed > today {
             continue;
         }
+        // Numeric-first per key: a present-but-null `adjDividend` beside a numeric
+        // `dividend` must read the amount, not take the unreadable-row bail path.
         let amount = row
             .get("adjDividend")
-            .or_else(|| row.get("dividend"))
-            .and_then(Value::as_f64);
+            .and_then(Value::as_f64)
+            .or_else(|| row.get("dividend").and_then(Value::as_f64));
         let Some(a) = amount else {
             anyhow::bail!(
                 "an in-window dividend row carried no numeric amount — malformed or drifted response"
@@ -4442,10 +4450,12 @@ fn dividend_history_from_value(
         if parsed < from || parsed > to {
             continue;
         }
+        // Numeric-first per key: a present-but-null `adjDividend` beside a numeric
+        // `dividend` must read the amount, not take the unreadable-row bail path.
         let amount = row
             .get("adjDividend")
-            .or_else(|| row.get("dividend"))
-            .and_then(Value::as_f64);
+            .and_then(Value::as_f64)
+            .or_else(|| row.get("dividend").and_then(Value::as_f64));
         let Some(a) = amount else {
             anyhow::bail!(
                 "an in-window dividend row carried no numeric amount — malformed or drifted response"
@@ -4488,10 +4498,12 @@ fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) {
         .get("expenseRatio")
         .and_then(Value::as_f64)
         .map(|percent| percent / 100.0);
+    // Numeric-first per key: live serves only `assetsUnderManagement`, so a drifted
+    // `aum: null` beside it must not erase the value the fallback exists to read.
     fund.aum = obj
         .get("aum")
-        .or_else(|| obj.get("assetsUnderManagement"))
-        .and_then(Value::as_f64);
+        .and_then(Value::as_f64)
+        .or_else(|| obj.get("assetsUnderManagement").and_then(Value::as_f64));
     fund.nav = obj.get("nav").and_then(Value::as_f64);
 }
 
@@ -4590,6 +4602,18 @@ mod suite_tests {
         assert_eq!(rows[1].filing_date.as_deref(), Some("2026-01-30"));
         assert!(gaps.is_empty());
         assert_eq!(server.request_paths(), vec!["/income-statement"]);
+    }
+
+    #[test]
+    fn quarterly_income_null_stable_eps_falls_through_to_the_legacy_spelling() {
+        // FMP serves JSON nulls: a present-but-null `epsDiluted` must not block
+        // the legacy `epsdiluted` value (the balance-sheet shaper's rule).
+        let value: Value = serde_json::from_str(
+            r#"[{"date":"2026-03-31","epsDiluted":null,"epsdiluted":1.55,"revenue":95e9}]"#,
+        )
+        .unwrap();
+        let rows = quarterly_income_from_value(&value);
+        assert_eq!(rows[0].eps_diluted, Some(1.55));
     }
 
     #[test]
@@ -4713,6 +4737,41 @@ mod suite_tests {
     }
 
     #[test]
+    fn consensus_null_stable_keys_fall_through_to_legacy_values() {
+        // Both rows carry present-but-null stable keys beside numeric legacy
+        // spellings — the blend must read the legacy values, not None them.
+        let body = r#"[
+          {"date":"2026-09-30","epsAvg":null,"estimatedEpsAvg":6.8},
+          {"date":"2027-09-30","epsAvg":null,"estimatedEpsAvg":7.4}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let c = consensus_from_value(&value, "2026-07-16").unwrap();
+        assert_eq!(c.periods_used, 2);
+        let w = 76.0 / 365.0;
+        assert!((c.eps_mid.unwrap() - (w * 6.8 + (1.0 - w) * 7.4)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn consensus_dedups_duplicate_fiscal_period_rows() {
+        // Two rows share the near fiscal-period date: the duplicate must not
+        // masquerade as the far year — the blend reads the true following fiscal
+        // year, never the same year at both weights.
+        let body = r#"[
+          {"date":"2026-09-30","epsAvg":6.8},
+          {"date":"2026-09-30","epsAvg":6.9},
+          {"date":"2027-09-30","epsAvg":7.4}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let c = consensus_from_value(&value, "2026-07-16").unwrap();
+        assert_eq!(c.periods_used, 2);
+        let w = 76.0 / 365.0;
+        assert!(
+            (c.eps_mid.unwrap() - (w * 6.8 + (1.0 - w) * 7.4)).abs() < 1e-9,
+            "the far leg must be the following fiscal year, not the duplicate"
+        );
+    }
+
+    #[test]
     fn dated_eod_round_trips_sorted_dated_closes() {
         // The Stooq-fallback form keeps the dates the undated per-company EOD read
         // discards — the v2 anchor join needs them for the latest-on-or-before join.
@@ -4792,6 +4851,17 @@ mod suite_tests {
     }
 
     #[test]
+    fn ttm_dividends_null_adj_amount_falls_through_to_the_plain_amount() {
+        // A present-but-null `adjDividend` beside a numeric `dividend` is a
+        // readable row — it must sum, not take the unreadable-row bail path.
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
+        let v: Value =
+            serde_json::from_str(r#"[{"date":"2026-05-10","adjDividend":null,"dividend":0.26}]"#)
+                .unwrap();
+        assert_eq!(ttm_dividends_from_value(&v, today).unwrap(), Some(0.26));
+    }
+
+    #[test]
     fn dividend_history_windows_sorts_and_stays_strict() {
         let from = chrono::NaiveDate::from_ymd_opt(2025, 6, 3).unwrap();
         let to = chrono::NaiveDate::from_ymd_opt(2026, 6, 3).unwrap();
@@ -4815,6 +4885,31 @@ mod suite_tests {
         // An empty body is a genuine non-payer window.
         let empty: Value = serde_json::from_str("[]").unwrap();
         assert!(dividend_history_from_value(&empty, from, to).unwrap().is_empty());
+    }
+
+    #[test]
+    fn dividend_history_null_adj_amount_falls_through_to_the_plain_amount() {
+        let from = chrono::NaiveDate::from_ymd_opt(2025, 6, 3).unwrap();
+        let to = chrono::NaiveDate::from_ymd_opt(2026, 6, 3).unwrap();
+        let v: Value =
+            serde_json::from_str(r#"[{"date":"2025-11-10","adjDividend":null,"dividend":0.24}]"#)
+                .unwrap();
+        let rows = dividend_history_from_value(&v, from, to).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!((rows[0].value - 0.24).abs() < 1e-12);
+    }
+
+    #[test]
+    fn fund_info_null_aum_falls_through_to_assets_under_management() {
+        // Live serves only `assetsUnderManagement`; a drifted `aum: null` beside
+        // it must not erase the value the fallback exists to read.
+        let v: Value = serde_json::from_str(
+            r#"[{"name":"SPDR S&P 500","aum":null,"assetsUnderManagement":5.4e11}]"#,
+        )
+        .unwrap();
+        let mut fund = crate::portfolio::fund::FundData::default();
+        fund_info_into(&v, &mut fund);
+        assert_eq!(fund.aum, Some(5.4e11));
     }
 
     #[test]
