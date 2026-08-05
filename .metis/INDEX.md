@@ -142,7 +142,11 @@ overlay depth slice (2026-08-04, PR #58), the outcome-learning depth
 slice (2026-08-04, PR #59), the construction-stage depth slice
 (2026-08-04, PR #60), the Portfolio-page polish micro-slice
 (2026-08-04, `f24c852`), and the section-scoped footer + report-nav slice
-(2026-08-04, `c9b660e` — the pre-test block's last item) are built; the
+(2026-08-04, `c9b660e` — the pre-test block's last item), and the
+B-ruling doc batch + B12 context-fit instrumentation (2026-08-04,
+`a5992f4`) are built; four further B-ruled slices (B3 listing guard /
+B7 profile alignment / B10 momentum tile / B13 monitor render) are
+queued pre-run; the
 remaining Portfolio pieces (the live
 research loop and the held-name refresh lane) and Trade Opportunities are
 designed, not built — the docs below describe both without distinction;
@@ -165,7 +169,8 @@ build status lives in BUILD.md.*
 - M5 pre-flight verification record (2026-07-28 — serving/backend, #14645 behavioral verify, long-context probe 35/35 → 160.6K, memory/throughput; re-verification template + harness scripts for Ollama bumps) — verification/2026-07-28-m5-preflight.md; local-model-operations.md §M5 pre-flight checklist
 - First live Portfolio run record (2026-07-31 — spine live-verified end-to-end; 10 findings incl. flat-target syndrome + grade-band compression + think-wire; follow-up slices #1–9 incl. the user-settled section-scoped footer / report-nav design — #8 the polish micro-slice landed 2026-08-04 `f24c852`, #9 the footer/report-nav slice landed 2026-08-04 `c9b660e`, closing the block; run `3b21ae85` = the first calibration dataset) — verification/2026-07-31-first-live-portfolio-run.md
 - FMP light-EOD adjustment-basis probe record (2026-08-02 — FMP `historical-price-eod/light` basis = Stooq's split-adjusted dividend-unadjusted convention, question closed; the Stooq JS-PoW-interstitial observation) — verification/2026-08-02-fmp-light-eod-adjustment-basis.md; data-sources.md §Stooq
-- Pre-big-run review piece 2 record (2026-08-04 — the code-vs-docs conformance walk of the Portfolio Analysis job: seven parallel passes, 39 verified divergences → 5 code fixes (A, `462aaa5` — profile out of the 6f prompt, house-view freshness gate, negative-basis gain, gate-block messages, tracker labels) + 20 doc corrections (C, incl. the as-built/designed marker sweep) applied, two Codex rounds to approval (`c2d963d`); **the 14 open B design rulings** w/ per-item evidence + options, incl. B3 listing guard / B5 vector lane / B6 options method) — verification/2026-08-04-piece2-conformance-walk.md
+- Pre-big-run review piece 2 record (2026-08-04 — the code-vs-docs conformance walk of the Portfolio Analysis job: seven parallel passes, 39 verified divergences → 5 code fixes (A, `462aaa5` — profile out of the 6f prompt, house-view freshness gate, negative-basis gain, gate-block messages, tracker labels) + 20 doc corrections (C, incl. the as-built/designed marker sweep) applied, two Codex rounds to approval (`c2d963d`); **the 14 B design rulings** w/ per-item evidence + options — **all ruled 2026-08-04** (`a5992f4`, §Rulings): 9 doc outcomes applied + 5 build outcomes (B12 landed same commit; B3 listing guard / B7 profile alignment / B10 momentum tile / B13 monitor render queued)) — verification/2026-08-04-piece2-conformance-walk.md
+- Local context-fit instrumentation (B12, landed 2026-08-04 `a5992f4` + one Codex round — per-chat-call `prompt_eval_count` (non-streaming reply + stream done chunk) w/ sent `prompt_chars` behind the defaulted `HoldingAnalyst::take_prompt_usage`; `DataHealth.context_pressure` on two signatures — near-full ≥90%-of-`num_ctx` + the chars-vs-count front-truncation trigger (post-truncation counts land far below `num_ctx`, the preflight 1,026-of-2,048 signature; ×8 implausibility bound) — attention + distinct summary clauses, `peak_prompt` always recorded for the big-run fit watch) — portfolio-analysis.md §Portfolio roll-up and construction, §Starting parameters (Step 7b covenant); verification/2026-07-28-m5-preflight.md §Truncation behavior
 - Grade-band shadow-tune record (2026-08-03 — formula certification vs run `3b21ae85`'s persisted audits, the statement-gap census, the 93-call probe refresh, the band sweep → the user-picked recentered-growth bands) — verification/2026-08-03-grade-band-shadow-tune.md; portfolio-analysis.md §Starting parameters
 - Model residency default (one 122B fills all reasoning roles + embedder resident; 35B fast tier benchmark-gated) — local-models.md §The model roster and per-task routing
 - Local-model adapter seam (flexible endpoint/model_id client, distinct from the cloud AgentModel enum) — local-models.md §The local-model adapter seam
@@ -177,7 +182,7 @@ build status lives in BUILD.md.*
 - Source quality & evidence weighting (quality informs conviction, never gates discovery; app-computed vs model-derived annotations; lane policy; diversity caps) — web-research.md §Source quality and evidence weighting
 - Connected Sources (optional subscription enrichment; webview login → Keychain session; health-tested; never on the execution gate) — web-research.md §Connected sources; configuration.md §Connected Sources (subscriptions)
 - Charles Schwab integration (OAuth loopback, 30-min/7-day token lifecycle, positions, account hashing) — schwab-integration.md
-- Manual holdings import (CSV/paste fallback; never clears the gate) — schwab-integration.md §Manual import fallback
+- Manual holdings import (CSV/paste fallback; never clears the gate; designed, not built — ruled 2026-08-04) — schwab-integration.md §Manual import (supplement)
 - Portfolio Analysis job (per-holding pipeline → intrinsic verdict; whole-book construction → portfolio action) — portfolio-analysis.md
 - Holding verdict schema (intrinsic verdict vs portfolio action; what-changed split) — portfolio-analysis.md §The holding verdict
 - Intrinsic-verdict vs portfolio-action separation (per-holding loop → Step 7a deterministic aggregates → 7b model reconciliation) — portfolio-analysis.md §Portfolio roll-up and construction; portfolio-workflow.md §Step 7

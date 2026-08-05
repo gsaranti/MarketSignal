@@ -399,8 +399,8 @@ load-bearing decisions:
   holdings *and* live option chains, from which a deterministic put/call +
   IV/skew signal is computed — an activity proxy, not positioning truth, kept
   out of grade sub-scores until calibrated. **A connected Schwab account is
-  required to run either local job** — manual CSV/paste import only supplements
-  holdings. Same-symbol rows across granted accounts (and future manual
+  required to run either local job** — manual CSV/paste import (designed, not
+  built — ruled 2026-08-04) only supplements holdings. Same-symbol rows across granted accounts (and future manual
   supplements) **net at snapshot assembly** into one signed book-level position
   per symbol — the holdings-normalization contract
   (`docs/schwab-integration.md §What is pulled`), built with the fund slice;
@@ -758,7 +758,9 @@ through the fail-soft profile read, the below-bar eligibility note); the
 first live **construction pass** (lean-divergence / engine-bar /
 carried-stale-lean rates at 47-position scale, the construction prompt's
 fit in the shared 131k `num_ctx` — the settled response is compress
-digests, never `num_ctx` — the overlay-classification read against real
+digests, never `num_ctx`, and the fit is now instrumented (B12,
+2026-08-04: per-call prompt counts + sent size, pressure/truncation
+flags on the data-health read) — the overlay-classification read against real
 Schwab OCC rows, and the 7b sizing-only decided-range movement rate that
 would justify a band-relative episode trigger); 128 K runner
 stability; distill speed; whether Stooq's PoW gate is permanent). **Trade
@@ -825,7 +827,11 @@ consume, and reserved the episode `lean` / `lean_divergence` pair — which
 the construction stage now populates (lean divergence recorded without an
 episode-schema migration, exactly as reserved).
 
-**The block is fully built — nothing remains before the big run.** The
+**The pre-test block is built; the 2026-08-04 B-ruling batch (piece-2
+record §Rulings, `a5992f4`) queued five further pre-run slices — B12
+(the context-fit instrumentation) landed same day, four remain: B3
+listing-resolution guard, B7 investor-profile alignment, B10
+momentum-tile differentiation, B13 monitor render.** The
 last result-review UI fix, the **section-scoped footer + report-nav
 slice**, landed 2026-08-04 (`c9b660e`, direct to main): `jobs::JobStatus`
 reshaped to per-section `report` / `portfolio` stamp groups scoped by
@@ -844,8 +850,9 @@ price / avg cost / cost basis under the unrealized figure, sub-2%
 weight-band decimal precision, and Hold's "maintain" phrasing; one Codex
 round, the short-position finding disputed on engine-reachability
 evidence — net-short is not-rated pre-routing, so no full card pairs with
-a signed row — with its regression-case half adopted.) Next: the single
-big confirmation run banks the stacked runtime confirmations above. Excluded from the block and still designed-not-built: the
+a signed row — with its regression-case half adopted.) Next: the four
+remaining B-ruled slices, then the single big confirmation run banks the
+stacked runtime confirmations above. Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
 shipped schemas don't preclude them — but the research-loop slice **must**
 add holding-identity + source-text observation validation (plus a period-
