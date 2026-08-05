@@ -1063,14 +1063,46 @@ pub struct DataHealth {
     /// pre-field runs.
     #[serde(default)]
     pub house_view_omitted: bool,
+    /// Local chat calls whose prompt filled at least
+    /// [`CONTEXT_PRESSURE_FRACTION`] of their declared `num_ctx` — the
+    /// digest-compression covenant's detection leg (`docs/portfolio-analysis.md`
+    /// §Portfolio roll-up): `num_ctx` overflow silently front-truncates, so a
+    /// near-full prompt is surfaced here rather than discovered as a corrupted
+    /// read. `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub context_pressure: Vec<crate::local_model::PromptUsage>,
+    /// The run's fullest local prompt (by fraction of its `num_ctx`), recorded
+    /// regardless of pressure — the measurement the big-run prompt-fit watch
+    /// reads. `None` when no call reported a count. `#[serde(default)]` for
+    /// pre-field runs.
+    #[serde(default)]
+    pub peak_prompt: Option<crate::local_model::PromptUsage>,
     /// Infrastructure degradation worth surfacing prominently: unrecovered
-    /// deep-history failures, any current-multiple carry, or a run-wide DGS10
-    /// history gap — a raw-percentile fallback from genuinely thin issuer history is
-    /// counted but not flagged.
+    /// deep-history failures, any current-multiple carry, a run-wide DGS10
+    /// history gap, or context pressure on any local call — a raw-percentile
+    /// fallback from genuinely thin issuer history is counted but not flagged.
     pub attention: bool,
     /// The one-line deterministic summary the roll-up card renders.
     pub summary: String,
 }
+
+/// The prompt-fill fraction at which a local call's context is considered under
+/// pressure (`context_pressure` above): at or beyond it, the sanctioned response
+/// is compressing the construction digests, never a `num_ctx` change
+/// (`docs/portfolio-analysis.md` §Portfolio roll-up).
+pub const CONTEXT_PRESSURE_FRACTION: f64 = 0.9;
+
+/// The truncation-implausibility bound: a reported `prompt_eval_count` whose
+/// `× TRUNCATION_CHARS_PER_TOKEN` cannot cover the chars the app actually sent
+/// reads as **likely front-truncation**. Needed because the fill fraction alone
+/// cannot see a truncation — Ollama's count is post-truncation and lands far
+/// *below* `num_ctx`, not near it (live marker test: a ~4.6K-token prompt into
+/// `num_ctx` 2,048 reported 1,026 — 50% fill —
+/// `docs/verification/2026-07-28-m5-preflight.md` §Truncation behavior). Real
+/// tokenization of this pipeline's prose/JSON prompts runs ~3–5 chars per
+/// token; 8 is a deliberately generous bound so a trip is near-certain
+/// truncation, not estimate noise.
+pub const TRUNCATION_CHARS_PER_TOKEN: u64 = 8;
 
 /// The portfolio-level view produced after the per-holding pass
 /// (`docs/portfolio-analysis.md` §Portfolio roll-up): concentration and a cash

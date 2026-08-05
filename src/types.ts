@@ -582,8 +582,26 @@ export interface DataHealth {
   // The house view was omitted for staleness (latest report older than the pinned
   // window — docs/portfolio-workflow.md §Step 5); informational, rides `summary`.
   house_view_omitted: boolean;
+  // Local chat calls under context pressure (the digest-compression covenant's
+  // detection leg) — near-full (≥ 90% of num_ctx) or likely front-truncated (a
+  // reported count too small to cover the chars actually sent; Ollama's count
+  // is post-truncation and lands far below num_ctx, so fill alone can't see
+  // it). Named in `summary` and an attention trigger; `peak_prompt` is the
+  // run's fullest prompt regardless, the big-run prompt-fit watch's measurement.
+  context_pressure: PromptUsage[];
+  peak_prompt: PromptUsage | null;
   attention: boolean;
   summary: string;
+}
+
+// One local chat call's prompt-size observation: Ollama's reported prompt token
+// count (post-truncation) against the num_ctx the request declared and the
+// prompt size the app actually sent.
+export interface PromptUsage {
+  stage: string;
+  prompt_tokens: number;
+  num_ctx: number;
+  prompt_chars: number;
 }
 
 // One holding's action-sizing spine row (docs/portfolio-workflow.md §Step 7a) —

@@ -73,3 +73,22 @@ Each item: the divergence, and the decision it needs.
   *Gate retrieval vs edit the doc.*
 
 One recorded note requiring no ruling: the construction spine's `hard_forensic_bar` field is producer-dormant **and consumer-unread** (no reader in `feasible_actions`, the digest, or validation) — when the forensic producer lands, its consumer seam needs wiring too.
+
+## Rulings (2026-08-04)
+
+All fourteen ruled by the user in a per-item walkthrough; doc edits applied same-day.
+
+- **Doc outcomes (9)** — B1 payout basis softened to the as-built trailing-TTM sum (specials-included exposure noted; no wire flag to filter on);
+  B2 both floor arms marked designed (the identity arm's producer rides the B3 slice);
+  B4 narrowed to the as-built existence-flag render, prior-value rendering a named candidate rider on the designed 6g input-delta validator slice;
+  B5 the vector-continuity lane marked designed at both ends, revisited once a learning corpus exists;
+  B6 re-scoped to the as-built whole-chain read, the 25-delta matched-tenor spec the designed target owned by the calibration slice (chain staleness rejection marked designed with it);
+  B8 manual import marked designed;
+  B9 the CEF leg marked designed, `nav_premium` noted computed-but-unconsumed;
+  B11 the alignment / divergence strata noted recorded-not-derived, landing with the calibration-proposal slice;
+  B14 the unconditional fund quick-refresh retrieval documented as intended (evaluation-side gating is the contract).
+- **Build outcomes (5), all pre-big-run** — B3 the listing-resolution guard (the flagged candidate — a wrong-issuer grade is invisible to the run's own checks);
+  B7 investor-profile alignment to the documented intent (`objective` field, medium-to-high default, 7b render, the read-only Settings block) — a deliberate change to the framing the big run banks;
+  B10 the momentum tile set apart as a market-setup read (display-only);
+  B12 the `prompt_eval_count` instrumentation leg + the covenant reword (behavior-free; makes the prompt-fit watch measurable);
+  B13 the MonitorScenario card render, user-elevated to pre-run.

@@ -126,6 +126,13 @@ pub trait HoldingAnalyst {
     ) -> Result<crate::portfolio::construction::ConstructionDraft>;
     /// The model ids this analyst used, for the run's audit record.
     fn model_ids(&self) -> Vec<String>;
+    /// Drain the prompt-size observations the calls above accumulated
+    /// ([`crate::local_model::PromptUsage`]) — the data-health context-fit read
+    /// (`docs/portfolio-analysis.md` §Portfolio roll-up). Defaulted empty so
+    /// deterministic stubs carry no instrumentation.
+    fn take_prompt_usage(&self) -> Vec<crate::local_model::PromptUsage> {
+        Vec::new()
+    }
 }
 
 /// Run one holding through the pipeline end to end, returning its verdict and audit
@@ -2161,6 +2168,11 @@ pub struct LocalAnalyst {
     client: LocalModelClient,
     reasoner_model: String,
     fast_model: String,
+    /// Prompt-size observations accumulated across this run's chat calls
+    /// (drained by [`HoldingAnalyst::take_prompt_usage`]). A `Mutex` only for the
+    /// `&self` receivers — the per-holding loop is sequential, so it is never
+    /// contended.
+    prompt_usage: std::sync::Mutex<Vec<crate::local_model::PromptUsage>>,
 }
 
 impl LocalAnalyst {
@@ -2179,7 +2191,40 @@ impl LocalAnalyst {
             client,
             reasoner_model,
             fast_model,
+            prompt_usage: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Record one call's prompt-size observation when the daemon reported a count
+    /// and the request declared a `num_ctx` — the pair the data-health context-fit
+    /// read compares.
+    fn record_usage(
+        &self,
+        stage: String,
+        req: &ChatRequest,
+        resp: &crate::local_model::ChatResponse,
+    ) {
+        let (Some(prompt_tokens), Some(num_ctx)) =
+            (resp.prompt_eval_count, crate::local_model::request_num_ctx(req))
+        else {
+            return;
+        };
+        // The sent size in chars — the ground truth a post-truncation
+        // `prompt_eval_count` is checked against (`build_data_health`).
+        let prompt_chars = req
+            .messages
+            .iter()
+            .map(|m| m.content.chars().count() as u64)
+            .sum();
+        self.prompt_usage
+            .lock()
+            .expect("prompt-usage lock is never poisoned")
+            .push(crate::local_model::PromptUsage {
+                stage,
+                prompt_tokens,
+                num_ctx,
+                prompt_chars,
+            });
     }
 }
 
@@ -2326,6 +2371,11 @@ impl HoldingAnalyst for LocalAnalyst {
             findings,
         );
         let resp = self.client.chat(&req)?;
+        self.record_usage(
+            format!("distill {}", dossier.position.symbol),
+            &req,
+            &resp,
+        );
         Ok(resp.content)
     }
 
@@ -2337,6 +2387,11 @@ impl HoldingAnalyst for LocalAnalyst {
         // instead of a minutes-long quiet stretch (the first live run's F8).
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
+        self.record_usage(
+            format!("interpret {}", input.dossier.position.symbol),
+            &req,
+            &resp,
+        );
         serde_json::from_str(&resp.content)
             .with_context(|| format!("parsing interpretation JSON: {}", resp.content))
     }
@@ -2345,6 +2400,11 @@ impl HoldingAnalyst for LocalAnalyst {
         let req = role_risk_request(&self.reasoner_model, input);
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
+        self.record_usage(
+            format!("role-risk {}", input.dossier.position.symbol),
+            &req,
+            &resp,
+        );
         serde_json::from_str(&resp.content)
             .with_context(|| format!("parsing role/risk interpretation JSON: {}", resp.content))
     }
@@ -2360,6 +2420,7 @@ impl HoldingAnalyst for LocalAnalyst {
         let resp = self
             .client
             .chat_streaming(&req, StreamRole::Step(CONSTRUCTION_STEP_KEY))?;
+        self.record_usage(CONSTRUCTION_STEP_KEY.to_string(), &req, &resp);
         serde_json::from_str(&resp.content)
             .with_context(|| format!("parsing construction JSON: {}", resp.content))
     }
@@ -2370,6 +2431,15 @@ impl HoldingAnalyst for LocalAnalyst {
         // record doesn't list the same model twice.
         ids.dedup();
         ids
+    }
+
+    fn take_prompt_usage(&self) -> Vec<crate::local_model::PromptUsage> {
+        std::mem::take(
+            &mut *self
+                .prompt_usage
+                .lock()
+                .expect("prompt-usage lock is never poisoned"),
+        )
     }
 }
 
@@ -2384,6 +2454,42 @@ mod tests {
     use crate::portfolio::dossier::HouseView;
     use crate::schwab::Position;
     use std::collections::HashMap;
+
+    /// The prompt-usage collector: a counted response records against the request's
+    /// `num_ctx`, a count-less one (an older daemon) records nothing rather than a
+    /// zero, and draining empties the buffer.
+    #[test]
+    fn local_analyst_records_and_drains_prompt_usage() {
+        let analyst = LocalAnalyst::new(
+            LocalModelClient::new("http://127.0.0.1:1").unwrap(),
+            "reasoner".into(),
+            String::new(),
+        );
+        let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
+        req.options = Some(options::thinking_general(131_072));
+        let counted = crate::local_model::ChatResponse {
+            content: String::new(),
+            thinking: None,
+            prompt_eval_count: Some(120_000),
+        };
+        analyst.record_usage("construction".to_string(), &req, &counted);
+        let uncounted = crate::local_model::ChatResponse {
+            content: String::new(),
+            thinking: None,
+            prompt_eval_count: None,
+        };
+        analyst.record_usage("interpret AAPL".to_string(), &req, &uncounted);
+        let drained = analyst.take_prompt_usage();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].stage, "construction");
+        assert_eq!(drained[0].prompt_tokens, 120_000);
+        assert_eq!(drained[0].num_ctx, 131_072);
+        assert_eq!(drained[0].prompt_chars, 1, "the one-char user message");
+        assert!(
+            analyst.take_prompt_usage().is_empty(),
+            "drain empties the buffer"
+        );
+    }
 
     fn position(asset_class: AssetClass) -> Position {
         Position {

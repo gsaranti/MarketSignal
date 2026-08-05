@@ -181,6 +181,46 @@ pub mod options {
 pub struct ChatResponse {
     pub content: String,
     pub thinking: Option<String>,
+    /// Ollama's reported prompt token count (`prompt_eval_count` — on the
+    /// non-streaming reply body, or the stream's `done` chunk). The context-fit
+    /// instrumentation: `num_ctx` overflow **silently front-truncates** the prompt
+    /// (`docs/local-model-operations.md §The num_ctx trap`), and this count against
+    /// the request's `num_ctx` is the only in-app way to see it. `None` when the
+    /// daemon omits the field.
+    pub prompt_eval_count: Option<u64>,
+}
+
+/// One chat call's prompt-size observation — the stage label, Ollama's reported
+/// prompt token count, and the `num_ctx` the request declared. Collected per run
+/// and folded into the run's data-health read (`docs/portfolio-analysis.md`
+/// §Portfolio roll-up: the digest-compression covenant's detection leg).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptUsage {
+    /// Which call this measures (e.g. `interpret AAPL`, `construction`).
+    pub stage: String,
+    /// Ollama's `prompt_eval_count` for the call — **post-truncation**: on
+    /// `num_ctx` overflow the daemon front-truncates and reports only the kept
+    /// tokens (live-verified far *below* `num_ctx`, not near it —
+    /// `docs/verification/2026-07-28-m5-preflight.md` §Truncation behavior), so
+    /// this count alone cannot witness a truncation.
+    pub prompt_tokens: u64,
+    /// The `num_ctx` the request was sent with.
+    pub num_ctx: u32,
+    /// The size of the prompt the app actually sent (chars across all message
+    /// contents) — the app-side ground truth a post-truncation `prompt_tokens`
+    /// is checked against.
+    #[serde(default)]
+    pub prompt_chars: u64,
+}
+
+/// The `num_ctx` a request declares in its generation options, when one is set.
+/// Requests built through [`options`] always set it explicitly.
+pub fn request_num_ctx(req: &ChatRequest) -> Option<u32> {
+    req.options
+        .as_ref()?
+        .get("num_ctx")?
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
 }
 
 /// The `/api/chat` request body, serialized from the typed request. `stream` is set
@@ -225,6 +265,8 @@ fn build_chat_body(req: &ChatRequest, stream: bool) -> Value {
 #[derive(Debug, Deserialize)]
 struct ChatReplyWire {
     message: ChatReplyMessage,
+    #[serde(default)]
+    prompt_eval_count: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -244,6 +286,7 @@ fn parse_chat_reply(body: &str) -> Result<ChatResponse> {
     Ok(ChatResponse {
         content: wire.message.content,
         thinking: wire.message.thinking.filter(|t| !t.is_empty()),
+        prompt_eval_count: wire.prompt_eval_count,
     })
 }
 
@@ -537,6 +580,7 @@ fn stream_chat_response(
     let mut token_pending = String::new();
     let mut thinking_pending = String::new();
     let mut saw_done = false;
+    let mut prompt_eval_count = None;
 
     for line in reader.lines() {
         if progress.is_cancelled() {
@@ -577,6 +621,8 @@ fn stream_chat_response(
         }
         if event.get("done").and_then(Value::as_bool) == Some(true) {
             saw_done = true;
+            // The terminal chunk carries the run counters (`prompt_eval_count` …).
+            prompt_eval_count = event.get("prompt_eval_count").and_then(Value::as_u64);
             break;
         }
     }
@@ -601,6 +647,7 @@ fn stream_chat_response(
     Ok(ChatResponse {
         content,
         thinking: (!thinking.is_empty()).then_some(thinking),
+        prompt_eval_count,
     })
 }
 
@@ -1171,6 +1218,41 @@ mod tests {
             &m.event,
             ProgressEvent::StepThinking { step, .. } if step == "holding-AAPL"
         )));
+    }
+
+    #[test]
+    fn chat_reply_captures_prompt_eval_count_and_tolerates_absence() {
+        // The context-fit instrumentation: the count rides the reply when the daemon
+        // reports it, and its absence is `None`, never a parse failure.
+        let with = parse_chat_reply(
+            r#"{"message":{"content":"ok"},"prompt_eval_count":117964,"eval_count":42}"#,
+        )
+        .unwrap();
+        assert_eq!(with.prompt_eval_count, Some(117_964));
+        let without = parse_chat_reply(r#"{"message":{"content":"ok"}}"#).unwrap();
+        assert_eq!(without.prompt_eval_count, None);
+    }
+
+    #[test]
+    fn stream_decoder_captures_prompt_eval_count_from_the_done_chunk() {
+        let (_rec, ctx) = recording_ctx();
+        let ndjson = concat!(
+            r#"{"message":{"content":"body"}}"#,
+            "\n",
+            r#"{"message":{"content":""},"done":true,"prompt_eval_count":131000,"eval_count":9}"#,
+            "\n",
+        );
+        let resp = stream_chat_response(ndjson.as_bytes(), &ctx, StreamRole::Silent).unwrap();
+        assert_eq!(resp.content, "body");
+        assert_eq!(resp.prompt_eval_count, Some(131_000));
+    }
+
+    #[test]
+    fn request_num_ctx_reads_the_options_field() {
+        let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
+        assert_eq!(request_num_ctx(&req), None); // no options at all
+        req.options = Some(options::thinking_general(131_072));
+        assert_eq!(request_num_ctx(&req), Some(131_072));
     }
 
     #[test]

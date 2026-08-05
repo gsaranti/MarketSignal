@@ -1076,6 +1076,7 @@ fn run_analysis(
         deep_history_fallbacks,
         rates.history_gap.is_some(),
         house_view_omitted,
+        analyst.take_prompt_usage(),
     );
     roll_up.aggregates = Some(aggregates);
     roll_up.construction = Some(construction_view);
@@ -1273,6 +1274,7 @@ fn build_roll_up(
     deep_history_fallbacks: usize,
     dgs10_history_gap: bool,
     house_view_omitted: bool,
+    prompt_usage: Vec<crate::local_model::PromptUsage>,
 ) -> PortfolioRollUp {
     use crate::portfolio::VerdictDisposition;
     let mut graded = 0;
@@ -1328,6 +1330,7 @@ fn build_roll_up(
             deep_history_fallbacks,
             dgs10_history_gap,
             house_view_omitted,
+            prompt_usage,
         )),
         overview: format!(
             "{graded} graded{role_note}, {not_rated} not rated, {insufficient} \
@@ -1350,6 +1353,7 @@ fn build_data_health(
     deep_history_fallbacks: usize,
     dgs10_history_gap: bool,
     house_view_omitted: bool,
+    prompt_usage: Vec<crate::local_model::PromptUsage>,
 ) -> crate::portfolio::DataHealth {
     let metas: Vec<&crate::portfolio::engine::TargetMeta> =
         audits.iter().filter_map(|a| a.target_meta.as_ref()).collect();
@@ -1384,11 +1388,72 @@ fn build_data_health(
             crate::portfolio::dossier::HOUSE_VIEW_MAX_AGE_DAYS
         ));
     }
-    // Informational, not an attention trigger: the omission is the freshness
-    // gate working as designed, not infrastructure degradation.
+
+    // The context-fit read (`docs/portfolio-analysis.md` §Portfolio roll-up), two
+    // triggers with distinct signatures: **near-full** — a prompt at or past the
+    // pressure fraction of its `num_ctx` is one digest away from truncation; and
+    // **likely front-truncation** — a reported count too small to cover the chars
+    // the app actually sent (Ollama's count is post-truncation and lands far
+    // *below* `num_ctx`, so the fill fraction alone cannot see it — the preflight
+    // marker test's 1,026-of-2,048 signature). The peak fill is recorded
+    // regardless — the big-run prompt-fit watch's measurement.
+    let fill = |u: &crate::local_model::PromptUsage| u.prompt_tokens as f64 / u.num_ctx as f64;
+    let truncated = |u: &crate::local_model::PromptUsage| {
+        u.prompt_tokens
+            .saturating_mul(crate::portfolio::TRUNCATION_CHARS_PER_TOKEN)
+            < u.prompt_chars
+    };
+    let peak_prompt = prompt_usage
+        .iter()
+        .filter(|u| u.num_ctx > 0)
+        .max_by(|a, b| fill(a).total_cmp(&fill(b)))
+        .cloned();
+    let context_pressure: Vec<crate::local_model::PromptUsage> = prompt_usage
+        .into_iter()
+        .filter(|u| {
+            u.num_ctx > 0
+                && (fill(u) >= crate::portfolio::CONTEXT_PRESSURE_FRACTION || truncated(u))
+        })
+        .collect();
+    let truncation_suspects: Vec<&crate::local_model::PromptUsage> =
+        context_pressure.iter().filter(|u| truncated(u)).collect();
+    if let Some(worst) = truncation_suspects
+        .iter()
+        .max_by(|a, b| a.prompt_chars.cmp(&b.prompt_chars))
+    {
+        parts.push(format!(
+            "likely front-truncation on {} local call{} (worst: {} reported {} tokens for a \
+             {}-char prompt, num_ctx {})",
+            truncation_suspects.len(),
+            if truncation_suspects.len() == 1 { "" } else { "s" },
+            worst.stage,
+            worst.prompt_tokens,
+            worst.prompt_chars,
+            worst.num_ctx
+        ));
+    }
+    let near_full = context_pressure.len() - truncation_suspects.len();
+    if near_full > 0 {
+        let worst = context_pressure
+            .iter()
+            .filter(|u| !truncated(u))
+            .max_by(|a, b| fill(a).total_cmp(&fill(b)))
+            .expect("near_full > 0 implies a non-truncated pressured row");
+        parts.push(format!(
+            "context pressure on {near_full} local call{} (worst: {} at {} of {} tokens)",
+            if near_full == 1 { "" } else { "s" },
+            worst.stage,
+            worst.prompt_tokens,
+            worst.num_ctx
+        ));
+    }
+
+    // The house-view omission is informational, not an attention trigger: it is
+    // the freshness gate working as designed, not infrastructure degradation.
     let attention = deep_history_failures > deep_history_fallbacks
         || carry > 0
-        || dgs10_history_gap;
+        || dgs10_history_gap
+        || !context_pressure.is_empty();
     let summary = if parts.is_empty() {
         "no priced targets this run".to_string()
     } else {
@@ -1406,6 +1471,8 @@ fn build_data_health(
         deep_history_fallbacks,
         dgs10_history_gap,
         house_view_omitted,
+        context_pressure,
+        peak_prompt,
         attention,
         summary,
     }
@@ -1434,6 +1501,73 @@ mod tests {
     use crate::portfolio::pipeline::StubAnalyst;
     use crate::portfolio::{AssetClass, PositionChange};
     use crate::schwab::{FixtureHoldingsSource, Position};
+
+    /// The context-fit fold: a call at or past the pressure fraction of its
+    /// `num_ctx` is named in the summary and trips attention; the peak fill is
+    /// recorded either way — the big-run prompt-fit watch's measurement.
+    #[test]
+    fn data_health_flags_context_pressure_and_records_the_peak() {
+        let usage = vec![
+            crate::local_model::PromptUsage {
+                stage: "interpret AAPL".into(),
+                prompt_tokens: 50_000,
+                num_ctx: 131_072,
+                prompt_chars: 200_000,
+            },
+            crate::local_model::PromptUsage {
+                stage: "construction".into(),
+                prompt_tokens: 125_000,
+                num_ctx: 131_072,
+                prompt_chars: 500_000,
+            },
+        ];
+        let dh = build_data_health(&[], 0, 0, false, false, usage);
+        assert_eq!(dh.context_pressure.len(), 1);
+        assert_eq!(dh.context_pressure[0].stage, "construction");
+        assert_eq!(dh.peak_prompt.as_ref().unwrap().stage, "construction");
+        assert!(dh.attention, "{}", dh.summary);
+        let expected = "context pressure on 1 local call (worst: construction at 125000 of \
+                        131072 tokens)";
+        assert!(dh.summary.contains(expected), "{}", dh.summary);
+    }
+
+    #[test]
+    fn data_health_records_the_peak_without_pressure() {
+        let usage = vec![crate::local_model::PromptUsage {
+            stage: "interpret MSFT".into(),
+            prompt_tokens: 90_000,
+            num_ctx: 131_072,
+            prompt_chars: 360_000,
+        }];
+        let dh = build_data_health(&[], 0, 0, false, false, usage);
+        assert!(dh.context_pressure.is_empty());
+        let peak = dh.peak_prompt.expect("peak recorded regardless of pressure");
+        assert_eq!(peak.prompt_tokens, 90_000);
+        assert!(!dh.attention, "{}", dh.summary);
+        assert!(!dh.summary.contains("context pressure"), "{}", dh.summary);
+    }
+
+    /// The demonstrated truncation signature
+    /// (`docs/verification/2026-07-28-m5-preflight.md` §Truncation behavior): the
+    /// post-truncation count reads as a *comfortable* ~50% fill, so only the
+    /// chars-vs-count implausibility check can see it — the fill trigger alone
+    /// must not be the detector.
+    #[test]
+    fn data_health_flags_likely_truncation_despite_comfortable_fill() {
+        let usage = vec![crate::local_model::PromptUsage {
+            stage: "interpret NVDA".into(),
+            prompt_tokens: 1_026,
+            num_ctx: 2_048,
+            prompt_chars: 18_400,
+        }];
+        let dh = build_data_health(&[], 0, 0, false, false, usage);
+        assert_eq!(dh.context_pressure.len(), 1);
+        assert!(dh.attention, "{}", dh.summary);
+        let expected = "likely front-truncation on 1 local call (worst: interpret NVDA reported \
+                        1026 tokens for a 18400-char prompt, num_ctx 2048)";
+        assert!(dh.summary.contains(expected), "{}", dh.summary);
+        assert!(!dh.summary.contains("context pressure on"), "{}", dh.summary);
+    }
 
     /// The offline rate fixture — decimal ratios, with a dated DGS10 history
     /// covering the fixture anchor window.
