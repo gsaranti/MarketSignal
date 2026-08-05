@@ -313,9 +313,14 @@ function avgCostOf(pos: Position | null): number | null {
 }
 
 // Unrealized P/L from the two Schwab-reported totals. A position with no
-// reported cost basis (cash, typically) has an undefined gain.
+// reported cost basis (cash, typically — arrives as 0) has an undefined gain;
+// a NEGATIVE netted basis (a net-short book, where the short side's proceeds
+// offset the basis) keeps its dollar gain — the signed totals hold
+// market value − cost basis equal to the book's aggregate unrealized P/L
+// (docs/portfolio-analysis.md §Storage and display). Zero stays undefined:
+// on the wire it is indistinguishable from "no basis reported".
 function gainOf(pos: Position | null): number | null {
-  if (!pos || pos.cost_basis <= 0) return null;
+  if (!pos || pos.cost_basis === 0) return null;
   return pos.market_value - pos.cost_basis;
 }
 function gainPctOf(pos: Position | null): number | null {
@@ -1289,7 +1294,11 @@ const keyFigures = computed(() => {
                         :class="dirOf(gainOf(positionFor(v.symbol)))"
                       >
                         {{ fmtSigned(gainOf(positionFor(v.symbol))!) }}
-                        ({{ fmtPct(gainPctOf(positionFor(v.symbol))!) }})
+                        <!-- A negative netted basis has a defined dollar gain but
+                             no honest percentage — the parenthetical drops. -->
+                        <template v-if="gainPctOf(positionFor(v.symbol)) !== null"
+                          >({{ fmtPct(gainPctOf(positionFor(v.symbol))!) }})</template
+                        >
                       </span>
                       <span v-else class="ana-num hc-gain-none">—</span>
                     </dd>
@@ -1533,7 +1542,11 @@ const keyFigures = computed(() => {
                         :class="dirOf(gainOf(positionFor(v.symbol)))"
                       >
                         {{ fmtSigned(gainOf(positionFor(v.symbol))!) }}
-                        ({{ fmtPct(gainPctOf(positionFor(v.symbol))!) }})
+                        <!-- A negative netted basis has a defined dollar gain but
+                             no honest percentage — the parenthetical drops. -->
+                        <template v-if="gainPctOf(positionFor(v.symbol)) !== null"
+                          >({{ fmtPct(gainPctOf(positionFor(v.symbol))!) }})</template
+                        >
                       </span>
                       <span v-else class="ana-num hc-gain-none">—</span>
                     </dd>

@@ -78,6 +78,62 @@ test("an active run with no running step yet falls back to 'Generating report'",
   expect(wrapper.find(".toolbar-tag").exists()).toBe(false);
 });
 
+test("a portfolio-owned tracker never announces itself as report generation", () => {
+  // The owning-page label set (docs/run-tracking.md): back control, scroll-region
+  // accessible name, and idle headline all follow the run's kind — a Portfolio
+  // run's tracker showing "Back to report" / "Report generation progress" was the
+  // original mislabel this pins against.
+  const pending: RunTrace = deepFreeze({
+    runId: "run-1",
+    label: "Portfolio Analysis",
+    terminal: null,
+    steps: [{ key: "holdings", label: "Pull holdings", status: "pending", detail: null, agentText: "", agentThinking: "", requests: [] }],
+  });
+  const active = mount(JobTrackerView, {
+    props: { trace: pending, active: true, cancelRequested: false, kind: "portfolio" },
+  });
+  expect(active.find(".toolbar-label").text()).toBe("Analyzing portfolio");
+  expect(active.find(".tracker-scroll").attributes("aria-label")).toBe(
+    "Portfolio analysis progress"
+  );
+
+  const terminal = mount(JobTrackerView, {
+    props: { trace: terminalTrace("successful"), active: false, cancelRequested: false, kind: "portfolio" },
+  });
+  expect(terminal.find(".btn-secondary").text()).toBe("Back to portfolio");
+});
+
+test("a quick-check tracker carries its own labels and returns to the portfolio", () => {
+  const pending: RunTrace = deepFreeze({
+    runId: "run-1",
+    label: "Quick check",
+    terminal: null,
+    steps: [{ key: "sweep", label: "Sweep ledgers", status: "pending", detail: null, agentText: "", agentThinking: "", requests: [] }],
+  });
+  const active = mount(JobTrackerView, {
+    props: { trace: pending, active: true, cancelRequested: false, kind: "portfolio-quick-check" },
+  });
+  expect(active.find(".toolbar-label").text()).toBe("Running quick check");
+  expect(active.find(".tracker-scroll").attributes("aria-label")).toBe(
+    "Quick check progress"
+  );
+
+  const terminal = mount(JobTrackerView, {
+    props: { trace: terminalTrace("successful"), active: false, cancelRequested: false, kind: "portfolio-quick-check" },
+  });
+  expect(terminal.find(".btn-secondary").text()).toBe("Back to portfolio");
+});
+
+test("the report-owned tracker keeps its report labels (the default kind)", () => {
+  const terminal = mount(JobTrackerView, {
+    props: { trace: terminalTrace("successful"), active: false, cancelRequested: false },
+  });
+  expect(terminal.find(".btn-secondary").text()).toBe("Back to report");
+  expect(terminal.find(".tracker-scroll").attributes("aria-label")).toBe(
+    "Report generation progress"
+  );
+});
+
 test("once terminal the headline reads 'Run log' and the tag maps + tones the outcome", () => {
   const completed = mount(JobTrackerView, {
     props: { trace: terminalTrace("successful"), active: false, cancelRequested: false },

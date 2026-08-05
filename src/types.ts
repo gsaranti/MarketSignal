@@ -579,6 +579,9 @@ export interface DataHealth {
   deep_history_failures: number;
   deep_history_fallbacks: number;
   dgs10_history_gap: boolean;
+  // The house view was omitted for staleness (latest report older than the pinned
+  // window — docs/portfolio-workflow.md §Step 5); informational, rides `summary`.
+  house_view_omitted: boolean;
   attention: boolean;
   summary: string;
 }

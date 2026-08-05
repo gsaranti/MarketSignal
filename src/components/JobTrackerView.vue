@@ -21,25 +21,58 @@ import type { RunTrace, StepStatus } from "../types";
 // rejected patterns (it is one slow opacity oscillation on the *current* item, not
 // skeleton shimmer, a spinner, or completion celebration) and is gated by
 // prefers-reduced-motion. Approved as an intentional departure.
-const props = defineProps<{
-  trace: RunTrace;
-  // Whether the run is still in flight (drives Cancel vs Dismiss + the live region).
-  active: boolean;
-  // A cancel has been requested but the run hasn't ended yet — disables Cancel and
-  // shows the cooperative-stop note.
-  cancelRequested: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    trace: RunTrace;
+    // Whether the run is still in flight (drives Cancel vs Dismiss + the live region).
+    active: boolean;
+    // A cancel has been requested but the run hasn't ended yet — disables Cancel and
+    // shows the cooperative-stop note.
+    cancelRequested: boolean;
+    // Which page owns the run (docs/run-tracking.md — one shared tracker placed on
+    // the running job's own page), keying the surface labels: the back control,
+    // the scroll region's accessible name, and the idle headline.
+    kind?: "report" | "portfolio" | "portfolio-quick-check";
+  }>(),
+  { kind: "report" }
+);
 
 const emit = defineEmits<{
   (e: "cancel"): void;
   (e: "close"): void;
 }>();
 
+// The owning-page label set (docs/run-tracking.md): a Portfolio run's tracker
+// must never announce itself as report generation.
+const idleHeadline = computed(() => {
+  switch (props.kind) {
+    case "portfolio":
+      return "Analyzing portfolio";
+    case "portfolio-quick-check":
+      return "Running quick check";
+    default:
+      return "Generating report";
+  }
+});
+const backLabel = computed(() =>
+  props.kind === "report" ? "Back to report" : "Back to portfolio"
+);
+const progressRegionLabel = computed(() => {
+  switch (props.kind) {
+    case "portfolio":
+      return "Portfolio analysis progress";
+    case "portfolio-quick-check":
+      return "Quick check progress";
+    default:
+      return "Report generation progress";
+  }
+});
+
 // The toolbar headline, announced politely to screen readers as it changes.
 const headline = computed(() => {
   if (props.active) {
     const running = props.trace.steps.find((s) => s.status === "running");
-    return running ? running.label : "Generating report";
+    return running ? running.label : idleHeadline.value;
   }
   return "Run log";
 });
@@ -181,7 +214,7 @@ watch(contentSignature, async () => {
           class="btn btn-secondary"
           @click="emit('close')"
         >
-          Back to report
+          {{ backLabel }}
         </button>
       </div>
     </div>
@@ -192,7 +225,7 @@ watch(contentSignature, async () => {
       ref="scroller"
       class="tracker-scroll"
       role="region"
-      aria-label="Report generation progress"
+      :aria-label="progressRegionLabel"
       :aria-busy="active"
       tabindex="0"
       @scroll="onScroll"

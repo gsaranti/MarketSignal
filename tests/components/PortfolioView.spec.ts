@@ -591,6 +591,51 @@ describe("PortfolioView sort bar", () => {
     expect(pctButton.attributes("aria-label")).toBe("Sort by % gain, ascending");
   });
 
+  test("a negative netted basis keeps its dollar gain — sortable and rendered without a percentage", async () => {
+    // A net-short book: the short side's proceeds push the netted basis below
+    // zero (docs/portfolio-analysis.md §Storage and display). The dollar gain
+    // stays defined — market value − cost basis is the book's aggregate
+    // unrealized P/L — while %gain and cash-invested stay undefined and sort
+    // last. Pins the fix for the `<= 0` guard that conflated a negative basis
+    // with "no basis reported".
+    const shortRun: PortfolioRun = {
+      ...run,
+      holdings: {
+        ...run.holdings,
+        positions: [
+          ...positions,
+          // market_value −1_000 (short 100 shares), basis −1_500 (proceeds):
+          // dollar gain = −1_000 − (−1_500) = +500 — third under $ gain desc
+          // (AAPL +5_500 > XYZ +3_000 > SHRT +500 > MSFT −2_000 > OPT null).
+          position("SHRT", {
+            quantity: -100,
+            cost_basis: -1_500,
+            market_value: -1_000,
+          }),
+        ],
+      },
+      verdicts: [
+        ...run.verdicts,
+        verdict("SHRT", { status: "not-rated", reason: "Net short position." }),
+      ],
+    };
+    const wrapper = mountView({ run: shortRun });
+    const gainButton = wrapper
+      .findAll(".ana-sortbar button")
+      .find((b) => b.text().includes("$ gain"))!;
+    await gainButton.trigger("click");
+    // SHRT ranks by its defined +500 gain — never lumped with the undefined
+    // no-basis case. (Its card is the reduced not-rated branch, which carries
+    // no Unrealized figure — the gain's render home is the sort rank here.)
+    expect(stackTickers(wrapper)).toEqual(["AAPL", "XYZ", "SHRT", "MSFT", "OPT"]);
+    // Undefined keys still sort it last alongside the no-basis option.
+    const pctButton = wrapper
+      .findAll(".ana-sortbar button")
+      .find((b) => b.text().includes("% gain"))!;
+    await pctButton.trigger("click");
+    expect(stackTickers(wrapper).slice(-2).sort()).toEqual(["OPT", "SHRT"]);
+  });
+
   test("the last-used key persists in localStorage and seeds the next mount", async () => {
     const first = mountView({ run });
     const costButton = first

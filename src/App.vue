@@ -1602,6 +1602,11 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
             :trace="runTrace"
             :active="runActive"
             :cancel-requested="cancelRequested"
+            :kind="
+              runTraceKind === 'portfolio-quick-check'
+                ? 'portfolio-quick-check'
+                : 'portfolio'
+            "
             @cancel="cancelRun"
             @close="portfolioPaneMode = 'results'"
           />

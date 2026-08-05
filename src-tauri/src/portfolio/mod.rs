@@ -1057,6 +1057,12 @@ pub struct DataHealth {
     /// The run-level DGS10 anchor-history request failed (every spread observation
     /// inadmissible run-wide).
     pub dgs10_history_gap: bool,
+    /// The house view was omitted for staleness — the latest report is older than
+    /// the pinned freshness window (`docs/portfolio-workflow.md` §Step 5), so it
+    /// was recorded as a gap rather than fed as current. `#[serde(default)]` for
+    /// pre-field runs.
+    #[serde(default)]
+    pub house_view_omitted: bool,
     /// Infrastructure degradation worth surfacing prominently: unrecovered
     /// deep-history failures, any current-multiple carry, or a run-wide DGS10
     /// history gap — a raw-percentile fallback from genuinely thin issuer history is

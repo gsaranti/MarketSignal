@@ -528,7 +528,10 @@ fn run_analysis(
         .flatten()
         .filter(|s| Some(&s.swept_run_id) == prior_run_id.as_ref());
 
-    let house_view = dossier::load_house_view(conn, &paths.reports_dir);
+    // Freshness-gated (`docs/portfolio-workflow.md` §Step 5): a stale latest
+    // report drops the whole view; the omission rides the run's data health.
+    let (house_view, house_view_omitted) =
+        dossier::load_house_view(conn, &paths.reports_dir, chrono::Utc::now().date_naive());
 
     // The run-level rate anchors — **hard-fail before any per-holding work** (the
     // suite's canonical rate-anchor rule: the engine consumes the rates numerically
@@ -1072,6 +1075,7 @@ fn run_analysis(
         deep_history_failures,
         deep_history_fallbacks,
         rates.history_gap.is_some(),
+        house_view_omitted,
     );
     roll_up.aggregates = Some(aggregates);
     roll_up.construction = Some(construction_view);
@@ -1267,6 +1271,7 @@ fn build_roll_up(
     deep_history_failures: usize,
     deep_history_fallbacks: usize,
     dgs10_history_gap: bool,
+    house_view_omitted: bool,
 ) -> PortfolioRollUp {
     use crate::portfolio::VerdictDisposition;
     let mut graded = 0;
@@ -1321,6 +1326,7 @@ fn build_roll_up(
             deep_history_failures,
             deep_history_fallbacks,
             dgs10_history_gap,
+            house_view_omitted,
         )),
         overview: format!(
             "{graded} graded{role_note}, {not_rated} not rated, {insufficient} \
@@ -1342,6 +1348,7 @@ fn build_data_health(
     deep_history_failures: usize,
     deep_history_fallbacks: usize,
     dgs10_history_gap: bool,
+    house_view_omitted: bool,
 ) -> crate::portfolio::DataHealth {
     let metas: Vec<&crate::portfolio::engine::TargetMeta> =
         audits.iter().filter_map(|a| a.target_meta.as_ref()).collect();
@@ -1370,6 +1377,14 @@ fn build_data_health(
     if floored > 0 {
         parts.push(format!("dispersion floor widened {floored} target bands"));
     }
+    if house_view_omitted {
+        parts.push(format!(
+            "house view omitted (latest report older than {} days)",
+            crate::portfolio::dossier::HOUSE_VIEW_MAX_AGE_DAYS
+        ));
+    }
+    // Informational, not an attention trigger: the omission is the freshness
+    // gate working as designed, not infrastructure degradation.
     let attention = deep_history_failures > deep_history_fallbacks
         || carry > 0
         || dgs10_history_gap;
@@ -1389,6 +1404,7 @@ fn build_data_health(
         deep_history_failures,
         deep_history_fallbacks,
         dgs10_history_gap,
+        house_view_omitted,
         attention,
         summary,
     }

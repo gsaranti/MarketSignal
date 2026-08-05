@@ -708,7 +708,10 @@ async fn generate_portfolio_manual(
         let probe = client.probe_daemon(&roster);
         let report = local_model::local_gate(&cfg, &probe);
         if report.is_blocked {
-            return Err(config::blocked_summary(&report));
+            return Err(config::blocked_summary_local_run(
+                "run Portfolio Analysis",
+                &report,
+            ));
         }
 
         let analyst = portfolio::pipeline::LocalAnalyst::new(
@@ -850,7 +853,7 @@ async fn run_portfolio_quick_check(
     // Presence-only gate — no daemon probe: the quick check makes no model call.
     let report = local_model::local_presence_gate(&cfg);
     if report.is_blocked {
-        return Err(config::blocked_summary(&report));
+        return Err(config::blocked_summary_named("run the quick check", &report));
     }
     let paths = report_paths(&app)?;
     let guard = guard.inner().clone();

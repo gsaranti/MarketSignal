@@ -462,7 +462,10 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
 /// A concise one-line reason a run was blocked, for the command's error return.
 /// The structured detail lives in the `ValidationReport` the frontend already
 /// shows in the Persistent Warning Area; this is only the fallback summary.
-pub fn blocked_summary(report: &ValidationReport) -> String {
+/// `action` names the blocked job ("generate report", "run Portfolio Analysis",
+/// "run the quick check") so a Portfolio-surface block never reads as a report
+/// failure.
+pub fn blocked_summary_named(action: &str, report: &ValidationReport) -> String {
     let titles: Vec<&str> = report
         .categories
         .iter()
@@ -470,8 +473,24 @@ pub fn blocked_summary(report: &ValidationReport) -> String {
         .map(|c| c.title.as_str())
         .collect();
     format!(
-        "Cannot generate report — resolve the configuration warnings first: {}.",
+        "Cannot {action} — resolve the configuration warnings first: {}.",
         titles.join(", ")
+    )
+}
+
+/// The report job's blocked summary.
+pub fn blocked_summary(report: &ValidationReport) -> String {
+    blocked_summary_named("generate report", report)
+}
+
+/// The local full-run variant: names the job and carries the documented
+/// Settings → Test Connection pointer (`docs/interface.md` §Connection status —
+/// the run-gate inline block points at the manual daemon test). The quick check
+/// never probes the daemon, so its block uses [`blocked_summary_named`] alone.
+pub fn blocked_summary_local_run(action: &str, report: &ValidationReport) -> String {
+    format!(
+        "{} If the local daemon is unreachable, use Settings → Test Connection.",
+        blocked_summary_named(action, report)
     )
 }
 
@@ -676,9 +695,28 @@ mod tests {
     fn blocked_summary_lists_the_blocking_titles() {
         let report = validate(&AppConfig::default());
         let summary = blocked_summary(&report);
+        assert!(summary.starts_with("Cannot generate report"), "{summary}");
         assert!(summary.contains("Agent configuration"), "{summary}");
         assert!(summary.contains("API tokens"), "{summary}");
         assert!(summary.contains("Provider credentials"), "{summary}");
+    }
+
+    #[test]
+    fn blocked_summary_named_names_the_job_not_the_report() {
+        // A Portfolio-surface block must never read as a report failure
+        // (`docs/interface.md` §Connection status).
+        let report = validate(&AppConfig::default());
+        let summary = blocked_summary_named("run the quick check", &report);
+        assert!(summary.starts_with("Cannot run the quick check"), "{summary}");
+        assert!(!summary.contains("generate report"), "{summary}");
+    }
+
+    #[test]
+    fn blocked_summary_local_run_carries_the_test_connection_pointer() {
+        let report = validate(&AppConfig::default());
+        let summary = blocked_summary_local_run("run Portfolio Analysis", &report);
+        assert!(summary.starts_with("Cannot run Portfolio Analysis"), "{summary}");
+        assert!(summary.contains("Settings → Test Connection"), "{summary}");
     }
 
     #[test]

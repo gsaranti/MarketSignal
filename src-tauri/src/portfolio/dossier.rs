@@ -265,13 +265,44 @@ pub fn assemble(
     }
 }
 
+/// The house-view freshness window, in days — the pinned default of
+/// `docs/portfolio-workflow.md` §Step 5: a latest report older than this is
+/// omitted whole and recorded as a gap rather than fed as current (a month-old
+/// thesis is not today's; a stale input is absent, not current).
+pub const HOUSE_VIEW_MAX_AGE_DAYS: i64 = 7;
+
 /// Load the Market Signal house view deterministically: the most recent
 /// [`HOUSE_VIEW_RECENT_REPORTS`] report summaries and the latest report's relevant
 /// prose sections. Fail-soft — an unreadable DB or missing Markdown degrades to a
 /// thinner house view, never an error (the holding still grades on its fundamentals).
-pub fn load_house_view(conn: &Connection, reports_dir: &Path) -> HouseView {
+/// Freshness-gated: a latest report older than [`HOUSE_VIEW_MAX_AGE_DAYS`] drops
+/// the whole view — summaries included — and the second return reports the
+/// omission so the run's data health records the gap.
+pub fn load_house_view(
+    conn: &Connection,
+    reports_dir: &Path,
+    today: chrono::NaiveDate,
+) -> (HouseView, bool) {
     let with_paths = storage::list_recent_reports_with_paths(conn, HOUSE_VIEW_RECENT_REPORTS)
         .unwrap_or_default();
+
+    // The freshness gate reads the newest report's dated `created_at`; an
+    // unparseable date (never app-produced) fails soft to feeding the view.
+    let stale = with_paths.first().is_some_and(|(s, _)| {
+        chrono::NaiveDate::parse_from_str(&s.created_at[..10.min(s.created_at.len())], "%Y-%m-%d")
+            .map(|d| (today - d).num_days() > HOUSE_VIEW_MAX_AGE_DAYS)
+            .unwrap_or(false)
+    });
+    if stale {
+        return (
+            HouseView {
+                recent_summaries: Vec::new(),
+                latest_sections: None,
+            },
+            true,
+        );
+    }
+
     let recent_summaries: Vec<ReportSummary> =
         with_paths.iter().map(|(s, _)| s.clone()).collect();
 
@@ -285,10 +316,13 @@ pub fn load_house_view(conn: &Connection, reports_dir: &Path) -> HouseView {
         .map(extract_house_view_sections)
         .filter(|s| !s.is_empty());
 
-    HouseView {
-        recent_summaries,
-        latest_sections,
-    }
+    (
+        HouseView {
+            recent_summaries,
+            latest_sections,
+        },
+        false,
+    )
 }
 
 /// Resolve a stored Markdown path, tolerating a relative stored path by joining it
@@ -378,6 +412,71 @@ mod tests {
     use crate::portfolio::engine::{QuarterlyCashFlowRow, QuarterlyIncomeRow};
     use crate::portfolio::{AssetClass, PositionChange, VerdictDisposition};
     use crate::schwab::{Holdings, Position};
+
+    /// A minimal persisted report for the house-view freshness tests.
+    fn insert_house_view_report(conn: &Connection, id: &str, created_at: &str) {
+        use crate::agent::{MarketCycle, RiskPosture, ThesisStance};
+        let summary = ReportSummary {
+            report_id: id.to_string(),
+            report_type: "weekly_market".to_string(),
+            created_at: created_at.to_string(),
+            title: "Sample headline".to_string(),
+            risk_posture: RiskPosture::Mixed,
+            market_cycle: MarketCycle::LateCycle,
+            thesis_stance: ThesisStance::Uncertain,
+            header_summary_bullets: vec!["a".to_string()],
+            key_risks: vec![],
+            unresolved_questions: vec![],
+            forward_outlook_themes: vec![],
+        };
+        let summary_json = serde_json::to_string(&summary).unwrap();
+        storage::insert_report(
+            conn,
+            &storage::ReportRecord {
+                summary: &summary,
+                markdown_path: &format!("/nonexistent/{id}.md"),
+                summary_json: &summary_json,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn house_view_older_than_a_week_is_omitted_whole_and_flagged() {
+        let conn = Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        insert_house_view_report(&conn, "r-old", "2026-07-20T00:00:00Z");
+        // 8 days later — past the pinned window; the whole view drops (summaries
+        // included), and the omission is reported for the data-health gap record.
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
+        let (view, omitted) = load_house_view(&conn, Path::new("/nonexistent"), today);
+        assert!(omitted);
+        assert!(view.recent_summaries.is_empty());
+        assert!(view.latest_sections.is_none());
+    }
+
+    #[test]
+    fn house_view_exactly_a_week_old_is_still_fed() {
+        let conn = Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        insert_house_view_report(&conn, "r-week", "2026-07-21T00:00:00Z");
+        // "Older than one week" is strict: exactly 7 days still feeds.
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
+        let (view, omitted) = load_house_view(&conn, Path::new("/nonexistent"), today);
+        assert!(!omitted);
+        assert_eq!(view.recent_summaries.len(), 1);
+    }
+
+    #[test]
+    fn house_view_with_no_reports_is_empty_but_not_flagged() {
+        let conn = Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        // Nothing exists to omit — an empty store is a debut, not a staleness gap.
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
+        let (view, omitted) = load_house_view(&conn, Path::new("/nonexistent"), today);
+        assert!(!omitted);
+        assert!(view.recent_summaries.is_empty());
+    }
 
     fn fmp_only() -> CompanyFinancials {
         CompanyFinancials {

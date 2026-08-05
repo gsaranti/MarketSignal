@@ -1217,8 +1217,8 @@ pub fn interpretation_system_prompt() -> String {
      lean instead. \
      Use the Market Signal house view for the horizon reads and market-setup context \
      only — it is a market-level thesis, never by itself a reason to exit a specific \
-     holding. The lean is profile-independent: read the investor profile as context \
-     for the prose, never as a reason to move the lean. \
+     holding. The read is profile-independent — no investor profile is given at this \
+     stage; it enters at portfolio construction only. \
      You also maintain the position's THESIS LEDGER — the persisted standing thesis \
      with monitorable falsifiers and pre-committed action triggers: test the prior \
      ledger against this run's evidence and the engine's deterministic condition \
@@ -1496,16 +1496,11 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         }
     }
 
-    p.push_str(&format!(
-        "\nINVESTOR PROFILE: risk tolerance {:?}, horizon {:?}, taxable {}, cash {}\n",
-        d.profile.risk_tolerance,
-        d.profile.horizon,
-        d.profile.tax_sensitive,
-        d.profile
-            .available_cash
-            .map(|c| format!("{c:.0}"))
-            .unwrap_or_else(|| "unconstrained".to_string()),
-    ));
+    // The investor profile is deliberately NOT rendered here: the intrinsic
+    // verdict is profile-independent and the profile enters at Step 7b
+    // construction only (`docs/portfolio-workflow.md` §Step 6f "deliberately
+    // absent"; `docs/portfolio-analysis.md` §Intrinsic verdict). The dossier
+    // still carries it for the engine's action-sizing cash bound.
 
     p.push_str("\nHORIZONS for the outlook: ");
     p.push_str(&format!("{HORIZON_SHORT}, {HORIZON_MID}, {HORIZON_LONG}.\n"));
@@ -2833,6 +2828,13 @@ mod tests {
         let system = interpretation_system_prompt();
         assert!(system.contains("Conviction means"), "{system}");
         assert!(system.contains("horizon reads and market-setup context"), "{system}");
+
+        // Profile independence is input isolation, not instruction
+        // (`docs/portfolio-workflow.md` §Step 6f "deliberately absent"): the
+        // intrinsic prompt renders no investor profile; the profile enters at
+        // Step 7b construction only.
+        assert!(!user.contains("INVESTOR PROFILE"), "{user}");
+        assert!(system.contains("profile-independent"), "{system}");
         assert!(system.contains("never by itself a reason to exit"), "{system}");
     }
 
