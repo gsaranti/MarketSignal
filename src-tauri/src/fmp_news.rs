@@ -248,16 +248,24 @@ impl FmpNewsSource {
 
     /// Fetch the single bounded page, returning its headlines or the error it
     /// failed on. `gather` applies the fail-soft policy; this stays honest about a
-    /// failure so the caller can log it. Retries ride the shared FMP backoff.
+    /// failure so the caller can log it. Retries ride the shared FMP policy
+    /// (`fmp::FMP_RETRY` — the minute-crossing 429 ladder), with the run's cancel
+    /// flag aborting a backoff mid-sleep.
     fn fetch_articles(&self) -> Result<Vec<RawHeadline>> {
         let url = format!("{}{FMP_ARTICLES_PATH}", self.base_url);
-        let (status, body) = crate::http_retry::send_with_retry("FMP", || {
-            self.http.get(&url).query(&[
-                ("page", "0"),
-                ("limit", ARTICLES_LIMIT),
-                ("apikey", self.api_key.as_str()),
-            ])
-        })?;
+        let abort = || self.progress.is_cancelled();
+        let (status, body) = crate::http_retry::send_with_retry_policy(
+            "FMP",
+            &crate::fmp::FMP_RETRY,
+            Some(&abort),
+            || {
+                self.http.get(&url).query(&[
+                    ("page", "0"),
+                    ("limit", ARTICLES_LIMIT),
+                    ("apikey", self.api_key.as_str()),
+                ])
+            },
+        )?;
         Ok(headlines_from_articles(interpret_fmp_articles(
             status, &body,
         )?))

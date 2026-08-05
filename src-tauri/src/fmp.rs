@@ -75,6 +75,27 @@ const FMP_SECTOR_PATH: &str = "/sector-performance-snapshot";
 /// none of which should park for the model adapter's 120s ceiling.
 const FMP_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
+/// FMP's provider-specific retry policy (probe-verified 2026-08-05: the paid
+/// plan's per-minute limit arrives as an **HTTP 429** carrying the
+/// `"Limit Reach"` body with no `Retry-After` — tripped at ~61 calls of a 2s
+/// burst, so the suite's burst paths can genuinely hit it). The 429 ladder
+/// doubles 1s → 32s — 63s cumulative over seven attempts, guaranteed to cross
+/// any minute window (pinned by test) — while 5xx keeps the short shared
+/// schedule so a genuinely-down provider fails fast instead of stalling a
+/// multi-request scan; a server `Retry-After`, should one appear, is honored
+/// up to 90s. Shared by every FMP client (`fmp_news` included).
+pub(crate) const FMP_RETRY: crate::http_retry::RetryPolicy = crate::http_retry::RetryPolicy {
+    rate_limit: crate::http_retry::Schedule {
+        attempts: 7,
+        base: StdDuration::from_secs(1),
+    },
+    server_error: crate::http_retry::Schedule {
+        attempts: 3,
+        base: StdDuration::from_secs(1),
+    },
+    retry_after_cap: StdDuration::from_secs(90),
+};
+
 /// How many trading-day candidates back to probe for the most recent sector snapshot.
 /// A run can land on a weekend, when the latest snapshot is the prior Friday's;
 /// `sector_candidate_dates` skips the closed-market weekend without spending a request,
@@ -851,6 +872,10 @@ pub struct FmpDataSource {
     /// (tests / offline smokes); the live command path attaches the real one via
     /// [`FmpDataSource::with_context`].
     progress: Arc<RunContext>,
+    /// Per-provider retry policy every request rides. Defaults to [`FMP_RETRY`]
+    /// (the minute-crossing 429 ladder); a wiring test injects a
+    /// millisecond-scale policy via [`FmpDataSource::with_retry_policy`].
+    retry: crate::http_retry::RetryPolicy,
 }
 
 impl FmpDataSource {
@@ -864,6 +889,7 @@ impl FmpDataSource {
             http,
             base_url: FMP_BASE.to_string(),
             progress: RunContext::noop(),
+            retry: FMP_RETRY,
         })
     }
 
@@ -873,6 +899,14 @@ impl FmpDataSource {
     #[cfg(test)]
     fn with_base_url(mut self, base_url: &str) -> Self {
         self.base_url = base_url.trim_end_matches('/').to_string();
+        self
+    }
+
+    /// Swap the retry policy for a millisecond-scale one so the wiring test proves
+    /// `get` rides `self.retry` without sleeping the real ladder. Test-only.
+    #[cfg(test)]
+    fn with_retry_policy(mut self, retry: crate::http_retry::RetryPolicy) -> Self {
+        self.retry = retry;
         self
     }
 
@@ -895,11 +929,17 @@ impl FmpDataSource {
     /// a query param, returning the status and raw body for `interpret_response` to
     /// judge. A transport error (the provider is unreachable) returns `Err` to the
     /// caller, which records it as an `Unavailable` gap rather than failing the scan.
+    /// Requests ride [`FMP_RETRY`] (via `self.retry`) with the run's cancel flag as
+    /// the abort signal, so a cancel mid-backoff stops retrying within ~250ms and
+    /// the caller's own `is_cancelled()` boundary check routes it.
     fn get(&self, path: &str, extra: &[(&str, &str)]) -> Result<(u16, String)> {
         let mut query: Vec<(&str, &str)> = vec![("apikey", self.api_key.as_str())];
         query.extend_from_slice(extra);
         let url = format!("{}{path}", self.base_url);
-        crate::http_retry::send_with_retry("FMP", || self.http.get(&url).query(&query))
+        let abort = || self.progress.is_cancelled();
+        crate::http_retry::send_with_retry_policy("FMP", &self.retry, Some(&abort), || {
+            self.http.get(&url).query(&query)
+        })
     }
 
     /// Fetch one quote per symbol, recording a [`DataGap`] in `group` for any that don't
@@ -1918,6 +1958,63 @@ mod tests {
         FmpDataSource::new("test-key".to_string())
             .expect("build adapter")
             .with_base_url(base_url)
+    }
+
+    #[test]
+    fn fmp_ladder_crosses_a_minute_window_and_is_the_constructor_default() {
+        // The plan-pinned guarantee (2026-08-05 ruling): the 429 ladder's cumulative
+        // sleep must cross any 60s rate window. 1+2+4+8+16+32 = 63s.
+        assert_eq!(
+            FMP_RETRY.cumulative_rate_limit_backoff(),
+            StdDuration::from_secs(63)
+        );
+        assert!(FMP_RETRY.cumulative_rate_limit_backoff() > StdDuration::from_secs(60));
+        // And the production constructor wires it on — not the shared default.
+        let source = FmpDataSource::new("k".into()).expect("adapter");
+        assert_eq!(source.retry, FMP_RETRY);
+    }
+
+    #[test]
+    fn get_rides_the_injected_retry_policy_past_a_429_burst() {
+        // Four 429s then a clean quote: under the server-error-sized budget (3)
+        // this stops at attempt 3 and surfaces a gap; under the rate-limit class
+        // (attempts=5 here, millisecond-scale) the fetch rides through to the
+        // parsed quote — proving `get` consumes `self.retry`'s rate-limit class.
+        let mut replies: Vec<Canned> = (0..4)
+            .map(|_| Canned::Reply {
+                status: 429,
+                headers: vec![],
+                body: "limit",
+            })
+            .collect();
+        replies.push(Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"[{"symbol":"AAPL","name":"Apple","price":195.0,"changePercentage":0.5}]"#,
+        });
+        let server = MockHttp::serve(replies);
+        let source =
+            test_source(&server.base_url).with_retry_policy(crate::http_retry::RetryPolicy {
+                rate_limit: crate::http_retry::Schedule {
+                    attempts: 5,
+                    base: StdDuration::from_millis(1),
+                },
+                server_error: crate::http_retry::Schedule {
+                    attempts: 3,
+                    base: StdDuration::from_millis(1),
+                },
+                retry_after_cap: StdDuration::from_millis(50),
+            });
+        let mut gaps = Vec::new();
+        let quotes =
+            source.fetch_quotes(&[("AAPL", "Apple", "pts")], GroupKind::Indices, &mut gaps);
+        assert_eq!(server.attempts(), 5, "all four 429s must be retried past");
+        assert_eq!(
+            quotes.len(),
+            1,
+            "the ladder must ride through to the parsed quote; gaps={gaps:?}"
+        );
+        assert!(gaps.is_empty());
     }
 
     #[test]
@@ -3305,6 +3402,112 @@ mod tests {
             if !resolved {
                 eprintln!("  {exchange}: no sector-P/E data resolved over the candidate window");
             }
+        }
+    }
+
+    /// One-shot burst probe settling the *shape* of the paid plan's per-minute rate
+    /// limit (2026-08-05 plan ruling: docs first — FMP's own pages 403 to scrapers
+    /// and third-party references disagree — then this probe). Fires up to ~240
+    /// cheap `/stable/quote` calls across 4 threads inside one minute window and
+    /// records the FIRST rejection's status, `Retry-After` / `X-RateLimit-*`
+    /// headers, and body head — the fact that decides whether the minute limit is
+    /// an HTTP 429 (the retry ladder covers it as-is) or a 200 `Error Message`
+    /// body (needs a narrowly-matched body classification). Burns ~1 minute of the
+    /// 200/min paid budget, once, per the live-smoke discipline; run:
+    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///     src-tauri/Cargo.toml fmp_minute_limit_probe -- --ignored --nocapture
+    #[test]
+    #[ignore = "hits the live FMP API; set FMP_API_KEY. Bursts past 200/min to observe the limiter's shape."]
+    fn fmp_minute_limit_probe() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Mutex;
+        use std::time::Instant;
+
+        const CAP: usize = 240;
+        const THREADS: usize = 4;
+
+        let key = crate::config::AppConfig::from_env()
+            .fmp_key()
+            .expect("FMP_API_KEY set");
+        let start = Instant::now();
+        let sent = AtomicUsize::new(0);
+        let done = AtomicBool::new(false);
+        let rejection: Mutex<Option<String>> = Mutex::new(None);
+
+        std::thread::scope(|s| {
+            for _ in 0..THREADS {
+                s.spawn(|| {
+                    let http = reqwest::blocking::Client::builder()
+                        .timeout(FMP_TIMEOUT)
+                        .build()
+                        .expect("http client");
+                    let url = format!("{FMP_BASE}/quote");
+                    loop {
+                        if done.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        let n = sent.fetch_add(1, Ordering::SeqCst);
+                        if n >= CAP {
+                            return;
+                        }
+                        let q = [("symbol", "AAPL"), ("apikey", key.as_str())];
+                        match http.get(&url).query(&q).send() {
+                            Ok(resp) => {
+                                let status = resp.status().as_u16();
+                                let retry_after = resp
+                                    .headers()
+                                    .get(reqwest::header::RETRY_AFTER)
+                                    .and_then(|v| v.to_str().ok())
+                                    .map(str::to_owned);
+                                let ratelimit: Vec<String> = resp
+                                    .headers()
+                                    .iter()
+                                    .filter(|(k, _)| {
+                                        k.as_str().to_ascii_lowercase().contains("ratelimit")
+                                    })
+                                    .map(|(k, v)| {
+                                        format!("{k}: {}", v.to_str().unwrap_or("<bin>"))
+                                    })
+                                    .collect();
+                                let body = resp.text().unwrap_or_default();
+                                let is_reject = status != 200
+                                    || body.contains("Error Message")
+                                    || body.to_ascii_lowercase().contains("limit");
+                                if is_reject {
+                                    let head: String = body.chars().take(400).collect();
+                                    *rejection.lock().unwrap() = Some(format!(
+                                        "call #{n} at {:.1}s: HTTP {status}\n  Retry-After: {retry_after:?}\n  rate-limit headers: {ratelimit:?}\n  body head: {head}",
+                                        start.elapsed().as_secs_f32(),
+                                    ));
+                                    done.store(true, Ordering::SeqCst);
+                                    return;
+                                }
+                            }
+                            Err(e) => {
+                                *rejection.lock().unwrap() = Some(format!(
+                                    "call #{n} at {:.1}s: transport error: {e}",
+                                    start.elapsed().as_secs_f32(),
+                                ));
+                                done.store(true, Ordering::SeqCst);
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let total = sent.load(Ordering::SeqCst).min(CAP);
+        let rejection = rejection.lock().unwrap();
+        match rejection.as_ref() {
+            Some(r) => eprintln!(
+                "\n=== FIRST REJECTION after {total} calls in {:.1}s ===\n{r}",
+                start.elapsed().as_secs_f32(),
+            ),
+            None => eprintln!(
+                "\n=== NO REJECTION: {total} calls completed clean in {:.1}s — limiter not tripped ===",
+                start.elapsed().as_secs_f32(),
+            ),
         }
     }
 
