@@ -339,7 +339,10 @@ slice** (2026-08-04, PR #59; internal + four Codex rounds to convergence),
 the recommendation-state-keyed decision-episode machinery, as-built under
 Portfolio Analysis below — and the **construction stage** (2026-08-04,
 PR #60; internal + four Codex rounds to convergence), the Step 7a+7b
-whole-book reconciliation, as-built under Portfolio Analysis below.
+whole-book reconciliation, as-built under Portfolio Analysis below — and
+the **listing-resolution guard** (2026-08-05, `22534fd` + one Codex round),
+the stocks-only loop-time issuer cross-check, as-built under Portfolio
+Analysis below.
 **Trade Opportunities and the remaining Portfolio depth slices (held-name
 refresh lane, the live research loop) remain designed, not built.** The
 load-bearing decisions:
@@ -465,7 +468,16 @@ load-bearing decisions:
   remaining depth slices designed — `docs/portfolio-analysis.md`,
   `portfolio-workflow.md`; strategy
   audit converged 2026-07-10; the fund-form target methodology settled
-  2026-07-16 — the v2 function over the exposure-priced composite).** The
+  2026-07-16 — the v2 function over the exposure-priced composite).** Every
+  stock enters behind the **loop-time listing-resolution guard** (built
+  2026-08-05): the one per-stock FMP `profile` read — also the outcome
+  episodes' entry-stamped sector identity — cross-checks issuer name +
+  exchange against Schwab's; US = the NYSE / NASDAQ / AMEX exchange
+  allowlist (OTC/PNK → not-rated `unsupported listing`), a zero-shared-token
+  name conflict → `insufficient-evidence` with standing-ledger +
+  prior-vintage retention, an unverifiable read proceeds as a degraded input
+  (only FMP's definitive empty body reads no-resolution), and a
+  guard-terminal stock skips its remaining per-symbol retrieval. The
   intrinsic verdict is a **discriminated union**: the **`priced`** branch is
   the four-part read — deterministic grade (momentum settled out of the
   letter; since the 2026-08-03 shadow-tune computed on a one-basis-per-holding
@@ -762,7 +774,10 @@ digests, never `num_ctx`, and the fit is now instrumented (B12,
 2026-08-04: per-call prompt counts + sent size, pressure/truncation
 flags on the data-health read) — the overlay-classification read against real
 Schwab OCC rows, and the 7b sizing-only decided-range movement rate that
-would justify a band-relative episode trigger); 128 K runner
+would justify a band-relative episode trigger); the **listing guard**
+against real Schwab identity shapes (slash-notation class-share symbols
+read unsupported under the verbatim FMP lookup; ticker-noise
+descriptions' false-conflict risk); 128 K runner
 stability; distill speed; whether Stooq's PoW gate is permanent). **Trade
 Opportunities waits behind the whole block** (design settled — full strategy
 audit plus three external review rounds to convergence, 2026-07-09; the paid
@@ -829,9 +844,10 @@ episode-schema migration, exactly as reserved).
 
 **The pre-test block is built; the 2026-08-04 B-ruling batch (piece-2
 record §Rulings, `a5992f4`) queued five further pre-run slices — B12
-(the context-fit instrumentation) landed same day, four remain: B3
-listing-resolution guard, B7 investor-profile alignment, B10
-momentum-tile differentiation, B13 monitor render.** The
+(the context-fit instrumentation) landed same day, B3 (the
+listing-resolution guard) landed 2026-08-05, three remain: B7
+investor-profile alignment, B10 momentum-tile differentiation, B13
+monitor render.** The
 last result-review UI fix, the **section-scoped footer + report-nav
 slice**, landed 2026-08-04 (`c9b660e`, direct to main): `jobs::JobStatus`
 reshaped to per-section `report` / `portfolio` stamp groups scoped by
@@ -850,8 +866,9 @@ price / avg cost / cost basis under the unrealized figure, sub-2%
 weight-band decimal precision, and Hold's "maintain" phrasing; one Codex
 round, the short-position finding disputed on engine-reachability
 evidence — net-short is not-rated pre-routing, so no full card pairs with
-a signed row — with its regression-case half adopted.) Next: the four
-remaining B-ruled slices, then the single big confirmation run banks the
+a signed row — with its regression-case half adopted.) Next: the three
+remaining B-ruled slices (B7, then the B10+B13 pair), then the single big
+confirmation run banks the
 stacked runtime confirmations above. Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
 shipped schemas don't preclude them — but the research-loop slice **must**

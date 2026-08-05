@@ -7,6 +7,7 @@ The rulings: US listing = **exchange allowlist NYSE/NASDAQ/AMEX** (all OTC/PNK �
 As-built: new `portfolio/listing.rs` (pure rules), `fetch_profile_identity` tri-state on the one per-stock `/profile` call (`fetch_profile_sector` retired; sector identity rides the same lookup), `ListingResolution` on the dossier, routing beside the eligibility gates (no-resolution/non-US → not-rated; conflict → insufficient-evidence w/ ledger + prior-vintage retention), and the **guard-terminal fetch skip** (the loop's first short-circuit — all four per-symbol pulls tripwire-pinned).
 Codex round fixed the one real boundary defect: **only the definitive empty-array body reads Unresolved** — drifted/malformed-but-valid-JSON shapes are Unverified, never terminal; plus honest guard-terminal audit sources and the "never re-spent" doc reword.
 Docs flipped as-built (portfolio-analysis §Asset eligibility + §Evidence floor identity arm + §Starting parameters constants; workflow Step 3/6a; data-sources profile row) — the B2 "in build" line is no longer stale.
+**BUILD + INDEX aligned in-session at user request** (same commit as this handoff): BUILD's as-built list + Portfolio Analysis bullet gain the guard, §What remains now queues three B slices and carries the two new listing-guard big-run watches; INDEX gains the slice row, the status paragraph and concept row updated.
 Verified: cargo 921 lib + 32 integration / 0 fail, clippy 0, npm build, 40 node + 206 vitest.
 
 ## Current state
