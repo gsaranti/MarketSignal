@@ -169,6 +169,7 @@ describe("App.vue Tauri boundary", () => {
     expect([...invokedCommands()].sort()).toEqual([
       "check_configuration",
       "check_local_configuration",
+      "get_investor_profile",
       "get_settings",
       "job_status",
       "latest_holdings_pull",

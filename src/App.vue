@@ -25,6 +25,7 @@ import type {
   HoldingsPull,
   ImportInspection,
   ImportSummary,
+  InvestorProfileDisplay,
   JobStatus,
   LocalDaemonStatus,
   LocalModelSettings,
@@ -616,6 +617,12 @@ const localDaemonStatus = ref<LocalDaemonStatus | null>(null);
 // settings form.
 const truncationStats = ref<TruncationStats | null>(null);
 
+// The fixed investor-profile preset for the read-only Settings block, loaded on
+// the diagnostics channel (docs/configuration.md §Investor Profile). `null` =
+// not yet loaded / IPC fault (the section is omitted); the command is pure, so
+// a populated value is always the full five-row preset.
+const investorProfile = ref<InvestorProfileDisplay | null>(null);
+
 // Per-credential "Test connection" state, kept on its own channels (apart from
 // settingsError, which is load/save only): which credential is being tested, and
 // the last result for each. Ephemeral and Settings-local — reset on every fresh
@@ -1035,6 +1042,14 @@ async function refreshSettings() {
     truncationStats.value = await invoke<TruncationStats>("truncation_stats");
   } catch {
     truncationStats.value = null;
+  }
+  // The read-only investor-profile preset rides the same fail-soft posture: a
+  // throw is only an IPC-layer fault, and the section simply omits on null.
+  try {
+    investorProfile.value =
+      await invoke<InvestorProfileDisplay>("get_investor_profile");
+  } catch {
+    investorProfile.value = null;
   }
   void refreshSchwabStatus();
 }
@@ -1683,6 +1698,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :local-testing="localDaemonTesting"
           :local-daemon="localDaemonStatus"
           :truncation-stats="truncationStats"
+          :investor-profile="investorProfile"
           :schwab-status="schwabStatus"
           :schwab-connecting="schwabConnecting"
           :schwab-busy="schwabBusy"

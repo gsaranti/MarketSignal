@@ -255,6 +255,19 @@ export interface FormatCount {
   count: number;
 }
 
+// Mirrors the Rust `portfolio::InvestorProfileDisplay` returned by the
+// `get_investor_profile` command — the fixed investor-profile preset as
+// ready-to-render read-only Settings rows (docs/configuration.md §Investor
+// Profile). The strings are composed backend-side from the same label source
+// the Step-7b construction prompt renders, so the two surfaces cannot drift.
+export interface InvestorProfileDisplay {
+  objective: string;
+  risk_tolerance: string;
+  horizon: string;
+  tax: string;
+  cash: string;
+}
+
 // The API-token half of a `save_settings` submission (the token-gated cloud
 // save). A field is set only when the user entered a new value; null/"" leaves
 // the stored secret unchanged. The FMP/FRED/Tavily provider credentials save

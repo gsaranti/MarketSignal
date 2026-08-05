@@ -8,6 +8,7 @@ import type {
   AgentModels,
   ConnectionTestResult,
   CredentialUpdate,
+  InvestorProfileDisplay,
   LocalDaemonStatus,
   LocalModelSettings,
   ModelOption,
@@ -57,6 +58,12 @@ const props = defineProps<{
   // unavailable / not yet loaded (the section is omitted); a populated all-zero
   // aggregate renders the "none recorded" empty state.
   truncationStats: TruncationStats | null;
+  // The fixed investor-profile preset for the read-only display section
+  // (docs/configuration.md §Investor Profile). `null` = not yet loaded /
+  // unavailable (the section is omitted, like diagnostics). Display strings
+  // arrive ready-to-render from the backend — the same label source the
+  // Step-7b construction prompt uses.
+  investorProfile: InvestorProfileDisplay | null;
   // Charles Schwab connection (docs/schwab-integration.md, docs/interface.md
   // §Connection status). `null` = not yet loaded / unavailable (the section is
   // omitted, like diagnostics). `schwabConnecting` is true while the interactive
@@ -979,6 +986,48 @@ const importDataLabel = computed(() =>
           </section>
         </form>
 
+        <!-- Investor profile: the fixed preset shown read-only (docs/configuration.md
+             §Investor Profile; docs/interface.md Settings tree). No inputs and no
+             save — the preset is not user-configured until a configurable profile
+             ships — so it sits outside every form, on its own data channel like
+             diagnostics (omitted while unavailable). Values arrive ready-to-render
+             from the backend, the same label source the construction prompt uses.
+             Generic-chrome register: monochrome, no analytical palette. -->
+        <section
+          v-if="investorProfile"
+          class="settings-section"
+          aria-labelledby="sec-profile"
+        >
+          <h3 id="sec-profile" class="section-eyebrow">Investor profile</h3>
+          <p class="section-note">
+            The fixed posture the local jobs frame their prescriptions against. It
+            shapes actions and framing, never which holdings grade well. Read-only
+            until a configurable profile ships.
+          </p>
+          <dl class="profile-rows">
+            <div class="profile-row">
+              <dt>Objective</dt>
+              <dd>{{ investorProfile.objective }}</dd>
+            </div>
+            <div class="profile-row">
+              <dt>Risk tolerance</dt>
+              <dd>{{ investorProfile.risk_tolerance }}</dd>
+            </div>
+            <div class="profile-row">
+              <dt>Horizon</dt>
+              <dd>{{ investorProfile.horizon }}</dd>
+            </div>
+            <div class="profile-row">
+              <dt>Tax posture</dt>
+              <dd>{{ investorProfile.tax }}</dd>
+            </div>
+            <div class="profile-row">
+              <dt>Cash posture</dt>
+              <dd>{{ investorProfile.cash }}</dd>
+            </div>
+          </dl>
+        </section>
+
         <!-- Charles Schwab connection (docs/schwab-integration.md, docs/interface.md
              §Connection status). Its own section outside the config form — its
              Save/Connect/Disconnect are independent of the gated model+credential
@@ -1604,6 +1653,34 @@ const importDataLabel = computed(() =>
 
 .switch:disabled .switch-knob {
   background: var(--hairline);
+}
+
+/* Investor-profile readout: the read-only preset as label-above-value rows —
+   the Settings form's label-above-field posture without inputs. Prose values,
+   so sans (not the mono numeric idiom); flat and hairline-free like the
+   diagnostics block. */
+.profile-rows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.profile-row dt {
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.profile-row dd {
+  margin: var(--s-1) 0 0;
+  font-family: var(--font-sans);
+  font-size: var(--t-ui-sm);
+  line-height: 1.45;
+  color: var(--ink);
 }
 
 /* Diagnostics readout: a label/value list in mono tabular figures (the system's

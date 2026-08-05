@@ -1847,9 +1847,10 @@ pub fn construction_user_prompt(
         ));
     }
     p.push_str(&format!(
-        "\nINVESTOR PROFILE: risk tolerance {:?}, horizon {:?}, taxable {}, cash {}\n",
-        profile.risk_tolerance,
-        profile.horizon,
+        "\nINVESTOR PROFILE: objective {}, risk tolerance {}, horizon {}, taxable {}, cash {}\n",
+        profile.objective.label(),
+        profile.risk_tolerance.label(),
+        profile.horizon.label(),
         profile.tax_sensitive,
         profile
             .available_cash
@@ -3031,6 +3032,14 @@ mod tests {
         assert!(p.contains("GONE"));
         assert!(p.contains("House view text"));
         assert!(p.contains("unconstrained"));
+        // The B7-aligned profile line: the objective clause and the exact
+        // medium-to-high risk framing the big run banks (the shared label()
+        // source — `docs/configuration.md` §Investor Profile).
+        assert!(p.contains(
+            "INVESTOR PROFILE: objective maximize profit (total return; no income or \
+             capital-preservation mandate), risk tolerance aggressive (medium-to-high), \
+             horizon long-term"
+        ), "{p}");
         assert!(!p.contains("VALIDATION FAILURE"));
 
         let retry = construction_user_prompt(

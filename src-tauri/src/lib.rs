@@ -1504,6 +1504,16 @@ fn truncation_stats(app: tauri::AppHandle) -> storage::TruncationStats {
     storage::truncation_stats(&conn).unwrap_or_default()
 }
 
+/// The fixed investor-profile preset as ready-to-render read-only Settings rows
+/// (`docs/configuration.md` §Investor Profile; `docs/interface.md` Settings tree).
+/// Pure — no store, no side effects: the preset is not user-configured, so the
+/// display derives from [`portfolio::InvestorProfile::default_fixture`] alone,
+/// through the same label source the Step-7b construction prompt renders.
+#[tauri::command]
+fn get_investor_profile() -> portfolio::InvestorProfileDisplay {
+    portfolio::InvestorProfile::default_fixture().display()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1573,7 +1583,8 @@ pub fn run() {
             list_research_archive,
             delete_research_archive_document,
             reveal_research_archive,
-            truncation_stats
+            truncation_stats,
+            get_investor_profile
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

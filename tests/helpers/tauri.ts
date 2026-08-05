@@ -11,6 +11,7 @@
 
 import type {
   HoldingsPull,
+  InvestorProfileDisplay,
   JobStatus,
   PortfolioRun,
   ReportSummary,
@@ -177,6 +178,18 @@ export const defaultTruncationStats: TruncationStats = {
   latest_captured_at: null,
 };
 
+// The fixed investor-profile preset the read-only Settings block renders —
+// mirrors the Rust `InvestorProfile::default_fixture().display()` strings
+// (pinned backend-side by `investor_profile_display_pins_preset_rows`).
+export const defaultInvestorProfile: InvestorProfileDisplay = {
+  objective:
+    "maximize profit (total return; no income or capital-preservation mandate)",
+  risk_tolerance: "aggressive (medium-to-high)",
+  horizon: "long-term (durable multi-quarter / multi-year theses)",
+  tax: "tax-aware — the possible benefit of realizing a loss is weighed qualitatively; no tax-lot, holding-period, or rate modeling",
+  cash: "unconstrained — adds are never gated on observed Schwab cash",
+};
+
 export type InvokeHandler = (args?: Record<string, unknown>) => unknown;
 
 // The command → response map. Any command absent here throws when invoked, so a
@@ -198,6 +211,9 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     get_settings: () => defaultSettings,
     // Read on Settings-view entry, alongside get_settings.
     truncation_stats: () => defaultTruncationStats,
+    // The fixed investor-profile preset for the read-only Settings block —
+    // ready-to-render display strings from the backend label source.
+    get_investor_profile: () => defaultInvestorProfile,
     schwab_status: () => defaultSchwabStatus,
     // Action commands a spec may drive through a user interaction.
     save_settings: () => null,

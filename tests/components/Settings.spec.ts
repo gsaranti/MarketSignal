@@ -14,6 +14,7 @@ import Settings from "../../src/components/Settings.vue";
 import { deepFreeze } from "../helpers/freeze";
 import { defaultSchwabStatus } from "../helpers/tauri";
 import type {
+  InvestorProfileDisplay,
   LocalDaemonStatus,
   SettingsView,
   SchwabStatus,
@@ -57,6 +58,9 @@ const baseProps = {
   localTesting: false,
   localDaemon: null as LocalDaemonStatus | null,
   truncationStats: null as TruncationStats | null,
+  // The read-only investor-profile preset: unavailable by default (the section
+  // is omitted); the profile tests override.
+  investorProfile: null as InvestorProfileDisplay | null,
   // A clean install: no Schwab credentials, no connection (the shared helper
   // fixture, spread so deepFreeze can't freeze the shared object). Schwab tests
   // override.
@@ -304,6 +308,57 @@ test("the appearance toggle (in the toolbar) emits set-dark with the flipped val
   const wrapper = makeWrapper({ dark: false });
   await wrapper.find('.toolbar button[role="switch"]').trigger("click");
   expect(wrapper.emitted("set-dark")).toEqual([[true]]);
+});
+
+// --- Investor profile section ------------------------------------------------
+// The read-only preset block (docs/configuration.md §Investor Profile): omitted
+// when unavailable, otherwise five backend-composed label/value rows with no
+// inputs — read-only by construction, so it can't disturb any form's dirtiness.
+
+function profileSection(wrapper: ReturnType<typeof makeWrapper>) {
+  return wrapper.find('section[aria-labelledby="sec-profile"]');
+}
+
+test("the investor-profile section is omitted when the preset is unavailable (null)", () => {
+  const wrapper = makeWrapper({ investorProfile: null });
+  expect(profileSection(wrapper).exists()).toBe(false);
+});
+
+test("the investor-profile section renders the five preset rows verbatim, with no inputs", () => {
+  const profile: InvestorProfileDisplay = {
+    objective:
+      "maximize profit (total return; no income or capital-preservation mandate)",
+    risk_tolerance: "aggressive (medium-to-high)",
+    horizon: "long-term (durable multi-quarter / multi-year theses)",
+    tax: "tax-aware — the possible benefit of realizing a loss is weighed qualitatively; no tax-lot, holding-period, or rate modeling",
+    cash: "unconstrained — adds are never gated on observed Schwab cash",
+  };
+  const wrapper = makeWrapper({ investorProfile: profile });
+  const section = profileSection(wrapper);
+  expect(section.exists()).toBe(true);
+
+  // The five rows, in template order, rendering the backend strings verbatim
+  // (they are the shared label source with the construction prompt — never
+  // re-worded frontend-side).
+  const labels = section.findAll(".profile-row dt").map((d) => d.text());
+  expect(labels).toEqual([
+    "Objective",
+    "Risk tolerance",
+    "Horizon",
+    "Tax posture",
+    "Cash posture",
+  ]);
+  const values = section.findAll(".profile-row dd").map((d) => d.text());
+  expect(values).toEqual([
+    profile.objective,
+    profile.risk_tolerance,
+    profile.horizon,
+    profile.tax,
+    profile.cash,
+  ]);
+
+  // Read-only by construction: no form controls of any kind inside the section.
+  expect(section.find("input, select, textarea, button").exists()).toBe(false);
 });
 
 // --- Truncation diagnostics section ----------------------------------------

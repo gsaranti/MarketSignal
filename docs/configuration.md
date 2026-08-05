@@ -152,6 +152,7 @@ The default posture:
   Total return is the goal; no income or capital-preservation mandate is imposed.
 - **risk tolerance — medium-to-high.**
   Higher-risk cells and archetypes (disruptors, commodity cyclicals, smaller caps) are in scope, gated by the engine's forensic/risk discipline rather than by a conservative cap.
+  The preset is represented as the **aggressive** rung of the three-step tolerance scale and renders as "aggressive (medium-to-high)" in the construction prompt and the read-only Settings block — one shared framing, per the 2026-08-05 B7 ruling.
 - **cash — always available.**
   Buying power is treated as **unconstrained**: the user may hold cash in accounts the app can't see, so *add aggressively* and full-size entries are **never** gated on observed Schwab cash.
   (Concentration and risk limits still apply; only the cash constraint is lifted.)

@@ -69,14 +69,16 @@ pub const HORIZON_LONG: &str = "long term (~3–5 years)";
 
 // ---- Investor profile --------------------------------------------------------
 
-/// The configured investor profile that personalizes grading and especially the
-/// action (`docs/portfolio-analysis.md`, `docs/configuration.md`). The grade is
-/// intrinsic to the holding; the *action* additionally reflects horizon, risk
-/// tolerance, tax sensitivity, and available cash. For this slice it is seeded as a
-/// fixture ([`InvestorProfile::default_fixture`]); the configurable Settings form is
-/// a later slice.
+/// The configured investor profile that personalizes the *action* — never the
+/// intrinsic verdict (`docs/portfolio-analysis.md` §Intrinsic verdict,
+/// `docs/configuration.md` §Investor Profile). It enters at Step-7b construction
+/// only: objective, risk tolerance, horizon, tax posture, and available cash frame
+/// the prescription. It ships as the documented fixed preset
+/// ([`InvestorProfile::default_fixture`]); the configurable Settings form is a
+/// later slice — Settings shows the preset read-only via [`Self::display`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InvestorProfile {
+    pub objective: ProfileObjective,
     pub risk_tolerance: RiskTolerance,
     pub horizon: ProfileHorizon,
     /// Whether holdings sit in a taxable account (so realized gains carry a tax
@@ -91,19 +93,77 @@ pub struct InvestorProfile {
 }
 
 impl InvestorProfile {
-    /// The default fixture profile this slice runs against: moderate risk tolerance,
-    /// a long-term horizon, taxable/tax-aware, and **cash treated as unconstrained**
-    /// (the preset's stance — the user may hold cash the app can't see). The real
-    /// per-user profile is configured in a later Settings slice; this stands in so the
-    /// action sizing has a profile to read.
+    /// The documented fixed preset (`docs/configuration.md` §Investor Profile):
+    /// profit-maximization objective, medium-to-high risk tolerance (represented as
+    /// the aggressive rung of the three-step scale), a long-term horizon,
+    /// taxable/tax-aware (the qualitative loss-realization counterweight only — no
+    /// tax-lot modeling), and **cash treated as unconstrained** (the user may hold
+    /// cash the app can't see). The real per-user profile is configured in a later
+    /// Settings slice.
     pub fn default_fixture() -> Self {
         Self {
-            risk_tolerance: RiskTolerance::Moderate,
+            objective: ProfileObjective::MaximizeProfit,
+            risk_tolerance: RiskTolerance::Aggressive,
             horizon: ProfileHorizon::LongTerm,
             tax_sensitive: true,
             // Unconstrained cash — adds are not gated on observed Schwab cash
             // (`docs/configuration.md` §Investor Profile).
             available_cash: None,
+        }
+    }
+
+    /// The read-only Settings rows for this profile — ready-to-render display
+    /// strings composed here so the Settings block and the construction prompt
+    /// share one label source (`docs/interface.md` Settings tree;
+    /// `docs/configuration.md` §Investor Profile).
+    pub fn display(&self) -> InvestorProfileDisplay {
+        InvestorProfileDisplay {
+            objective: self.objective.label().to_string(),
+            risk_tolerance: self.risk_tolerance.label().to_string(),
+            horizon: self.horizon.label().to_string(),
+            tax: if self.tax_sensitive {
+                "tax-aware — the possible benefit of realizing a loss is weighed \
+                 qualitatively; no tax-lot, holding-period, or rate modeling"
+                    .to_string()
+            } else {
+                "tax-exempt — no tax consideration applied".to_string()
+            },
+            cash: match self.available_cash {
+                Some(cap) => format!("capped at {cap:.0} (account currency)"),
+                None => "unconstrained — adds are never gated on observed Schwab cash"
+                    .to_string(),
+            },
+        }
+    }
+}
+
+/// The ready-to-render read-only Settings rows for the investor profile
+/// ([`InvestorProfile::display`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvestorProfileDisplay {
+    pub objective: String,
+    pub risk_tolerance: String,
+    pub horizon: String,
+    pub tax: String,
+    pub cash: String,
+}
+
+/// The investor's return objective (`docs/configuration.md` §Investor Profile).
+/// Single-variant today — the fixed preset's stance; income / capital-preservation
+/// mandates join when the configurable profile ships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileObjective {
+    MaximizeProfit,
+}
+
+impl ProfileObjective {
+    /// The shared prompt/Settings label ([`InvestorProfile::display`]).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MaximizeProfit => {
+                "maximize profit (total return; no income or capital-preservation mandate)"
+            }
         }
     }
 }
@@ -116,12 +176,38 @@ pub enum RiskTolerance {
     Aggressive,
 }
 
+impl RiskTolerance {
+    /// The shared prompt/Settings label ([`InvestorProfile::display`]). The
+    /// aggressive rung carries the documented preset's "medium-to-high" framing
+    /// (`docs/configuration.md` §Investor Profile — the 2026-08-05 B7 ruling: the
+    /// three-rung vocabulary is kept, the preset represented as the aggressive
+    /// rung and rendered with the medium-to-high posture).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Conservative => "conservative",
+            Self::Moderate => "moderate",
+            Self::Aggressive => "aggressive (medium-to-high)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProfileHorizon {
     ShortTerm,
     MediumTerm,
     LongTerm,
+}
+
+impl ProfileHorizon {
+    /// The shared prompt/Settings label ([`InvestorProfile::display`]).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ShortTerm => "short-term",
+            Self::MediumTerm => "medium-term",
+            Self::LongTerm => "long-term (durable multi-quarter / multi-year theses)",
+        }
+    }
 }
 
 // ---- Asset eligibility -------------------------------------------------------
@@ -1553,6 +1639,26 @@ pub fn role_risk_interpretation_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the read-only Settings payload for the fixed preset — the exact
+    /// snake_case keys the frontend types against and the shared label strings
+    /// (one label source with the Step-7b prompt — the 2026-08-05 B7 slice).
+    #[test]
+    fn investor_profile_display_pins_preset_rows() {
+        let shape = serde_json::to_value(InvestorProfile::default_fixture().display()).unwrap();
+        assert_eq!(
+            shape,
+            json!({
+                "objective":
+                    "maximize profit (total return; no income or capital-preservation mandate)",
+                "risk_tolerance": "aggressive (medium-to-high)",
+                "horizon": "long-term (durable multi-quarter / multi-year theses)",
+                "tax": "tax-aware — the possible benefit of realizing a loss is weighed \
+                        qualitatively; no tax-lot, holding-period, or rate modeling",
+                "cash": "unconstrained — adds are never gated on observed Schwab cash",
+            })
+        );
+    }
 
     /// A grammar-valid ledger object in the schema's own labels, for the
     /// interpretation round-trip tests.
