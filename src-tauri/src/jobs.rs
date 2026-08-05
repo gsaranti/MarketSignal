@@ -382,18 +382,12 @@ pub fn dismiss_warning_category(conn: &Connection, kind: WarningKind, dismiss_id
     Ok(())
 }
 
-/// A snapshot of job status for the UI (`docs/scheduling.md §Job Status
-/// Visibility`): last successful run, last failure, last skipped event, and
-/// whether a run is in flight now — and, when one is, which kind of workflow
-/// holds the slot, so the footer's running label matches the actual work.
-/// Timestamps are the canonical UTC RFC3339 strings; the frontend renders them
-/// in local time. The engine-only Portfolio quick check is excluded from every
-/// "last X" stamp — a between-run sweep is not the analysis freshness the footer
-/// reports, and its failures still surface through the failed-jobs warning.
+/// One section's "last X" stamps (`docs/scheduling.md §Job Status Visibility`):
+/// the most recent run per terminal state for a single `job_type`. Timestamps
+/// are the canonical UTC RFC3339 strings; the frontend renders them in local
+/// time.
 #[derive(Debug, Clone, Serialize)]
-pub struct JobStatus {
-    pub is_running: bool,
-    pub running_kind: Option<RunKind>,
+pub struct SectionStamps {
     pub last_successful_at: Option<String>,
     pub last_failed_at: Option<String>,
     pub last_failure_detail: Option<String>,
@@ -401,30 +395,58 @@ pub struct JobStatus {
     pub last_cancelled_at: Option<String>,
 }
 
-/// Assemble the current `JobStatus` from job history and the live run guard. Each
-/// "last X" is the most recent run of that state by insertion order (`id`),
-/// independent of the others — a later failure does not erase the last successful
-/// run's timestamp, and vice versa.
+/// A snapshot of job status for the UI (`docs/scheduling.md §Job Status
+/// Visibility`): whether a run is in flight now — and, when one is, which kind
+/// of workflow holds the slot, so the footer's running label matches the actual
+/// work — plus the "last X" stamps *per section*, keyed by `job_type`, so the
+/// footer under each surface reports that section's own job (a portfolio run
+/// must never stamp LAST RUN under report chrome). The run-slot fields stay
+/// global: the single slot is shared across workflows. The engine-only
+/// Portfolio quick check reaches neither section's stamps — the equality filter
+/// on `job_type` excludes its `portfolio_quick_check` rows implicitly — since a
+/// between-run sweep is not the analysis freshness the footer reports; its
+/// failures still surface through the failed-jobs warning, which deliberately
+/// keeps no `job_type` filter.
+#[derive(Debug, Clone, Serialize)]
+pub struct JobStatus {
+    pub is_running: bool,
+    pub running_kind: Option<RunKind>,
+    pub report: SectionStamps,
+    pub portfolio: SectionStamps,
+}
+
+/// Assemble the current `JobStatus` from job history and the live run guard.
+/// Each "last X" is the most recent run of that state *and section* by
+/// insertion order (`id`), independent of the others — a later failure does not
+/// erase the last successful run's timestamp, and vice versa. Both sections
+/// ride one payload (rather than a per-call section parameter) so a view switch
+/// never waits on — or briefly mislabels across — a re-fetch.
 pub fn job_status(conn: &Connection, guard: &RunGuard) -> Result<JobStatus> {
-    let last_of = |state: &str| -> Result<Option<(String, Option<String>)>> {
-        Ok(conn
-            .query_row(
-                "SELECT finished_at, detail FROM job_runs
-                 WHERE state = ?1 AND job_type != ?2 ORDER BY id DESC LIMIT 1",
-                params![state, crate::portfolio::quick_check::QUICK_CHECK_JOB],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-            )
-            .optional()?)
+    let stamps_for = |job_type: &str| -> Result<SectionStamps> {
+        let last_of = |state: &str| -> Result<Option<(String, Option<String>)>> {
+            Ok(conn
+                .query_row(
+                    "SELECT finished_at, detail FROM job_runs
+                     WHERE state = ?1 AND job_type = ?2 ORDER BY id DESC LIMIT 1",
+                    params![state, job_type],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()?)
+        };
+        let failed = last_of(JobState::Failed.as_str())?;
+        Ok(SectionStamps {
+            last_successful_at: last_of(JobState::Successful.as_str())?.map(|(at, _)| at),
+            last_failed_at: failed.as_ref().map(|(at, _)| at.clone()),
+            last_failure_detail: failed.and_then(|(_, detail)| detail),
+            last_skipped_at: last_of(JobState::Skipped.as_str())?.map(|(at, _)| at),
+            last_cancelled_at: last_of(JobState::Cancelled.as_str())?.map(|(at, _)| at),
+        })
     };
-    let failed = last_of(JobState::Failed.as_str())?;
     Ok(JobStatus {
         is_running: guard.is_running(),
         running_kind: guard.running_kind(),
-        last_successful_at: last_of(JobState::Successful.as_str())?.map(|(at, _)| at),
-        last_failed_at: failed.as_ref().map(|(at, _)| at.clone()),
-        last_failure_detail: failed.and_then(|(_, detail)| detail),
-        last_skipped_at: last_of(JobState::Skipped.as_str())?.map(|(at, _)| at),
-        last_cancelled_at: last_of(JobState::Cancelled.as_str())?.map(|(at, _)| at),
+        report: stamps_for(MARKET_SIGNAL_JOB)?,
+        portfolio: stamps_for(crate::portfolio::job::PORTFOLIO_JOB)?,
     })
 }
 
@@ -510,18 +532,46 @@ mod tests {
         insert(&conn, JobState::Skipped, Some(SKIP_REASON));
         let st = job_status(&conn, &RunGuard::default()).unwrap();
         assert!(!st.is_running);
-        assert!(st.last_successful_at.is_some());
-        assert!(st.last_failed_at.is_some());
-        assert_eq!(st.last_failure_detail.as_deref(), Some("provider 500"));
-        assert!(st.last_skipped_at.is_some());
+        assert!(st.report.last_successful_at.is_some());
+        assert!(st.report.last_failed_at.is_some());
+        assert_eq!(st.report.last_failure_detail.as_deref(), Some("provider 500"));
+        assert!(st.report.last_skipped_at.is_some());
+    }
+
+    #[test]
+    fn job_status_scopes_stamps_to_each_sections_job_type() {
+        // The footer under each surface reports that section's own job: a
+        // portfolio run's finish must never stamp LAST RUN under report chrome
+        // (the first live run surfaced exactly that), and vice versa.
+        let conn = mem();
+        insert(&conn, JobState::Successful, None);
+        record_run(
+            &conn,
+            &JobRun {
+                job_type: crate::portfolio::job::PORTFOLIO_JOB,
+                state: JobState::Failed,
+                started_at: "2026-06-02T09:00:00Z",
+                finished_at: "2026-06-02T09:00:05Z",
+                report_id: None,
+                detail: Some("daemon unreachable"),
+            },
+        )
+        .unwrap();
+        let st = job_status(&conn, &RunGuard::default()).unwrap();
+        assert_eq!(st.report.last_successful_at.as_deref(), Some("2026-06-01T09:05:00Z"));
+        assert!(st.report.last_failed_at.is_none(), "a portfolio failure is not the report's");
+        assert!(st.portfolio.last_successful_at.is_none(), "a report run is not the portfolio's");
+        assert_eq!(st.portfolio.last_failed_at.as_deref(), Some("2026-06-02T09:00:05Z"));
+        assert_eq!(st.portfolio.last_failure_detail.as_deref(), Some("daemon unreachable"));
     }
 
     #[test]
     fn job_status_ignores_quick_check_rows() {
         // The engine-only quick check must not move the footer's last-run stamps:
         // "last successful run" reads as analysis freshness, and a between-run
-        // sweep is not that. Its failures reach the user through the failed-jobs
-        // warning instead (`failure_warning` has no job_type filter).
+        // sweep is not that. The per-section job_type equality filter excludes
+        // its rows from *both* sections. Its failures reach the user through the
+        // failed-jobs warning instead (`failure_warning` has no job_type filter).
         let conn = mem();
         record_run(
             &conn,
@@ -536,7 +586,8 @@ mod tests {
         )
         .unwrap();
         let st = job_status(&conn, &RunGuard::default()).unwrap();
-        assert!(st.last_successful_at.is_none(), "a sweep is not a run the footer reports");
+        assert!(st.report.last_successful_at.is_none(), "a sweep is not a run the footer reports");
+        assert!(st.portfolio.last_successful_at.is_none(), "a sweep is not portfolio analysis freshness");
         // A real workflow's stamp still surfaces, unshadowed by a later sweep.
         insert(&conn, JobState::Successful, None);
         record_run(
@@ -552,7 +603,8 @@ mod tests {
         )
         .unwrap();
         let st = job_status(&conn, &RunGuard::default()).unwrap();
-        assert_eq!(st.last_successful_at.as_deref(), Some("2026-06-01T09:05:00Z"));
+        assert_eq!(st.report.last_successful_at.as_deref(), Some("2026-06-01T09:05:00Z"));
+        assert!(st.portfolio.last_successful_at.is_none());
     }
 
     #[test]

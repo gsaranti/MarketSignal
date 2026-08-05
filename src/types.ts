@@ -64,9 +64,21 @@ export interface ResearchDocument {
   parse_error: string | null;
 }
 
-// Mirrors the Rust `jobs::JobStatus` returned by the `job_status` command
+// One section's "last X" stamps — mirrors the Rust `jobs::SectionStamps`
 // (docs/scheduling.md §Job Status Visibility). Timestamps are canonical UTC
 // RFC3339 strings; the UI renders them in local time.
+export interface SectionStamps {
+  last_successful_at: string | null;
+  last_failed_at: string | null;
+  last_failure_detail: string | null;
+  last_skipped_at: string | null;
+  last_cancelled_at: string | null;
+}
+
+// Mirrors the Rust `jobs::JobStatus` returned by the `job_status` command
+// (docs/scheduling.md §Job Status Visibility). The run-slot fields are global
+// (one shared slot); the stamps come per section, keyed by job_type, and the
+// footer renders the active section's group.
 export interface JobStatus {
   is_running: boolean;
   // Which workflow holds the single run slot while is_running — drives the
@@ -79,11 +91,8 @@ export interface JobStatus {
     | "holdings-pull"
     | "data-portability"
     | null;
-  last_successful_at: string | null;
-  last_failed_at: string | null;
-  last_failure_detail: string | null;
-  last_skipped_at: string | null;
-  last_cancelled_at: string | null;
+  report: SectionStamps;
+  portfolio: SectionStamps;
 }
 
 // --- Data portability (docs/data-portability.md) -----------------------------

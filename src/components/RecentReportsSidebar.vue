@@ -143,9 +143,10 @@ function runTitle(r: PortfolioRunSummary): string {
             </div>
           </button>
         </template>
-        <!-- Empty state keeps a path back to the (empty) report view from the
-             inbox/archive/settings surfaces, since the bottom nav has no report
-             target. Clickable and keyboard-operable like a real row. When listing
+        <!-- Empty state keeps the list region occupied with a path back to the
+             (empty) report view — the bottom nav's report entry is the durable
+             target, this row mirrors it at the spot a report row would occupy.
+             Clickable and keyboard-operable like a real row. When listing
              failed (and there's no list to show), the meta says so rather than
              misreporting an empty library as "No reports yet". -->
         <button
@@ -172,6 +173,19 @@ function runTitle(r: PortfolioRunSummary): string {
     </template>
 
     <nav class="sidebar-nav" aria-label="Views">
+      <!-- The report target leads the nav (docs/interface.md §Main Layout): on
+           the Portfolio view the history list swaps to runs, so without this
+           entry no report row exists and the view is a navigation dead-end. -->
+      <button
+        type="button"
+        class="nav-item"
+        :class="{ 'is-active': view === 'report' }"
+        :aria-current="view === 'report' ? 'page' : undefined"
+        @click="$emit('navigate', 'report')"
+      >
+        <Icon name="report" :size="14" color="var(--ink-2)" />
+        <span class="nav-label">Latest Market Report</span>
+      </button>
       <button
         type="button"
         class="nav-item"

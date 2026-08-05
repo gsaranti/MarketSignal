@@ -214,6 +214,25 @@ test("nav items mark the active view and emit navigate with its key", async () =
   expect(wrapper.emitted("navigate")).toEqual([["settings"]]);
 });
 
+test("the report nav entry leads the nav and closes the Portfolio dead-end", async () => {
+  // On the Portfolio view the history list swaps to runs, so no report row
+  // exists — the nav entry is the only path back to the report.
+  const wrapper = makeWrapper({ view: "portfolio" });
+  const labels = wrapper.findAll(".nav-item .nav-label").map((l) => l.text());
+  expect(labels[0]).toBe("Latest Market Report");
+
+  const entry = navItemByLabel(wrapper, "Latest Market Report");
+  expect(entry.attributes("aria-current")).toBeUndefined();
+  await entry.trigger("click");
+  expect(wrapper.emitted("navigate")).toEqual([["report"]]);
+});
+
+test("the report nav entry marks itself active on the report view", () => {
+  const entry = navItemByLabel(makeWrapper({ view: "report" }), "Latest Market Report");
+  expect(entry.classes()).toContain("is-active");
+  expect(entry.attributes("aria-current")).toBe("page");
+});
+
 test("count badges show only when non-zero", () => {
   const wrapper = makeWrapper({ inboxCount: 3, archiveCount: 0 });
   expect(navItemByLabel(wrapper, "Research Inbox").find(".nav-badge").text()).toBe("3");

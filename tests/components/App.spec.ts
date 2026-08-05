@@ -343,6 +343,34 @@ describe("App.vue Tauri boundary", () => {
 
     wrapper.unmount();
   });
+
+  test("the footer's section + showGenerate props follow the view: stamps map per feature, the trigger is report-view-only", async () => {
+    // The user-settled featureOf mapping (docs/interface.md §Main Layout): the
+    // Portfolio view reports the portfolio job; report AND the neutral surfaces
+    // (inbox/archive/settings) report the report job — but the generate trigger
+    // renders only when the report view is the main window, so the neutral
+    // views get report stamps WITHOUT the button. Pinned here because only App
+    // owns both view→prop mappings.
+    const wrapper = mount(App);
+    await flushPromises();
+    const panel = wrapper.findComponent(JobStatusPanel);
+    expect(panel.props("section")).toBe("report");
+    expect(panel.props("showGenerate")).toBe(true);
+
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+    expect(panel.props("section")).toBe("portfolio");
+    expect(panel.props("showGenerate")).toBe(false);
+
+    for (const view of ["inbox", "archive", "settings"] as const) {
+      wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", view);
+      await flushPromises();
+      expect(panel.props("section")).toBe("report");
+      expect(panel.props("showGenerate")).toBe(false);
+    }
+
+    wrapper.unmount();
+  });
 });
 
 // The run tracker's event-folding (handleProgress) reducer, driven through the

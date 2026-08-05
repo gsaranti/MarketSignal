@@ -28,8 +28,10 @@ use crate::sec::{CompanyFacts, SecEdgarSource};
 use crate::storage;
 
 /// The `job_runs.job_type` slug for Portfolio Analysis runs, distinct from the
-/// report's `market_signal` so the two histories stay separable.
-const PORTFOLIO_JOB: &str = "portfolio_analysis";
+/// report's `market_signal` so the two histories stay separable. `pub(crate)`
+/// because `jobs::job_status` scopes its per-section footer stamps by this slug
+/// (mirroring `quick_check::QUICK_CHECK_JOB`).
+pub(crate) const PORTFOLIO_JOB: &str = "portfolio_analysis";
 
 /// Human title for the run tracker header.
 const RUN_LABEL: &str = "Portfolio Analysis";

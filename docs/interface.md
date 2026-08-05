@@ -17,7 +17,8 @@ Market Signal
 ├── Recent Reports Sidebar (the shared-history sidebar — content swaps per feature)
 │   ├── Ordered descending
 │   ├── Recent reports · last 30 (report / inbox / archive / settings views)
-│   └── Portfolio runs · last 10 (Portfolio view; an older run opens read-only)
+│   ├── Portfolio runs · last 10 (Portfolio view; an older run opens read-only)
+│   └── Bottom nav (Latest Market Report · Portfolio · Research Inbox · Research Archive · Settings)
 │
 ├── Research Documents
 │   ├── Research Inbox
@@ -73,6 +74,10 @@ The operational behavior of each panel is defined in the relevant concern files:
 ### The shared-history sidebar and the Portfolio runs history
 
 The sidebar is **one shared-history component whose list content swaps per feature** (the design package's shared-history pattern): the Portfolio view swaps in the retained **Portfolio runs** (last 10, newest first — each row a full-book label with its holdings count, local timestamp, and rated count), while every other view keeps the recent-reports list.
+The bottom nav leads with a **"Latest Market Report"** entry: because the history list swaps per feature, the Portfolio view has no report rows, and this entry is the durable path back to the report view from any surface.
+
+The **footer's job readout is section-scoped**: it reports the active section's own job (the report job everywhere except the Portfolio view, which reports Portfolio Analysis — the same per-feature mapping as the history swap), and the **"Generate now" trigger renders only on the report view** — each section keeps its own trigger (*Run analysis* on the Portfolio page; the Trade Opportunities controls with that feature).
+The stamp semantics (what scopes, what stays global) live in [scheduling.md §Job Status Visibility](scheduling.md#job-status-visibility).
 Selecting the **newest** run row shows the live Portfolio page; selecting an **older** one renders that persisted run on the Portfolio page **read-only** — an informational banner names the run's vintage and carries a *Back to latest* control, the Run analysis / Pull holdings triggers lock with the reason stated, and the current-holdings comparison section (whose churn tags are keyed to the *latest* vintage) never renders over a past run.
 A run row appears only on persisted success (the run-is-never-a-report invariant — [run-tracking.md](run-tracking.md)), a fresh successful run closes any open past-run view, and a run pruned by the 10-run retention leaves the list — an open past run that falls out of retention closes back to the latest view.
 

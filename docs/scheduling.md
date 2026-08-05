@@ -84,7 +84,12 @@ The application displays:
 - last cancelled run
 - skipped job events
 
-The engine-only Portfolio quick check is excluded from every "last X" stamp above: a between-run sweep is not the analysis freshness these timestamps report, and a failed quick check still surfaces through the failed-jobs warning ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)).
+The "last X" stamps are **scoped per section by `job_type`**: the footer under each surface reports that section's own job — the report job on the report view (and the inbox / archive / settings views, mirroring the shared-history sidebar's mapping), the Portfolio Analysis job on the Portfolio view — so a portfolio run's finish never stamps LAST RUN under report chrome.
+All four stamps scope together (the whole facts block is the section readout); the running-job state stays global, since the single run slot is shared across workflows.
+Both sections' stamps ride one `job_status` payload, so a view switch never waits on a re-fetch.
+The failed-jobs warning stays **unscoped** — a failure of any job type surfaces there regardless of the active section.
+
+The engine-only Portfolio quick check reaches neither section's stamps (the per-section `job_type` equality filter excludes its rows implicitly): a between-run sweep is not the analysis freshness these timestamps report, and a failed quick check still surfaces through the failed-jobs warning ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)).
 
 ## Generating a Report
 

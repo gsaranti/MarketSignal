@@ -29,14 +29,19 @@ export const defaultValidation: ValidationReport = {
   is_blocked: false,
 };
 
-export const defaultJobStatus: JobStatus = {
-  is_running: false,
-  running_kind: null,
+const emptyStamps = {
   last_successful_at: null,
   last_failed_at: null,
   last_failure_detail: null,
   last_skipped_at: null,
   last_cancelled_at: null,
+};
+
+export const defaultJobStatus: JobStatus = {
+  is_running: false,
+  running_kind: null,
+  report: { ...emptyStamps },
+  portfolio: { ...emptyStamps },
 };
 
 export const defaultSettings: SettingsView = {

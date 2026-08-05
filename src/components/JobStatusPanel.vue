@@ -3,12 +3,26 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import type { JobStatus } from "../types";
 
 // Job status (docs/scheduling.md §Job Status Visibility). Reports run history
-// (last run / last failure / last skipped / last cancelled) and the in-flight
-// indicator. It also carries the persistent manual "Generate now" trigger (the
-// kit's footer division — generation is a job action, the report toolbar is
-// reading-only). Recessed chrome on paper-soft.
+// (last run / last failure / last skipped / last cancelled) scoped to the
+// active section's job, and the in-flight indicator (global — one shared run
+// slot). When the report view is the main window it also carries the
+// persistent manual "Generate now" trigger (the kit's footer division —
+// generation is a job action, the report toolbar is reading-only); every other
+// view offers no generate control here — the Portfolio section keeps its own
+// Run analysis trigger on the page, and the neutral inbox/archive/settings
+// surfaces share the report's stamps but not its trigger.
+// Recessed chrome on paper-soft.
 const props = defineProps<{
   status: JobStatus | null;
+  // Which section's stamps the footer reports (docs/interface.md §Main
+  // Layout): the Portfolio view scopes to the portfolio job, every other view
+  // to the report — the sidebar's featureOf mapping.
+  section: "report" | "portfolio";
+  // Whether the manual generate trigger renders — true only when the report
+  // view is the main window (docs/interface.md §Main Layout). Deliberately
+  // separate from `section`: the neutral surfaces are section "report" but
+  // must not surface the button.
+  showGenerate: boolean;
   error: string | null;
   blocked: boolean;
   generating: boolean;
@@ -37,6 +51,16 @@ defineEmits<{ (e: "generate"): void; (e: "view-tracker"): void }>();
 // Whether a run is in flight: prefer the immediate event-driven flag, falling back
 // to the backend guard state.
 const isRunning = computed(() => props.runActive || props.status?.is_running === true);
+
+// The active section's "last X" stamps — the facts block reads only this group,
+// so a portfolio run's finish never stamps LAST RUN under report chrome.
+const stamps = computed(() => (props.status ? props.status[props.section] : null));
+
+// Section-appropriate empty state: the portfolio footer must not talk about
+// reports (and vice versa).
+const noRunYetLabel = computed(() =>
+  props.section === "portfolio" ? "No analysis has run yet" : "No report has run yet"
+);
 
 // Stay silent until the first status resolves (mirrors the warning area), so the
 // footer doesn't flash empty on load. Surface as soon as there's status, an error,
@@ -140,25 +164,25 @@ function formatLocal(iso: string): string {
           <dt>Last run</dt>
           <dd>
             {{
-              status?.last_successful_at
-                ? formatLocal(status.last_successful_at)
-                : "No report has run yet"
+              stamps?.last_successful_at
+                ? formatLocal(stamps.last_successful_at)
+                : noRunYetLabel
             }}
           </dd>
         </div>
         <!-- Timestamp only — the full failure reason is in the warning band
              above, which has room to wrap (the footer always truncated it). -->
-        <div v-if="status?.last_failed_at" class="job-fact">
+        <div v-if="stamps?.last_failed_at" class="job-fact">
           <dt>Last failure</dt>
-          <dd>{{ formatLocal(status.last_failed_at) }}</dd>
+          <dd>{{ formatLocal(stamps.last_failed_at) }}</dd>
         </div>
-        <div v-if="status?.last_cancelled_at" class="job-fact">
+        <div v-if="stamps?.last_cancelled_at" class="job-fact">
           <dt>Last cancelled</dt>
-          <dd>{{ formatLocal(status.last_cancelled_at) }}</dd>
+          <dd>{{ formatLocal(stamps.last_cancelled_at) }}</dd>
         </div>
-        <div v-if="status?.last_skipped_at" class="job-fact">
+        <div v-if="stamps?.last_skipped_at" class="job-fact">
           <dt>Last skipped</dt>
-          <dd>{{ formatLocal(status.last_skipped_at) }}</dd>
+          <dd>{{ formatLocal(stamps.last_skipped_at) }}</dd>
         </div>
       </dl>
     </div>
@@ -187,11 +211,14 @@ function formatLocal(iso: string): string {
         Latest run log
       </button>
 
-      <!-- Persistent manual trigger. Hidden while a run is in flight (the bar to
-           the left already says so). Disabled when the gate blocks a run; the
-           reason lives in the warning band above and the report empty state. -->
+      <!-- Persistent manual trigger — the report view only (each section keeps
+           its own trigger: Run analysis lives on the Portfolio page; the
+           neutral views offer none). Hidden while a run is in flight (the bar
+           to the left already says so). Disabled when the gate blocks a run;
+           the reason lives in the warning band above and the report empty
+           state. -->
       <button
-        v-if="!isRunning"
+        v-if="showGenerate && !isRunning"
         type="button"
         class="btn btn-secondary btn-generate"
         :disabled="generating || blocked"

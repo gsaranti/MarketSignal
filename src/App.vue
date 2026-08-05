@@ -713,6 +713,15 @@ const footerRunningLabel = computed(() => {
   return "Generating report…";
 });
 
+// Which section's job the footer reports (docs/interface.md §Main Layout): the
+// Portfolio view scopes to the portfolio job; every other view scopes to the
+// report — the same featureOf mapping the shared-history sidebar uses. Drives
+// the stamps group only; the Generate trigger is gated separately on the
+// report view itself (the panel's show-generate binding below).
+const footerSection = computed<"report" | "portfolio">(() =>
+  view.value === "portfolio" ? "portfolio" : "report"
+);
+
 // The gate blocks generation when configuration is incomplete. The backend is
 // the authoritative guard; this only disables the control and short-circuits.
 // Fail safe: until the first check resolves (or if it errors), treat as blocked
@@ -1692,6 +1701,8 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
       </div>
       <JobStatusPanel
         :status="jobStatus"
+        :section="footerSection"
+        :show-generate="view === 'report'"
         :error="jobStatusError"
         :blocked="blocked"
         :generating="generating"

@@ -2,21 +2,20 @@
 // view-tracker). Mock-free like ResearchDocuments/Settings. These pin: the
 // visibility gate (silent until the first status resolves), the running indicator
 // (which hides both the facts and the Generate control), the error-vs-facts branch,
-// the run-history facts (the "no report yet" fallback + the conditional
-// failure/cancelled/skipped rows + formatLocal's raw-string fallback), the
-// view-tracker handle's label swap + emit, and the Generate button's disabled/label/
-// title states + emit.
+// the run-history facts (the section-scoped stamps + the per-section "no run yet"
+// fallback + the conditional failure/cancelled/skipped rows + formatLocal's
+// raw-string fallback), the view-tracker handle's label swap + emit, and the
+// Generate button's report-view-only rendering (showGenerate, independent of the
+// stamp section) + disabled/label/title states + emit.
 
 import { test, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 import JobStatusPanel from "../../src/components/JobStatusPanel.vue";
 import { deepFreeze } from "../helpers/freeze";
-import type { JobStatus } from "../../src/types";
+import type { JobStatus, SectionStamps } from "../../src/types";
 
-function status(overrides: Partial<JobStatus> = {}): JobStatus {
+function stamps(overrides: Partial<SectionStamps> = {}): SectionStamps {
   return {
-    is_running: false,
-    running_kind: null,
     last_successful_at: null,
     last_failed_at: null,
     last_failure_detail: null,
@@ -26,8 +25,20 @@ function status(overrides: Partial<JobStatus> = {}): JobStatus {
   };
 }
 
+function status(overrides: Partial<JobStatus> = {}): JobStatus {
+  return {
+    is_running: false,
+    running_kind: null,
+    report: stamps(),
+    portfolio: stamps(),
+    ...overrides,
+  };
+}
+
 const baseProps = deepFreeze({
   status: null as JobStatus | null,
+  section: "report" as "report" | "portfolio",
+  showGenerate: true,
   error: null as string | null,
   blocked: false,
   generating: false,
@@ -138,10 +149,12 @@ test("facts: last-run fallback, the conditional failure/cancelled/skipped rows, 
   // environment-dependent, so the raw fallback is the TZ-safe thing to assert).
   const populated = makeWrapper({
     status: status({
-      last_successful_at: "not-a-date",
-      last_failed_at: "also-bad",
-      last_cancelled_at: "x",
-      last_skipped_at: "y",
+      report: stamps({
+        last_successful_at: "not-a-date",
+        last_failed_at: "also-bad",
+        last_cancelled_at: "x",
+        last_skipped_at: "y",
+      }),
     }),
   });
   expect(populated.findAll(".job-fact dt").map((dt) => dt.text())).toEqual([
@@ -151,6 +164,51 @@ test("facts: last-run fallback, the conditional failure/cancelled/skipped rows, 
     "Last skipped",
   ]);
   expect(populated.find(".job-fact dd").text()).toBe("not-a-date");
+});
+
+test("the facts read the active section's stamps — the other section's never leak in", () => {
+  // A portfolio finish with an empty report history: report chrome keeps its
+  // fallback copy (the mislabeling the first live run surfaced), while the
+  // portfolio section renders the stamp.
+  const mixed = status({
+    portfolio: stamps({ last_successful_at: "not-a-date", last_failed_at: "also-bad" }),
+  });
+  const reportSide = makeWrapper({ status: mixed, section: "report" });
+  expect(reportSide.findAll(".job-fact dt").map((dt) => dt.text())).toEqual(["Last run"]);
+  expect(reportSide.find(".job-fact dd").text()).toBe("No report has run yet");
+
+  const portfolioSide = makeWrapper({ status: mixed, section: "portfolio" });
+  expect(portfolioSide.findAll(".job-fact dt").map((dt) => dt.text())).toEqual([
+    "Last run",
+    "Last failure",
+  ]);
+  expect(portfolioSide.find(".job-fact dd").text()).toBe("not-a-date");
+});
+
+test("the portfolio section's empty state talks about analysis, not reports", () => {
+  const wrapper = makeWrapper({ status: status(), section: "portfolio" });
+  expect(wrapper.find(".job-fact dd").text()).toBe("No analysis has run yet");
+});
+
+test("Generate renders only when the report view is the main window; the tracker handle stays", () => {
+  // Each section keeps its own trigger — Run analysis lives on the Portfolio
+  // page, so the footer offers no generate control there even when idle.
+  const portfolio = makeWrapper({
+    status: status(),
+    section: "portfolio",
+    showGenerate: false,
+    hasRunLog: true,
+  });
+  expect(portfolio.find(".btn-generate").exists()).toBe(false);
+  expect(portfolio.find(".btn-handle").exists()).toBe(true);
+
+  // The neutral surfaces (inbox/archive/settings) share the report's stamps —
+  // section "report" — but not its trigger: showGenerate alone gates the
+  // button, so report-section chrome without it must stay button-free.
+  const neutral = makeWrapper({ status: status(), section: "report", showGenerate: false });
+  expect(neutral.find(".btn-generate").exists()).toBe(false);
+
+  expect(makeWrapper({ status: status() }).find(".btn-generate").exists()).toBe(true);
 });
 
 test("the view-tracker handle swaps its label by run state and emits view-tracker", async () => {
