@@ -1926,6 +1926,16 @@ mod tests {
             assert_ne!(symbol, "NTDOF", "a guard-terminal stock must not hit SEC");
             StubCompanyData.facts(symbol)
         }
+        fn deep_price_history(
+            &self,
+            symbol: &str,
+        ) -> (Vec<crate::portfolio::engine::DatedValue>, Vec<String>) {
+            assert_ne!(
+                symbol, "NTDOF",
+                "a guard-terminal stock must not pull deep history"
+            );
+            (vec![], vec![])
+        }
         fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
             use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
             if symbol == "NTDOF" {
@@ -1940,6 +1950,28 @@ mod tests {
         }
     }
 
+    /// A holdings source that forbids the option-chain pull for one symbol — the
+    /// guard-terminal skip's chain-side tripwire.
+    struct ChainTripwire {
+        inner: FixtureHoldingsSource,
+        barred: &'static str,
+    }
+    impl crate::schwab::HoldingsSource for ChainTripwire {
+        fn holdings(&self) -> anyhow::Result<crate::schwab::Holdings> {
+            self.inner.holdings()
+        }
+        fn option_chain(
+            &self,
+            symbol: &str,
+        ) -> anyhow::Result<Option<crate::schwab::OptionChain>> {
+            assert_ne!(
+                symbol, self.barred,
+                "a guard-terminal stock must not pull an option chain"
+            );
+            self.inner.option_chain(symbol)
+        }
+    }
+
     #[test]
     fn a_non_us_listing_is_not_rated_and_skips_the_statement_fetch() {
         let (_dir, paths) = paths();
@@ -1948,7 +1980,10 @@ mod tests {
             stock("NTDOF", 100.0, 1_000.0),
         ]);
         let run = match run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(holdings),
+            &ChainTripwire {
+                inner: FixtureHoldingsSource::with_holdings(holdings),
+                barred: "NTDOF",
+            },
             &NonUsListingData,
             &StubMarket,
             &StubAnalyst,
@@ -1978,6 +2013,30 @@ mod tests {
             }
             other => panic!("expected not-rated, got {other:?}"),
         }
+        // The audit's sources tell the truth about a guard-terminal holding: the
+        // profile identity read drove the verdict, and the never-consulted
+        // statement surface is not claimed.
+        let ntdof_audit = run
+            .audit
+            .iter()
+            .find(|a| a.symbol == "NTDOF")
+            .expect("NTDOF audit");
+        assert!(
+            ntdof_audit
+                .sources
+                .iter()
+                .any(|s| s.contains("listing-resolution guard")),
+            "{:?}",
+            ntdof_audit.sources
+        );
+        assert!(
+            !ntdof_audit
+                .sources
+                .iter()
+                .any(|s| s.contains("FMP company financials")),
+            "{:?}",
+            ntdof_audit.sources
+        );
         // The sibling stock still grades normally through the unverified default
         // (no guard input is never a terminal outcome).
         let aapl = run
@@ -2009,6 +2068,16 @@ mod tests {
                 assert_ne!(symbol, "MSFT", "a guard-terminal stock must not hit SEC");
                 StubCompanyData.facts(symbol)
             }
+            fn deep_price_history(
+                &self,
+                symbol: &str,
+            ) -> (Vec<crate::portfolio::engine::DatedValue>, Vec<String>) {
+                assert_ne!(
+                    symbol, "MSFT",
+                    "a guard-terminal stock must not pull deep history"
+                );
+                (vec![], vec![])
+            }
             fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
                 use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
                 if symbol == "MSFT" {
@@ -2025,7 +2094,10 @@ mod tests {
         let (_dir, paths) = paths();
         let first = full_run(&paths, two_stocks());
         let second = match run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &ChainTripwire {
+                inner: FixtureHoldingsSource::with_holdings(two_stocks()),
+                barred: "MSFT",
+            },
             &ConflictData,
             &StubMarket,
             &StubAnalyst,

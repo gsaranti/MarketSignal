@@ -241,7 +241,22 @@ pub fn assemble(
             iv_skew: None,
         });
 
-    let mut sources = vec!["FMP company financials".to_string()];
+    // A guard-terminal holding never consulted the statement surface — its audit
+    // must not claim it; the profile identity read is the evidence that actually
+    // drove the verdict (`docs/portfolio-analysis.md` §Asset eligibility).
+    let guard_terminal = matches!(
+        &listing,
+        Some(
+            crate::portfolio::listing::ListingResolution::Unresolved
+                | crate::portfolio::listing::ListingResolution::NonUs { .. }
+                | crate::portfolio::listing::ListingResolution::Conflict { .. }
+        )
+    );
+    let mut sources = if guard_terminal {
+        vec!["FMP company profile (listing-resolution guard)".to_string()]
+    } else {
+        vec!["FMP company financials".to_string()]
+    };
     if ttm_basis {
         sources.push("FMP TTM statement basis (four-quarter sums)".to_string());
     }

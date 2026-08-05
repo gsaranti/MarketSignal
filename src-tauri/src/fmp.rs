@@ -3843,10 +3843,7 @@ impl FmpDataSource {
             FMP_PROFILE_PATH,
             &[("symbol", symbol)],
         ) {
-            Disposition::Value(value) => match profile_identity_from_value(&value) {
-                Some(identity) => ProfileLookup::Resolved(identity),
-                None => ProfileLookup::Unresolved,
-            },
+            Disposition::Value(value) => profile_identity_from_value(&value),
             Disposition::Gap(reason) => {
                 ProfileLookup::Unverified(format!("FMP profile unavailable ({})", reason.as_str()))
             }
@@ -4415,17 +4412,28 @@ fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<O
     Ok(any.then_some(sum))
 }
 
-/// Extract the identity fields from a `/profile` body (array-of-one or bare
-/// object). Pure; `None` means the body carried no profile object at all — FMP's
-/// definitive no-such-symbol shape — while a present object with blank or missing
-/// fields resolves with those fields `None` (the guard types them unverifiable,
-/// never unresolved, and the sector consumer types `sector-unscorable`).
-fn profile_identity_from_value(value: &Value) -> Option<crate::portfolio::listing::ProfileIdentity> {
-    let obj = value
+/// Shape a `/profile` body (array-of-one or bare object) into the guard's lookup.
+/// Pure. Only FMP's definitive no-such-symbol shape — an **empty array** — reads
+/// `Unresolved`; any other non-object body (a drifted or malformed-but-valid-JSON
+/// response) is `Unverified`, so an unreadable shape can never terminally not-rate
+/// a holding (`docs/portfolio-analysis.md` §Asset eligibility). A present object
+/// with blank or missing fields resolves with those fields `None` (the guard types
+/// them unverifiable, and the sector consumer types `sector-unscorable`).
+fn profile_identity_from_value(value: &Value) -> crate::portfolio::listing::ProfileLookup {
+    use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
+    if value.as_array().is_some_and(|a| a.is_empty()) {
+        return ProfileLookup::Unresolved;
+    }
+    let Some(obj) = value
         .as_array()
         .and_then(|a| a.first())
         .or(Some(value))
-        .filter(|o| o.is_object())?;
+        .filter(|o| o.is_object())
+    else {
+        return ProfileLookup::Unverified(
+            "FMP profile body unreadable (drifted response shape)".to_string(),
+        );
+    };
     let field = |key: &str| {
         obj.get(key)
             .and_then(Value::as_str)
@@ -4433,7 +4441,7 @@ fn profile_identity_from_value(value: &Value) -> Option<crate::portfolio::listin
             .filter(|s| !s.is_empty())
             .map(String::from)
     };
-    Some(crate::portfolio::listing::ProfileIdentity {
+    ProfileLookup::Resolved(ProfileIdentity {
         company_name: field("companyName"),
         exchange: field("exchange"),
         sector: field("sector"),
@@ -4931,34 +4939,51 @@ mod suite_tests {
 
     #[test]
     fn profile_identity_reads_array_of_one_or_bare_object() {
+        use crate::portfolio::listing::ProfileLookup;
         let v: Value = serde_json::from_str(
             r#"[{"symbol":"AAPL","companyName":"Apple Inc.","exchange":"NASDAQ","sector":"Technology"}]"#,
         )
         .unwrap();
-        let identity = profile_identity_from_value(&v).unwrap();
+        let ProfileLookup::Resolved(identity) = profile_identity_from_value(&v) else {
+            panic!("expected resolved");
+        };
         assert_eq!(identity.company_name.as_deref(), Some("Apple Inc."));
         assert_eq!(identity.exchange.as_deref(), Some("NASDAQ"));
         assert_eq!(identity.sector.as_deref(), Some("Technology"));
         let bare: Value = serde_json::from_str(r#"{"sector":"Energy"}"#).unwrap();
-        assert_eq!(
-            profile_identity_from_value(&bare).unwrap().sector.as_deref(),
-            Some("Energy")
-        );
+        let ProfileLookup::Resolved(identity) = profile_identity_from_value(&bare) else {
+            panic!("expected resolved");
+        };
+        assert_eq!(identity.sector.as_deref(), Some("Energy"));
     }
 
     #[test]
-    fn profile_identity_distinguishes_empty_body_from_blank_fields() {
-        // The definitive no-such-symbol shape: a body with no profile object at all.
+    fn profile_identity_only_an_empty_array_reads_unresolved() {
+        use crate::portfolio::listing::ProfileLookup;
+        // The definitive no-such-symbol shape — the ONLY body that may route a
+        // holding terminal as "no resolution".
         let empty: Value = serde_json::from_str("[]").unwrap();
-        assert_eq!(profile_identity_from_value(&empty), None);
-        let junk: Value = serde_json::from_str("42").unwrap();
-        assert_eq!(profile_identity_from_value(&junk), None);
+        assert_eq!(profile_identity_from_value(&empty), ProfileLookup::Unresolved);
+        // Drifted / malformed-but-valid-JSON shapes are unverified — they proceed
+        // degraded, never terminally not-rate a holding.
+        for body in ["42", "null", "\"oops\"", "[42]"] {
+            let junk: Value = serde_json::from_str(body).unwrap();
+            assert!(
+                matches!(
+                    profile_identity_from_value(&junk),
+                    ProfileLookup::Unverified(_)
+                ),
+                "{body} should read unverified"
+            );
+        }
         // A present object with blank / missing fields resolves — the fields read
         // `None` (unverifiable upstream), never a missing-listing signal.
         let blank: Value =
             serde_json::from_str(r#"[{"symbol":"AAPL","companyName":"  ","sector":"  "}]"#)
                 .unwrap();
-        let identity = profile_identity_from_value(&blank).unwrap();
+        let ProfileLookup::Resolved(identity) = profile_identity_from_value(&blank) else {
+            panic!("expected resolved");
+        };
         assert_eq!(identity.company_name, None);
         assert_eq!(identity.exchange, None);
         assert_eq!(identity.sector, None);
