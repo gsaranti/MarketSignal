@@ -2,25 +2,24 @@
 
 ## What happened
 
-**The Portfolio-page polish micro-slice SHIPPED** — committed directly to `main` (`f24c852`, no PR; display-only, one Codex round).
-The four F9 items landed in `PortfolioView.vue` + its spec: the wrap-safe key-figure-strip lattice (1px flex gap over a hairline background, cells repaint paper, a partial final row stretches — an app-side extension of the kit's single-row `.keyfig`, replacing the border idiom that dropped row-1 bottom rules), the card-header **position block** (Price / Avg cost / Cost basis above Unrealized on both full-card branches, "—" on unreported inputs), **sub-2% weight-band decimal precision** (band-max rule), and Hold's **"maintain"** phrasing (`bandVerb`, both action-line copies).
-Five plan assumptions were settled by selection UI pre-implementation (scope = #8 only, header placement, band-max rule, "maintain" wording, app-side-only DS extension).
-The Codex round's medium short-position finding (signed cost basis renders "—") was **disputed on engine-reachability evidence** — net-short short-circuits to not-rated *before* class routing, cards are run-anchored, side reversals force-include — with its regression-case half adopted (net-short row → reduced card, no `.hc-position`, spec-pinned); Codex approved.
-Verified: cargo 890 lib + integration 0 fail, clippy 0, npm build, 40 node + 196 vitest, plus a **live dev-app visual check** (run `3b21ae85`, both themes, 7+1 and 5+3 wrap widths).
-For the record: a band straddling 2% (e.g. 1.8–2.2%) renders "2–2%" under the locked rule — inherent, watch only if such a band appears live.
+**The section-scoped footer + report-nav slice SHIPPED** — committed directly to `main` (`c9b660e`, no PR) — **closing the locked pre-test block: every queued slice is now built.**
+The three settled parts landed: per-section **`job_type`-scoped footer stamps** (`jobs::JobStatus` reshaped to `report` / `portfolio` `SectionStamps` groups, both scopes on one parameterless payload; all four "last X" stamps scope together; the quick-check exclusion now implicit in the equality filter; the failed-jobs warning and run-slot fields stay global), the sidebar bottom nav's leading **"Latest Market Report"** entry (closes the Portfolio-view dead-end), and **"Generate now" gated report-view-only** via a dedicated `showGenerate` flag.
+Four plan assumptions were user-settled pre-implementation (one payload not a per-call param; inbox/archive/settings → report section for stamps; all four stamps scope; nav entry first).
+Review path: internal approve-with-nits (nit fixed — App-level test pinning the view→section mapping); **Codex round 1 found a real Medium** — the button gated on `section === 'report'` still rendered on the neutral views, contradicting the settled design text — the user settled **report-view-only**, fixed by decoupling `showGenerate` from the stamp section (neutral views: report stamps, no button) with the missing spec case added; Codex round 2 approved (stale-comment nit fixed).
+Verified: cargo 891 lib + 32 integration / 0 fail, clippy 0, npm build, 40 node + 202 vitest.
 
 ## Current state
 
-**No capture debt** — BUILD (§What remains narrowed to the one remaining slice) and INDEX (suite status paragraph + first-live-run record row stamped `#8 landed`) updated in-session and committed with this handoff.
-Queue: the block's remainder is **only the section-scoped footer + report-nav slice** (user-settled design 2026-07-31, three parts: a sidebar "Latest Market Report" nav entry, "Generate now" rendered only on the report view, and the footer LAST RUN readout scoped to the active section's job via a `job_type` filter in `jobs::job_status`; `docs/interface.md §Main Layout` is the canonical home to amend when it lands; the footer defect was re-observed live this session) — then the single big confirmation run.
+**No capture debt** — BUILD (§What remains → "block fully built" + the slice's as-built record) and INDEX (job-status-visibility row rewritten, suite status + first-live-run-record `#9 landed` stamps, new slice row) updated in-session and committed with this handoff.
+Queue: **the single big confirmation run** — the locked plan's end state (no further building before it). The checklist of stacked runtime confirmations lives in BUILD §What remains; the footer/report-nav behavior gets its live visual check in the same run.
 
 ## Open questions
 
-- **New big-run watches (construction leg)** — lean-divergence / engine-bar / carried-stale-lean rates at 47-position scale; construction-prompt fit in the shared 131k `num_ctx` (settled: compress digests, never `num_ctx`); overlay classification against real Schwab OCC rows; the 7b sizing-only decided-range movement rate that would justify a band-relative episode trigger. Live 122B construction behavior is wholly unexercised (all Codex rounds deferred it).
+- **New big-run watches (construction leg)** — lean-divergence / engine-bar / carried-stale-lean rates at 47-position scale; construction-prompt fit in the shared 131k `num_ctx` (settled: compress digests, never `num_ctx`); overlay classification against real Schwab OCC rows; the 7b sizing-only decided-range movement rate that would justify a band-relative episode trigger. Live 122B construction behavior is wholly unexercised.
 - **Research-loop activation obligation** — identity + source-text validation + period normalization before the pre-profit producer activates.
 - **Standing** — unchanged carried list: live-run calibration watches (STI-reads-zero, YoY contiguity, outcome-leg watches), no A letters under grade-v2, big-run checklist, reasoning-pane DOM weight, encrypted portability round-trip, step-17 embedding, 600 s stress, scorecard display, dev-store residue, Keychain fail-soft, stage-and-swap import, chain both-maps invariant, four-part verdict bound, §1 open drafts, fraud-producer posture, fund-slice drafted constants, checkpoint/resume + the 6g input-delta validator (still gates the outcome slice's dormant legs).
 
 ## Where to start
 
-`/metis-plan-task` for the section-scoped footer + report-nav slice — the last item in the block before the big confirmation run.
-It touches Rust (`jobs::job_status` gains a `job_type` filter), so the plan's verification command must name clippy alongside `cargo test` per CLAUDE.md.
+**Run the single big confirmation run** — a live Portfolio run over the real 47-position book in the dev app (user present; drive the dev app by process name, never `tell application`), banking the stacked confirmations checklisted in BUILD §What remains, plus Stooq-PoW / data-health evidence for the rung-order question.
+After the run: triage findings into a verification record, then Trade Opportunities implementation planning per the locked plan.

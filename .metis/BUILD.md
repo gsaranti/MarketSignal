@@ -822,17 +822,27 @@ consume, and reserved the episode `lean` / `lean_divergence` pair — which
 the construction stage now populates (lean divergence recorded without an
 episode-schema migration, exactly as reserved).
 
-**Remaining in the block: only one small, display-only result-review UI
-fix** — the section-scoped footer + report-nav slice. (The Portfolio-page
-polish micro-slice landed 2026-08-04, `f24c852`: wrap-safe key-figure
-strip lattice — an app-side flex-gap extension of the kit's single-row
-`.keyfig` — the card-header position block with price / avg cost / cost
-basis under the unrealized figure, sub-2% weight-band decimal precision,
-and Hold's "maintain" phrasing; one Codex round, the short-position
-finding disputed on engine-reachability evidence — net-short is not-rated
-pre-routing, so no full card pairs with a signed row — with its
-regression-case half adopted.) Then the single big confirmation run banks
-the stacked runtime confirmations above. Excluded from the block and still designed-not-built: the
+**The block is fully built — nothing remains before the big run.** The
+last result-review UI fix, the **section-scoped footer + report-nav
+slice**, landed 2026-08-04 (`c9b660e`, direct to main): `jobs::JobStatus`
+reshaped to per-section `report` / `portfolio` stamp groups scoped by
+`job_type` equality — both scopes on one parameterless payload, all four
+"last X" stamps scoping together, the quick-check exclusion now implicit,
+the failed-jobs warning deliberately unscoped, the run-slot fields global
+— plus the sidebar's leading **"Latest Market Report"** nav entry closing
+the Portfolio-view dead-end, and **Generate now gated report-view-only**
+via a dedicated `showGenerate` flag independent of the stamp section (the
+neutral inbox / archive / settings views keep report stamps without the
+button); internal review + two Codex rounds to convergence. (The
+Portfolio-page polish micro-slice landed the same day, `f24c852`:
+wrap-safe key-figure-strip lattice — an app-side flex-gap extension of
+the kit's single-row `.keyfig` — the card-header position block with
+price / avg cost / cost basis under the unrealized figure, sub-2%
+weight-band decimal precision, and Hold's "maintain" phrasing; one Codex
+round, the short-position finding disputed on engine-reachability
+evidence — net-short is not-rated pre-routing, so no full card pairs with
+a signed row — with its regression-case half adopted.) Next: the single
+big confirmation run banks the stacked runtime confirmations above. Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
 shipped schemas don't preclude them — but the research-loop slice **must**
 add holding-identity + source-text observation validation (plus a period-
