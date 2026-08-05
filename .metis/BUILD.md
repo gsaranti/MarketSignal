@@ -822,9 +822,16 @@ consume, and reserved the episode `lean` / `lean_divergence` pair — which
 the construction stage now populates (lean divergence recorded without an
 episode-schema migration, exactly as reserved).
 
-**Remaining in the block: only the two small, display-only result-review
-UI fixes** (the Portfolio-page polish micro-slice; the section-scoped
-footer + report-nav slice) — then the single big confirmation run banks
+**Remaining in the block: only one small, display-only result-review UI
+fix** — the section-scoped footer + report-nav slice. (The Portfolio-page
+polish micro-slice landed 2026-08-04, `f24c852`: wrap-safe key-figure
+strip lattice — an app-side flex-gap extension of the kit's single-row
+`.keyfig` — the card-header position block with price / avg cost / cost
+basis under the unrealized figure, sub-2% weight-band decimal precision,
+and Hold's "maintain" phrasing; one Codex round, the short-position
+finding disputed on engine-reachability evidence — net-short is not-rated
+pre-routing, so no full card pairs with a signed row — with its
+regression-case half adopted.) Then the single big confirmation run banks
 the stacked runtime confirmations above. Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
 shipped schemas don't preclude them — but the research-loop slice **must**
