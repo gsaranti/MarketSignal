@@ -434,11 +434,14 @@ load-bearing decisions:
   `portfolio-workflow.md §Step 1`.) Both jobs are personalized by a **fixed default investor-profile
   preset** (user config deferred) that frames the prescription, never which
   holdings or ideas qualify — nor the intrinsic verdict (profile-independence
-  is declared).
+  is declared **and input-isolation-enforced** since 2026-08-04: the 6f
+  intrinsic prompt carries no profile — it enters at 7b construction only,
+  test-pinned).
 - **Invariants governing the designed features** (full specs in the docs; a
   plan must not work against these):
   - **Deterministic finance, primary-source evidence** — a shared Rust engine
-    over FMP + keyless SEC EDGAR / Stooq / FINRA / CBOE computes every
+    over FMP + keyless SEC EDGAR / Stooq / FINRA / CBOE (the FINRA and CBOE
+    legs designed, unbuilt) computes every
     sub-score, risk tier, metric, and scenario target; **the model interprets,
     never invents numbers**. One shared FMP key, upgraded to paid (`*-bulk`,
     transcripts, 13F-institutional, fund-holdings, and press-releases are
