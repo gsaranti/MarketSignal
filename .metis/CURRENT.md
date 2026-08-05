@@ -2,16 +2,19 @@
 
 ## What happened
 
-**The section-scoped footer + report-nav slice SHIPPED** — committed directly to `main` (`c9b660e`, no PR) — **closing the locked pre-test block: every queued slice is now built.**
-The three settled parts landed: per-section **`job_type`-scoped footer stamps** (`jobs::JobStatus` reshaped to `report` / `portfolio` `SectionStamps` groups, both scopes on one parameterless payload; all four "last X" stamps scope together; the quick-check exclusion now implicit in the equality filter; the failed-jobs warning and run-slot fields stay global), the sidebar bottom nav's leading **"Latest Market Report"** entry (closes the Portfolio-view dead-end), and **"Generate now" gated report-view-only** via a dedicated `showGenerate` flag.
-Four plan assumptions were user-settled pre-implementation (one payload not a per-call param; inbox/archive/settings → report section for stamps; all four stamps scope; nav entry first).
-Review path: internal approve-with-nits (nit fixed — App-level test pinning the view→section mapping); **Codex round 1 found a real Medium** — the button gated on `section === 'report'` still rendered on the neutral views, contradicting the settled design text — the user settled **report-view-only**, fixed by decoupling `showGenerate` from the stamp section (neutral views: report stamps, no button) with the missing spec case added; Codex round 2 approved (stale-comment nit fixed).
-Verified: cargo 891 lib + 32 integration / 0 fail, clippy 0, npm build, 40 node + 202 vitest.
+**Pre-big-run review piece 1 (of 3) COMPLETE** — every finding in `docs/verification/2026-07-31-first-live-portfolio-run.md` verified handled in code with file:line evidence (four parallel verification passes over F1–F10 + the nine follow-up candidates; all confirmed landed, including the doc amendments).
+Codex ran the same piece and surfaced **one real Medium**: key-first FMP fallback chains where a present-but-null preferred key suppressed a valid legacy value — against the codebase's own declared numeric-first convention — plus a missing fiscal-period dedup in the NTM consensus selector (duplicate same-date rows could blend one year at both weights and stamp `periods_used=2`).
+Confirmed and **fixed, `6ee69a2` direct to main**: numeric-first at **five** sites (Codex cited three; the review added `dividend_history_from_value` — where the null-adj row took the whole-read bail path — and fund `aum`, where live serves only the fallback key), `dedup_by_key` after the forward sort, six pinning tests, and the stale `StreamRole` "mirror" comment corrected to "superset".
+One internal observation (`data_health: None` off the full-pass path) was Codex-refuted — the cited sites are `#[cfg(test)]` fixtures — and retracted.
+Verified: cargo 897 lib + integration / 0 fail, clippy 0, npm build, 40 node + 202 vitest. Codex approved the fix round.
 
 ## Current state
 
-**No capture debt** — BUILD (§What remains → "block fully built" + the slice's as-built record) and INDEX (job-status-visibility row rewritten, suite status + first-live-run-record `#9 landed` stamps, new slice row) updated in-session and committed with this handoff.
-Queue: **the single big confirmation run** — the locked plan's end state (no further building before it). The checklist of stacked runtime confirmations lives in BUILD §What remains; the footer/report-nav behavior gets its live visual check in the same run.
+**No capture debt** — the fix is adapter-internal (numeric-first was already the stated convention; no doc contract moved), so BUILD/INDEX deliberately untouched.
+Queue: **review pieces 2 and 3, then the single big confirmation run.**
+Piece 2 = code-vs-docs conformance walk of the Portfolio Analysis job (flag divergences, propose per-divergence verdicts batched for user decision, doc edits follow single-home discipline).
+Piece 3 = correctness walk of the deterministic value chain (statement canonicalization → TTM basis → sub-scores → targets/hurdle → feasible set → construction merge → outcome labels) hunting bugs that degrade analysis.
+Each piece runs in its own session by user decision.
 
 ## Open questions
 
@@ -21,5 +24,5 @@ Queue: **the single big confirmation run** — the locked plan's end state (no f
 
 ## Where to start
 
-**Run the single big confirmation run** — a live Portfolio run over the real 47-position book in the dev app (user present; drive the dev app by process name, never `tell application`), banking the stacked confirmations checklisted in BUILD §What remains, plus Stooq-PoW / data-health evidence for the rung-order question.
-After the run: triage findings into a verification record, then Trade Opportunities implementation planning per the locked plan.
+**Run review piece 2** — fresh session, walk the Portfolio Analysis code's logical flow against the docs' documented logic (`portfolio-analysis.md`, `portfolio-workflow.md`, and the storage/interface/data-sources sections it touches); flag every divergence with a proposed verdict (code right vs docs right) and batch for user decision before editing either side.
+After piece 2: piece 3 (correctness walk), then the big confirmation run per the locked plan.
