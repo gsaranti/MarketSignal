@@ -337,10 +337,12 @@ rounds to convergence), the deterministic execution/financing overlay,
 as-built under Portfolio Analysis below — and the **outcome-learning
 slice** (2026-08-04, PR #59; internal + four Codex rounds to convergence),
 the recommendation-state-keyed decision-episode machinery, as-built under
-Portfolio Analysis below. **Trade Opportunities and the remaining
-Portfolio depth slices (held-name refresh lane, the 7b construction stage,
-the live research loop) remain designed, not built.** The load-bearing
-decisions:
+Portfolio Analysis below — and the **construction stage** (2026-08-04,
+PR #60; internal + four Codex rounds to convergence), the Step 7a+7b
+whole-book reconciliation, as-built under Portfolio Analysis below.
+**Trade Opportunities and the remaining Portfolio depth slices (held-name
+refresh lane, the live research loop) remain designed, not built.** The
+load-bearing decisions:
 
 - **A local-only model layer, distinct from the cloud report (built).** A
   flexible local-model adapter (`local_model.rs`) calls one **user-installed,
@@ -653,6 +655,39 @@ decisions:
   `/profile` read + the static sector→SPDR map; the run's records ride
   `PortfolioRun.outcome`, and the episode store + price-bar cache join
   portability as **format v3**.
+  The **construction stage** (built 2026-08-04, PR #60,
+  `portfolio/construction.rs`; prompt contract **portfolio-v6**; internal +
+  four Codex rounds to convergence): 6f authors the **standalone lean** on
+  the full ladder (only severe pre-profit deterioration restricts it to the
+  exit family — the feasible-set bars moved to construction; the role-risk
+  6f call no longer authors an action), and the new module owns Step 7a+7b —
+  per-holding spine rows (the role-risk decision surface riding the row:
+  class label, role read, expense drag, observable risk, tilt, gaps; prior
+  action / prior lean baselines) + whole-book aggregates (fund-folded sector
+  table, overlap clusters, OCC not-rated notional, and the snapshot-derived
+  **same-underlying option-overlay classification** — covered /
+  partial-never-covered / protective / collar / other, per-leg strike +
+  expiry, zero-net legs filtered, no delta at 7a — the dossier overlay leg's
+  stand-in), the joint-feasibility solver with typed violations (implied
+  post-action book + the external-funding line; drift tolerance on
+  implied-book checks only, exact ordering / non-negativity / sell-all-0–0
+  structural checks), the per-holding-narrowed schema (offered-set action
+  enums, minimum-0 weights), both prompts (numeric rung bands as decimal
+  fractions — the model is never validated against a bound it was not
+  shown), and the one named-violation re-run. The merge
+  (`construction::merge_validated_actions`) sets the final action,
+  `sizing_from_range` deltas + rationale, and the action-half
+  `ActionWhatChanged`, **restores `model-chosen`** on a construction-moved
+  demoted action, and app-stamps `carried-stale-lean`; two further
+  attribution paths are app-stamped from the closed cause vocabulary — the
+  **engine-barred lean** and an **action reverting to an unchanged lean**
+  (moved-context, cause-less). Episodes record `lean` + `lean_divergence`
+  (the outcome slice's reserved pair — no schema migration) with the new
+  `LeanChange` open reason and the **decided-range payload** (episode
+  identity stays on the ledger's pre-committed range — a band-anchored
+  range comparison would mint episodes from weight drift; the band-relative
+  trigger is a big-run watch). Frontend renders the lean tag, sizing
+  rationale, action-half line, and the roll-up construction view.
   Funds are strategy-classified at loop time and routed (exposure-priced
   proxy valuation for ≥70%-US equity funds; their structurally absent quality
   axis uses the shared neutral-50 imputation; honest gaps elsewhere).
@@ -716,8 +751,13 @@ rates, financing-state distribution, unscorable-gap rates — including the
 STI-absent-reads-zero liquid-resources convention and the YoY share-change
 quarter-contiguity assumption); the first live **outcome-learning** pass
 (episode-debut volume at 47-position scale, sector-resolution rates
-through the fail-soft profile read, the below-bar eligibility note); 128 K
-runner
+through the fail-soft profile read, the below-bar eligibility note); the
+first live **construction pass** (lean-divergence / engine-bar /
+carried-stale-lean rates at 47-position scale, the construction prompt's
+fit in the shared 131k `num_ctx` — the settled response is compress
+digests, never `num_ctx` — the overlay-classification read against real
+Schwab OCC rows, and the 7b sizing-only decided-range movement rate that
+would justify a band-relative episode trigger); 128 K runner
 stability; distill speed; whether Stooq's PoW gate is permanent). **Trade
 Opportunities waits behind the whole block** (design settled — full strategy
 audit plus three external review rounds to convergence, 2026-07-09; the paid
@@ -762,11 +802,12 @@ pre-flight completed 2026-07-28, Ollama pinned v0.32.5 —
   above (target provenance, the softened dead-money weighing, the conviction
   definition, house-view scoping, the band-recalibration continuity NOTE).
 
-The **first five depth slices are done** — the **thesis ledger**
+The **first six depth slices are done** — the **thesis ledger**
 (2026-08-03, `portfolio-v4`), the **quick check** (2026-08-03, PR #56),
 **selective re-analysis** (2026-08-04, PR #57), the **pre-profit
-overlay** (2026-08-04, PR #58), and **outcome learning** (2026-08-04,
-PR #59) — as-built contracts in
+overlay** (2026-08-04, PR #58), **outcome learning** (2026-08-04,
+PR #59), and the **construction stage** (2026-08-04, PR #60,
+`portfolio-v6`) — as-built contracts in
 §Local analysis suite. The ledger + sweep supplied the selective
 machinery's triggering surface (validated conditions with eval state +
 cadence tags, app-stamped monitor bands, the acknowledgment transition,
@@ -777,17 +818,14 @@ later slices consume: per-holding vintages (`effective_vintage`), the
 persisted `action_source` vocabulary, and the subset sweep
 (`quick_check::sweep_tail`); the outcome slice adds the episode store +
 `HoldingAudit.hurdle` snapshot the calibration-proposal slice will
-consume, and reserves the episode `lean` / `lean_divergence` pair so 7b
-diverges lean from final action without an episode-schema migration.
+consume, and reserved the episode `lean` / `lean_divergence` pair — which
+the construction stage now populates (lean divergence recorded without an
+episode-schema migration, exactly as reserved).
 
-**Remaining in the block: the 7b construction stage** (which picks up the
-carried-action transition-rule validation — toward-hold-only plus the
-aggregate-validated context trim — over the now-persisted `action_source` +
-vintage stamps, and diverges the episode `lean` from the final action over
-the reserved `lean_divergence`) — with the two small,
-display-only result-review UI fixes (the Portfolio-page polish
-micro-slice; the section-scoped footer + report-nav slice) slotting
-anywhere between slices as breathers. Excluded from the block and still designed-not-built: the
+**Remaining in the block: only the two small, display-only result-review
+UI fixes** (the Portfolio-page polish micro-slice; the section-scoped
+footer + report-nav slice) — then the single big confirmation run banks
+the stacked runtime confirmations above. Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
 shipped schemas don't preclude them — but the research-loop slice **must**
 add holding-identity + source-text observation validation (plus a period-
