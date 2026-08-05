@@ -899,6 +899,14 @@ pub struct ConstructionView {
     /// (`docs/portfolio-workflow.md` §Step 7b).
     #[serde(default)]
     pub retried: bool,
+    /// Engine-bound findings recorded against the model's plan — a rung outside
+    /// the engine's offered set, a range outside its rung band, a concentration-cap
+    /// breach, unfunded buys. Since `portfolio-v7` these **annotate, never
+    /// enforce**: the plan persists as authored and the divergence renders beside
+    /// it (`docs/portfolio-analysis.md` §Portfolio roll-up and construction).
+    /// `#[serde(default)]` for pre-v7 runs.
+    #[serde(default)]
+    pub engine_bound_annotations: Vec<String>,
 }
 
 /// One holding's validated construction outcome, merged onto its verdict.
@@ -964,7 +972,7 @@ impl std::fmt::Display for Violation {
                 let offered: Vec<&str> = offered.iter().map(Action::as_kebab).collect();
                 write!(
                     f,
-                    "{symbol}: action '{}' is outside its allowed set [{}]",
+                    "{symbol}: action '{}' departs the engine set [{}]",
                     action.as_kebab(),
                     offered.join(", ")
                 )
@@ -1067,6 +1075,10 @@ pub fn validate_construction(
     profile: &InvestorProfile,
 ) -> Result<ValidatedConstruction, Vec<Violation>> {
     let mut violations: Vec<Violation> = Vec::new();
+    // Engine-bound findings — recorded on the view, never enforced (the v7
+    // no-restrictions contract): the model's plan stands as authored and these
+    // render beside it. Coherence and attribution checks stay in `violations`.
+    let mut annotations: Vec<Violation> = Vec::new();
     let total = holdings.account_total;
 
     let spine_by_symbol: HashMap<String, &SizingSpineRow> = agg
@@ -1117,12 +1129,11 @@ pub fn validate_construction(
             continue;
         };
         if !row.offered.contains(&action) {
-            violations.push(Violation::ActionOutsideOffered {
+            annotations.push(Violation::ActionOutsideOffered {
                 symbol: row.symbol.clone(),
                 action,
                 offered: row.offered.clone(),
             });
-            continue;
         }
         let (low, high) = (proposal.target_weight_low, proposal.target_weight_high);
         if !(low.is_finite() && high.is_finite()) || low > high || low < 0.0 {
@@ -1139,14 +1150,13 @@ pub fn validate_construction(
         }
         let band = engine::rung_band(action, row.current_weight);
         if low < band.0 - STRUCT_EPS || high > band.1 + STRUCT_EPS {
-            violations.push(Violation::RangeOutsideRungBand {
+            annotations.push(Violation::RangeOutsideRungBand {
                 symbol: row.symbol.clone(),
                 action,
                 low,
                 high,
                 band,
             });
-            continue;
         }
         let mid = (low + high) / 2.0;
         let mid_value = if total > 0.0 { mid * total } else { row.market_value };
@@ -1190,7 +1200,7 @@ pub fn validate_construction(
 
     if let Some(available) = profile.available_cash {
         if buys > sells + available + DOLLAR_EPS {
-            violations.push(Violation::UnfundedBuys {
+            annotations.push(Violation::UnfundedBuys {
                 buys,
                 available: sells + available,
             });
@@ -1219,7 +1229,7 @@ pub fn validate_construction(
             });
         }
         if implied_weight > engine::MAX_SINGLE_WEIGHT + WEIGHT_EPS {
-            violations.push(Violation::CapBreach {
+            annotations.push(Violation::CapBreach {
                 symbol: symbol.clone(),
                 implied: implied_weight,
             });
@@ -1445,6 +1455,7 @@ pub fn validate_construction(
             external_funding: (total > 0.0).then_some(external_funding),
             implied_total: (total > 0.0).then_some(implied_total),
             retried: false,
+            engine_bound_annotations: annotations.iter().map(|v| v.to_string()).collect(),
         },
     })
 }
@@ -1564,7 +1575,21 @@ pub fn construction_schema(spine: &[SizingSpineRow]) -> Value {
     let mut holding_props = serde_json::Map::new();
     let mut required_symbols: Vec<Value> = Vec::new();
     for row in spine {
-        let offered: Vec<&str> = row.offered.iter().map(Action::as_kebab).collect();
+        // The v7 unrestricted contract: every holding's action enum lists the
+        // full ladder. The engine's offered set still renders into the prompt as
+        // its own arm's read, and an outside-the-set rung is recorded as an
+        // engine-bound annotation, never a schema bar
+        // (`docs/portfolio-analysis.md` §Portfolio roll-up and construction).
+        let offered: Vec<&str> = [
+            Action::SellAll,
+            Action::Trim,
+            Action::Hold,
+            Action::Add,
+            Action::AddAggressively,
+        ]
+        .iter()
+        .map(Action::as_kebab)
+        .collect();
         holding_props.insert(
             row.symbol.clone(),
             json!({
@@ -1622,14 +1647,17 @@ pub fn construction_system_prompt() -> String {
      sector exposure and overlap clusters, cash, the not-rated positions' exposure — \
      into its FINAL ACTION and a target portfolio-weight range, and write the \
      portfolio-level view. Express every target weight as a DECIMAL FRACTION of the \
-     book (write 0.065 for 6.5%). Rules you must hold: choose each action only from \
-     that holding's ALLOWED set (a carried holding's set enforces the transition \
-     rule — toward hold only, plus a context trim that needs a real concentration or \
-     overlap reason). Each allowed action is listed with its engine band as a \
-     fraction range — keep target_weight_low/high inside the chosen action's band \
-     (a sell-all range is 0–0) — and propose weights that can hold SIMULTANEOUSLY, \
-     each under the single-position concentration cap: the app solves the implied \
-     post-action book and rejects a jointly infeasible plan. Where your final action \
+     book (write 0.065 for 6.5%). Your action choice is UNRESTRICTED — the full \
+     ladder is open on every holding. Each holding lists the ENGINE set: the rungs \
+     and fraction bands the engine's own mechanical rules would offer (a carried \
+     holding's engine set reflects the transition rule — toward hold only, plus a \
+     context trim needing a real concentration or overlap reason). Treat the engine \
+     set as evidence, not a bar: departing it is legitimate, and the app records the \
+     departure beside your plan rather than rejecting it. Two things must still \
+     COHERE: a sell-all range is 0–0, and your proposed weights must be arithmetically \
+     consistent when they hold SIMULTANEOUSLY (the app solves the implied post-action \
+     book; a stated range the implied weight falls outside is incoherent and comes \
+     back once, named). Where your final action \
      departs a holding's lean, say why with a divergence_cause from the vocabulary; \
      where an action changed against its baseline, attribute it (moved-intrinsic or \
      moved-context with a cause) — every context claim is checked against the real \
@@ -1744,9 +1772,13 @@ fn spine_digest(row: &SizingSpineRow) -> String {
             format!("{} {:.4}\u{2013}{:.4}", a.as_kebab(), lo, hi)
         })
         .collect();
-    parts.push(format!("ALLOWED [{}]", offered.join(", ")));
+    parts.push(format!("ENGINE SET [{}]", offered.join(", ")));
     if row.context_trim_carveout {
-        parts.push("trim allowed only with a became-oversized / overlap-emerged attribution".into());
+        parts.push(
+            "the engine set admits trim only with a became-oversized / overlap-emerged \
+             attribution"
+                .into(),
+        );
     }
     format!("- {}: {}\n", row.symbol, parts.join("; "))
 }
@@ -1828,7 +1860,10 @@ pub fn construction_user_prompt(
     }
     p.push_str(&format!("\nNOTE: {}\n", agg.correlation_note));
 
-    p.push_str("\nHOLDINGS (choose each final action from its ALLOWED set):\n");
+    p.push_str(
+        "\nHOLDINGS (full ladder open on every holding; ENGINE SET = the engine's own \
+         mechanical read, given as evidence):\n",
+    );
     for row in &agg.spine {
         p.push_str(&spine_digest(row));
     }
@@ -2086,7 +2121,10 @@ mod tests {
     }
 
     #[test]
-    fn a_range_outside_the_rung_band_is_a_named_violation() {
+    fn a_range_outside_the_rung_band_is_annotated_never_enforced() {
+        // The v7 contract: an engine-band departure records on the view and the
+        // plan persists as authored — a coherent range outside the rung band is
+        // the model's opinion, not an error.
         let spine = vec![spine_row("AAA", 0.10, vec![Action::SellAll, Action::Trim, Action::Hold])];
         let holdings = Holdings {
             cash: 90_000.0,
@@ -2098,8 +2136,9 @@ mod tests {
             "AAA",
             HoldingProposalDraft {
                 action: "hold".into(),
-                // Hold band at 10% weight is [9%, 11%] — 20% is outside it.
-                target_weight_low: 0.18,
+                // Hold band at 10% weight is [9%, 11%] — the range sits well above
+                // it, but stays coherent with the implied post-action book.
+                target_weight_low: 0.16,
                 target_weight_high: 0.20,
                 rationale: "x".into(),
                 divergence_cause: None,
@@ -2109,15 +2148,18 @@ mod tests {
                 changed_note: None,
             },
         )]);
-        let violations =
+        let out =
             validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
-                .unwrap_err();
-        assert!(violations
-            .iter()
-            .any(|v| matches!(v, Violation::RangeOutsideRungBand { symbol, .. } if symbol == "AAA")));
-        // The Display text names the band, so the re-run can fix it.
-        let text = violations[0].to_string();
-        assert!(text.contains("engine band"), "{text}");
+                .expect("an engine-band departure is an annotation, not a violation");
+        assert_eq!(out.actions["AAA"].target_weight_low, 0.16);
+        assert!(
+            out.view
+                .engine_bound_annotations
+                .iter()
+                .any(|a| a.contains("engine band")),
+            "{:?}",
+            out.view.engine_bound_annotations
+        );
     }
 
     #[test]
@@ -2199,12 +2241,17 @@ mod tests {
     }
 
     #[test]
-    fn an_action_outside_the_offered_set_is_a_violation() {
-        // A carried hold's transition set is {trim*, hold} — 'add' is barred.
+    fn an_action_outside_the_engine_set_is_annotated_never_enforced() {
+        // A carried hold's engine (transition) set is {trim*, hold} — the model
+        // picks 'add' anyway. The v7 contract: the pick stands, the departure
+        // records on the view.
         let mut row = spine_row("AAA", 0.10, transition_actions(Action::Hold).0);
         row.carried = true;
         row.context_trim_carveout = true;
         row.lean = None;
+        // No prior action: the what-changed attribution requirement (an honesty
+        // check, still enforced) stays out of this test's way.
+        row.prior_action = None;
         let spine = vec![row];
         let holdings = Holdings {
             cash: 90_000.0,
@@ -2227,12 +2274,18 @@ mod tests {
                 changed_note: None,
             },
         )]);
-        let violations =
+        let out =
             validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
-                .unwrap_err();
-        assert!(violations
-            .iter()
-            .any(|v| matches!(v, Violation::ActionOutsideOffered { symbol, .. } if symbol == "AAA")));
+                .expect("an engine-set departure is an annotation, not a violation");
+        assert_eq!(out.actions["AAA"].action, Action::Add);
+        assert!(
+            out.view
+                .engine_bound_annotations
+                .iter()
+                .any(|a| a.contains("engine set")),
+            "{:?}",
+            out.view.engine_bound_annotations
+        );
     }
 
     #[test]
@@ -2426,9 +2479,9 @@ mod tests {
     }
 
     #[test]
-    fn an_implied_cap_breach_is_a_violation() {
-        // A 24% position proposed to hold (band up to ~26.4% clamps at 25%) whose
-        // upper range the model pushes past the cap.
+    fn an_implied_cap_breach_is_annotated_never_enforced() {
+        // A 24% position pushed past the concentration cap: the v7 contract records
+        // both the band departure and the cap breach on the view; the plan stands.
         let mut row = spine_row("AAA", 0.24, vec![Action::SellAll, Action::Trim, Action::Hold]);
         row.lean = Some(Action::Hold);
         let spine = vec![row];
@@ -2442,7 +2495,8 @@ mod tests {
             "AAA",
             HoldingProposalDraft {
                 action: "hold".into(),
-                // Hold band at 24%: [21.6%, 25%] (clamped) — proposing the top.
+                // Hold band at 24%: [21.6%, 25%] (clamped). Mid 27% implies ~26.2%
+                // of the implied book — coherent with the stated range, above the cap.
                 target_weight_low: 0.26,
                 target_weight_high: 0.28,
                 rationale: "x".into(),
@@ -2453,12 +2507,12 @@ mod tests {
                 changed_note: None,
             },
         )]);
-        let violations =
+        let out =
             validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
-                .unwrap_err();
-        // Both the band check and (were it to pass) the cap check would catch it;
-        // the band check fires first.
-        assert!(!violations.is_empty());
+                .expect("band + cap departures annotate, never enforce");
+        let notes = &out.view.engine_bound_annotations;
+        assert!(notes.iter().any(|a| a.contains("engine band")), "{notes:?}");
+        assert!(notes.iter().any(|a| a.contains("concentration cap")), "{notes:?}");
     }
 
     #[test]
@@ -2489,25 +2543,35 @@ mod tests {
                 changed_note: None,
             },
         )]);
-        // Unconstrained preset: the buy is external funding, not a violation.
+        // Unconstrained preset: the buy is external funding, no annotation.
         let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
             .expect("unconstrained cash admits the buy");
         assert!(out.view.external_funding.unwrap() > 0.0);
-        // A constraining profile with no cash gates it.
+        assert!(out.view.engine_bound_annotations.is_empty());
+        // A constraining profile with no cash records the funding gap — an
+        // annotation on the view since v7, never a rejection.
         let constrained = InvestorProfile {
             available_cash: Some(0.0),
             ..InvestorProfile::default_fixture()
         };
-        let violations = validate_construction(&draft, &agg, &holdings, &constrained).unwrap_err();
-        assert!(violations
-            .iter()
-            .any(|v| matches!(v, Violation::UnfundedBuys { .. })));
+        let out = validate_construction(&draft, &agg, &holdings, &constrained)
+            .expect("an unfunded buy annotates, never enforces");
+        assert!(
+            out.view
+                .engine_bound_annotations
+                .iter()
+                .any(|a| a.contains("funding")),
+            "{:?}",
+            out.view.engine_bound_annotations
+        );
     }
 
     // ---- the schema -------------------------------------------------------------
 
     #[test]
-    fn construction_schema_narrows_each_holding_to_its_offered_set() {
+    fn construction_schema_offers_the_full_ladder_to_every_holding() {
+        // The v7 unrestricted contract: no per-holding narrowing — the engine set
+        // is prompt evidence, and a departure annotates.
         let spine = vec![
             spine_row("AAA", 0.10, vec![Action::SellAll, Action::Trim, Action::Hold]),
             spine_row("BBB", 0.05, transition_actions(Action::Add).0),
@@ -2520,22 +2584,17 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         assert_eq!(req, vec!["AAA", "BBB"]);
-        let aaa: Vec<&str> = schema["properties"]["holdings"]["properties"]["AAA"]["properties"]
-            ["action"]["enum"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert_eq!(aaa, vec!["sell-all", "trim", "hold"]);
-        let bbb: Vec<&str> = schema["properties"]["holdings"]["properties"]["BBB"]["properties"]
-            ["action"]["enum"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert_eq!(bbb, vec!["trim", "hold", "add"]);
+        let full = vec!["sell-all", "trim", "hold", "add", "add-aggressively"];
+        for symbol in ["AAA", "BBB"] {
+            let actions: Vec<&str> = schema["properties"]["holdings"]["properties"][symbol]
+                ["properties"]["action"]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert_eq!(actions, full, "{symbol} must see the full ladder");
+        }
         // The top level requires the portfolio view.
         let top: Vec<&str> = schema["required"]
             .as_array()
@@ -2593,6 +2652,8 @@ mod tests {
                 financial_summary: String::new(),
                 what_changed: String::new(),
                 action_what_changed: None,
+                model_view: None,
+                engine_view: None,
             })),
             thesis_ledger: None,
             analyzed_at: None,
@@ -2710,6 +2771,8 @@ mod tests {
                 financial_summary: String::new(),
                 what_changed: String::new(),
                 action_what_changed: None,
+                model_view: None,
+                engine_view: None,
             })),
             thesis_ledger: None,
             analyzed_at: None,
@@ -3020,13 +3083,14 @@ mod tests {
         let profile = InvestorProfile::default_fixture();
         let p = construction_user_prompt(&agg, &exited, Some("House view text"), &profile, None);
         assert!(p.contains("- AAA:"));
-        // Each allowed action carries its numeric engine band at the row's
-        // current weight (0.18): the model is validated against these bounds,
-        // so it must see them.
+        // Each engine-set rung carries its numeric band at the row's current
+        // weight (0.18) — rendered as the engine arm's own read, evidence the
+        // model weighs rather than a bar it is validated against (v7).
         assert!(
-            p.contains("ALLOWED [sell-all 0.0000\u{2013}0.0000, trim 0.0720\u{2013}0.1260, hold 0.1620\u{2013}0.1980]"),
+            p.contains("ENGINE SET [sell-all 0.0000\u{2013}0.0000, trim 0.0720\u{2013}0.1260, hold 0.1620\u{2013}0.1980]"),
             "{p}"
         );
+        assert!(p.contains("full ladder open on every holding"), "{p}");
         assert!(p.contains("single-position concentration cap 25% (0.25 as a fraction)"));
         assert!(p.contains("OVERLAP CLUSTERS"));
         assert!(p.contains("GONE"));
@@ -3103,6 +3167,8 @@ mod tests {
                 financial_summary: String::new(),
                 what_changed: String::new(),
                 action_what_changed: None,
+                model_view: None,
+                engine_view: None,
             })),
             thesis_ledger: None,
             analyzed_at: None,

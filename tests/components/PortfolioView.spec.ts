@@ -1288,3 +1288,189 @@ describe("PortfolioView construction stage", () => {
     expect(wrapper.find(".rollup-construction").exists()).toBe(false);
   });
 });
+
+// ---- The two-arm verdict (portfolio-v7) --------------------------------------
+// Engine baseline | model view paired columns, the full-width action strip, the
+// model retrospective, and the roll-up's scoreboard + engine-bound annotations.
+
+function twoArmGraded(over: Partial<GradedVerdict> = {}): GradedVerdict {
+  return graded({
+    lean: "add",
+    model_view: {
+      sub_scores: { quality: 88, valuation: 35, momentum: 70, risk: 60 },
+      letter: "C",
+      price_targets: {
+        one_month: { base: 215, bear: 200, bull: 230 },
+        twelve_month: { base: 280, bear: 190, bull: 340 },
+      },
+      self_assessment: "First read for this holding — no prior call to assess.",
+    },
+    engine_view: {
+      outlook: { short: "bearish", mid: "neutral", long: "bearish" },
+      conviction: "low",
+      action: "hold",
+      action_sizing: {
+        target_weight_low: 0.09,
+        target_weight_high: 0.11,
+        est_share_delta: null,
+        est_dollar_delta: null,
+      },
+    },
+    ...over,
+  });
+}
+
+describe("PortfolioView two-arm verdict", () => {
+  test("a v7 card renders the paired arms, the action strip, and the retrospective", () => {
+    const wrapper = mountView({
+      run: {
+        ...run,
+        verdicts: [verdict("AAPL", { status: "priced", ...twoArmGraded() })],
+      },
+    });
+    const card = wrapper.find(".holding-card");
+    const kickers = card.findAll(".hc-kicker").map((k) => k.text());
+    expect(kickers.some((k) => k.startsWith("Engine baseline"))).toBe(true);
+    expect(kickers.some((k) => k.startsWith("Model view"))).toBe(true);
+    expect(kickers).toContain("Portfolio action");
+    expect(kickers).toContain("Model retrospective");
+    // The model letter chip is derived from the model's own scores.
+    expect(card.find(".hc-model-letter").text()).toBe("C");
+    // The engine column carries the stand-in action with its band.
+    const engineCol = card.find(".hc-col-intrinsic");
+    expect(engineCol.text()).toContain("Hold");
+    expect(engineCol.text()).toContain("9–11%");
+    // Model values render as authored beside the engine's.
+    expect(card.text()).toContain("$280.00");
+    // Divergent conviction and lean carry the quiet ≠ engine tag.
+    const tags = card.findAll(".ana-tag").map((t) => t.text());
+    expect(tags.filter((t) => t === "≠ engine").length).toBe(2);
+    // The action strip is full-width beneath the arms.
+    expect(card.find(".hc-actionrow .hc-action-word").exists()).toBe(true);
+    expect(
+      card.find(".hc-summary + .hc-summary .hc-prose").text()
+    ).toContain("First read for this holding");
+  });
+
+  test("a pre-v7 card renders the legacy single intrinsic column, no model view", () => {
+    const wrapper = mountView({
+      run: {
+        ...run,
+        verdicts: [verdict("AAPL", { status: "priced", ...graded() })],
+      },
+    });
+    const card = wrapper.find(".holding-card");
+    expect(card.find(".hc-body").classes()).toContain("hc-body-single");
+    const kickers = card.findAll(".hc-kicker").map((k) => k.text());
+    expect(kickers).toContain("Intrinsic verdict");
+    expect(kickers.some((k) => k.startsWith("Model view"))).toBe(false);
+    expect(kickers).not.toContain("Model retrospective");
+    // The action strip still renders (one universal layout).
+    expect(card.find(".hc-actionrow .hc-action-word").exists()).toBe(true);
+  });
+
+  test("an inverted model band renders as authored with the annotation tag", () => {
+    const inverted = twoArmGraded();
+    inverted.model_view!.price_targets.twelve_month = {
+      base: 250,
+      bear: 300,
+      bull: 200,
+    };
+    const wrapper = mountView({
+      run: {
+        ...run,
+        verdicts: [verdict("AAPL", { status: "priced", ...inverted })],
+      },
+    });
+    const tags = wrapper.findAll(".ana-tag").map((t) => t.text());
+    expect(tags).toContain("band inverted as authored");
+    // The authored numbers are not reordered.
+    expect(wrapper.text()).toContain("($300.00–$200.00)");
+  });
+
+  test("the roll-up renders the scoreboard and the engine-bound annotations", () => {
+    const wrapper = mountView({
+      run: {
+        ...run,
+        roll_up: {
+          ...run.roll_up,
+          construction: {
+            risk_posture: "balanced",
+            deployment_stance: "hold cash",
+            concentration_read: "one oversized name",
+            closed_positions_note: null,
+            external_funding: null,
+            implied_total: 60_000,
+            retried: false,
+            engine_bound_annotations: [
+              "AAPL: action 'add-aggressively' departs the engine set [hold, trim]",
+            ],
+          },
+        },
+        outcome: {
+          matured: [
+            {
+              symbol: "AAPL",
+              episode_id: "ep-1",
+              window_months: 1,
+              outcome: "scored",
+              total_return: 0.042,
+              price_return: 0.04,
+            },
+          ],
+          reads: {
+            target_calibration: [
+              {
+                window_months: 12,
+                parameter_version: "targets-v3",
+                scored: 2,
+                coverage_rate: 1,
+                nominal_coverage: 0.8,
+                mean_interval_score: 0.41,
+                mean_base_signed_error: 0.02,
+              },
+            ],
+            model_target_calibration: [
+              {
+                window_months: 12,
+                parameter_version: "targets-v3",
+                scored: 2,
+                coverage_rate: 1,
+                nominal_coverage: 0.8,
+                mean_interval_score: 0.35,
+                mean_base_signed_error: -0.01,
+              },
+            ],
+            head_to_head: [
+              {
+                window_months: 12,
+                scored: 2,
+                engine_mean_interval_score: 0.41,
+                model_mean_interval_score: 0.35,
+                engine_coverage_rate: 1,
+                model_coverage_rate: 1,
+              },
+            ],
+            outlook_direction: [
+              { arm: "engine", window_months: 12, scored: 2, hits: 0, neutral: 0 },
+              { arm: "model", window_months: 12, scored: 2, hits: 2, neutral: 0 },
+            ],
+          },
+        },
+      },
+    });
+    const scoreboard = wrapper.find(".rollup-scoreboard");
+    expect(scoreboard.exists()).toBe(true);
+    expect(scoreboard.text()).toContain(
+      "12-mo interval score (paired, 2): model 0.350 vs engine 0.410"
+    );
+    expect(scoreboard.text()).toContain("12-mo direction: model 2/2 vs engine 0/2");
+    const annotations = wrapper.find(".rollup-annotations");
+    expect(annotations.exists()).toBe(true);
+    expect(annotations.text()).toContain("departs the engine set");
+    // The card foot carries the symbol's matured scored line.
+    expect(wrapper.find(".hc-scoreboard-line").text()).toContain(
+      "1-mo window scored (total return 4.2%)"
+    );
+  });
+});

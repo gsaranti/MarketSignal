@@ -583,6 +583,53 @@ pub struct PriceTargets {
     pub twelve_month: Option<PriceTarget>,
 }
 
+/// One model-authored scenario target band — the model arm's counterpart of the
+/// engine's [`PriceTarget`] (`docs/portfolio-analysis.md` §The holding verdict, the
+/// two-arm contract). Authored freely at interpretation: no engine bound, band, or
+/// clamp applies, and the app persists it exactly as returned. Scoring reads the
+/// band as (min, max), so an inverted bear/bull pair still scores; the render
+/// annotates disorder rather than reordering the authored numbers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelPriceTarget {
+    pub base: f64,
+    pub bear: f64,
+    pub bull: f64,
+}
+
+/// The model arm's one-month and twelve-month targets — the same rolling windows
+/// as the engine's [`PriceTargets`]. Both are always authored: the model can always
+/// commit to a view, so the engine's missing-input `None` legs have no analog here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelPriceTargets {
+    pub one_month: ModelPriceTarget,
+    pub twelve_month: ModelPriceTarget,
+}
+
+/// The model arm of the two-arm verdict (`docs/portfolio-analysis.md` §The holding
+/// verdict): the model's own read of fields the engine also computes, authored with
+/// the engine's values in the prompt as evidence and **never validated against
+/// them**. It never feeds a deterministic consumer — the quick check, hurdle tests,
+/// monitor stamps, and outcome labels read engine values only; these values are
+/// displayed, scored by the outcome scoreboard, and carried into the next run's
+/// retrospective. Beside this struct, the model-authored `conviction`,
+/// `horizon_outlook`, and `lean` on [`GradedVerdict`] complete the arm.
+/// `None` on runs persisted before `portfolio-v7`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelView {
+    /// The model's own four sub-scores on the engine's 0–100 scale (higher = better).
+    pub sub_scores: SubScores,
+    /// Derived app-side from the model's quality / valuation / risk through the
+    /// shared composite weights and cutoffs ([`engine::grade_from_subscores`]) — the
+    /// model controls its letter through its scores, and letters stay comparable
+    /// across arms. Momentum stays outside the letter in both arms.
+    pub letter: Grade,
+    pub price_targets: ModelPriceTargets,
+    /// The model's retrospective self-assessment — was the prior read right, was it
+    /// better than the engine baseline, and why (prose). The scored comparison is
+    /// the deterministic scoreboard's job, never this field's.
+    pub self_assessment: String,
+}
+
 /// The per-stock options-activity signal computed from the Schwab option chain
 /// (`docs/schwab-integration.md`) — a rough *activity proxy*, not positioning truth.
 /// Deliberately **kept out of the grade sub-scores until shadow-mode calibration**
@@ -686,6 +733,37 @@ pub struct GradedVerdict {
     /// (`#[serde(default)]`).
     #[serde(default)]
     pub action_what_changed: Option<ActionWhatChanged>,
+    /// The model arm of the two-arm verdict ([`ModelView`]) — the model's own
+    /// sub-scores, derived letter, targets, and retrospective self-assessment.
+    /// `#[serde(default)]` for runs persisted before `portfolio-v7`.
+    #[serde(default)]
+    pub model_view: Option<ModelView>,
+    /// The engine's mechanical stand-in arm ([`EngineView`]) — deterministic
+    /// outlook / conviction / action baselines beside the model's, so every
+    /// model-authored field has a scored engine counterpart.
+    /// `#[serde(default)]` for pre-v7 runs.
+    #[serde(default)]
+    pub engine_view: Option<EngineView>,
+}
+
+/// The engine's mechanical stand-in arm of the two-arm verdict
+/// (`docs/portfolio-analysis.md` §The holding verdict): deterministic, disclosed
+/// formulas producing baseline counterparts for the three fields only the model
+/// used to author — outlook, conviction, and the action rung. Computed by
+/// [`engine::engine_view`] from data already on the dossier; no model input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EngineView {
+    /// Trailing-return outlook over ~21 / 126 / 252 sessions with per-window flat
+    /// thresholds — a mechanical short / mid / long read.
+    pub outlook: HorizonOutlook,
+    /// A disclosed degradation count mapped to High / Medium / Low — data
+    /// completeness as confidence, never judgment.
+    pub conviction: Conviction,
+    /// The formalized rung rule over the existing feasible-set machinery
+    /// (grade × hurdle × admission, tiebreak toward hold).
+    pub action: Action,
+    /// The engine action's rung-band sizing ([`engine::size_action`]).
+    pub action_sizing: ActionSizing,
 }
 
 /// One exposure weight (a sector or country label and its fraction of the fund).
@@ -1329,7 +1407,19 @@ pub struct HoldingAudit {
 /// the action half of the what-changed audit, and the portfolio-level view,
 /// validated by the deterministic joint-feasibility check with one
 /// named-violation re-run ([`construction`]).
-pub const PROMPT_VERSION: &str = "portfolio-v6";
+/// v7: the two-arm verdict (`docs/portfolio-analysis.md` §The holding verdict) —
+/// the interpretation additionally authors the **model arm** (its own four
+/// sub-scores, freely-authored one-/twelve-month target bands, and a
+/// retrospective self-assessment; the model letter is derived app-side from the
+/// model's scores through the shared cutoffs), the lean and conviction enums
+/// are **unrestricted** (the full ladder / full enum — engine bounds and the
+/// pre-profit ceiling render as prompt evidence and audit annotations, never
+/// schema bars or clamps), the prior run's both-arm values plus realized-since
+/// render into the prompt (the retrospective — deliberately reversing the v4
+/// anchoring guard), and the engine gains its mechanical stand-in arm
+/// ([`EngineView`]) so every model field has a scored baseline counterpart.
+/// Model-arm values never feed a deterministic consumer.
+pub const PROMPT_VERSION: &str = "portfolio-v7";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -1471,6 +1561,14 @@ pub struct Interpretation {
     pub what_changed: String,
     /// The rewritten thesis ledger — required; validated at the 6g seam.
     pub ledger: LedgerDraft,
+    /// The model arm's four sub-scores (0–100, higher better) — its own read
+    /// beside the engine's, never validated against them (the two-arm contract).
+    pub model_sub_scores: SubScores,
+    /// The model arm's freely-authored one- / twelve-month targets — no engine
+    /// bound or clamp applies.
+    pub model_price_targets: ModelPriceTargets,
+    /// The retrospective self-assessment (see [`ModelView::self_assessment`]).
+    pub self_assessment: String,
 }
 
 /// The ledger half of the interpretation schema (`docs/portfolio-analysis.md` §The
@@ -1564,20 +1662,36 @@ pub fn ledger_schema(role_risk: bool) -> Value {
 
 /// The JSON Schema handed to Ollama's `format` so the interpretation is structurally
 /// valid by construction. Mirrors [`Interpretation`]'s shape; enums are string enums
-/// with the same kebab labels serde uses, so the decoded object round-trips. The
-/// action enum lists only the **engine-bounded feasible set** for this holding
-/// (`docs/portfolio-analysis.md` §Starting parameters — the feasible-set rule: the
-/// prompt states the allowed set; the model chooses within it, enforced structurally
-/// here), and the conviction enum narrows beneath a matched pre-profit conviction
-/// ceiling the same way (`docs/portfolio-workflow.md` §Step 6f — the model receives
-/// the ceiling and interprets the execution evidence beneath it).
-pub fn interpretation_schema(
-    feasible: &[Action],
-    conviction_ceiling: Option<pre_profit::ConvictionCeiling>,
-) -> Value {
+/// with the same kebab labels serde uses, so the decoded object round-trips. Since
+/// `portfolio-v7` the schema is **structurally unrestricted** (the two-arm
+/// contract — `docs/portfolio-analysis.md` §The holding verdict): the lean enum
+/// always lists the full ladder and the conviction enum all three values; the
+/// engine's own feasible set and any pre-profit conviction ceiling render into the
+/// prompt as evidence and into the audit as annotations, never as schema bars.
+pub fn interpretation_schema() -> Value {
     let read = json!({ "type": "string", "enum": ["bullish", "neutral", "bearish"] });
-    let actions: Vec<&str> = feasible.iter().map(Action::as_kebab).collect();
-    let convictions = pre_profit::allowed_conviction_labels(conviction_ceiling);
+    let all = [
+        Action::SellAll,
+        Action::Trim,
+        Action::Hold,
+        Action::Add,
+        Action::AddAggressively,
+    ];
+    let actions: Vec<&str> = all.iter().map(Action::as_kebab).collect();
+    let convictions = vec!["high", "medium", "low"];
+    // The model target band stays within the schema subset the local grammar
+    // converter proves out (type / properties / required / enum) — the 0–100
+    // sub-score scale and target positivity are stated in the prompt, never as
+    // numeric range keywords the grammar cannot express.
+    let target = json!({
+        "type": "object",
+        "properties": {
+            "base": { "type": "number" },
+            "bear": { "type": "number" },
+            "bull": { "type": "number" }
+        },
+        "required": ["base", "bear", "bull"]
+    });
     json!({
         "type": "object",
         "properties": {
@@ -1591,11 +1705,28 @@ pub fn interpretation_schema(
             "financial_summary": { "type": "string" },
             "price_target_rationale": { "type": "string" },
             "what_changed": { "type": "string" },
-            "ledger": ledger_schema(false)
+            "ledger": ledger_schema(false),
+            "model_sub_scores": {
+                "type": "object",
+                "properties": {
+                    "quality": { "type": "number" },
+                    "valuation": { "type": "number" },
+                    "momentum": { "type": "number" },
+                    "risk": { "type": "number" }
+                },
+                "required": ["quality", "valuation", "momentum", "risk"]
+            },
+            "model_price_targets": {
+                "type": "object",
+                "properties": { "one_month": target, "twelve_month": target },
+                "required": ["one_month", "twelve_month"]
+            },
+            "self_assessment": { "type": "string" }
         },
         "required": [
             "action", "conviction", "horizon_outlook",
-            "financial_summary", "price_target_rationale", "what_changed", "ledger"
+            "financial_summary", "price_target_rationale", "what_changed", "ledger",
+            "model_sub_scores", "model_price_targets", "self_assessment"
         ]
     })
 }
@@ -1708,12 +1839,22 @@ mod tests {
             "financial_summary": "Durable margins, light leverage.",
             "price_target_rationale": "Base case tracks the engine's DCF midpoint.",
             "what_changed": "new holding",
-            "ledger": raw_ledger()
+            "ledger": raw_ledger(),
+            "model_sub_scores": { "quality": 88.0, "valuation": 35.0, "momentum": 70.0, "risk": 60.0 },
+            "model_price_targets": {
+                "one_month": { "base": 210.0, "bear": 195.0, "bull": 225.0 },
+                "twelve_month": { "base": 260.0, "bear": 180.0, "bull": 320.0 }
+            },
+            "self_assessment": "First read; no prior call to assess."
         });
         let parsed: Interpretation = serde_json::from_value(raw).unwrap();
         assert_eq!(parsed.action, Action::Add);
         assert_eq!(parsed.conviction, Conviction::High);
         assert_eq!(parsed.horizon_outlook.mid, HorizonRead::Bullish);
+        // The model arm decoded exactly as authored — no bound or clamp applies.
+        assert_eq!(parsed.model_sub_scores.valuation, 35.0);
+        assert_eq!(parsed.model_price_targets.twelve_month.bull, 320.0);
+        assert_eq!(parsed.self_assessment, "First read; no prior call to assess.");
         // The ledger draft decoded structurally: the machine-core claims arrive as
         // strings for app-side validation, never pre-trusted types.
         assert_eq!(parsed.ledger.falsifiers.len(), 1);
@@ -1728,7 +1869,7 @@ mod tests {
         // Both interpretation schemas require the rewritten ledger, the quant series
         // enum is exactly the engine's closed executability surface, and the
         // role-risk trigger-family enum drops `add` (the reduced spine).
-        let schema = interpretation_schema(&[Action::Hold], None);
+        let schema = interpretation_schema();
         let required: Vec<&str> = schema["required"]
             .as_array()
             .unwrap()
@@ -1736,6 +1877,21 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         assert!(required.contains(&"ledger"), "{required:?}");
+        // The model arm is schema-required in full (the two-arm contract): its own
+        // sub-scores, both freely-authored target bands, and the retrospective.
+        for field in ["model_sub_scores", "model_price_targets", "self_assessment"] {
+            assert!(required.contains(&field), "{required:?}");
+        }
+        let bands = &schema["properties"]["model_price_targets"]["properties"];
+        for window in ["one_month", "twelve_month"] {
+            let req: Vec<&str> = bands[window]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert_eq!(req, vec!["base", "bear", "bull"]);
+        }
 
         let ledger = &schema["properties"]["ledger"];
         let series: Vec<&str> = ledger["properties"]["falsifiers"]["items"]["properties"]["quant"]
@@ -1879,14 +2035,7 @@ mod tests {
 
     #[test]
     fn interpretation_schema_lists_every_required_field() {
-        let all = [
-            Action::SellAll,
-            Action::Trim,
-            Action::Hold,
-            Action::Add,
-            Action::AddAggressively,
-        ];
-        let schema = interpretation_schema(&all, None);
+        let schema = interpretation_schema();
         let required: Vec<&str> = schema["required"]
             .as_array()
             .unwrap()
@@ -1903,14 +2052,14 @@ mod tests {
         ] {
             assert!(required.contains(&field), "schema must require {field}");
         }
-        // The action enum advertises exactly the feasible set, so the model can't
-        // pick a rung the engine barred.
+        // The v7 unrestricted contract: the lean enum always advertises the full
+        // ladder and conviction all three values — engine bounds are prompt
+        // evidence and annotations, never schema bars.
         let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
         assert_eq!(actions.len(), 5);
-        let bounded = interpretation_schema(&[Action::SellAll, Action::Trim, Action::Hold], None);
-        let bounded_actions = bounded["properties"]["action"]["enum"].as_array().unwrap();
-        assert_eq!(bounded_actions.len(), 3);
-        assert!(!bounded_actions.iter().any(|a| a == "add"));
+        assert!(actions.iter().any(|a| a == "add-aggressively"));
+        let convictions = schema["properties"]["conviction"]["enum"].as_array().unwrap();
+        assert_eq!(convictions.len(), 3);
     }
 
     #[test]
@@ -1989,6 +2138,9 @@ mod tests {
                 assert!(g.risk_tier.is_none());
                 assert!(g.dead_money.is_none());
                 assert!(!g.low_confidence_grade);
+                // A pre-v7 run carries neither arm — the legacy single-arm render path.
+                assert!(g.model_view.is_none());
+                assert!(g.engine_view.is_none());
                 // Pre-construction runs carry no lean — an absent lean reads as
                 // equal to the action — and no action-half audit.
                 assert!(g.lean.is_none());

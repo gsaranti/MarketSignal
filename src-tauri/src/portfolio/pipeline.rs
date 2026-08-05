@@ -27,8 +27,9 @@ use crate::portfolio::{
     ConditionEvalState, ConditionRole, Conviction, CrossingOutcome, ExposureWeight,
     FalsifierDraft, GradedVerdict, HoldingAudit, HoldingVerdict, HorizonOutlook, HorizonRead,
     Interpretation, KeyDriver, KeyDriverDraft, LedgerAudit, LedgerBranch, LedgerCondition,
-    LedgerComparator, LedgerDraft, MonitorScenario, PositionChange, PositionDelta, PriceTarget,
-    QuantCore, QuantCoreDraft, RoleRiskInterpretation, RoleRiskVerdict, ScenarioDraft,
+    LedgerComparator, LedgerDraft, ModelPriceTarget, ModelPriceTargets, ModelView,
+    MonitorScenario, PositionChange, PositionDelta, PriceTarget,
+    QuantCore, QuantCoreDraft, RoleRiskInterpretation, RoleRiskVerdict, ScenarioDraft, SubScores,
     ScenarioKind, ThesisLedger, TriggerDraft, TriggerFamily, VerdictDisposition, HORIZON_LONG,
     HORIZON_MID, HORIZON_SHORT, PROMPT_VERSION,
 };
@@ -482,30 +483,12 @@ pub fn analyze_holding(
             pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
         })
         .context("interpreting the holding")?;
-    // Defense in depth behind the schema constraint: a lean outside the
-    // intrinsic-bar set never persists.
-    if !lean_set.contains(&interpretation.action) {
-        anyhow::bail!(
-            "interpretation chose {:?} outside the intrinsic lean set {:?}",
-            interpretation.action,
-            lean_set
-        );
-    }
-    // The overlay's engine-matched conviction ceiling binds after interpretation —
-    // the app, not the model, owns the final value (`docs/portfolio-workflow.md`
-    // §Step 6g; a plain min while no raise machinery exists). Defense in depth
-    // behind the narrowed schema enum; a clamp that actually lowered the value is
-    // recorded on the overlay so the audit can reconstruct it.
-    let ceiling = pre_profit_overlay
-        .as_ref()
-        .filter(|o| o.is_eligible())
-        .and_then(|o| o.consequences.conviction_ceiling);
-    let (conviction, clamped) = pre_profit::clamp_conviction(interpretation.conviction, ceiling);
-    if clamped {
-        if let Some(overlay) = pre_profit_overlay.as_mut() {
-            overlay.clamped_from = Some(interpretation.conviction);
-        }
-    }
+    // The v7 unrestricted contract: the model's lean and conviction persist exactly
+    // as authored — no bail, no clamp (`docs/portfolio-analysis.md` §The holding
+    // verdict). The engine's own lean bars and any matched pre-profit ceiling stay
+    // recorded on the overlay / engine view, so a lean outside the engine set or a
+    // conviction above the ceiling reads as an annotated divergence, never an error.
+    let conviction = interpretation.conviction;
 
     // The 6g ledger seam: validate the rewrite and stamp the engine's scenario
     // targets into the monitor (app-owns-the-number — a model-written target never
@@ -522,6 +505,19 @@ pub fn analyze_holding(
     // Merge engine numbers + model judgment into the verdict; size the action.
     let action_sizing = engine::size_action(
         interpretation.action,
+        &dossier.position,
+        &dossier.profile,
+        account_total,
+    );
+    // The engine stand-in arm — mechanical outlook / conviction / action baselines
+    // beside the model's (`docs/portfolio-analysis.md` §The holding verdict).
+    let engine_view = engine::engine_view(
+        &engine_output,
+        &dossier.financials,
+        pre_profit_overlay
+            .as_ref()
+            .filter(|o| o.is_eligible())
+            .map(|o| &o.consequences),
         &dossier.position,
         &dossier.profile,
         account_total,
@@ -548,6 +544,16 @@ pub fn analyze_holding(
         financial_summary: interpretation.financial_summary,
         what_changed: interpretation.what_changed,
         action_what_changed: None,
+        // The model arm: persisted exactly as authored, letter derived from the
+        // model's own scores through the shared cutoffs (the two-arm contract —
+        // `docs/portfolio-analysis.md` §The holding verdict).
+        model_view: Some(ModelView {
+            sub_scores: interpretation.model_sub_scores,
+            letter: engine::grade_from_subscores(&interpretation.model_sub_scores),
+            price_targets: interpretation.model_price_targets.clone(),
+            self_assessment: interpretation.self_assessment.clone(),
+        }),
+        engine_view: Some(engine_view),
     };
     let verdict = HoldingVerdict {
         symbol: symbol.clone(),
@@ -1264,21 +1270,26 @@ pub fn validate_ledger_rewrite(
 /// rule: read numbers from the engine, never invent them.
 pub fn interpretation_system_prompt() -> String {
     "You are a disciplined equity analyst grading one holding for a prescriptive \
-     portfolio review. The quantitative analysis — sub-scores, the composite grade, \
-     valuation multiples, the risk tier, the capital-efficiency read, and the scenario \
-     price targets — has already been computed deterministically and is given to you. \
-     Do NOT invent or alter any number: read them from the analysis. Your job is the \
-     judgment the numbers don't make: choose the STANDALONE ACTION LEAN — the action \
-     this holding would earn if it stood alone, a pure read of grade, conviction, \
-     upside/downside, and risk, with NO portfolio context (the final portfolio action \
-     is set later, at portfolio construction, with the whole book in view) — from the \
-     ALLOWED LEANS offered (never outside them), set your conviction and the three \
-     horizon reads, justify the base-case price target, and write a concise financial \
-     summary and a continuity note. Conviction means your confidence in the overall \
-     read — grade, outlook, and lean together — and must match the lean's \
-     decisiveness: a decisive lean (sell all, add aggressively) requires conviction \
-     you actually hold; if your conviction is low, choose a less decisive allowed \
-     lean instead. \
+     portfolio review. The verdict has TWO ARMS. The ENGINE ARM — sub-scores, the \
+     composite grade, valuation multiples, the risk tier, the capital-efficiency \
+     read, and the scenario price targets — has already been computed \
+     deterministically and is given to you as the baseline: a disclosed calculator, \
+     evidence to weigh, never numbers you must adopt. The MODEL ARM is yours to \
+     author, unrestricted: your OWN four sub-scores on the same 0-100 higher-is-better \
+     scale (momentum stays outside the letter; your letter is derived from your \
+     quality/valuation/risk through the same cutoffs), your OWN one-month and \
+     twelve-month price target bands (base, bear, bull — your numbers, free to \
+     depart the engine's as far as the evidence takes you), your conviction, the \
+     three horizon reads, and the STANDALONE ACTION LEAN — the action this holding \
+     would earn if it stood alone, with NO portfolio context (the final portfolio \
+     action is set later, at construction, with the whole book in view) — from the \
+     FULL ladder: the engine's own lean set is shown as its arm's read, not a bound \
+     on yours. Both arms are scored against realized outcomes by a deterministic \
+     scoreboard; where a RETROSPECTIVE block appears, assess your prior read against \
+     the engine baseline and what actually happened — honestly, in self_assessment — \
+     and let it discipline this run's numbers. Conviction means your confidence in \
+     the overall read — your scores, outlook, and lean together — and should match \
+     the lean's decisiveness. \
      Use the Market Signal house view for the horizon reads and market-setup context \
      only — it is a market-level thesis, never by itself a reason to exit a specific \
      holding. The read is profile-independent — no investor profile is given at this \
@@ -1371,6 +1382,158 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     p
 }
 
+/// Render the v7 retrospective block: the prior run's both-arm values, the price
+/// move since, and any matured scoreboard lines — the input the self-assessment
+/// reads against (`docs/portfolio-analysis.md` §The holding verdict; a deliberate
+/// reversal of the v4 anchoring guard). Empty when the prior verdict carries no
+/// priced body to compare.
+fn retrospective_prompt_section(d: &HoldingDossier) -> String {
+    let Some(prior) = &d.prior_verdict else {
+        return String::new();
+    };
+    let VerdictDisposition::Priced(g) = &prior.disposition else {
+        return "\nRETROSPECTIVE: the prior verdict was not a priced read (role/risk-only \
+                or an abstention), so there are no prior arms to compare.\n"
+            .to_string();
+    };
+    let mut p = String::new();
+    let since = d
+        .prior_run_created_at
+        .as_deref()
+        .map(|t| format!(" (prior run {t})"))
+        .unwrap_or_default();
+    p.push_str(&format!("\nRETROSPECTIVE{since}:\n"));
+
+    let outlook = |o: &HorizonOutlook| {
+        format!(
+            "outlook s/m/l {:?}/{:?}/{:?}",
+            o.short, o.mid, o.long
+        )
+        .to_lowercase()
+    };
+    let engine_targets = {
+        let t12 = g.price_targets.twelve_month.as_ref().map(|t| {
+            format!("12-mo base {:.2} [{:.2}\u{2013}{:.2}]", t.base, t.bear, t.bull)
+        });
+        let t1 = g.price_targets.one_month.as_ref().map(|t| {
+            format!("1-mo base {:.2} [{:.2}\u{2013}{:.2}]", t.base, t.bear, t.bull)
+        });
+        [t1, t12].into_iter().flatten().collect::<Vec<_>>().join(", ")
+    };
+    let engine_rest = match &g.engine_view {
+        Some(ev) => format!(
+            "conviction {:?}, {}, action {}",
+            ev.conviction,
+            outlook(&ev.outlook),
+            ev.action.as_kebab()
+        )
+        .to_lowercase(),
+        None => "conviction/outlook/action not recorded (pre-v7 run)".to_string(),
+    };
+    p.push_str(&format!(
+        "- prior ENGINE arm: grade {} (q {:.0} / v {:.0} / r {:.0}; momentum {:.0}); {}; {}\n",
+        g.grade.as_str(),
+        g.sub_scores.quality,
+        g.sub_scores.valuation,
+        g.sub_scores.risk,
+        g.sub_scores.momentum,
+        if engine_targets.is_empty() {
+            "targets (gap)".to_string()
+        } else {
+            engine_targets
+        },
+        engine_rest,
+    ));
+
+    match &g.model_view {
+        Some(mv) => {
+            let mt = &mv.price_targets;
+            p.push_str(&format!(
+                "- prior MODEL arm (yours): letter {} (q {:.0} / v {:.0} / m {:.0} / r {:.0}); \
+                 1-mo base {:.2} [{:.2}\u{2013}{:.2}], 12-mo base {:.2} [{:.2}\u{2013}{:.2}]; \
+                 conviction {:?}, {}, lean {}\n",
+                mv.letter.as_str(),
+                mv.sub_scores.quality,
+                mv.sub_scores.valuation,
+                mv.sub_scores.momentum,
+                mv.sub_scores.risk,
+                mt.one_month.base,
+                mt.one_month.bear,
+                mt.one_month.bull,
+                mt.twelve_month.base,
+                mt.twelve_month.bear,
+                mt.twelve_month.bull,
+                g.conviction,
+                outlook(&g.horizon_outlook),
+                g.lean.unwrap_or(g.action).as_kebab(),
+            ));
+        }
+        None => p.push_str(
+            "- prior MODEL arm: not recorded (the prior run predates the two-arm \
+             contract) — your prior conviction/outlook/lean above rode the single-arm \
+             verdict.\n",
+        ),
+    }
+
+    if let Some(spot) = d.financials.current_price {
+        // The realized move since the prior read: current spot over the prior
+        // run's authoring spot — the actual "what happened" line (Codex round 1,
+        // finding 2). The target-distance reads are labeled as exactly that:
+        // distance to the old targets, never a realized return.
+        let mut vs: Vec<String> = Vec::new();
+        if let Some(prior_spot) = d.prior_spot.filter(|s| *s > 0.0) {
+            vs.push(format!(
+                "{:+.1}% realized since the prior run (authoring spot {:.2})",
+                (spot / prior_spot - 1.0) * 100.0,
+                prior_spot
+            ));
+        }
+        if let Some(t) = g.price_targets.twelve_month.as_ref() {
+            if t.base > 0.0 {
+                vs.push(format!(
+                    "distance to the prior engine 12-mo base {:+.1}%",
+                    (spot / t.base - 1.0) * 100.0
+                ));
+            }
+        }
+        if let Some(mv) = &g.model_view {
+            let b = mv.price_targets.twelve_month.base;
+            if b > 0.0 {
+                vs.push(format!(
+                    "distance to the prior model 12-mo base {:+.1}%",
+                    (spot / b - 1.0) * 100.0
+                ));
+            }
+        }
+        if !vs.is_empty() {
+            p.push_str(&format!(
+                "- price now {:.2}: {} (uncorrected for splits; the scored comparison \
+                 is the deterministic scoreboard's)\n",
+                spot,
+                vs.join("; ")
+            ));
+        }
+    }
+
+    if d.prior_matured_notes.is_empty() {
+        p.push_str("- matured scored windows: none yet\n");
+    } else {
+        p.push_str(
+            "- matured scored windows for this holding (deterministic; any vintage — \
+             a window may predate the prior read):\n",
+        );
+        for note in &d.prior_matured_notes {
+            p.push_str(&format!("  - {note}\n"));
+        }
+    }
+    p.push_str(
+        "Write self_assessment against this: was your prior read right, was it better \
+         than the engine baseline, and why — then let it discipline this run's model \
+         arm.\n",
+    );
+    p
+}
+
 /// The user prompt: the holding's evidence packet rendered for the model — the
 /// position, the computed metrics/sub-scores/grade/targets, the options-activity
 /// signal (an activity proxy, not a grade input), the gaps, the distilled research,
@@ -1394,14 +1557,14 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     ));
 
     p.push_str(&format!(
-        "\nCOMPUTED GRADE: {} (do not change{})\nSUB-SCORES (0-100, higher better): quality {:.0}, valuation {:.0}, risk {:.0}; \
+        "\nENGINE GRADE (the baseline arm{}): {}\nENGINE SUB-SCORES (0-100, higher better): quality {:.0}, valuation {:.0}, risk {:.0}; \
          momentum {:.0} rides as market-setup context OUTSIDE the letter\n",
-        e.grade.as_str(),
         if e.low_confidence_grade {
             "; low-confidence — an imputed sub-score underlies it"
         } else {
             ""
         },
+        e.grade.as_str(),
         e.sub_scores.quality,
         e.sub_scores.valuation,
         e.sub_scores.risk,
@@ -1462,8 +1625,14 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
 
     if let Some(tm) = &e.price_targets.twelve_month {
         p.push_str(&format!(
-            "\nSCENARIO TARGETS (twelve-month rolling): bear {:.2} / base {:.2} / bull {:.2}\n  methodology: {}\n",
+            "\nENGINE SCENARIO TARGETS (baseline arm; twelve-month rolling): bear {:.2} / base {:.2} / bull {:.2}\n  methodology: {}\n",
             tm.bear, tm.base, tm.bull, tm.methodology
+        ));
+    }
+    if let Some(om) = &e.price_targets.one_month {
+        p.push_str(&format!(
+            "ENGINE ONE-MONTH TARGETS: bear {:.2} / base {:.2} / bull {:.2}\n",
+            om.bear, om.base, om.bull
         ));
     }
 
@@ -1519,12 +1688,25 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     }
 
     p.push_str(
-        "\nALLOWED LEANS (choose the standalone lean within this set; the final \
-         portfolio action is set at construction): ",
+        "\nENGINE LEAN SET (the engine's own arm restricts itself to this — evidence, \
+         not a bound; YOUR standalone lean is unrestricted on the full ladder, and \
+         the final portfolio action is set at construction): ",
     );
-    let allowed: Vec<&str> = input.lean_set.iter().map(Action::as_kebab).collect();
-    p.push_str(&allowed.join(", "));
+    let engine_set: Vec<&str> = input.lean_set.iter().map(Action::as_kebab).collect();
+    p.push_str(&engine_set.join(", "));
     p.push('\n');
+
+    p.push_str(
+        "\nYOUR MODEL ARM (authored by you, unrestricted, scored against realized \
+         outcomes beside the engine baseline): model_sub_scores — your own \
+         quality/valuation/momentum/risk on the 0-100 higher-is-better scale (your \
+         letter derives from your quality/valuation/risk through the same cutoffs); \
+         model_price_targets — your own one-month and twelve-month base/bear/bull \
+         prices (positive numbers, bear ≤ base ≤ bull as you mean them); \
+         self_assessment — your honest retrospective (on a debut: say it is a first \
+         read). Depart the engine wherever your read of the evidence differs; \
+         agreement is a finding, not a requirement.\n",
+    );
 
     let s = &d.options_signal;
     p.push_str(&format!(
@@ -1589,6 +1771,11 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
                      self-correction.\n",
                 );
             }
+            // The v7 retrospective: the prior run's BOTH-arm values plus what has
+            // happened since — a deliberate reversal of the v4 anchoring guard,
+            // because self-assessment against the baseline is the point of the
+            // model arm (`docs/portfolio-analysis.md` §The holding verdict).
+            p.push_str(&retrospective_prompt_section(d));
         }
         None => p.push_str("\nCONTINUITY: new holding (no prior verdict).\n"),
     }
@@ -1608,9 +1795,9 @@ fn opt(v: Option<f64>) -> String {
 
 /// Render the finalized pre-profit execution / financing overlay for an eligible
 /// stock's interpretation prompt (`docs/portfolio-workflow.md` §Step 6f): the
-/// engine's states and matched rules, the rule-bounded conviction ceiling the model
-/// must interpret beneath, and — under severe deterioration — the engine-provided
-/// exit-family lean set.
+/// engine's states and matched rules, framed as the ENGINE arm's own bindings —
+/// evidence the unrestricted model arm weighs, with departures recorded as
+/// annotations, never prompt-level clamps (the v7 two-arm contract).
 fn pre_profit_prompt_section(o: &PreProfitOverlay) -> String {
     use crate::portfolio::pre_profit::{ConvictionCeiling, FinancingState};
     let i = &o.statement_inputs;
@@ -1676,9 +1863,10 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay) -> String {
     ));
     if let Some(ceiling) = o.consequences.conviction_ceiling {
         p.push_str(&format!(
-            "CONVICTION CEILING: at most {} — engine-matched rule(s): {}. Interpret the \
-             execution evidence beneath the ceiling; it is structural and binds after any \
-             raise.\n",
+            "CONVICTION CEILING (engine rule): the engine arm holds its own conviction at \
+             or beneath {} — matched rule(s): {}. Your conviction is UNRESTRICTED: exceeding \
+             the ceiling persists as authored, with the departure recorded beside the rule — \
+             so weigh the execution evidence honestly rather than deferring to the ceiling.\n",
             match ceiling {
                 ConvictionCeiling::Medium => "medium",
                 ConvictionCeiling::Low => "low",
@@ -1688,11 +1876,17 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay) -> String {
     }
     if o.consequences.exit_family_only {
         p.push_str(
-            "SEVERE DETERIORATION: your action must be one of the engine-provided exit \
-             family {trim, sell-all}; choose and explain which from the validated evidence.\n",
+            "SEVERE DETERIORATION (engine rule): the engine's own lean set narrows to the \
+             exit family {trim, sell-all} and its stand-in action follows it. Your lean is \
+             UNRESTRICTED — a rung outside the exit family persists as authored with the \
+             departure recorded; weigh the validated deterioration evidence before \
+             departing.\n",
         );
     } else if o.consequences.bar_add_family {
-        p.push_str("Note: the add family is barred by the overlay's financing rule.\n");
+        p.push_str(
+            "Note: the engine's own set drops the add family on the overlay's financing \
+             rule; your lean is unrestricted, the departure recorded.\n",
+        );
     }
     p
 }
@@ -2121,6 +2315,32 @@ impl HoldingAnalyst for StubAnalyst {
                 &input.dossier.position.symbol,
                 false,
             ),
+            // The stub's model arm: the engine's values deterministically nudged,
+            // so the two arms are distinguishable in tests and demo runs without
+            // being random.
+            model_sub_scores: SubScores {
+                quality: (e.sub_scores.quality + 5.0).min(100.0),
+                valuation: (e.sub_scores.valuation + 5.0).min(100.0),
+                momentum: (e.sub_scores.momentum + 5.0).min(100.0),
+                risk: (e.sub_scores.risk + 5.0).min(100.0),
+            },
+            model_price_targets: {
+                let spot = input.dossier.financials.current_price.unwrap_or(100.0);
+                let mt = |t: Option<&PriceTarget>, scale: f64| ModelPriceTarget {
+                    base: t.map(|t| t.base).unwrap_or(spot) * scale,
+                    bear: t.map(|t| t.bear).unwrap_or(spot * 0.9) * scale,
+                    bull: t.map(|t| t.bull).unwrap_or(spot * 1.1) * scale,
+                };
+                ModelPriceTargets {
+                    one_month: mt(e.price_targets.one_month.as_ref(), 1.01),
+                    twelve_month: mt(e.price_targets.twelve_month.as_ref(), 1.05),
+                }
+            },
+            self_assessment: if input.dossier.prior_verdict.is_some() {
+                "Prior read broadly held; no basis to fault the baseline yet.".to_string()
+            } else {
+                "First read for this holding — no prior call to assess.".to_string()
+            },
         })
     }
 
@@ -2351,17 +2571,11 @@ fn interpret_request(reasoner_model: &str, input: &InterpretationInput) -> ChatR
             ChatMessage::user(interpretation_user_prompt(input)),
         ],
     );
-    // The per-holding schema advertises only the intrinsic lean set (the full
-    // ladder; severe deterioration restricts to the exit family), so a barred rung
-    // is structurally unreachable (`docs/portfolio-analysis.md` §Intrinsic verdict).
-    // The conviction enum narrows structurally beneath a matched pre-profit ceiling,
-    // mirroring the lean-set narrowing (`docs/portfolio-workflow.md` §Step 6f).
-    req.format_schema = Some(interpretation_schema(
-        input.lean_set,
-        input
-            .pre_profit
-            .and_then(|o| o.consequences.conviction_ceiling),
-    ));
+    // The v7 unrestricted schema: full ladder, full conviction enum — the engine's
+    // own lean bars and any pre-profit ceiling render into the prompt as evidence,
+    // never as schema narrowing (`docs/portfolio-analysis.md` §The holding verdict,
+    // the two-arm contract).
+    req.format_schema = Some(interpretation_schema());
     req.think = Some(true);
     req.options = Some(options::thinking_general(NUM_CTX_INTERPRET));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
@@ -2661,6 +2875,9 @@ mod tests {
             house_view: HouseView::default(),
             fund: None,
             prior_verdict: None,
+            prior_run_created_at: None,
+            prior_spot: None,
+            prior_matured_notes: Vec::new(),
             prior_grade_parameter_version: None,
             sources: vec!["FMP".into()],
             prior_pre_profit: None,
@@ -3058,18 +3275,24 @@ mod tests {
             pre_profit: None,
         };
         let user = interpretation_user_prompt(&input);
-        assert!(user.contains("COMPUTED GRADE"), "{user}");
-        assert!(user.contains("SUB-SCORES"), "{user}");
+        assert!(user.contains("ENGINE GRADE (the baseline arm"), "{user}");
+        assert!(user.contains("ENGINE SUB-SCORES"), "{user}");
         assert!(user.contains("NOT a grade input"), "options proxy is flagged: {user}");
         assert!(user.contains("RISK TIER"), "{user}");
-        // The intrinsic lean set is stated, and a barred rung isn't listed.
-        assert!(user.contains("ALLOWED LEANS"), "{user}");
-        let allowed_line = user
+        // The engine's own lean set renders as evidence; the model arm is told it
+        // is unrestricted (v7 — the two-arm contract).
+        assert!(user.contains("ENGINE LEAN SET"), "{user}");
+        let engine_set_line = user
             .lines()
-            .find(|l| l.contains("ALLOWED LEANS"))
-            .unwrap();
-        assert!(!allowed_line.contains("add"), "{allowed_line}");
-        assert!(interpretation_system_prompt().contains("Do NOT invent"));
+            .find(|l| l.contains("sell-all, trim, hold"))
+            .expect("the engine set line lists the restricted rungs");
+        assert!(!engine_set_line.contains("add,"), "{engine_set_line}");
+        assert!(user.contains("YOUR MODEL ARM"), "{user}");
+        assert!(user.contains("unrestricted"), "{user}");
+        let system = interpretation_system_prompt();
+        assert!(system.contains("TWO ARMS"), "{system}");
+        assert!(system.contains("MODEL ARM"), "{system}");
+        assert!(!system.contains("never outside them"), "{system}");
 
         // The prompt-adjustments slice (portfolio-v3): target provenance always
         // renders, the dead-money read is a weighed input (not an instruction), and
@@ -3087,6 +3310,62 @@ mod tests {
         assert!(!user.contains("INVESTOR PROFILE"), "{user}");
         assert!(system.contains("profile-independent"), "{system}");
         assert!(system.contains("never by itself a reason to exit"), "{system}");
+    }
+
+    #[test]
+    fn retrospective_renders_both_prior_arms_and_the_realized_since() {
+        // The v7 retrospective (the deliberate reversal of the v4 anchoring
+        // guard): a prior priced verdict's engine + model arms render with the
+        // price-since read and the matured scoreboard lines.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let (prior, _) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-07-29").unwrap();
+        d.prior_verdict = Some(prior);
+        d.prior_run_created_at = Some("2026-07-29T12:00:00Z".into());
+        d.prior_spot = Some(180.0);
+        d.prior_matured_notes = vec!["1-month window scored: total return +4.2%".into()];
+
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let feasible = vec![Action::SellAll, Action::Trim, Action::Hold];
+        let user = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "distilled findings",
+            lean_set: &feasible,
+            ledger_eval: None,
+            pre_profit: None,
+        });
+        assert!(user.contains("RETROSPECTIVE (prior run 2026-07-29T12:00:00Z)"), "{user}");
+        assert!(user.contains("prior ENGINE arm: grade"), "{user}");
+        assert!(user.contains("prior MODEL arm (yours): letter"), "{user}");
+        // The realized move computes against the prior AUTHORING spot (180 →
+        // 195 = +8.3%), never against a target; the target reads are labeled
+        // as distances, not returns (Codex round 1, finding 2).
+        assert!(
+            user.contains("+8.3% realized since the prior run (authoring spot 180.00)"),
+            "{user}"
+        );
+        assert!(user.contains("distance to the prior engine 12-mo base"), "{user}");
+        assert!(user.contains("distance to the prior model 12-mo base"), "{user}");
+        assert!(user.contains("any vintage"), "{user}");
+        assert!(user.contains("1-month window scored: total return +4.2%"), "{user}");
+        assert!(user.contains("Write self_assessment against this"), "{user}");
+
+        // A debut renders no retrospective and says so in the model-arm brief.
+        let debut = dossier(AssetClass::Stock, strong_financials());
+        let debut_user = interpretation_user_prompt(&InterpretationInput {
+            dossier: &debut,
+            engine: &engine_output,
+            distilled: "distilled findings",
+            lean_set: &feasible,
+            ledger_eval: None,
+            pre_profit: None,
+        });
+        assert!(!debut_user.contains("RETROSPECTIVE"), "{debut_user}");
+        assert!(debut_user.contains("new holding (no prior verdict)"), "{debut_user}");
     }
 
     #[test]
@@ -3367,6 +3646,17 @@ mod tests {
                     price_target_rationale: "".into(),
                     what_changed: "".into(),
                     ledger: stub_ledger_draft(None, "AAPL", false),
+                    model_sub_scores: SubScores {
+                        quality: 90.0,
+                        valuation: 90.0,
+                        momentum: 90.0,
+                        risk: 90.0,
+                    },
+                    model_price_targets: ModelPriceTargets {
+                        one_month: ModelPriceTarget { base: 250.0, bear: 220.0, bull: 280.0 },
+                        twelve_month: ModelPriceTarget { base: 300.0, bear: 200.0, bull: 400.0 },
+                    },
+                    self_assessment: "".into(),
                 })
             }
             fn interpret_role_risk(&self, _input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
@@ -4574,13 +4864,14 @@ mod tests {
             overlay.consequences.conviction_ceiling,
             Some(ConvictionCeiling::Medium)
         );
-        // The stub proposed High (A/B grade); the app clamped it beneath the
-        // engine-matched ceiling and recorded the clamp.
+        // The stub proposed High (A/B grade); under v7 it persists as authored —
+        // the engine-matched ceiling stays recorded on the overlay as an
+        // annotation the render sets beside the model's value, never a clamp.
         let VerdictDisposition::Priced(g) = verdict.disposition else {
             panic!("expected a priced verdict");
         };
-        assert_eq!(g.conviction, Conviction::Medium);
-        assert_eq!(overlay.clamped_from, Some(Conviction::High));
+        assert_eq!(g.conviction, Conviction::High);
+        assert_eq!(overlay.clamped_from, None);
         assert!(overlay
             .consequences
             .matched_rules
@@ -4610,21 +4901,57 @@ mod tests {
             pre_profit: Some(&overlay),
         });
         assert!(user.contains("PRE-PROFIT EXECUTION / FINANCING OVERLAY"), "{user}");
-        assert!(user.contains("CONVICTION CEILING: at most medium"), "{user}");
+        // The ceiling renders as the ENGINE arm's own rule with the model arm
+        // explicitly unrestricted — never binding language aimed at the model
+        // (Codex round 1, finding 1).
+        assert!(
+            user.contains("CONVICTION CEILING (engine rule): the engine arm holds its own \
+                           conviction at or beneath medium"),
+            "{user}"
+        );
+        assert!(user.contains("Your conviction is UNRESTRICTED"), "{user}");
+        assert!(!user.contains("binds after any raise"), "{user}");
+        assert!(!user.contains("your action must be"), "{user}");
         assert!(user.contains("repeated-execution-miss"), "{user}");
     }
 
     #[test]
-    fn severe_overlay_restricts_the_action_to_the_exit_family() {
+    fn severe_overlay_binds_the_engine_arm_never_the_model() {
         // Repeated miss + constrained runway (tiny cash against the burn) → the
-        // severe conjunction → the exit-family action set end to end.
+        // severe conjunction. Under v7 a defiant model lean and conviction persist
+        // exactly as authored — no bail, no clamp — while the consequences bind
+        // the ENGINE arm's action and stay recorded for the annotation render.
+        struct DefiantAnalyst;
+        impl HoldingAnalyst for DefiantAnalyst {
+            fn distill(&self, d: &HoldingDossier, f: &ResearchFindings) -> Result<String> {
+                StubAnalyst.distill(d, f)
+            }
+            fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+                let mut i = StubAnalyst.interpret(input)?;
+                i.action = Action::Add;
+                i.conviction = Conviction::High;
+                Ok(i)
+            }
+            fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
+                StubAnalyst.interpret_role_risk(input)
+            }
+            fn construct(
+                &self,
+                _input: &ConstructionInput,
+            ) -> Result<crate::portfolio::construction::ConstructionDraft> {
+                unreachable!("per-holding test — construction never runs")
+            }
+            fn model_ids(&self) -> Vec<String> {
+                vec!["defiant".into()]
+            }
+        }
         let mut fin = pre_profit_financials();
         fin.cash_and_equivalents = Some(1.0e9);
         fin.short_term_investments = None;
         let mut d = dossier(AssetClass::Stock, fin);
         d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
         let (verdict, audit) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+            analyze_holding(&DefiantAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
         let overlay = audit.pre_profit.expect("overlay rides the audit");
         assert!(overlay.severe_deterioration);
         assert_eq!(
@@ -4634,12 +4961,22 @@ mod tests {
         let VerdictDisposition::Priced(g) = verdict.disposition else {
             panic!("expected a priced verdict");
         };
+        assert_eq!(g.action, Action::Add, "the model's lean persists as authored");
+        assert_eq!(g.conviction, Conviction::High, "no clamp under v7");
+        assert_eq!(overlay.clamped_from, None);
+        let ev = g.engine_view.expect("the engine arm rides the verdict");
         assert!(
-            matches!(g.action, Action::Trim | Action::SellAll),
-            "severe deterioration restricts the lean to the exit family, got {:?}",
-            g.action
+            matches!(ev.action, Action::Trim | Action::SellAll),
+            "the engine arm obeys its own severe bar, got {:?}",
+            ev.action
         );
-        assert_eq!(g.conviction, Conviction::Low);
+        // The engine arm's conviction observes its own ceiling too: severe
+        // deterioration's Low ceiling binds the stand-in, never the model.
+        assert_eq!(
+            ev.conviction,
+            Conviction::Low,
+            "the severe overlay's Low ceiling binds the engine arm's conviction"
+        );
     }
 
     #[test]

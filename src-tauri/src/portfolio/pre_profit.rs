@@ -905,6 +905,13 @@ fn derive_consequences(
 /// ceiling)` — the docs' "binds after any validated raise" degenerates to a plain
 /// min while no raise machinery exists). Returns the clamped value and whether the
 /// clamp actually lowered it.
+/// **Re-scoped with `portfolio-v7`** (the two-arm unrestriction): the matched
+/// ceiling never clamps the model's value anymore — its one production caller is
+/// [`crate::portfolio::engine::engine_view`], where it binds the **engine
+/// stand-in arm's** conviction (the engine obeys its own rules; the model's
+/// exceedance persists as an annotation — `docs/portfolio-analysis.md` §The
+/// holding verdict). Pre-v7 runs' persisted `clamped_from` values carry these
+/// same semantics.
 pub fn clamp_conviction(
     conviction: Conviction,
     ceiling: Option<ConvictionCeiling>,
@@ -926,8 +933,8 @@ pub fn clamp_conviction(
     }
 }
 
-/// The conviction labels the interpretation schema may offer under a matched
-/// ceiling — structural enforcement, mirroring the feasible-action narrowing.
+/// **Retired with `portfolio-v7`** (see [`clamp_conviction`]): the schema always
+/// offers all three labels now; no production caller remains.
 pub fn allowed_conviction_labels(ceiling: Option<ConvictionCeiling>) -> &'static [&'static str] {
     match ceiling {
         None => &["high", "medium", "low"],

@@ -58,6 +58,18 @@ pub struct HoldingDossier {
     /// The prior run's verdict for this holding (continuity input), or `None` on a
     /// holding the job has not seen before ("new holding").
     pub prior_verdict: Option<HoldingVerdict>,
+    /// The prior run's `created_at` — the retrospective block's "since" anchor
+    /// (`docs/portfolio-analysis.md` §The holding verdict, the two-arm contract).
+    /// `None` on a debut.
+    pub prior_run_created_at: Option<String>,
+    /// The prior run's authoring-time spot — the realized-move base the
+    /// retrospective renders `current ⁄ prior − 1` against. `None` on a debut or
+    /// a prior audit without a quick-check basis.
+    pub prior_spot: Option<f64>,
+    /// The prior run's matured outcome-window lines for this symbol (deterministic,
+    /// engine-computed) — the scored ground the retrospective reads against, where
+    /// any windows have matured. Empty on a debut or before any window matures.
+    pub prior_matured_notes: Vec<String>,
     /// The grade-band parameter version the prior verdict's letter was computed under
     /// (from the prior run's audit row; `None` = a pre-stamp run, i.e. the v1 bands).
     /// Meaningful only beside `prior_verdict` — the interpretation prompt compares it
@@ -90,6 +102,14 @@ pub struct PriorHolding {
     pub grade_parameter_version: Option<String>,
     /// The prior pre-profit overlay record — the observation history's carry path.
     pub pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
+    /// The prior run's `created_at` — the retrospective's "since" anchor.
+    pub run_created_at: String,
+    /// The prior run's authoring-time spot (its audit's quick-check basis print) —
+    /// the base the retrospective's realized price move computes against. `None`
+    /// where the prior audit carried no basis.
+    pub spot: Option<f64>,
+    /// The prior run's matured outcome-window lines for this symbol.
+    pub matured_notes: Vec<String>,
 }
 
 impl HoldingDossier {
@@ -225,9 +245,23 @@ pub fn assemble(
     prior: Option<PriorHolding>,
     listing: Option<crate::portfolio::listing::ListingResolution>,
 ) -> HoldingDossier {
-    let (prior_verdict, prior_grade_parameter_version, prior_pre_profit) = match prior {
-        Some(p) => (Some(p.verdict), p.grade_parameter_version, p.pre_profit),
-        None => (None, None, None),
+    let (
+        prior_verdict,
+        prior_grade_parameter_version,
+        prior_pre_profit,
+        prior_run_created_at,
+        prior_spot,
+        prior_matured_notes,
+    ) = match prior {
+        Some(p) => (
+            Some(p.verdict),
+            p.grade_parameter_version,
+            p.pre_profit,
+            Some(p.run_created_at),
+            p.spot,
+            p.matured_notes,
+        ),
+        None => (None, None, None, None, None, Vec::new()),
     };
     let mut fmp_financials = fmp_financials;
     let ttm_basis = apply_ttm_statement_basis(&mut fmp_financials);
@@ -282,6 +316,9 @@ pub fn assemble(
         house_view,
         fund,
         prior_verdict,
+        prior_run_created_at,
+        prior_spot,
+        prior_matured_notes,
         prior_grade_parameter_version,
         prior_pre_profit,
         listing,
@@ -419,14 +456,40 @@ pub fn prior_verdict_for(conn: &Connection, symbol: &str) -> Option<PriorHolding
         .audit
         .into_iter()
         .find(|a| a.symbol.eq_ignore_ascii_case(symbol));
-    let (grade_parameter_version, pre_profit) = match audit_row {
-        Some(a) => (a.grade_parameter_version, a.pre_profit),
-        None => (None, None),
+    let (grade_parameter_version, pre_profit, spot) = match audit_row {
+        Some(a) => {
+            let spot = a.quick_basis.as_ref().map(|b| b.spot);
+            (a.grade_parameter_version, a.pre_profit, spot)
+        }
+        None => (None, None, None),
     };
+    // The prior run's matured outcome lines for this symbol — the deterministic
+    // scored ground the retrospective block renders (empty until windows mature).
+    let matured_notes = run
+        .outcome
+        .as_ref()
+        .map(|o| {
+            o.matured
+                .iter()
+                .filter(|m| m.symbol.eq_ignore_ascii_case(symbol))
+                .map(|m| {
+                    let detail = match (m.total_return, m.price_return) {
+                        (Some(tr), _) => format!("total return {:+.1}%", tr * 100.0),
+                        (None, Some(pr)) => format!("price-only return {:+.1}%", pr * 100.0),
+                        _ => m.outcome.clone(),
+                    };
+                    format!("{}-month window {}: {}", m.window_months, m.outcome, detail)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Some(PriorHolding {
         verdict,
         grade_parameter_version,
         pre_profit,
+        run_created_at: run.created_at,
+        spot,
+        matured_notes,
     })
 }
 

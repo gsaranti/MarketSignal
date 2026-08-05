@@ -1683,6 +1683,8 @@ mod tests {
                 action: crate::portfolio::Action::Hold,
                 lean: Some(crate::portfolio::Action::Hold),
                 action_what_changed: None,
+                model_view: None,
+                engine_view: None,
                 action_sizing: crate::portfolio::ActionSizing {
                     target_weight_low: 0.02,
                     target_weight_high: 0.08,
