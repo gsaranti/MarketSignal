@@ -169,8 +169,14 @@ stage-and-swap is a named, unscheduled hardening.
   adds Commitments-of-Traders positioning — the one signal the price /
   valuation / macro / credit groups can't give (how crowded the speculative
   cohort is) — as a fail-soft, additive group. Gated adapters share a bounded,
-  `Retry-After`-aware retry/backoff; GDELT is excluded — its escalating IP
-  lockout makes retrying harmful, so it stays single-shot fail-soft. **Fixed
+  `Retry-After`-aware retry/backoff, parameterized per provider since
+  2026-08-05: **FMP rides a minute-crossing 429 ladder** (63 s cumulative
+  over seven attempts — probe-verified that the paid plan's per-minute limit
+  arrives as an HTTP 429 with a burst bucket tripping well under the headline
+  200/min; 5xx keeps the short schedule so a down provider fails fast, and
+  backoff sleeps poll the run's cancel flag in ~250 ms slices) while every
+  other adapter keeps the short default; GDELT is excluded — its escalating
+  IP lockout makes retrying harmful, so it stays single-shot fail-soft. **Fixed
   internal models** are non-configurable and distinct from the four
   user-selectable agent models: GPT-5 mini (headline filtering), Claude Sonnet
   (research routing), `text-embedding-3-large` (embeddings). Inbox document
