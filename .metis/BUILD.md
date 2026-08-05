@@ -542,7 +542,15 @@ load-bearing decisions:
   The ledger rides `HoldingVerdict` in the run blob (pre-ledger runs decode
   as the debut path; insufficient-evidence retains it unchanged), anchored
   on the Portfolio card by the kit's ThesisAnchor (3-line clamp, measured
-  reveal). Between runs the **quick check** keeps it live (built
+  reveal) — and since 2026-08-05 (B10+B13, one combined UI slice,
+  `1bc21d2`) the card renders the ledger's bear/base/bull **monitor** on
+  both verdict branches (the kit-Scenarios strip + the monitor-level
+  goalposts; condition-only on `role_risk_only` — the target line drops on
+  the structural null; historical views included — run content, not live
+  state), with the momentum tile set apart from the three letter tiles as
+  the **"Setup" market-setup read** under an always-visible caption (the
+  hover-only forms were ruled insufficient — no in-system hairline clears
+  3:1). Between runs the **quick check** keeps it live (built
   2026-08-03, PR #56; eight review rounds to convergence) — engine-only,
   no model / web / Schwab call, a single-row `portfolio_quick_checks`
   store deliberately **never** `portfolio_runs` (history, `latest_run`,
@@ -847,11 +855,11 @@ the construction stage now populates (lean divergence recorded without an
 episode-schema migration, exactly as reserved).
 
 **The pre-test block is built; the 2026-08-04 B-ruling batch (piece-2
-record §Rulings, `a5992f4`) queued five further pre-run slices — B12
-(the context-fit instrumentation) landed same day, B3 (the
-listing-resolution guard) and B7 (the investor-profile alignment) landed
-2026-08-05, two remain: B10 momentum-tile differentiation, B13
-monitor render.** The
+record §Rulings, `a5992f4`) queued five further pre-run slices — all
+five landed: B12 (the context-fit instrumentation) same day, B3 (the
+listing-resolution guard), B7 (the investor-profile alignment), and the
+B10+B13 card-display pair (one combined UI slice, `1bc21d2`) on
+2026-08-05.** The
 last result-review UI fix, the **section-scoped footer + report-nav
 slice**, landed 2026-08-04 (`c9b660e`, direct to main): `jobs::JobStatus`
 reshaped to per-section `report` / `portfolio` stamp groups scoped by
@@ -870,9 +878,9 @@ price / avg cost / cost basis under the unrealized figure, sub-2%
 weight-band decimal precision, and Hold's "maintain" phrasing; one Codex
 round, the short-position finding disputed on engine-reachability
 evidence — net-short is not-rated pre-routing, so no full card pairs with
-a signed row — with its regression-case half adopted.) Next: the remaining
-B-ruled pair (B10+B13, plausibly one UI slice), then the single big
-confirmation run banks the
+a signed row — with its regression-case half adopted.) Next: review
+piece 3 (the value-chain correctness walk, its own session — a review,
+not a build item), then the single big confirmation run banks the
 stacked runtime confirmations above. Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
 shipped schemas don't preclude them — but the research-loop slice **must**
