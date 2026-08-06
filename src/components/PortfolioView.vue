@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { etDayDiff } from "../etDate";
 import { localDate, localDateTime } from "../format";
 import type {
   ActionWhatChanged,
@@ -221,17 +222,18 @@ function degradedBadge(h: HoldingQuickState): { text: string; title: string } | 
 // A verdict whose analyzed_at is older than the run's created_at was not
 // re-analyzed by that run — a selective run's carry, or an abstention holding
 // its prior vintage — the stamp the card shows. Over-age mirrors the engine's
-// 28-day carry boundary (job.rs OVER_AGE_DAYS — recalibrate both together);
-// quiet informational tags, never the amber action color.
+// 28-day carry boundary exactly: whole ET session days, date-diffed (job.rs
+// OVER_AGE_DAYS + market_clock::et_date_of — recalibrate both together; a
+// fractional-ms age disagreed with the engine around the boundary); quiet
+// informational tags, never the amber action color.
 const OVER_AGE_DAYS = 28;
 function carriedStamp(
   v: HoldingVerdict
 ): { text: string; title: string } | null {
   const run = props.run;
   if (!run || !v.analyzed_at || v.analyzed_at === run.created_at) return null;
-  const ageDays =
-    (Date.parse(run.created_at) - Date.parse(v.analyzed_at)) / 86_400_000;
-  if (!Number.isFinite(ageDays)) return null;
+  const ageDays = etDayDiff(v.analyzed_at, run.created_at);
+  if (ageDays === null) return null;
   const when = localDate(v.analyzed_at);
   return ageDays > OVER_AGE_DAYS
     ? {

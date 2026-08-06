@@ -20,9 +20,37 @@
 //! rare wrong "open" label on a holiday is small next to a holiday table that needs yearly
 //! maintenance; revisit if it proves misleading in practice.
 
-use chrono::{DateTime, Datelike, Timelike, Utc, Weekday};
+use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc, Weekday};
 use chrono_tz::America::New_York;
 use chrono_tz::Tz;
+
+/// The US/Eastern calendar date of a UTC instant — the market's session date.
+///
+/// Every persisted run/vintage instant is UTC RFC3339, but the trading day it
+/// belongs to is the ET day: an evening-ET run (after ~8 PM EDT / 7 PM EST) has
+/// already rolled to the next UTC date, so truncating the UTC string to its date
+/// prefix dates the run one session late. Everything that keys a vintage,
+/// evidence boundary, entry anchor, or basis bridge to a session dates through
+/// here (`docs/portfolio-analysis.md` §Outcome learning, §The quick check).
+pub fn et_session_date(utc: DateTime<Utc>) -> NaiveDate {
+    utc.with_timezone(&New_York).date_naive()
+}
+
+/// The ET session date of a persisted timestamp string.
+///
+/// A full RFC3339 instant converts to its US/Eastern calendar date; a string
+/// that does not parse as an instant falls back to its bare `YYYY-MM-DD` prefix
+/// (a date-only value carries no instant to convert, and a malformed timestamp
+/// degrades to the old prefix read rather than vanishing); `None` when neither
+/// parses.
+pub fn et_date_of(stamp: &str) -> Option<NaiveDate> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(stamp) {
+        return Some(dt.with_timezone(&New_York).date_naive());
+    }
+    stamp
+        .get(..10)
+        .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+}
 
 /// Regular-session open, minutes since ET midnight (9:30 AM).
 const SESSION_OPEN_MINUTES: u32 = 9 * 60 + 30;
@@ -262,5 +290,78 @@ mod tests {
         // The offline/stub path has no real `as_of`, so the block is omitted entirely.
         assert_eq!(MarketClock::default().session(), None);
         assert!(MarketClock::default().main_agent_guidance().is_none());
+    }
+
+    #[test]
+    fn et_session_date_rolls_back_across_utc_midnight() {
+        // 2026-08-05 01:30 UTC = 2026-08-04 21:30 EDT — the ET session day is the 4th.
+        assert_eq!(
+            et_session_date(utc(2026, 8, 5, 1, 30)),
+            NaiveDate::from_ymd_opt(2026, 8, 4).unwrap(),
+        );
+        // Winter (EST, UTC-5): 2026-01-07 03:30 UTC = 2026-01-06 22:30 EST.
+        assert_eq!(
+            et_session_date(utc(2026, 1, 7, 3, 30)),
+            NaiveDate::from_ymd_opt(2026, 1, 6).unwrap(),
+        );
+        // A daytime instant stays on its own date.
+        assert_eq!(
+            et_session_date(utc(2026, 6, 23, 16, 4)),
+            NaiveDate::from_ymd_opt(2026, 6, 23).unwrap(),
+        );
+    }
+
+    #[test]
+    fn et_date_of_exotic_forms_pin_the_frontend_parity_contract() {
+        // The grammar the frontend mirrors byte-for-byte (src/etDate.ts,
+        // tests/etDate.test.ts — same cases): chrono's RFC3339 parse accepts
+        // space / 't' separators, lowercase 'z', fractional seconds, and the
+        // :60 leap second — each converting to the ET day (one earlier inside
+        // the evening window) — and rejects hour 24+, minute 60, second 61+,
+        // and a colon-less offset, degrading to the date prefix.
+        let et = |s: &str| et_date_of(s).map(|d| d.to_string());
+        assert_eq!(et("2026-08-06 01:30:00+00:00").as_deref(), Some("2026-08-05"));
+        assert_eq!(et("2026-08-06t01:30:00+00:00").as_deref(), Some("2026-08-05"));
+        assert_eq!(et("2026-08-06T01:30:00z").as_deref(), Some("2026-08-05"));
+        assert_eq!(
+            et("2026-08-06T01:30:00.123+00:00").as_deref(),
+            Some("2026-08-05"),
+        );
+        assert_eq!(
+            et("2026-08-06T01:30:60+00:00").as_deref(),
+            Some("2026-08-05"),
+            "the :60 leap second converts, not prefix-degrades",
+        );
+        // Rejected instants degrade to the prefix — the shared fallback. The
+        // hour-24 case uses a negative offset so conversion and prefix would
+        // disagree (conversion would read 08-06): the prefix read proves the
+        // parse rejected it.
+        assert_eq!(et("2026-08-05T24:00:00-06:00").as_deref(), Some("2026-08-05"));
+        assert_eq!(et("2026-08-06T25:00:00+00:00").as_deref(), Some("2026-08-06"));
+        assert_eq!(et("2026-08-06T01:60:00+00:00").as_deref(), Some("2026-08-06"));
+        assert_eq!(et("2026-08-06T01:30:61+00:00").as_deref(), Some("2026-08-06"));
+        assert_eq!(et("2026-08-06T01:30:00+0000").as_deref(), Some("2026-08-06"));
+    }
+
+    #[test]
+    fn et_date_of_parses_instants_dates_and_degrades() {
+        // A full RFC3339 instant converts through the ET offset.
+        assert_eq!(
+            et_date_of("2026-08-05T01:30:00+00:00"),
+            NaiveDate::from_ymd_opt(2026, 8, 4),
+        );
+        // A date-only string carries no instant — taken as-is.
+        assert_eq!(
+            et_date_of("2026-08-05"),
+            NaiveDate::from_ymd_opt(2026, 8, 5),
+        );
+        // A malformed timestamp degrades to its date prefix rather than vanishing.
+        assert_eq!(
+            et_date_of("2026-08-05T99:99:99"),
+            NaiveDate::from_ymd_opt(2026, 8, 5),
+        );
+        // Garbage parses as nothing.
+        assert_eq!(et_date_of("soon"), None);
+        assert_eq!(et_date_of(""), None);
     }
 }

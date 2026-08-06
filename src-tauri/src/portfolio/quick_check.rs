@@ -556,14 +556,20 @@ fn sweep_eligible(verdict: &HoldingVerdict) -> bool {
         )
 }
 
-/// A verdict's effective last-full-pass **date** (YYYY-MM-DD) inside the run
-/// whose `created_at` is given — the per-holding "since the last full pass"
-/// boundary ([`crate::portfolio::effective_vintage`]).
+/// A verdict's effective last-full-pass **ET session date** (YYYY-MM-DD) inside
+/// the run whose `created_at` is given — the per-holding "since the last full
+/// pass" boundary ([`crate::portfolio::effective_vintage`]). ET, not the UTC
+/// date prefix: an evening-ET pass has already rolled to the next UTC date, and
+/// a UTC-dated boundary would hide the pass's own ET day *and* the entire next
+/// ET day from the date-only filing/earnings feeds
+/// ([`crate::market_clock::et_date_of`]).
 fn vintage_date(verdict: &HoldingVerdict, run_created_at: &str) -> String {
-    crate::portfolio::effective_vintage(verdict, run_created_at)
-        .chars()
-        .take(10)
-        .collect()
+    let vintage = crate::portfolio::effective_vintage(verdict, run_created_at);
+    match crate::market_clock::et_date_of(vintage) {
+        Some(d) => d.format("%Y-%m-%d").to_string(),
+        // Unparseable vintage: the old prefix read, degraded rather than absent.
+        None => vintage.chars().take(10).collect(),
+    }
 }
 
 /// One holding's sweep assignment: the position whose quantity and fresh mark the
@@ -827,10 +833,18 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 note: Some(format!("EDGAR sweep failed: {e}")),
             }),
             FilingSweep::Filings(rows) => {
+                // Inclusive of the boundary day: filing dates are date-only, so
+                // a filing landing later on the pass's own ET day cannot be told
+                // apart from one the pass already saw. Inclusive re-raises a
+                // seen boundary-day item on every sweep — and force-includes the
+                // holding — until a full pass on a *later* ET day advances the
+                // vintage past it (a same-day re-pass re-lands on the boundary);
+                // strict `>` would instead hide the unseen one permanently. One
+                // contract across the filing / earnings / news legs.
                 let fresh_material: Vec<&RecentFiling> = rows
                     .iter()
                     .filter(|f| {
-                        f.filing_date.as_str() > inp.last_pass_date
+                        f.filing_date.as_str() >= inp.last_pass_date
                             && MATERIAL_FORMS.iter().any(|m| f.form.starts_with(m))
                     })
                     .collect();
@@ -937,7 +951,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             Ok(rows) => {
                 if let Some(row) = rows
                     .iter()
-                    .find(|r| r.date.as_str() > inp.last_pass_date && r.eps_actual.is_some())
+                    // Inclusive, matching the filing leg's boundary contract.
+                    .find(|r| r.date.as_str() >= inp.last_pass_date && r.eps_actual.is_some())
                 {
                     events.push(event(
                         EvidenceEventKind::EarningsActual,
@@ -1950,6 +1965,48 @@ mod tests {
                 .iter()
                 .any(|e| e.kind == EvidenceEventKind::EarningsActual),
             "the fresh holding's own vintage bounds its event window"
+        );
+    }
+
+    #[test]
+    fn the_evidence_boundary_is_the_inclusive_et_session_date() {
+        // An evening-ET full pass: 2026-08-05 01:30 UTC = 2026-08-04 21:30 EDT.
+        // The boundary is the ET session day (the 4th), inclusive: an 8-K and an
+        // earnings actual dated the pass's own ET day are visible to the sweep.
+        // Under the old UTC-prefix strict boundary (`> "2026-08-05"`) both were
+        // permanently invisible — the piece-3 ruling-1 repro.
+        let conn = mem();
+        let mut verdict = priced_verdict("AAPL", vec![]);
+        verdict.analyzed_at = Some("2026-08-05T01:30:00+00:00".into());
+        let mut run = sample_run(verdict, audit_for("AAPL", Some(basis())));
+        run.created_at = "2026-08-05T01:30:00+00:00".into();
+        store::insert_run(&conn, &run).unwrap();
+        let mut data = StubData::quiet(195.0, "2026-08-05");
+        data.filings = FilingSweep::Filings(vec![RecentFiling {
+            form: "8-K".into(),
+            filing_date: "2026-08-04".into(),
+        }]);
+        data.earnings = Ok(vec![SymbolEarningsRow {
+            date: "2026-08-04".into(),
+            eps_actual: Some(2.10),
+            eps_estimated: Some(2.00),
+            revenue_actual: None,
+        }]);
+        let state = run_quick_check(&data, &conn, &noop_ctx()).unwrap();
+        let h = &state.holdings[0];
+        assert!(
+            h.evidence_events
+                .iter()
+                .any(|e| e.kind == EvidenceEventKind::MaterialFiling),
+            "a filing on the pass's own ET day is visible: {:?}",
+            h.evidence_events
+        );
+        assert!(
+            h.evidence_events
+                .iter()
+                .any(|e| e.kind == EvidenceEventKind::EarningsActual),
+            "an earnings actual on the pass's own ET day is visible: {:?}",
+            h.evidence_events
         );
     }
 
