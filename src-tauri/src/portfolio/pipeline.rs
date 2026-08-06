@@ -4,8 +4,9 @@
 //! → interpret + grade → continuity. The engine owns the baseline arm's numbers;
 //! since `portfolio-v7` the model additionally authors its own arm — sub-scores,
 //! target bands, the retrospective self-assessment — beside the judgment calls and
-//! prose ([`crate::portfolio::Interpretation`]), model values never feeding a
-//! deterministic consumer.
+//! prose ([`crate::portfolio::Interpretation`]), model values never steering a
+//! deterministic decision consumer (the letter derivation, display, and
+//! scoreboard scoring are the sanctioned readers).
 //!
 //! The model stages live behind the [`HoldingAnalyst`] trait so `cargo test` runs the
 //! whole pipeline offline against [`StubAnalyst`] with no daemon, while the live
@@ -1274,7 +1275,8 @@ pub fn validate_ledger_rewrite(
 
 /// The system prompt for the interpretation stage — the role and the two-arm
 /// contract: the engine arm's numbers are the app's, the model arm's are the
-/// model's own, and model values never feed a deterministic consumer.
+/// model's own, and model values never steer a deterministic decision consumer
+/// (the letter derivation and scoreboard scoring are the sanctioned readers).
 pub fn interpretation_system_prompt() -> String {
     "You are a disciplined equity analyst grading one holding for a prescriptive \
      portfolio review. The verdict has TWO ARMS. The ENGINE ARM — sub-scores, the \

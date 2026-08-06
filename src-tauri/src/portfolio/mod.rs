@@ -14,8 +14,10 @@
 //! grade, scenario price targets, the options-activity signal, the mechanical
 //! stand-ins), and since `portfolio-v7` the model authors its **own arm** beside
 //! it — its sub-scores, derived letter, and target bands, plus the lean,
-//! conviction, horizon reads, and prose — with model values never feeding a
-//! deterministic consumer. The engine grade stays a deterministic roll-up of the
+//! conviction, horizon reads, and prose — with model values never steering a
+//! deterministic decision consumer (the sanctioned deterministic readers: the
+//! letter derivation, display, scoreboard scoring). The engine grade stays a
+//! deterministic roll-up of the
 //! engine's sub-scores, never a model gestalt; the model's letter derives from
 //! the model's own sub-scores through the same shared cutoffs.
 
@@ -615,10 +617,11 @@ pub struct ModelPriceTargets {
 /// The model arm of the two-arm verdict (`docs/portfolio-analysis.md` §The holding
 /// verdict): the model's own read of fields the engine also computes, authored with
 /// the engine's values in the prompt as evidence and **never validated against
-/// them**. It never feeds a deterministic consumer — the quick check, hurdle tests,
-/// monitor stamps, and outcome labels read engine values only; these values are
-/// displayed, scored by the outcome scoreboard, and carried into the next run's
-/// retrospective. Beside this struct, the model-authored `conviction`,
+/// them**. It never steers a deterministic decision consumer — the quick check,
+/// hurdle tests, monitor stamps, and outcome labels read engine values only; the
+/// sanctioned deterministic readers are the letter derivation (through the shared
+/// cutoffs), display, and the scoreboard's scoring, and these values carry into
+/// the next run's retrospective. Beside this struct, the model-authored `conviction`,
 /// `horizon_outlook`, and `lean` on [`GradedVerdict`] complete the arm.
 /// `None` on runs persisted before `portfolio-v7`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1432,7 +1435,8 @@ pub struct HoldingAudit {
 /// render into the prompt (the retrospective — deliberately reversing the v4
 /// anchoring guard), and the engine gains its mechanical stand-in arm
 /// ([`EngineView`]) so every model field has a scored baseline counterpart.
-/// Model-arm values never feed a deterministic consumer.
+/// Model-arm values never steer a deterministic decision consumer (the letter
+/// derivation and the scoreboard's scoring are the sanctioned readers).
 pub const PROMPT_VERSION: &str = "portfolio-v7";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local

@@ -6,7 +6,8 @@
 //! the mechanical stand-ins. The engine never guesses — a missing input becomes a
 //! gap, never a fabricated level. Since `portfolio-v7` the model authors its own
 //! arm's numbers beside these (sub-scores, target bands — typed model-authored),
-//! and model values never feed a deterministic consumer.
+//! and model values never steer a deterministic decision consumer — the letter
+//! derivation, display, and scoreboard scoring are the sanctioned readers.
 //!
 //! All formulas are simple, bounded, and **calibratable** — the grade-weight
 //! formula, the risk-tier thresholds, and the options-signal parameters are the
