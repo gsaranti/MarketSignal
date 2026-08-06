@@ -351,14 +351,14 @@ pub struct SelectiveRun<'a> {
 /// — recalibrating one means recalibrating both.
 const OVER_AGE_DAYS: i64 = 28;
 
-/// Whether a vintage timestamp is over-age against `today`. An unparseable
+/// Whether a vintage timestamp is over-age against `today`. Both sides date on
+/// the ET session ([`crate::market_clock::et_date_of`] / callers passing an ET
+/// `today`), never the UTC date prefix — an evening-ET vintage would otherwise
+/// read one day younger than the session it belongs to. An unparseable
 /// vintage reads over-age — the conservative resolution, since the stale-carry
 /// rules exist to keep an unverifiable strong action from standing.
 fn over_age(vintage: &str, today: chrono::NaiveDate) -> bool {
-    match vintage
-        .get(..10)
-        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-    {
+    match crate::market_clock::et_date_of(vintage) {
         Some(d) => (today - d).num_days() > OVER_AGE_DAYS,
         None => true,
     }
@@ -558,7 +558,17 @@ fn run_analysis(
     // last run; the safety sweep and the deterministic legs below then expand it
     // with every force-inclusion. `None` = the whole-book run — including a
     // selective request with an empty selection or no prior run to carry from.
-    let today = chrono::Utc::now().date_naive();
+    // The run's one wall-clock instant, minted before any dated decision: the
+    // over-age reads, the label pass, and the persisted `created_at` (which the
+    // card's stale badge ages against) all derive from it, so an hours-long run
+    // crossing ET midnight cannot demote on one ET day and render the badge on
+    // the next. Run identity is insertion order (`id`); `created_at` is display
+    // and vintage data, so stamping at run start is a display choice — and the
+    // one that matches the session the run's data belongs to.
+    let created_at = now_rfc3339();
+    // ET, pairing with the ET-dated vintages `over_age` compares against.
+    let today = crate::market_clock::et_date_of(&created_at)
+        .unwrap_or_else(|| crate::market_clock::et_session_date(chrono::Utc::now()));
     let mut swept_tail: std::collections::HashMap<
         String,
         crate::portfolio::quick_check::HoldingQuickState,
@@ -914,11 +924,11 @@ fn run_analysis(
         audits.push(audit);
     }
 
-    let created_at = now_rfc3339();
     // Stamp each fresh pass's analysis vintage with the run's own `created_at`
-    // (`docs/portfolio-analysis.md` §Triggering — carried verdicts ride
-    // vintage-stamped, so a fresh one must be distinguishable). An abstention
-    // already carries its preserved prior vintage from the loop.
+    // (minted at run start, above — `docs/portfolio-analysis.md` §Triggering:
+    // carried verdicts ride vintage-stamped, so a fresh one must be
+    // distinguishable). An abstention already carries its preserved prior
+    // vintage from the loop.
     for v in &mut verdicts {
         if !matches!(
             v.disposition,
@@ -1576,6 +1586,20 @@ mod tests {
     use crate::portfolio::pipeline::StubAnalyst;
     use crate::portfolio::{AssetClass, PositionChange};
     use crate::schwab::{FixtureHoldingsSource, Position};
+
+    #[test]
+    fn over_age_dates_the_vintage_on_its_et_session() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 8, 5).unwrap();
+        // 2026-07-08 01:30 UTC = 2026-07-07 21:30 EDT: the vintage belongs to
+        // the ET session of the 7th — 29 days before today, over-age. The UTC
+        // date prefix (the 8th, exactly 28 days) would have read it one day
+        // younger and let the carry stand.
+        assert!(over_age("2026-07-08T01:30:00+00:00", today));
+        // A daytime vintage on the boundary day itself stays within age.
+        assert!(!over_age("2026-07-08T15:00:00+00:00", today));
+        // Unparseable stays conservatively over-age.
+        assert!(over_age("soon", today));
+    }
 
     /// The context-fit fold: a call at or past the pressure fraction of its
     /// `num_ctx` is named in the summary and trips attention; the peak fill is

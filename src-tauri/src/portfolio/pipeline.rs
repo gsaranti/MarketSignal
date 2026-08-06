@@ -1551,7 +1551,10 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
         let anchor_close = d
             .prior_vintage
             .as_deref()
-            .and_then(crate::portfolio::outcome::parse_iso_date_prefix)
+            // The vintage instant's ET session date, matching the outcome
+            // slice's anchor dating — a UTC date prefix would key an evening-ET
+            // vintage to a session traded entirely after the prior read.
+            .and_then(crate::market_clock::et_date_of)
             .and_then(|day| {
                 crate::portfolio::outcome::anchor_session_close(&d.financials.daily_closes, day)
             })
@@ -3628,6 +3631,43 @@ mod tests {
         });
         assert!(!debut_user.contains("RETROSPECTIVE"), "{debut_user}");
         assert!(debut_user.contains("new holding (no prior verdict)"), "{debut_user}");
+    }
+
+    #[test]
+    fn retrospective_bridge_keys_the_prior_vintage_to_its_et_session() {
+        // An evening-ET prior read: 2026-07-30 01:30 UTC = 2026-07-29 21:30 EDT
+        // — the vintage belongs to the ET session of the 29th. The bridge must
+        // key that session's close (180), not the UTC-dated 30th's (250, a
+        // session traded entirely after the prior read).
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let (prior, _) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-07-29").unwrap();
+        d.prior_verdict = Some(prior);
+        d.prior_vintage = Some("2026-07-30T01:30:00Z".into());
+        d.prior_spot = Some(180.0);
+        d.financials.daily_closes.push(DatedValue {
+            date: "2026-07-29".into(),
+            value: 180.0,
+        });
+        d.financials.daily_closes.push(DatedValue {
+            date: "2026-07-30".into(),
+            value: 250.0,
+        });
+
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let feasible = vec![Action::SellAll, Action::Trim, Action::Hold];
+        let user = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "distilled findings",
+            lean_set: &feasible,
+            ledger_eval: None,
+            pre_profit: None,
+        });
+        assert!(user.contains("anchor close 180.00"), "{user}");
     }
 
     #[test]

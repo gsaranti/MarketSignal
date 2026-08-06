@@ -68,13 +68,14 @@ pub const MARKET_BENCHMARK: &str = "^spx";
 /// the label value is the last close at or before the window end either way).
 const COVERAGE_TOLERANCE_DAYS: i64 = 4;
 
-/// Session-proximity bound around the anchor, in calendar days (long weekend +
-/// holiday headroom). It bounds both anchor-adjacent reads: the "next session's
-/// close" **after** the anchor (the entry) and the anchor-session close **at or
-/// before** it (the basis bridge). A bar beyond the bound on either side is not
-/// an anchor-adjacent session — a late series start, a sparse cache — so the
-/// entry case holds the window pending and the bridge case excludes the
-/// bridge-dependent reads, never a much-later entry or a years-stale bridge.
+/// Session-proximity bound around a keyed session, in calendar days (long
+/// weekend + holiday headroom). It bounds both session-adjacent reads: the
+/// "next session's close" **after** the episode anchor (the entry) and the
+/// close **at or before** the intrinsic-vintage session (the basis bridge). A
+/// bar beyond the bound on either side is not an adjacent session — a late
+/// series start, a sparse cache — so the entry case holds the window pending
+/// and the bridge case excludes the bridge-dependent reads, never a much-later
+/// entry or a years-stale bridge.
 const ENTRY_TOLERANCE_DAYS: i64 = 7;
 
 /// Calendar-day pad on fetch ranges, so the entry anchor (the first session after
@@ -387,14 +388,18 @@ pub struct ScoredLabel {
     pub entry_price: f64,
     pub end_date: String,
     pub end_price: f64,
-    /// The label-basis close **at or before the anchor date** — the same-session
-    /// counterpart of the snapshot's authoring spot, so authored absolute prices
-    /// (band edges, the bear line) convert into the label basis as
-    /// `price × anchor_close ⁄ authoring_spot`. The next-session entry cannot
-    /// serve this role: it sits an overnight gap away from the spot, which would
-    /// shear the comparison. `None` when the series carried no bar at or before
-    /// the anchor — those labels are excluded from band scoring (the residual
-    /// error of the bridge is intraday quote-vs-close, never a split or a gap).
+    /// The label-basis close **at or before the intrinsic-vintage ET session**
+    /// — the same-session counterpart of the snapshot's authoring spot, so
+    /// authored absolute prices (band edges, the bear line) convert into the
+    /// label basis as `price × anchor_close ⁄ authoring_spot`. Keyed at the
+    /// intrinsic vintage, not the episode anchor: the spot and targets belong to
+    /// the intrinsic pass, older than the anchor on a rule-demotion open (for
+    /// vintage-fresh episodes the two key the same session). The next-session
+    /// entry cannot serve this role: it sits an overnight gap away from the
+    /// spot, which would shear the comparison. `None` when the series carried no
+    /// proximate bar at or before that session — those labels are excluded from
+    /// band scoring (the residual error of the bridge is intraday
+    /// quote-vs-close, never a split or a gap).
     #[serde(default)]
     pub anchor_close: Option<f64>,
     /// Price-only forward return — the cross-entry common basis.
@@ -461,9 +466,13 @@ pub struct DecisionEpisode {
 }
 
 impl DecisionEpisode {
-    /// The anchor date (the run date the windows key on).
+    /// The anchor date (the run date the windows key on) — the anchor instant's
+    /// **ET session date** ([`crate::market_clock::et_date_of`]), never the UTC
+    /// date prefix: an evening-ET run has rolled to the next UTC date, and a
+    /// UTC-dated anchor keys the entry one session late and the basis bridge to
+    /// a session traded entirely after the decision.
     pub fn anchor_date(&self) -> Option<NaiveDate> {
-        parse_iso_date_prefix(&self.anchor_at)
+        crate::market_clock::et_date_of(&self.anchor_at)
     }
 
     fn body_action(&self) -> Action {
@@ -961,6 +970,40 @@ pub fn mature_labels(
         pending_coverage: Vec::new(),
         changed: HashSet::new(),
     };
+    // The per-series fetch floor: the earliest active-episode anchor touching
+    // each fetched symbol (the holding itself, the market benchmark, the sector
+    // benchmark), so the one fetch per symbol per pass spans every active
+    // episode's windows on a single adjustment basis. Floored at the fetching
+    // episode's own anchor instead, a partial-range merge after a split could
+    // leave one series in two bases, and a second episode with an older anchor
+    // had no fetch left to heal its start coverage (piece-3 ruling 9).
+    let mut fetch_floor: HashMap<String, NaiveDate> = HashMap::new();
+    for ep in episodes.iter() {
+        if ep.state != EpisodeState::Active {
+            continue;
+        }
+        let Some(anchor) = ep.anchor_date() else {
+            continue;
+        };
+        let mut floor = |symbol: &str| {
+            fetch_floor
+                .entry(symbol.to_ascii_uppercase())
+                .and_modify(|d| *d = (*d).min(anchor))
+                .or_insert(anchor);
+        };
+        floor(&ep.symbol);
+        floor(MARKET_BENCHMARK);
+        if let Some(b) = &ep.sector.benchmark {
+            floor(b);
+        }
+    }
+    let floor_for = |fetch_floor: &HashMap<String, NaiveDate>, symbol: &str, own: NaiveDate| {
+        fetch_floor
+            .get(&symbol.to_ascii_uppercase())
+            .copied()
+            .unwrap_or(own)
+            .min(own)
+    };
     for ep in episodes.iter_mut() {
         if ep.state != EpisodeState::Active {
             continue;
@@ -969,6 +1012,24 @@ pub fn mature_labels(
             continue;
         };
         let mut changed = false;
+        // Pending window ends re-derive from the (ET) anchor and re-stamp when
+        // the stored string disagrees — an episode persisted before ET dating
+        // carries UTC-keyed ends, which would pair the healed ET entry with a
+        // horizon one session long. Recorded labels keep their stamps (they
+        // scored under the end they carry); the re-stamp persists via
+        // `summary.changed`, a one-time self-heal per legacy episode.
+        for l in ep.labels.iter_mut() {
+            if !matches!(l.outcome, LabelOutcome::Pending) {
+                continue;
+            }
+            let expect = window_end(anchor, l.window_months)
+                .format("%Y-%m-%d")
+                .to_string();
+            if l.window_end != expect {
+                l.window_end = expect;
+                changed = true;
+            }
+        }
         // The furthest window this pass will read, so the symbol is fetched once.
         let due_ends: Vec<NaiveDate> = ep
             .labels
@@ -978,9 +1039,15 @@ pub fn mature_labels(
             .filter(|end| *end <= today)
             .collect();
         let Some(furthest) = due_ends.iter().max().copied() else {
+            // No due window this pass — still persist a re-keyed end set.
+            if changed {
+                summary.changed.insert(ep.episode_id.clone());
+            }
             continue;
         };
-        let closes = ctx.series(&ep.symbol, anchor, furthest).to_vec();
+        let closes = ctx
+            .series(&ep.symbol, floor_for(&fetch_floor, &ep.symbol, anchor), furthest)
+            .to_vec();
         let entry = entry_close(&closes, anchor).cloned();
         // One dividends pull per episode serves every scoring window (the
         // furthest due end bounds the span) — never one request per window.
@@ -992,17 +1059,26 @@ pub fn mature_labels(
         let sector_gap = ep.sector.unscorable.clone();
         // The label-basis close at the decision instant — the split-bridge the
         // authored absolute prices convert through ([`ScoredLabel::anchor_close`]),
-        // session-proximity-bounded like the entry.
-        let anchor_close = anchor_session_close(&closes, anchor).map(|b| b.value);
+        // session-proximity-bounded like the entry — keyed at the episode's
+        // **intrinsic vintage** (ET session), not the episode anchor:
+        // `authoring_spot` and the authored targets belong to the intrinsic
+        // pass, which on a rule-demotion open is older than the anchor run, and
+        // an anchor-keyed bridge sheared the line for vintage-stale episodes
+        // (piece-3 ruling 9). Vintage-fresh episodes key the same session either
+        // way.
+        let anchor_close = crate::market_clock::et_date_of(&ep.intrinsic_vintage)
+            .and_then(|d| anchor_session_close(&closes, d))
+            .map(|b| b.value);
         // The material-drawdown line converted into the **label basis** via that
         // bridge (`anchor_close × bear ⁄ authoring_spot`): the authored bear
         // target is an absolute price in its authoring-time basis, label-time
         // closes are retroactively split-adjusted, and both bridge legs share the
-        // decision instant — anchoring on the next-session entry instead would
+        // authoring instant — anchoring on the next-session entry instead would
         // inject its overnight gap into the line (an upward gap fabricates a
-        // breach, a downward one hides it). No spot or no anchor bar (pre-field
-        // episodes, a start-uncovered series) leaves the events unstamped,
-        // excluded from the read — never a cross-basis comparison.
+        // breach, a downward one hides it). No spot or no bridge bar (pre-field
+        // episodes, a start-uncovered series, an uncovered intrinsic session)
+        // leaves the events unstamped, excluded from the read — never a
+        // cross-basis comparison.
         let bear_line_12m = match &ep.body {
             EpisodeBody::Priced(p) => p
                 .snapshot
@@ -1067,10 +1143,17 @@ pub fn mature_labels(
             // Benchmark legs follow the same coverage rule: an uncovered
             // resolvable leg holds the whole window pending within grace, then
             // scores with the leg typed unavailable past it.
-            let market_series = ctx.series(MARKET_BENCHMARK, anchor, w_end).to_vec();
+            let market_series = ctx
+                .series(
+                    MARKET_BENCHMARK,
+                    floor_for(&fetch_floor, MARKET_BENCHMARK, anchor),
+                    w_end,
+                )
+                .to_vec();
             let market_ret = bench_return(&market_series, anchor, w_end);
-            let sector_series =
-                sector_bench.as_ref().map(|b| ctx.series(b, anchor, w_end).to_vec());
+            let sector_series = sector_bench
+                .as_ref()
+                .map(|b| ctx.series(b, floor_for(&fetch_floor, b, anchor), w_end).to_vec());
             let sector_ret = sector_series
                 .as_ref()
                 .and_then(|s| bench_return(s, anchor, w_end));
@@ -1681,7 +1764,10 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                     .unwrap_or_else(|| {
                         SectorIdentity::unscorable("no sector read at the anchor run")
                     });
-                let Some(anchor) = parse_iso_date_prefix(input.created_at) else {
+                // The ET session date, matching [`DecisionEpisode::anchor_date`]
+                // — the window ends stamped here key on the same day that
+                // read-side derivation yields.
+                let Some(anchor) = crate::market_clock::et_date_of(input.created_at) else {
                     continue;
                 };
                 let body = match &verdict.disposition {
@@ -1793,7 +1879,14 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
             {
                 continue;
             }
-            let confirmed_at: String = input.created_at.chars().take(10).collect();
+            // The confirmation's **ET session date** — the session whose print
+            // confirmed the crossing. The UTC date prefix would date an
+            // evening-ET run's confirmation one session late, and this is the
+            // one stamp `stamp_lead_times` compares against bar dates, so a
+            // late stamp understates the falsifier's lead time by a day.
+            let confirmed_at: String = crate::market_clock::et_date_of(input.created_at)
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| input.created_at.chars().take(10).collect());
             let (target, post_maturity) = {
                 // The latest active episode carries the current ledger's
                 // conditions; older still-maturing episodes' forecasts predate
@@ -2849,6 +2942,54 @@ mod tests {
             "the crossing belongs to the episode carrying the current ledger"
         );
         assert_eq!(episodes[1].falsifier_events.len(), 1);
+        // Noon UTC = the same ET day: the confirmation stamps the run's session.
+        assert_eq!(episodes[1].falsifier_events[0].confirmed_at, "2026-08-18");
+    }
+
+    #[test]
+    fn a_confirmation_stamps_the_et_session_date() {
+        // An evening-ET run: 2026-08-19 01:30 UTC = 2026-08-18 21:30 EDT. The
+        // confirmation belongs to the ET session whose print confirmed it — the
+        // UTC date prefix (the 19th) would place it one session late in the
+        // lead-time read (`stamp_lead_times` positions the first bar at or
+        // after this date).
+        let c1 = "2026-08-19T01:30:00+00:00";
+        let hold = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
+        let sector = HashMap::new();
+        let audit = HoldingAudit {
+            symbol: "AAPL".into(),
+            metrics: Default::default(),
+            sources: vec![],
+            model_ids: vec![],
+            prompt_version: "portfolio-v5".into(),
+            degraded_inputs: vec![],
+            target_meta: None,
+            grade_parameter_version: None,
+            ledger_audit: Some(crate::portfolio::LedgerAudit {
+                crossings: vec![crate::portfolio::ConditionCrossing {
+                    condition_id: "c-1".into(),
+                    statement: "margin below 15%".into(),
+                    role: crate::portfolio::ConditionRole::Falsifier,
+                    outcome: crate::portfolio::CrossingOutcome::Confirmed,
+                    observed_value: 0.12,
+                    threshold: 0.15,
+                    observation_id: "2026-08-18".into(),
+                }],
+                ..Default::default()
+            }),
+            quick_basis: None,
+            fund_exposure: None,
+            pre_profit: None,
+            hurdle: None,
+        };
+        let audits = vec![audit];
+        let mut episodes = Vec::new();
+        let mut input = plan_input("run-1", c1, &hold, None, &sector);
+        input.audits = &audits;
+        plan_episodes(&input, &mut episodes);
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].falsifier_events.len(), 1);
+        assert_eq!(episodes[0].falsifier_events[0].confirmed_at, "2026-08-18");
     }
 
     #[test]
@@ -3094,8 +3235,36 @@ mod tests {
         conn
     }
 
+    /// Wraps [`SyntheticPrices`] recording every `daily_closes` call's
+    /// `(symbol, from)` — the fetch-floor pin.
+    struct RecordingPrices {
+        inner: SyntheticPrices,
+        calls: std::cell::RefCell<Vec<(String, NaiveDate)>>,
+    }
+
+    impl OutcomePriceSource for RecordingPrices {
+        fn daily_closes(
+            &self,
+            symbol: &str,
+            from: NaiveDate,
+            to: NaiveDate,
+        ) -> Result<Vec<DatedValue>> {
+            self.calls.borrow_mut().push((symbol.to_string(), from));
+            self.inner.daily_closes(symbol, from, to)
+        }
+        fn dividend_history(
+            &self,
+            symbol: &str,
+            from: NaiveDate,
+            to: NaiveDate,
+        ) -> Result<Vec<DatedValue>> {
+            self.inner.dividend_history(symbol, from, to)
+        }
+    }
+
     fn old_episode(symbol: &str, anchor_at: &str) -> DecisionEpisode {
-        let anchor = parse_iso_date_prefix(anchor_at).unwrap();
+        // The ET session date, as the production open path stamps it.
+        let anchor = crate::market_clock::et_date_of(anchor_at).unwrap();
         DecisionEpisode {
             episode_id: format!("ep-{symbol}"),
             symbol: symbol.into(),
@@ -3222,6 +3391,141 @@ mod tests {
         let mut ctx2 = SeriesCtx::new(&conn, Some(&source2));
         let summary2 = mature_labels(&mut episodes, &mut ctx2, today, "2026-08-05");
         assert!(summary2.matured.is_empty());
+    }
+
+    #[test]
+    fn an_evening_et_anchor_keys_entry_and_bridge_to_the_et_session() {
+        // 2026-02-04 01:30 UTC = 2026-02-03 20:30 EST: the decision belongs to
+        // the ET session of Tue the 3rd. Entry = the next session's close (Wed
+        // the 4th) and the bridge = the 3rd's close. The old UTC-prefix dating
+        // anchored on the 4th — entry one session late (the 5th) and a bridge
+        // close from a session traded entirely after the decision.
+        let conn = mem_conn();
+        let mut episodes = vec![old_episode("ETAN", "2026-02-04T01:30:00+00:00")];
+        let source = SyntheticPrices {
+            fail_dividends: false,
+        };
+        let mut ctx = SeriesCtx::new(&conn, Some(&source));
+        let today = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+        mature_labels(&mut episodes, &mut ctx, today, "2026-05-01");
+        let scored = scored_for(&episodes[0], 1).expect("1-month scored");
+        assert_eq!(scored.entry_date, "2026-02-04", "next session after the ET day");
+        // The bridge close is the ET session's own bar: fetch floor 2026-02-03
+        // − 7 pad = 01-27 (i=0), so 02-03 is i=7 → 100 + 4 + 0.7.
+        let bridge = scored.anchor_close.expect("bridge covered");
+        assert!((bridge - 104.7).abs() < 1e-9, "{bridge}");
+        assert!((scored.entry_price - 104.8).abs() < 1e-9, "{}", scored.entry_price);
+    }
+
+    #[test]
+    fn the_bridge_keys_at_the_intrinsic_vintage_healed_by_the_shared_fetch_floor() {
+        // Two active episodes on one symbol: EP-OLD anchored 02-10 (vintage
+        // fresh) and EP-NEW anchored 03-10 carrying an intrinsic vintage of
+        // 02-10 (a rule-demotion open). The symbol fetch floors at the earliest
+        // active anchor (02-10), so EP-NEW's bridge session is covered — and the
+        // bridge keys at the intrinsic vintage's session close, not the episode
+        // anchor's (which would shear the bear line by the 02-10 → 03-10 move).
+        let conn = mem_conn();
+        let mut ep_new = old_episode("BRDG", "2026-03-10T12:00:00+00:00");
+        ep_new.episode_id = "ep-BRDG-new".into();
+        ep_new.intrinsic_vintage = "2026-02-10T12:00:00+00:00".into();
+        ep_new.vintage_fresh = false;
+        let mut episodes = vec![
+            old_episode("BRDG", "2026-02-10T12:00:00+00:00"),
+            ep_new,
+        ];
+        let source = RecordingPrices {
+            inner: SyntheticPrices {
+                fail_dividends: false,
+            },
+            calls: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut ctx = SeriesCtx::new(&conn, Some(&source));
+        let today = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+        mature_labels(&mut episodes, &mut ctx, today, "2026-05-01");
+        // One holding fetch, floored at the earliest active anchor − pad.
+        let calls = source.calls.borrow();
+        let brdg: Vec<_> = calls.iter().filter(|(s, _)| s == "BRDG").collect();
+        assert_eq!(brdg.len(), 1, "one fetch per symbol per pass: {calls:?}");
+        assert_eq!(
+            brdg[0].1,
+            NaiveDate::from_ymd_opt(2026, 2, 3).unwrap(),
+            "floored at the earliest active-episode anchor minus the pad"
+        );
+        drop(calls);
+        // Both episodes bridge through the 02-10 session close (i=7 from the
+        // 02-03 fetch start → 100 + 4 + 0.7): a vintage-fresh no-op for EP-OLD,
+        // the intrinsic-vintage keying for EP-NEW.
+        let old_scored = scored_for(&episodes[0], 1).expect("EP-OLD 1-month scored");
+        let new_scored = scored_for(&episodes[1], 1).expect("EP-NEW 1-month scored");
+        let old_bridge = old_scored.anchor_close.expect("EP-OLD bridge covered");
+        let new_bridge = new_scored.anchor_close.expect("EP-NEW bridge covered");
+        assert!((old_bridge - 104.7).abs() < 1e-9, "{old_bridge}");
+        assert!((new_bridge - 104.7).abs() < 1e-9, "{new_bridge}");
+        // EP-NEW's entry still keys on its own anchor (the session after 03-10).
+        assert_eq!(new_scored.entry_date, "2026-03-11");
+    }
+
+    #[test]
+    fn legacy_utc_keyed_pending_windows_re_key_to_the_et_anchor() {
+        // Episodes persisted before ET dating carry UTC-keyed window ends: an
+        // evening anchor (2026-02-04 01:30 UTC = ET 02-03) whose legacy labels
+        // were stamped from the UTC prefix (02-04 → 1-month end 03-04). The
+        // label pass re-derives pending ends from the ET anchor and persists
+        // the re-stamp, so the healed entry and the horizon share one session
+        // dating — including an episode with no window due this pass.
+        let conn = mem_conn();
+        let mut due = old_episode("LGCY", "2026-02-04T01:30:00+00:00");
+        due.labels = pending_labels(parse_iso_date_prefix("2026-02-04").unwrap());
+        assert_eq!(due.labels[0].window_end, "2026-03-04", "legacy UTC stamp");
+        let mut idle = old_episode("LGC2", "2026-04-21T01:30:00+00:00");
+        idle.episode_id = "ep-LGC2".into();
+        idle.labels = pending_labels(parse_iso_date_prefix("2026-04-21").unwrap());
+        let mut episodes = vec![due, idle];
+        let source = SyntheticPrices {
+            fail_dividends: false,
+        };
+        let mut ctx = SeriesCtx::new(&conn, Some(&source));
+        let today = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-05-01");
+        // The 1-month window scored under the ET-derived end (03-03, a Tuesday
+        // bar) — the legacy end would have read one session further (03-04).
+        let scored = scored_for(&episodes[0], 1).expect("1-month scored");
+        assert_eq!(scored.end_date, "2026-03-03");
+        // Still-pending windows carry re-keyed ET ends on both episodes...
+        assert!(episodes[0]
+            .labels
+            .iter()
+            .filter(|l| matches!(l.outcome, LabelOutcome::Pending))
+            .all(|l| l.window_end.ends_with("-03")));
+        assert!(episodes[1].labels.iter().all(|l| l.window_end.ends_with("-20")));
+        // ...and both re-stamps persist — the idle episode via the no-due-window
+        // exit.
+        assert!(summary.changed.contains(&episodes[0].episode_id));
+        assert!(summary.changed.contains("ep-LGC2"));
+    }
+
+    #[test]
+    fn an_uncovered_intrinsic_session_excludes_the_bridge_never_guesses() {
+        // A lone rule-demotion episode: anchor 03-10, intrinsic vintage 02-10.
+        // The fetch floors at the earliest active anchor (03-10 — no older
+        // episode), so the intrinsic session is not covered: the bridge is
+        // excluded (`anchor_close: None`), never keyed at the anchor instead,
+        // while the window itself still scores.
+        let conn = mem_conn();
+        let mut ep = old_episode("LONE", "2026-03-10T12:00:00+00:00");
+        ep.intrinsic_vintage = "2026-02-10T12:00:00+00:00".into();
+        ep.vintage_fresh = false;
+        let mut episodes = vec![ep];
+        let source = SyntheticPrices {
+            fail_dividends: false,
+        };
+        let mut ctx = SeriesCtx::new(&conn, Some(&source));
+        let today = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+        mature_labels(&mut episodes, &mut ctx, today, "2026-05-01");
+        let scored = scored_for(&episodes[0], 1).expect("1-month scored");
+        assert!(scored.anchor_close.is_none(), "{:?}", scored.anchor_close);
+        assert!(scored.price_return.is_finite());
     }
 
     #[test]

@@ -1281,6 +1281,29 @@ describe("PortfolioView selective re-analysis", () => {
     expect(xyzCard.text()).not.toContain("analyzed");
   });
 
+  test("the stale boundary counts whole ET session days, matching the engine", () => {
+    // Analyzed 2026-06-03 00:30 EDT (04:30Z); run 2026-07-01 23:00 EDT
+    // (07-02 03:00Z): exactly 28 whole ET days — inside the carry window, so
+    // the quiet Carried tag, never Stale. The old fractional-ms read (~28.9
+    // days) called this stale a day early, disagreeing with the engine's
+    // ET date-diff (`job.rs over_age`).
+    const boundaryRun: PortfolioRun = {
+      ...run,
+      created_at: "2026-07-02T03:00:00Z",
+      verdicts: [
+        verdict(
+          "MSFT",
+          { status: "priced", ...graded() },
+          { analyzed_at: "2026-06-03T04:30:00Z" }
+        ),
+      ],
+    };
+    const wrapper = mountView({ run: boundaryRun });
+    const tags = wrapper.findAll(".ana-tag").map((t) => t.text());
+    expect(tags.some((t) => t.startsWith("Carried · analyzed"))).toBe(true);
+    expect(tags.some((t) => t.startsWith("Stale"))).toBe(false);
+  });
+
   test("a rule-demoted role-risk verdict shows the demotion tag on its own branch", () => {
     // The backend demotion is branch-unscoped (piece-2 A2); a demoted role-risk
     // hold with no tag would read as the model's standing choice.
