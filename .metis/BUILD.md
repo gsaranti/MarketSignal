@@ -351,7 +351,20 @@ the stocks-only loop-time issuer cross-check, as-built under Portfolio
 Analysis below — and the **two-arm verdict** (2026-08-05, `portfolio-v7`,
 branch `portfolio-v7-two-arm`; internal review + eleven Codex rounds to
 convergence), the engine-baseline + unrestricted-model-arm repositioning,
-as-built under Portfolio Analysis below.
+as-built under Portfolio Analysis below — and the **piece-3 value-chain
+fix batch** (2026-08-06, PR #63 squash `cdb7977`; internal review + three
+Codex rounds to approval), the ruled correctness repairs across the
+deterministic chain: monotonic date-keyed ledger observation identity
+(+ ack-clear on clean reset, same-id corrected-clean reset), the
+quarter-contiguity guard on every fixed-width statement window, the
+signed P/E derive (**`grade-v2.1`**), always-percent fund weights with
+**absolute** composite coverage, the role-risk full pass computing the
+price-derived ledger legs, **insertion-order run identity**, parsed-date
+consensus ordering with the strict undatable-row split, the FRED 10-day
+anchor bound, duration-phrase guards for "short"/"ultra", and the
+option/bond cost-basis render suppression — full dispositions and the
+ruled-but-unbuilt follow-up slice in
+`docs/verification/2026-08-05-piece3-value-chain-walk.md`.
 **Trade Opportunities and the remaining Portfolio depth slices (held-name
 refresh lane, the live research loop) remain designed, not built.** The
 load-bearing decisions:
@@ -383,7 +396,11 @@ load-bearing decisions:
   clean to 160.6 K (`docs/local-model-operations.md`; evidence record in
   `docs/verification/2026-07-28-m5-preflight.md`).
 - **Per-job isolation (learnings only).** Each feature stores its own runs
-  (last-N retention) and its own vector-memory partition; no job reads another's
+  (last-N retention; run identity is **insertion order** — `id`-primary in
+  every store query since the piece-3 batch, so a stepped wall clock can
+  never demote the just-persisted run from `latest` or shift the diff
+  baseline — `created_at` is display data) and its own vector-memory
+  partition; no job reads another's
   *learnings*. The Market Signal Report stays a read-only shared input, loaded
   deterministically (not vector-searched), additionally isolated by embedder
   dimensionality.
@@ -501,10 +518,15 @@ load-bearing decisions:
   intrinsic verdict is a **discriminated union**: the **`priced`** branch is
   the four-part read — deterministic grade (momentum settled out of the
   letter; since the 2026-08-03 shadow-tune computed on a one-basis-per-holding
-  **TTM statement basis** — the four newest quarterly income prints summed, a
+  **TTM statement basis** — the four newest quarterly income prints summed
+  (contiguity-guarded since the piece-3 batch — a gapped window fails
+  adoption to the annual fallback, never a >12-month "TTM"), a
   quarterly balance-sheet leg for debt / equity, SEC company-facts the
   **same-concept annual fallback**, fund holdings skipping the facts call
-  entirely — under the recentered **`grade-v2`** bands, each audit stamped
+  entirely — under the recentered **`grade-v2`** bands (current stamp
+  **`grade-v2.1`**, 2026-08-06: the signed P/E derive made the loss-maker
+  valuation guard reachable — an input-semantics change, bands unmoved),
+  each audit stamped
   with its **grade-parameter version** so a recalibration stays attributable;
   weights and A–F cutoffs untouched, reserved for the normalization slice),
   first-class forward outlook, bidirectional conviction, portfolio action —
@@ -941,10 +963,23 @@ price / avg cost / cost basis under the unrealized figure, sub-2%
 weight-band decimal precision, and Hold's "maintain" phrasing; one Codex
 round, the short-position finding disputed on engine-reachability
 evidence — net-short is not-rated pre-routing, so no full card pairs with
-a signed row — with its regression-case half adopted.) Next: review
-piece 3 (the value-chain correctness walk, its own session — a review,
-not a build item), then the single big confirmation run banks the
-stacked runtime confirmations above. Excluded from the block and still designed-not-built: the
+a signed row — with its regression-case half adopted.) **Review piece 3 —
+the value-chain correctness walk — completed and merged 2026-08-06**
+(PR #63; the fix batch in §Local analysis suite above). Next: the
+**ET-dating / outcome-hardening slice**, ruled and specced in the piece-3
+record's §The ruled follow-up slice — ET session dating via
+`market_clock` for the per-holding evidence boundary and the outcome
+entry anchor + basis bridge (the news-leg inclusivity and the frontend
+stale-tag boundary ruled with it), the bear-line bridge keyed at the
+intrinsic vintage (excluded-not-guessed when uncovered), and the
+price-bar fetch range from the symbol's earliest active-episode anchor —
+its own session; then the TO docs model-decision-power audit and the
+long-doc-line cleanup; then the single big confirmation run banks the
+stacked runtime confirmations above, now also carrying piece 3's probe
+set (the Schwab `averagePrice` multiplier behind the option/bond render
+suppression, `^GSPC`-mapping sufficiency, analyst-estimates page
+ordering, SEC sub-annual durations, FMP in-progress-bar behavior,
+sector-label taxonomy joins, SHV-style short-screen labels). Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
 shipped schemas don't preclude them — but the research-loop slice **must**
 add holding-identity + source-text observation validation (plus a period-

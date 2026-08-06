@@ -10,7 +10,7 @@ Nothing mid-build; main is clean at the squash commit. The queue, in order:
 
 1. **The ET-dating / outcome-hardening slice** — ruled and fully specced in the piece-3 record (§The ruled follow-up slice): ET session dating via `market_clock` for the per-holding evidence boundary and the outcome entry anchor + basis bridge (rule the news-leg inclusivity and the frontend stale-tag boundary with it), the bear-line bridge keyed at the **intrinsic vintage** (excluded-not-guessed when uncovered), and the price-bar fetch range from the symbol's **earliest active-episode anchor**. Own session, before the big run.
 2. **TO docs audit for model decision power** — the design pass on the kept single-arm carve-out (queue item 3, unchanged).
-3. **Cleanup: BUILD.md, INDEX.md, and the extremely long doc lines** — now also folds in the piece-3 staleness (BUILD §What remains still says "review piece 3 next"; grade-v2.1, the run-identity change, and the ET slice are uncaptured there).
+3. **Cleanup: the extremely long doc lines** — content-preserving sentence surgery under the sentence-per-line convention (format-only commits go in `.git-blame-ignore-revs`). BUILD/INDEX piece-3 alignment was done post-session-end 2026-08-06 (as-built batch entry, grade-v2.1 + run-identity + contiguity clauses, the ET-slice queue rewrite, the piece-3 INDEX row), so only the line-length surgery remains here.
 
 Then the **big confirmation run** (dev app, process name `market-signal`), banking the stacked confirmations plus the expanded watch/probe set.
 
