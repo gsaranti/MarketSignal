@@ -2,33 +2,26 @@
 
 ## What happened
 
-**The two-arm verdict (`portfolio-v7`) was ruled, planned, and implemented — UNCOMMITTED.**
-The user deliberately repositioned the Portfolio job ("this tool is about the model, not the engine"): every priced verdict now carries an **engine baseline arm** (existing sub-scores/letter/targets + new mechanical outlook/conviction/action stand-ins) beside an **unrestricted model arm** (own sub-scores, derived letter, freely-authored 1-/12-mo bands, conviction, outlook, lean, 7b action), a **retrospective** prompt block (deliberately reversing the v4 anchoring guard), and a **deterministic scoreboard** in outcome learning.
-Internal review: approve-with-nits (nits applied).
-**Codex round 1: all three P1s + the P2 verified real and fixed** — overlay prompt language reframed to engine-rule/evidence (no binding language at the model), the engine arm's conviction now observes its own pre-profit ceiling via `clamp_conviction` (re-scoped, not retired), the retrospective now renders the TRUE realized move off the prior run's authoring spot (`PriorHolding.spot`) with target reads relabeled as distances, the scoreboard head-to-head recomputed over the **paired population only** (`HeadToHeadRead` — both arms, same episodes), and the doc contradictions fixed incl. `local-models.md` §Context-memory discipline (Portfolio two-arm carve-out; **TO keeps the single-arm echo-validation rule**).
-All gates green after fixes: cargo 934 lib + integration / 0 fail, clippy 0, npm build, 40 node + 217 vitest.
+**The two-arm verdict (`portfolio-v7`) converged and MERGED TO MAIN** — PR #61 squash `78187cb`, feature branch deleted, internal approve + eleven Codex rounds to an approved convergence. Round 2 fixed the last functional findings: the retrospective's price comparisons now cross bases through the outcome slice's **split-safe anchor-close bridge** (`outcome::anchor_session_close` promoted `pub(crate)`; excluded-not-guessed without an anchor bar), and selective carries date by **effective vintage** (`PriorHolding.vintage`). Rounds 3–11 converged the policy language — the 27-finding exhaustive audit, the sizing-ownership corrections (the model authors the 7b range; the engine derives only the deltas), the original "every number comes from the engine" invariant unearthed and rewritten, and finally the boundary statement **single-homed**: *model-arm judgment values never alter or bind the engine baseline* lives only at `portfolio-analysis.md` §The holding verdict (intentional downstream consumers + the typed validated channels named there); every other doc/module mention is a one-line pointer — the structural fix for the restatement drift that fueled the tail rounds. BUILD/INDEX aligned in-branch (invariant bullet, spine/pre-profit/construction v6 claims, the two-arm as-built paragraph, the first-two-arm-vintage watch). Gates green throughout: cargo 969 / 0 fail, clippy 0, npm build, 40 node + 217 vitest.
 
 ## Current state
 
-**Codex round 2 arrived with further findings — deliberately unread** (context budget). Queue: verify → fix → re-gate → user commits → BUILD/INDEX alignment → review piece 3 → the big confirmation run (which banks the first two-arm vintage; new watches: prompt fit under the retrospective via B12 instrumentation, feasibility-annotation rates, model-vs-engine divergence rates).
+Nothing mid-build; main is clean at the squash commit. **The user set a four-item pre-big-run queue (2026-08-05):**
 
-**The ruling set that governs finding-triage** (verify every Codex claim against these before agreeing — round 1 precedent: all findings were real, but this design deliberately removed things reviewers read as bugs):
-1. Model arm **structurally validated only** — no value bound, cap, clamp, or feasible-set bar; every former restriction is an **annotation** (7b: only self-coherence enforces — sell-all 0–0, range ordering, implied-weight-in-range — with the single named re-run).
-2. **Model values never feed deterministic consumers** (quick check, hurdle, monitor stamps, ledger eval, labels read engine only).
-3. Engine arm **obeys its own bars** (feasible set, ceilings); caps bind it, annotate the model.
-4. Model letter **derived** from model sub-scores via shared cutoffs; model arm **priced-branch only**; stand-in formulas as drafted (21/126/252 @ 2/5/8%; degradation count 0/1–2/≥3; rung rule, never add-aggressively).
-5. Head-to-head comparisons **paired-population only**; per-arm reads keep full populations.
-6. Conviction-raise triple retired unbuilt; anti-reflexivity survives only in ledger validation.
+1. **Re-run review piece 2** — the code-vs-docs conformance walk — against post-v7 main (heavy doc+code churn since). Method + prior dispositions: `docs/verification/2026-08-04-piece2-conformance-walk.md`.
+2. **Review piece 3** — the value-chain correctness walk, its own session.
+3. **TO docs audit for model decision power** — parity with Portfolio's two-arm philosophy. NOTE: this is a deliberate *revisit* of the kept single-arm carve-out (`local-models.md` §Context-memory discipline scopes two-arm to Portfolio; TO's echo-validation + raise/cap decomposition were repeatedly preserved as-designed during rounds 4–10). A design pass producing rulings, not a conformance sweep — cheaper pre-build.
+4. **Cleanup: BUILD.md, INDEX.md, and the extremely long doc lines** — under the sentence-per-line convention long lines ARE long sentences, so this is content-preserving sentence surgery, not reflow; format-only commits go in `.git-blame-ignore-revs`.
 
-Files (`-chat.md` = full exchange, `-last.md` = latest message only, both overwritten): round-2 findings = `iris-codex-last.md` (the latest Codex review), with `iris-codex-chat.md` the full Codex exchange for context. Full prior Claude Code conversation = `iris-claude-code-chat.md` — **grep for specifics, never load whole**. Verification = `cd src-tauri && cargo test && cargo clippy --all-targets --all-features; npm run build; npm test`. Deferred: demo-mode visual card check (rides the big run's card-render watch).
+Then the **big confirmation run** (dev app, process name `market-signal`), banking the stacked confirmations plus the two-arm watches: retrospective/model-arm prompt fit via B12, feasibility-annotation rates, model-vs-engine divergence rates, the paired card render. The demo-mode visual card check rides that run's card-render watch.
 
 ## Open questions
 
-- **Two-arm follow-ups** — engine stand-in constants are drafted (calibratable against the scoreboard); model sub-scores/conviction recorded but unscored (predictor-quality read deferred behind the ≥30 bar).
-- **Big-run watches** — unchanged carried set (B3 slash-notation + ticker-noise, construction-leg rates, FMP 429-ladder engagements, Stooq-PoW rung order) **plus** the two-arm additions above.
-- **Research-loop activation obligation** — identity + source-text validation + period normalization before the pre-profit producer activates; the model arm's diet gains research findings when the loop lands (schema seam left open).
-- **Standing** — unchanged carried list from prior sessions (live-run calibration watches, no A letters under grade-v2, reasoning-pane DOM weight, encrypted portability round-trip, step-17 embedding, 600 s stress, checkpoint/resume + the 6g input-delta validator, etc.).
+- **Two-arm follow-ups** — engine stand-in constants drafted (calibratable against the scoreboard); model sub-scores/conviction recorded but unscored behind the ≥30 bar.
+- **Big-run watches** — the carried set (B3 slash-notation + ticker-noise, construction-leg rates, FMP 429-ladder engagements, Stooq-PoW rung order) plus the two-arm additions above.
+- **Research-loop activation obligation** — identity + source-text validation + period normalization before the pre-profit producer activates; the model arm's diet gains research findings when the loop lands.
+- **Standing** — unchanged carried list (live-run calibration watches, no A letters under grade-v2, reasoning-pane DOM weight, encrypted portability round-trip, step-17 embedding, 600 s stress, checkpoint/resume + the 6g input-delta validator, etc.).
 
 ## Where to start
 
-`/metis-session-start`, then read `iris-codex-last.md` (round 2). Verify each finding against the ruling set above before agreeing; fix what's real, dispute what contradicts the rulings, re-run the four verification gates. Then the user commits the whole slice, BUILD/INDEX get aligned to v7, and the queue resumes: review piece 3 (own session) → the big confirmation run in the dev app (process name `market-signal`).
+`/metis-session-start`, then queue item 1: re-run the piece-2 conformance walk against post-v7 main, following the method in `docs/verification/2026-08-04-piece2-conformance-walk.md` (parallel passes → A/B/C triage → fixes/rulings/corrections). Items 2–4 follow in order, each its own session; the big run closes the block.
