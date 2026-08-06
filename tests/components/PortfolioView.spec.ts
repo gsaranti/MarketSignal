@@ -669,6 +669,59 @@ describe("PortfolioView verdict cards", () => {
     expect(text).toContain(money.format(14_000));
   });
 
+  test("option rows withhold cost basis and gain until the multiplier is probed", () => {
+    // Schwab's averagePrice carries a contract/par multiplier the parse doesn't
+    // apply — averagePrice 3.5 × qty 2 wires cost_basis 7 for a $700 position,
+    // so the derived $/% gain would be wildly wrong. Withheld, not fabricated.
+    const pull: HoldingsPull = {
+      ...fresherPull,
+      holdings: {
+        positions: [
+          position("AAPL", { cost_basis: 14_000, market_value: 20_000 }),
+          position("OPT2", {
+            asset_class: "option-contract",
+            cost_basis: 7,
+            market_value: 800,
+            current_price: null,
+          }),
+        ],
+        cash: 3_000,
+        account_total: 23_800,
+      },
+    };
+    const wrapper = mountView({ run, pull });
+    const optRow = wrapper
+      .findAll(".ana-grid tbody tr")
+      .find((r) => r.text().includes("OPT2"))!;
+    const cells = optRow.findAll("td").map((c) => c.text().trim());
+    expect(cells).not.toContain("$7.00");
+    const gainCell = cells[cells.length - 1];
+    expect(gainCell).toBe("—");
+  });
+
+  test("sub-rounding gains render an unsigned zero, never a signed-zero artifact", () => {
+    // −0.0004 rounds to 0.0 at one decimal — "-0.0%" (red) is a signed-zero
+    // artifact; the rendered value keys the sign.
+    const pull: HoldingsPull = {
+      ...fresherPull,
+      holdings: {
+        positions: [position("AAPL", { cost_basis: 10_000, market_value: 9_996 })],
+        cash: 3_000,
+        account_total: 12_996,
+      },
+    };
+    const wrapper = mountView({ run, pull });
+    const row = wrapper
+      .findAll(".ana-grid tbody tr")
+      .find((r) => r.text().includes("AAPL"))!;
+    const cells = row.findAll("td");
+    const gainCell = cells[cells.length - 1];
+    expect(gainCell.text().trim()).toBe("0.0%");
+    // Direction keys on the rendered value: a cell reading "0.0%" must not
+    // wear the red/down treatment its own number no longer shows.
+    expect(gainCell.find(".down").exists()).toBe(false);
+  });
+
   test("unreported position inputs render as dashes, never fabricated numbers", () => {
     const bare: PortfolioRun = {
       ...run,
@@ -747,6 +800,45 @@ describe("PortfolioView verdict cards", () => {
     expect(
       tinyWrapper.find(".hc-action-band").text().replace(/\s+/g, " ")
     ).toBe("to 0.3–0.5%");
+  });
+
+  test("bands straddling 2% and false-zero lows escalate precision instead of collapsing", () => {
+    const bandRun = (low: number, high: number): PortfolioRun => ({
+      ...run,
+      verdicts: [
+        verdict("AAPL", {
+          status: "priced",
+          ...graded({
+            action: "hold",
+            action_sizing: {
+              target_weight_low: low,
+              target_weight_high: high,
+              est_share_delta: null,
+              est_dollar_delta: null,
+            },
+          }),
+        }),
+      ],
+    });
+    // A real 1.8–2.2% hold band: the high-endpoint-only precision switch
+    // rendered the degenerate "2–2%".
+    const straddle = mountView({ run: bandRun(0.018, 0.022) });
+    expect(straddle.find(".hc-action-band").text().replace(/\s+/g, " ")).toBe(
+      "maintain 1.8–2.2%"
+    );
+    // A 0.4–3% range: integer rounding zeroed the low endpoint ("0–3%"),
+    // reviving the sell-all read on a nonzero low.
+    const wide = mountView({ run: bandRun(0.004, 0.03) });
+    expect(wide.find(".hc-action-band").text().replace(/\s+/g, " ")).toBe(
+      "maintain 0.4–3.0%"
+    );
+    // A dust band below three-decimal precision: every escalation step fails
+    // (collapsed or false-zero low), and the fallback floors the positive
+    // low endpoint at "<0.001" — never a literal zero on a nonzero band.
+    const dust = mountView({ run: bandRun(0.000003, 0.00002) });
+    expect(dust.find(".hc-action-band").text().replace(/\s+/g, " ")).toBe(
+      "maintain <0.001–0.002%"
+    );
   });
 });
 
@@ -1187,6 +1279,50 @@ describe("PortfolioView selective re-analysis", () => {
       .findAll(".holding-card")
       .find((c) => c.text().includes("XYZ"))!;
     expect(xyzCard.text()).not.toContain("analyzed");
+  });
+
+  test("a rule-demoted role-risk verdict shows the demotion tag on its own branch", () => {
+    // The backend demotion is branch-unscoped (piece-2 A2); a demoted role-risk
+    // hold with no tag would read as the model's standing choice.
+    const roleRun: PortfolioRun = {
+      ...run,
+      holdings: {
+        positions: [position("BND", { asset_class: "etf", market_value: 10_000 })],
+        cash: 0,
+        account_total: 10_000,
+      },
+      verdicts: [
+        verdict(
+          "BND",
+          {
+            status: "role-risk-only",
+            class_label: "bond fund",
+            role_summary: "Core fixed-income sleeve.",
+            exposure_tilt: [],
+            expense_drag: null,
+            observable_risk: null,
+            structural_flag: false,
+            evidence_gaps: [],
+            action: "hold",
+            action_sizing: {
+              target_weight_low: 0.9,
+              target_weight_high: 1.1,
+              est_share_delta: null,
+              est_dollar_delta: null,
+            },
+            what_changed: "carried",
+          },
+          {
+            asset_class: "etf",
+            analyzed_at: "2026-05-01T12:00:00Z",
+            action_source: "rule-demoted",
+          }
+        ),
+      ],
+    };
+    const wrapper = mountView({ run: roleRun });
+    const tags = wrapper.findAll(".ana-tag").map((t) => t.text());
+    expect(tags).toContain("Add demoted to hold");
   });
 });
 

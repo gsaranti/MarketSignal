@@ -470,16 +470,36 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
     cash_flow.dedup_by(|a, b| a.period_end == b.period_end);
     let cash_flow = &cash_flow;
 
+    // Fixed-width windows are honest only over consecutive quarters — a feed
+    // gap would silently stretch a "TTM" (or misdate the YoY pair) rather than
+    // fail it, so each window is gated on contiguity and degrades to the same
+    // unscorable-gap path a missing print takes.
+    let income4_ok = income.len() >= 4
+        && crate::portfolio::engine::quarters_contiguous(
+            income[..4].iter().map(|r| r.period_end.as_str()),
+        );
+    let income5_ok = income.len() >= 5
+        && crate::portfolio::engine::quarters_contiguous(
+            income[..5].iter().map(|r| r.period_end.as_str()),
+        );
+    let cash4_ok = cash_flow.len() >= 4
+        && crate::portfolio::engine::quarters_contiguous(
+            cash_flow[..4].iter().map(|r| r.period_end.as_str()),
+        );
+
     // TTM sums over the four newest quarters — `None` unless all four carry the line
     // (a partial sum would misstate the trailing year).
-    let ttm_operating_income: Option<f64> = (income.len() >= 4)
+    let ttm_operating_income: Option<f64> = income4_ok
         .then(|| income[..4].iter().map(|r| r.operating_income).sum())
         .flatten();
     if ttm_operating_income.is_none() {
-        gaps.push("pre-profit: TTM operating income unscorable (missing quarterly prints)".into());
+        gaps.push(
+            "pre-profit: TTM operating income unscorable (missing or non-contiguous quarterly prints)"
+                .into(),
+        );
     }
 
-    let ttm_free_cash_flow: Option<f64> = (cash_flow.len() >= 4)
+    let ttm_free_cash_flow: Option<f64> = cash4_ok
         .then(|| {
             cash_flow[..4]
                 .iter()
@@ -488,7 +508,10 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
         })
         .flatten();
     if ttm_free_cash_flow.is_none() {
-        gaps.push("pre-profit: TTM free cash flow unscorable (missing cash-flow prints)".into());
+        gaps.push(
+            "pre-profit: TTM free cash flow unscorable (missing or non-contiguous cash-flow prints)"
+                .into(),
+        );
     }
 
     let has_positive_eps_consensus = fin
@@ -514,7 +537,7 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
         _ => None,
     };
 
-    let ttm_capex: Option<f64> = (cash_flow.len() >= 4)
+    let ttm_capex: Option<f64> = cash4_ok
         .then(|| {
             cash_flow[..4]
                 .iter()
@@ -522,20 +545,29 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
                 .sum::<Option<f64>>()
         })
         .flatten();
-    let ttm_revenue: Option<f64> = (income.len() >= 4)
+    let ttm_revenue: Option<f64> = income4_ok
         .then(|| income[..4].iter().map(|r| r.revenue).sum())
         .flatten();
+    // The one CROSS-statement ratio: numerator (cash-flow window) and
+    // denominator (income window) must cover the SAME trailing year — each
+    // window is internally contiguous, but a feed serving cash flow one
+    // quarter behind income would divide mismatched periods. Matching newest
+    // period-ends on two 4-contiguous windows aligns them whole.
+    let windows_aligned = income4_ok
+        && cash4_ok
+        && income[0].period_end == cash_flow[0].period_end;
     let ttm_capex_intensity = match (ttm_capex, ttm_revenue) {
-        (Some(capex), Some(rev)) if rev > 0.0 => Some(capex / rev),
+        (Some(capex), Some(rev)) if rev > 0.0 && windows_aligned => Some(capex / rev),
         _ => None,
     };
 
     // Split-adjusted YoY diluted-share change: newest quarter vs the same fiscal
-    // quarter one year back (index 4, newest-first). The feed's share counts are
-    // retroactively split-adjusted (NVDA 10:1 verified 2026-08-03).
+    // quarter one year back (index 4, newest-first — index arithmetic that is
+    // only a year apart when rows 0..=4 are contiguous). The feed's share counts
+    // are retroactively split-adjusted (NVDA 10:1 verified 2026-08-03).
     let diluted_share_change_yoy = match (
-        income.first().and_then(|r| r.diluted_shares),
-        income.get(4).and_then(|r| r.diluted_shares),
+        income5_ok.then(|| income[0].diluted_shares).flatten(),
+        income5_ok.then(|| income[4].diluted_shares).flatten(),
     ) {
         (Some(now), Some(prior)) if prior > 0.0 => Some(now / prior - 1.0),
         _ => None,
@@ -563,8 +595,10 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
             _ => None,
         }
     };
-    let gross_margin_recent_2q = two_q_avg(0, 1);
-    let gross_margin_preceding_2q = two_q_avg(2, 3);
+    // The 2q-vs-2q progression compares quarters 0–1 against 2–3, so it needs
+    // the same contiguous four-row run the TTM sums verified.
+    let gross_margin_recent_2q = income4_ok.then(|| two_q_avg(0, 1)).flatten();
+    let gross_margin_preceding_2q = income4_ok.then(|| two_q_avg(2, 3)).flatten();
     let gross_margin_change_2q = match (gross_margin_recent_2q, gross_margin_preceding_2q) {
         (Some(recent), Some(prec)) => Some(recent - prec),
         _ => None,
@@ -820,8 +854,12 @@ pub fn execution_read(observations: &[PreProfitObservation]) -> ExecutionRead {
             })
             .collect();
         comparable.sort_by(|a, b| b.0.cmp(a.0));
-        comparable.truncate(MISS_WINDOW_PERIODS);
+        // Counted before the window truncation: the field's contract is
+        // "periods (across identities) where an actual and a bound were
+        // comparable" — the miss window bounds which periods can *miss*, not
+        // how many were comparable.
         read.comparable_periods += comparable.len();
+        comparable.truncate(MISS_WINDOW_PERIODS);
 
         let mut missed_periods = 0usize;
         for (i, (period, bound, actual)) in comparable.iter().enumerate() {
@@ -1226,6 +1264,26 @@ mod tests {
         assert_eq!(overlay.statement_inputs.ttm_capex_intensity, Some(0.1));
     }
 
+    #[test]
+    fn capex_intensity_requires_period_aligned_windows() {
+        // Each statement window is internally contiguous, but cash flow trails
+        // income by one quarter — the cross-statement ratio would divide
+        // mismatched trailing years, so it gaps instead. The single-source
+        // reads keep their own windows.
+        let mut fin = burning_stock();
+        for row in &mut fin.quarterly_cash_flow {
+            row.capex = Some(-10.0e6);
+        }
+        fin.quarterly_cash_flow.remove(0); // newest cash quarter missing: 2026-03-31 leads
+        let overlay = compute_overlay(&fin, None, vec![]);
+        assert_eq!(
+            overlay.statement_inputs.ttm_capex_intensity, None,
+            "shifted-but-contiguous windows must not divide"
+        );
+        assert!(overlay.statement_inputs.ttm_operating_income.is_some());
+        assert!(overlay.statement_inputs.ttm_free_cash_flow.is_some());
+    }
+
     // ---- Observation validation, merge, and the miss rules ----
 
     #[test]
@@ -1333,6 +1391,10 @@ mod tests {
         let read = execution_read(&history);
         assert!(!read.repeated_miss);
         assert!(read.misses.is_empty());
+        // The field's contract counts every comparable period across identities;
+        // only the MISS rule is window-scoped (a pre-fix truncate capped this
+        // at 4, understating the persisted/prompted count).
+        assert_eq!(read.comparable_periods, 6);
     }
 
     #[test]

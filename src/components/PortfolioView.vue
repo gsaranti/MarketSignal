@@ -268,13 +268,23 @@ function fmtMoney(v: number): string {
   return Math.abs(v) >= 1000 ? money.format(v) : moneyExact.format(v);
 }
 function fmtPct(fraction: number, digits = 1): string {
-  return `${(fraction * 100).toFixed(digits)}%`;
+  const s = (fraction * 100).toFixed(digits);
+  // A value that rounds to zero must not keep its sign — toFixed renders
+  // −0.0004 as "-0.0", a signed-zero artifact.
+  return `${Number(s) === 0 ? (0).toFixed(digits) : s}%`;
 }
 function fmtSigned(v: number): string {
-  return `${v > 0 ? "+" : ""}${fmtMoney(v)}`;
+  // Sign keyed on the rendered (cent-rounded) value, so a sub-cent negative
+  // can't render "−$0.00" (and −0 normalizes to 0).
+  const cents = Math.round(v * 100) / 100;
+  const shown = cents === 0 ? 0 : cents;
+  return `${shown > 0 ? "+" : ""}${fmtMoney(shown)}`;
 }
 function fmtSignedPct(fraction: number): string {
-  return `${fraction > 0 ? "+" : ""}${fmtPct(fraction)}`;
+  // "+" keyed on the rendered percent, not the raw fraction — +0.0004 rounds
+  // to "0.0%" and must not read "+0.0%".
+  const s = fmtPct(fraction);
+  return Number.parseFloat(s) > 0 ? `+${s}` : s;
 }
 function fmtStamp(iso: string): string {
   return localDateTime(iso);
@@ -304,13 +314,15 @@ function priceOf(pos: Position | null): number | null {
   return pos?.current_price ?? null;
 }
 function costBasisOf(pos: Position | null): number | null {
-  if (!pos || pos.cost_basis <= 0) return null;
+  if (!pos || pos.cost_basis <= 0 || multiplierUnverified(pos)) return null;
   return pos.cost_basis;
 }
 // The across-orders average cost per share — the netted book-level cost total
 // over the netted quantity, never a share-weighted average of source rows.
 function avgCostOf(pos: Position | null): number | null {
-  if (!pos || pos.cost_basis <= 0 || pos.quantity <= 0) return null;
+  if (!pos || pos.cost_basis <= 0 || pos.quantity <= 0 || multiplierUnverified(pos)) {
+    return null;
+  }
   return pos.cost_basis / pos.quantity;
 }
 
@@ -321,17 +333,36 @@ function avgCostOf(pos: Position | null): number | null {
 // market value − cost basis equal to the book's aggregate unrealized P/L
 // (docs/portfolio-analysis.md §Storage and display). Zero stays undefined:
 // on the wire it is indistinguishable from "no basis reported".
+// Option and fixed-income rows render NO gain: Schwab's `averagePrice` carries
+// a contract/par multiplier convention the parse doesn't apply (an option's
+// basis would be understated ~100×, a bond's overstated ~1000×), so the
+// derived number is withheld rather than fabricated until the wire convention
+// is probed (piece-3 walk, 2026-08-05; big-run probe listed in the record).
+function multiplierUnverified(pos: Position): boolean {
+  return (
+    pos.asset_class === "option-contract" || pos.asset_class === "fixed-income"
+  );
+}
 function gainOf(pos: Position | null): number | null {
-  if (!pos || pos.cost_basis === 0) return null;
+  if (!pos || pos.cost_basis === 0 || multiplierUnverified(pos)) return null;
   return pos.market_value - pos.cost_basis;
 }
 function gainPctOf(pos: Position | null): number | null {
-  if (!pos || pos.cost_basis <= 0) return null;
+  if (!pos || pos.cost_basis <= 0 || multiplierUnverified(pos)) return null;
   return (pos.market_value - pos.cost_basis) / pos.cost_basis;
 }
 function dirOf(v: number | null): "up" | "down" | "flat" {
   if (v === null || v === 0) return "flat";
   return v > 0 ? "up" : "down";
+}
+// Direction keyed on the RENDERED value, not the raw one: a fraction whose text
+// rounds to "0.0%" (or a dollar gain to "$0.00") must not carry a red/green
+// treatment its own number no longer shows.
+function pctDir(fraction: number | null): "up" | "down" | "flat" {
+  return dirOf(fraction === null ? null : Math.round(fraction * 1000) / 1000);
+}
+function moneyDir(v: number | null): "up" | "down" | "flat" {
+  return dirOf(v === null ? null : Math.round(v * 100) / 100);
 }
 
 // ---- Fresher-pull comparison (presence-only churn tags) -----------------------
@@ -437,7 +468,9 @@ function sortMetric(symbol: string, key: SortKey): number | null {
     case "gain-pct":
       return gainPctOf(pos);
     case "cost":
-      return pos.cost_basis > 0 ? pos.cost_basis : null;
+      // Suppression-aware: an option/bond row's fabricated basis must not rank
+      // either (null sorts last, like the hidden render).
+      return costBasisOf(pos);
   }
 }
 
@@ -535,7 +568,8 @@ function pullSortMetric(
     case "value":
       return p.market_value;
     case "cost":
-      return p.cost_basis > 0 ? p.cost_basis : null;
+      // Same suppression-aware key as the card stack's cost sort.
+      return costBasisOf(p);
     case "gain-pct":
       return gainPctOf(p);
   }
@@ -772,12 +806,28 @@ function gradeClass(grade: string): string {
   return grade.toLowerCase();
 }
 
-// The target-weight band as a compact percent range. Sub-2% bands keep one
-// decimal on both endpoints — integer rounding turned a 0.27–0.48% trim band
-// into "0–0%", which reads as a sell-all.
+// The target-weight band as a compact percent range. Precision escalates until
+// the render is faithful: integer rounding turned a 0.27–0.48% trim band into
+// "0–0%" (reads as a sell-all), and a high-endpoint-only precision switch
+// rendered a real 1.8–2.2% hold band as the degenerate "2–2%" and a 0.4–3%
+// range with a false-zero low as "0–3%". A genuine 0–0 sell-all band still
+// renders "0–0%".
 function weightBand(low: number, high: number): string {
-  const digits = high * 100 < 2 ? 1 : 0;
-  return `${(low * 100).toFixed(digits)}–${(high * 100).toFixed(digits)}%`;
+  const lo = low * 100;
+  const hi = high * 100;
+  for (const digits of [0, 1, 2, 3]) {
+    const loStr = lo.toFixed(digits);
+    const hiStr = hi.toFixed(digits);
+    const collapsed = loStr === hiStr && lo !== hi;
+    const falseZeroLow = lo > 0 && Number(loStr) === 0;
+    if (!collapsed && !falseZeroLow) return `${loStr}–${hiStr}%`;
+  }
+  // Sub-0.0005-point bands (a dust position) sit below any sane display
+  // precision — a positive endpoint that still rounds to zero floors at
+  // "<0.001", so a nonzero band can never wear the sell-all "0" read.
+  const floor = (v: number) =>
+    v > 0 && Number(v.toFixed(3)) === 0 ? "<0.001" : v.toFixed(3);
+  return `${floor(lo)}–${floor(hi)}%`;
 }
 
 // Hold's band is a stay-put range (0.9×–1.1× current weight), so it reads
@@ -1134,13 +1184,13 @@ const keyFigures = computed(() => {
                   </td>
                   <td class="num">{{ fmtMoney(p.market_value) }}</td>
                   <td class="num">
-                    {{ p.cost_basis > 0 ? fmtMoney(p.cost_basis) : "—" }}
+                    {{ costBasisOf(p) !== null ? fmtMoney(costBasisOf(p)!) : "—" }}
                   </td>
                   <td class="num">
                     <span
                       v-if="gainPctOf(p) !== null"
                       class="dir"
-                      :class="dirOf(gainPctOf(p))"
+                      :class="pctDir(gainPctOf(p))"
                       >{{ fmtSignedPct(gainPctOf(p)!) }}</span
                     >
                     <template v-else>—</template>
@@ -1330,6 +1380,13 @@ const keyFigures = computed(() => {
                         <span v-if="v.disposition.structural_flag" class="ana-tag"
                           >Structurally path-dependent</span
                         >
+                        <!-- The over-age rule-demotion is branch-unscoped
+                             (job.rs demotes role-risk adds too) — without the
+                             tag a demoted hold reads as the model's standing
+                             choice. -->
+                        <span v-if="demoted(v)" class="ana-tag" :title="DEMOTED_TITLE"
+                          >Add demoted to hold</span
+                        >
                         <span v-if="noLongerHeld(v.symbol)" class="ana-tag"
                           >No longer held</span
                         >
@@ -1393,7 +1450,7 @@ const keyFigures = computed(() => {
                       <span
                         v-if="gainOf(positionFor(v.symbol)) !== null"
                         class="dir hc-gain"
-                        :class="dirOf(gainOf(positionFor(v.symbol)))"
+                        :class="moneyDir(gainOf(positionFor(v.symbol)))"
                       >
                         {{ fmtSigned(gainOf(positionFor(v.symbol))!) }}
                         <!-- A negative netted basis has a defined dollar gain but
@@ -1691,7 +1748,7 @@ const keyFigures = computed(() => {
                       <span
                         v-if="gainOf(positionFor(v.symbol)) !== null"
                         class="dir hc-gain"
-                        :class="dirOf(gainOf(positionFor(v.symbol)))"
+                        :class="moneyDir(gainOf(positionFor(v.symbol)))"
                       >
                         {{ fmtSigned(gainOf(positionFor(v.symbol))!) }}
                         <!-- A negative netted basis has a defined dollar gain but

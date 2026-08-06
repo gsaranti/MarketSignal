@@ -425,6 +425,14 @@ fn latest_annual_usd(value: &Value, concept: &str) -> Option<i64> {
     latest
 }
 
+/// Instant (balance) concepts — a point-in-time fact carries no `start`, so the
+/// annual-duration span check does not apply. Everything else is treated as a
+/// duration (flow) concept and FAILS CLOSED without a parseable ~annual span:
+/// the safe default for any concept added later, since a mistakenly-instant
+/// read only skips a check while a mistakenly-duration read fabricates an
+/// annual value from a stub period.
+const INSTANT_CONCEPTS: &[&str] = &["Assets", "StockholdersEquity"];
+
 /// The latest **two** annual full-year USD values for one GAAP concept, by distinct
 /// `end` date descending — the second is the prior fiscal year's print (a 10-K
 /// carries its comparative-year rows under the same concept, which is what makes the
@@ -446,13 +454,42 @@ fn latest_two_annual_usd(value: &Value, concept: &str) -> (Option<i64>, Option<i
     let mut dated: Vec<(String, Option<String>, usize, i64)> = units
         .iter()
         .enumerate()
-        .filter(|(_, row)| row.get("form").and_then(Value::as_str) == Some("10-K"))
+        // Prefix match: a 10-K/A restating the year is the most direct
+        // supersession vehicle — an exact "10-K" test would keep serving the
+        // withdrawn original print until the next annual report's comparative.
+        .filter(|(_, row)| {
+            row.get("form")
+                .and_then(Value::as_str)
+                .is_some_and(|f| f.starts_with("10-K"))
+        })
         // Prefer full-year datapoints; many 10-K rows carry `"fp":"FY"`.
         .filter(|(_, row)| {
             row.get("fp")
                 .and_then(Value::as_str)
                 .map(|fp| fp == "FY")
                 .unwrap_or(true)
+        })
+        // Duration facts must span roughly a year: company-facts arrays mix
+        // sub-annual durations under the same concept and form, and a Q4/stub
+        // row sharing the FY `end` date would otherwise win on a tie-break and
+        // masquerade as the annual value. CONCEPT-AWARE and fail-closed: a
+        // duration concept's row with an absent or unparseable `start` is
+        // excluded (a pass-through would readmit exactly the stub rows the
+        // filter exists to stop), while instant concepts skip the check —
+        // point-in-time facts legitimately carry no `start`.
+        .filter(|(_, row)| {
+            if INSTANT_CONCEPTS.contains(&concept) {
+                return true;
+            }
+            row.get("start")
+                .and_then(Value::as_str)
+                .zip(row.get("end").and_then(Value::as_str))
+                .and_then(|(s, e)| {
+                    let s = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+                    let e = chrono::NaiveDate::parse_from_str(e, "%Y-%m-%d").ok()?;
+                    Some((e - s).num_days())
+                })
+                .is_some_and(|d| (350..=380).contains(&d))
         })
         .filter_map(|(idx, row)| {
             let end = row.get("end").and_then(Value::as_str)?;
@@ -493,20 +530,20 @@ mod tests {
             "us-gaap": {
               "RevenueFromContractWithCustomerExcludingAssessedTax": {
                 "units": { "USD": [
-                  {"end":"2024-09-28","val":391035000000,"form":"10-K","fp":"FY","filed":"2024-11-01"},
-                  {"end":"2023-09-30","val":383285000000,"form":"10-K","fp":"FY","filed":"2023-11-03"},
-                  {"end":"2023-09-30","val":380000000000,"form":"10-K","fp":"FY","filed":"2024-11-01"}
+                  {"start":"2023-10-01","end":"2024-09-28","val":391035000000,"form":"10-K","fp":"FY","filed":"2024-11-01"},
+                  {"start":"2022-10-02","end":"2023-09-30","val":383285000000,"form":"10-K","fp":"FY","filed":"2023-11-03"},
+                  {"start":"2022-10-02","end":"2023-09-30","val":380000000000,"form":"10-K","fp":"FY","filed":"2024-11-01"}
                 ]}
               },
               "Revenues": {
                 "units": { "USD": [
-                  {"end":"2022-09-24","val":394328000000,"form":"10-K","fp":"FY"}
+                  {"start":"2021-09-26","end":"2022-09-24","val":394328000000,"form":"10-K","fp":"FY"}
                 ]}
               },
               "NetIncomeLoss": {
                 "units": { "USD": [
-                  {"end":"2024-09-28","val":93736000000,"form":"10-K","fp":"FY"},
-                  {"end":"2024-06-29","val":21448000000,"form":"10-Q","fp":"Q3"}
+                  {"start":"2023-10-01","end":"2024-09-28","val":93736000000,"form":"10-K","fp":"FY"},
+                  {"start":"2024-03-31","end":"2024-06-29","val":21448000000,"form":"10-Q","fp":"Q3"}
                 ]}
               },
               "StockholdersEquity": {
@@ -534,6 +571,39 @@ mod tests {
         // A concept that wasn't reported stays absent rather than fabricated.
         assert_eq!(facts.total_assets, None);
         assert!(!facts.is_empty());
+    }
+
+    #[test]
+    fn amendments_supersede_and_sub_annual_durations_are_excluded() {
+        // A 10-K/A restating the year is the most direct supersession vehicle —
+        // the prefix match must let its later-filed row win the period-end
+        // dedup — and a Q4-duration fact sharing the FY `end` date on a 10-K
+        // row must not masquerade as the annual value (the tie-break would
+        // otherwise fall to serialization order).
+        let body = r#"{
+          "facts": {
+            "us-gaap": {
+              "RevenueFromContractWithCustomerExcludingAssessedTax": {
+                "units": { "USD": [
+                  {"start":"2023-10-01","end":"2024-09-28","val":391035000000,"form":"10-K","fp":"FY","filed":"2024-11-01"},
+                  {"start":"2023-10-01","end":"2024-09-28","val":359752200000,"form":"10-K/A","fp":"FY","filed":"2025-03-15"},
+                  {"start":"2024-06-30","end":"2024-09-28","val":94930000000,"form":"10-K","fp":"FY","filed":"2024-11-01"},
+                  {"end":"2024-09-28","val":1,"form":"10-K","fp":"FY","filed":"2025-06-01"},
+                  {"start":"2022-10-02","end":"2023-09-30","val":383285000000,"form":"10-K","fp":"FY","filed":"2023-11-03"}
+                ]}
+              }
+            }
+          }
+        }"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let facts = facts_from_value(&value);
+        // The amendment's restated print wins (later filed, same period end);
+        // the Q4-duration row (90 days) is excluded outright, and so is the
+        // start-less duration row — filed latest, it would WIN the dedup under
+        // a fail-open span check (duration concepts fail closed; only instant
+        // concepts legitimately omit `start`).
+        assert_eq!(facts.revenue, Some(359_752_200_000));
+        assert_eq!(facts.revenue_prior, Some(383_285_000_000));
     }
 
     #[test]

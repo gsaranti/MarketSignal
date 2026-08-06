@@ -552,11 +552,21 @@ pub fn build_aggregates(inp: &AggregateInputs<'_>) -> BookAggregates {
         // unknown bucket.
         let is_fund = matches!(position.asset_class, AssetClass::Etf | AssetClass::MutualFund);
         let mut row_sector: Option<String> = None;
-        if position.asset_class.is_gradeable() && weight != 0.0 {
+        // Disposition-gated, not class-gated: a not-rated *stock* (guard-terminal
+        // listing outcomes) rides the NOT-RATED surface below — folding its
+        // weight into the sector table too would present the same exposure
+        // twice and overstate `unknown_sector_weight`'s gradeable-weight meaning.
+        let not_rated_verdict = matches!(verdict.disposition, VerdictDisposition::NotRated { .. });
+        if position.asset_class.is_gradeable() && weight != 0.0 && !not_rated_verdict {
             if is_fund {
                 if let Some(weights) = inp.fund_sector_weights.get(&key) {
                     let mut covered = 0.0;
                     for (sector, w) in weights {
+                        // A per-sector share can never exceed 1: the clamp bounds
+                        // a percent-served weighting misread as fractions, which
+                        // would otherwise inflate the fold ~100× and fabricate
+                        // overlap clusters.
+                        let w = w.min(1.0);
                         covered += w;
                         let entry = sectors.entry(sector.clone()).or_default();
                         entry.1 += weight * w;
@@ -568,7 +578,9 @@ pub fn build_aggregates(inp: &AggregateInputs<'_>) -> BookAggregates {
                     .and_then(|f| f.top_sector.clone())
                 {
                     // A carried fund's persisted comparator carries the top
-                    // sector only; the remainder is honestly unknown.
+                    // sector only; the remainder is honestly unknown. Same ≤1
+                    // clamp as the fresh-weights fold.
+                    let w = w.min(1.0);
                     let entry = sectors.entry(sector).or_default();
                     entry.1 += weight * w;
                     entry.2.push(position.symbol.clone());
@@ -945,6 +957,7 @@ pub struct ValidatedConstruction {
 pub enum Violation {
     MissingHolding { symbol: String },
     UnknownHolding { symbol: String },
+    DuplicateHolding { symbol: String },
     UnparseableAction { symbol: String, action: String },
     ActionOutsideOffered { symbol: String, action: Action, offered: Vec<Action> },
     RangeInverted { symbol: String },
@@ -971,6 +984,12 @@ impl std::fmt::Display for Violation {
             }
             Violation::UnknownHolding { symbol } => {
                 write!(f, "{symbol}: proposed but not a holding this run constructs")
+            }
+            Violation::DuplicateHolding { symbol } => {
+                write!(
+                    f,
+                    "{symbol}: proposed more than once (case-variant keys) — one proposal per holding"
+                )
             }
             Violation::UnparseableAction { symbol, action } => {
                 write!(f, "{symbol}: action '{action}' is not a ladder rung")
@@ -1125,10 +1144,21 @@ pub fn validate_construction(
     let mut parsed: Vec<Parsed<'_>> = Vec::new();
     let mut buys = 0.0_f64;
     let mut sells = 0.0_f64;
+    // Case-folded dedup: the schema can't bar extra keys, and a case-variant
+    // pair ("AAA" / "aaa") would resolve to one spine row twice — double-
+    // counting the implied book and external funding while the map silently
+    // keeps only one action.
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (symbol, proposal) in &draft.holdings {
         let Some(row) = spine_by_symbol.get(&symbol.to_ascii_uppercase()).copied() else {
             continue;
         };
+        if !seen_keys.insert(symbol.to_ascii_uppercase()) {
+            violations.push(Violation::DuplicateHolding {
+                symbol: row.symbol.clone(),
+            });
+            continue;
+        }
         let Some(action) = parse_action(&proposal.action) else {
             violations.push(Violation::UnparseableAction {
                 symbol: row.symbol.clone(),
@@ -1253,13 +1283,15 @@ pub fn validate_construction(
                     .iter()
                     .any(|c| c.symbols.iter().any(|s| s.eq_ignore_ascii_case(&symbol))),
                 // Freed cash supports an add-side move only, and only when the
-                // plan actually raises proceeds.
+                // plan actually raises proceeds. The move's baseline is the lean
+                // where one exists (fresh priced rows), else the prior action —
+                // role-risk and carried rows carry no lean, and an
+                // `unwrap_or(false)` here made a truthful cash-freed attribution
+                // structurally rejectable on exactly those rows — else hold (a
+                // debut's neutral baseline).
                 ContextCause::CashFreed => {
-                    sells > DOLLAR_EPS
-                        && x.row
-                            .lean
-                            .map(|lean| rung_index(x.action) > rung_index(lean))
-                            .unwrap_or(false)
+                    let baseline = x.row.lean.or(x.row.prior_action).unwrap_or(Action::Hold);
+                    sells > DOLLAR_EPS && rung_index(x.action) > rung_index(baseline)
                 }
             }
         };
@@ -1542,6 +1574,10 @@ pub fn merge_validated_actions(
             lean_divergence_by_symbol.insert(key, d.clone());
         } else if carried.contains(&key) {
             if let VerdictDisposition::Priced(g) = &v.disposition {
+                // Known miss, accepted (ruled 2026-08-05, piece-3 walk): a
+                // pre-lean-era carried verdict has `lean: None` and skips the
+                // stamp even when construction moves off its action — the
+                // ambiguity ages out with the pre-construction blobs.
                 if g.lean.is_some_and(|l| l != vh.action) {
                     lean_divergence_by_symbol.insert(
                         key,
@@ -2360,6 +2396,87 @@ mod tests {
     }
 
     #[test]
+    fn cash_freed_validates_on_a_lean_less_add_side_move() {
+        // Role-risk and carried rows carry no lean; the pre-fix check
+        // `unwrap_or(false)` made a truthful cash-freed attribution
+        // structurally rejectable on exactly those rows (reachable since v7
+        // opened role-risk adds, departures annotated). The baseline falls back
+        // to the prior action.
+        let mut add_row = spine_row("AAA", 0.05, vec![Action::Trim, Action::Hold, Action::Add]);
+        add_row.lean = None; // role-risk / carried shape
+        add_row.prior_action = Some(Action::Hold);
+        let mut trim_row = spine_row("BBB", 0.10, vec![Action::SellAll, Action::Trim, Action::Hold]);
+        trim_row.lean = Some(Action::Trim);
+        trim_row.prior_action = Some(Action::Trim);
+        let spine = vec![add_row, trim_row];
+        let holdings = Holdings {
+            cash: 85_000.0,
+            account_total: 100_000.0,
+            ..holdings_for(&spine, 0.0)
+        };
+        let agg = agg_for(spine);
+        let (a_low, a_high) = engine::rung_band(Action::Add, 0.05);
+        let add = HoldingProposalDraft {
+            action: "add".into(),
+            target_weight_low: a_low,
+            target_weight_high: a_high,
+            rationale: "redeploy the trim's proceeds".into(),
+            divergence_cause: None,
+            divergence_note: None,
+            changed_attribution: Some("moved-context".into()),
+            changed_cause: Some("cash-freed".into()),
+            changed_note: Some("BBB's trim raises proceeds".into()),
+        };
+        let (t_low, t_high) = engine::rung_band(Action::Trim, 0.10);
+        let mut trim = hold_proposal(0.10);
+        trim.action = "trim".into();
+        trim.target_weight_low = t_low;
+        trim.target_weight_high = t_high;
+        let draft = draft_for(vec![("AAA", add), ("BBB", trim)]);
+        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture());
+        match out {
+            Ok(v) => {
+                let wc = v.actions["AAA"].what_changed.as_ref().unwrap();
+                assert_eq!(wc.cause, Some(ContextCause::CashFreed));
+            }
+            Err(violations) => {
+                assert!(
+                    !violations.iter().any(|v| matches!(
+                        v,
+                        Violation::ContextCauseUnsupported { symbol, .. } if symbol == "AAA"
+                    )),
+                    "a truthful lean-less cash-freed attribution must validate: {violations:?}"
+                );
+                panic!("unexpected unrelated violations: {violations:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn case_variant_duplicate_proposals_are_a_typed_violation() {
+        // The schema can't bar extra keys; "AAA" and "aaa" both resolve to one
+        // spine row — un-deduped they double-count the implied book and
+        // external funding while the map silently keeps one action.
+        let spine = vec![spine_row("AAA", 0.05, vec![Action::Trim, Action::Hold, Action::Add])];
+        let holdings = Holdings {
+            cash: 85_000.0,
+            account_total: 100_000.0,
+            ..holdings_for(&spine, 0.0)
+        };
+        let agg = agg_for(spine);
+        let draft = draft_for(vec![("AAA", hold_proposal(0.05)), ("aaa", hold_proposal(0.05))]);
+        let violations =
+            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+                .unwrap_err();
+        assert!(
+            violations
+                .iter()
+                .any(|v| matches!(v, Violation::DuplicateHolding { .. })),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
     fn a_reversion_to_an_unchanged_lean_is_app_stamped_not_model_claimed() {
         // Prior action trim, lean hold then and now (a lapsed context divergence):
         // the fresh pass re-converges to the lean — the app stamps the
@@ -2734,6 +2851,51 @@ mod tests {
         // Spine rows exist for the two gradeable holdings only.
         assert_eq!(agg.spine.len(), 2);
         assert!(agg.spine.iter().all(|r| !r.offered.is_empty()));
+
+        // A guard-terminal not-rated STOCK (class-gradeable, verdict not-rated)
+        // rides the NOT-RATED surface only — folding its weight into the sector
+        // table too would present the same exposure twice and overstate the
+        // unknown bucket's gradeable-weight meaning.
+        let not_rated_stock = HoldingVerdict {
+            symbol: "XX".into(),
+            asset_class: AssetClass::Stock,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::NotRated {
+                reason: "unsupported listing".into(),
+            },
+            thesis_ledger: None,
+            analyzed_at: None,
+            action_source: ActionSource::ModelChosen,
+        };
+        let verdicts2 = vec![graded("AAA", Action::Hold), not_rated_stock];
+        let holdings2 = Holdings {
+            positions: vec![
+                position("AAA", AssetClass::Stock, 20_000.0),
+                position("XX", AssetClass::Stock, 6_000.0),
+            ],
+            cash: 74_000.0,
+            account_total: 100_000.0,
+            source_rows: vec![],
+        };
+        let agg2 = build_aggregates(&AggregateInputs {
+            holdings: &holdings2,
+            verdicts: &verdicts2,
+            audits: &[],
+            prior_verdicts: None,
+            carried: &carried,
+            over_age: &over_age,
+            stock_sectors: &stock_sectors,
+            fund_sector_weights: &fund_weights,
+            episodes: &[],
+            profile: &InvestorProfile::default_fixture(),
+        });
+        assert!(
+            (agg2.unknown_sector_weight - 0.0).abs() < 1e-9,
+            "the not-rated stock's weight must not land in the unknown bucket: {}",
+            agg2.unknown_sector_weight
+        );
+        assert_eq!(agg2.not_rated.len(), 1);
+        assert!((agg2.not_rated[0].weight - 0.06).abs() < 1e-9);
     }
 
     #[test]

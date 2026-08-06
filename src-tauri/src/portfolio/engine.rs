@@ -90,7 +90,11 @@ const RISK_DEBT_EQUITY_BAND: (f64, f64) = (2.5, 0.0);
 /// `3b21ae85`, certified v1-exact first): the recentered-growth bands above plus
 /// the negative-D/E → 0 guard; runs decoding `None` predate the stamp and carry
 /// the v1 bands.
-pub const GRADE_PARAMETER_VERSION: &str = "grade-v2";
+// v2.1 (2026-08-05, piece-3 walk): the dossier's P/E derive went signed, making
+// the negative-P/E fixed-score guard reachable for loss-makers — an input-
+// semantics change that can move letters, so it is stamped as its own version
+// even though every band, weight, and cutoff is unchanged.
+pub const GRADE_PARAMETER_VERSION: &str = "grade-v2.1";
 
 /// Fallback one-month scenario half-band (fraction of the base target) when
 /// realized volatility can't be computed. The twelve-month band needs no fallback
@@ -406,6 +410,34 @@ pub fn canonicalize_statements(fin: &mut CompanyFinancials) {
     fin.quarterly_cash_flow.dedup_by(|a, b| a.period_end == b.period_end);
 }
 
+/// Whether a run of newest-first quarterly period-ends is **consecutive
+/// quarters**: each adjacent pair sits roughly one quarter apart (60–120 days,
+/// covering 13/14-week fiscal calendars and transition stubs). Canonicalization
+/// fixes order and duplicates but cannot detect a *skipped* quarter — and every
+/// fixed-width window in the chain (the TTM statement basis, the anchor
+/// windows, the trailing clamp prints, the pre-profit YoY / margin windows)
+/// assumes its rows are consecutive, so a feed gap would silently stretch a
+/// "TTM" past twelve months. An undatable period-end reads non-contiguous
+/// (the conservative side: the window degrades to its gap path).
+pub fn quarters_contiguous<'a, I>(period_ends: I) -> bool
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut prev: Option<chrono::NaiveDate> = None;
+    for end in period_ends {
+        let Ok(d) = chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d") else {
+            return false;
+        };
+        if let Some(p) = prev {
+            if !(60..=120).contains(&(p - d).num_days()) {
+                return false;
+            }
+        }
+        prev = Some(d);
+    }
+    true
+}
+
 /// The raw computed metrics behind the sub-scores — recorded on the run's audit so a
 /// verdict's basis is inspectable, and rendered into the interpretation prompt so the
 /// model reasons over real figures. Each is `None` when its inputs were missing.
@@ -613,6 +645,28 @@ impl LedgerSeries {
             .find(|s| s.as_kebab() == claim.trim())
     }
 
+    /// Whether the engine ever computes this series for the holding's vehicle
+    /// kind. The executability surface is class-shaped: statement and multiple
+    /// series exist only for stocks (the fund path skips the facts call and
+    /// carries no statement lines), the expense ratio only for funds. A series
+    /// the class can never resolve must downgrade at 6g — admitted, it would
+    /// type unevaluable on every sweep, permanently un-clear its family, and
+    /// force-include the holding on every selective run.
+    pub fn computable_for(self, is_fund: bool) -> bool {
+        if is_fund {
+            matches!(
+                self,
+                LedgerSeries::ExpenseRatio
+                    | LedgerSeries::Price
+                    | LedgerSeries::PortfolioWeight
+                    | LedgerSeries::ReturnVolatility
+                    | LedgerSeries::TrailingReturn
+            )
+        } else {
+            !matches!(self, LedgerSeries::ExpenseRatio)
+        }
+    }
+
     /// The series' cadence (`docs/portfolio-analysis.md` §The position thesis
     /// ledger): statement-derived series are filing-cadence; price-derived ones
     /// market-data. The expense ratio rides the fund's `etf/info` print — a
@@ -700,6 +754,11 @@ pub fn resolve_series(
             .map(|d| d.date.clone())
             .ok_or_else(|| "no dated price print to key the observation".to_string())
     };
+    // Accepted consequence of the period-end identity (ruled 2026-08-05,
+    // piece-3 walk): an amendment restating the SAME period keys the same
+    // observation, so a restated breach cannot advance a filing streak until
+    // the next quarter's filing — the material-filing badge and statement
+    // re-pull still fire, only the streak waits.
     let filing_obs = || -> Result<String, String> {
         fin.quarterly_income
             .iter()
@@ -847,9 +906,25 @@ pub fn evaluate_ledger_conditions_gated(
             crate::portfolio::LedgerComparator::Below => resolved.value < quant.threshold - margin,
             crate::portfolio::LedgerComparator::Above => resolved.value > quant.threshold + margin,
         };
-        let new_observation =
-            st.last_observation_id.as_deref() != Some(resolved.observation_id.as_str());
-        if new_observation {
+        // Observation ordering is MONOTONIC for date-keyed ids (closes, period
+        // ends, marks days): the sweep and the full run key different EOD feeds
+        // (FMP vs the Stooq deep-history swap), so an out-of-order *older*
+        // print is reachable and must neither advance a streak, reset one, nor
+        // regress the recorded state. The value-keyed expense-ratio id has no
+        // order and keeps the distinct test.
+        let iso_date = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
+        let resolved_date = iso_date(&resolved.observation_id);
+        let last_date = st.last_observation_id.as_deref().and_then(iso_date);
+        let (new_observation, stale_observation) = match (resolved_date, last_date) {
+            (Some(r), Some(l)) => (r > l, r < l),
+            _ => (
+                st.last_observation_id.as_deref() != Some(resolved.observation_id.as_str()),
+                false,
+            ),
+        };
+        if stale_observation {
+            // Older than the recorded observation: no state movement at all.
+        } else if new_observation {
             st.last_observation_id = Some(resolved.observation_id.clone());
             st.last_value = Some(resolved.value);
             st.last_evaluated_at = Some(run_date.to_string());
@@ -865,27 +940,59 @@ pub fn evaluate_ledger_conditions_gated(
                 }
             } else {
                 // A clean distinct observation resets the streak — the prior streak's
-                // record lives in the previously persisted runs.
+                // record lives in the previously persisted runs. The acknowledgment
+                // clears with it: a later re-breach is a genuinely new observation
+                // (without the clear, a value-keyed id re-printing its acknowledged
+                // value would be suppressed indefinitely).
+                st.breach_streak = 0;
+                st.first_breach_at = None;
+                st.confirmed_at = None;
+                st.acknowledged_observation_id = None;
+            }
+        } else {
+            // Same observation: re-evaluation never advances the streak — repeated
+            // passes against one print can't confirm a breach. The VALUE may have
+            // been corrected under the same identity (a fixed close, a
+            // same-period restated print): a corrected-clean read supersedes the
+            // breached read of the same observation, so any standing breach
+            // state resets — a confirmed crossing must never stand on, or emit
+            // carrying, a value that no longer breaches.
+            st.last_value = Some(resolved.value);
+            st.last_evaluated_at = Some(run_date.to_string());
+            if !breached && st.breach_streak > 0 {
                 st.breach_streak = 0;
                 st.first_breach_at = None;
                 st.confirmed_at = None;
             }
-        } else {
-            // Same observation: re-evaluation never advances the streak — repeated
-            // passes against one print can't confirm a breach.
-            st.last_value = Some(resolved.value);
-            st.last_evaluated_at = Some(run_date.to_string());
         }
 
         let confirmed_now = st.breach_streak >= quant.series.required_consecutive();
-        // The acknowledgment transition: a consumed breach re-raises only against a
-        // distinct new observation. Date-keyed ids (closes, period ends) only ever
-        // move forward and the value-keyed expense-ratio id has no order, so
-        // "distinct from the acknowledged one" is the honest test for every id kind.
+        // The acknowledgment transition: a consumed breach re-raises only against
+        // an observation past the acknowledged one — strictly newer for date-keyed
+        // ids (an older cross-feed print must not read as new), distinct for the
+        // orderless value-keyed id (whose stale-suppression case the reset-clear
+        // above closes).
         let past_ack = match (&st.acknowledged_observation_id, &st.last_observation_id) {
-            (Some(ack), Some(last)) => last != ack,
+            (Some(ack), Some(last)) => match (iso_date(ack), iso_date(last)) {
+                (Some(a), Some(l)) => l > a,
+                _ => last != ack,
+            },
             (None, _) => true,
             (Some(_), None) => false,
+        };
+        // A still-unconsumed confirmed breach re-raises each pass until 6g acks
+        // it — keyed to the RECORDED observation when this pass's print is
+        // stale (acking the stale id would let the next sweep's newer print
+        // read as past-ack and re-raise the just-consumed breach).
+        let (crossing_obs, crossing_val) = if stale_observation {
+            (
+                st.last_observation_id
+                    .clone()
+                    .unwrap_or_else(|| resolved.observation_id.clone()),
+                st.last_value.unwrap_or(resolved.value),
+            )
+        } else {
+            (resolved.observation_id.clone(), resolved.value)
         };
         if confirmed_now && past_ack {
             out.crossings.push(ConditionCrossing {
@@ -893,9 +1000,9 @@ pub fn evaluate_ledger_conditions_gated(
                 statement: cond.statement.clone(),
                 role: cond.role,
                 outcome: CrossingOutcome::Confirmed,
-                observed_value: resolved.value,
+                observed_value: crossing_val,
                 threshold: quant.threshold,
-                observation_id: resolved.observation_id.clone(),
+                observation_id: crossing_obs,
             });
         } else if breached && new_observation && !confirmed_now {
             out.crossings.push(ConditionCrossing {
@@ -1489,6 +1596,11 @@ fn stock_anchor_observations(
             break;
         }
         let window = &q[i..i + 4];
+        // A window spanning a feed gap is not a TTM — skip it (the anchor set
+        // just gets one fewer observation, like any other inadmissible window).
+        if !quarters_contiguous(window.iter().map(|r| r.period_end.as_str())) {
+            continue;
+        }
         let ttm: Option<f64> = if use_eps {
             window.iter().map(|r| r.eps_diluted).sum()
         } else {
@@ -1556,8 +1668,12 @@ struct DriverRead {
 fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
     let c = fin.consensus.as_ref();
 
-    // Trailing TTM prints for the growth clamp (newest four quarters).
-    let ttm_eps: Option<f64> = (fin.quarterly_income.len() >= 4)
+    // Trailing TTM prints for the growth clamp (newest four quarters) — only a
+    // contiguous four-quarter run is a TTM; a gapped window would clamp against
+    // a >12-month print, so the clamp just goes unavailable instead.
+    let ttm_window_ok = fin.quarterly_income.len() >= 4
+        && quarters_contiguous(fin.quarterly_income[..4].iter().map(|r| r.period_end.as_str()));
+    let ttm_eps: Option<f64> = ttm_window_ok
         .then(|| fin.quarterly_income[..4].iter().map(|r| r.eps_diluted).sum())
         .flatten();
     let latest_shares = fin
@@ -1566,7 +1682,7 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
         .and_then(|r| r.diluted_shares)
         .or(fin.shares_outstanding);
     let ttm_rev_ps: Option<f64> = match (
-        (fin.quarterly_income.len() >= 4)
+        ttm_window_ok
             .then(|| fin.quarterly_income[..4].iter().map(|r| r.revenue).sum::<Option<f64>>())
             .flatten(),
         latest_shares,
@@ -2306,6 +2422,10 @@ pub fn sizing_from_range(
             // unconstrained (the fixed preset's stance — the user may hold cash the app
             // can't see), so adds are not gated on observed Schwab cash
             // (`docs/configuration.md` §Investor Profile). INFINITY ⇒ no cap.
+            // The cap is PER ROW, not joint across adds (ruled 2026-08-05,
+            // piece-3 walk): two validated adds can each individually clear a
+            // set cap while jointly overspending it — inert under the fixed
+            // preset; a joint gate rides any future configurable-cash slice.
             if dollar_delta > 0.0 {
                 dollar_delta = dollar_delta.min(profile.available_cash.unwrap_or(f64::INFINITY));
             }
@@ -3951,6 +4071,23 @@ mod tests {
     }
 
     #[test]
+    fn quarters_contiguous_accepts_fiscal_spacing_and_rejects_gaps() {
+        // Ordinary calendar quarters and 13/14-week fiscal spacing pass; a
+        // skipped quarter (~182 days) or an undatable print reads
+        // non-contiguous, and short runs are trivially contiguous.
+        assert!(quarters_contiguous(["2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30"]));
+        assert!(quarters_contiguous(["2026-06-27", "2026-03-28", "2025-12-27"])); // 13-week
+        assert!(!quarters_contiguous([
+            "2026-06-30",
+            "2025-12-31", // 2026-03-31 missing — a ~182-day jump
+            "2025-09-30"
+        ]));
+        assert!(!quarters_contiguous(["2026-06-30", "not-a-date"]));
+        assert!(quarters_contiguous(["2026-06-30"]));
+        assert!(quarters_contiguous(std::iter::empty::<&str>()));
+    }
+
+    #[test]
     fn filing_cadence_confirms_on_the_first_qualifying_breach_beyond_the_margin() {
         let fin = strong();
         let metrics = compute_metrics(&fin); // net margin 100/400 = 0.25
@@ -4092,6 +4229,177 @@ mod tests {
         let s = &eval.updated_states[0].1;
         assert_eq!(s.breach_streak, 0);
         assert!(s.first_breach_at.is_none());
+    }
+
+    #[test]
+    fn an_out_of_order_older_print_neither_advances_nor_resets_nor_regresses() {
+        // The sweep (FMP) and the full run (Stooq deep-history swap) key
+        // different EOD feeds — a one-day-lagged feed can serve an OLDER print
+        // than the recorded observation. Date-keyed identity is monotonic: the
+        // stale print is a non-event, whatever its value.
+        let fin = strong(); // newest close 2026-07-15
+        let metrics = compute_metrics(&fin);
+        let st = ConditionEvalState {
+            last_observation_id: Some("2026-07-20".into()),
+            last_value: Some(193.0),
+            breach_streak: 1,
+            first_breach_at: Some("2026-08-01".into()),
+            ..Default::default()
+        };
+        // Breaching value (195 < 200) on the stale print: no advance.
+        let carried = ledger_of(vec![quant_cond(
+            "p",
+            LedgerSeries::Price,
+            LedgerComparator::Below,
+            200.0,
+            0.0,
+            Some(st.clone()),
+        )]);
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        let s = &eval.updated_states[0].1;
+        assert_eq!(s.breach_streak, 1, "a stale print must not advance the streak");
+        assert_eq!(s.last_observation_id.as_deref(), Some("2026-07-20"));
+        assert_eq!(s.last_value, Some(193.0), "state must not regress to the stale value");
+        assert!(eval.crossings.is_empty(), "{:?}", eval.crossings);
+
+        // Clean value on a stale print: no reset either (the recorded streak
+        // was keyed to a NEWER observation the stale print can't overrule).
+        let clean_carried = ledger_of(vec![quant_cond(
+            "p",
+            LedgerSeries::Price,
+            LedgerComparator::Below,
+            180.0,
+            0.0,
+            Some(st),
+        )]);
+        let eval = evaluate_ledger_conditions(&clean_carried, &metrics, &fin, None, "2026-08-04");
+        assert_eq!(eval.updated_states[0].1.breach_streak, 1, "no reset on a stale print");
+    }
+
+    #[test]
+    fn a_stale_print_re_raise_keys_to_the_recorded_observation() {
+        // A confirmed-unacked breach still re-raises on a stale-print pass, but
+        // the crossing must carry the RECORDED (newer) observation id — 6g acks
+        // whatever the crossing names, and acking the stale id would let the
+        // next sweep's newer print read as past-ack and re-raise the breach it
+        // just consumed.
+        let fin = strong(); // newest close 2026-07-15
+        let metrics = compute_metrics(&fin);
+        let confirmed = ConditionEvalState {
+            last_observation_id: Some("2026-07-20".into()),
+            last_value: Some(190.0),
+            breach_streak: 2,
+            first_breach_at: Some("2026-07-31".into()),
+            confirmed_at: Some("2026-08-01".into()),
+            ..Default::default()
+        };
+        let carried = ledger_of(vec![quant_cond(
+            "p",
+            LedgerSeries::Price,
+            LedgerComparator::Below,
+            200.0,
+            0.0,
+            Some(confirmed),
+        )]);
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        assert_eq!(eval.crossings.len(), 1);
+        assert_eq!(eval.crossings[0].observation_id, "2026-07-20");
+        assert_eq!(eval.crossings[0].observed_value, 190.0);
+    }
+
+    #[test]
+    fn a_same_observation_corrected_clean_value_resets_the_breach_state() {
+        // Same identity, corrected VALUE (a fixed close, a same-period restated
+        // print): the observation's settled value is clean, so any standing
+        // breach state resets and no Confirmed crossing can emit carrying a
+        // value that no longer breaches.
+        let fin = strong(); // newest close 2026-07-15, value 195
+        let metrics = compute_metrics(&fin);
+        let confirmed = ConditionEvalState {
+            last_observation_id: Some("2026-07-15".into()),
+            last_value: Some(185.0), // the earlier, breached read of the same print
+            breach_streak: 2,
+            first_breach_at: Some("2026-07-31".into()),
+            confirmed_at: Some("2026-08-01".into()),
+            ..Default::default()
+        };
+        // Below 190: the corrected 195 reads clean on the SAME observation id.
+        let carried = ledger_of(vec![quant_cond(
+            "p",
+            LedgerSeries::Price,
+            LedgerComparator::Below,
+            190.0,
+            0.0,
+            Some(confirmed),
+        )]);
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        assert!(
+            eval.crossings.is_empty(),
+            "no crossing may carry a clean value: {:?}",
+            eval.crossings
+        );
+        let s = &eval.updated_states[0].1;
+        assert_eq!(s.breach_streak, 0);
+        assert!(s.confirmed_at.is_none());
+        assert_eq!(s.last_value, Some(195.0));
+    }
+
+    #[test]
+    fn a_clean_reset_clears_the_acknowledgment_so_a_re_breach_re_raises() {
+        // Value-keyed identity has no order, so without the reset-clear a
+        // genuine re-breach at the previously acknowledged value would read as
+        // the already-examined observation indefinitely (left, came back —
+        // suppressed until some third value printed).
+        let fin = strong();
+        let metrics_high = ComputedMetrics {
+            expense_ratio: Some(0.005),
+            ..Default::default()
+        };
+        let acked = ConditionEvalState {
+            last_observation_id: Some("expense-ratio:0.005".into()),
+            last_value: Some(0.005),
+            breach_streak: 1,
+            confirmed_at: Some("2026-08-01".into()),
+            acknowledged_observation_id: Some("expense-ratio:0.005".into()),
+            ..Default::default()
+        };
+        let cond = |st: Option<ConditionEvalState>| {
+            ledger_of(vec![quant_cond(
+                "e",
+                LedgerSeries::ExpenseRatio,
+                LedgerComparator::Above,
+                0.004,
+                0.0,
+                st,
+            )])
+        };
+        // The print moves clean (0.004, distinct, not above the threshold):
+        // streak resets AND the acknowledgment clears with it.
+        let metrics_clean = ComputedMetrics {
+            expense_ratio: Some(0.004),
+            ..Default::default()
+        };
+        let eval = evaluate_ledger_conditions(
+            &cond(Some(acked)),
+            &metrics_clean,
+            &fin,
+            None,
+            "2026-08-05",
+        );
+        let reset = eval.updated_states[0].1.clone();
+        assert_eq!(reset.breach_streak, 0);
+        assert!(reset.acknowledged_observation_id.is_none(), "ack must clear on reset");
+        // The ratio returns to 0.005 — a genuinely new observation of the old
+        // value: filing-cadence count 1 confirms and the crossing re-raises.
+        let eval = evaluate_ledger_conditions(
+            &cond(Some(reset)),
+            &metrics_high,
+            &fin,
+            None,
+            "2026-08-06",
+        );
+        assert_eq!(eval.crossings.len(), 1, "{:?}", eval.crossings);
+        assert_eq!(eval.crossings[0].outcome, CrossingOutcome::Confirmed);
     }
 
     #[test]

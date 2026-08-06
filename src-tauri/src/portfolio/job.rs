@@ -1173,6 +1173,7 @@ fn run_analysis(
             dgs2: Some(rates.dgs2),
             unreadable_active_symbols,
             lean_divergence_by_symbol: &lean_divergence_by_symbol,
+            carried_symbols: &carried_symbols,
         },
         &mut episodes,
     );
@@ -1266,51 +1267,65 @@ fn run_analysis(
     // full pass either, so its sweep state — freshly merged by the in-run tail
     // sweep where one ran — is retained re-stamped to the new run rather than
     // cleared (`docs/portfolio-analysis.md` §Triggering).
-    let store_state = store::latest_quick_check(conn)?;
-    let mut retained_holdings: Vec<crate::portfolio::quick_check::HoldingQuickState> = Vec::new();
-    for v in &run.verdicts {
-        let key = v.symbol.to_ascii_uppercase();
-        let abstained = matches!(
-            v.disposition,
-            crate::portfolio::VerdictDisposition::InsufficientEvidence { .. }
-        );
-        if !abstained && !carried_symbols.contains(&key) {
-            continue;
+    // Fail-soft, matching the run-start read's posture (`.ok().flatten()`): the
+    // run row committed above, so an error in this bookkeeping step must not
+    // record a durably persisted run as Failed — the "failed" run would still
+    // be the next run's diff baseline and carry source, a half-written
+    // lifecycle state. The cost of a swallowed error here is a stale
+    // quick-check row the next sweep supersedes.
+    let retention: anyhow::Result<()> = (|| {
+        let store_state = store::latest_quick_check(conn)?;
+        let mut retained_holdings: Vec<crate::portfolio::quick_check::HoldingQuickState> =
+            Vec::new();
+        for v in &run.verdicts {
+            let key = v.symbol.to_ascii_uppercase();
+            let abstained = matches!(
+                v.disposition,
+                crate::portfolio::VerdictDisposition::InsufficientEvidence { .. }
+            );
+            if !abstained && !carried_symbols.contains(&key) {
+                continue;
+            }
+            // The in-run sweep's merged state is the freshest; the persisted store row
+            // covers a holding the sweep did not cover (a selected holding that
+            // abstained, or a full run's abstention).
+            if let Some(h) = swept_tail.get(&key) {
+                retained_holdings.push(h.clone());
+            } else if let Some(h) = store_state.as_ref().and_then(|s| {
+                s.holdings
+                    .iter()
+                    .find(|h| h.symbol.eq_ignore_ascii_case(&v.symbol))
+            }) {
+                retained_holdings.push(h.clone());
+            }
         }
-        // The in-run sweep's merged state is the freshest; the persisted store row
-        // covers a holding the sweep did not cover (a selected holding that
-        // abstained, or a full run's abstention).
-        if let Some(h) = swept_tail.get(&key) {
-            retained_holdings.push(h.clone());
-        } else if let Some(h) = store_state
-            .as_ref()
-            .and_then(|s| s.holdings.iter().find(|h| h.symbol.eq_ignore_ascii_case(&v.symbol)))
-        {
-            retained_holdings.push(h.clone());
+        if retained_holdings.is_empty() {
+            store::clear_quick_check(conn)?;
+        } else {
+            let state = crate::portfolio::quick_check::QuickCheckState {
+                swept_run_id: run.run_id.clone(),
+                // The in-run tail sweep is itself a quick-check evaluation; with none
+                // (a full run retaining an abstention) the store's own timestamp holds.
+                last_checked_at: if swept_tail.is_empty() {
+                    store_state
+                        .as_ref()
+                        .map(|s| s.last_checked_at.clone())
+                        .unwrap_or_else(|| created_at.clone())
+                } else {
+                    created_at.clone()
+                },
+                // The retained states predate this run, so their rate cache must not
+                // shadow the fresher prints this run just fetched — the next sweep's
+                // fail-soft prefers the prior state's cache over the run blob's.
+                rate_cache: run.rate_prints.clone(),
+                holdings: retained_holdings,
+            };
+            store::save_quick_check(conn, &state)?;
         }
-    }
-    if retained_holdings.is_empty() {
-        store::clear_quick_check(conn)?;
-    } else {
-        let state = crate::portfolio::quick_check::QuickCheckState {
-            swept_run_id: run.run_id.clone(),
-            // The in-run tail sweep is itself a quick-check evaluation; with none
-            // (a full run retaining an abstention) the store's own timestamp holds.
-            last_checked_at: if swept_tail.is_empty() {
-                store_state
-                    .as_ref()
-                    .map(|s| s.last_checked_at.clone())
-                    .unwrap_or_else(|| created_at.clone())
-            } else {
-                created_at.clone()
-            },
-            // The retained states predate this run, so their rate cache must not
-            // shadow the fresher prints this run just fetched — the next sweep's
-            // fail-soft prefers the prior state's cache over the run blob's.
-            rate_cache: run.rate_prints.clone(),
-            holdings: retained_holdings,
-        };
-        store::save_quick_check(conn, &state)?;
+        Ok(())
+    })();
+    if let Err(e) = retention {
+        eprintln!("quick-check retention after run persist failed (run kept): {e}");
     }
     ctx.step_finished("persist", "ok", None);
 
@@ -2717,7 +2732,11 @@ mod tests {
         let symbol = first.verdicts[0].symbol.clone();
 
         // A between-run quick check advanced this condition to a confirmed streak
-        // against the same observation the fixture data will serve again.
+        // on a NEWER observation than the fixture history the full run re-serves
+        // (the cross-feed lag: the sweep's FMP print leads the run's deep
+        // history by days) with a genuinely breaching recorded value — the
+        // run's older print is a stale non-event, so the overlaid state chains
+        // whole and the crossing keys to the recorded observation.
         let conn = storage::open(&paths.db_path).unwrap();
         store::save_quick_check(
             &conn,
@@ -2733,8 +2752,8 @@ mod tests {
                     condition_states: vec![(
                         cond_id.clone(),
                         ConditionEvalState {
-                            last_observation_id: Some("2026-06-30".into()),
-                            last_value: Some(1.0),
+                            last_observation_id: Some("2026-07-04".into()),
+                            last_value: Some(-0.45),
                             last_evaluated_at: Some("2026-08-03".into()),
                             breach_streak: 5,
                             first_breach_at: Some("2026-08-02".into()),
@@ -2763,8 +2782,8 @@ mod tests {
         assert!(st.breach_streak >= 5, "the overlaid streak chained: {st:?}");
         assert_eq!(
             st.acknowledged_observation_id.as_deref(),
-            Some("2026-06-30"),
-            "the full pass stamped the acknowledging observation"
+            Some("2026-07-04"),
+            "the ack stamps the RECORDED (newer) observation, never the run's stale print"
         );
         // And the successful pass — every holding analyzed, none abstaining —
         // left nothing to retain, so the between-run store cleared.

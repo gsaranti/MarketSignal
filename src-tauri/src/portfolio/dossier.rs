@@ -163,6 +163,15 @@ pub fn apply_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
         }
         rows[..4].iter().map(get).sum()
     }
+    // The four newest rows are a TTM only when they are consecutive quarters —
+    // a feed gap (missed quarter, fiscal transition) would silently sum a
+    // >12-month span into every level-vs-market-cap multiple. Non-contiguous
+    // reads fail adoption onto the existing annual-fallback path.
+    if !crate::portfolio::engine::quarters_contiguous(
+        rows.iter().take(4).map(|r| r.period_end.as_str()),
+    ) {
+        return false;
+    }
     let ttm_revenue = sum4(rows, |r| r.revenue);
     let ttm_net_income = sum4(rows, |r| r.net_income);
     let (Some(_), Some(_)) = (ttm_revenue, ttm_net_income) else {
@@ -176,7 +185,18 @@ pub fn apply_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
         r.gross_profit
             .or_else(|| Some(r.revenue? - r.cost_of_revenue?))
     });
-    let prior = if rows.len() >= 8 { &rows[4..8] } else { &[][..] };
+    // The prior-year window needs the full eight-row run contiguous — a gap
+    // anywhere across it shifts the YoY comparison by a quarter, so growth
+    // gaps (`None`) rather than reading a misaligned window. The TTM basis
+    // itself stands: its own four rows were verified above.
+    let prior = if rows.len() >= 8
+        && crate::portfolio::engine::quarters_contiguous(
+            rows.iter().take(8).map(|r| r.period_end.as_str()),
+        ) {
+        &rows[4..8]
+    } else {
+        &[][..]
+    };
     let prior_revenue = sum4(prior, |r| r.revenue);
 
     fin.revenue = ttm_revenue;
@@ -221,8 +241,19 @@ pub fn merge_financials(
         (Some(n), Some(d)) if d > 0.0 => Some(n / d),
         _ => None,
     };
+    // The P/E derive is SIGNED (denominator ≠ 0, not > 0): a loss-maker must
+    // produce a negative P/E so the engine's fixed "a loss-maker is never
+    // cheap" valuation guard is reachable — a `None` here silently excused
+    // every loss-maker from the penalty (the grade-v2.1 boundary; the
+    // band-recalibration NOTE attributes the letter shifts). P/S and P/B keep
+    // the positive-denominator derive: negative revenue does not occur, and a
+    // negative-equity P/B has no engine read (risk carries the negative-D/E
+    // guard instead).
     if fmp.pe_ratio.is_none() {
-        fmp.pe_ratio = derive(fmp.market_cap, fmp.net_income);
+        fmp.pe_ratio = match (fmp.market_cap, fmp.net_income) {
+            (Some(n), Some(d)) if d != 0.0 => Some(n / d),
+            _ => None,
+        };
     }
     if fmp.ps_ratio.is_none() {
         fmp.ps_ratio = derive(fmp.market_cap, fmp.revenue);
@@ -416,25 +447,37 @@ const HOUSE_VIEW_CHAR_CAP: usize = 6_000;
 /// [`HOUSE_VIEW_CHAR_CAP`] so the house view stays a context input, not the whole report.
 pub fn extract_house_view_sections(markdown: &str) -> String {
     let mut out = String::new();
-    let mut capturing = false;
+    // The level the currently-kept section's header sits at; `None` = not
+    // capturing. A deeper header inside a kept section belongs to the section;
+    // only a same-or-higher header re-decides — including a level-1 `#`, which
+    // can never itself start a kept section but must end one.
+    let mut capturing_level: Option<usize> = None;
     for line in markdown.lines() {
         let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("##") {
-            // A header line (## or ###): decide whether this section is one we keep.
-            let title = rest.trim_start_matches('#').trim().to_ascii_lowercase();
-            capturing = HOUSE_VIEW_SECTION_TITLES
-                .iter()
-                .any(|t| title.contains(t));
-            if capturing {
+        if trimmed.starts_with('#') {
+            let level = trimmed.chars().take_while(|c| *c == '#').count();
+            if capturing_level.is_some_and(|cap| level > cap) {
+                out.push_str(trimmed);
+                out.push('\n');
+                if out.len() >= HOUSE_VIEW_CHAR_CAP {
+                    break;
+                }
+                continue;
+            }
+            let title = trimmed.trim_start_matches('#').trim().to_ascii_lowercase();
+            let keeps = (2..=3).contains(&level)
+                && HOUSE_VIEW_SECTION_TITLES.iter().any(|t| title.contains(t));
+            capturing_level = keeps.then_some(level);
+            if keeps {
                 if !out.is_empty() {
                     out.push('\n');
                 }
-                out.push_str(line.trim_start());
+                out.push_str(trimmed);
                 out.push('\n');
             }
             continue;
         }
-        if capturing {
+        if capturing_level.is_some() {
             out.push_str(line);
             out.push('\n');
             if out.len() >= HOUSE_VIEW_CHAR_CAP {
@@ -442,7 +485,16 @@ pub fn extract_house_view_sections(markdown: &str) -> String {
             }
         }
     }
-    out.truncate(HOUSE_VIEW_CHAR_CAP);
+    // Whole-line pushes overshoot the cap, so the final cut must respect char
+    // boundaries: `String::truncate` panics mid-character, and report prose is
+    // full of multi-byte punctuation (em-dashes, curly quotes).
+    if out.len() > HOUSE_VIEW_CHAR_CAP {
+        let mut cut = HOUSE_VIEW_CHAR_CAP;
+        while !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.truncate(cut);
+    }
     out.trim().to_string()
 }
 
@@ -661,6 +713,50 @@ mod tests {
     }
 
     #[test]
+    fn ttm_basis_rejects_a_non_contiguous_four_quarter_window() {
+        // A feed gap (a skipped quarter) makes the "four newest rows" span more
+        // than twelve months — adoption must fail onto the annual-fallback path
+        // rather than sum a 15-month "TTM" into every multiple.
+        let mut fin = fmp_only();
+        let mut rows = quarters(5, true, false);
+        rows.remove(1); // drop 2026-03-31: newest four now span 2025-06-30..2026-06-30
+        fin.quarterly_income = rows;
+        assert!(!apply_ttm_statement_basis(&mut fin), "gapped window must not adopt");
+        assert!(fin.revenue.is_none(), "no partial fill on the failed adoption");
+    }
+
+    #[test]
+    fn ttm_prior_window_gaps_on_a_non_contiguous_eight_quarter_run() {
+        // The TTM window itself is contiguous, but a gap inside the prior four
+        // shifts the YoY comparison a quarter — growth gaps rather than
+        // misaligning, while the TTM basis itself stands.
+        let mut fin = fmp_only();
+        let mut rows = quarters(8, true, false);
+        rows.remove(5); // drop 2025-03-31 from the prior window
+        fin.quarterly_income = rows;
+        assert!(apply_ttm_statement_basis(&mut fin), "the TTM four are intact");
+        assert_eq!(fin.revenue, Some(394.0));
+        assert_eq!(fin.revenue_prior, None, "misaligned prior window must gap");
+    }
+
+    #[test]
+    fn loss_maker_pe_derives_negative_so_the_engine_guard_is_reachable() {
+        // The signed P/E derive (grade-v2.1): a loss-maker must produce a
+        // NEGATIVE P/E — `None` silently excused every loss-maker from the
+        // engine's fixed "a loss-maker is never cheap" valuation score, a
+        // ~25-point axis escape. P/B keeps the positive-denominator derive.
+        let mut fin = fmp_only();
+        fin.market_cap = Some(1_000.0);
+        fin.net_income = Some(-50.0);
+        fin.total_equity = Some(-10.0);
+        let merged = merge_financials(fin, &CompanyFacts::default(), true);
+        assert_eq!(merged.pe_ratio, Some(-20.0));
+        assert_eq!(merged.pb_ratio, None, "negative equity has no P/B read");
+        let metrics = crate::portfolio::engine::compute_metrics(&merged);
+        assert_eq!(metrics.pe_ratio, Some(-20.0));
+    }
+
+    #[test]
     fn ttm_gross_profit_derives_from_cost_of_revenue_when_unreported() {
         let mut fin = fmp_only();
         fin.quarterly_income = quarters(4, false, true);
@@ -745,6 +841,49 @@ Watch the 2s10s and the labor prints.
         // Non-house-view sections are excluded.
         assert!(!sections.contains("Dow up"), "{sections}");
         assert!(!sections.contains("a bullet"), "{sections}");
+    }
+
+    #[test]
+    fn extract_honors_the_section_level_contract() {
+        // A `###` sub-heading inside a kept `##` section belongs to it (the
+        // pre-fix walk ended capture there, silently dropping the section's
+        // remainder); a level-1 `#` heading ends capture (it previously failed
+        // the "##" strip and leaked unrelated prose in).
+        let md = "\
+## Forward Outlook
+Watch the 2s10s.
+
+### Rates
+The long end is the swing factor.
+
+# Appendix
+Sources and footnotes.
+";
+        let sections = extract_house_view_sections(md);
+        assert!(sections.contains("Watch the 2s10s"), "{sections}");
+        assert!(
+            sections.contains("The long end is the swing factor"),
+            "a ### subsection inside a kept section was dropped: {sections}"
+        );
+        assert!(
+            !sections.contains("Sources and footnotes"),
+            "a level-1 heading must end capture: {sections}"
+        );
+    }
+
+    #[test]
+    fn extract_truncates_multi_byte_prose_without_panicking() {
+        // Whole-line pushes overshoot the byte cap, and report prose is full of
+        // multi-byte punctuation — the final cut must respect char boundaries
+        // (`String::truncate` panics mid-character; the panic unwound past every
+        // run_finished emitter, stranding the tracker with no Failed row).
+        // Header (24 bytes) + "x" puts the em-dash run at byte 25; the cap at
+        // 6000 lands (6000 − 25) = 5975 bytes in — 5975 mod 3 = 2, mid-dash by
+        // construction, so the pre-fix truncate reliably panicked here.
+        let md = format!("## Market Signal Thesis\nx{}\n", "—".repeat(9_000));
+        let sections = extract_house_view_sections(&md);
+        assert!(sections.len() <= HOUSE_VIEW_CHAR_CAP, "{}", sections.len());
+        assert!(sections.starts_with("## Market Signal Thesis"), "{sections}");
     }
 
     #[test]

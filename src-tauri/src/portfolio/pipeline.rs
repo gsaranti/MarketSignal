@@ -156,6 +156,13 @@ pub fn analyze_holding(
 ) -> Result<(HoldingVerdict, HoldingAudit)> {
     let symbol = dossier.position.symbol.clone();
     let asset_class = dossier.position.asset_class;
+    // The 6g executability surface is class-shaped (statement series never
+    // resolve on the fund path, the expense ratio only there) — computed once
+    // beside the class it derives from.
+    let is_fund = matches!(
+        asset_class,
+        crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
+    );
     // App-set from the deterministic holdings diff, never the model — carried on every
     // verdict (graded or not) as the structured what-changed position tag.
     let position_change = dossier.position_delta.change;
@@ -253,16 +260,24 @@ pub fn analyze_holding(
     // model — the ladder's verbs, the sizing multipliers, and the outcome labels all
     // read long — so it takes the not-rated treatment with a short-position reason;
     // its signed (negative) market value still feeds the whole-book aggregates
-    // (`docs/portfolio-analysis.md` §Asset eligibility).
-    if dossier.position.quantity < 0.0 {
+    // (`docs/portfolio-analysis.md` §Asset eligibility). An exactly-zero netted
+    // position (long and short legs fully offset across accounts — deliberately
+    // kept by netting) is neither long nor short: it must not carry the
+    // long-ladder read on zero economic exposure, so it is not-rated too.
+    if dossier.position.quantity <= 0.0 {
+        let reason = if dossier.position.quantity < 0.0 {
+            "held net short — the ladder's long-side semantics don't apply; \
+             the signed exposure still feeds the whole-book aggregates"
+        } else {
+            "fully offset — the netted position is zero shares, so there is no \
+             economic exposure for the long-side ladder to act on"
+        };
         let verdict = HoldingVerdict {
             symbol: symbol.clone(),
             asset_class,
             position_change,
             disposition: VerdictDisposition::NotRated {
-                reason: "held net short — the ladder's long-side semantics don't apply; \
-                         the signed exposure still feeds the whole-book aggregates"
-                    .to_string(),
+                reason: reason.to_string(),
             },
             thesis_ledger: None,
             analyzed_at: None,
@@ -363,10 +378,19 @@ pub fn analyze_holding(
             }
             FundEngineVerdict::RoleRiskOnly(readout) => {
                 // Evaluate the prior fund ledger's quantitative conditions against
-                // the reduced surface this branch actually computes (the expense
-                // ratio joins the metrics; price/weight resolve from the dossier).
+                // the reduced surface this branch actually computes: the expense
+                // ratio plus the price-derived legs (trailing return, return
+                // volatility) from the closes the dossier already carries —
+                // price/weight resolve from the dossier directly. The full pass
+                // must cover the SAME fund-computable surface the quick check
+                // evaluates, or a sweep-confirmed price-leg crossing would read
+                // unevaluable here, never be acknowledged, and re-raise on every
+                // later sweep after the successful pass cleared the store.
+                let price_legs = engine::compute_metrics(&dossier.financials);
                 let fund_metrics = engine::ComputedMetrics {
                     expense_ratio: readout.expense_ratio,
+                    return_volatility: price_legs.return_volatility,
+                    trailing_return: price_legs.trailing_return,
                     ..Default::default()
                 };
                 let ledger_eval = prior_ledger.map(|l| {
@@ -401,6 +425,7 @@ pub fn analyze_holding(
                     prior_ledger,
                     ledger_eval.as_ref(),
                     LedgerBranch::RoleRiskOnly,
+                    is_fund,
                     None,
                     dossier.financials.current_price,
                 );
@@ -516,6 +541,7 @@ pub fn analyze_holding(
         prior_ledger,
         ledger_eval.as_ref(),
         LedgerBranch::Priced,
+        is_fund,
         engine_output.price_targets.twelve_month.as_ref(),
         dossier.financials.current_price,
     );
@@ -614,15 +640,24 @@ pub fn analyze_holding(
 /// Parse a draft's quantitative-core claim against the engine's executability
 /// surface — the resolution contract's app-side check
 /// (`docs/portfolio-workflow.md` §Step 6g): the series must be one the engine
-/// actually computes and refreshes, the comparator well-formed, the numbers finite.
-/// `Err` carries the downgrade reason.
-fn parse_quant_core(qd: &QuantCoreDraft) -> std::result::Result<QuantCore, String> {
+/// actually computes and refreshes **for this holding's vehicle kind**, the
+/// comparator well-formed, the numbers finite. `Err` carries the downgrade
+/// reason.
+fn parse_quant_core(qd: &QuantCoreDraft, is_fund: bool) -> std::result::Result<QuantCore, String> {
     let series = engine::LedgerSeries::parse(&qd.series).ok_or_else(|| {
         format!(
             "series '{}' does not resolve to a series the engine computes",
             qd.series
         )
     })?;
+    if !series.computable_for(is_fund) {
+        return Err(format!(
+            "series '{}' has no {} computation — the condition would be \
+             permanently unevaluable on this holding",
+            qd.series,
+            if is_fund { "fund-path" } else { "stock-path" }
+        ));
+    }
     let comparator = match qd.comparator.trim() {
         "below" => LedgerComparator::Below,
         "above" => LedgerComparator::Above,
@@ -845,6 +880,7 @@ fn validate_condition(
     role: ConditionRole,
     trigger_family: Option<TriggerFamily>,
     quant_draft: Option<&QuantCoreDraft>,
+    is_fund: bool,
     technology_class: bool,
     claimed: bool,
     prior_pool: &mut Vec<LedgerCondition>,
@@ -856,7 +892,7 @@ fn validate_condition(
     let statement = statement.trim().to_string();
     let (quant, downgraded_reason) = match quant_draft {
         None => (None, None),
-        Some(qd) => match parse_quant_core(qd) {
+        Some(qd) => match parse_quant_core(qd, is_fund) {
             Ok(core) => (Some(core), None),
             Err(reason) => {
                 // Downgraded to qualitative, logged, never dropped — and it retains
@@ -971,6 +1007,7 @@ pub fn validate_ledger_rewrite(
     prior: Option<&ThesisLedger>,
     evaluation: Option<&LedgerEvaluation>,
     branch: LedgerBranch,
+    is_fund: bool,
     engine_targets: Option<&PriceTarget>,
     spot: Option<f64>,
 ) -> (ThesisLedger, LedgerAudit) {
@@ -1012,7 +1049,7 @@ pub fn validate_ledger_rewrite(
                      family: Option<TriggerFamily>,
                      quant_draft: Option<&QuantCoreDraft>,
                      statement: &str| {
-        match quant_draft.and_then(|qd| parse_quant_core(qd).ok()) {
+        match quant_draft.and_then(|qd| parse_quant_core(qd, is_fund).ok()) {
             Some(core) => format!(
                 "{role:?}|{family:?}|{}|{}|{}|{}",
                 core.series.as_kebab(),
@@ -1069,7 +1106,7 @@ pub fn validate_ledger_rewrite(
         {
             continue;
         }
-        let Some(core) = quant_draft.and_then(|qd| parse_quant_core(qd).ok()) else {
+        let Some(core) = quant_draft.and_then(|qd| parse_quant_core(qd, is_fund).ok()) else {
             continue;
         };
         let key = dedup_key(role, family, quant_draft, statement);
@@ -1108,6 +1145,7 @@ pub fn validate_ledger_rewrite(
             ConditionRole::Falsifier,
             None,
             f.quant.as_ref(),
+            is_fund,
             f.technology_class,
             f.tripped,
             &mut prior_pool,
@@ -1154,6 +1192,7 @@ pub fn validate_ledger_rewrite(
             ConditionRole::Trigger,
             family,
             t.quant.as_ref(),
+            is_fund,
             false,
             t.fired,
             &mut prior_pool,
@@ -3155,6 +3194,67 @@ mod tests {
     }
 
     #[test]
+    fn role_risk_full_pass_evaluates_the_price_derived_ledger_series() {
+        // The full role-risk pass must cover the SAME fund-computable surface
+        // the quick check evaluates (expense ratio + the price-derived legs) —
+        // with metrics carrying only the expense ratio, a sweep-confirmed
+        // trailing-return crossing read unevaluable here, was never
+        // acknowledged, and re-raised on every later sweep after the
+        // successful pass cleared the store.
+        let mut bond = us_equity_fund();
+        bond.symbol = "BND".into();
+        bond.asset_class = Some("Fixed Income".into());
+        bond.sector_weights = vec![];
+        let (mut prior, _) = analyze_holding(
+            &StubAnalyst,
+            &fund_dossier(bond.clone()),
+            29_500.0,
+            &rates(),
+            "2026-08-03",
+        )
+        .unwrap();
+        // Re-point the prior ledger's falsifier at a price-derived series.
+        let ledger = prior.thesis_ledger.as_mut().expect("role-risk ledger");
+        let falsifier = ledger
+            .conditions
+            .iter_mut()
+            .find(|c| c.role == ConditionRole::Falsifier)
+            .expect("a falsifier");
+        falsifier.quant = Some(QuantCore {
+            series: engine::LedgerSeries::TrailingReturn,
+            comparator: LedgerComparator::Below,
+            threshold: -0.40,
+            margin: 0.02,
+        });
+        let mut d = fund_dossier(bond);
+        d.prior_verdict = Some(prior);
+        let (verdict, audit) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-04").unwrap();
+        let la = audit.ledger_audit.expect("ledger audit");
+        assert!(
+            !la.unevaluable.iter().any(|u| u.contains("trailing")),
+            "the price-derived series must evaluate on the full role-risk pass: {:?}",
+            la.unevaluable
+        );
+        // The evaluated state keys to the marks' trading day, proving the leg
+        // actually resolved rather than silently skipping.
+        let evaluated = verdict
+            .thesis_ledger
+            .as_ref()
+            .and_then(|l| {
+                l.conditions
+                    .iter()
+                    .find(|c| {
+                        c.quant.as_ref().map(|q| q.series)
+                            == Some(engine::LedgerSeries::TrailingReturn)
+                    })
+            })
+            .and_then(|c| c.eval_state.as_ref())
+            .expect("an evaluated state on the carried condition");
+        assert_eq!(evaluated.last_observation_id.as_deref(), Some("2026-07-15"));
+    }
+
+    #[test]
     fn ineligible_asset_class_is_not_rated_without_a_model_call() {
         let (verdict, _audit) = analyze_holding(
             &StubAnalyst,
@@ -3186,6 +3286,94 @@ mod tests {
             }
             other => panic!("expected not-rated, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_fully_offset_zero_position_is_not_rated_not_graded_long() {
+        // Exactly-zero netted shares (long and short legs fully offset,
+        // deliberately kept by netting) is neither long nor short — the strict
+        // `< 0.0` gate previously waved it onto the long-semantics ladder with
+        // zero economic exposure.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.position.quantity = 0.0;
+        d.position.market_value = 0.0;
+        let (verdict, _audit) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-05").unwrap();
+        match verdict.disposition {
+            VerdictDisposition::NotRated { reason } => {
+                assert!(reason.contains("offset"), "{reason}");
+            }
+            other => panic!("expected not-rated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn six_g_downgrades_a_series_the_asset_class_never_computes() {
+        // A statement series on a fund validates as quantitative under a
+        // class-blind check, then types unevaluable on every sweep — the family
+        // never clears and every selective run force-includes the holding. The
+        // class-aware check downgrades it to qualitative at 6g instead; the
+        // expense ratio is the stock-side mirror.
+        let mut fund_draft = stub_ledger_draft(None, "VTI", false);
+        fund_draft.falsifiers = vec![FalsifierDraft {
+            statement: "net margin below 5%".into(),
+            quant: Some(QuantCoreDraft {
+                series: "net-margin".into(),
+                comparator: "below".into(),
+                threshold: 0.05,
+                margin: 0.0,
+            }),
+            technology_class: false,
+            tripped: false,
+        }];
+        fund_draft.triggers = vec![];
+        let (ledger, audit) =
+            validate_ledger_rewrite(&fund_draft, None, None, LedgerBranch::Priced, true, None, None);
+        let cond = ledger
+            .conditions
+            .iter()
+            .find(|c| c.statement.contains("net margin"))
+            .unwrap();
+        assert!(cond.quant.is_none(), "downgraded to qualitative");
+        assert!(
+            audit.downgraded.iter().any(|d| d.contains("fund-path")),
+            "{:?}",
+            audit.downgraded
+        );
+
+        let mut stock_draft = stub_ledger_draft(None, "AAPL", false);
+        stock_draft.falsifiers = vec![FalsifierDraft {
+            statement: "expense ratio above 40 bps".into(),
+            quant: Some(QuantCoreDraft {
+                series: "expense-ratio".into(),
+                comparator: "above".into(),
+                threshold: 0.004,
+                margin: 0.0,
+            }),
+            technology_class: false,
+            tripped: false,
+        }];
+        stock_draft.triggers = vec![];
+        let (ledger, audit) = validate_ledger_rewrite(
+            &stock_draft,
+            None,
+            None,
+            LedgerBranch::Priced,
+            false,
+            None,
+            None,
+        );
+        let cond = ledger
+            .conditions
+            .iter()
+            .find(|c| c.statement.contains("expense ratio"))
+            .unwrap();
+        assert!(cond.quant.is_none(), "downgraded to qualitative");
+        assert!(
+            audit.downgraded.iter().any(|d| d.contains("stock-path")),
+            "{:?}",
+            audit.downgraded
+        );
     }
 
     #[test]
@@ -3980,7 +4168,7 @@ mod tests {
             methodology: "m".into(),
         };
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, Some(&targets), None);
+            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, Some(&targets), None);
         assert_eq!(ledger.branch, LedgerBranch::Priced);
         assert_eq!(ledger.original_thesis, ledger.current_thesis, "frozen at debut");
         assert_eq!(ledger.conditions.len(), 2);
@@ -4019,7 +4207,7 @@ mod tests {
             methodology: "m".into(),
         };
         let relation_at = |spot: f64| {
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, Some(&targets), Some(spot))
+            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, Some(&targets), Some(spot))
                 .0
                 .authored_band_relation
         };
@@ -4039,7 +4227,7 @@ mod tests {
             margin: 0.0,
         });
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, None, None);
+            validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, None, None);
         let f = ledger
             .conditions
             .iter()
@@ -4064,7 +4252,7 @@ mod tests {
         // Re-word the quantitative falsifier; the machine core is untouched.
         draft.falsifiers[0].statement = "The price collapses more than 40% (reworded)".into();
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
         let f = ledger
             .conditions
             .iter()
@@ -4089,7 +4277,7 @@ mod tests {
         // Edit the falsifier's threshold: same series + role, changed core.
         draft.falsifiers[0].quant.as_mut().unwrap().threshold = -0.50;
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
         let f = ledger
             .conditions
             .iter()
@@ -4162,7 +4350,7 @@ mod tests {
             },
         ];
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
         let unchanged = ledger
             .conditions
             .iter()
@@ -4220,7 +4408,7 @@ mod tests {
             let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
             draft.falsifiers = order.iter().map(|t| falsifier(*t)).collect();
             let (ledger, audit) =
-                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
             let ancestor_of = |threshold: f64| {
                 ledger
                     .conditions
@@ -4296,7 +4484,7 @@ mod tests {
             let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
             draft.falsifiers = order.iter().map(|t| falsifier(*t)).collect();
             let (ledger, _) =
-                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
             let ancestor_of = |threshold: f64| {
                 ledger
                     .conditions
@@ -4383,7 +4571,7 @@ mod tests {
             let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
             draft.triggers = order.iter().map(|f| trigger(f)).collect();
             let (ledger, audit) =
-                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+                validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
             let by_family = |family: TriggerFamily| {
                 ledger
                     .conditions
@@ -4449,7 +4637,7 @@ mod tests {
             fired: false,
         }];
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
         let trim = ledger
             .conditions
             .iter()
@@ -4489,7 +4677,7 @@ mod tests {
             tripped: false,
         }];
         let (ledger, _) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
         let edited = ledger
             .conditions
             .iter()
@@ -4504,7 +4692,7 @@ mod tests {
         let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
         draft.triggers.clear();
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
         assert!(!ledger.conditions.iter().any(|c| c.condition_id == "trig-1"));
         assert!(
             audit
@@ -4526,7 +4714,7 @@ mod tests {
         // No engine crossing at all: both claims cleared and logged — the ledger
         // cannot be quietly rewritten to fit a new verdict.
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
         assert!(ledger.conditions.iter().all(|c| !c.tripped));
         assert_eq!(audit.rejected_claims.len(), 2, "{:?}", audit.rejected_claims);
 
@@ -4560,6 +4748,7 @@ mod tests {
             Some(&prior),
             Some(&eval),
             LedgerBranch::Priced,
+            false,
             None,
             None,
         );
@@ -4592,7 +4781,7 @@ mod tests {
             fired: false,
         });
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, None, None, LedgerBranch::RoleRiskOnly, None, None);
+            validate_ledger_rewrite(&draft, None, None, LedgerBranch::RoleRiskOnly, false, None, None);
         assert_eq!(ledger.branch, LedgerBranch::RoleRiskOnly);
         assert!(
             ledger.monitor.iter().all(|m| m.engine_target.is_none()),
@@ -4629,6 +4818,7 @@ mod tests {
             None,
             None,
             LedgerBranch::RoleRiskOnly,
+            false,
             Some(&targets),
             Some(195.0),
         );
@@ -4669,7 +4859,7 @@ mod tests {
             .retain(|f| f.quant.as_ref().map(|q| q.threshold) != Some(-0.60));
         draft.falsifiers.push(dup);
         let (ledger, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
         assert_eq!(audit.duplicates.len(), 1, "{:?}", audit.duplicates);
         // Exactly one -0.40 condition persists, carrying its id; keep-2 was
         // closed (removed by the rewrite), never superseded by the duplicate.
@@ -4700,7 +4890,7 @@ mod tests {
             .clone();
         draft.falsifiers.push(dup);
         let (_, audit) =
-            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, None, None);
+            validate_ledger_rewrite(&draft, Some(&prior), None, LedgerBranch::Priced, false, None, None);
         assert_eq!(audit.duplicates.len(), 1, "{:?}", audit.duplicates);
     }
 
@@ -4709,7 +4899,7 @@ mod tests {
         let mut draft = stub_ledger_draft(None, "AAPL", false);
         draft.target_weight_low = 0.5;
         draft.target_weight_high = 0.1;
-        let (ledger, _) = validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, None, None);
+        let (ledger, _) = validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, None, None);
         assert_eq!(
             (ledger.target_weight_low, ledger.target_weight_high),
             (0.1, 0.5),
@@ -4717,7 +4907,7 @@ mod tests {
         );
         draft.target_weight_low = -0.2;
         draft.target_weight_high = 3.0;
-        let (ledger, _) = validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, None, None);
+        let (ledger, _) = validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, None, None);
         assert_eq!((ledger.target_weight_low, ledger.target_weight_high), (0.0, 1.0));
     }
 
