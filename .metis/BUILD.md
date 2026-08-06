@@ -348,7 +348,10 @@ PR #60; internal + four Codex rounds to convergence), the Step 7a+7b
 whole-book reconciliation, as-built under Portfolio Analysis below — and
 the **listing-resolution guard** (2026-08-05, `22534fd` + one Codex round),
 the stocks-only loop-time issuer cross-check, as-built under Portfolio
-Analysis below.
+Analysis below — and the **two-arm verdict** (2026-08-05, `portfolio-v7`,
+branch `portfolio-v7-two-arm`; internal review + eleven Codex rounds to
+convergence), the engine-baseline + unrestricted-model-arm repositioning,
+as-built under Portfolio Analysis below.
 **Trade Opportunities and the remaining Portfolio depth slices (held-name
 refresh lane, the live research loop) remain designed, not built.** The
 load-bearing decisions:
@@ -454,9 +457,16 @@ load-bearing decisions:
   plan must not work against these):
   - **Deterministic finance, primary-source evidence** — a shared Rust engine
     over FMP + keyless SEC EDGAR / Stooq / FINRA / CBOE (the FINRA and CBOE
-    legs designed, unbuilt) computes every
-    sub-score, risk tier, metric, and scenario target; **the model interprets,
-    never invents numbers**. One shared FMP key, upgraded to paid (`*-bulk`,
+    legs designed, unbuilt) computes every **engine-arm** sub-score, risk
+    tier, metric, and scenario target. Since 2026-08-05 (`portfolio-v7`) the
+    verdict is **two-arm**: the engine's values are the incorruptible
+    baseline beside an **unrestricted model arm** authoring its own
+    sub-scores, derived letter, target bands, conviction, outlook, lean, and
+    7b action — scored head-to-head by a deterministic scoreboard.
+    **Model-arm judgment values never alter or bind the engine baseline**
+    (the boundary statement, with its intentional downstream consumers and
+    typed validated channels, single-homed at `docs/portfolio-analysis.md`
+    §The holding verdict). One shared FMP key, upgraded to paid (`*-bulk`,
     transcripts, 13F-institutional, fund-holdings, and press-releases are
     **off-plan** → SEC EDGAR / 8-K / web-loop / N-PORT fallbacks); the report's
     data-source logic is unchanged. An **evidence floor** returns
@@ -505,10 +515,12 @@ load-bearing decisions:
   per-holding loop emits the verdict plus a standalone lean (`priced`
   branch only), and a
   post-roll-up construction stage (deterministic aggregates → model
-  reconciliation, joint-feasibility-checked) sets the final action + sizing —
-  the engine **bounds the feasible action set and the model chooses within**,
-  so "A-grade business, trim because oversized" is expressible (an allocation
-  optimizer is **deferred, not adopted**). Capital efficiency tests **total
+  reconciliation, coherence-checked) sets the final action + sizing — the
+  engine computes **its own action set** and the model chooses freely, an
+  outside-the-set choice persisting with an engine-bound annotation since
+  `portfolio-v7`, never a schema bar — so "A-grade business, trim because
+  oversized" is expressible (an allocation optimizer is **deferred, not
+  adopted**). Capital efficiency tests **total
   return** against a DGS2-anchored, tier-scaled, **three-state hurdle** —
   only *fails* is dead money (exit-side hysteresis) — and under the
   **`portfolio-v3`** interpretation contract (2026-08-03) a *fails* read
@@ -640,12 +652,13 @@ load-bearing decisions:
   (financing + dilution alone never suffices) — is built **producer-dormant**
   (research stubbed, candidate list empty; the research-loop slice **must**
   add holding-identity + source-text validation before activating the
-  producer). Consequences are engine-owned and triple-enforced — schema
-  narrowing of the action AND conviction enums, feasible-set bars
-  (constrained runway / severe strips the add family; severe restricts to
-  {trim, sell all} — action = lean until 7b), and a post-interpretation
-  min-clamp with `clamped_from` recorded; repeated miss caps Medium, severe
-  caps Low, the letter and targets never move. The full record rides
+  producer). Consequences are engine-owned and, since `portfolio-v7`, bind
+  the **engine arm alone** — its stand-in conviction observes the matched
+  ceiling (the re-scoped `clamp_conviction`), its action set drops the add
+  family under constrained runway / severe (severe → {trim, sell all}) —
+  rendered to the model as engine rules with departures annotated; repeated
+  miss caps Medium, severe caps Low on the engine arm, the letter and
+  targets never move. The full record rides
   `HoldingAudit.pre_profit` (boundary-epsilon-tolerant thresholds; carried
   whole by the selective carry; retained through abstention like the standing
   ledger), and statement canonicalization is a **shared policy** with a named
@@ -689,11 +702,13 @@ load-bearing decisions:
   `PortfolioRun.outcome`, and the episode store + price-bar cache join
   portability as **format v3**.
   The **construction stage** (built 2026-08-04, PR #60,
-  `portfolio/construction.rs`; prompt contract **portfolio-v6**; internal +
-  four Codex rounds to convergence): 6f authors the **standalone lean** on
-  the full ladder (only severe pre-profit deterioration restricts it to the
-  exit family — the feasible-set bars moved to construction; the role-risk
-  6f call no longer authors an action), and the new module owns Step 7a+7b —
+  `portfolio/construction.rs`; prompt contract **portfolio-v6**, since
+  superseded by **portfolio-v7**; internal + four Codex rounds to
+  convergence): 6f authors the **standalone lean** on the full ladder (the
+  engine's intrinsic set — severe pre-profit deterioration restricting it to
+  the exit family — rides as evidence since `portfolio-v7`, the lean
+  schema-unrestricted; the role-risk 6f call authors no action), and the new
+  module owns Step 7a+7b —
   per-holding spine rows (the role-risk decision surface riding the row:
   class label, role read, expense drag, observable risk, tilt, gaps; prior
   action / prior lean baselines) + whole-book aggregates (fund-folded sector
@@ -701,13 +716,16 @@ load-bearing decisions:
   **same-underlying option-overlay classification** — covered /
   partial-never-covered / protective / collar / other, per-leg strike +
   expiry, zero-net legs filtered, no delta at 7a — the dossier overlay leg's
-  stand-in), the joint-feasibility solver with typed violations (implied
-  post-action book + the external-funding line; drift tolerance on
-  implied-book checks only, exact ordering / non-negativity / sell-all-0–0
-  structural checks), the per-holding-narrowed schema (offered-set action
-  enums, minimum-0 weights), both prompts (numeric rung bands as decimal
-  fractions — the model is never validated against a bound it was not
-  shown), and the one named-violation re-run. The merge
+  stand-in), the joint-feasibility solve — since `portfolio-v7` split two
+  ways: the self-coherence checks (exact ordering / non-negativity /
+  sell-all-0–0 / stated-range-contains-implied-weight, drift tolerance on
+  implied-book checks only) still return typed violations with the one
+  named-violation re-run, while the engine-bound checks (rung band,
+  concentration cap, funding, the transition rule) record as
+  `engine_bound_annotations`, never a violation — the full-ladder
+  per-holding schema (minimum-0 weights), and both prompts (the ENGINE SET +
+  numeric rung bands as decimal fractions — the engine's own read, an
+  outside-the-set choice annotated, never schema-barred). The merge
   (`construction::merge_validated_actions`) sets the final action,
   `sizing_from_range` deltas + rationale, and the action-half
   `ActionWhatChanged`, **restores `model-chosen`** on a construction-moved
@@ -721,6 +739,42 @@ load-bearing decisions:
   range comparison would mint episodes from weight drift; the band-relative
   trigger is a big-run watch). Frontend renders the lean tag, sizing
   rationale, action-half line, and the roll-up construction view.
+  The **two-arm verdict** (built 2026-08-05, `portfolio-v7`, branch
+  `portfolio-v7-two-arm`; internal review + eleven Codex rounds to
+  convergence): the deliberate repositioning — *the tool is about the model,
+  not the engine* — makes every priced verdict two-arm. The **engine arm**
+  is the existing deterministic read plus three mechanical stand-ins
+  (outlook = 21/126/252-session trailing returns @ 2/5/8% flat thresholds;
+  conviction = disclosed degradation count 0 / 1–2 / ≥3 → High/Medium/Low;
+  action = feasible∩hurdle∩grade formalized to a single rung, tiebreak
+  toward hold, sized on the shared rung bands), obeying its own bars (the
+  overlay ceilings via the re-scoped `clamp_conviction`). The **model arm**
+  (priced branch only) authors its own sub-scores (letter derived app-side
+  through the shared cutoffs), freely-authored 1-/12-mo low/base/high bands,
+  conviction, outlook, lean, retrospective `self_assessment`, and the 7b
+  action + range on the full ladder — structural / self-coherence validation
+  only; every engine-bound check annotates (the construction split above).
+  The 6f prompt carries a **retrospective** (deliberately reversing the v4
+  anchoring guard): prior both-arm values plus the realized move through the
+  outcome slice's **split-safe anchor-close bridge**, dated by the prior
+  verdict's **effective vintage** — excluded, never guessed, without an
+  anchor bar inside the proximity bound. Outcome learning freezes both arms
+  on the episode snapshot and scores them with one extracted scorer —
+  per-arm full-population calibrations plus the **paired-population
+  `HeadToHeadRead`** (the only arm-comparison read) and the outlook
+  direction read; model sub-scores / conviction are recorded unscored behind
+  the ≥30 bar. The conviction-raise triple is **retired unbuilt**
+  (anti-reflexivity survives in the ledger's tripped/fired validation); no
+  portability bump (additive-optional fields, pre-v7 blobs decode `None`);
+  the card renders paired Engine-baseline | Model-view columns with
+  divergence tags and the roll-up scoreboard (a recorded design-system
+  extension — the kit has no paired-comparison component). The boundary
+  contract is **single-homed** at `docs/portfolio-analysis.md` §The holding
+  verdict — model-arm judgment values never alter or bind the engine
+  baseline; the typed validated channels (ledger conditions,
+  `research_forward_assumption`, the dormant pre-profit observations) are
+  the deliberate, validated model→engine inputs — every other doc and
+  module-doc mention a one-line pointer.
   Funds are strategy-classified at loop time and routed (exposure-priced
   proxy valuation for ≥70%-US equity funds; their structurally absent quality
   axis uses the shared neutral-50 imputation; honest gaps elsewhere).
@@ -795,7 +849,10 @@ Schwab OCC rows, and the 7b sizing-only decided-range movement rate that
 would justify a band-relative episode trigger); the **listing guard**
 against real Schwab identity shapes (slash-notation class-share symbols
 read unsupported under the verbatim FMP lookup; ticker-noise
-descriptions' false-conflict risk); 128 K runner
+descriptions' false-conflict risk); the first **two-arm vintage**
+(the retrospective + model-arm brief's prompt fit under the B12
+instrumentation, feasibility-annotation rates, model-vs-engine divergence
+rates, the paired two-arm card render at 47-position scale); 128 K runner
 stability; distill speed; whether Stooq's PoW gate is permanent). **Trade
 Opportunities waits behind the whole block** (design settled — full strategy
 audit plus three external review rounds to convergence, 2026-07-09; the paid
