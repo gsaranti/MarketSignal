@@ -1334,22 +1334,41 @@ describe("PortfolioView two-arm verdict", () => {
     expect(kickers.some((k) => k.startsWith("Model view"))).toBe(true);
     expect(kickers).toContain("Portfolio action");
     expect(kickers).toContain("Model retrospective");
-    // The model letter chip is derived from the model's own scores.
+    // The model letter chip is derived from the model's own scores and carries
+    // the grade-scale tint class the design system's `.grade.c` compound reads
+    // (the same `gradeClass()` binding as the engine chip).
     expect(card.find(".hc-model-letter").text()).toBe("C");
+    expect(card.find(".hc-model-letter").classes()).toContain("c");
     // The engine column carries the stand-in action with its band.
     const engineCol = card.find(".hc-col-intrinsic");
     expect(engineCol.text()).toContain("Hold");
     expect(engineCol.text()).toContain("9–11%");
     // Model values render as authored beside the engine's.
     expect(card.text()).toContain("$280.00");
-    // Divergent conviction and lean carry the quiet ≠ engine tag.
+    // Divergent conviction, outlook, and lean each carry the quiet ≠ engine tag
+    // (the fixture's model outlook differs from the engine stand-in's).
     const tags = card.findAll(".ana-tag").map((t) => t.text());
-    expect(tags.filter((t) => t === "≠ engine").length).toBe(2);
+    expect(tags.filter((t) => t === "≠ engine").length).toBe(3);
     // The action strip is full-width beneath the arms.
     expect(card.find(".hc-actionrow .hc-action-word").exists()).toBe(true);
     expect(
       card.find(".hc-summary + .hc-summary .hc-prose").text()
     ).toContain("First read for this holding");
+  });
+
+  test("a model outlook matching the stand-in on every horizon drops its tag", () => {
+    const aligned = twoArmGraded();
+    aligned.horizon_outlook = { ...aligned.engine_view!.outlook };
+    const wrapper = mountView({
+      run: {
+        ...run,
+        verdicts: [verdict("AAPL", { status: "priced", ...aligned })],
+      },
+    });
+    // Conviction and lean still diverge in the fixture — the outlook row's tag
+    // is the one that disappears when every horizon matches.
+    const tags = wrapper.findAll(".ana-tag").map((t) => t.text());
+    expect(tags.filter((t) => t === "≠ engine").length).toBe(2);
   });
 
   test("a pre-v7 card renders the legacy single intrinsic column, no model view", () => {

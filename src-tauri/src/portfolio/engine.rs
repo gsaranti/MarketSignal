@@ -1601,9 +1601,14 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
     // Rung 1: forward EPS, eligible only on a finite positive consensus mid.
     if let Some(mid) = c.and_then(|c| c.eps_mid).filter(|m| m.is_finite() && *m > 0.0) {
         let base = clamp(mid, ttm_eps, mid);
-        let flat = c.map(|c| c.eps_low.is_none() || c.eps_high.is_none()).unwrap_or(true);
-        let low = c.and_then(|c| c.eps_low).unwrap_or(mid);
-        let high = c.and_then(|c| c.eps_high).unwrap_or(mid);
+        // A half-published spread (either leg missing) reads as a missing
+        // spread: both legs hold at mid, so `flat_driver` describes the drivers
+        // exactly and a clamp collapse stays distinguishable from a
+        // consensus-flat band (`docs/portfolio-analysis.md` §Starting
+        // parameters — "held flat").
+        let spread = c.and_then(|c| c.eps_low.zip(c.eps_high));
+        let flat = spread.is_none();
+        let (low, high) = spread.unwrap_or((mid, mid));
         let drivers = [
             clamp(low, ttm_eps, base),
             base,
@@ -1624,11 +1629,12 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
         latest_shares.filter(|s| *s > 0.0),
     ) {
         let base = clamp(mid / sh, ttm_rev_ps, mid / sh);
-        let flat = c
-            .map(|c| c.revenue_low.is_none() || c.revenue_high.is_none())
-            .unwrap_or(true);
-        let low = c.and_then(|c| c.revenue_low).map(|v| v / sh).unwrap_or(mid / sh);
-        let high = c.and_then(|c| c.revenue_high).map(|v| v / sh).unwrap_or(mid / sh);
+        // Same half-published-spread convention as the EPS rung above.
+        let spread = c.and_then(|c| c.revenue_low.zip(c.revenue_high));
+        let flat = spread.is_none();
+        let (low, high) = spread
+            .map(|(l, h)| (l / sh, h / sh))
+            .unwrap_or((mid / sh, mid / sh));
         let drivers = [
             clamp(low, ttm_rev_ps, base),
             base,
@@ -2145,9 +2151,15 @@ pub fn engine_action(
 /// dated closes, conviction off the degradation flags, the action rung with its
 /// rung-band sizing. Position context (weight, profile, book total) is the
 /// caller's — this runs at the pipeline merge, not inside [`analyze`].
+/// `input_gaps` is the dossier's **assembled** degraded-input list (financials
+/// gaps plus fund-metadata gaps, the DGS10-history gap, and the listing-guard
+/// unverified note), so the conviction read counts *any* dossier gap
+/// (`docs/portfolio-analysis.md` §Starting parameters) — tier gaps stay out of
+/// it, since they carry their own counter.
 pub fn engine_view(
     out: &EngineOutput,
     fin: &CompanyFinancials,
+    input_gaps: &[String],
     overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
     position: &Position,
     profile: &InvestorProfile,
@@ -2164,7 +2176,7 @@ pub fn engine_view(
     // the stand-in action (`docs/portfolio-analysis.md` §The holding verdict —
     // caps bind the engine arm, annotate the model's).
     let (conviction, _) = crate::portfolio::pre_profit::clamp_conviction(
-        engine_conviction(out, &fin.gaps),
+        engine_conviction(out, input_gaps),
         overlay_rules.and_then(|r| r.conviction_ceiling),
     );
     EngineView {
@@ -2656,6 +2668,47 @@ mod tests {
     }
 
     #[test]
+    fn a_half_published_spread_reads_flat_on_both_legs() {
+        // One published leg beside a missing one must not spread the drivers
+        // while recording `flat_driver`: the record would misdescribe the band,
+        // and a clamp collapse on the published leg could never be recorded
+        // (`clamp_collapse` is suppressed on flat reads). Either leg missing →
+        // both hold at mid — the doc's "held flat".
+        let all_flat = |read: &DriverRead| {
+            (read.drivers[0] - read.drivers[1]).abs() < 1e-12
+                && (read.drivers[2] - read.drivers[1]).abs() < 1e-12
+        };
+        let mut fin = strong();
+        let c = fin.consensus.as_mut().unwrap();
+        c.eps_low = Some(5.0);
+        c.eps_high = None;
+        let read = driver_ladder(&fin).unwrap();
+        assert!(read.flat_driver);
+        assert!(!read.clamp_flattened);
+        assert!(all_flat(&read), "both legs hold at mid: {:?}", read.drivers);
+        // The opposite missing leg reads identically.
+        let mut fin = strong();
+        let c = fin.consensus.as_mut().unwrap();
+        c.eps_low = None;
+        c.eps_high = Some(9.0);
+        let read = driver_ladder(&fin).unwrap();
+        assert!(read.flat_driver);
+        assert!(all_flat(&read), "both legs hold at mid: {:?}", read.drivers);
+        // The revenue rung shares the convention (EPS legs removed so rung 2
+        // fires on the published revenue mid + one-sided spread).
+        let mut fin = strong();
+        let c = fin.consensus.as_mut().unwrap();
+        c.eps_low = None;
+        c.eps_mid = None;
+        c.eps_high = None;
+        c.revenue_high = None;
+        let read = driver_ladder(&fin).unwrap();
+        assert!(!read.use_eps, "rung 2 must be the driver under an EPS-less consensus");
+        assert!(read.flat_driver);
+        assert!(all_flat(&read), "both legs hold at mid: {:?}", read.drivers);
+    }
+
+    #[test]
     fn inverse_spread_mapping_orders_the_multiples() {
         // Nine spread observations from wide (cheap) to narrow (rich): the inverse
         // mapping must give M_bear ≤ M_base ≤ M_bull without sorting prices.
@@ -3008,6 +3061,47 @@ mod tests {
         assert_eq!(
             engine_conviction(&three, &["no dividends history".to_string()]),
             Conviction::Low
+        );
+    }
+
+    #[test]
+    fn engine_view_conviction_counts_the_assembled_dossier_gaps() {
+        // The gap leg reads the caller's ASSEMBLED degraded-input list — fund
+        // metadata gaps, the DGS10-history gap, and the listing-guard
+        // unverified note ride beside the financials manifest
+        // (`docs/portfolio-analysis.md` §Starting parameters: "any dossier
+        // gap") — so a holding whose only degradation is a non-financials gap
+        // still counts it, and the financials manifest is no longer consulted
+        // directly.
+        let out = match analyze(&strong(), &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let mut clean = (*out).clone();
+        clean.low_confidence_grade = false;
+        clean.target_meta = TargetMeta { rate_anchored: true, ..Default::default() };
+        clean.tier_gaps.clear();
+        clean.hurdle.state = crate::portfolio::HurdleState::Clears;
+        let fin = strong();
+        let position = Position {
+            symbol: "AAPL".into(),
+            description: "Apple".into(),
+            asset_class: AssetClass::Stock,
+            quantity: 5.0,
+            cost_basis: 450.0,
+            market_value: 500.0,
+            current_price: Some(100.0),
+        };
+        let profile = InvestorProfile::default_fixture();
+        let view = engine_view(&clean, &fin, &[], None, &position, &profile, 100_000.0);
+        assert_eq!(view.conviction, Conviction::High, "no assembled gap → High");
+        let degraded =
+            ["listing-resolution guard unverified — FMP profile unavailable".to_string()];
+        let view = engine_view(&clean, &fin, &degraded, None, &position, &profile, 100_000.0);
+        assert_eq!(
+            view.conviction,
+            Conviction::Medium,
+            "a non-financials dossier gap counts against the stand-in read"
         );
     }
 

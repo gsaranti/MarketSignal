@@ -694,6 +694,16 @@ function twoArm(d: GradedVerdict): boolean {
   return d.model_view != null && d.engine_view != null;
 }
 
+// The model outlook's ≠ engine read compares per-horizon against the stand-in;
+// any differing window tags the row — one quiet tag, the conviction/lean idiom.
+function outlookDiverges(d: GradedVerdict): boolean {
+  const ev = d.engine_view;
+  if (!ev) return false;
+  return (["short", "mid", "long"] as const).some(
+    (h) => d.horizon_outlook[h] !== ev.outlook[h]
+  );
+}
+
 // Column A renders the engine stand-in's conviction/outlook on a two-arm card
 // and the verdict's own (model-authored) values on a legacy one.
 function armAConviction(d: GradedVerdict): PortfolioConviction {
@@ -1889,7 +1899,7 @@ const keyFigures = computed(() => {
                       >Model view
                       <span
                         class="grade hc-model-letter"
-                        :class="`grade-${v.disposition.model_view!.letter.toLowerCase()}`"
+                        :class="gradeClass(v.disposition.model_view!.letter)"
                         :title="MODEL_LETTER_TITLE"
                         >{{ v.disposition.model_view!.letter }}</span
                       ></span
@@ -1980,6 +1990,11 @@ const keyFigures = computed(() => {
                             read
                           }}</span>
                         </span>
+                        <span
+                          v-if="outlookDiverges(v.disposition)"
+                          class="ana-tag"
+                          >≠ engine</span
+                        >
                       </dd>
                       <dt>Lean</dt>
                       <dd>

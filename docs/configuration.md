@@ -102,9 +102,9 @@ The suite calls a local model daemon — Ollama, over its native HTTP API (the c
 Settings hold:
 - the **daemon endpoint** (the local Ollama URL)
 - the **model roster** — the model ids for the **reasoner** and the **embedder** (both required), plus an **optional fast tier** (benchmark-gated; see [local-models.md](local-models.md) for the recommended defaults).
-  Changing the **embedder** id re-embeds the local memory namespaces from their retained content (identity, not dimension, is the compatibility key — [storage.md §Local Vector Memory](storage.md#local-vector-memory))
+  Changing the **embedder** id clears the local memory namespaces as a stale cohort (identity, not dimension, is the compatibility key; re-embedding them from retained content is the designed, M5-deferred path — [storage.md §Local Vector Memory](storage.md#local-vector-memory))
 
-The local-suite Run buttons are **locked** whenever the daemon endpoint or a **required** roster id (the reasoner or the embedder — the optional fast tier never gates) is unset — a presence check, exactly like the cloud model selectors and data-source tokens above, raising the persistent **local models not configured** warning until they are filled.
+The local-suite Run buttons are **locked** whenever the daemon endpoint or a **required** roster id (the reasoner or the embedder — an **unset** optional fast tier never gates; a *configured* fast id is verified like any rostered model by the connectivity check below) is unset — a presence check, exactly like the cloud model selectors and data-source tokens above, raising the persistent **local models not configured** warning until they are filled.
 Whether the daemon is actually **reachable** and the rostered models actually **pulled** is a separate, connectivity check verified only at the **run-gate** and by a **manual *Test Connection*** here — not probed at startup (see [local-models.md §Serving runtime](local-models.md#serving-runtime), [interface.md §Connection status](interface.md#connection-status-local-suite)).
 When a connectivity check finds the daemon or a rostered model missing, it offers **guided setup** — installing Ollama (deep-link / Homebrew) and pulling the roster from inside the app, with `pull` progress on the run tracker; the app supervises a user-installed Ollama, it does not bundle it.
 

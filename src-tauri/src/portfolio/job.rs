@@ -986,6 +986,15 @@ fn run_analysis(
                     );
                 }
                 crate::portfolio::VerdictDisposition::RoleRiskOnly(r) => {
+                    // Reachable since `portfolio-v7`: the 7b choice is
+                    // structurally open (departures annotated), so a role-risk
+                    // verdict can carry an add-family action — the
+                    // stale-strong-action rule is branch-unscoped
+                    // (`docs/portfolio-analysis.md` §Triggering).
+                    if stale && r.action.is_add_family() {
+                        r.action = crate::portfolio::Action::Hold;
+                        carried.action_source = crate::portfolio::ActionSource::RuleDemoted;
+                    }
                     r.action_sizing = crate::portfolio::engine::size_action(
                         r.action,
                         position,
@@ -3485,6 +3494,70 @@ mod tests {
                 );
             }
             other => panic!("expected a priced carry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_over_age_carried_role_risk_add_action_is_rule_demoted_to_hold() {
+        // Reachable since `portfolio-v7`: the 7b choice is structurally open,
+        // so a role-risk verdict can persist an add-family action — and the
+        // stale-strong-action rule is branch-unscoped, so the carry must
+        // demote it exactly like a priced add.
+        let (_dir, paths) = paths();
+        full_run(&paths, two_stocks());
+        let old = days_ago(40);
+        doctor_latest_run(&paths, "MSFT", |v| {
+            v.analyzed_at = Some(old.clone());
+            v.disposition = crate::portfolio::VerdictDisposition::RoleRiskOnly(Box::new(
+                crate::portfolio::RoleRiskVerdict {
+                    class_label: "bond fund".into(),
+                    role_summary: "Core fixed-income sleeve.".into(),
+                    exposure_tilt: Vec::new(),
+                    expense_drag: None,
+                    observable_risk: None,
+                    structural_flag: false,
+                    evidence_gaps: Vec::new(),
+                    action: crate::portfolio::Action::Add,
+                    action_sizing: crate::portfolio::ActionSizing {
+                        target_weight_low: 0.02,
+                        target_weight_high: 0.03,
+                        est_share_delta: Some(10.0),
+                        est_dollar_delta: Some(1_950.0),
+                        sizing_rationale: None,
+                    },
+                    what_changed: "new holding".into(),
+                    action_what_changed: None,
+                },
+            ));
+        });
+        let second = selective_run(
+            &paths,
+            two_stocks(),
+            &["AAPL"],
+            &SelectiveQuickData::default(),
+        );
+        let msft = verdict(&second, "MSFT");
+        assert_eq!(
+            msft.analyzed_at.as_deref(),
+            Some(old.as_str()),
+            "the demotion is a labeled weaken on the carried verdict, not a fresh pass"
+        );
+        assert_eq!(
+            msft.action_source,
+            crate::portfolio::ActionSource::RuleDemoted
+        );
+        match &msft.disposition {
+            crate::portfolio::VerdictDisposition::RoleRiskOnly(r) => {
+                assert_eq!(r.action, crate::portfolio::Action::Hold);
+                let w = 3_900.0 / second.holdings.account_total;
+                assert!(
+                    (r.action_sizing.target_weight_low - 0.9 * w).abs() < 1e-12
+                        && (r.action_sizing.target_weight_high - 1.1 * w).abs() < 1e-12,
+                    "hold band re-anchored on today's weight: {:?}",
+                    r.action_sizing
+                );
+            }
+            other => panic!("expected a role-risk carry, got {other:?}"),
         }
     }
 

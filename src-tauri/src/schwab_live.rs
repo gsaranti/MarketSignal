@@ -142,7 +142,9 @@ impl HoldingsSource for SchwabApiSource {
             // A parsed chain, `None` when the name has no listed contracts, or an error
             // when the 200 body is malformed / contract-drifted (surfaced, not swallowed).
             200 => parse_chain(symbol, &body),
-            // A genuinely un-optioned or unknown symbol is a gap, not a fault.
+            // A genuinely un-optioned or unknown symbol carries no signal and no
+            // gap — a market fact, not a fault or degradation
+            // (`docs/schwab-integration.md §Failure posture`).
             404 => Ok(None),
             // An auth/server fault (e.g. the token lapsing mid-job) is a real error, not
             // "no chain": return it rather than silently blanking the signal. The Portfolio
@@ -272,7 +274,8 @@ fn map_asset_class(asset_type: Option<&str>) -> AssetClass {
 /// Map Schwab's `/chains` response to our [`OptionChain`], flattening the nested
 /// `callExpDateMap` / `putExpDateMap` (`date:dte → strike → [contract]`) into a flat
 /// contract list. `Ok(None)` when the (well-formed) response carries no contracts — a
-/// name with no listed options, exactly the gap the failure posture describes — but a
+/// name with no listed options, the quiet no-signal market fact the failure posture
+/// describes (no typed gap recorded) — but a
 /// **malformed / contract-drifted** body is an `Err`, not a silent no-chain, so provider
 /// API drift surfaces rather than masquerading as "no options listed".
 fn parse_chain(symbol: &str, body: &str) -> Result<Option<OptionChain>> {
@@ -280,7 +283,7 @@ fn parse_chain(symbol: &str, body: &str) -> Result<Option<OptionChain>> {
     // A well-formed SUCCESS response carries the two expiration maps (empty objects for
     // an un-optioned name), so treat *both* absent as a drifted/renamed shape or a
     // non-SUCCESS status payload (e.g. `{"status":"FAILED"}`) and surface it, rather than
-    // reading a structurally-wrong response as a genuine "no options" gap.
+    // reading a structurally-wrong response as a genuine "no options" read.
     //
     // The guard is deliberately both-absent, not either-absent: the "always both maps"
     // invariant is documented but not yet live-confirmed (the OAuth smoke is unrun), so a
@@ -293,8 +296,8 @@ fn parse_chain(symbol: &str, body: &str) -> Result<Option<OptionChain>> {
         bail!("unexpected Schwab option-chain response shape (no expiration maps)");
     }
     let mut contracts = Vec::new();
-    collect_contracts(json.get("callExpDateMap"), OptionKind::Call, &mut contracts);
-    collect_contracts(json.get("putExpDateMap"), OptionKind::Put, &mut contracts);
+    collect_contracts(json.get("callExpDateMap"), OptionKind::Call, &mut contracts)?;
+    collect_contracts(json.get("putExpDateMap"), OptionKind::Put, &mut contracts)?;
     if contracts.is_empty() {
         return Ok(None);
     }
@@ -315,25 +318,48 @@ fn parse_chain(symbol: &str, body: &str) -> Result<Option<OptionChain>> {
 }
 
 /// Walk one expiration map (`{ "2026-07-17:5": { "195.0": [ {contract}, … ] } }`) into
-/// `OptionQuote`s, tagging each with `kind`.
-fn collect_contracts(map: Option<&Value>, kind: OptionKind, out: &mut Vec<OptionQuote>) {
-    let Some(exp_map) = map.and_then(Value::as_object) else {
-        return;
+/// `OptionQuote`s, tagging each with `kind`. A structurally unreadable node or a
+/// non-numeric strike / volume / open-interest is an `Err`, riding the same
+/// malformed→gap path as a drifted top-level shape — a fabricated 0.0 level must
+/// never enter the signal as data (`docs/schwab-integration.md §Failure posture`).
+/// The IV sentinel (−999 = no value) keeps its tolerant read.
+fn collect_contracts(
+    map: Option<&Value>,
+    kind: OptionKind,
+    out: &mut Vec<OptionQuote>,
+) -> Result<()> {
+    let Some(value) = map else {
+        return Ok(());
+    };
+    // Absence is the tolerated one-sided-map case (see `parse_chain`); a PRESENT
+    // non-object map is shape drift and must not silently read as a partial (or
+    // empty) successful chain.
+    let Some(exp_map) = value.as_object() else {
+        bail!("an expiration map is present but not an object — malformed or drifted response");
     };
     for (date_key, strikes) in exp_map {
         // The map key is `date:daysToExpiration`; the ISO date is the part before ':'.
         let expiry = date_key.split(':').next().unwrap_or(date_key).to_string();
         let Some(strike_map) = strikes.as_object() else {
-            continue;
+            bail!("strike map under {date_key:?} is not an object — malformed or drifted response");
         };
         for contracts in strike_map.values() {
             let Some(list) = contracts.as_array() else {
-                continue;
+                bail!(
+                    "contract list under {date_key:?} is not an array — malformed or drifted response"
+                );
             };
             for c in list {
-                let strike = c.get("strikePrice").and_then(Value::as_f64).unwrap_or(0.0);
-                let volume = c.get("totalVolume").and_then(Value::as_f64).unwrap_or(0.0);
-                let open_interest = c.get("openInterest").and_then(Value::as_f64).unwrap_or(0.0);
+                let field = |key: &str| {
+                    c.get(key).and_then(Value::as_f64).with_context(|| {
+                        format!(
+                            "a contract under {date_key:?} carries no numeric {key} — malformed or drifted response"
+                        )
+                    })
+                };
+                let strike = field("strikePrice")?;
+                let volume = field("totalVolume")?;
+                let open_interest = field("openInterest")?;
                 // Schwab reports volatility as a percent, with -999 as "no value".
                 let implied_volatility = c
                     .get("volatility")
@@ -351,6 +377,7 @@ fn collect_contracts(map: Option<&Value>, kind: OptionKind, out: &mut Vec<Option
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -436,12 +463,38 @@ mod tests {
 
     #[test]
     fn parse_chain_none_when_no_contracts() {
-        // A well-formed response with no listed contracts is a genuine gap.
+        // A well-formed response with no listed contracts is the quiet
+        // no-signal read — a market fact, no typed gap.
         assert!(
             parse_chain("AAPL", r#"{"symbol":"AAPL","callExpDateMap":{},"putExpDateMap":{}}"#)
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn parse_chain_errors_on_a_non_numeric_contract_field() {
+        // A row whose strike (or volume / open interest) is non-numeric surfaces
+        // as malformed — the caller records the typed gap — rather than riding
+        // the signal as a fabricated 0.0 level.
+        let body = r#"{"symbol":"AAPL","callExpDateMap":{"2026-09-18:44":{"195.0":[
+            {"putCall":"CALL","strikePrice":"195.0","totalVolume":10,"openInterest":5,"volatility":30.0}
+        ]}},"putExpDateMap":{}}"#;
+        assert!(parse_chain("AAPL", body).is_err());
+        let body = r#"{"symbol":"AAPL","callExpDateMap":{"2026-09-18:44":{"195.0":[
+            {"putCall":"CALL","strikePrice":195.0,"openInterest":5,"volatility":30.0}
+        ]}},"putExpDateMap":{}}"#;
+        assert!(parse_chain("AAPL", body).is_err(), "a missing volume must not read as zero");
+    }
+
+    #[test]
+    fn parse_chain_errors_on_a_present_non_object_map() {
+        // Absence is the tolerated one-sided case; a PRESENT wrong-type map is
+        // drift — it must not parse as a partial (or empty) successful chain.
+        let body = r#"{"symbol":"AAPL","callExpDateMap":{"2026-09-18:44":{"195.0":[
+            {"putCall":"CALL","strikePrice":195.0,"totalVolume":10,"openInterest":5,"volatility":30.0}
+        ]}},"putExpDateMap":[]}"#;
+        assert!(parse_chain("AAPL", body).is_err());
     }
 
     #[test]
@@ -453,7 +506,7 @@ mod tests {
     #[test]
     fn parse_chain_valid_json_without_expiration_maps_is_an_error() {
         // A well-formed JSON body that isn't a chains payload (a FAILED status, or drifted
-        // / renamed map fields) is a drift signal, not a genuine no-options gap. Contrast
+        // / renamed map fields) is a drift signal, not a genuine no-options read. Contrast
         // with `parse_chain_none_when_no_contracts`, where the maps are present but empty.
         assert!(parse_chain("AAPL", r#"{"symbol":"AAPL","status":"FAILED"}"#).is_err());
         assert!(parse_chain("AAPL", r#"{"symbol":"AAPL","callMap":{},"putMap":{}}"#).is_err());
@@ -488,8 +541,8 @@ mod tests {
     }
 
     #[test]
-    fn option_chain_404_is_a_gap_but_a_fault_is_an_error() {
-        // 404 → no listed options for this name → a gap, fail-soft.
+    fn option_chain_404_is_a_quiet_no_options_read_but_a_fault_is_an_error() {
+        // 404 → no listed options for this name → the quiet no-signal read, fail-soft.
         let not_found = MockHttp::serve(vec![Canned::Reply {
             status: 404,
             headers: vec![],
