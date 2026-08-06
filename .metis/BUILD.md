@@ -362,9 +362,27 @@ signed P/E derive (**`grade-v2.1`**), always-percent fund weights with
 price-derived ledger legs, **insertion-order run identity**, parsed-date
 consensus ordering with the strict undatable-row split, the FRED 10-day
 anchor bound, duration-phrase guards for "short"/"ultra", and the
-option/bond cost-basis render suppression — full dispositions and the
-ruled-but-unbuilt follow-up slice in
-`docs/verification/2026-08-05-piece3-value-chain-walk.md`.
+option/bond cost-basis render suppression — full dispositions in
+`docs/verification/2026-08-05-piece3-value-chain-walk.md` — and the
+**ET-dating / outcome-hardening slice** (2026-08-06, PR #64 squash
+`512d5ec`; internal review + four Codex rounds to approval), the walk's
+ruled follow-up (rulings 1 + 9): **ET session dating** via
+`market_clock` (`et_session_date` / `et_date_of`) for the per-holding
+evidence boundary, the over-age carry boundary and its `today`, the
+outcome entry anchor + episode-open window stamping, and the
+retrospective bridge — the filings/earnings evidence legs **inclusive**,
+matching the news leg, the true noise bound documented (recurring badge
++ at most one redundant forced re-analysis until a later-ET-day full
+pass) — the basis bridge keyed at the **intrinsic vintage**
+(excluded-not-guessed when uncovered), the per-symbol price-bar fetch
+floored at the **earliest active-episode anchor** (benchmark series
+included), the frontend ET mirror (`src/etDate.ts` byte-for-byte with
+`market_clock`, the exotic-forms contract pinned case-for-case on both
+sides; the carried/stale tag on whole ET days), and the review
+hardening — legacy UTC-keyed pending window ends self-heal at the label
+pass, `created_at` minted at run start (one ET day for the over-age
+decisions, the label pass, and the rendered badge), ET-stamped
+`confirmed_at`.
 **Trade Opportunities and the remaining Portfolio depth slices (held-name
 refresh lane, the live research loop) remain designed, not built.** The
 load-bearing decisions:
@@ -708,9 +726,10 @@ load-bearing decisions:
   the labeled price-only fallback), typed price-coverage / terminal
   closures past the shared grace — and every authored-price comparison
   (band calibration, the falsifier lead-time line) crosses bases through
-  the **anchor-close bridge** (`anchor-session close × price ⁄ authoring
-  spot`), split- and gap-safe, **excluded rather than guessed** when the
-  spot or anchor bar is missing. Derived reads are unique-holding-counted —
+  the **anchor-close bridge** (the **intrinsic-vintage session's** close
+  `× price ⁄ authoring spot` — ET-session-dated since the ET slice),
+  split- and gap-safe, **excluded rather than guessed** when the spot or
+  bridge bar is missing. Derived reads are unique-holding-counted —
   lean-keyed cohorts (vintage-fresh, model-chosen; rule-demoted and
   role-risk their own classes; a missing TR leg quotes price-only, the
   labeled-mix rule), target calibration split per parameter version
@@ -965,16 +984,11 @@ round, the short-position finding disputed on engine-reachability
 evidence — net-short is not-rated pre-routing, so no full card pairs with
 a signed row — with its regression-case half adopted.) **Review piece 3 —
 the value-chain correctness walk — completed and merged 2026-08-06**
-(PR #63; the fix batch in §Local analysis suite above). Next: the
-**ET-dating / outcome-hardening slice**, ruled and specced in the piece-3
-record's §The ruled follow-up slice — ET session dating via
-`market_clock` for the per-holding evidence boundary and the outcome
-entry anchor + basis bridge (the news-leg inclusivity and the frontend
-stale-tag boundary ruled with it), the bear-line bridge keyed at the
-intrinsic vintage (excluded-not-guessed when uncovered), and the
-price-bar fetch range from the symbol's earliest active-episode anchor —
-its own session; then the TO docs model-decision-power audit and the
-long-doc-line cleanup; then the single big confirmation run banks the
+(PR #63; the fix batch in §Local analysis suite above), **and its ruled
+follow-up — the ET-dating / outcome-hardening slice — built and merged
+2026-08-06** (PR #64 squash `512d5ec`; the as-built entry in §Local
+analysis suite above). Next: the TO docs model-decision-power audit and
+the long-doc-line cleanup; then the single big confirmation run banks the
 stacked runtime confirmations above, now also carrying piece 3's probe
 set (the Schwab `averagePrice` multiplier behind the option/bond render
 suppression, `^GSPC`-mapping sufficiency, analyst-estimates page
