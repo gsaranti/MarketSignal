@@ -6,8 +6,8 @@
 //! the mechanical stand-ins. The engine never guesses — a missing input becomes a
 //! gap, never a fabricated level. Since `portfolio-v7` the model authors its own
 //! arm's numbers beside these (sub-scores, target bands — typed model-authored),
-//! and model values never alter or bind the engine baseline (the boundary
-//! statement: `docs/portfolio-analysis.md` §The holding verdict).
+//! and model-arm judgment values never alter or bind the engine baseline (the
+//! boundary statement: `docs/portfolio-analysis.md` §The holding verdict).
 //!
 //! All formulas are simple, bounded, and **calibratable** — the grade-weight
 //! formula, the risk-tier thresholds, and the options-signal parameters are the

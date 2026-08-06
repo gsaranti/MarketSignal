@@ -14,8 +14,8 @@
 //! grade, scenario price targets, the options-activity signal, the mechanical
 //! stand-ins), and since `portfolio-v7` the model authors its **own arm** beside
 //! it — its sub-scores, derived letter, and target bands, plus the lean,
-//! conviction, horizon reads, and prose — with model values never altering or
-//! binding the engine baseline (the boundary statement:
+//! conviction, horizon reads, and prose — with model-arm judgment values never
+//! altering or binding the engine baseline (the boundary statement:
 //! `docs/portfolio-analysis.md` §The holding verdict). The engine grade stays a
 //! deterministic roll-up of the
 //! engine's sub-scores, never a model gestalt; the model's letter derives from
