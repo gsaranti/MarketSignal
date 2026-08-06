@@ -165,10 +165,11 @@ const ANNUALIZATION_FACTOR: f64 = 15.87;
 const ADD_FLOOR_WEIGHT: f64 = 0.015;
 const ADD_AGGRESSIVE_FLOOR_WEIGHT: f64 = 0.03;
 
-/// Concentration cap: a single position is not steered above this share of the
-/// account, and at-or-above it the add family leaves the feasible set. Crate-public:
-/// the construction stage's joint-feasibility check enforces the same cap on the
-/// implied post-action book ([`crate::portfolio::construction`]).
+/// Concentration cap: the engine never steers a single position above this share
+/// of the account, and at-or-above it the add family leaves the feasible set.
+/// Crate-public: the construction stage's joint-feasibility solve tests the same
+/// cap on the implied post-action book — an engine-bound annotation since
+/// `portfolio-v7` ([`crate::portfolio::construction`]).
 pub(crate) const MAX_SINGLE_WEIGHT: f64 = 0.25;
 
 // -- Thesis-ledger persistence semantics (`docs/portfolio-analysis.md` §The position
@@ -1934,15 +1935,17 @@ pub fn hurdle_read(
     }
 }
 
-/// The action set the 6f interpretation authors the **standalone lean** within —
-/// the intrinsic bars alone (`docs/portfolio-analysis.md` §Intrinsic verdict: the
-/// lean is "a pure read … set before portfolio constraints", profile-independent):
-/// the full ladder, restricted to the exit family `{sell all, trim}` only by
-/// severe pre-profit deterioration ("severe deterioration *additionally* restricts
-/// the intrinsic standalone lean" — §Starting parameters, the one intrinsic-side
-/// bar). Every other bar — the admission test, grade-F, the concentration cap,
-/// dead money, a constrained-runway overlay — is a construction-side rule, applied
-/// in [`feasible_actions`] and consumed at the 7b stage.
+/// The engine's **intrinsic lean set** — the intrinsic bars alone
+/// (`docs/portfolio-analysis.md` §Intrinsic verdict: the lean is "a pure read …
+/// set before portfolio constraints", profile-independent): the full ladder,
+/// restricted to the exit family `{sell all, trim}` only by severe pre-profit
+/// deterioration (the one intrinsic-side bar). Since `portfolio-v7` it binds the
+/// **engine arm** alone — it renders into the 6f prompt as the engine's own read;
+/// the model's standalone lean is schema-unrestricted, an outside-the-set lean
+/// persisting with the engine-bound annotation at construction. Every other bar —
+/// the admission test, grade-F, the concentration cap, dead money, a
+/// constrained-runway overlay — is an engine-set rule, applied in
+/// [`feasible_actions`] and consumed at the 7b stage.
 pub fn lean_actions(
     overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
 ) -> Vec<Action> {
@@ -1967,10 +1970,12 @@ pub fn lean_actions(
 /// it (constrained runway / severe deterioration); *add aggressively* additionally
 /// needs an A/B grade with headroom. Severe deterioration restricts the whole set
 /// to the exit family `{trim, sell all}`. Consumed at the **7b construction
-/// stage**: this set bounds the final action a fresh holding's construction rung
-/// may take (a carried holding is bounded by the transition-allowed set instead —
-/// [`crate::portfolio::construction`]). Every grade test reads the momentum-free
-/// letter.
+/// stage** as a fresh holding's **engine set** (a carried holding takes the
+/// transition set instead — [`crate::portfolio::construction`]): since
+/// `portfolio-v7` it reaches the model as the rendered ENGINE SET — the engine
+/// arm's own action stand-in walks its rung into it, while an outside-the-set
+/// model choice persists with an engine-bound annotation, never a schema bar.
+/// Every grade test reads the momentum-free letter.
 pub fn feasible_actions(
     grade: Grade,
     hurdle: &HurdleRead,
@@ -2245,8 +2250,8 @@ pub fn size_action(
 
 /// The engine's target-weight band for one action rung at a current weight — the
 /// single home for the per-rung multiplier ladder, shared by [`size_action`] and
-/// the construction stage's range validation (a model-proposed range must sit
-/// inside its rung's band — `docs/portfolio-workflow.md` §Step 7b).
+/// the construction stage's range read (a model range outside its rung's band
+/// records an engine-bound annotation — `docs/portfolio-workflow.md` §Step 7b).
 ///
 /// Per-rung multiplicative target around the current weight (a simple, legible
 /// ladder; concentration is bounded by the cap). The add-family rungs carry

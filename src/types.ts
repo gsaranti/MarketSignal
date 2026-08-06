@@ -536,8 +536,9 @@ export interface RoleRiskVerdict {
   observable_risk: number | null;
   structural_flag: boolean;
   evidence_gaps: string[];
-  // Set wholly at construction from the reduced {sell-all, trim, hold} spine —
-  // this branch carries no standalone lean.
+  // Set wholly at construction — the reduced {sell-all, trim, hold} set is the
+  // engine arm's there, the model's choice structurally open (departures
+  // annotated); this branch carries no standalone lean.
   action: PortfolioAction;
   action_sizing: ActionSizing;
   what_changed: string;
@@ -658,9 +659,9 @@ export interface PromptUsage {
 }
 
 // One holding's action-sizing spine row (docs/portfolio-workflow.md §Step 7a) —
-// the engine-known decision surface the construction call chose within,
-// persisted with the roll-up for auditability. Not rendered by the Portfolio
-// page in this slice.
+// the engine-known decision surface the construction call read (engine sets +
+// annotation bounds since portfolio-v7), persisted with the roll-up for
+// auditability. Not rendered by the Portfolio page in this slice.
 export interface SizingSpineRow {
   symbol: string;
   asset_class: AssetClass;
@@ -686,8 +687,8 @@ export interface SizingSpineRow {
   // Dormant wiring — structurally false until a forensic event producer lands.
   hard_forensic_bar: boolean;
   sector: string | null;
-  // The construction-allowed action set: feasible (fresh) / transition (carried)
-  // / the reduced spine (fresh role-risk).
+  // The engine action set: feasible (fresh) / transition (carried) / the reduced
+  // set (fresh role-risk) — annotation-bounding only since portfolio-v7.
   offered: PortfolioAction[];
   context_trim_carveout: boolean;
   tax_note: string | null;
@@ -776,8 +777,9 @@ export interface PortfolioRollUp {
   exited: ExitedPosition[];
   // Absent on runs persisted before the field existed.
   data_health?: DataHealth | null;
-  // The Step-7a aggregates + per-holding spine the construction call chose
-  // within — persisted for auditability; the page renders only the view today.
+  // The Step-7a aggregates + per-holding spine the construction call read
+  // (engine sets + annotation bounds) — persisted for auditability; the page
+  // renders only the view today.
   aggregates?: BookAggregates | null;
   // The construction call's portfolio-level view — absent on pre-construction runs.
   construction?: ConstructionView | null;

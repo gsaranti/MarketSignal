@@ -60,11 +60,12 @@ pub fn research(_dossier: &HoldingDossier) -> ResearchFindings {
 }
 
 /// What the interpretation stage reads: the dossier, the engine's computed analysis,
-/// the distilled research findings, and the **intrinsic lean set** the model
-/// authors the standalone lean within — the full ladder, restricted only by severe
-/// pre-profit deterioration (`docs/portfolio-analysis.md` §Intrinsic verdict; the
-/// feasible-set bars are construction-side). The model reasons over *this* —
-/// evidence, not a gathering transcript.
+/// the distilled research findings, and the engine's **intrinsic lean set** —
+/// rendered to the model as the engine arm's own read since `portfolio-v7`, never
+/// a bound: the model's standalone lean is schema-unrestricted (full ladder), an
+/// outside-the-set lean persisting with the engine-bound annotation at
+/// construction (`docs/portfolio-analysis.md` §Intrinsic verdict). The model
+/// reasons over *this* — evidence, not a gathering transcript.
 pub struct InterpretationInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub engine: &'a EngineOutput,
@@ -364,8 +365,9 @@ pub fn analyze_holding(
                 });
                 // The union's other branch: the model authors the role read only —
                 // the branch carries no standalone lean, so its action arises
-                // wholly at the 7b construction stage from the reduced spine
-                // (`docs/portfolio-analysis.md` §Portfolio action). A provisional
+                // wholly at the 7b construction stage, where the engine arm's
+                // reduced set (sell-all / trim / hold) rides as annotation-bounded
+                // evidence (`docs/portfolio-analysis.md` §Portfolio action). A provisional
                 // *hold* stands in until construction overwrites it inside this
                 // same pass (construction is fail-hard, so the placeholder never
                 // persists).
@@ -443,12 +445,13 @@ pub fn analyze_holding(
         }
     };
 
-    // The set the model authors the **standalone lean** within — the intrinsic
-    // bars alone: the full ladder, restricted only by severe pre-profit
-    // deterioration (`docs/portfolio-analysis.md` §Intrinsic verdict — the lean is
-    // set before portfolio constraints; the feasible-set bars are construction-side
-    // rules, re-derived and applied at the 7b stage). The overlay's rules join only
-    // when the stock actually entered the overlay (a priced fund carries none).
+    // The engine's intrinsic lean set — the intrinsic bars alone: the full
+    // ladder, restricted only by severe pre-profit deterioration
+    // (`docs/portfolio-analysis.md` §Intrinsic verdict). Since `portfolio-v7` it
+    // binds the engine arm alone — rendered into the prompt as the engine's own
+    // read, the model's lean schema-unrestricted, an outside-the-set lean
+    // annotated at construction. The overlay's rules join only when the stock
+    // actually entered the overlay (a priced fund carries none).
     let overlay_rules = pre_profit_overlay
         .as_ref()
         .filter(|o| o.is_eligible())
@@ -1309,8 +1312,10 @@ pub fn role_risk_system_prompt() -> String {
      class this pipeline is structurally unable to price (a bond or commodity fund, \
      an ex-US fund, a leveraged/inverse vehicle, or a fund without usable weightings). \
      Do NOT produce a grade, price target, conviction, or action — none exists for \
-     this branch here (its action is set later, at portfolio construction, from the \
-     reduced sell-all / trim / hold ladder with the whole book in view). Your job: \
+     this branch here (its action is set later, at portfolio construction, with the \
+     whole book in view; the engine arm's set for this branch is sell-all / trim / \
+     hold, rendered there as its own read — the construction choice is structurally \
+     open, an outside-the-set rung recorded as an engine-bound annotation). Your job: \
      describe the vehicle's role — the mandate and the exposure it exists to supply, \
      read in isolation — and write the continuity note. Read the engine's exposure, \
      expense, and risk figures; never invent one. \
@@ -1364,8 +1369,10 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         ));
     }
     p.push_str(
-        "\nACTION: none here — this branch's action is set at portfolio construction \
-         from the reduced spine (sell-all / trim / hold; no add family).\n",
+        "\nACTION: none here — this branch's action is set at portfolio construction. \
+         The engine arm's set for this branch: sell-all / trim / hold (no add \
+         family); the construction choice is structurally open, a departure \
+         recorded as an engine-bound annotation.\n",
     );
     match &d.prior_verdict {
         Some(_) => p.push_str(
@@ -1398,9 +1405,9 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
     };
     let mut p = String::new();
     let since = d
-        .prior_run_created_at
+        .prior_vintage
         .as_deref()
-        .map(|t| format!(" (prior run {t})"))
+        .map(|t| format!(" (prior read {t})"))
         .unwrap_or_default();
     p.push_str(&format!("\nRETROSPECTIVE{since}:\n"));
 
@@ -1476,42 +1483,71 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
     }
 
     if let Some(spot) = d.financials.current_price {
-        // The realized move since the prior read: current spot over the prior
-        // run's authoring spot — the actual "what happened" line (Codex round 1,
-        // finding 2). The target-distance reads are labeled as exactly that:
-        // distance to the old targets, never a realized return.
-        let mut vs: Vec<String> = Vec::new();
-        if let Some(prior_spot) = d.prior_spot.filter(|s| *s > 0.0) {
-            vs.push(format!(
-                "{:+.1}% realized since the prior run (authoring spot {:.2})",
-                (spot / prior_spot - 1.0) * 100.0,
-                prior_spot
-            ));
-        }
-        if let Some(t) = g.price_targets.twelve_month.as_ref() {
-            if t.base > 0.0 {
-                vs.push(format!(
-                    "distance to the prior engine 12-mo base {:+.1}%",
-                    (spot / t.base - 1.0) * 100.0
+        // Every prior-basis price comparison crosses to today's basis through
+        // the anchor-close bridge — the outcome slice's split-safe contract
+        // (`docs/portfolio-analysis.md` §Outcome learning) keyed on the prior
+        // read's vintage session. A raw prior-spot ratio would report a 2:1
+        // split as a ~-50% "realized" move (Codex round 2, finding 1); no
+        // anchor bar within the proximity bound → the comparison is excluded,
+        // never guessed. The target-distance reads stay labeled as exactly
+        // that: distance to the old targets, never a realized return.
+        let anchor_close = d
+            .prior_vintage
+            .as_deref()
+            .and_then(crate::portfolio::outcome::parse_iso_date_prefix)
+            .and_then(|day| {
+                crate::portfolio::outcome::anchor_session_close(&d.financials.daily_closes, day)
+            })
+            .map(|b| b.value)
+            .filter(|c| *c > 0.0);
+        match anchor_close {
+            Some(anchor) => {
+                let mut vs: Vec<String> = vec![format!(
+                    "{:+.1}% realized since the prior read (anchor close {:.2}{})",
+                    (spot / anchor - 1.0) * 100.0,
+                    anchor,
+                    d.prior_spot
+                        .filter(|s| *s > 0.0)
+                        .map(|s| format!("; authoring spot {s:.2} on its own basis"))
+                        .unwrap_or_default(),
+                )];
+                // The prior authored targets are on the prior read's basis:
+                // bridge them (`target × anchor ⁄ authoring spot`) before taking
+                // a distance, so a split can't fabricate one. No authoring spot →
+                // no bridge → the distances are excluded, not guessed.
+                if let Some(prior_spot) = d.prior_spot.filter(|s| *s > 0.0) {
+                    let bridge = anchor / prior_spot;
+                    if let Some(t) = g.price_targets.twelve_month.as_ref() {
+                        if t.base > 0.0 {
+                            vs.push(format!(
+                                "distance to the prior engine 12-mo base {:+.1}% (basis-bridged)",
+                                (spot / (t.base * bridge) - 1.0) * 100.0
+                            ));
+                        }
+                    }
+                    if let Some(mv) = &g.model_view {
+                        let b = mv.price_targets.twelve_month.base;
+                        if b > 0.0 {
+                            vs.push(format!(
+                                "distance to the prior model 12-mo base {:+.1}% (basis-bridged)",
+                                (spot / (b * bridge) - 1.0) * 100.0
+                            ));
+                        }
+                    }
+                }
+                p.push_str(&format!(
+                    "- price now {:.2}: {} (split-safe via the anchor-close bridge; \
+                     the scored comparison is the deterministic scoreboard's)\n",
+                    spot,
+                    vs.join("; ")
                 ));
             }
-        }
-        if let Some(mv) = &g.model_view {
-            let b = mv.price_targets.twelve_month.base;
-            if b > 0.0 {
-                vs.push(format!(
-                    "distance to the prior model 12-mo base {:+.1}%",
-                    (spot / b - 1.0) * 100.0
-                ));
-            }
-        }
-        if !vs.is_empty() {
-            p.push_str(&format!(
-                "- price now {:.2}: {} (uncorrected for splits; the scored comparison \
-                 is the deterministic scoreboard's)\n",
-                spot,
-                vs.join("; ")
-            ));
+            None => p.push_str(&format!(
+                "- price now {:.2}: prior-read price comparison unavailable — no \
+                 anchor-session close at the prior vintage (excluded rather than \
+                 guessed; the deterministic scoreboard stays the scored ground)\n",
+                spot
+            )),
         }
     }
 
@@ -2262,10 +2298,11 @@ impl HoldingAnalyst for StubAnalyst {
             crate::portfolio::Grade::D => Action::Trim,
             crate::portfolio::Grade::F => Action::SellAll,
         };
-        // The live path's schema constrains the lean to the intrinsic set; the stub
-        // honors the same bound by falling back to the least-drastic offered rung
-        // (hold is not always offered — a severe pre-profit overlay restricts the
-        // set to the exit family).
+        // The live path renders the engine's intrinsic set as evidence (the v7
+        // schema is full-ladder); the stub deliberately stays inside the engine
+        // set so no engine-bound annotation fires, falling back to the
+        // least-drastic engine rung (hold is not always in the engine set — a
+        // severe pre-profit overlay restricts it to the exit family).
         let action = if input.lean_set.contains(&preferred) {
             preferred
         } else if input.lean_set.contains(&Action::Hold) {
@@ -2375,8 +2412,8 @@ impl HoldingAnalyst for StubAnalyst {
     ) -> Result<crate::portfolio::construction::ConstructionDraft> {
         use crate::portfolio::construction::{ConstructionDraft, HoldingProposalDraft};
         // The stub's construction is the deterministic echo: re-affirm each
-        // holding's standalone read inside its allowed set — the carried action
-        // for a carried row, the lean where the feasible set still offers it,
+        // holding's standalone read inside its engine set — the carried action
+        // for a carried row, the lean where the engine set still offers it,
         // continuity (the prior action) or *hold* otherwise — at the engine's
         // rung band. It exercises the validate-and-merge seam without ever
         // proposing a violation; the violation paths are rogue-stub territory.
@@ -2599,8 +2636,9 @@ fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest
     req
 }
 
-/// Build the portfolio-construction request: thinking on, the per-holding-narrowed
-/// construction schema, and the **shared** interpret context size — the
+/// Build the portfolio-construction request: thinking on, the per-holding
+/// construction schema (full-ladder enums since `portfolio-v7`), and the
+/// **shared** interpret context size — the
 /// one-`num_ctx`-per-model rule (an Ollama `num_ctx` change reloads the resident
 /// runner, `docs/local-model-operations.md §The num_ctx trap`), so the run-level
 /// call must not bounce the runner between sizes. On prompt overrun the sanctioned
@@ -2875,7 +2913,7 @@ mod tests {
             house_view: HouseView::default(),
             fund: None,
             prior_verdict: None,
-            prior_run_created_at: None,
+            prior_vintage: None,
             prior_spot: None,
             prior_matured_notes: Vec::new(),
             prior_grade_parameter_version: None,
@@ -3089,7 +3127,7 @@ mod tests {
         match verdict.disposition {
             VerdictDisposition::RoleRiskOnly(r) => {
                 assert_eq!(r.class_label, "bond fund");
-                // The reduced spine only; the stub holds.
+                // The provisional placeholder until 7b sets the action; the stub holds.
                 assert_eq!(r.action, Action::Hold);
                 assert!(!r.role_summary.is_empty());
                 assert!(!r.evidence_gaps.is_empty());
@@ -3321,9 +3359,16 @@ mod tests {
         let (prior, _) =
             analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-07-29").unwrap();
         d.prior_verdict = Some(prior);
-        d.prior_run_created_at = Some("2026-07-29T12:00:00Z".into());
+        d.prior_vintage = Some("2026-07-29T12:00:00Z".into());
         d.prior_spot = Some(180.0);
         d.prior_matured_notes = vec!["1-month window scored: total return +4.2%".into()];
+        // The prior vintage's anchor-session close (same basis, no split): the
+        // bridge's realized leg. Without a bar inside the proximity bound the
+        // comparison would be excluded, so the fixture carries one.
+        d.financials.daily_closes.push(DatedValue {
+            date: "2026-07-29".into(),
+            value: 180.0,
+        });
 
         let engine_output = match engine::analyze(&d.financials, &rates()) {
             EngineVerdict::Analyzed(o) => o,
@@ -3338,18 +3383,29 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
         });
-        assert!(user.contains("RETROSPECTIVE (prior run 2026-07-29T12:00:00Z)"), "{user}");
+        assert!(user.contains("RETROSPECTIVE (prior read 2026-07-29T12:00:00Z)"), "{user}");
         assert!(user.contains("prior ENGINE arm: grade"), "{user}");
         assert!(user.contains("prior MODEL arm (yours): letter"), "{user}");
-        // The realized move computes against the prior AUTHORING spot (180 →
-        // 195 = +8.3%), never against a target; the target reads are labeled
-        // as distances, not returns (Codex round 1, finding 2).
+        // The realized move computes off the prior vintage's anchor-session
+        // close (the split-safe bridge — Codex round 2, finding 1), never
+        // against a target; here the anchor bar equals the authoring spot
+        // (180 → 195 = +8.3%). The target reads are labeled as distances,
+        // not returns (Codex round 1, finding 2).
         assert!(
-            user.contains("+8.3% realized since the prior run (authoring spot 180.00)"),
+            user.contains(
+                "+8.3% realized since the prior read (anchor close 180.00; \
+                 authoring spot 180.00 on its own basis)"
+            ),
             "{user}"
         );
-        assert!(user.contains("distance to the prior engine 12-mo base"), "{user}");
-        assert!(user.contains("distance to the prior model 12-mo base"), "{user}");
+        assert!(
+            user.contains("distance to the prior engine 12-mo base"),
+            "{user}"
+        );
+        assert!(
+            user.contains("distance to the prior model 12-mo base"),
+            "{user}"
+        );
         assert!(user.contains("any vintage"), "{user}");
         assert!(user.contains("1-month window scored: total return +4.2%"), "{user}");
         assert!(user.contains("Write self_assessment against this"), "{user}");
@@ -3366,6 +3422,86 @@ mod tests {
         });
         assert!(!debut_user.contains("RETROSPECTIVE"), "{debut_user}");
         assert!(debut_user.contains("new holding (no prior verdict)"), "{debut_user}");
+    }
+
+    #[test]
+    fn retrospective_realized_move_is_split_safe_via_the_anchor_close_bridge() {
+        // A 2:1 split between reads: the prior read authored at 180.00; the same
+        // economic level trades near 90 today. A raw prior-spot ratio would
+        // report ~−46% "realized" (Codex round 2, finding 1); the anchor-close
+        // bridge keys both legs to today's basis — the true +8.3% renders, and
+        // the prior targets cross through `target × anchor ⁄ authoring spot`.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let (prior, _) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-07-29").unwrap();
+        d.prior_verdict = Some(prior);
+        d.prior_vintage = Some("2026-07-29T12:00:00Z".into());
+        d.prior_spot = Some(180.0); // pre-split basis
+        d.financials.current_price = Some(97.5); // post-split basis
+        d.financials.daily_closes.push(DatedValue {
+            date: "2026-07-29".into(),
+            value: 90.0, // the vintage session's close on today's basis
+        });
+
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let feasible = vec![Action::SellAll, Action::Trim, Action::Hold];
+        let user = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "",
+            lean_set: &feasible,
+            ledger_eval: None,
+            pre_profit: None,
+        });
+        assert!(
+            user.contains(
+                "+8.3% realized since the prior read (anchor close 90.00; \
+                 authoring spot 180.00 on its own basis)"
+            ),
+            "{user}"
+        );
+        // The raw cross-basis ratio (97.5 ⁄ 180 − 1 ≈ −45.8%) must be nowhere.
+        assert!(!user.contains("-45.8"), "{user}");
+        assert!(user.contains("(basis-bridged)"), "{user}");
+    }
+
+    #[test]
+    fn retrospective_excludes_the_price_comparison_without_an_anchor_close() {
+        // The fixture's dated closes end 2026-07-15 — outside the proximity
+        // bound around the 2026-07-29 vintage — so the bridge has no anchor
+        // session and every price comparison is excluded, never guessed (the
+        // outcome slice's shared contract). The rest of the retrospective
+        // still renders.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let (prior, _) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-07-29").unwrap();
+        d.prior_verdict = Some(prior);
+        d.prior_vintage = Some("2026-07-29T12:00:00Z".into());
+        d.prior_spot = Some(180.0);
+
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let feasible = vec![Action::SellAll, Action::Trim, Action::Hold];
+        let user = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "",
+            lean_set: &feasible,
+            ledger_eval: None,
+            pre_profit: None,
+        });
+        assert!(user.contains("RETROSPECTIVE (prior read"), "{user}");
+        assert!(
+            user.contains("prior-read price comparison unavailable"),
+            "{user}"
+        );
+        assert!(!user.contains("% realized"), "{user}");
+        assert!(!user.contains("distance to the prior engine"), "{user}");
     }
 
     #[test]

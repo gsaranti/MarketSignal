@@ -368,8 +368,9 @@ pub struct SubScores {
 
 /// The action ladder (`docs/portfolio-analysis.md` §The holding verdict) — a fixed
 /// vocabulary so verdicts stay comparable and the model can't retreat into hedged
-/// language. The model selects the rung **within the engine-bounded feasible set**;
-/// the sizing is computed deterministically.
+/// language. Since `portfolio-v7` the model selects the rung freely (the full
+/// ladder); the engine's set rides as evidence, an outside-the-set rung persisting
+/// with an engine-bound annotation, and the sizing is computed deterministically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Action {
@@ -775,8 +776,10 @@ pub struct ExposureWeight {
 
 /// The `role_risk_only` branch of an analyzed verdict (`docs/portfolio-analysis.md`
 /// §Intrinsic verdict): a structurally unpriceable vehicle class gets a typed role /
-/// risk read — **no letter, no price targets, no conviction, no tier** — while the
-/// action machinery still applies over the reduced {sell all, trim, hold} spine.
+/// risk read — **no letter, no price targets, no conviction, no tier** — its action
+/// set at 7b construction, where the engine arm's set for this branch is the
+/// reduced {sell all, trim, hold} and the model's choice is structurally open with
+/// departures annotated (`portfolio-v7`).
 /// Engine-computed fields (exposure, expense, risk, gaps) plus the model's role read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleRiskVerdict {
@@ -798,10 +801,11 @@ pub struct RoleRiskVerdict {
     /// The typed evidence gaps — this branch's confidence surface (never a fabricated
     /// High / Medium / Low conviction).
     pub evidence_gaps: Vec<String>,
-    /// The action from the reduced {sell all, trim, hold} spine — set **wholly at
-    /// the 7b construction stage** (`docs/portfolio-analysis.md` §Portfolio action:
-    /// this branch carries no lean, so its action arises from the reduced spine
-    /// with the whole book in view). Holds a provisional `hold` between
+    /// The final action — set **wholly at the 7b construction stage** with the
+    /// whole book in view (`docs/portfolio-analysis.md` §Portfolio action: this
+    /// branch carries no lean). The engine arm's set for the branch is the
+    /// reduced {sell all, trim, hold}; the construction choice is structurally
+    /// open, departures annotated. Holds a provisional `hold` between
     /// interpretation and construction inside a pass.
     pub action: Action,
     pub action_sizing: ActionSizing,
@@ -1298,9 +1302,9 @@ pub struct PortfolioRollUp {
     #[serde(default)]
     pub data_health: Option<DataHealth>,
     /// The Step-7a whole-book aggregates + per-holding sizing-spine rows the
-    /// construction call chose within ([`construction::BookAggregates`]). `None`
-    /// on runs persisted before the construction stage existed
-    /// (`#[serde(default)]`).
+    /// construction call read — its engine sets and annotation bounds
+    /// ([`construction::BookAggregates`]). `None` on runs persisted before the
+    /// construction stage existed (`#[serde(default)]`).
     #[serde(default)]
     pub aggregates: Option<construction::BookAggregates>,
     /// The validated portfolio-level view the 7b construction call produced —
@@ -1736,7 +1740,9 @@ pub fn interpretation_schema() -> Value {
 /// read and the continuity note. None of the priced fields exist — no grade,
 /// conviction, horizon, or target rationale — **and no action**: this branch
 /// carries no standalone lean, so its action arises wholly at the 7b construction
-/// stage from the reduced spine (`docs/portfolio-analysis.md` §Portfolio action).
+/// stage, where the engine arm's set for the branch is the reduced
+/// {sell all, trim, hold} and the model's choice is structurally open with
+/// departures annotated (`docs/portfolio-analysis.md` §Portfolio action).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleRiskInterpretation {
     /// The vehicle's mandate and the exposure it exists to supply (prose).
@@ -1747,13 +1753,14 @@ pub struct RoleRiskInterpretation {
     pub ledger: LedgerDraft,
 }
 
-/// The reduced action spine a `role_risk_only` holding's feasible set offers —
-/// the add family requires return evidence this branch has none of by construction
-/// (`docs/portfolio-analysis.md` §Portfolio action).
+/// The reduced action set — a `role_risk_only` holding's **engine set** at
+/// construction: the add family requires return evidence this branch has none of
+/// by construction (`docs/portfolio-analysis.md` §Portfolio action).
 pub const ROLE_RISK_ACTIONS: [Action; 3] = [Action::SellAll, Action::Trim, Action::Hold];
 
 /// The JSON Schema for [`RoleRiskInterpretation`] — no action field (the branch's
-/// action is set at construction from the reduced spine), and the ledger's reduced
+/// action is set at construction, where the reduced set is the engine arm's and
+/// the model's choice is structurally open), and the ledger's reduced
 /// trigger-family enum is structural.
 pub fn role_risk_interpretation_schema() -> Value {
     json!({
@@ -2064,8 +2071,9 @@ mod tests {
 
     #[test]
     fn role_risk_schema_carries_no_action_field() {
-        // The branch's action arises wholly at the 7b construction stage from the
-        // reduced spine — the 6f role/risk interpretation authors none.
+        // The branch's action arises wholly at the 7b construction stage (the
+        // reduced set = the engine arm's read there) — the 6f role/risk
+        // interpretation authors none.
         let schema = role_risk_interpretation_schema();
         assert!(schema["properties"].get("action").is_none());
         let required: Vec<&str> = schema["required"]

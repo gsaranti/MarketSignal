@@ -9,10 +9,11 @@
 //! (single-name look-through is off-plan), sector-level overlap clusters, the
 //! not-rated positions' risk / exposure contribution (market value + signed
 //! notional; duration / credit / delta ride as typed gaps), cash — plus the
-//! per-holding **action-sizing spine rows**, each carrying the construction-allowed
-//! action set: the engine-bounded feasible set for a fresh holding, the
-//! **carried-action transition set** (toward *hold* only, plus the aggregate-gated
-//! context-trim carve-out) for a carried one.
+//! per-holding **action-sizing spine rows**, each carrying the **engine action
+//! set**: the engine's feasible set for a fresh holding, the **carried-action
+//! transition set** (toward *hold* only, plus the aggregate-gated context-trim
+//! carve-out) for a carried one — since `portfolio-v7` prompt evidence and the
+//! annotation bound, never a schema bar.
 //!
 //! **Step 7b is the construction model call** (built in [`super::pipeline`] /
 //! [`super::job`] over this module's contract): the 122B reconciles each holding's
@@ -20,10 +21,13 @@
 //! range and the portfolio-level view. This module owns the **schema**
 //! ([`construction_schema`] — per-holding action enums are structural), the
 //! **prompt text**, and the deterministic **joint-feasibility validation**
-//! ([`validate_construction`]): the implied post-action book, the range / rung-band
-//! / concentration checks, the transition rule, and the app-validated action-half
-//! attributions. A failing validation names its violations; the caller re-runs the
-//! synthesis once with them named, and a persisting infeasibility fails the run
+//! ([`validate_construction`]) — split two ways since `portfolio-v7`: the
+//! self-coherence checks (sell-all 0–0, range ordering,
+//! stated-range-contains-implied-weight) and the app-validated action-half
+//! attributions still return violations — the caller re-runs the synthesis once
+//! with them named, and persisting incoherence fails the run — while the
+//! engine-bound checks (rung band, concentration cap, funding, the transition
+//! rule) record as `engine_bound_annotations`, never a violation
 //! (`docs/portfolio-analysis.md` §Portfolio roll-up and construction).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -87,9 +91,9 @@ pub enum SpineBranch {
 }
 
 /// One holding's action-sizing spine inputs (`docs/portfolio-workflow.md` §Step 7a)
-/// — the engine-known decision surface the construction call chooses within,
-/// persisted with the roll-up so the chosen actions stay auditable against the
-/// bounds they were chosen under.
+/// — the engine-known decision surface the construction call reads, persisted
+/// with the roll-up so the chosen actions stay auditable against the engine's
+/// read they were chosen beside (annotation bounds since `portfolio-v7`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SizingSpineRow {
     pub symbol: String,
@@ -139,9 +143,9 @@ pub struct SizingSpineRow {
     /// The holding's sector label where one resolved (fail-soft — the `unknown`
     /// bucket carries the rest).
     pub sector: Option<String>,
-    /// The construction-allowed action set: the engine-bounded feasible set
-    /// (fresh), the transition set (carried), or the reduced spine (fresh
-    /// `role_risk_only`).
+    /// The engine action set: the feasible set (fresh), the transition set
+    /// (carried), or the reduced set (fresh `role_risk_only`) — rendered as the
+    /// prompt's ENGINE SET, annotation-bounding only since `portfolio-v7`.
     pub offered: Vec<Action>,
     /// `trim` entered `offered` only through the carried-name context-trim
     /// carve-out — choosing it requires a validated concentration / overlap
@@ -274,13 +278,15 @@ fn action_at(idx: i8) -> Action {
     }
 }
 
-/// The carried-action transition set (`docs/portfolio-analysis.md` §Triggering):
-/// the roll-up may re-affirm the carried action or move it stepwise **toward
-/// *hold***, never away from it on either side of the ladder — with the one
-/// carve-out that fresh whole-book aggregates may move a carried *hold* or
-/// add-family action to ***trim*** (never *sell all*), gated at validation on a
-/// concentration / overlap attribution. Returns the allowed set plus whether
-/// `trim` entered only via the carve-out.
+/// The carried-action transition set (`docs/portfolio-analysis.md` §Triggering) —
+/// the engine's rule for a carried holding: re-affirm the carried action or move
+/// it stepwise **toward *hold***, never away from it on either side of the ladder
+/// — with the one carve-out that fresh whole-book aggregates may move a carried
+/// *hold* or add-family action to ***trim*** (never *sell all*), gated at
+/// validation on a concentration / overlap attribution. Since `portfolio-v7` the
+/// set binds the engine arm alone — it renders as the carried row's ENGINE SET,
+/// an outside-the-set choice persisting with an engine-bound annotation. Returns
+/// the engine set plus whether `trim` entered only via the carve-out.
 pub fn transition_actions(carried: Action) -> (Vec<Action>, bool) {
     let from = rung_index(carried);
     let hold = rung_index(Action::Hold);
@@ -848,7 +854,7 @@ pub struct HoldingProposalDraft {
     /// The sizing rationale (the card's action rationale line).
     pub rationale: String,
     /// The divergence-from-lean context cause — required (and validated) when the
-    /// final action departs a lean the offered set still contains.
+    /// final action departs a lean the engine set still contains.
     #[serde(default)]
     pub divergence_cause: Option<String>,
     #[serde(default)]
@@ -1067,7 +1073,8 @@ impl std::fmt::Display for Violation {
 /// account total, holds the book identity (position values plus the cash residual
 /// account for the implied book, with the profile's stated external-funding
 /// assumption an explicit line), and validates each final weight against its
-/// stated range and the concentration cap.
+/// stated range (the coherence rail); the concentration-cap read records as an
+/// engine-bound annotation.
 pub fn validate_construction(
     draft: &ConstructionDraft,
     agg: &BookAggregates,
@@ -1563,9 +1570,10 @@ fn parse_action(s: &str) -> Option<Action> {
 
 /// The JSON Schema handed to Ollama's `format` for the construction call — one
 /// required property per actionable holding, each holding's `action` enum listing
-/// exactly its allowed set (feasible / transition / reduced spine), so a barred
-/// rung is structurally unreachable, mirroring the 6f narrowing
-/// (`docs/portfolio-workflow.md` §Step 7b).
+/// the **full ladder** since `portfolio-v7` — the engine's allowed set (feasible /
+/// transition / reduced spine) renders into the prompt as the engine arm's own
+/// read, an outside-the-set rung persisting with an engine-bound annotation,
+/// never a schema bar (`docs/portfolio-workflow.md` §Step 7b).
 pub fn construction_schema(spine: &[SizingSpineRow]) -> Value {
     let causes = ["became-oversized", "overlap-emerged", "cash-freed"];
     let mut cause_or_null: Vec<Value> = causes.iter().map(|c| json!(c)).collect();
@@ -1760,10 +1768,10 @@ fn spine_digest(row: &SizingSpineRow) -> String {
     if let Some(t) = &row.tax_note {
         parts.push(format!("tax: {t}"));
     }
-    // Each allowed action with its engine band at this row's current weight, as
-    // decimal fractions of the book — the numeric bounds the contract holds the
-    // model to (`docs/portfolio-workflow.md` §Step 7b: the model must not guess
-    // the bands it is validated against).
+    // Each engine-set action with its engine band at this row's current weight,
+    // as decimal fractions of the book — the engine's numeric read, rendered so
+    // the model never has to guess the bands its departures are annotated
+    // against (`docs/portfolio-workflow.md` §Step 7b).
     let offered: Vec<String> = row
         .offered
         .iter()
@@ -3111,10 +3119,10 @@ mod tests {
             &exited,
             Some("House view text"),
             &profile,
-            Some("AAA: action 'add' is outside its allowed set"),
+            Some("AAA: sell-all must carry a 0-0 weight range"),
         );
         assert!(retry.starts_with("VALIDATION FAILURE"));
-        assert!(retry.contains("outside its allowed set"));
+        assert!(retry.contains("sell-all must carry a 0-0 weight range"));
     }
 
     // ---- the construction merge ---------------------------------------------------

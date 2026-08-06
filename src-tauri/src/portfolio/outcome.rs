@@ -482,7 +482,7 @@ impl DecisionEpisode {
     }
 }
 
-fn parse_iso_date_prefix(s: &str) -> Option<NaiveDate> {
+pub(crate) fn parse_iso_date_prefix(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s.get(..10)?, "%Y-%m-%d").ok()
 }
 
@@ -902,7 +902,9 @@ fn entry_close(closes: &[DatedValue], anchor: NaiveDate) -> Option<&DatedValue> 
 /// **bounded by the same [`ENTRY_TOLERANCE_DAYS`]** — a years-old bar from a
 /// sparse cache sits at the anchor's date position but is no decision-instant
 /// close, so it must exclude the bridge-dependent reads rather than scale them.
-fn anchor_session_close(closes: &[DatedValue], anchor: NaiveDate) -> Option<&DatedValue> {
+/// `pub(crate)` because the 6f retrospective's price comparisons ride the same
+/// bridge contract (`pipeline::retrospective_section`) — one home, one bound.
+pub(crate) fn anchor_session_close(closes: &[DatedValue], anchor: NaiveDate) -> Option<&DatedValue> {
     close_at_or_before(closes, anchor).filter(|b| {
         parse_iso_date_prefix(&b.date)
             .is_some_and(|d| d >= anchor - chrono::Duration::days(ENTRY_TOLERANCE_DAYS))

@@ -58,13 +58,16 @@ pub struct HoldingDossier {
     /// The prior run's verdict for this holding (continuity input), or `None` on a
     /// holding the job has not seen before ("new holding").
     pub prior_verdict: Option<HoldingVerdict>,
-    /// The prior run's `created_at` — the retrospective block's "since" anchor
-    /// (`docs/portfolio-analysis.md` §The holding verdict, the two-arm contract).
-    /// `None` on a debut.
-    pub prior_run_created_at: Option<String>,
-    /// The prior run's authoring-time spot — the realized-move base the
-    /// retrospective renders `current ⁄ prior − 1` against. `None` on a debut or
-    /// a prior audit without a quick-check basis.
+    /// The prior verdict's **effective analysis vintage** — its `analyzed_at`,
+    /// else its run's `created_at` — the retrospective block's "since" anchor and
+    /// the anchor-close bridge's session key (`docs/portfolio-analysis.md` §The
+    /// holding verdict, the two-arm contract). A selective carry keeps the
+    /// original authoring vintage, so this date and `prior_spot` stay paired
+    /// (Codex round 2, finding 2). `None` on a debut.
+    pub prior_vintage: Option<String>,
+    /// The prior read's authoring-time spot, **on the prior read's price basis** —
+    /// the anchor-close bridge's authoring leg for re-basing the prior authored
+    /// targets. `None` on a debut or a prior audit without a quick-check basis.
     pub prior_spot: Option<f64>,
     /// The prior run's matured outcome-window lines for this symbol (deterministic,
     /// engine-computed) — the scored ground the retrospective reads against, where
@@ -102,8 +105,11 @@ pub struct PriorHolding {
     pub grade_parameter_version: Option<String>,
     /// The prior pre-profit overlay record — the observation history's carry path.
     pub pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
-    /// The prior run's `created_at` — the retrospective's "since" anchor.
-    pub run_created_at: String,
+    /// The verdict's **effective analysis vintage** (`analyzed_at`, else the
+    /// prior run's `created_at`) — the retrospective's "since" anchor. A
+    /// selective carry keeps the original vintage, so this date stays paired
+    /// with the carried audit's authoring spot (Codex round 2, finding 2).
+    pub vintage: String,
     /// The prior run's authoring-time spot (its audit's quick-check basis print) —
     /// the base the retrospective's realized price move computes against. `None`
     /// where the prior audit carried no basis.
@@ -249,7 +255,7 @@ pub fn assemble(
         prior_verdict,
         prior_grade_parameter_version,
         prior_pre_profit,
-        prior_run_created_at,
+        prior_vintage,
         prior_spot,
         prior_matured_notes,
     ) = match prior {
@@ -257,7 +263,7 @@ pub fn assemble(
             Some(p.verdict),
             p.grade_parameter_version,
             p.pre_profit,
-            Some(p.run_created_at),
+            Some(p.vintage),
             p.spot,
             p.matured_notes,
         ),
@@ -316,7 +322,7 @@ pub fn assemble(
         house_view,
         fund,
         prior_verdict,
-        prior_run_created_at,
+        prior_vintage,
         prior_spot,
         prior_matured_notes,
         prior_grade_parameter_version,
@@ -452,6 +458,11 @@ pub fn prior_verdict_for(conn: &Connection, symbol: &str) -> Option<PriorHolding
         .verdicts
         .into_iter()
         .find(|v| v.symbol.eq_ignore_ascii_case(symbol))?;
+    // The verdict's effective vintage, not the container run's `created_at`: a
+    // selective carry re-persists an old verdict (and its audit's authoring-spot
+    // basis) into a newer run, so dating the retrospective off the container
+    // would pair run A's spot with run B's date (Codex round 2, finding 2).
+    let vintage = crate::portfolio::effective_vintage(&verdict, &run.created_at).to_string();
     let audit_row = run
         .audit
         .into_iter()
@@ -487,7 +498,7 @@ pub fn prior_verdict_for(conn: &Connection, symbol: &str) -> Option<PriorHolding
         verdict,
         grade_parameter_version,
         pre_profit,
-        run_created_at: run.created_at,
+        vintage,
         spot,
         matured_notes,
     })
@@ -984,5 +995,59 @@ Watch the 2s10s and the labor prints.
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let prior = prior_verdict_for(&conn, "AAPL").expect("verdict present");
         assert_eq!(prior.grade_parameter_version.as_deref(), Some("grade-v2"));
+        // No `analyzed_at` on the verdict -> the vintage falls back to the
+        // container run's `created_at`.
+        assert_eq!(prior.vintage, "2026-08-03T00:00:00Z");
+    }
+
+    #[test]
+    fn prior_verdict_lookup_dates_a_selective_carry_by_its_own_vintage() {
+        // A selective run re-persists a carried verdict (its `analyzed_at` and
+        // its audit's authoring-spot basis intact) into a newer container run.
+        // The retrospective's "since" anchor must be the verdict's effective
+        // vintage — the container run's `created_at` would pair run A's spot
+        // with run B's date (Codex round 2, finding 2).
+        let conn = Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        let run = crate::portfolio::PortfolioRun {
+            run_id: "r2".into(),
+            created_at: "2026-08-05T00:00:00Z".into(),
+            holdings: Holdings {
+                positions: vec![],
+                cash: 0.0,
+                account_total: 0.0,
+                source_rows: vec![],
+            },
+            verdicts: vec![HoldingVerdict {
+                symbol: "AAPL".into(),
+                asset_class: AssetClass::Stock,
+                position_change: PositionChange::Unchanged,
+                disposition: VerdictDisposition::NotRated {
+                    reason: "fixture".into(),
+                },
+                thesis_ledger: None,
+                analyzed_at: Some("2026-07-29T12:00:00Z".into()),
+                action_source: Default::default(),
+            }],
+            roll_up: crate::portfolio::PortfolioRollUp {
+                aggregates: None,
+                construction: None,
+                graded_count: 0,
+                not_rated_count: 1,
+                insufficient_evidence_count: 0,
+                role_risk_only_count: 0,
+                top_position_weight: 0.0,
+                cash_weight: 0.0,
+                exited: vec![],
+                data_health: None,
+                overview: String::new(),
+            },
+            audit: vec![],
+            rate_prints: None,
+            outcome: None,
+        };
+        crate::portfolio::store::insert_run(&conn, &run).unwrap();
+        let prior = prior_verdict_for(&conn, "AAPL").expect("verdict present");
+        assert_eq!(prior.vintage, "2026-07-29T12:00:00Z");
     }
 }
