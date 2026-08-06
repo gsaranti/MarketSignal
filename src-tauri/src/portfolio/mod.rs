@@ -370,7 +370,9 @@ pub struct SubScores {
 /// vocabulary so verdicts stay comparable and the model can't retreat into hedged
 /// language. Since `portfolio-v7` the model selects the rung freely (the full
 /// ladder); the engine's set rides as evidence, an outside-the-set rung persisting
-/// with an engine-bound annotation, and the sizing is computed deterministically.
+/// with an engine-bound annotation. The model also authors the 7b target-weight
+/// range (coherence-validated); only the share/dollar deltas are computed
+/// deterministically from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Action {
@@ -648,10 +650,12 @@ pub struct OptionsSignal {
     pub iv_skew: Option<f64>,
 }
 
-/// The deterministic action sizing the engine derives once the model has chosen the
-/// action rung (`docs/portfolio-analysis.md` — "a target portfolio-weight range and
-/// an estimated share/dollar adjustment, bounded by concentration limits, available
-/// cash, and tax sensitivity"). No orders are ever placed.
+/// One holding's action sizing. Since `portfolio-v7` the model authors the
+/// target-weight range at the 7b construction stage (coherence-validated; the
+/// engine's rung band annotating, never binding), and the engine derives only the
+/// share/dollar deltas deterministically from that range
+/// ([`crate::portfolio::engine::sizing_from_range`] — one home). Pre-7b
+/// provisional sizing rides the engine band. No orders are ever placed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionSizing {
     /// The target portfolio-weight band (fractions, 0.0–1.0).
@@ -670,9 +674,11 @@ pub struct ActionSizing {
 }
 
 /// The priced body of a holding verdict — present only when the holding was eligible,
-/// priceable, *and* cleared the evidence floor. Numbers (grade, sub-scores, targets,
-/// tier, hurdle, options signal, sizing) come from the engine; the action, conviction,
-/// horizon reads, and prose come from the model's interpretation.
+/// priceable, *and* cleared the evidence floor. The engine arm's numbers (grade,
+/// sub-scores, targets, tier, hurdle, options signal — and the share/dollar deltas
+/// derived from the chosen range) come from the engine; the action with its
+/// 7b-authored target-weight range, conviction, horizon reads, prose, and the
+/// model arm ([`ModelView`]) come from the model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GradedVerdict {
     pub grade: Grade,

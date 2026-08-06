@@ -294,8 +294,9 @@ pub struct ExecutionRead {
     pub material_single_miss: bool,
 }
 
-/// Which conviction ceiling an overlay rule matched (the strictest binds, after any
-/// validated raise — `docs/portfolio-workflow.md` §Step 6g).
+/// Which conviction ceiling an overlay rule matched — the strictest binds the
+/// engine arm's stand-in as a plain min (the raise machinery is retired with
+/// `portfolio-v7` — `docs/portfolio-workflow.md` §Step 6g).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConvictionCeiling {
@@ -909,10 +910,9 @@ fn derive_consequences(
     c
 }
 
-/// Clamp a model conviction to an engine-matched ceiling (`final = min(model,
-/// ceiling)` — the docs' "binds after any validated raise" degenerates to a plain
-/// min while no raise machinery exists). Returns the clamped value and whether the
-/// clamp actually lowered it.
+/// Clamp a conviction to an engine-matched ceiling — a plain `min(value,
+/// ceiling)`; Portfolio's raise machinery is retired, so there is no raise leg.
+/// Returns the clamped value and whether the clamp actually lowered it.
 /// **Re-scoped with `portfolio-v7`** (the two-arm unrestriction): the matched
 /// ceiling never clamps the model's value anymore — its one production caller is
 /// [`crate::portfolio::engine::engine_view`], where it binds the **engine
