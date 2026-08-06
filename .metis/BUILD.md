@@ -510,10 +510,13 @@ load-bearing decisions:
     verdict, never a turn-away; long jobs **checkpoint/resume** (resume is its
     own entry path on the run's pinned snapshot); early runs are
     **shadow/calibration**.
-  - **Anti-reflexivity / no-double-count** — research may *raise* conviction
-    only via a typed, app-validated `validated_leading_indicator` (≤ one band),
-    never via price or narrative; an unconfirmed price gain caps conviction,
-    never boosts it; the archive never self-promotes.
+  - **Anti-reflexivity / no-double-count** — since the two-arm repositioning
+    conviction is the model's own (the raise triple and app-derived final
+    conviction are retired; `validated_leading_indicator` survives as
+    evidence), the cap-only since-flagged stance is prompt-side discipline,
+    and the guard binds where it has deterministic consumers — the
+    confirmed-crossing validation on stored falsifiers / milestone conditions
+    and the cheap sweep's tripwires; the archive never self-promotes.
   - **Source quality informs conviction, never gates discovery** — tiers grade;
     only the explicit deny list drops.
   - **Only a deep re-evaluation can archive an opportunity; the cheap
@@ -845,7 +848,27 @@ load-bearing decisions:
   **lifecycle-keyed picked episodes** that outlive matrix / archive / run
   retention) **and a shadow scorecard over every name the funnel turned away**
   (typed decision episodes, a strict measurement contract) feed a
-  **propose-only, never auto-applied** calibration. Persistence separates six
+  **propose-only, never auto-applied** calibration.
+  Since the **two-arm repositioning** (2026-08-06, docs-only — the
+  model-decision-power audit's five rulings plus the final logic sweep and
+  its carried-name hard-trigger ruling), every judgment field is carried in
+  **two arms**: the engine baseline beside the model's **own** sub-scores,
+  twelve-month bands, implied-expectations read, and conviction —
+  structurally validated only, the raise triple and app-derived
+  `final_conviction` retired. **Admission is either-arm** — both arms run
+  the same entry-asymmetry gate and a name clearing either enters, stamped
+  `admitted_by` with both gate vectors persisted — the grant scoped to that
+  gate alone: the evidence floor, the forensic hard triggers, and anchorless
+  `hype` bind absolutely on both arms, and a deep-pass-validated hard
+  trigger on a **carried** pick app-forces `invalidated` → archive with a
+  typed status-override divergence. Three classes stay single-valued: facts
+  and their arithmetic; tier / horizon placement (the model's views persist
+  as advisory divergences); and the outcome machinery, which scores both
+  arms identically and slices by admission provenance, the run-level band /
+  conviction **divergence rates** standing recorded reads. A **blind-first
+  diagnostic** (engine-blind + realized-move-blind) is reserved
+  diagnostic-only with reconstructability required, its execution
+  **deliberately unspecified until built**. Persistence separates six
   structures: matrix, opportunity graph, discovery-coverage ledger,
   price-tracked departed-pick archive, shadow ledger, and picked-episode store.
 
@@ -987,7 +1010,12 @@ the value-chain correctness walk — completed and merged 2026-08-06**
 (PR #63; the fix batch in §Local analysis suite above), **and its ruled
 follow-up — the ET-dating / outcome-hardening slice — built and merged
 2026-08-06** (PR #64 squash `512d5ec`; the as-built entry in §Local
-analysis suite above). Next: the TO docs model-decision-power audit and
+analysis suite above). The **TO docs model-decision-power audit landed
+2026-08-06** (PR #65 — five rulings: the two-arm TO repositioning,
+either-arm admission, the deferred blind-first reservation) **with the
+final TO logic sweep riding the same merge** (four incorrect-information
+fixes plus the carried-name hard-trigger ruling and its typed
+status-override divergence; five Codex review rounds to approval). Next:
 the long-doc-line cleanup; then the single big confirmation run banks the
 stacked runtime confirmations above, now also carrying piece 3's probe
 set (the Schwab `averagePrice` multiplier behind the option/bond render
