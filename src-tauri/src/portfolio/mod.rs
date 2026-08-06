@@ -10,11 +10,14 @@
 //! verdict and its parts, the investor profile, and the durable plan-time
 //! parameters pinned for this slice. The split between the deterministic engine and
 //! the model is load-bearing (`docs/local-models.md §Context-memory discipline`):
-//! the engine computes every *number* (sub-scores, the composite grade, scenario
-//! price targets, the options-activity signal); the model *interprets* — it picks
-//! the action, conviction, horizon reads, and writes the prose, but never invents a
-//! figure. The grade is therefore a deterministic roll-up of the engine's
-//! sub-scores, not a model gestalt.
+//! the engine computes every **baseline-arm** number (sub-scores, the composite
+//! grade, scenario price targets, the options-activity signal, the mechanical
+//! stand-ins), and since `portfolio-v7` the model authors its **own arm** beside
+//! it — its sub-scores, derived letter, and target bands, plus the lean,
+//! conviction, horizon reads, and prose — with model values never feeding a
+//! deterministic consumer. The engine grade stays a deterministic roll-up of the
+//! engine's sub-scores, never a model gestalt; the model's letter derives from
+//! the model's own sub-scores through the same shared cutoffs.
 
 pub mod construction;
 pub mod diff;
@@ -559,7 +562,8 @@ pub struct HorizonOutlook {
 /// One scenario price target with its methodology exposed (`docs/portfolio-analysis.md`
 /// — "computed by the financial-analysis engine as scenario outputs with their
 /// methodology and assumptions exposed"). The model selects and justifies the base
-/// case; it never invents the number.
+/// case; this engine-arm number is never model-authored (the model arm's own
+/// bands ride [`ModelPriceTargets`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PriceTarget {
     /// The base-case target value (account currency).
@@ -1554,9 +1558,11 @@ pub struct KeyDriverDraft {
 }
 
 /// The model's grammar-constrained output (Ollama native `format`) — the only thing
-/// the 122B authors. Every *number* in the final verdict comes from the engine; this
-/// carries the judgment calls (action, conviction, horizon reads), the prose, and the
-/// rewritten thesis ledger. A schema-valid object is guaranteed by
+/// the 122B authors. The engine arm's numbers come from the engine; since
+/// `portfolio-v7` this also carries the model arm's own numbers (sub-scores,
+/// target bands — [`ModelView`]'s sources) beside the judgment calls (lean,
+/// conviction, horizon reads), the prose, the retrospective self-assessment, and
+/// the rewritten thesis ledger. A schema-valid object is guaranteed by
 /// grammar-constrained decoding, so there is no parse-and-pray path
 /// (`docs/local-models.md §Schema-constrained output`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

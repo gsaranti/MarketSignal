@@ -1,10 +1,12 @@
 //! The deterministic financial-analysis engine (`docs/portfolio-analysis.md` §The
 //! per-holding pipeline, step 2; `docs/local-models.md §Context-memory discipline` —
-//! "Compute, don't guess"). Every *number* in a holding's verdict originates here:
-//! the four sub-scores, the composite grade they roll up to, the scenario price
-//! targets with their methodology, and the options-activity signal. The model
-//! interprets these values; it never invents one — so a missing input becomes a gap,
-//! never a fabricated level.
+//! "Compute, don't guess"). Every **engine-arm** number in a holding's verdict
+//! originates here: the four sub-scores, the composite grade they roll up to, the
+//! scenario price targets with their methodology, the options-activity signal, and
+//! the mechanical stand-ins. The engine never guesses — a missing input becomes a
+//! gap, never a fabricated level. Since `portfolio-v7` the model authors its own
+//! arm's numbers beside these (sub-scores, target bands — typed model-authored),
+//! and model values never feed a deterministic consumer.
 //!
 //! All formulas are simple, bounded, and **calibratable** — the grade-weight
 //! formula, the risk-tier thresholds, and the options-signal parameters are the
