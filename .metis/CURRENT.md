@@ -2,23 +2,30 @@
 
 ## What happened
 
-**Queue item 1 — the ET-dating / outcome-hardening slice — COMPLETE and MERGED TO MAIN** (PR #64 squash `512d5ec`, branch deleted). The piece-3 ruled follow-up (rulings 1+9) built as specced: ET session dating via `market_clock` (`et_session_date` / `et_date_of`) for the per-holding evidence boundary, the over-age carry boundary + its `today`, the outcome entry anchor + episode-open window stamping, and the retrospective bridge; the basis bridge keyed at the **intrinsic vintage** (excluded-not-guessed); the price-bar fetch floored at the **earliest active-episode anchor** (benchmark series included). Two in-slice rulings went to the recommended dispositions: **inclusive** (`>=`) filings/earnings boundary matching the news leg, and the frontend carried/stale tag on **whole-ET-day date-diff** (new `src/etDate.ts`, byte-for-byte `market_clock` mirror, exotic-forms contract pinned case-for-case on both sides). Review hardening beyond the spec: legacy UTC-keyed pending `window_end`s self-heal at the label pass, `created_at` minted at run start (one ET day for decisions + the rendered badge), ET-stamped `confirmed_at`, and the inclusive boundary's **true noise bound** documented (recurring badge + at most one redundant forced re-analysis until a later-ET-day full pass). Internal review approve-with-nits (fixed) + **four Codex rounds (4→1→1→approved)**. Gates at merge: cargo 984 lib + 32 integration / 0 fail, clippy 0, npm build, 46 node + 223 vitest. BUILD/INDEX aligned in-session (user-directed).
+**Queue item 1 — the TO docs model-decision-power audit — done, ruled, and applied; PR #65 is OPEN and unmerged** (branch `to-docs-two-arm`, commit `9268100`, 6 files +198/−81, docs only). The audit found TO holding the exact conviction machinery Portfolio retired at `portfolio-v7` — the raise triple, the app-derived `final_conviction`, cap-only levers clamping the model — and explicitly claiming parity with it. The carve-out at `local-models.md` was real but scoped to **numbers only**, so conviction, archetype, tier/horizon views and the retrospective sat outside the ruling while being treated as inside it.
+
+**Five rulings, all to the recommended disposition**, and the fifth went further than proposed: TO gets a **real second arm on the numbers** (own sub-scores, bands, implied-expectations read), and **admission became either-arm** — a name clearing either gate enters, stamped `admitted_by` with both gate vectors, making "should the model's judgment bind admission?" a measured question. Contract single-homed at `trade-opportunities.md` §The opportunity. Three classes stay single-valued by design: facts and their arithmetic, matrix placement, and the outcome machinery (whoever keeps score can't be a player). Grant scoped to the entry-asymmetry gate alone — floor, forensic hard triggers and anchorless `hype` still bind absolutely on both arms.
+
+**The load-bearing process call:** fourteen Codex rounds produced 27 findings, all real — but rounds 3–14 were all the *reserved blind-first counterfactual* accreting built-feature contract surface, with the last five findings each created by the prior round's fix. We cut that back: the reservation, its two interventions, diagnostic-only authority and a reconstructability requirement stay; call placement, timeouts, cardinality, state vocabulary, eligibility timing and arbitration are **deliberately unspecified until TO is built**. Codex concurred and contributed the reconstructability refinement.
 
 ## Current state
 
-Nothing mid-build; main is clean at the squash + metis alignment. The queue, in order:
+Nothing mid-build. **PR #65 is open and not merged** — next session starts there.
 
-1. **TO docs audit for model decision power** — the design pass on the kept single-arm carve-out (unchanged from the prior handoff).
-2. **Cleanup: the extremely long doc lines** — content-preserving sentence surgery under the sentence-per-line convention (format-only commits go in `.git-blame-ignore-revs`).
+The queue, in order:
 
-Then the **big confirmation run** (dev app, process name `market-signal`), banking the stacked confirmations plus the expanded watch/probe set.
+1. **The final TO logic sweep** (the agreed next task) — walk `trade-opportunities-workflow.md` Steps 1→10 plus the ATO flow as the spine, checking each step's claims against the docs that own them: `data-sources.md` (what endpoints exist / what's off-plan), `trade-opportunities.md` (contract), `storage.md` (what's persisted), `local-models.md` / `configuration.md` (substrate). **Flag only incorrect information** — contradictions between docs, claims a source or engine read doesn't support, flows that can't happen in the stated order. Anything shaped "this should also specify X" is *missing* information and goes to task planning untouched. Read-and-report; bring findings back for rulings before editing.
+2. **Cleanup: the extremely long doc lines** — content-preserving sentence surgery (format-only commits go in `.git-blame-ignore-revs`). Two known items: this slice added prose to already-long lines, and `storage.md:187` carries a pre-existing unindented continuation.
+
+Then the **big confirmation run** (dev app, process name `market-signal`).
 
 ## Open questions
 
-- **Big-run watches/probes** — the carried set (Schwab `averagePrice`, `^GSPC` mapping, analyst-estimates ordering, SEC sub-annual durations, FMP in-progress-bar, sector-taxonomy joins, SHV-style labels, exchange codes/B3, OCC slash notation) plus one from this slice: **boundary-day re-raise / force-include rates** under the inclusive evidence boundary at 47-position scale.
-- **Design notes awaiting rulings** (piece-3 record) — carried-audit data-health mixing on selective runs; unbounded model-arm renders; "rated N" sidebar wording; `rate_prints.fetched_at` stamp — plus the same-family observation from this slice's review: `ScoredLabel.labeled_at` / the run's `run_date` stay UTC date-prefix display stamps (never compared).
+- **BUILD/INDEX alignment for this slice is not done** — deliberately deferred while PR #65 is unmerged. When it lands: the TO as-built/designed entry needs the two-arm contract, either-arm admission, and the deferred-execution reservation.
+- **Big-run watches** — the carried set (Schwab `averagePrice`, `^GSPC` mapping, estimates ordering, SEC sub-annual durations, FMP in-progress-bar, sector-taxonomy joins, SHV-style labels, exchange codes/B3, OCC slash notation, boundary-day re-raise/force-include rates) **plus new from this slice: the band and conviction divergence rates**, now a standing recorded read rather than an experiment input.
+- **Design notes awaiting rulings** (piece-3 record) — carried-audit data-health mixing on selective runs; unbounded model-arm renders; "rated N" sidebar wording; `rate_prints.fetched_at` stamp; `ScoredLabel.labeled_at` / `run_date` staying UTC display stamps.
 - **Two-arm follow-ups / research-loop activation obligation / standing list** — unchanged.
 
 ## Where to start
 
-`/metis-session-start`, then queue item 1: the TO docs model-decision-power audit (a docs/design pass, not a build — read `docs/trade-opportunities.md` + `trade-opportunities-workflow.md` against the two-arm repositioning's "the tool is about the model" intent and surface where the docs under-grant model decision power). Item 2 follows; the big run closes the block.
+`/metis-session-start`, then **check PR #65's state** (merged? review comments?). If merged, do the BUILD/INDEX alignment for it first — that's the one piece of this slice still outstanding. Then queue item 1: the final TO logic sweep, scoped to *incorrect* information only, per the framing in Current state. Item 2 follows; the big run closes the block.
