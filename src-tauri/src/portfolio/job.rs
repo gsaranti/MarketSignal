@@ -3705,7 +3705,10 @@ mod tests {
         assert!(calls[0].is_none());
         let named = calls[1].as_deref().expect("the re-run names the violations");
         assert!(named.contains("AAPL"), "{named}");
-        assert!(named.contains("engine band"), "{named}");
+        // The rogue range trips the coherence check (the implied weight falls
+        // outside the stated range) — the engine-band departure itself only
+        // annotates under v7 and never drives the re-run.
+        assert!(named.contains("does not hold simultaneously"), "{named}");
         assert!(
             run.roll_up.construction.as_ref().unwrap().retried,
             "the view records the re-run"

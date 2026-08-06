@@ -1,10 +1,13 @@
 //! The deterministic financial-analysis engine (`docs/portfolio-analysis.md` §The
 //! per-holding pipeline, step 2; `docs/local-models.md §Context-memory discipline` —
-//! "Compute, don't guess"). Every *number* in a holding's verdict originates here:
-//! the four sub-scores, the composite grade they roll up to, the scenario price
-//! targets with their methodology, and the options-activity signal. The model
-//! interprets these values; it never invents one — so a missing input becomes a gap,
-//! never a fabricated level.
+//! "Compute, don't guess"). Every **engine-arm** number in a holding's verdict
+//! originates here: the four sub-scores, the composite grade they roll up to, the
+//! scenario price targets with their methodology, the options-activity signal, and
+//! the mechanical stand-ins. The engine never guesses — a missing input becomes a
+//! gap, never a fabricated level. Since `portfolio-v7` the model authors its own
+//! arm's numbers beside these (sub-scores, target bands — typed model-authored),
+//! and model-arm judgment values never alter or bind the engine baseline (the
+//! boundary statement: `docs/portfolio-analysis.md` §The holding verdict).
 //!
 //! All formulas are simple, bounded, and **calibratable** — the grade-weight
 //! formula, the risk-tier thresholds, and the options-signal parameters are the
@@ -16,8 +19,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::portfolio::{
-    Action, ActionSizing, Grade, InvestorProfile, OptionsSignal, PriceTarget, PriceTargets,
-    SubScores,
+    Action, ActionSizing, Conviction, EngineView, Grade, HorizonOutlook, HorizonRead,
+    InvestorProfile, OptionsSignal, PriceTarget, PriceTargets, SubScores,
 };
 use crate::schwab::{OptionChain, OptionKind, Position};
 
@@ -165,10 +168,11 @@ const ANNUALIZATION_FACTOR: f64 = 15.87;
 const ADD_FLOOR_WEIGHT: f64 = 0.015;
 const ADD_AGGRESSIVE_FLOOR_WEIGHT: f64 = 0.03;
 
-/// Concentration cap: a single position is not steered above this share of the
-/// account, and at-or-above it the add family leaves the feasible set. Crate-public:
-/// the construction stage's joint-feasibility check enforces the same cap on the
-/// implied post-action book ([`crate::portfolio::construction`]).
+/// Concentration cap: the engine never steers a single position above this share
+/// of the account, and at-or-above it the add family leaves the feasible set.
+/// Crate-public: the construction stage's joint-feasibility solve tests the same
+/// cap on the implied post-action book — an engine-bound annotation since
+/// `portfolio-v7` ([`crate::portfolio::construction`]).
 pub(crate) const MAX_SINGLE_WEIGHT: f64 = 0.25;
 
 // -- Thesis-ledger persistence semantics (`docs/portfolio-analysis.md` §The position
@@ -1934,15 +1938,17 @@ pub fn hurdle_read(
     }
 }
 
-/// The action set the 6f interpretation authors the **standalone lean** within —
-/// the intrinsic bars alone (`docs/portfolio-analysis.md` §Intrinsic verdict: the
-/// lean is "a pure read … set before portfolio constraints", profile-independent):
-/// the full ladder, restricted to the exit family `{sell all, trim}` only by
-/// severe pre-profit deterioration ("severe deterioration *additionally* restricts
-/// the intrinsic standalone lean" — §Starting parameters, the one intrinsic-side
-/// bar). Every other bar — the admission test, grade-F, the concentration cap,
-/// dead money, a constrained-runway overlay — is a construction-side rule, applied
-/// in [`feasible_actions`] and consumed at the 7b stage.
+/// The engine's **intrinsic lean set** — the intrinsic bars alone
+/// (`docs/portfolio-analysis.md` §Intrinsic verdict: the lean is "a pure read …
+/// set before portfolio constraints", profile-independent): the full ladder,
+/// restricted to the exit family `{sell all, trim}` only by severe pre-profit
+/// deterioration (the one intrinsic-side bar). Since `portfolio-v7` it binds the
+/// **engine arm** alone — it renders into the 6f prompt as the engine's own read;
+/// the model's standalone lean is schema-unrestricted, an outside-the-set lean
+/// persisting with the engine-bound annotation at construction. Every other bar —
+/// the admission test, grade-F, the concentration cap, dead money, a
+/// constrained-runway overlay — is an engine-set rule, applied in
+/// [`feasible_actions`] and consumed at the 7b stage.
 pub fn lean_actions(
     overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
 ) -> Vec<Action> {
@@ -1967,10 +1973,12 @@ pub fn lean_actions(
 /// it (constrained runway / severe deterioration); *add aggressively* additionally
 /// needs an A/B grade with headroom. Severe deterioration restricts the whole set
 /// to the exit family `{trim, sell all}`. Consumed at the **7b construction
-/// stage**: this set bounds the final action a fresh holding's construction rung
-/// may take (a carried holding is bounded by the transition-allowed set instead —
-/// [`crate::portfolio::construction`]). Every grade test reads the momentum-free
-/// letter.
+/// stage** as a fresh holding's **engine set** (a carried holding takes the
+/// transition set instead — [`crate::portfolio::construction`]): since
+/// `portfolio-v7` it reaches the model as the rendered ENGINE SET — the engine
+/// arm's own action stand-in walks its rung into it, while an outside-the-set
+/// model choice persists with an engine-bound annotation, never a schema bar.
+/// Every grade test reads the momentum-free letter.
 pub fn feasible_actions(
     grade: Grade,
     hurdle: &HurdleRead,
@@ -1996,6 +2004,175 @@ pub fn feasible_actions(
         }
     }
     set
+}
+
+// ---- The engine stand-in arm (the two-arm baseline) ---------------------------
+//
+// Mechanical counterparts for the three verdict fields only the model used to
+// author — outlook, conviction, action — so every model-authored field has a
+// deterministic, disclosed baseline the scoreboard can score it against
+// (`docs/portfolio-analysis.md` §The holding verdict, the two-arm contract).
+// All three are calibratable constants in the module's spirit: simple, bounded,
+// legible — a glorified calculator, never judgment.
+
+/// The stand-in outlook's session windows (trading days) and per-window flat
+/// thresholds: a trailing return inside ±threshold reads neutral, outside reads
+/// bullish/bearish by sign. ~1 / 6 / 12 months of sessions.
+const OUTLOOK_WINDOWS: [(usize, f64); 3] = [(21, 0.02), (126, 0.05), (252, 0.08)];
+
+/// The degradation count at or above which the stand-in conviction reads Low
+/// (0 → High, 1–2 → Medium, ≥3 → Low).
+const CONVICTION_LOW_AT: usize = 3;
+
+/// The mechanical short / mid / long outlook: the trailing return over each of
+/// [`OUTLOOK_WINDOWS`]'s session counts, read against its flat threshold. A window
+/// the dated series cannot cover reads **neutral** — the rule's null, never a
+/// fabricated direction (the series is the deep dated-closes leg the v2 anchor
+/// join already fetches, so this adds no retrieval).
+pub fn engine_outlook(daily_closes: &[DatedValue]) -> HorizonOutlook {
+    let read = |sessions: usize, flat: f64| -> HorizonRead {
+        if daily_closes.len() < sessions + 1 {
+            return HorizonRead::Neutral;
+        }
+        let last = daily_closes[daily_closes.len() - 1].value;
+        let first = daily_closes[daily_closes.len() - 1 - sessions].value;
+        if first <= 0.0 || last <= 0.0 {
+            return HorizonRead::Neutral;
+        }
+        let r = last / first - 1.0;
+        if r > flat {
+            HorizonRead::Bullish
+        } else if r < -flat {
+            HorizonRead::Bearish
+        } else {
+            HorizonRead::Neutral
+        }
+    };
+    HorizonOutlook {
+        short: read(OUTLOOK_WINDOWS[0].0, OUTLOOK_WINDOWS[0].1),
+        mid: read(OUTLOOK_WINDOWS[1].0, OUTLOOK_WINDOWS[1].1),
+        long: read(OUTLOOK_WINDOWS[2].0, OUTLOOK_WINDOWS[2].1),
+    }
+}
+
+/// The mechanical conviction: a disclosed degradation count over the analysis's
+/// own data-quality flags — completeness as confidence, never judgment. Counted:
+/// an imputed letter axis, a non-rate-anchored target surface, a current-multiple
+/// carry, a flat or clamp-flattened driver, a dispersion-floor widening, any
+/// tier-input gap, an unscorable hurdle, and any dossier input gap. 0 → High,
+/// 1–2 → Medium, ≥[`CONVICTION_LOW_AT`] → Low.
+pub fn engine_conviction(out: &EngineOutput, input_gaps: &[String]) -> Conviction {
+    use crate::portfolio::HurdleState;
+    let mut count = 0usize;
+    if out.low_confidence_grade {
+        count += 1;
+    }
+    if !out.target_meta.rate_anchored {
+        count += 1;
+    }
+    if out.target_meta.current_multiple_carry {
+        count += 1;
+    }
+    if out.target_meta.flat_driver || out.target_meta.clamp_flattened {
+        count += 1;
+    }
+    if out.target_meta.dispersion_floor_applied {
+        count += 1;
+    }
+    if !out.tier_gaps.is_empty() {
+        count += 1;
+    }
+    if out.hurdle.state == HurdleState::Unscorable {
+        count += 1;
+    }
+    if !input_gaps.is_empty() {
+        count += 1;
+    }
+    if count == 0 {
+        Conviction::High
+    } else if count < CONVICTION_LOW_AT {
+        Conviction::Medium
+    } else {
+        Conviction::Low
+    }
+}
+
+/// The mechanical action rung: grade × hurdle × admission over the engine's own
+/// feasible machinery, tiebreak toward hold. F-grade or dead money leans exit
+/// (sell-all only when both agree); an A/B grade whose base case clears the hurdle
+/// and admits new money leans add (`Add` is the rule's top rung — the most
+/// aggressive rung stays a judgment call no formula fakes); everything else holds.
+/// The chosen rung is then walked toward hold until it sits inside
+/// [`feasible_actions`] — the engine arm always obeys its own bars.
+pub fn engine_action(
+    grade: Grade,
+    hurdle: &HurdleRead,
+    current_weight: f64,
+    overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
+) -> Action {
+    use crate::portfolio::HurdleState;
+    let dead_money = hurdle.state == HurdleState::Fails;
+    let rule = if grade == Grade::F && dead_money {
+        Action::SellAll
+    } else if grade == Grade::F || dead_money {
+        Action::Trim
+    } else if matches!(grade, Grade::A | Grade::B)
+        && hurdle.state == HurdleState::Clears
+        && hurdle.admits_new_money
+    {
+        Action::Add
+    } else {
+        Action::Hold
+    };
+    let feasible = feasible_actions(grade, hurdle, current_weight, overlay_rules);
+    if feasible.contains(&rule) {
+        return rule;
+    }
+    // Walk toward hold; a set without hold (severe → exit family) takes trim.
+    let toward_hold: &[Action] = match rule {
+        Action::Add | Action::AddAggressively => &[Action::Hold, Action::Trim],
+        Action::SellAll => &[Action::Trim, Action::Hold],
+        _ => &[Action::Hold, Action::Trim],
+    };
+    toward_hold
+        .iter()
+        .copied()
+        .find(|a| feasible.contains(a))
+        .unwrap_or(Action::Trim)
+}
+
+/// Assemble the full engine stand-in arm for a priced holding — outlook off the
+/// dated closes, conviction off the degradation flags, the action rung with its
+/// rung-band sizing. Position context (weight, profile, book total) is the
+/// caller's — this runs at the pipeline merge, not inside [`analyze`].
+pub fn engine_view(
+    out: &EngineOutput,
+    fin: &CompanyFinancials,
+    overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
+    position: &Position,
+    profile: &InvestorProfile,
+    account_total: f64,
+) -> EngineView {
+    let current_weight = if account_total > 0.0 {
+        position.market_value / account_total
+    } else {
+        0.0
+    };
+    let action = engine_action(out.grade, &out.hurdle, current_weight, overlay_rules);
+    // The engine arm observes its own cap rules: a matched pre-profit conviction
+    // ceiling binds the stand-in conviction exactly as the feasible-set bars bind
+    // the stand-in action (`docs/portfolio-analysis.md` §The holding verdict —
+    // caps bind the engine arm, annotate the model's).
+    let (conviction, _) = crate::portfolio::pre_profit::clamp_conviction(
+        engine_conviction(out, &fin.gaps),
+        overlay_rules.and_then(|r| r.conviction_ceiling),
+    );
+    EngineView {
+        outlook: engine_outlook(&fin.daily_closes),
+        conviction,
+        action,
+        action_sizing: size_action(action, position, profile, account_total),
+    }
 }
 
 // ---- Options-activity signal (kept out of the grade) -------------------------
@@ -2076,8 +2253,8 @@ pub fn size_action(
 
 /// The engine's target-weight band for one action rung at a current weight — the
 /// single home for the per-rung multiplier ladder, shared by [`size_action`] and
-/// the construction stage's range validation (a model-proposed range must sit
-/// inside its rung's band — `docs/portfolio-workflow.md` §Step 7b).
+/// the construction stage's range read (a model range outside its rung's band
+/// records an engine-bound annotation — `docs/portfolio-workflow.md` §Step 7b).
 ///
 /// Per-rung multiplicative target around the current weight (a simple, legible
 /// ladder; concentration is bounded by the cap). The add-family rungs carry
@@ -2766,6 +2943,117 @@ mod tests {
         let admit = hurdle_read(&scenario(0.02, 0.12, 0.20), 0.04, RiskTier::Medium);
         assert_eq!(admit.state, HurdleState::Indeterminate);
         assert!(admit.admits_new_money);
+    }
+
+    // ---- The engine stand-in arm --------------------------------------------------
+
+    #[test]
+    fn engine_outlook_reads_windowed_trailing_returns_per_threshold() {
+        let closes = |last: f64| -> Vec<DatedValue> {
+            let mut vals: Vec<DatedValue> = (0..300)
+                .map(|i| DatedValue { date: format!("d{i}"), value: 100.0 })
+                .collect();
+            vals.last_mut().unwrap().value = last;
+            vals
+        };
+        // +10% clears every window's flat threshold.
+        let up = engine_outlook(&closes(110.0));
+        assert_eq!(
+            (up.short, up.mid, up.long),
+            (HorizonRead::Bullish, HorizonRead::Bullish, HorizonRead::Bullish)
+        );
+        // −10% likewise bearish everywhere.
+        let down = engine_outlook(&closes(90.0));
+        assert_eq!(
+            (down.short, down.mid, down.long),
+            (HorizonRead::Bearish, HorizonRead::Bearish, HorizonRead::Bearish)
+        );
+        // +3% clears only the short window's 2% threshold — mid (5%) and long (8%)
+        // read neutral.
+        let mild = engine_outlook(&closes(103.0));
+        assert_eq!(
+            (mild.short, mild.mid, mild.long),
+            (HorizonRead::Bullish, HorizonRead::Neutral, HorizonRead::Neutral)
+        );
+        // A series too short for any window reads neutral — the rule's null, never
+        // a fabricated direction.
+        let thin = engine_outlook(&closes(120.0)[..10]);
+        assert_eq!(
+            (thin.short, thin.mid, thin.long),
+            (HorizonRead::Neutral, HorizonRead::Neutral, HorizonRead::Neutral)
+        );
+    }
+
+    #[test]
+    fn engine_conviction_maps_the_degradation_count() {
+        let out = match analyze(&strong(), &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        // Force a clean read: no degradation → High.
+        let mut clean = (*out).clone();
+        clean.low_confidence_grade = false;
+        clean.target_meta = TargetMeta { rate_anchored: true, ..Default::default() };
+        clean.tier_gaps.clear();
+        clean.hurdle.state = crate::portfolio::HurdleState::Clears;
+        assert_eq!(engine_conviction(&clean, &[]), Conviction::High);
+        // One flag → Medium.
+        let mut one = clean.clone();
+        one.low_confidence_grade = true;
+        assert_eq!(engine_conviction(&one, &[]), Conviction::Medium);
+        // Three flags → Low.
+        let mut three = clean.clone();
+        three.low_confidence_grade = true;
+        three.target_meta.current_multiple_carry = true;
+        assert_eq!(
+            engine_conviction(&three, &["no dividends history".to_string()]),
+            Conviction::Low
+        );
+    }
+
+    #[test]
+    fn engine_action_applies_the_rung_rule_and_walks_toward_hold() {
+        use crate::portfolio::HurdleState;
+        let hurdle = |state: HurdleState, admits: bool| HurdleRead {
+            state,
+            admits_new_money: admits,
+            ..Default::default()
+        };
+        // A/B + clears + admits → add.
+        assert_eq!(
+            engine_action(Grade::B, &hurdle(HurdleState::Clears, true), 0.05, None),
+            Action::Add
+        );
+        // F + dead money → sell all; dead money alone → trim.
+        assert_eq!(
+            engine_action(Grade::F, &hurdle(HurdleState::Fails, false), 0.05, None),
+            Action::SellAll
+        );
+        assert_eq!(
+            engine_action(Grade::C, &hurdle(HurdleState::Fails, false), 0.05, None),
+            Action::Trim
+        );
+        // The default read is hold.
+        assert_eq!(
+            engine_action(Grade::C, &hurdle(HurdleState::Indeterminate, false), 0.05, None),
+            Action::Hold
+        );
+        // An add barred by the concentration cap walks toward hold.
+        assert_eq!(
+            engine_action(Grade::A, &hurdle(HurdleState::Clears, true), 0.30, None),
+            Action::Hold
+        );
+        // Severe deterioration (exit family only): hold is off the set → trim.
+        let severe = crate::portfolio::pre_profit::OverlayConsequences {
+            conviction_ceiling: None,
+            bar_add_family: true,
+            exit_family_only: true,
+            matched_rules: vec!["severe".into()],
+        };
+        assert_eq!(
+            engine_action(Grade::B, &hurdle(HurdleState::Clears, true), 0.05, Some(&severe)),
+            Action::Trim
+        );
     }
 
     #[test]

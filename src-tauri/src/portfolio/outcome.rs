@@ -283,6 +283,29 @@ pub struct CalibrationSnapshot {
     pub grade_parameter_version: Option<String>,
     pub target_parameter_version: Option<String>,
     pub degraded_inputs: Vec<String>,
+    /// The model arm's freely-authored target bands, frozen at open — scored by
+    /// the same interval-score machinery as the engine bands over the same
+    /// exclusion population, so the model-vs-engine head-to-head is fair
+    /// (`docs/portfolio-analysis.md` §Outcome learning). `None` on pre-v7
+    /// episodes, which are excluded from the model-arm reads.
+    #[serde(default)]
+    pub model_price_targets: Option<crate::portfolio::ModelPriceTargets>,
+    /// The model arm's own sub-scores at open (recorded for later predictor-quality
+    /// reads; no scored read yet). `None` on pre-v7 episodes.
+    #[serde(default)]
+    pub model_sub_scores: Option<SubScores>,
+    /// Both arms' horizon outlooks at open — the direction hit-rate read scores
+    /// each against the realized sign at its mapped window. `None` on pre-v7.
+    #[serde(default)]
+    pub model_outlook: Option<crate::portfolio::HorizonOutlook>,
+    #[serde(default)]
+    pub engine_outlook: Option<crate::portfolio::HorizonOutlook>,
+    /// The engine stand-in arm's conviction and action rung at open. `None` on
+    /// pre-v7 episodes.
+    #[serde(default)]
+    pub engine_conviction: Option<Conviction>,
+    #[serde(default)]
+    pub engine_action: Option<Action>,
 }
 
 /// The priced branch's episode body.
@@ -459,7 +482,7 @@ impl DecisionEpisode {
     }
 }
 
-fn parse_iso_date_prefix(s: &str) -> Option<NaiveDate> {
+pub(crate) fn parse_iso_date_prefix(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s.get(..10)?, "%Y-%m-%d").ok()
 }
 
@@ -578,6 +601,41 @@ pub struct TargetCalibrationRead {
     pub mean_base_signed_error: Option<f64>,
 }
 
+/// One arm's outlook direction hit-rate at its mapped window (short → 1-month,
+/// mid → 6-month, long → 12-month labels) — the two-arm scoreboard's directional
+/// read (`docs/portfolio-analysis.md` §Outcome learning). Realized direction is
+/// the price-only label's sign (a directional call is about the price path); a
+/// neutral read is counted beside the hit-rate, never inside it; a zero realized
+/// return scores a directional call as a miss.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutlookDirectionRead {
+    /// "engine" (the stand-in arm) or "model".
+    pub arm: String,
+    pub window_months: u32,
+    /// Directional (bullish / bearish) reads whose window scored.
+    pub scored: usize,
+    pub hits: usize,
+    /// Neutral reads at this window, excluded from the hit-rate.
+    pub neutral: usize,
+}
+
+/// The model-vs-engine band head-to-head at one window, computed over the
+/// **paired population only** — episodes where BOTH arms carried a band and the
+/// window scored with an authoring spot and anchor bridge — so the comparison is
+/// same-events by construction, never two independently-pooled populations
+/// (`docs/portfolio-analysis.md` §Outcome learning). The per-arm
+/// `target_calibration` reads keep each arm's full population separately.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeadToHeadRead {
+    pub window_months: u32,
+    /// Paired bands scored — identical for both arms by construction.
+    pub scored: usize,
+    pub engine_mean_interval_score: Option<f64>,
+    pub model_mean_interval_score: Option<f64>,
+    pub engine_coverage_rate: Option<f64>,
+    pub model_coverage_rate: Option<f64>,
+}
+
 /// One falsifier lead-time record (priced episodes only).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FalsifierLeadTimeRead {
@@ -616,6 +674,19 @@ pub struct EligibilityRecord {
 pub struct DerivedReads {
     pub cohorts: Vec<CohortWindowRead>,
     pub target_calibration: Vec<TargetCalibrationRead>,
+    /// The model arm's band calibration — same scorer and exclusion rules as
+    /// `target_calibration`, over the episodes' frozen model bands (empty until
+    /// v7 episodes mature); each arm's read covers that arm's own full band
+    /// population. `#[serde(default)]` for pre-v7 runs.
+    #[serde(default)]
+    pub model_target_calibration: Vec<TargetCalibrationRead>,
+    /// The paired model-vs-engine head-to-head ([`HeadToHeadRead`]) — the ONLY
+    /// read the arms are compared on. `#[serde(default)]` for pre-v7 runs.
+    #[serde(default)]
+    pub head_to_head: Vec<HeadToHeadRead>,
+    /// Both arms' outlook direction hit-rates (`#[serde(default)]` for pre-v7).
+    #[serde(default)]
+    pub outlook_direction: Vec<OutlookDirectionRead>,
     pub falsifier_lead_times: Vec<FalsifierLeadTimeRead>,
     pub self_correction: SelfCorrectionRead,
     pub eligibility: EligibilityRecord,
@@ -831,7 +902,9 @@ fn entry_close(closes: &[DatedValue], anchor: NaiveDate) -> Option<&DatedValue> 
 /// **bounded by the same [`ENTRY_TOLERANCE_DAYS`]** — a years-old bar from a
 /// sparse cache sits at the anchor's date position but is no decision-instant
 /// close, so it must exclude the bridge-dependent reads rather than scale them.
-fn anchor_session_close(closes: &[DatedValue], anchor: NaiveDate) -> Option<&DatedValue> {
+/// `pub(crate)` because the 6f retrospective's price comparisons ride the same
+/// bridge contract (`pipeline::retrospective_section`) — one home, one bound.
+pub(crate) fn anchor_session_close(closes: &[DatedValue], anchor: NaiveDate) -> Option<&DatedValue> {
     close_at_or_before(closes, anchor).filter(|b| {
         parse_iso_date_prefix(&b.date)
             .is_some_and(|d| d >= anchor - chrono::Duration::days(ENTRY_TOLERANCE_DAYS))
@@ -1615,6 +1688,18 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                             degraded_inputs: audit
                                 .map(|a| a.degraded_inputs.clone())
                                 .unwrap_or_default(),
+                            // The two-arm freeze (v7): both arms' authored values
+                            // ride the episode so the scoreboard can score them
+                            // long after the run ages out.
+                            model_price_targets: g
+                                .model_view
+                                .as_ref()
+                                .map(|m| m.price_targets.clone()),
+                            model_sub_scores: g.model_view.as_ref().map(|m| m.sub_scores),
+                            model_outlook: Some(g.horizon_outlook),
+                            engine_outlook: g.engine_view.as_ref().map(|ev| ev.outlook),
+                            engine_conviction: g.engine_view.as_ref().map(|ev| ev.conviction),
+                            engine_action: g.engine_view.as_ref().map(|ev| ev.action),
                         },
                     })),
                     VerdictDisposition::RoleRiskOnly(r) => {
@@ -1871,17 +1956,121 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
     // Target calibration: each band at its matching window, vintage-fresh bands
     // only, scored on the price-only label — in return space over the authoring
     // spot (split-safe), split per target-function parameter version (bases
-    // never mix).
+    // never mix). One accumulation, parameterized on the band source, runs for
+    // BOTH arms: the engine bands and the model arm's frozen bands share the
+    // scorer, the exclusion rules, and the population, so the model-vs-engine
+    // head-to-head is fair (`docs/portfolio-analysis.md` §Outcome learning; a
+    // pre-v7 episode with no frozen model band drops out of the model read only).
     #[derive(Default)]
     struct BandAcc {
         scores: Vec<f64>,
         hits: usize,
         base_errors: Vec<f64>,
     }
-    let mut target_calibration = Vec::new();
+    /// A band source for the shared accumulation: (episode, window months) → the
+    /// arm's (bear, base, bull), `None` when the arm carries no band there.
+    type BandSource = dyn Fn(&PricedEpisode, u32) -> Option<(f64, f64, f64)>;
+    let band_calibration =
+        |band_of: &BandSource| {
+            let mut reads = Vec::new();
+            for months in [1u32, 12u32] {
+                let mut by_version: std::collections::BTreeMap<Option<String>, BandAcc> =
+                    std::collections::BTreeMap::new();
+                for ep in episodes {
+                    if !ep.vintage_fresh {
+                        continue;
+                    }
+                    let EpisodeBody::Priced(p) = &ep.body else {
+                        continue;
+                    };
+                    let Some(label) = scored_for(ep, months) else {
+                        continue;
+                    };
+                    let Some((bear, base, bull)) = band_of(p, months) else {
+                        continue;
+                    };
+                    let Some(spot) = p.snapshot.authoring_spot.filter(|s| *s > 0.0) else {
+                        // No authoring spot recorded: the bases can't be
+                        // reconciled, so the band is excluded rather than
+                        // compared across them.
+                        continue;
+                    };
+                    let Some(bridge) = label.anchor_close.filter(|a| *a > 0.0) else {
+                        // No anchor-session close on the label: the realized side
+                        // has no same-instant bridge to the authoring basis (the
+                        // next-session entry sits an overnight gap away), so the
+                        // band is excluded.
+                        continue;
+                    };
+                    let (lo, hi) = (bear.min(bull), bear.max(bull));
+                    let (lo_r, hi_r) = (lo / spot - 1.0, hi / spot - 1.0);
+                    // Realized return from the same decision instant: end over the
+                    // anchor-session close — both sides of the comparison now share
+                    // one anchor, so neither a split nor the overnight gap into the
+                    // entry can shear it.
+                    let realized_r = label.end_price / bridge - 1.0;
+                    let acc = by_version
+                        .entry(p.snapshot.target_parameter_version.clone())
+                        .or_default();
+                    if realized_r >= lo_r && realized_r <= hi_r {
+                        acc.hits += 1;
+                    }
+                    acc.scores
+                        .push(interval_score(lo_r, hi_r, realized_r, 1.0 - NOMINAL_BAND_COVERAGE));
+                    if base != 0.0 {
+                        let realized_authoring_basis = spot * (1.0 + realized_r);
+                        acc.base_errors.push((realized_authoring_basis - base) / base);
+                    }
+                }
+                if by_version.is_empty() {
+                    // Keep the per-window read present (scored: 0) so an empty
+                    // store still reports the window rather than omitting it.
+                    by_version.insert(None, BandAcc::default());
+                }
+                for (version, acc) in by_version {
+                    let n = acc.scores.len();
+                    reads.push(TargetCalibrationRead {
+                        window_months: months,
+                        parameter_version: version,
+                        scored: n,
+                        coverage_rate: (n > 0).then(|| acc.hits as f64 / n as f64),
+                        nominal_coverage: NOMINAL_BAND_COVERAGE,
+                        mean_interval_score: (n > 0)
+                            .then(|| acc.scores.iter().sum::<f64>() / n as f64),
+                        mean_base_signed_error: (!acc.base_errors.is_empty()).then(|| {
+                            acc.base_errors.iter().sum::<f64>() / acc.base_errors.len() as f64
+                        }),
+                    });
+                }
+            }
+            reads
+        };
+    let engine_band = |p: &PricedEpisode, months: u32| -> Option<(f64, f64, f64)> {
+        let band = match months {
+            1 => p.snapshot.price_targets.one_month.as_ref(),
+            _ => p.snapshot.price_targets.twelve_month.as_ref(),
+        }?;
+        Some((band.bear, band.base, band.bull))
+    };
+    let model_band = |p: &PricedEpisode, months: u32| -> Option<(f64, f64, f64)> {
+        let t = p.snapshot.model_price_targets.as_ref()?;
+        let band = match months {
+            1 => &t.one_month,
+            _ => &t.twelve_month,
+        };
+        Some((band.bear, band.base, band.bull))
+    };
+    let target_calibration = band_calibration(&engine_band);
+    let model_target_calibration = band_calibration(&model_band);
+
+    // The paired head-to-head: only episodes where BOTH arms carry the band (and
+    // the shared spot/bridge exclusions pass) enter, and both arms score the same
+    // realized outcome — same-events by construction, so the comparison can't be
+    // skewed by one arm's easier population (Codex round 1, finding 3).
+    let mut head_to_head = Vec::new();
     for months in [1u32, 12u32] {
-        let mut by_version: std::collections::BTreeMap<Option<String>, BandAcc> =
-            std::collections::BTreeMap::new();
+        let (mut e_scores, mut m_scores) = (Vec::new(), Vec::new());
+        let (mut e_hits, mut m_hits) = (0usize, 0usize);
         for ep in episodes {
             if !ep.vintage_fresh {
                 continue;
@@ -1892,60 +2081,92 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
             let Some(label) = scored_for(ep, months) else {
                 continue;
             };
-            let band = match months {
-                1 => p.snapshot.price_targets.one_month.as_ref(),
-                _ => p.snapshot.price_targets.twelve_month.as_ref(),
+            let (Some(eb), Some(mb)) = (engine_band(p, months), model_band(p, months)) else {
+                continue;
             };
-            let Some(band) = band else { continue };
             let Some(spot) = p.snapshot.authoring_spot.filter(|s| *s > 0.0) else {
-                // No authoring spot recorded: the bases can't be reconciled, so
-                // the band is excluded rather than compared across them.
                 continue;
             };
             let Some(bridge) = label.anchor_close.filter(|a| *a > 0.0) else {
-                // No anchor-session close on the label: the realized side has no
-                // same-instant bridge to the authoring basis (the next-session
-                // entry sits an overnight gap away), so the band is excluded.
                 continue;
             };
-            let (lo, hi) = (band.bear.min(band.bull), band.bear.max(band.bull));
-            let (lo_r, hi_r) = (lo / spot - 1.0, hi / spot - 1.0);
-            // Realized return from the same decision instant: end over the
-            // anchor-session close — both sides of the comparison now share one
-            // anchor, so neither a split nor the overnight gap into the entry
-            // can shear it.
             let realized_r = label.end_price / bridge - 1.0;
-            let acc = by_version
-                .entry(p.snapshot.target_parameter_version.clone())
-                .or_default();
-            if realized_r >= lo_r && realized_r <= hi_r {
-                acc.hits += 1;
-            }
-            acc.scores
-                .push(interval_score(lo_r, hi_r, realized_r, 1.0 - NOMINAL_BAND_COVERAGE));
-            if band.base != 0.0 {
-                let realized_authoring_basis = spot * (1.0 + realized_r);
-                acc.base_errors
-                    .push((realized_authoring_basis - band.base) / band.base);
-            }
+            let score = |band: (f64, f64, f64), scores: &mut Vec<f64>, hits: &mut usize| {
+                let (lo, hi) = (band.0.min(band.2), band.0.max(band.2));
+                let (lo_r, hi_r) = (lo / spot - 1.0, hi / spot - 1.0);
+                if realized_r >= lo_r && realized_r <= hi_r {
+                    *hits += 1;
+                }
+                scores.push(interval_score(lo_r, hi_r, realized_r, 1.0 - NOMINAL_BAND_COVERAGE));
+            };
+            score(eb, &mut e_scores, &mut e_hits);
+            score(mb, &mut m_scores, &mut m_hits);
         }
-        if by_version.is_empty() {
-            // Keep the per-window read present (scored: 0) so an empty store
-            // still reports the window rather than omitting it.
-            by_version.insert(None, BandAcc::default());
-        }
-        for (version, acc) in by_version {
-            let n = acc.scores.len();
-            target_calibration.push(TargetCalibrationRead {
+        let n = e_scores.len();
+        head_to_head.push(HeadToHeadRead {
+            window_months: months,
+            scored: n,
+            engine_mean_interval_score: (n > 0).then(|| e_scores.iter().sum::<f64>() / n as f64),
+            model_mean_interval_score: (n > 0).then(|| m_scores.iter().sum::<f64>() / n as f64),
+            engine_coverage_rate: (n > 0).then(|| e_hits as f64 / n as f64),
+            model_coverage_rate: (n > 0).then(|| m_hits as f64 / n as f64),
+        });
+    }
+
+    // Outlook direction hit-rate, both arms: each horizon read scored against the
+    // realized price-only sign at its mapped window (short → 1-month, mid →
+    // 6-month, long → 12-month), vintage-fresh episodes only; a neutral read is
+    // counted beside the hit-rate, never inside it.
+    let mut outlook_direction = Vec::new();
+    for (arm, pick) in [
+        (
+            "engine",
+            &(|p: &PricedEpisode| p.snapshot.engine_outlook)
+                as &dyn Fn(&PricedEpisode) -> Option<crate::portfolio::HorizonOutlook>,
+        ),
+        ("model", &(|p: &PricedEpisode| p.snapshot.model_outlook)),
+    ] {
+        for (months, read_of) in [
+            (1u32, &(|o: &crate::portfolio::HorizonOutlook| o.short)
+                as &dyn Fn(&crate::portfolio::HorizonOutlook) -> crate::portfolio::HorizonRead),
+            (6u32, &(|o: &crate::portfolio::HorizonOutlook| o.mid)),
+            (12u32, &(|o: &crate::portfolio::HorizonOutlook| o.long)),
+        ] {
+            let (mut scored, mut hits, mut neutral) = (0usize, 0usize, 0usize);
+            for ep in episodes {
+                if !ep.vintage_fresh {
+                    continue;
+                }
+                let EpisodeBody::Priced(p) = &ep.body else {
+                    continue;
+                };
+                let Some(outlook) = pick(p) else { continue };
+                let Some(label) = scored_for(ep, months) else {
+                    continue;
+                };
+                let pr = label.price_return;
+                match read_of(&outlook) {
+                    crate::portfolio::HorizonRead::Neutral => neutral += 1,
+                    crate::portfolio::HorizonRead::Bullish => {
+                        scored += 1;
+                        if pr > 0.0 {
+                            hits += 1;
+                        }
+                    }
+                    crate::portfolio::HorizonRead::Bearish => {
+                        scored += 1;
+                        if pr < 0.0 {
+                            hits += 1;
+                        }
+                    }
+                }
+            }
+            outlook_direction.push(OutlookDirectionRead {
+                arm: arm.to_string(),
                 window_months: months,
-                parameter_version: version,
-                scored: n,
-                coverage_rate: (n > 0).then(|| acc.hits as f64 / n as f64),
-                nominal_coverage: NOMINAL_BAND_COVERAGE,
-                mean_interval_score: (n > 0).then(|| acc.scores.iter().sum::<f64>() / n as f64),
-                mean_base_signed_error: (!acc.base_errors.is_empty()).then(|| {
-                    acc.base_errors.iter().sum::<f64>() / acc.base_errors.len() as f64
-                }),
+                scored,
+                hits,
+                neutral,
             });
         }
     }
@@ -2015,6 +2236,9 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
     DerivedReads {
         cohorts,
         target_calibration,
+        model_target_calibration,
+        head_to_head,
+        outlook_direction,
         falsifier_lead_times,
         self_correction: SelfCorrectionRead { total, per_holding },
         eligibility,
@@ -2042,6 +2266,20 @@ pub fn matured_learning_text(records: &OutcomeRecords, run_date: &str) -> Option
             "{} {}-month window: {} ({})",
             m.symbol, m.window_months, m.outcome, detail
         ));
+    }
+    // The model-vs-engine head-to-head — the PAIRED read only (same episodes,
+    // both arms scoring the same realized outcomes), never two independently
+    // pooled populations.
+    for h in &records.reads.head_to_head {
+        if let (Some(model), Some(engine)) =
+            (h.model_mean_interval_score, h.engine_mean_interval_score)
+        {
+            lines.push(format!(
+                "model-vs-engine {}-month interval score (paired, {} bands): model \
+                 {model:.4} vs engine {engine:.4} — lower is better",
+                h.window_months, h.scored
+            ));
+        }
     }
     lines.push(records.reads.eligibility.note.clone());
     Some(lines.join("\n"))
@@ -2076,6 +2314,8 @@ mod tests {
             action,
             lean: Some(action),
             action_what_changed: None,
+            model_view: None,
+            engine_view: None,
             action_sizing: ActionSizing {
                 target_weight_low: 0.04,
                 target_weight_high: 0.06,
@@ -2785,6 +3025,39 @@ mod tests {
                     grade_parameter_version: Some("grade-v2".into()),
                     target_parameter_version: Some("targets-v3".into()),
                     degraded_inputs: vec![],
+                    // The two-arm freeze: a model band wider than the engine's and
+                    // opposite-direction outlooks, so the head-to-head reads have
+                    // something to distinguish.
+                    model_price_targets: Some(crate::portfolio::ModelPriceTargets {
+                        one_month: crate::portfolio::ModelPriceTarget {
+                            base: 108.0,
+                            bear: 90.0,
+                            bull: 125.0,
+                        },
+                        twelve_month: crate::portfolio::ModelPriceTarget {
+                            base: 140.0,
+                            bear: 70.0,
+                            bull: 200.0,
+                        },
+                    }),
+                    model_sub_scores: Some(SubScores {
+                        quality: 80.0,
+                        valuation: 40.0,
+                        momentum: 60.0,
+                        risk: 70.0,
+                    }),
+                    model_outlook: Some(crate::portfolio::HorizonOutlook {
+                        short: crate::portfolio::HorizonRead::Bullish,
+                        mid: crate::portfolio::HorizonRead::Bullish,
+                        long: crate::portfolio::HorizonRead::Bullish,
+                    }),
+                    engine_outlook: Some(crate::portfolio::HorizonOutlook {
+                        short: crate::portfolio::HorizonRead::Bearish,
+                        mid: crate::portfolio::HorizonRead::Neutral,
+                        long: crate::portfolio::HorizonRead::Bearish,
+                    }),
+                    engine_conviction: Some(Conviction::Medium),
+                    engine_action: Some(Action::Hold),
                 },
             })),
             observations: vec![],
@@ -3185,8 +3458,118 @@ mod tests {
             .unwrap();
         assert_eq!(cal.scored, 2);
         assert!(cal.mean_interval_score.is_some());
+        // The model arm scored over the SAME population with its own frozen bands
+        // — a fair head-to-head, and a different result (the fixture's model band
+        // differs from the engine's).
+        let model_cal = reads
+            .model_target_calibration
+            .iter()
+            .find(|t| t.window_months == 12)
+            .unwrap();
+        assert_eq!(model_cal.scored, 2, "same exclusion rules as the engine read");
+        assert!(model_cal.mean_interval_score.is_some());
+        assert_ne!(
+            model_cal.mean_interval_score, cal.mean_interval_score,
+            "distinct bands must score distinctly"
+        );
+        // The paired head-to-head runs over the intersection — here both fixture
+        // episodes carry both bands, so the pair scores 2 with distinct means.
+        let paired = reads
+            .head_to_head
+            .iter()
+            .find(|h| h.window_months == 12)
+            .unwrap();
+        assert_eq!(paired.scored, 2, "paired population = episodes with BOTH bands");
+        assert_ne!(
+            paired.engine_mean_interval_score, paired.model_mean_interval_score,
+            "the pair scores both arms on the same events"
+        );
+        // Direction reads: both arms present at all three mapped windows; the
+        // fixture's model is bullish everywhere and the engine bearish/neutral,
+        // so on the synthetic series exactly one directional arm can be hitting.
+        assert_eq!(reads.outlook_direction.len(), 6);
+        let read = |arm: &str, months: u32| {
+            reads
+                .outlook_direction
+                .iter()
+                .find(|r| r.arm == arm && r.window_months == months)
+                .unwrap()
+        };
+        assert_eq!(read("model", 12).scored, 2);
+        assert_eq!(read("engine", 6).neutral, 2, "neutral counts beside the hit-rate");
+        assert_eq!(
+            read("model", 12).hits + read("engine", 12).hits,
+            2,
+            "opposite directional calls: exactly one arm hits per episode"
+        );
         assert!(!reads.eligibility.eligible, "2 of 30: below the bar");
         assert!(reads.eligibility.note.contains("below the proposal eligibility bar"));
+    }
+
+    #[test]
+    fn matured_learning_text_renders_the_paired_head_to_head_only() {
+        // The comparison line comes from the PAIRED read alone (same episodes,
+        // both arms) and renders only where the pair scored — never from the two
+        // arms' independently-pooled per-arm reads (Codex round 1, finding 3).
+        let records = OutcomeRecords {
+            opened: vec![],
+            extended: vec![],
+            alignment_tags: vec![],
+            matured: vec![MaturedNote {
+                symbol: "AAPL".into(),
+                episode_id: "ep-1".into(),
+                window_months: 12,
+                outcome: "scored".into(),
+                total_return: Some(0.10),
+                price_return: Some(0.08),
+            }],
+            pending_coverage: vec![],
+            reads: DerivedReads {
+                cohorts: vec![],
+                target_calibration: vec![],
+                model_target_calibration: vec![],
+                head_to_head: vec![
+                    // An unscored 1-mo pair renders no line.
+                    HeadToHeadRead {
+                        window_months: 1,
+                        scored: 0,
+                        engine_mean_interval_score: None,
+                        model_mean_interval_score: None,
+                        engine_coverage_rate: None,
+                        model_coverage_rate: None,
+                    },
+                    HeadToHeadRead {
+                        window_months: 12,
+                        scored: 4,
+                        engine_mean_interval_score: Some(0.50),
+                        model_mean_interval_score: Some(0.30),
+                        engine_coverage_rate: Some(0.75),
+                        model_coverage_rate: Some(1.0),
+                    },
+                ],
+                outlook_direction: vec![],
+                falsifier_lead_times: vec![],
+                self_correction: SelfCorrectionRead {
+                    total: 0,
+                    per_holding: vec![],
+                },
+                eligibility: EligibilityRecord {
+                    unique_matured_holdings: 1,
+                    bar: PROPOSAL_ELIGIBILITY_BAR,
+                    eligible: false,
+                    note: "below the proposal eligibility bar".into(),
+                },
+            },
+        };
+        let text = matured_learning_text(&records, "2026-08-05").expect("matured → text");
+        assert!(
+            text.contains(
+                "model-vs-engine 12-month interval score (paired, 4 bands): model 0.3000 \
+                 vs engine 0.5000 — lower is better"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("1-month interval score"), "{text}");
     }
 
     fn scored_label(price_return: f64, total_return: Option<f64>) -> ScoredLabel {

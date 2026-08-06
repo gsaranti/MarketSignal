@@ -7,8 +7,9 @@
 //!
 //! The overlay is **conviction / risk / action context only** — never another grade
 //! component, and never a license for the model to calculate a number: the engine
-//! computes attainment, states, and rule consequences; the model interprets the
-//! evidence beneath an engine-matched ceiling.
+//! computes attainment, states, and rule consequences; the rule consequences bind
+//! the engine arm (its stand-ins observe the matched ceiling), the model
+//! interpreting the evidence unrestricted, departures annotated.
 //!
 //! **Producer status (as-built):** the research-observation leg is
 //! **producer-dormant** — the web-research stage is stubbed and distillation emits
@@ -293,8 +294,9 @@ pub struct ExecutionRead {
     pub material_single_miss: bool,
 }
 
-/// Which conviction ceiling an overlay rule matched (the strictest binds, after any
-/// validated raise — `docs/portfolio-workflow.md` §Step 6g).
+/// Which conviction ceiling an overlay rule matched — the strictest binds the
+/// engine arm's stand-in as a plain min (the raise machinery is retired with
+/// `portfolio-v7` — `docs/portfolio-workflow.md` §Step 6g).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConvictionCeiling {
@@ -305,13 +307,17 @@ pub enum ConvictionCeiling {
 /// The overlay's deterministic rule consequences — separately attributed from the
 /// forensic rules (`docs/portfolio-workflow.md` §Step 6g): repeated execution miss
 /// → Medium ceiling; constrained runway → add-family bar; severe deterioration →
-/// Low ceiling + add-family bar + exit-family-only intrinsic lean.
+/// Low ceiling + add-family bar + an exit-family-only action rule. Since
+/// `portfolio-v7` all of these bind the **engine arm** (its stand-in conviction
+/// and action observe them); the model's conviction and lean are unrestricted,
+/// with departures recorded as annotations.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OverlayConsequences {
     pub conviction_ceiling: Option<ConvictionCeiling>,
     pub bar_add_family: bool,
-    /// Severe deterioration restricts the standalone lean to {trim, sell all}
-    /// (as-built the action enum — action = lean until the 7b construction stage).
+    /// Severe deterioration's exit-family-only rule ({trim, sell all}) — since
+    /// `portfolio-v7` it binds the engine arm's lean/action stand-ins and renders
+    /// as an engine rule; the model's lean is unrestricted, departures annotated.
     pub exit_family_only: bool,
     /// The engine-matched rules, recorded so a clamped value is reconstructable
     /// (the audit's matched-cap-rule leg).
@@ -344,8 +350,11 @@ pub struct PreProfitOverlay {
     pub backfill_attempts: Vec<BackfillAttempt>,
     pub consequences: OverlayConsequences,
     pub unscorable_gaps: Vec<String>,
-    /// The model conviction the app clamped from when a ceiling engaged (set by the
-    /// pipeline post-interpretation; `None` = no clamp was needed).
+    /// Pre-v7 recorded semantics: the model conviction the app clamped from when
+    /// a ceiling engaged (the pipeline clamped post-interpretation through
+    /// `portfolio-v6`). Since `portfolio-v7` nothing clamps the model — the
+    /// ceiling binds the engine arm's stand-in — so new runs persist `None`; the
+    /// field decodes old audits.
     #[serde(default)]
     pub clamped_from: Option<Conviction>,
     pub parameter_version: String,
@@ -893,18 +902,24 @@ fn derive_consequences(
         c.bar_add_family = true;
         c.exit_family_only = true;
         c.matched_rules.push(
-            "severe-deterioration → conviction ceiling Low, add family barred, \
-             lean restricted to {trim, sell all}"
+            "severe-deterioration → engine-arm rules: conviction ceiling Low, \
+             add family barred, exit family only {trim, sell all}"
                 .to_string(),
         );
     }
     c
 }
 
-/// Clamp a model conviction to an engine-matched ceiling (`final = min(model,
-/// ceiling)` — the docs' "binds after any validated raise" degenerates to a plain
-/// min while no raise machinery exists). Returns the clamped value and whether the
-/// clamp actually lowered it.
+/// Clamp a conviction to an engine-matched ceiling — a plain `min(value,
+/// ceiling)`; Portfolio's raise machinery is retired, so there is no raise leg.
+/// Returns the clamped value and whether the clamp actually lowered it.
+/// **Re-scoped with `portfolio-v7`** (the two-arm unrestriction): the matched
+/// ceiling never clamps the model's value anymore — its one production caller is
+/// [`crate::portfolio::engine::engine_view`], where it binds the **engine
+/// stand-in arm's** conviction (the engine obeys its own rules; the model's
+/// exceedance persists as an annotation — `docs/portfolio-analysis.md` §The
+/// holding verdict). Pre-v7 runs' persisted `clamped_from` values carry these
+/// same semantics.
 pub fn clamp_conviction(
     conviction: Conviction,
     ceiling: Option<ConvictionCeiling>,
@@ -926,8 +941,8 @@ pub fn clamp_conviction(
     }
 }
 
-/// The conviction labels the interpretation schema may offer under a matched
-/// ceiling — structural enforcement, mirroring the feasible-action narrowing.
+/// **Retired with `portfolio-v7`** (see [`clamp_conviction`]): the schema always
+/// offers all three labels now; no production caller remains.
 pub fn allowed_conviction_labels(ceiling: Option<ConvictionCeiling>) -> &'static [&'static str] {
     match ceiling {
         None => &["high", "medium", "low"],

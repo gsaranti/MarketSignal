@@ -4,9 +4,11 @@ import { localDate, localDateTime } from "../format";
 import type {
   ActionWhatChanged,
   FlagTrigger,
+  GradedVerdict,
   HoldingQuickState,
   HoldingsPull,
   HoldingVerdict,
+  HorizonOutlook,
   PortfolioConviction,
   PortfolioRun,
   Position,
@@ -677,6 +679,84 @@ const LETTER_SUBSCORES = ["quality", "valuation", "risk"] as const;
 // must not be hover-only (Codex P2, ruled 2026-08-05): one copy source serves
 // pointer, keyboard, low-vision, and screen-reader users alike.
 const SETUP_NOTE = "Setup — market-setup read, outside the letter";
+
+// ---- The two-arm verdict (portfolio-v7) --------------------------------------
+// The engine baseline beside the model's own view. A pre-v7 run carries neither
+// arm and renders the legacy single intrinsic column.
+
+const MODEL_ARM_NOTE =
+  "Model view — the model's own numbers, unrestricted; scored against the baseline";
+const MODEL_LETTER_TITLE =
+  "The model's letter, derived from its own quality/valuation/risk through the " +
+  "shared cutoffs";
+
+function twoArm(d: GradedVerdict): boolean {
+  return d.model_view != null && d.engine_view != null;
+}
+
+// Column A renders the engine stand-in's conviction/outlook on a two-arm card
+// and the verdict's own (model-authored) values on a legacy one.
+function armAConviction(d: GradedVerdict): PortfolioConviction {
+  return twoArm(d) ? d.engine_view!.conviction : d.conviction;
+}
+function armAOutlook(d: GradedVerdict): HorizonOutlook {
+  return twoArm(d) ? d.engine_view!.outlook : d.horizon_outlook;
+}
+
+// The matured scoreboard lines for one symbol, from the run's outcome records —
+// engine-computed, quiet-note register on the card foot.
+function maturedLinesFor(symbol: string): string[] {
+  const matured = props.run?.outcome?.matured ?? [];
+  return matured
+    .filter((m) => m.symbol.toUpperCase() === symbol.toUpperCase())
+    .map((m) => {
+      const detail =
+        m.total_return !== null
+          ? `total return ${(m.total_return * 100).toFixed(1)}%`
+          : m.price_return !== null
+            ? `price-only ${(m.price_return * 100).toFixed(1)}%`
+            : m.outcome;
+      return `${m.window_months}-mo window ${m.outcome} (${detail})`;
+    });
+}
+
+// The roll-up's model-vs-engine scoreboard lines: the PAIRED head-to-head per
+// window (both arms scored over the identical episode set — the backend's
+// same-events contract) plus the outlook direction hit-rates. Empty until v7
+// episodes mature.
+const scoreboardLines = computed<string[]>(() => {
+  const reads = props.run?.outcome?.reads;
+  if (!reads) return [];
+  const lines: string[] = [];
+  for (const h of reads.head_to_head ?? []) {
+    if (
+      h.scored > 0 &&
+      h.model_mean_interval_score !== null &&
+      h.engine_mean_interval_score !== null
+    ) {
+      lines.push(
+        `${h.window_months}-mo interval score (paired, ${h.scored}): ` +
+          `model ${h.model_mean_interval_score.toFixed(3)} ` +
+          `vs engine ${h.engine_mean_interval_score.toFixed(3)} — lower is better`
+      );
+    }
+  }
+  for (const window of [1, 6, 12]) {
+    const arm = (name: string) =>
+      (reads.outlook_direction ?? []).find(
+        (r) => r.arm === name && r.window_months === window && r.scored > 0
+      );
+    const engine = arm("engine");
+    const model = arm("model");
+    if (engine && model) {
+      lines.push(
+        `${window}-mo direction: model ${model.hits}/${model.scored} ` +
+          `vs engine ${engine.hits}/${engine.scored}`
+      );
+    }
+  }
+  return lines;
+});
 
 function gradeClass(grade: string): string {
   return grade.toLowerCase();
@@ -1641,11 +1721,21 @@ const keyFigures = computed(() => {
                   </button>
                 </div>
 
-                <!-- Two linked blocks: intrinsic verdict beside portfolio action
-                     (distinct but linked — docs/interface.md). -->
-                <div class="hc-body">
+                <!-- The two-arm body (portfolio-v7): the engine baseline beside
+                     the model's own view — the same paired 1fr/1fr hairline grid
+                     as the old intrinsic/action split (a recorded design-system
+                     extension: no paired-comparison component exists in the kit;
+                     comparison here is adjacency + kicker, the system's idiom).
+                     A pre-v7 run has no model arm and renders the single
+                     intrinsic column full-width instead. -->
+                <div
+                  class="hc-body"
+                  :class="{ 'hc-body-single': !twoArm(v.disposition) }"
+                >
                   <div class="hc-col hc-col-intrinsic">
-                    <span class="hc-kicker">Intrinsic verdict</span>
+                    <span class="hc-kicker">{{
+                      twoArm(v.disposition) ? "Engine baseline" : "Intrinsic verdict"
+                    }}</span>
                     <!-- Letter inputs, then — set apart behind a hairline —
                          the market-setup read (momentum), which is context
                          for conviction and never a grade input (B10). -->
@@ -1674,18 +1764,18 @@ const keyFigures = computed(() => {
                         <span
                           class="conviction"
                           role="img"
-                          :aria-label="`Conviction: ${v.disposition.conviction}`"
+                          :aria-label="`Conviction: ${armAConviction(v.disposition)}`"
                         >
                           <i
                             v-for="i in 3"
                             :key="i"
                             :class="{
-                              on: i <= CONVICTION_LEVEL[v.disposition.conviction],
+                              on: i <= CONVICTION_LEVEL[armAConviction(v.disposition)],
                             }"
                           />
                         </span>
                         <span class="hc-conviction-word">{{
-                          v.disposition.conviction
+                          armAConviction(v.disposition)
                         }}</span>
                       </dd>
                       <template v-if="v.disposition.price_targets.one_month">
@@ -1737,7 +1827,7 @@ const keyFigures = computed(() => {
                       <dt>Outlook</dt>
                       <dd class="hc-outlook">
                         <span
-                          v-for="(read, horizon) in v.disposition.horizon_outlook"
+                          v-for="(read, horizon) in armAOutlook(v.disposition)"
                           :key="horizon"
                           class="hc-horizon"
                         >
@@ -1747,6 +1837,20 @@ const keyFigures = computed(() => {
                           }}</span>
                         </span>
                       </dd>
+                      <template v-if="twoArm(v.disposition)">
+                        <dt>Action</dt>
+                        <dd>
+                          {{ ACTION_LABELS[v.disposition.engine_view!.action] }}
+                          <span class="hc-band">{{
+                            weightBand(
+                              v.disposition.engine_view!.action_sizing
+                                .target_weight_low,
+                              v.disposition.engine_view!.action_sizing
+                                .target_weight_high
+                            )
+                          }}</span>
+                        </dd>
+                      </template>
                     </dl>
                     <!-- Target methodology: engine-computed figures, exposed
                          (a Reveal-style inline disclosure, not a popover). -->
@@ -1777,7 +1881,126 @@ const keyFigures = computed(() => {
                     </div>
                   </div>
 
-                  <div class="hc-col">
+                  <!-- The model arm: the model's own numbers, authored
+                       unrestricted and persisted exactly as returned — scored
+                       against the engine baseline by the outcome scoreboard. -->
+                  <div v-if="twoArm(v.disposition)" class="hc-col">
+                    <span class="hc-kicker hc-armhead"
+                      >Model view
+                      <span
+                        class="grade hc-model-letter"
+                        :class="`grade-${v.disposition.model_view!.letter.toLowerCase()}`"
+                        :title="MODEL_LETTER_TITLE"
+                        >{{ v.disposition.model_view!.letter }}</span
+                      ></span
+                    >
+                    <div class="hc-subscores">
+                      <div
+                        v-for="name in LETTER_SUBSCORES"
+                        :key="name"
+                        class="hc-sub"
+                      >
+                        <span class="hc-sub-label">{{ name }}</span>
+                        <span class="ana-num hc-sub-value">{{
+                          Math.round(v.disposition.model_view!.sub_scores[name])
+                        }}</span>
+                      </div>
+                      <div class="hc-sub hc-sub-setup">
+                        <span class="hc-sub-label">Setup</span>
+                        <span class="ana-num hc-sub-value">{{
+                          Math.round(v.disposition.model_view!.sub_scores.momentum)
+                        }}</span>
+                      </div>
+                    </div>
+                    <p class="hc-setup-note">{{ MODEL_ARM_NOTE }}</p>
+                    <dl class="hc-kv">
+                      <dt>Conviction</dt>
+                      <dd>
+                        <span
+                          class="conviction"
+                          role="img"
+                          :aria-label="`Conviction: ${v.disposition.conviction}`"
+                        >
+                          <i
+                            v-for="i in 3"
+                            :key="i"
+                            :class="{
+                              on: i <= CONVICTION_LEVEL[v.disposition.conviction],
+                            }"
+                          />
+                        </span>
+                        <span class="hc-conviction-word">{{
+                          v.disposition.conviction
+                        }}</span>
+                        <span
+                          v-if="
+                            v.disposition.conviction !==
+                            v.disposition.engine_view!.conviction
+                          "
+                          class="ana-tag"
+                          >≠ engine</span
+                        >
+                      </dd>
+                      <template
+                        v-for="(band, window) in {
+                          '1-mo target':
+                            v.disposition.model_view!.price_targets.one_month,
+                          '12-mo target':
+                            v.disposition.model_view!.price_targets.twelve_month,
+                        }"
+                        :key="window"
+                      >
+                        <dt>{{ window }}</dt>
+                        <dd>
+                          <span class="ana-num"
+                            >{{ moneyExact.format(band.base) }}
+                            <span class="hc-band"
+                              >({{ moneyExact.format(band.bear) }}–{{
+                                moneyExact.format(band.bull)
+                              }})</span
+                            ></span
+                          >
+                          <span
+                            v-if="band.bear > band.bull"
+                            class="ana-tag"
+                            title="The model authored bear above bull; the value renders as returned — scoring reads the band as (min, max)."
+                            >band inverted as authored</span
+                          >
+                        </dd>
+                      </template>
+                      <dt>Outlook</dt>
+                      <dd class="hc-outlook">
+                        <span
+                          v-for="(read, horizon) in v.disposition.horizon_outlook"
+                          :key="horizon"
+                          class="hc-horizon"
+                        >
+                          <span class="hc-horizon-label">{{ horizon }}</span>
+                          <span class="dir" :class="HORIZON_DIR[read]">{{
+                            read
+                          }}</span>
+                        </span>
+                      </dd>
+                      <dt>Lean</dt>
+                      <dd>
+                        {{ ACTION_LABELS[v.disposition.lean ?? v.disposition.action] }}
+                        <span
+                          v-if="
+                            (v.disposition.lean ?? v.disposition.action) !==
+                            v.disposition.engine_view!.action
+                          "
+                          class="ana-tag"
+                          >≠ engine</span
+                        >
+                      </dd>
+                    </dl>
+                  </div>
+                </div>
+
+                <!-- Portfolio action: the final whole-book decision — full-width
+                     beneath the arms (the action is the model's under the v7
+                     contract; the engine's own rung reads as the baseline row). -->
+                <div class="hc-col hc-actionrow">
                     <span class="hc-kicker">Portfolio action</span>
                     <div class="hc-action">
                       <span class="hc-action-word">{{
@@ -1893,7 +2116,6 @@ const keyFigures = computed(() => {
                         </template>
                       </template>
                     </dl>
-                  </div>
                 </div>
 
                 <!-- Thesis monitor (B13): the ledger's bear/base/bull scenarios
@@ -1955,6 +2177,19 @@ const keyFigures = computed(() => {
                   <p class="hc-prose">{{ v.disposition.financial_summary }}</p>
                 </div>
 
+                <!-- The model's retrospective self-assessment (v7): prose input
+                     to the learnings; the scored comparison is the deterministic
+                     scoreboard's, never this paragraph's. -->
+                <div
+                  v-if="v.disposition.model_view?.self_assessment"
+                  class="hc-summary"
+                >
+                  <span class="hc-kicker">Model retrospective</span>
+                  <p class="hc-prose">
+                    {{ v.disposition.model_view!.self_assessment }}
+                  </p>
+                </div>
+
                 <!-- What changed + the app-computed position delta. -->
                 <footer class="hc-foot">
                   <div class="hc-foot-main">
@@ -1966,6 +2201,12 @@ const keyFigures = computed(() => {
                     >
                       Action
                       {{ actionChangeLine(v.disposition.action_what_changed) }}
+                    </p>
+                    <p
+                      v-if="maturedLinesFor(v.symbol).length"
+                      class="hc-changed hc-scoreboard-line"
+                    >
+                      Scored: {{ maturedLinesFor(v.symbol).join("; ") }}
                     </p>
                   </div>
                   <span class="ana-tag" :title="'Position vs. prior run'"
@@ -2033,6 +2274,31 @@ const keyFigures = computed(() => {
                 title="The construction synthesis validated on its single named-violation re-run"
                 >Validated on re-run</span
               >
+              <!-- Engine-bound annotations (v7): where the model's plan departed
+                   the engine's own read — recorded and rendered, never enforced. -->
+              <div
+                v-if="run.roll_up.construction.engine_bound_annotations?.length"
+                class="rollup-annotations"
+              >
+                <span class="hc-kicker">Engine-bound notes · plan as authored</span>
+                <ul class="rollup-annotation-list">
+                  <li
+                    v-for="(note, i) in run.roll_up.construction
+                      .engine_bound_annotations"
+                    :key="i"
+                  >
+                    {{ note }}
+                  </li>
+                </ul>
+              </div>
+            </div>
+            <!-- The model-vs-engine scoreboard (v7): deterministic, engine-scored
+                 reads over matured windows — empty until v7 episodes mature. -->
+            <div v-if="scoreboardLines.length" class="rollup-scoreboard">
+              <span class="hc-kicker">Model vs engine · scored</span>
+              <ul class="rollup-annotation-list">
+                <li v-for="(line, i) in scoreboardLines" :key="i">{{ line }}</li>
+              </ul>
             </div>
             <div v-if="run.roll_up.exited.length > 0" class="rollup-exited">
               <span class="hc-kicker">Positions closed since last run</span>
@@ -2557,10 +2823,21 @@ const keyFigures = computed(() => {
   color: var(--ink-3);
 }
 
-/* Two linked columns; stack on narrow windows so nothing crushes. */
+/* Two linked columns; stack on narrow windows so nothing crushes. Since v7 the
+   pair is engine baseline | model view (a recorded extension of the kit's
+   two-linked-blocks grid — comparison by adjacency + kicker, the system's
+   idiom); a pre-v7 run has no model arm and collapses to one column. */
 .hc-body {
   display: grid;
   grid-template-columns: 1fr 1fr;
+}
+
+.hc-body-single {
+  grid-template-columns: 1fr;
+}
+
+.hc-body-single .hc-col-intrinsic {
+  border-right: 0;
 }
 
 @media (max-width: 760px) {
@@ -2581,6 +2858,26 @@ const keyFigures = computed(() => {
 
 .hc-col-intrinsic {
   border-right: 1px solid var(--hairline-soft);
+}
+
+/* The full-width portfolio-action strip beneath the arms (v7) — the same
+   self-seaming hairline rhythm as the monitor/summary sections. */
+.hc-actionrow {
+  border-top: 1px solid var(--hairline-soft);
+}
+
+/* The model-view column head: kicker + the model's derived letter, rendered as
+   a compact grade chip beside the label (never competing with the header's
+   engine chip). */
+.hc-armhead {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.hc-model-letter {
+  font-size: var(--t-caption);
+  padding: 0 var(--s-2);
 }
 
 .hc-col > .hc-kicker {
@@ -3014,6 +3311,39 @@ const keyFigures = computed(() => {
 .rollup-retried-tag {
   margin-top: var(--s-3);
   display: inline-block;
+}
+
+/* Engine-bound annotations + the model-vs-engine scoreboard (v7): quiet list
+   registers in the roll-up's section rhythm — recorded findings, never alarm
+   states (an annotation is a departure on display, not an error). */
+.rollup-annotations {
+  margin-top: var(--s-3);
+}
+
+.rollup-scoreboard {
+  padding: var(--s-4) var(--s-5);
+  border-top: 1px solid var(--hairline-soft);
+}
+
+.rollup-annotations .hc-kicker,
+.rollup-scoreboard .hc-kicker {
+  margin-bottom: var(--s-2);
+}
+
+.rollup-annotation-list {
+  margin: 0;
+  padding-left: var(--s-5);
+  color: var(--ink-2);
+  font-size: var(--t-caption);
+}
+
+.rollup-annotation-list li {
+  margin: 0 0 var(--s-1);
+  overflow-wrap: anywhere;
+}
+
+.hc-scoreboard-line {
+  color: var(--ink-3);
 }
 
 .dh-line {

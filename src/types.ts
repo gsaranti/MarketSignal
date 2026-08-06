@@ -442,6 +442,42 @@ export interface ActionWhatChanged {
   note: string;
 }
 
+// One model-authored target band (the model arm's counterpart of PriceTarget) —
+// authored freely at interpretation, persisted exactly as returned; the render
+// annotates an inverted bear/bull pair rather than reordering it.
+export interface ModelPriceTarget {
+  base: number;
+  bear: number;
+  bull: number;
+}
+
+export interface ModelPriceTargets {
+  one_month: ModelPriceTarget;
+  twelve_month: ModelPriceTarget;
+}
+
+// The model arm of the two-arm verdict (docs/portfolio-analysis.md §The holding
+// verdict): the model's own sub-scores, its letter derived through the shared
+// cutoffs, freely-authored targets, and the retrospective self-assessment.
+// Beside it, the verdict's conviction / horizon_outlook / lean complete the arm.
+// Absent on runs persisted before portfolio-v7.
+export interface ModelView {
+  sub_scores: SubScores;
+  letter: PortfolioGrade;
+  price_targets: ModelPriceTargets;
+  self_assessment: string;
+}
+
+// The engine's mechanical stand-in arm — deterministic outlook / conviction /
+// action baselines so every model-authored field has a scored engine counterpart.
+// Absent on pre-v7 runs.
+export interface EngineView {
+  outlook: HorizonOutlook;
+  conviction: PortfolioConviction;
+  action: PortfolioAction;
+  action_sizing: ActionSizing;
+}
+
 export interface GradedVerdict {
   grade: PortfolioGrade;
   sub_scores: SubScores;
@@ -477,6 +513,10 @@ export interface GradedVerdict {
   // The action half, authored at construction — absent when unchanged and on
   // pre-construction runs.
   action_what_changed?: ActionWhatChanged | null;
+  // The two arms (portfolio-v7) — both absent on earlier runs, which render the
+  // legacy single-arm card.
+  model_view?: ModelView | null;
+  engine_view?: EngineView | null;
 }
 
 // One exposure weight (a sector or country label and its fraction of the fund).
@@ -496,8 +536,9 @@ export interface RoleRiskVerdict {
   observable_risk: number | null;
   structural_flag: boolean;
   evidence_gaps: string[];
-  // Set wholly at construction from the reduced {sell-all, trim, hold} spine —
-  // this branch carries no standalone lean.
+  // Set wholly at construction — the reduced {sell-all, trim, hold} set is the
+  // engine arm's there, the model's choice structurally open (departures
+  // annotated); this branch carries no standalone lean.
   action: PortfolioAction;
   action_sizing: ActionSizing;
   what_changed: string;
@@ -618,9 +659,9 @@ export interface PromptUsage {
 }
 
 // One holding's action-sizing spine row (docs/portfolio-workflow.md §Step 7a) —
-// the engine-known decision surface the construction call chose within,
-// persisted with the roll-up for auditability. Not rendered by the Portfolio
-// page in this slice.
+// the engine-known decision surface the construction call read (engine sets +
+// annotation bounds since portfolio-v7), persisted with the roll-up for
+// auditability. Not rendered by the Portfolio page in this slice.
 export interface SizingSpineRow {
   symbol: string;
   asset_class: AssetClass;
@@ -646,8 +687,8 @@ export interface SizingSpineRow {
   // Dormant wiring — structurally false until a forensic event producer lands.
   hard_forensic_bar: boolean;
   sector: string | null;
-  // The construction-allowed action set: feasible (fresh) / transition (carried)
-  // / the reduced spine (fresh role-risk).
+  // The engine action set: feasible (fresh) / transition (carried) / the reduced
+  // set (fresh role-risk) — annotation-bounding only since portfolio-v7.
   offered: PortfolioAction[];
   context_trim_carveout: boolean;
   tax_note: string | null;
@@ -718,6 +759,10 @@ export interface ConstructionView {
   external_funding: number | null;
   implied_total: number | null;
   retried: boolean;
+  // Engine-bound findings against the model's plan (a rung outside the engine
+  // set, a range outside its band, a cap breach, unfunded buys) — annotations
+  // since portfolio-v7, never enforcement. Absent on pre-v7 runs.
+  engine_bound_annotations?: string[];
 }
 
 export interface PortfolioRollUp {
@@ -732,12 +777,70 @@ export interface PortfolioRollUp {
   exited: ExitedPosition[];
   // Absent on runs persisted before the field existed.
   data_health?: DataHealth | null;
-  // The Step-7a aggregates + per-holding spine the construction call chose
-  // within — persisted for auditability; the page renders only the view today.
+  // The Step-7a aggregates + per-holding spine the construction call read
+  // (engine sets + annotation bounds) — persisted for auditability; the page
+  // renders only the view today.
   aggregates?: BookAggregates | null;
   // The construction call's portfolio-level view — absent on pre-construction runs.
   construction?: ConstructionView | null;
   overview: string;
+}
+
+// One arm's band-calibration read (window × target-parameter version) — the
+// deterministic scoreboard's unit (docs/portfolio-analysis.md §Outcome learning).
+export interface TargetCalibrationRead {
+  window_months: number;
+  parameter_version?: string | null;
+  scored: number;
+  coverage_rate: number | null;
+  nominal_coverage: number;
+  mean_interval_score: number | null;
+  mean_base_signed_error: number | null;
+}
+
+// One arm's outlook direction hit-rate at its mapped window (short→1, mid→6,
+// long→12 months); neutral reads count beside the hit-rate, never inside it.
+export interface OutlookDirectionRead {
+  arm: "engine" | "model";
+  window_months: number;
+  scored: number;
+  hits: number;
+  neutral: number;
+}
+
+// The paired model-vs-engine head-to-head: both arms scored over the identical
+// episode set (episodes where both bands exist), so the comparison is
+// same-events by construction — the only read the arms are compared on.
+export interface HeadToHeadRead {
+  window_months: number;
+  scored: number;
+  engine_mean_interval_score: number | null;
+  model_mean_interval_score: number | null;
+  engine_coverage_rate: number | null;
+  model_coverage_rate: number | null;
+}
+
+// One matured outcome-window line (per symbol) from the run's label pass.
+export interface MaturedNote {
+  symbol: string;
+  episode_id: string;
+  window_months: number;
+  outcome: string;
+  total_return: number | null;
+  price_return: number | null;
+}
+
+// The subset of the run's outcome-learning records the page renders: the
+// model-vs-engine scoreboard reads and the matured lines. Absent on pre-outcome
+// runs; the fuller record (cohorts, lead times, eligibility) stays backend-only.
+export interface OutcomeRecordsView {
+  matured: MaturedNote[];
+  reads: {
+    target_calibration: TargetCalibrationRead[];
+    model_target_calibration?: TargetCalibrationRead[];
+    head_to_head?: HeadToHeadRead[];
+    outlook_direction?: OutlookDirectionRead[];
+  };
 }
 
 export interface PortfolioRun {
@@ -749,6 +852,9 @@ export interface PortfolioRun {
   // The per-holding audit records (sources, metrics, model ids…) — persisted
   // for traceability; not rendered by the Portfolio page in this slice.
   audit: unknown[];
+  // This run's outcome-learning records (scoreboard subset) — absent on runs
+  // persisted before the outcome slice.
+  outcome?: OutcomeRecordsView | null;
 }
 
 // --- Portfolio quick check ---------------------------------------------------
