@@ -116,9 +116,10 @@ pub struct SizingSpineRow {
     pub risk_tier: Option<RiskTier>,
     pub grade: Option<Grade>,
     pub conviction: Option<Conviction>,
-    /// The standalone lean (priced branch; `None` on `role_risk_only`). On a
-    /// carried row this is the *prior* pass's lean — stale, so the divergence
-    /// machinery applies to fresh rows only.
+    /// The standalone lean (priced branch; `None` on `role_risk_only` — and
+    /// `None` on a carried row, whose stale lean rides `prior_lean` and the
+    /// carried verdict instead, so the divergence machinery applies to fresh
+    /// rows only).
     pub lean: Option<Action>,
     /// The prior lean where one is comparable (the prior verdict's lean, falling
     /// back to its action for pre-construction runs whose action *was* the lean) —

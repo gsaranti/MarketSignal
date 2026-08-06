@@ -127,7 +127,7 @@ doc section rather than working from the clause here.*
 - Optional passphrase encryption (AES-256-GCM / Argon2id, frozen KDF parameters; lost passphrase unrecoverable) — data-portability.md §Optional passphrase encryption
 - Export flow (Settings Data section → save dialog → `export_data`; holds the single run slot) — data-portability.md §Export flow
 - Import flow (fresh-load or replace-all-with-confirmation, merge deferred; everything validated pre-destructively; `markdown_path` re-derived; `app_settings` untouched) — data-portability.md §Import flow
-- Vector-memory embedder binding on import (report namespace portable; local namespaces re-embed on identity mismatch — identity compared, never dimension — content retained) — data-portability.md §Vector memory is embedder-bound
+- Vector-memory embedder binding on import (report namespace portable; the import-side identity check designed, not built — as-built rows insert unchecked, only the search-time dimension skip guards; a live embedder change = atomic stale-cohort clear, re-embed-from-content M5-deferred) — data-portability.md §Vector memory is embedder-bound; storage.md §Local Vector Memory
 - Build placement (independent of the local suite — suite coverage = a format-extension rule + versioned import entry-set, never automatic) — data-portability.md §Build-order placement
 - Confirmation dialog (design-package generic-chrome extension: `.dialog-*` + `--scrim`; first use = import replace-all) — market-signal-design-system (colors_and_type.css, preview/confirmation-dialog.html); data-portability.md §Import flow; BUILD.md §Module boundaries (frontend)
 
@@ -185,7 +185,7 @@ build status lives in BUILD.md.*
 - Local-model adapter seam (flexible endpoint/model_id client, distinct from the cloud AgentModel enum) — local-models.md §The local-model adapter seam
 - Schema-constrained output (grammar-constrained JSON) — local-models.md §Schema-constrained output
 - Context-memory discipline (distilled hand-offs, retrieve-don't-dump) — local-models.md §Context-memory discipline
-- Per-job isolated vector memory (three partitions; entry kind = purpose boundary, TO rows lifecycle-tagged; embedder-identity re-embed on change; durable-learning retention carve-out) — local-models.md §Run history and continuity; storage.md §Local Vector Memory
+- Per-job isolated vector memory (three partitions; entry kind = purpose boundary, TO rows lifecycle-tagged; embedder-identity change = stale-cohort clear, re-embed M5-deferred; durable-learning retention carve-out) — local-models.md §Run history and continuity; storage.md §Local Vector Memory
 - Web research tool (SearXNG-primary, Tavily fallback, fetch/extract) — web-research.md
 - Source registry & evidence tiers (per-domain tier 0–5 / deny + evidenceKinds; a thin override over heuristic defaults) — data-sources.md §Source registry and evidence tiers; web-research.md §Source quality and evidence weighting; configuration.md §Web Research
 - Source quality & evidence weighting (quality informs conviction, never gates discovery; app-computed vs model-derived annotations; lane policy; diversity caps) — web-research.md §Source quality and evidence weighting

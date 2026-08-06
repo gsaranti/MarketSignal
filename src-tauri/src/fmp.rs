@@ -2190,6 +2190,29 @@ mod tests {
     }
 
     #[test]
+    fn ttm_dividend_pull_requests_the_full_history_margin() {
+        // The TTM pull shares the label-time history limit: the feed's newest
+        // rows can be future-dated declarations that consume slots without
+        // landing in the window, and a monthly payer alone fills a 12-row cap —
+        // a truncated pull silently understates the trailing sum (and with it
+        // the hurdle's payout leg), so the margin is pinned here.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: "[]",
+        }]);
+        let src = test_source(&server.base_url);
+        let mut gaps = Vec::new();
+        assert!(src.fetch_ttm_dividends("AAPL", &mut gaps).is_none());
+        assert!(gaps.is_empty(), "an empty body is the non-payer read: {gaps:?}");
+        let targets = server.request_targets();
+        assert!(
+            targets[0].contains(&format!("limit={DIVIDEND_HISTORY_LIMIT}")),
+            "{targets:?}"
+        );
+    }
+
+    #[test]
     fn company_financials_degrade_to_gaps_on_premium_and_transport_failures() {
         // Quote 402 (premium gate) then EOD malformed body: both degrade to gaps, never
         // a fabricated level, and the engine grades over what SEC supplies instead.
@@ -3770,8 +3793,11 @@ const FMP_DIVIDENDS_PATH: &str = "/dividends";
 /// (`docs/portfolio-analysis.md §Outcome learning` — the entry-stamped sector
 /// identity).
 const FMP_PROFILE_PATH: &str = "/profile";
-/// Dividend rows requested for the label-time history pull — a monthly payer over
-/// a 13-month window needs ~15; the margin covers specials.
+/// Dividend rows requested for both dividend pulls — the label-time history and
+/// the trailing-TTM sum. A monthly payer over a 13-month window needs ~15, and
+/// the newest rows can be future-dated announced-but-unpaid declarations that
+/// consume slots without landing in the window; the margin covers both plus
+/// specials (a truncated pull would silently understate the trailing sum).
 const DIVIDEND_HISTORY_LIMIT: &str = "60";
 
 /// The dividend-history gap's stable prefix ([`FmpDataSource::fetch_ttm_dividends`]):
@@ -4010,7 +4036,7 @@ impl FmpDataSource {
             symbol,
             "Dividend history",
             FMP_DIVIDENDS_PATH,
-            &[("symbol", symbol), ("limit", "12")],
+            &[("symbol", symbol), ("limit", DIVIDEND_HISTORY_LIMIT)],
         ) {
             // Any unreadable body — non-array, a dateless row, an in-window row
             // with a non-numeric amount — must record the gap: `None` with no

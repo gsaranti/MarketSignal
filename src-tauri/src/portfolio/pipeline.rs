@@ -306,6 +306,17 @@ pub fn analyze_holding(
         if let Some(crate::portfolio::listing::ListingResolution::Conflict { fmp_name }) =
             &dossier.listing
         {
+            // The floor exit's overlay-survival semantics hold at the guard
+            // too: the guard-terminal skip fetched no statements, so the
+            // record reads eligibility-unscorable with its input gaps — but
+            // the period-keyed observation history carries forward, so one
+            // conflicted (possibly transient) run can never reset it
+            // (`docs/storage.md` §Local Analysis Suite Storage).
+            let pre_profit = crate::portfolio::pre_profit::compute_overlay(
+                &dossier.financials,
+                dossier.prior_pre_profit.as_ref(),
+                Vec::new(),
+            );
             return abstain(
                 format!(
                     "conflicting identity — FMP resolves this symbol to \"{fmp_name}\", \
@@ -314,7 +325,7 @@ pub fn analyze_holding(
                 ),
                 Default::default(),
                 None,
-                None,
+                Some(pre_profit),
             );
         }
     }
@@ -521,6 +532,7 @@ pub fn analyze_holding(
     let engine_view = engine::engine_view(
         &engine_output,
         &dossier.financials,
+        &degraded,
         pre_profit_overlay
             .as_ref()
             .filter(|o| o.is_eligible())
@@ -5139,6 +5151,38 @@ mod tests {
         let overlay = audit.pre_profit.expect("overlay survives an abstention");
         assert!(overlay.is_eligible());
         assert_eq!(overlay.observations.len(), 4, "history carried");
+    }
+
+    #[test]
+    fn a_guard_conflict_abstention_records_a_carrying_overlay() {
+        use crate::portfolio::listing::ListingResolution;
+        use crate::portfolio::pre_profit::PreProfitEligibility;
+        // The conflicting-identity exit takes the floor exit's full overlay
+        // semantics: the guard-terminal skip fetched no statements, so the
+        // record reads eligibility-unscorable with its input gaps — but the
+        // period-keyed observation history carries, so one conflicted
+        // (possibly transient) run can never reset it.
+        let mut d = dossier(
+            AssetClass::Stock,
+            CompanyFinancials { symbol: "X".into(), ..CompanyFinancials::default() },
+        );
+        d.listing = Some(ListingResolution::Conflict {
+            fmp_name: "Wrong Issuer Inc.".into(),
+        });
+        d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
+        let (verdict, audit) =
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-05").unwrap();
+        assert!(matches!(
+            verdict.disposition,
+            VerdictDisposition::InsufficientEvidence { .. }
+        ));
+        let overlay = audit.pre_profit.expect("the record survives the guard exit");
+        assert!(
+            matches!(overlay.eligibility, PreProfitEligibility::Unscorable { .. }),
+            "no statement was fetched — the read is unscorable, never inferred: {:?}",
+            overlay.eligibility
+        );
+        assert_eq!(overlay.observations.len(), 4, "history carried, not reset");
     }
 
     #[test]
