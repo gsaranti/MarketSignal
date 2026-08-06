@@ -2190,6 +2190,32 @@ mod tests {
     }
 
     #[test]
+    fn strict_estimates_split_undatable_rows_from_an_honest_past_only_set() {
+        // `Ok(None)` on the strict read is what the Revision family clears on,
+        // so it must mean an honest empty/past-only consensus — a body whose
+        // rows carry undatable dates is drift and must be `Err` (family
+        // `unknown`), or a stale verdict could carry uninspected behind a
+        // fabricated fresh_clear.
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"soon","epsAvg":6.5}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2020-09-30","epsAvg":3.1}]"#,
+            },
+        ]);
+        let src = test_source(&server.base_url);
+        let err = src.fetch_analyst_estimates_strict("AAPL").unwrap_err();
+        assert!(err.to_string().contains("undatable"), "{err}");
+        // Past-only rows are the honest no-forward-consensus read.
+        assert!(src.fetch_analyst_estimates_strict("AAPL").unwrap().is_none());
+    }
+
+    #[test]
     fn ttm_dividend_pull_requests_the_full_history_margin() {
         // The TTM pull shares the label-time history limit: the feed's newest
         // rows can be future-dated declarations that consume slots without
@@ -3788,6 +3814,10 @@ const FMP_BALANCE_SHEET_PATH: &str = "/balance-sheet-statement";
 /// only, like the other statements.
 const FMP_CASH_FLOW_PATH: &str = "/cash-flow-statement";
 const FMP_ANALYST_ESTIMATES_PATH: &str = "/analyst-estimates";
+/// Estimates page size — must exceed the served forward-year count (~5–6 today)
+/// with margin, since the endpoint pages farthest-future-first and a too-small
+/// limit cuts the *nearest* forward year off the page.
+const ESTIMATES_PAGE_LIMIT: &str = "10";
 const FMP_DIVIDENDS_PATH: &str = "/dividends";
 /// The company profile — the outcome episodes' sector-label source
 /// (`docs/portfolio-analysis.md §Outcome learning` — the entry-stamped sector
@@ -3962,6 +3992,11 @@ impl FmpDataSource {
     /// The NTM forward consensus (the time-weighted blend of the two nearest coming
     /// fiscal-year rows — [`consensus_from_value`]) — the v2 driver ladder's source.
     /// Fail-soft to `None` with a tagged gap.
+    ///
+    /// The page limit must exceed the served forward-year count with margin: the
+    /// endpoint pages farthest-future-first, so a too-small limit cuts the
+    /// *nearest* forward year and the NTM read silently becomes a full-weight
+    /// far-year read (the ordering itself is a big-run watch).
     pub fn fetch_analyst_estimates(
         &self,
         symbol: &str,
@@ -3973,7 +4008,7 @@ impl FmpDataSource {
             symbol,
             "Analyst estimates",
             FMP_ANALYST_ESTIMATES_PATH,
-            &[("symbol", symbol), ("period", "annual"), ("limit", "6")],
+            &[("symbol", symbol), ("period", "annual"), ("limit", ESTIMATES_PAGE_LIMIT)],
         ) {
             Disposition::Value(value) => match consensus_from_value(&value, &today) {
                 Some(c) => Some(c),
@@ -4008,7 +4043,7 @@ impl FmpDataSource {
             symbol,
             "Analyst estimates",
             FMP_ANALYST_ESTIMATES_PATH,
-            &[("symbol", symbol), ("period", "annual"), ("limit", "6")],
+            &[("symbol", symbol), ("period", "annual"), ("limit", ESTIMATES_PAGE_LIMIT)],
         ) {
             Disposition::Value(value) => {
                 // Strict shape check: a malformed 200 must surface as a failed
@@ -4017,6 +4052,26 @@ impl FmpDataSource {
                     anyhow::bail!(
                         "FMP analyst estimates returned a non-array body — malformed or drifted response"
                     );
+                }
+                // Every row must carry a datable `date`: the shared shaper drops
+                // undatable rows silently (tolerable on the fail-soft path, which
+                // records a gap either way), but HERE `Ok(None)` is the honest
+                // empty/past-only read the Revision family clears on — a drifted
+                // body of unreadable dates must surface as `Err` (family
+                // `unknown`), never masquerade as "no forward consensus".
+                // Non-zero-padded dates ("2026-9-30") parse fine and stay valid.
+                for row in value.as_array().into_iter().flatten() {
+                    let Some(d) = row.get("date").and_then(Value::as_str) else {
+                        anyhow::bail!(
+                            "an estimates row carried no date — malformed or drifted response"
+                        );
+                    };
+                    if chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err() {
+                        anyhow::bail!(
+                            "an estimates row carried an undatable date {d:?} — malformed or \
+                             drifted response"
+                        );
+                    }
                 }
                 Ok(consensus_from_value(&value, &today))
             }
@@ -4533,39 +4588,43 @@ fn consensus_from_value(
             .and_then(Value::as_f64)
             .or_else(|| row.get(legacy).and_then(Value::as_f64))
     };
-    let mut forward: Vec<&Value> = rows
+    // Filter / sort / dedup on the PARSED date, never the source text: chrono
+    // accepts non-zero-padded fields ("2026-9-30"), which compare
+    // lexicographically after "2026-12-31" — a raw-string sort would reverse
+    // the near/far legs and invert the NTM blend (the dividend windower's
+    // documented wire quirk, same feed family). An undatable row can't be
+    // ordered or weighted, so it never enters the forward set.
+    let today_parsed = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d").ok()?;
+    let mut forward: Vec<(chrono::NaiveDate, &Value)> = rows
         .iter()
-        .filter(|r| date_of(r).as_str() >= today)
+        .filter_map(|r| {
+            let d = chrono::NaiveDate::parse_from_str(&date_of(r), "%Y-%m-%d").ok()?;
+            (d >= today_parsed).then_some((d, r))
+        })
         .collect();
-    forward.sort_by_key(|r| date_of(r));
+    forward.sort_by_key(|(d, _)| *d);
     // One row per fiscal-period date: a duplicated period must not masquerade as
     // near + far — the blend would re-read the same year at both weights and
     // exclude the true following fiscal year while recording `periods_used = 2`.
-    forward.dedup_by_key(|r| date_of(r));
-    let near: &Value = forward.first()?;
-    let far: Option<&&Value> = forward.get(1);
+    forward.dedup_by_key(|(d, _)| *d);
+    let (near_date, near): (chrono::NaiveDate, &Value) = *forward.first()?;
+    let far: Option<&Value> = forward.get(1).map(|(_, r)| *r);
 
     // The near row's weight = the share of the rolling twelve months its fiscal year
     // still covers (days to its period end / 365, clamped); the far row carries the
-    // rest. An unparseable date falls back to the near row alone — the prior
-    // single-row semantics, never a fabricated blend. At the boundary (the near
-    // fiscal year ends today) the weight is 0 — the value is entirely the far
-    // row's while `period_end` still names the near row; `near_weight` on the
-    // record is what keys the provenance.
-    let near_weight = match (
-        far,
-        chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d"),
-        chrono::NaiveDate::parse_from_str(&date_of(near), "%Y-%m-%d"),
-    ) {
-        (Some(_), Ok(t), Ok(n)) => ((n - t).num_days().clamp(0, 365) as f64) / 365.0,
-        _ => 1.0,
+    // rest. At the boundary (the near fiscal year ends today) the weight is 0 — the
+    // value is entirely the far row's while `period_end` still names the near row;
+    // `near_weight` on the record is what keys the provenance.
+    let near_weight = match far {
+        Some(_) => ((near_date - today_parsed).num_days().clamp(0, 365) as f64) / 365.0,
+        None => 1.0,
     };
     let blended = near_weight < 1.0;
     let blend = |stable: &str, legacy: &str| -> Option<f64> {
         let n = field(near, stable, legacy);
-        // An inactive blend (single forward row, a far year wholly beyond the
-        // window, or unparseable dates) reads the near row alone — a far fiscal
-        // year must never leak in at full weight through a missing near leg.
+        // An inactive blend (single forward row, or a far year wholly beyond
+        // the window) reads the near row alone — a far fiscal year must never
+        // leak in at full weight through a missing near leg.
         if !blended {
             return n;
         }
@@ -4601,6 +4660,10 @@ fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<O
     let Some(rows) = value.as_array() else {
         anyhow::bail!("non-array body — malformed or drifted response");
     };
+    // Exclusive lower bound: the window is the 365 days ending today. Inclusive
+    // on both ends it would span 366 distinct days, and a payment dated exactly
+    // `today − 365` would ride beside today's — a fifth quarterly (or second
+    // annual) print inflating the trailing sum.
     let cutoff = today - Duration::days(365);
     let mut sum = 0.0;
     let mut any = false;
@@ -4621,7 +4684,7 @@ fn ttm_dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<O
         // Window on the PARSED date, never the source text: chrono accepts
         // non-zero-padded fields ("2026-5-10"), which compare lexicographically
         // outside the window and would silently drop an in-window payment.
-        if parsed < cutoff || parsed > today {
+        if parsed <= cutoff || parsed > today {
             continue;
         }
         // Numeric-first per key: a present-but-null `adjDividend` beside a numeric
@@ -4762,31 +4825,32 @@ fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) {
 }
 
 /// Shape a weightings array (`[{sector|country, weightPercentage}]`) into
-/// `(label, fraction)` pairs. Weights arrive as `"25.53%"` strings or numbers; a set
-/// whose values exceed 1.5 reads as percent and normalizes to fractions.
+/// `(label, fraction)` pairs. The field is PERCENT by wire contract — the key is
+/// named `weightPercentage`, and FMP's own examples serve both forms in percent
+/// units (`"97.82%"` on country-weightings, numeric `1.8` — SPY's ~2% Basic
+/// Materials sleeve — on sector-weightings), so every value divides by 100.
+/// No unit heuristic: a sum- or element-shaped guess misreads exactly the
+/// sparse sets where the stakes are highest (a lone `1.4` row read as a
+/// "fraction" priced a whole fund off a 1.4% sleeve). Were a fraction-served
+/// set ever to appear, the ÷100 makes it tiny and the absolute coverage /
+/// us_share guards abstain — the fail-safe direction, visible as a coverage
+/// gap, never a fabricated grade.
 fn weights_from_value(value: &Value, label_key: &str) -> Vec<(String, f64)> {
     let Some(rows) = value.as_array() else {
         return vec![];
     };
-    let mut out: Vec<(String, f64)> = rows
-        .iter()
+    rows.iter()
         .filter_map(|row| {
             let label = row.get(label_key).and_then(Value::as_str)?.to_string();
             let raw = row.get("weightPercentage")?;
-            let weight = match raw {
+            let percent = match raw {
                 Value::Number(n) => n.as_f64()?,
                 Value::String(s) => s.trim().trim_end_matches('%').parse::<f64>().ok()?,
                 _ => return None,
             };
-            Some((label, weight))
+            Some((label, percent / 100.0))
         })
-        .collect();
-    if out.iter().any(|(_, w)| *w > 1.5) {
-        for (_, w) in &mut out {
-            *w /= 100.0;
-        }
-    }
-    out
+        .collect()
 }
 
 /// Shape `sector-pe-snapshot` / `historical-sector-pe` rows; a row without a usable
@@ -4930,6 +4994,35 @@ mod suite_tests {
     }
 
     #[test]
+    fn consensus_orders_on_parsed_dates_never_the_source_text() {
+        // A non-zero-padded month ("2026-9-30") sorts lexicographically AFTER
+        // "2026-12-31" — a raw-string sort would make December the near leg and
+        // September the far leg, inverting the NTM blend's weights. Parsed
+        // dates order correctly and the near row is September.
+        let body = r#"[
+          {"date":"2026-12-31","epsAvg":9.0},
+          {"date":"2026-9-30","epsAvg":6.0}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let c = consensus_from_value(&value, "2026-08-05").unwrap();
+        assert_eq!(c.period_end, "2026-9-30", "the September row is near");
+        assert_eq!(c.periods_used, 2);
+        // near_weight = days(2026-09-30 − 2026-08-05)/365 = 56/365; the blend
+        // must lean far (December), not the reverse.
+        assert!((c.near_weight - 56.0 / 365.0).abs() < 1e-9, "{}", c.near_weight);
+        let expected = c.near_weight * 6.0 + (1.0 - c.near_weight) * 9.0;
+        assert!((c.eps_mid.unwrap() - expected).abs() < 1e-9);
+        // An undatable row never enters the forward set.
+        let junk: Value = serde_json::from_str(
+            r#"[{"date":"soon","epsAvg":9.9},{"date":"2026-09-30","epsAvg":6.0}]"#,
+        )
+        .unwrap();
+        let c = consensus_from_value(&junk, "2026-08-05").unwrap();
+        assert_eq!(c.periods_used, 1);
+        assert_eq!(c.eps_mid, Some(6.0));
+    }
+
+    #[test]
     fn consensus_with_one_forward_row_keeps_single_row_semantics() {
         let body = r#"[
           {"date":"2025-09-30","epsAvg":6.1},
@@ -5070,6 +5163,28 @@ mod suite_tests {
         // No rows in the window → None, never a fabricated yield.
         let stale: Value = serde_json::from_str(r#"[{"date":"2020-01-01","dividend":1.0}]"#).unwrap();
         assert!(ttm_dividends_from_value(&stale, today).unwrap().is_none());
+    }
+
+    #[test]
+    fn ttm_dividend_window_is_365_days_exclusive_lower_bound() {
+        // Exactly `today − 365` is OUT: inclusive-both-ends the window spans 366
+        // distinct days, and a quarterly payer with a year-ago ex-date landing
+        // on the boundary would sum FIVE payments into "trailing twelve months"
+        // (an annual payer would double). `today` itself is in.
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 8, 12).unwrap();
+        let body = r#"[
+          {"date":"2026-08-12","adjDividend":0.25},
+          {"date":"2026-05-11","adjDividend":0.25},
+          {"date":"2026-02-09","adjDividend":0.25},
+          {"date":"2025-11-10","adjDividend":0.25},
+          {"date":"2025-08-12","adjDividend":0.25}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let ttm = ttm_dividends_from_value(&value, today).unwrap().unwrap();
+        assert!(
+            (ttm - 1.0).abs() < 1e-9,
+            "{ttm}: the 2025-08-12 boundary row (today − 365) must be excluded"
+        );
     }
 
     #[test]
@@ -5241,6 +5356,34 @@ mod suite_tests {
         assert!((fund.sector_weights[0].1 - 0.325).abs() < 1e-9);
         assert!((fund.country_weights[0].1 - 0.994).abs() < 1e-9);
         assert!(fund.gaps.is_empty(), "{:?}", fund.gaps);
+    }
+
+    #[test]
+    fn weights_are_percent_by_wire_contract_in_both_forms() {
+        // The field is percent by contract (FMP's own examples: numeric 1.8 =
+        // SPY's ~2% Basic Materials sleeve; "97.82%" strings on countries) —
+        // every value divides by 100, sparse or full, suffixed or not. No unit
+        // heuristic: sum- and element-shaped guesses misread exactly the
+        // sparse sets where a wrong read prices a fund off a sliver.
+        let numeric: Value = serde_json::from_str(
+            r#"[{"sector":"Technology","weightPercentage":32.5},
+                {"sector":"Basic Materials","weightPercentage":1.8}]"#,
+        )
+        .unwrap();
+        let out = weights_from_value(&numeric, "sector");
+        assert!((out[0].1 - 0.325).abs() < 1e-12, "{:?}", out);
+        assert!((out[1].1 - 0.018).abs() < 1e-12, "{:?}", out);
+        let suffixed: Value =
+            serde_json::from_str(r#"[{"sector":"Technology","weightPercentage":"1.4%"}]"#).unwrap();
+        let out = weights_from_value(&suffixed, "sector");
+        assert!((out[0].1 - 0.014).abs() < 1e-12, "{:?}", out);
+        // The sparse numeric row divides too — the case every heuristic
+        // misread (1.4 kept as a "fraction" priced the fund off a 1.4% sleeve
+        // at 100% reported coverage).
+        let sparse: Value =
+            serde_json::from_str(r#"[{"sector":"Technology","weightPercentage":1.4}]"#).unwrap();
+        let out = weights_from_value(&sparse, "sector");
+        assert!((out[0].1 - 0.014).abs() < 1e-12, "{:?}", out);
     }
 
     #[test]

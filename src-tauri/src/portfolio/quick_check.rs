@@ -633,9 +633,15 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
         let position = target.position;
         let step_key = holding_step_key(&position.symbol);
         ctx.step_started(step_key.clone(), format!("Check {}", position.symbol));
-        let prior_holding = pass
-            .prior_state
-            .and_then(|s| s.holdings.iter().find(|h| h.symbol == position.symbol));
+        // Case-insensitive like every neighboring symbol join (the diff, the
+        // retention seam, `prior_verdict_for`) — a casing drift between the
+        // fresh pull and the stored sweep state must not silently drop the
+        // carried flag / streak chain.
+        let prior_holding = pass.prior_state.and_then(|s| {
+            s.holdings
+                .iter()
+                .find(|h| h.symbol.eq_ignore_ascii_case(&position.symbol))
+        });
         let fresh_weight = prices.get(&position.symbol).and_then(|(price, _)| {
             (fresh_total > 0.0 && position.quantity != 0.0)
                 .then(|| (position.quantity * price) / fresh_total)
@@ -2167,11 +2173,14 @@ mod tests {
         }]);
         // Fresh statements: 10% net margin — breaches the 20% floor; filing
         // cadence confirms on the first qualifying print.
+        // Real quarterly spacing — the statement windows are contiguity-gated,
+        // so a synthetic monthly run would (correctly) fail TTM adoption.
+        let quarter_ends = ["2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30"];
         stub.statements = CompanyFinancials {
             symbol: "AAPL".into(),
             quarterly_income: (0..4)
                 .map(|i| engine::QuarterlyIncomeRow {
-                    period_end: format!("2026-0{}-30", 6 - i),
+                    period_end: quarter_ends[i].to_string(),
                     filing_date: None,
                     revenue: Some(100.0),
                     eps_diluted: Some(1.0),

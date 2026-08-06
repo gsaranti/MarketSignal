@@ -441,6 +441,13 @@ const FRED_RELEASE_DATES_PATH: &str = "/release/dates";
 /// floor and [`CALENDAR_BACK_MAX_DAYS`] the cap. The *forward* window stays fixed — the
 /// upcoming schedule is equally relevant regardless of the interval since the last report.
 const CALENDAR_BACK_DAYS: i64 = 10;
+
+/// Max age of the newest numeric print [`FredDataSource::latest_rate_dated`]
+/// accepts as a **current** rate anchor. The "." markers on weekends / holidays
+/// make a short lookback legitimate; past this bound the latest available print
+/// is a stale anchor, not a current one, and the read fails onto the callers'
+/// hard-fail / unknown postures (ruled 2026-08-05, piece-3 Codex round).
+const RATE_ANCHOR_MAX_AGE_DAYS: i64 = 10;
 const CALENDAR_BACK_MAX_DAYS: i64 = 45;
 const CALENDAR_FWD_DAYS: i64 = 21;
 
@@ -676,10 +683,14 @@ fn releases_to_calendar(
     value: Value,
     name: &str,
     today: NaiveDate,
+    back_days: i64,
 ) -> Result<Vec<EconomicRelease>> {
     let raw: FredReleaseDates = serde_json::from_value(value)
         .context("FRED release/dates response did not match the expected shape")?;
-    let earliest = today - Duration::days(CALENDAR_BACK_DAYS);
+    // The back window must be the caller's cadence-scaled one — re-filtering on
+    // the fixed floor here would silently drop released entries the scaled
+    // query deliberately kept (a monthly run's whole-gap releases).
+    let earliest = today - Duration::days(back_days);
     let latest = today + Duration::days(CALENDAR_FWD_DAYS);
     let mut out = Vec::with_capacity(raw.release_dates.len());
     for rd in raw.release_dates {
@@ -779,19 +790,42 @@ impl FredDataSource {
             }
             let parsed: FredObservations =
                 serde_json::from_str(&body).context("parsing FRED observations")?;
-            parsed
+            let latest = parsed
                 .observations
                 .iter()
                 .find_map(|o| {
                     o.value
                         .parse::<f64>()
                         .ok()
+                        // Finite only — same guard as the history read: a parsed
+                        // "NaN"/"inf" must read as a missing print, never a rate.
+                        .filter(|v| v.is_finite())
                         .map(|percent| crate::portfolio::engine::DatedValue {
                             date: o.date.clone(),
                             value: percent / 100.0,
                         })
                 })
-                .with_context(|| format!("no numeric observation for {series_id}"))
+                .with_context(|| format!("no numeric observation for {series_id}"))?;
+            // Skipping "." markers to the prior print is correct FRED semantics
+            // (weekends / holidays publish no rate), but the fallback must be
+            // BOUNDED: a long malformed or unpublished run would otherwise serve
+            // an arbitrarily stale print as the current anchor. Ten days covers
+            // holiday + weekend clusters with margin; older is a missing anchor,
+            // taking the caller's existing hard-fail / unknown posture.
+            let fresh_floor =
+                chrono::Utc::now().date_naive() - chrono::Duration::days(RATE_ANCHOR_MAX_AGE_DAYS);
+            let print_date = chrono::NaiveDate::parse_from_str(&latest.date, "%Y-%m-%d")
+                .with_context(|| {
+                    format!("undatable observation date {:?} for {series_id}", latest.date)
+                })?;
+            if print_date < fresh_floor {
+                anyhow::bail!(
+                    "latest numeric print for {series_id} is stale ({} — older than \
+                     {RATE_ANCHOR_MAX_AGE_DAYS} days)",
+                    latest.date
+                );
+            }
+            Ok(latest)
         })();
         match &result {
             Ok(_) => self
@@ -850,6 +884,10 @@ impl FredDataSource {
                     o.value
                         .parse::<f64>()
                         .ok()
+                        // Finite only — Rust's parser accepts "NaN"/"inf", and a
+                        // non-finite anchor point would panic the percentile sort
+                        // (the baseline path rejects the same input explicitly).
+                        .filter(|v| v.is_finite())
                         .map(|percent| crate::portfolio::engine::DatedValue {
                             date: o.date,
                             value: percent / 100.0,
@@ -1056,7 +1094,8 @@ impl FredDataSource {
                 Err(_) => Disposition::Gap(GapReason::Unavailable),
             };
             match disposition {
-                Disposition::Value(value) => match releases_to_calendar(value, name, today) {
+                Disposition::Value(value) => match releases_to_calendar(value, name, today, back_days)
+                {
                     Ok(entries) => out.extend(entries),
                     Err(_) => gaps.push(DataGap::new(
                         GroupKind::Calendar,
@@ -1963,7 +2002,7 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let cal = releases_to_calendar(v, "Consumer Price Index", today).unwrap();
+        let cal = releases_to_calendar(v, "Consumer Price Index", today, CALENDAR_BACK_DAYS).unwrap();
         assert_eq!(cal.len(), 3, "out-of-window dates dropped: {cal:?}");
         assert_eq!(cal[0].date, "2026-06-05");
         assert_eq!(cal[0].status, "released");
@@ -1976,10 +2015,64 @@ mod tests {
     }
 
     #[test]
+    fn latest_rate_anchor_skips_markers_but_bounds_the_fallback() {
+        // Skipping "." markers to the prior business day is correct FRED
+        // semantics — but the fallback is bounded: a print older than the
+        // anchor max age must error onto the callers' hard-fail / unknown
+        // postures, never serve as a current anchor.
+        let today = chrono::Utc::now().date_naive();
+        let recent = (today - Duration::days(2)).format("%Y-%m-%d").to_string();
+        let marker = today.format("%Y-%m-%d").to_string();
+        let fresh_body = format!(
+            r#"{{"observations":[{{"date":"{marker}","value":"."}},{{"date":"{recent}","value":"4.30"}}]}}"#
+        );
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: Box::leak(fresh_body.into_boxed_str()),
+        }]);
+        let d = test_source(&server.base_url).latest_rate_dated("DGS10").unwrap();
+        assert!((d.value - 0.043).abs() < 1e-12);
+        assert_eq!(d.date, recent);
+
+        let stale = (today - Duration::days(RATE_ANCHOR_MAX_AGE_DAYS + 1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let stale_body =
+            format!(r#"{{"observations":[{{"date":"{stale}","value":"4.30"}}]}}"#);
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: Box::leak(stale_body.into_boxed_str()),
+        }]);
+        let err = test_source(&server.base_url)
+            .latest_rate_dated("DGS10")
+            .unwrap_err();
+        assert!(err.to_string().contains("stale"), "{err}");
+    }
+
+    #[test]
+    fn releases_to_calendar_honors_the_scaled_back_window() {
+        // The cadence-scaled lookback must reach the filter: a release 25 days
+        // back is kept under a 45-day window and dropped under the 10-day floor
+        // (the pre-fix behavior re-filtered on the floor unconditionally).
+        let today = NaiveDate::from_ymd_opt(2026, 6, 6).unwrap();
+        let v = || -> Value {
+            serde_json::from_str(r#"{"release_dates":[{"release_id":10,"date":"2026-05-12"}]}"#)
+                .unwrap()
+        };
+        let scaled = releases_to_calendar(v(), "CPI", today, 45).unwrap();
+        assert_eq!(scaled.len(), 1, "in-window under the scaled lookback: {scaled:?}");
+        assert_eq!(scaled[0].status, "released");
+        let floor = releases_to_calendar(v(), "CPI", today, CALENDAR_BACK_DAYS).unwrap();
+        assert!(floor.is_empty(), "outside the 10-day floor: {floor:?}");
+    }
+
+    #[test]
     fn releases_to_calendar_empty_is_empty() {
         let today = NaiveDate::from_ymd_opt(2026, 6, 6).unwrap();
         let v: Value = serde_json::from_str(r#"{"release_dates":[]}"#).unwrap();
-        assert!(releases_to_calendar(v, "x", today).unwrap().is_empty());
+        assert!(releases_to_calendar(v, "x", today, CALENDAR_BACK_DAYS).unwrap().is_empty());
     }
 
     #[test]
@@ -1987,11 +2080,11 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2026, 6, 6).unwrap();
         // A body without the `release_dates` array is a contract violation.
         let bad_shape: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
-        assert!(releases_to_calendar(bad_shape, "x", today).is_err());
+        assert!(releases_to_calendar(bad_shape, "x", today, CALENDAR_BACK_DAYS).is_err());
         // An unparseable date fails closed rather than being silently dropped.
         let bad_date: Value =
             serde_json::from_str(r#"{"release_dates":[{"date":"June 6th"}]}"#).unwrap();
-        assert!(releases_to_calendar(bad_date, "x", today).is_err());
+        assert!(releases_to_calendar(bad_date, "x", today, CALENDAR_BACK_DAYS).is_err());
     }
 
     #[test]

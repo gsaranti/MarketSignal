@@ -746,10 +746,18 @@ impl OutcomePriceSource for LiveOutcomePrices {
             Err(stooq_err) => {
                 // The FMP dated-EOD fetch is now-anchored; a lookback from today
                 // covering `from` spans the requested range (labels always read
-                // through the present).
+                // through the present). The symbol must cross to FMP's OWN
+                // identity: `^spx` is Stooq's S&P 500 name — FMP serves `^GSPC`
+                // — so passing it verbatim would leave the market-benchmark leg
+                // with no working fallback rung.
+                let fmp_symbol = if symbol.eq_ignore_ascii_case(MARKET_BENCHMARK) {
+                    "^GSPC"
+                } else {
+                    symbol
+                };
                 let today = chrono::Utc::now().date_naive();
                 let lookback = (today - from).num_days().max(1);
-                match self.fmp.fetch_dated_eod(symbol, lookback) {
+                match self.fmp.fetch_dated_eod(fmp_symbol, lookback) {
                     Ok(closes) if !closes.is_empty() => Ok(closes),
                     Ok(_) => Err(stooq_err.context("FMP dated-EOD fallback was empty")),
                     Err(fmp_err) => {
@@ -1084,11 +1092,19 @@ pub fn mature_labels(
                 None => Err("no price source".to_string()),
             });
             let end_iso = w_end.format("%Y-%m-%d").to_string();
+            let entry_iso = entry_date.format("%Y-%m-%d").to_string();
             let (total_return, total_return_gap) = match divs_result {
                 Ok(rows) => {
+                    // The window off an entry CLOSE is `(entry, end]`: an
+                    // ex-date on the entry session itself is already out of the
+                    // entry price, so counting it would overstate the label by
+                    // one payment.
                     let paid: f64 = rows
                         .iter()
-                        .filter(|d| d.date.as_str() <= end_iso.as_str())
+                        .filter(|d| {
+                            d.date.as_str() > entry_iso.as_str()
+                                && d.date.as_str() <= end_iso.as_str()
+                        })
                         .map(|d| d.value)
                         .sum();
                     (Some((end_bar.value + paid) / entry.value - 1.0), None)
@@ -1426,6 +1442,13 @@ pub fn episode_decision(
             match rec_state(prior_v) {
                 RecState::None => EpisodeDecision::Open(vec![OpenReason::Debut]),
                 RecState::Abstained => {
+                    // A ledger-less abstained prior is a *debut* abstention — the
+                    // holding was never tracked, so nothing is comparable and the
+                    // episode opens as a debut (a weight-range "change" against
+                    // a never-committed range would be a fabricated reason).
+                    if prior_v.thesis_ledger.is_none() {
+                        return EpisodeDecision::Open(vec![OpenReason::Debut]);
+                    }
                     // The abstained prior retained the standing ledger: branch and
                     // weight range are still comparable; the action is not.
                     let prior_branch_priced = matches!(
@@ -1550,6 +1573,13 @@ pub struct PlanInput<'a> {
     /// the divergence rationale is a per-episode fact, never a join against an
     /// audit record that ages out). Empty on runs with no divergences.
     pub lean_divergence_by_symbol: &'a HashMap<String, String>,
+    /// Symbols whose verdict (and audit) were carried, not freshly passed
+    /// (uppercase). A carried audit's `ledger_audit.crossings` are its *prior*
+    /// run's crossings — they attached to an episode in that run, so the
+    /// falsifier-attach loop must skip them: re-attaching one to an episode
+    /// newly opened this run (whose empty event list defeats the per-episode
+    /// dedup) would fabricate a fresh confirmation dated today.
+    pub carried_symbols: &'a HashSet<String>,
 }
 
 /// What the plan changed.
@@ -1748,8 +1778,12 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
     // This run's confirmed falsifier crossings attach to the episode carrying the
     // condition. With no active episode the event lands on the latest matured
     // episode typed post-maturity — retained as context for the next episode,
-    // feeding no lead-time read.
+    // feeding no lead-time read. Carried audits are skipped: their crossings
+    // are prior-run facts that already attached in their own run.
     for audit in input.audits {
+        if input.carried_symbols.contains(&audit.symbol.to_ascii_uppercase()) {
+            continue;
+        }
         let Some(ledger_audit) = &audit.ledger_audit else {
             continue;
         };
@@ -2398,6 +2432,11 @@ mod tests {
         EMPTY.get_or_init(HashMap::new)
     }
 
+    fn empty_carried() -> &'static HashSet<String> {
+        static EMPTY: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+        EMPTY.get_or_init(HashSet::new)
+    }
+
     fn plan_input<'a>(
         run_id: &'a str,
         created_at: &'a str,
@@ -2415,6 +2454,7 @@ mod tests {
             lean_divergence_by_symbol: empty_divergence(),
             dgs2: Some(0.04),
             unreadable_active_symbols: HashSet::new(),
+            carried_symbols: empty_carried(),
         }
     }
 
@@ -2862,6 +2902,86 @@ mod tests {
         input2.audits = &audits;
         plan_episodes(&input2, &mut episodes);
         assert_eq!(episodes[0].falsifier_events.len(), 1, "same observation dedups");
+    }
+
+    #[test]
+    fn carried_audit_crossings_never_attach_as_fresh_events() {
+        // A carried audit's `ledger_audit.crossings` are its PRIOR run's facts —
+        // they attached to an episode in that run. Re-processing them (the
+        // whole-audit carry rides `input.audits`) against an episode newly
+        // opened this run would fabricate a falsifier confirmation dated today
+        // (the new episode's empty event list defeats the per-episode dedup).
+        let c1 = "2026-08-04T12:00:00+00:00";
+        let verdicts = vec![fresh(verdict("AAPL", Action::Add, (0.03, 0.06)), c1)];
+        let sector = HashMap::new();
+        let mut episodes = Vec::new();
+        let audit = HoldingAudit {
+            symbol: "AAPL".into(),
+            metrics: Default::default(),
+            sources: vec![],
+            model_ids: vec![],
+            prompt_version: "portfolio-v7".into(),
+            degraded_inputs: vec![],
+            target_meta: None,
+            grade_parameter_version: None,
+            ledger_audit: Some(crate::portfolio::LedgerAudit {
+                crossings: vec![crate::portfolio::ConditionCrossing {
+                    condition_id: "c-1".into(),
+                    statement: "margin below 15%".into(),
+                    role: crate::portfolio::ConditionRole::Falsifier,
+                    outcome: crate::portfolio::CrossingOutcome::Confirmed,
+                    observed_value: 0.12,
+                    threshold: 0.15,
+                    observation_id: "2026-06-30".into(),
+                }],
+                ..Default::default()
+            }),
+            quick_basis: None,
+            fund_exposure: None,
+            pre_profit: None,
+            hurdle: None,
+        };
+        let audits = vec![audit];
+        let mut input = plan_input("run-1", c1, &verdicts, None, &sector);
+        input.audits = &audits;
+        plan_episodes(&input, &mut episodes);
+        assert_eq!(episodes[0].falsifier_events.len(), 1, "the fresh run attaches");
+
+        // Run 2: the verdict's action changed (a new episode opens) and the
+        // audit rides the carry — the month-old crossing must not re-attach.
+        let c2 = "2026-09-08T12:00:00+00:00";
+        let mut carried_verdict = verdict("AAPL", Action::Hold, (0.03, 0.06));
+        carried_verdict.analyzed_at = Some(c1.to_string());
+        let current = vec![carried_verdict];
+        let carried: HashSet<String> = ["AAPL".to_string()].into();
+        let mut input2 = plan_input("run-2", c2, &current, Some(&verdicts), &sector);
+        input2.audits = &audits;
+        input2.carried_symbols = &carried;
+        plan_episodes(&input2, &mut episodes);
+        let total_events: usize = episodes.iter().map(|e| e.falsifier_events.len()).sum();
+        assert_eq!(
+            total_events, 1,
+            "no fresh event from a carried audit: {episodes:#?}"
+        );
+    }
+
+    #[test]
+    fn a_priced_verdict_after_a_ledger_less_abstention_opens_as_debut() {
+        // A debut abstention retained no standing ledger — nothing is
+        // comparable, so the first priced verdict is a DEBUT open, never a
+        // fabricated weight-range change against a never-committed range.
+        let mut abstained = verdict("AAPL", Action::Hold, (0.03, 0.06));
+        abstained.disposition = VerdictDisposition::InsufficientEvidence {
+            reason: "debut abstention".into(),
+        };
+        abstained.thesis_ledger = None;
+        let current = verdict("AAPL", Action::Hold, (0.03, 0.06));
+        let decision = episode_decision(Some(&abstained), &current, true);
+        assert_eq!(
+            decision,
+            EpisodeDecision::Open(vec![OpenReason::Debut]),
+            "ledger-less abstained prior must read as a debut"
+        );
     }
 
     // ---- Alignment ----

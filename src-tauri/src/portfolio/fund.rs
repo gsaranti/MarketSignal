@@ -48,8 +48,21 @@ const US_LABELS: &[&str] = &["united states", "united states of america", "usa",
 /// screen the report's movers list applies. A leveraged / inverse match routes the
 /// fund to `role_risk_only`.
 const STRUCTURAL_FLAG_FRAGMENTS: &[&str] = &[
-    "2x", "3x", "-1x", "-2x", "-3x", "ultra", "inverse", "leveraged", "daily bear", "daily bull",
+    "2x", "3x", "-1x", "-2x", "-3x", "inverse", "leveraged", "daily bear", "daily bull",
 ];
+
+/// Duration PHRASES that disqualify the ambiguous fragments ("short", "ultra")
+/// from reading as an inverse / leveraged vehicle — the suppression must be
+/// phrase-shaped, not vocabulary-shaped: a word veto anywhere in the name
+/// ("treasury", "bond") would also suppress genuine inverse bond funds
+/// ("ProShares Short 20+ Year Treasury"), while an unconditional "ultra"
+/// fragment misread "Ultra Short-Term Bond" duration funds as daily-reset
+/// vehicles. Only a fragment inside a maturity phrase is a duration read.
+/// Known cost (ruled 2026-08-05, piece-3 Codex round): "iShares Short Treasury
+/// Bond"-style duration names flag as leveraged/inverse — still
+/// `role_risk_only` either way, a wrong class label only; a big-run watch.
+const SHORT_DURATION_PHRASES: &[&str] =
+    &["short-term", "short term", "short duration", "short maturity"];
 
 /// Name / mandate fragments that deterministically flag an **option-overlay** vehicle
 /// (covered-call / buy-write / put-write / defined-outcome buffer funds). Unlike
@@ -147,7 +160,13 @@ pub fn classify(fund: &FundData) -> FundClassification {
     .to_ascii_lowercase();
     let leveraged_inverse = STRUCTURAL_FLAG_FRAGMENTS
         .iter()
-        .any(|f| name_blob.contains(f));
+        .any(|f| name_blob.contains(f))
+        // The ambiguous fragments — bare "short" (SH-style inverse names carry
+        // neither "-1x" nor "inverse") and "ultra" (UltraPro/UltraShort
+        // leverage vs "Ultra Short-Term" duration) — count only outside a
+        // duration phrase.
+        || ((name_blob.contains("short") || name_blob.contains("ultra"))
+            && !SHORT_DURATION_PHRASES.iter().any(|f| name_blob.contains(f)));
     if leveraged_inverse {
         return FundClassification {
             class: FundStrategyClass::LeveragedInverse,
@@ -265,12 +284,16 @@ fn us_share(fund: &FundData) -> Option<f64> {
     if fund.country_weights.is_empty() {
         return None;
     }
+    // Capped at 1: a share above 100% is only reachable through a
+    // percent-served set misread as fractions, and this value feeds the
+    // ≥70%-US pricing guard — the cap bounds that misread's blast radius.
     Some(
         fund.country_weights
             .iter()
             .filter(|(c, _)| US_LABELS.contains(&c.to_ascii_lowercase().trim()))
             .map(|(_, w)| w)
-            .sum(),
+            .sum::<f64>()
+            .min(1.0),
     )
 }
 
@@ -315,10 +338,6 @@ pub fn composite_yield(
     weights: &[(String, f64)],
     blended_pe: &HashMap<String, f64>,
 ) -> Option<CompositeYield> {
-    let total: f64 = weights.iter().map(|(_, w)| w).sum();
-    if total <= 0.0 {
-        return None;
-    }
     let mut covered = 0.0;
     let mut sum = 0.0;
     for (sector, w) in weights {
@@ -330,9 +349,16 @@ pub fn composite_yield(
     if covered <= 0.0 {
         return None;
     }
+    // The coverage-guard input is ABSOLUTE — the priced share of the whole
+    // fund, not of whatever rows the feed happened to serve. Weights are
+    // fund fractions by the adapter contract, so `covered` is that share
+    // directly; renormalizing over the served rows' sum let a sparse response
+    // (one 1.4% sector row) report 100% coverage and price the entire fund
+    // off a sliver. The yield itself stays renormalized over covered weight —
+    // uncovered weight neither reads as zero earnings nor extrapolates.
     Some(CompositeYield {
         yield_value: sum / covered,
-        covered_share: covered / total,
+        covered_share: covered.min(1.0),
     })
 }
 
@@ -572,6 +598,8 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
 
     // Valuation: what the mix costs now versus what it has cost — the percentile rank
     // of the current composite yield in its own history (a higher yield is cheaper).
+    // `<=` counts exact ties as cheap, so a degenerate flat history scores 100
+    // rather than neutral — accepted as cosmetic (ruled 2026-08-05, piece-3 walk).
     let below = history
         .iter()
         .filter(|h| h.value <= composite.yield_value)
@@ -929,6 +957,55 @@ mod tests {
     }
 
     #[test]
+    fn bare_short_flags_inverse_names_but_not_duration_phrases() {
+        // "ProShares Short S&P500" carries neither "-1x" nor "inverse" — bare
+        // "short" must catch it; duration PHRASES ("Short-Term Bond", "Short
+        // Duration") are maturity reads, not daily-reset vehicles.
+        let mut sh = fund();
+        sh.name = Some("ProShares Short S&P500".to_string());
+        assert_eq!(classify(&sh).class, FundStrategyClass::LeveragedInverse);
+        assert!(classify(&sh).structural_flag);
+        // An inverse BOND fund must flag too — the suppression is phrase-shaped,
+        // never a vocabulary veto ("treasury" anywhere must not excuse it).
+        let mut tbf = fund();
+        tbf.name = Some("ProShares Short 20+ Year Treasury".to_string());
+        tbf.asset_class = Some("Fixed Income".to_string());
+        assert_eq!(classify(&tbf).class, FundStrategyClass::LeveragedInverse);
+        let mut bond = fund();
+        bond.name = Some("iShares Short-Term Corporate Bond ETF".to_string());
+        bond.asset_class = Some("Fixed Income".to_string());
+        assert_eq!(classify(&bond).class, FundStrategyClass::Bond);
+        let mut duration = fund();
+        duration.name = Some("PIMCO Short Duration Municipal Income".to_string());
+        duration.asset_class = Some("Fixed Income".to_string());
+        assert_eq!(classify(&duration).class, FundStrategyClass::Bond);
+        // "ultra" is ambiguous the same way: leverage (UltraPro / UltraShort)
+        // flags, a duration phrase ("Ultra Short-Term Bond") suppresses.
+        let mut ultra_duration = fund();
+        ultra_duration.name = Some("iShares Ultra Short-Term Bond ETF".to_string());
+        ultra_duration.asset_class = Some("Fixed Income".to_string());
+        assert_eq!(classify(&ultra_duration).class, FundStrategyClass::Bond);
+        let mut ultrashort = fund();
+        ultrashort.name = Some("ProShares UltraShort 20+ Year Treasury".to_string());
+        ultrashort.asset_class = Some("Fixed Income".to_string());
+        assert_eq!(classify(&ultrashort).class, FundStrategyClass::LeveragedInverse);
+        let mut ultra_long = fund();
+        ultra_long.name = Some("ProShares Ultra S&P500".to_string());
+        assert_eq!(classify(&ultra_long).class, FundStrategyClass::LeveragedInverse);
+    }
+
+    #[test]
+    fn us_share_caps_at_one() {
+        // A percent-served country set misread as fractions would report a
+        // >100% US share straight into the ≥70% pricing guard — the cap bounds
+        // the guard input at full-US.
+        let mut misread = fund();
+        misread.country_weights = vec![("United States".to_string(), 99.4)];
+        let c = classify(&misread);
+        assert_eq!(c.us_share, Some(1.0));
+    }
+
+    #[test]
     fn blend_averages_exchange_yields_not_pes() {
         let blended = blend_sector_pes(&snapshot());
         // Technology: yields 1/30 and 1/34 average to ~0.031373 → PE ≈ 31.875.
@@ -948,6 +1025,17 @@ mod tests {
         let fin_pe = 2.0 / (1.0 / 14.0 + 1.0 / 16.0);
         let expected = (0.5 / tech_pe + 0.3 / fin_pe) / 0.8;
         assert!((c.yield_value - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_sparse_served_weighting_reads_absolute_coverage_never_renormalized() {
+        // One 1.4% sector row: renormalizing over the served rows' sum reported
+        // 100% coverage and priced the whole fund off the sliver — absolute
+        // coverage reads 1.4% and the ≥70% guard abstains downstream.
+        let sparse = vec![("Technology".to_string(), 0.014)];
+        let c = composite_yield(&sparse, &blend_sector_pes(&snapshot())).unwrap();
+        assert!((c.covered_share - 0.014).abs() < 1e-12, "{c:?}");
+        assert!(c.covered_share < PE_COVERAGE_GUARD);
     }
 
     #[test]

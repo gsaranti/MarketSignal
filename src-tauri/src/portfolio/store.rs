@@ -341,13 +341,17 @@ pub fn insert_run(conn: &Connection, run: &PortfolioRun) -> Result<()> {
 
 /// The most recent run, or `None` before any run exists. The prior run's verdicts
 /// feed the next run's continuity check (`docs/portfolio-analysis.md` §Continuity and
-/// isolation). Newest-first by `created_at` with an `id` tiebreak, matching the
-/// report's recent-reports ordering.
+/// isolation). Newest-first by **insertion order** (`id` — monotonic within a store,
+/// and preserved across machines by the portability export's id-order): the
+/// production identity of "latest" is the run most recently PERSISTED, never the
+/// wall clock's claim — under a backwards clock step a `created_at` ordering would
+/// hand the diff/carry baseline (and the page's refresh) back to the prior run
+/// while the just-persisted one sat invisible. `created_at` stays display data.
 pub fn latest_run(conn: &Connection) -> Result<Option<PortfolioRun>> {
     let json = conn
         .query_row(
             "SELECT run_json FROM portfolio_runs
-             ORDER BY created_at DESC, id DESC
+             ORDER BY id DESC
              LIMIT 1",
             [],
             |row| row.get::<_, String>(0),
@@ -360,11 +364,11 @@ pub fn latest_run(conn: &Connection) -> Result<Option<PortfolioRun>> {
 }
 
 /// List the most recent runs, newest first, capped at `limit` — the Portfolio page's
-/// run history.
+/// run history. Same insertion-order identity as [`latest_run`].
 pub fn list_recent_runs(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRun>> {
     let mut stmt = conn.prepare(
         "SELECT run_json FROM portfolio_runs
-         ORDER BY created_at DESC, id DESC
+         ORDER BY id DESC
          LIMIT ?1",
     )?;
     let rows = stmt.query_map([limit], |row| row.get::<_, String>(0))?;
@@ -429,11 +433,17 @@ pub fn run_by_id(conn: &Connection, run_id: &str) -> Result<Option<PortfolioRun>
 /// ordering as [`latest_run`], so it evicts exactly the runs the history no longer
 /// shows. Idempotent; a no-op at or under the cap.
 pub fn prune_runs(conn: &Connection, keep: u32) -> Result<()> {
+    // Insertion-order retention, matching [`latest_run`] / [`list_recent_runs`]
+    // exactly — so eviction removes precisely the runs the history no longer
+    // shows, and the run being persisted (the max id) is inherently inside the
+    // keep set even under a backwards wall-clock step (a `created_at` ordering
+    // could evict it inside its own transaction, leaving a Successful job
+    // pointing at a phantom run_id).
     conn.execute(
         "DELETE FROM portfolio_runs
          WHERE id NOT IN (
              SELECT id FROM portfolio_runs
-             ORDER BY created_at DESC, id DESC
+             ORDER BY id DESC
              LIMIT ?1
          )",
         [keep],
@@ -617,6 +627,34 @@ mod tests {
             .collect();
         assert!(!surviving.contains(&"run-00".to_string()));
         assert_eq!(latest_run(&conn).unwrap().unwrap().run_id, "run-10");
+    }
+
+    #[test]
+    fn a_backdated_run_keeps_full_production_identity_under_insertion_order() {
+        // A backwards wall-clock step must not demote the just-persisted run:
+        // under a `created_at` ordering it survived the prune (if at all) as an
+        // invisible extra row — `latest_run` returned the prior run, the capped
+        // history excluded it, the page refresh swapped it away, and the next
+        // analysis diffed against the wrong baseline. Insertion order is the
+        // production identity everywhere.
+        let conn = mem();
+        for i in 0..PORTFOLIO_RUN_RETENTION {
+            let created_at = format!("2026-06-{:02}T00:00:00Z", i + 2);
+            record_run(&conn, &sample_run(&format!("run-{i:02}"), &created_at)).unwrap();
+        }
+        // The clock steps back before every retained run.
+        record_run(&conn, &sample_run("run-backdated", "2026-06-01T00:00:00Z")).unwrap();
+        // The newest-inserted run IS the latest, heads the CAPPED history the
+        // page actually queries, and the count holds the retention cap.
+        assert_eq!(latest_run(&conn).unwrap().unwrap().run_id, "run-backdated");
+        let capped: Vec<String> = list_recent_runs(&conn, PORTFOLIO_RUN_RETENTION)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.run_id)
+            .collect();
+        assert_eq!(capped.first().map(String::as_str), Some("run-backdated"));
+        assert_eq!(capped.len() as u32, PORTFOLIO_RUN_RETENTION);
+        assert!(!capped.contains(&"run-00".to_string()), "the oldest-inserted evicted");
     }
 
     #[test]
