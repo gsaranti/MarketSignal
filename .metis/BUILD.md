@@ -486,8 +486,9 @@ load-bearing decisions:
   block's backend-composed rows) that frames the prescription, never which
   holdings or ideas qualify — nor the intrinsic verdict (profile-independence
   is declared **and input-isolation-enforced** since 2026-08-04: the 6f
-  intrinsic prompt carries no profile — it enters at 7b construction only,
-  test-pinned).
+  intrinsic prompt carries no profile — it reaches the model at 7b
+  construction only, test-pinned; the loop's one read is mechanical, the
+  engine bounding a sizing delta by available cash).
 - **Invariants governing the designed features** (full specs in the docs; a
   plan must not work against these):
   - **Deterministic finance, primary-source evidence** — a shared Rust engine
@@ -1015,8 +1016,21 @@ analysis suite above). The **TO docs model-decision-power audit landed
 either-arm admission, the deferred blind-first reservation) **with the
 final TO logic sweep riding the same merge** (four incorrect-information
 fixes plus the carried-name hard-trigger ruling and its typed
-status-override divergence; five Codex review rounds to approval). Next:
-the long-doc-line cleanup; then the single big confirmation run banks the
+status-override divergence; five Codex review rounds to approval).
+**The Portfolio docs sweep landed 2026-08-06** — the flag-only-incorrect
+walk of `portfolio-workflow.md` Steps 1–9 + the quick check against the
+owning docs (six parallel passes with targeted code reads): six findings
+and two user rulings — the whole-book fund fold is **sector-only** (the
+country leg unbuilt by decision, though `etf/country-weightings` still
+feeds the per-holding tilt), and the investor profile reaches **no model
+call before 7b**, the loop's one read being the engine's available-cash
+sizing bound. Three Codex rounds then corrected the **option / bond
+cost-basis display contract**: the derived basis leaves the contract /
+par multiplier unapplied — an option's understated, a bond's overstated
+— so those rows withhold every cost-derived figure and sort last on
+those keys until the `averagePrice` probe settles it; four further
+claims were pushed back as out-of-charter.
+Next: the long-doc-line cleanup; then the single big confirmation run banks the
 stacked runtime confirmations above, now also carrying piece 3's probe
 set (the Schwab `averagePrice` multiplier behind the option/bond render
 suppression, `^GSPC`-mapping sufficiency, analyst-estimates page

@@ -139,7 +139,7 @@ Manual import (designed, not built — [schwab-integration.md §Manual import](s
 ### Investor Profile
 
 Both local jobs are personalized by an **investor profile**: risk tolerance, time horizon, objective, tax sensitivity, and cash posture.
-It shapes Portfolio Analysis's action ladder and cash/deployment stance — **never the intrinsic verdict**: grade, sub-scores, conviction, targets, and the standalone lean are **profile-independent**, computed identically for any investor, the profile entering at portfolio construction only ([portfolio-analysis.md §Intrinsic verdict](portfolio-analysis.md#intrinsic-verdict)) — and Trade Opportunities' entry framing and conviction emphasis (see [trade-opportunities.md](trade-opportunities.md)).
+It shapes Portfolio Analysis's action ladder and cash/deployment stance — **never the intrinsic verdict**: grade, sub-scores, conviction, targets, and the standalone lean are **profile-independent**, computed identically for any investor, the profile shaping the prescription at portfolio construction only ([portfolio-analysis.md §Intrinsic verdict](portfolio-analysis.md#intrinsic-verdict)) — and Trade Opportunities' entry framing and conviction emphasis (see [trade-opportunities.md](trade-opportunities.md)).
 The profile never changes *which* holdings grade well or *which* opportunities qualify — those are engine and research outputs — only how the prescription is framed for this investor.
 
 **For now the profile is a fixed default preset, not user-configured** (a configurable profile is deferred).
