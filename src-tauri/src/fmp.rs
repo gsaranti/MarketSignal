@@ -101,7 +101,7 @@ pub(crate) const FMP_RETRY: crate::http_retry::RetryPolicy = crate::http_retry::
 /// `sector_candidate_dates` skips the closed-market weekend without spending a request,
 /// so this budget covers weekdays (the holidays that actually need walking back over)
 /// rather than being burned on a guaranteed-empty Saturday or Sunday.
-const SECTOR_LOOKBACK_WEEKDAYS: usize = 5;
+pub(crate) const SECTOR_LOOKBACK_WEEKDAYS: usize = 5;
 
 /// FMP's end-of-day historical-price endpoint (light: date + close). One call per
 /// index over a trailing ~53-week window backs the multi-horizon `IndexPerformance`
@@ -764,7 +764,7 @@ fn risk_premium_from_value(value: Value) -> Result<Vec<MarketRiskPremium>> {
 /// actually need walking back over) rather than being burned on the weekend. A run
 /// landing on a weekend would otherwise spend its first one or two requests on the
 /// guaranteed-empty Sat/Sun.
-fn sector_candidate_dates(today: NaiveDate, lookback: usize) -> Vec<NaiveDate> {
+pub(crate) fn sector_candidate_dates(today: NaiveDate, lookback: usize) -> Vec<NaiveDate> {
     let mut out = Vec::with_capacity(lookback);
     let mut date = today;
     while out.len() < lookback {
@@ -4316,10 +4316,17 @@ impl FmpDataSource {
     }
 
     /// The per-sector aggregate P/E snapshot for one exchange (run-level, shared
-    /// across funds; `docs/data-sources.md` — one call per exchange). `date` is the
-    /// most recent weekday, computed by the caller; a weekday market holiday still
-    /// returns a full snapshot (2026-07-03 and Juneteenth served with carried
-    /// values — live-verified 2026-07-16), so the keying needs no holiday case.
+    /// across funds; `docs/data-sources.md`). `date` is one candidate session,
+    /// computed by the caller — the Portfolio job passes its **ET session date**
+    /// and walks back over earlier weekdays until a candidate serves, so this is
+    /// one call per exchange **per candidate tried**.
+    ///
+    /// In practice the walk should stop at the first: a weekday market holiday
+    /// still returns a full snapshot (2026-07-03 and Juneteenth served with
+    /// carried values — live-verified 2026-07-16), so the second candidate is a
+    /// safety net rather than an expected cost. The walk exists because the
+    /// *empty* answer is a 200, indistinguishable from a served snapshot with no
+    /// rows, and an unnoticed empty surface silently abstains every priced fund.
     pub fn fetch_sector_pe_snapshot(
         &self,
         exchange: &str,

@@ -831,10 +831,25 @@ fn trailing_return(fin: &CompanyFinancials) -> Option<f64> {
 }
 
 /// The fund's base metrics (price-derived legs only; the statement legs stay `None`).
+///
+/// The two price legs come from [`engine::compute_metrics`] — the 180-day
+/// `price_history` — **not** the ~1,600-day dated `daily_closes` the local helpers
+/// above prefer. `TrailingReturn` and `ReturnVolatility` are both fund-computable
+/// ledger series, and the quick check evaluates them off `price_history`
+/// (`quick_check.rs`, the sweep's own EOD pull). Authoring them here on the deep
+/// history would author a condition on one window and evaluate it on another, so a
+/// fund's falsifier could confirm a breach with no change in the thesis. This
+/// mirrors the role-risk branch, which was pointed at `compute_metrics` for exactly
+/// this reason (`pipeline.rs`).
+///
+/// The deep history still backs the fund tier's volatility leg and the momentum
+/// sub-score above — both authored once per run and never re-evaluated by a sweep,
+/// so no second window can disagree with them.
 fn base_metrics(fin: &CompanyFinancials) -> ComputedMetrics {
+    let price_legs = engine::compute_metrics(fin);
     ComputedMetrics {
-        return_volatility: per_period_volatility(fin),
-        trailing_return: trailing_return(fin),
+        return_volatility: price_legs.return_volatility,
+        trailing_return: price_legs.trailing_return,
         ..Default::default()
     }
 }
@@ -954,6 +969,48 @@ mod tests {
 
     fn as_of() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 7, 16).unwrap()
+    }
+
+    /// A fund's `TrailingReturn` / `ReturnVolatility` ledger conditions are authored
+    /// on the full pass and evaluated by the quick check, which reads the 180-day
+    /// `price_history`. Authoring them on the ~1,600-day `daily_closes` put the two
+    /// on different windows, so a falsifier could confirm a breach with the thesis
+    /// intact. The full pass's ledger surface must match the sweep's.
+    #[test]
+    fn base_metrics_price_legs_match_the_window_the_quick_check_evaluates() {
+        // The two histories disagree sharply: the deep series has tripled, the
+        // 180-day window is flat. The ledger must see the flat one.
+        let fin = CompanyFinancials {
+            symbol: "VTI".to_string(),
+            current_price: Some(300.0),
+            price_history: vec![297.0, 298.0, 299.0, 300.0],
+            daily_closes: vec![
+                DatedValue { date: "2022-01-03".into(), value: 100.0 },
+                DatedValue { date: "2024-01-02".into(), value: 200.0 },
+                DatedValue { date: "2026-07-15".into(), value: 300.0 },
+            ],
+            ..Default::default()
+        };
+
+        let m = base_metrics(&fin);
+        let sweep = engine::compute_metrics(&fin);
+        assert_eq!(
+            m.trailing_return, sweep.trailing_return,
+            "the full pass must author on the window the sweep evaluates"
+        );
+        assert_eq!(m.return_volatility, sweep.return_volatility);
+
+        // Concretely: ~1% off the 180-day window, not the ~200% the deep series
+        // would have authored.
+        let tr = m.trailing_return.expect("both closes present");
+        assert!(tr < 0.05, "trailing return {tr} came from the deep history");
+
+        // The deep history still backs the tier's volatility leg and momentum —
+        // authored once per run, never re-evaluated, so no second window disagrees.
+        assert!(
+            per_period_volatility(&fin) != m.return_volatility,
+            "fixture sanity: the two windows genuinely differ"
+        );
     }
 
     #[test]
