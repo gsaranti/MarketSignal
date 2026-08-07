@@ -402,7 +402,69 @@ quick check evaluates** (~1,600-day authoring vs 180-day sweeping could
 confirm a breach with the thesis intact). Full record — twelve passes,
 26 findings, four cross-pass convergences, and the **23 carried to the
 next ruling round enumerated with evidence** — in
-`docs/verification/2026-08-07-scoped-conformance-check.md`.
+`docs/verification/2026-08-07-scoped-conformance-check.md`
+— and the **conformance ruling round** (2026-08-07, three merges:
+`859bef4` Batch A, `4ea18c8` Batch B, `e52a0cc` Batch C; internal
+verification + five external rounds on A, three on B), which ruled all
+23 carried findings and built them in three independently-ruled
+batches. Two rulings reversed how a finding was carried: the
+statement-basis flip was nominated accept-with-note and ruled a
+**defect** on the Tier-1 fund fix's own precedent (authored on one
+statement *basis*, evaluated on another), and the `/chains` cardinality
+item ruled one way rather than either, since `pipeline` routes a
+non-gradeable class to `NotRated` reading none of the retrieval spent
+on it. The load-bearing outcomes:
+**two systemic classes swept whole**, each now with a citable home so a
+later pass can check conformance against one statement rather than
+re-deriving the inventory — every **session-keyed date** reads the ET
+session (`docs/data-sources.md` intro; the class ran wider than the
+walk's five sites, including `fred.rs`'s rate-anchor floor whose bail
+hard-fails a whole run, the report chain's FRED scan, and three
+`fmp.rs` snapshot walks that were the Tier-1 sector-P/E defect one file
+over), while **fetch-range upper bounds deliberately stay UTC**,
+annotated in place; and every **episode and report selection reads
+insertion order**, never a wall clock (`load_episodes`,
+`prune_matured_episodes`, the four in-memory selections, lost-active
+supersession, construction's sector inheritance, and — ruled in
+separately — the report-retention keep window, where a backwards clock
+step could evict the report the run had just written; the date-ordered
+sidebar and house view deliberately do **not** move, so the two windows
+differ on *which* 30, never on how many).
+Plus the **basis-continuity gate** (a typed `StatementBasis` stamped at
+the `apply_ttm_statement_basis` choke point and **refined at the
+merge**, the only point that knows what finally supplied the levels;
+a statement-derived series compared across a basis change types
+unevaluable once per flip, the full pass owning the gate because the
+sweep's values span two bases at once), the **off-scale guard** (a
+signed P/E or debt/equity resolves unevaluable rather than comparing —
+deliberately not a sentinel, since a ledger threshold is
+model-authored with an open comparator and `f64` infinities do not
+survive the `serde_json` round-trip), a falsifier event stamped from
+the **confirming** pass and deduped on that rather than an observation
+id designed to change on every re-raise, the total-return dividend
+window bounded at the **end bar's** session, the abstention comparing
+against the **standing episode's** own action and lean, the bridge
+floored at `min(anchor, intrinsic vintage)`, the shared **embedding
+validator** behind the trait (cardinality, echoed identity, finiteness,
+nonzero norm, and an input byte cap moved into the request builders so
+it binds the persistence paths too — dimensionality deliberately
+**not** asserted, since the store is dimension-agnostic and its
+search-time skip is the guard), one `Arc<StooqSource>` per run so
+"run-wide breaker" is true across both retrieval phases, warning
+categories de-duplicated by kind, and the eligibility gate sparing a
+non-gradeable class its whole per-symbol retrieval.
+An audit's `sources` now names only what the **verdict** consulted: the
+house-view claim is opted into by the two interpretation paths from
+predicates living beside their own render sites, because the two prompts
+render different parts of it.
+The block's durable lesson is recorded with it: the code fixes held from
+the first round, and **every later finding was the accuracy of a claim
+made around them** — enumerated exits standing in for an invariant, a
+shared presence test for two renderers, "all four routes" for three,
+equivalence claims for a narrow guarantee, and finally the pin whose
+un-pruned assertion was what made a wrong sidebar claim look true, which
+the prose then quoted four times. When a round corrects a claim,
+re-check the test it cites.
 **Trade Opportunities and the remaining Portfolio depth slices (held-name
 refresh lane, the live research loop) remain designed, not built.** The
 load-bearing decisions:
@@ -1061,15 +1123,26 @@ discrepancy was prose imprecision (all eight fixed-width statement
 windows are guarded), and three passes independently confirmed the
 option/bond display contract leaks nowhere. It found 26 findings with
 four cross-pass convergences; the **three Tier-1 defects are built**
-(as-built above), and **23 carry to the next ruling round**, enumerated
-with `file:line` evidence in the record. The largest carried item is
-that the **ET conversion is incomplete at four further sites** (the
-house-view freshness gate, the quick-check rate-cache age, the
-per-holding `run_date`, and `fmp.rs`'s TTM dividend window), found by
-three passes independently; next after it, the signed-metric guard
-`resolve_series` still lacks on P/E and debt/equity — the same root
-cause as the tier fix that just landed.
-Next: rule the 23 carried findings, then the long-doc-line cleanup; then the single big confirmation run banks the
+(as-built above), and 23 carried to their own ruling round, enumerated
+with `file:line` evidence in the record. **That round completed and
+merged 2026-08-07** in three batches (`859bef4` / `4ea18c8` /
+`e52a0cc`) — all 23 ruled, the run-gating twelve built first, both
+systemic classes swept whole, as-built above. Two findings were
+**pushed back and the pushback granted**: repeated true provider names
+inside one warning row are verbosity rather than incorrect information
+(the honest fix — structured items from both gates — is a
+`WarningCategory` contract change, recorded as a candidate), and
+reports' insertion order is deliberately **not portable**, a
+machine-local artifact like the re-derived `markdown_path`, so a
+clock-stepped report that survives on the source machine can be evicted
+after an import.
+Two items are recorded for a later ruling round rather than absorbed:
+the **structured warning items** above, and the Settings tree's
+**completeness** gap (`interface.md` omits two built panels — Data and
+the document-truncation diagnostics — while listing three
+designed-and-unbuilt ones), which the doc half's flag-only-incorrect
+charter excluded.
+Next: the long-doc-line cleanup; then the single big confirmation run banks the
 stacked runtime confirmations above, now also carrying piece 3's probe
 set (the Schwab `averagePrice` multiplier behind the option/bond render
 suppression, `^GSPC`-mapping sufficiency, analyst-estimates page
