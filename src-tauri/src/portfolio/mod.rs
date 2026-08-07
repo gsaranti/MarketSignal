@@ -76,11 +76,13 @@ pub const HORIZON_LONG: &str = "long term (~3–5 years)";
 
 /// The configured investor profile that personalizes the *action* — never the
 /// intrinsic verdict (`docs/portfolio-analysis.md` §Intrinsic verdict,
-/// `docs/configuration.md` §Investor Profile). It enters at Step-7b construction
-/// only: objective, risk tolerance, horizon, tax posture, and available cash frame
-/// the prescription. It ships as the documented fixed preset
-/// ([`InvestorProfile::default_fixture`]); the configurable Settings form is a
-/// later slice — Settings shows the preset read-only via [`Self::display`].
+/// `docs/configuration.md` §Investor Profile). It reaches the model at Step-7b
+/// construction only: objective, risk tolerance, horizon, tax posture, and available
+/// cash frame the prescription there. Inside the per-holding loop the engine reads
+/// `available_cash` alone, bounding a sizing delta (`engine::size_action`). It
+/// ships as the documented fixed preset ([`InvestorProfile::default_fixture`]);
+/// the configurable Settings form is a later slice — Settings shows the preset
+/// read-only via [`Self::display`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InvestorProfile {
     pub objective: ProfileObjective,
