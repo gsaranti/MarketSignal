@@ -1948,7 +1948,11 @@ pub fn assign_stock_tier(
 
     let high = fin.market_cap.map(|c| c < TIER_HIGH_MAX_MCAP).unwrap_or(false)
         || annual_vol.map(|v| v > TIER_HIGH_MIN_ANNUAL_VOL).unwrap_or(false)
-        || m.debt_to_equity.map(|d| d > TIER_HIGH_MIN_DEBT_EQUITY).unwrap_or(false)
+        // Negative equity is levered beyond the equity base — maximal leverage, not
+        // minimal. The naked `>` read it as passing neither leg, so a negative-book
+        // issuer fell through to the Low conjunction below. Same stance as
+        // `risk_score`'s `RISK_DEBT_EQUITY_BAND` guard, which scores it 0.
+        || m.debt_to_equity.map(|d| !(0.0..=TIER_HIGH_MIN_DEBT_EQUITY).contains(&d)).unwrap_or(false)
         || profitable.map(|p| !p).unwrap_or(false)
         || drawdown.map(|d| d > TIER_HIGH_MIN_DRAWDOWN).unwrap_or(false);
     if high {
@@ -1960,7 +1964,10 @@ pub fn assign_stock_tier(
     // triggers (the missing-input rule).
     let low = fin.market_cap.map(|c| c > TIER_LOW_MIN_MCAP).unwrap_or(false)
         && profitable.unwrap_or(false)
-        && m.debt_to_equity.map(|d| d < TIER_LOW_MAX_DEBT_EQUITY).unwrap_or(false)
+        // Guarded on both ends: the High leg above already claims a negative
+        // debt/equity, but the bound is stated here too so the Low conjunction reads
+        // correctly on its own and survives any reordering of the legs.
+        && m.debt_to_equity.map(|d| (0.0..TIER_LOW_MAX_DEBT_EQUITY).contains(&d)).unwrap_or(false)
         && annual_vol.map(|v| v < TIER_LOW_MAX_ANNUAL_VOL).unwrap_or(false);
     if low {
         (RiskTier::Low, vec![])
@@ -3033,6 +3040,43 @@ mod tests {
         let cheap = valuation_score(&m(Some(12.0))).unwrap();
         assert_eq!(negative, 20.0, "the fixed low score for a loss-maker");
         assert!(negative < cheap, "a loss-maker must never outscore a cheap earner");
+    }
+
+    /// The tier legs read a negative debt/equity the same way `risk_score` does —
+    /// as maximal leverage. The naked `>` / `<` comparisons passed neither the High
+    /// leg nor failed the Low one, so a negative-book large cap landed on `Low`:
+    /// the smallest hurdle premium, admitting the add family on a scenario the
+    /// correct tier leaves indeterminate.
+    #[test]
+    fn negative_equity_reads_as_maximal_leverage_in_the_tier_not_minimal() {
+        // Strong on every other leg — large cap, profitable, calm — so only the
+        // leverage leg decides. Equity has gone negative on buybacks.
+        let mut fin = strong();
+        fin.total_debt = Some(48.0e9);
+        fin.total_equity = Some(-11.0e9);
+        let m = compute_metrics(&fin);
+        assert!(m.debt_to_equity.unwrap() < 0.0, "fixture sanity: signed ratio");
+
+        let (tier, _) = assign_stock_tier(&fin, &m);
+        assert_eq!(
+            tier,
+            RiskTier::High,
+            "negative equity is levered beyond the equity base"
+        );
+        // And the same input reads the same way on the risk sub-score's leverage
+        // leg — isolated, since `risk_score` averages it with the volatility leg.
+        let leverage_only = ComputedMetrics {
+            debt_to_equity: m.debt_to_equity,
+            ..ComputedMetrics::default()
+        };
+        assert_eq!(risk_score(&leverage_only).unwrap(), 0.0);
+
+        // The Low conjunction rejects it on its own, independent of leg order.
+        let low_ok = m
+            .debt_to_equity
+            .map(|d| (0.0..TIER_LOW_MAX_DEBT_EQUITY).contains(&d))
+            .unwrap_or(false);
+        assert!(!low_ok, "a negative ratio must never satisfy the Low leg");
     }
 
     /// A negative debt/equity (negative equity) takes the leverage band's floor —

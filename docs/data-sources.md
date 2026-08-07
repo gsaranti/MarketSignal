@@ -592,7 +592,7 @@ Its full endpoint surface, by source, is tabulated under [§Portfolio Analysis �
 ### Portfolio Analysis — endpoint surface
 
 Every endpoint Portfolio Analysis ([portfolio-analysis.md](portfolio-analysis.md)) calls (including the conditional fallback paths, tagged *optional*), by source, paralleling the report's per-source tables above.
-**Cardinality** is the load-bearing axis — it sets the per-run call budget: **per-holding** and **per-fund** calls scale with portfolio size (the budget driver), while **run-level** calls fire once and are shared across all holdings.
+**Cardinality** is the load-bearing axis — it sets the per-run call budget: **per-holding** and **per-fund** calls scale with portfolio size (the budget driver), while **run-level** calls are bounded independently of it and shared across all holdings — most fire once, but **each row's own count governs**: the sector-P/E snapshot walks candidate sessions per exchange, and its historical series is per sector × exchange.
 All FMP paths are on the `https://financialmodelingprep.com/stable` base and run on the shared paid key.
 
 **FMP** — the per-holding / per-fund endpoint surface for Portfolio Analysis on the current plan.
@@ -627,7 +627,7 @@ Equity grading is fully covered; the fund path degrades, since constituent look-
 | `news/stock` | per-holding | symbol-scoped news headlines — research-loop **seed** (a lead, never evidence) + a trigger surface for the conditional technology-event topic ([portfolio-analysis.md §The per-holding pipeline](portfolio-analysis.md#the-per-holding-pipeline)); pulled by the quick check for tech-falsifier holdings (the qualifying-news-seed leg) |
 | `etf/info` | per-fund | expense ratio, AUM, NAV, asset class, mandate — refreshed by the quick check (the fund evidence-event leg) |
 | `etf/sector-weightings`, `etf/country-weightings` | per-fund | sector / country exposure → fund exposure tilt (the constituent look-through proxy); refreshed by the quick check per the exposure evidence-event legs |
-| `sector-pe-snapshot` | run-level (one call per exchange, shared across funds) | per-sector aggregate P/E (exchange-tagged) → the fund path's **exposure-priced valuation** composite ([portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)) |
+| `sector-pe-snapshot` | run-level (one call per exchange per candidate session, shared across funds — the run's **ET session date** first, then earlier weekdays until one serves, ≤ 5 candidates; the first is expected to serve, since a weekday holiday returns carried values live-verified 2026-07-16) | per-sector aggregate P/E (exchange-tagged) → the fund path's **exposure-priced valuation** composite ([portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)) |
 | `historical-sector-pe` | run-level (one call per sector × exchange, memoized on first need across funds — the union of the held funds' composite sectors, both exchanges) | the exposure composite's own trailing history → the fund's **constant-current-mix** vs-own-past read ([portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)) |
 
 **FRED** — base `https://api.stlouisfed.org/fred`, `/series/observations` (the `series_id` doubles as the quote symbol).

@@ -382,7 +382,27 @@ sides; the carried/stale tag on whole ET days), and the review
 hardening — legacy UTC-keyed pending window ends self-heal at the label
 pass, `created_at` minted at run start (one ET day for the over-age
 decisions, the label pass, and the rendered badge), ET-stamped
-`confirmed_at`.
+`confirmed_at` — and the **scoped conformance Tier-1 batch**
+(2026-08-07, PR #67; internal fan-out + two Codex rounds to approval),
+the three defects the cross-path walk found in the two commits above:
+the **sector-P/E snapshot** now dates through `market_clock`'s ET
+session and walks weekday candidates (sharing the report chain's
+`sector_candidate_dates`), an exhausted walk returning `Err` with the
+gap **memoized onto every fund** — the UTC read asked for an untraded
+session, and the endpoint's empty 200 silently abstained every priced
+US-equity fund as "no sector overlap" on five evenings in seven;
+`assign_stock_tier`'s debt/equity legs are **sign-bounded**, so
+negative equity reads as maximal leverage (it had taken `RiskTier::Low`
+— a 7% hurdle, `Clears`, and an engine `Add` where the correct tier
+holds — while `risk_score` scored the same input 0); and
+`fund::base_metrics` takes both price legs from
+`engine::compute_metrics`, so a priced fund's `TrailingReturn` /
+`ReturnVolatility` ledger conditions are **authored on the window the
+quick check evaluates** (~1,600-day authoring vs 180-day sweeping could
+confirm a breach with the thesis intact). Full record — twelve passes,
+26 findings, four cross-pass convergences, and the **23 carried to the
+next ruling round enumerated with evidence** — in
+`docs/verification/2026-08-07-scoped-conformance-check.md`.
 **Trade Opportunities and the remaining Portfolio depth slices (held-name
 refresh lane, the live research loop) remain designed, not built.** The
 load-bearing decisions:
@@ -1030,12 +1050,37 @@ par multiplier unapplied — an option's understated, a bond's overstated
 — so those rows withhold every cost-derived figure and sort last on
 those keys until the `averagePrice` probe settles it; four further
 claims were pushed back as out-of-charter.
-Next: the long-doc-line cleanup; then the single big confirmation run banks the
+**The scoped conformance check + off-spine doc pass landed 2026-08-07**
+(PR #67) — the follow-up all four sweeps left owed, since each corrected
+docs to match code (implicitly ruling the code right) while verifying
+only the one site it cited. Twelve parallel passes: seven re-checking
+each changed behavior of the two unwalked commits across **all** paths,
+five walking the owning-doc sections no spine ever covered. Both of its
+own leads resolved **negative** — the `quarters_contiguous` call-site
+discrepancy was prose imprecision (all eight fixed-width statement
+windows are guarded), and three passes independently confirmed the
+option/bond display contract leaks nowhere. It found 26 findings with
+four cross-pass convergences; the **three Tier-1 defects are built**
+(as-built above), and **23 carry to the next ruling round**, enumerated
+with `file:line` evidence in the record. The largest carried item is
+that the **ET conversion is incomplete at four further sites** (the
+house-view freshness gate, the quick-check rate-cache age, the
+per-holding `run_date`, and `fmp.rs`'s TTM dividend window), found by
+three passes independently; next after it, the signed-metric guard
+`resolve_series` still lacks on P/E and debt/equity — the same root
+cause as the tier fix that just landed.
+Next: rule the 23 carried findings, then the long-doc-line cleanup; then the single big confirmation run banks the
 stacked runtime confirmations above, now also carrying piece 3's probe
 set (the Schwab `averagePrice` multiplier behind the option/bond render
 suppression, `^GSPC`-mapping sufficiency, analyst-estimates page
 ordering, SEC sub-annual durations, FMP in-progress-bar behavior,
-sector-label taxonomy joins, SHV-style short-screen labels). Excluded from the block and still designed-not-built: the
+sector-label taxonomy joins, SHV-style short-screen labels) and the
+conformance check's four (sector-P/E walk-back depth — how often the
+first candidate misses; the risk-tier distribution now that
+negative-book issuers take High, against the stacked conviction/action
+watches; priced-fund ledger flag rates once authoring and evaluation
+share the 180-day window; and the basis-flip rate when a one-quarter
+feed gap drops a holding to the SEC annual basis). Excluded from the block and still designed-not-built: the
 **live research loop** and the **held-name research refresh lane**; the
 shipped schemas don't preclude them — but the research-loop slice **must**
 add holding-identity + source-text observation validation (plus a period-

@@ -244,26 +244,52 @@ impl CompanyDataSource for LiveCompanyData {
     }
 
     fn sector_pe_snapshot(&self) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
-        // The most recent weekday: the snapshot endpoint is date-keyed and a weekend
-        // date returns nothing. A market holiday can still gap — recorded, calibrated
-        // against live runs.
-        let date = last_weekday(chrono::Utc::now().date_naive())
-            .format("%Y-%m-%d")
-            .to_string();
-        let mut rows = Vec::new();
+        // The snapshot endpoint is date-keyed, so the date has to be a session that
+        // actually traded. Two things follow, and this path had neither:
+        //
+        // - **The date is the ET session date**, not the UTC calendar date. An
+        //   evening-ET run (after ~8 PM EDT / 7 PM EST) has already rolled to the
+        //   next UTC day, so a UTC read asks for a session that has not happened —
+        //   and the endpoint answers 200 with an empty array, not an error.
+        // - **The walk backs over weekday candidates**, exactly as the report path
+        //   does ([`crate::fmp::FmpDataSource::fetch_sector_pe_for_exchange`]).
+        //   Its warrant is that empty answer, not holidays: the adapter records
+        //   live-verified evidence that a weekday holiday *does* serve carried
+        //   values (2026-07-03, Juneteenth), so the second candidate is a safety
+        //   net, not an expected cost — practical cardinality stays two calls.
+        //   Weekends cost no request.
+        //
+        // Both matter because an empty snapshot is not inert: every priced US-equity
+        // fund fails `composite_yield` and abstains, attributed to "no P/E-usable
+        // sector overlap" rather than to the missing snapshot.
+        let today = crate::market_clock::et_session_date(chrono::Utc::now());
         let mut last_err = None;
-        for exchange in SECTOR_PE_EXCHANGES {
-            match self.fmp.fetch_sector_pe_snapshot(exchange, &date) {
-                Ok(mut r) => rows.append(&mut r),
-                Err(e) => last_err = Some(e),
+        for candidate in sector_pe_candidates(today) {
+            let date = candidate.format("%Y-%m-%d").to_string();
+            let mut rows = Vec::new();
+            for exchange in SECTOR_PE_EXCHANGES {
+                match self.fmp.fetch_sector_pe_snapshot(exchange, &date) {
+                    Ok(mut r) => rows.append(&mut r),
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            // A partial read (one exchange served, the other faulted) is still a
+            // usable snapshot — the original single-date behavior, kept.
+            if !rows.is_empty() {
+                return Ok(rows);
             }
         }
-        if rows.is_empty() {
-            if let Some(e) = last_err {
-                return Err(e);
-            }
+        if let Some(e) = last_err {
+            return Err(e);
         }
-        Ok(rows)
+        // An exhausted walk with no transport fault is a real absence. Report it as
+        // a gap rather than an empty snapshot: `Err` is this seam's gap channel (the
+        // caller records it on the fund's `gaps`), so the fund's abstention names the
+        // missing snapshot instead of blaming the fund's own sector weights.
+        anyhow::bail!(
+            "no sector-P/E snapshot in the {} weekdays through {today}",
+            crate::fmp::SECTOR_LOOKBACK_WEEKDAYS
+        )
     }
 
     fn sector_pe_history(&self, sector: &str) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
@@ -669,10 +695,17 @@ fn run_analysis(
     let mut deep_history_fallbacks = 0usize;
 
     // The run-level sector-P/E surface, fetched on first need and memoized across
-    // funds (`docs/portfolio-workflow.md` §Step 6a): the snapshot once (per
-    // exchange, inside the source), the per-sector histories as each fund's
-    // weightings introduce sectors.
+    // funds (`docs/portfolio-workflow.md` §Step 6a): the snapshot once per exchange
+    // per candidate session tried (the walk is inside the source and is expected to
+    // stop at the first), the per-sector histories as each fund's weightings
+    // introduce sectors.
     let mut sector_pe_cache: Option<Vec<crate::portfolio::fund::SectorPe>> = None;
+    // The snapshot is fetched once and memoized, so its failure has to be memoized
+    // too: every fund's composite reads the same empty surface, so every fund's
+    // gaps must carry the same reason. Pushing it only where the fetch happened
+    // left funds 2..N abstaining as "no P/E-usable sector overlap" — the exact
+    // misattribution the typed gap exists to prevent.
+    let mut sector_pe_gap: Option<String> = None;
     let mut sector_history_cache: std::collections::HashMap<
         String,
         Vec<crate::portfolio::fund::SectorPe>,
@@ -807,11 +840,15 @@ fn run_analysis(
                 sector_pe_cache = Some(match company_data.sector_pe_snapshot() {
                     Ok(rows) => rows,
                     Err(e) => {
-                        fund.gaps
-                            .push(format!("sector-P/E snapshot unavailable: {e}"));
+                        sector_pe_gap = Some(format!("sector-P/E snapshot unavailable: {e}"));
                         vec![]
                     }
                 });
+            }
+            // Carried to every fund, not just the one whose turn triggered the
+            // fetch — they all price off the same memoized surface.
+            if let Some(gap) = &sector_pe_gap {
+                fund.gaps.push(gap.clone());
             }
             for (sector, _) in &fund.sector_weights {
                 let key = sector.to_ascii_lowercase();
@@ -1569,15 +1606,12 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// The most recent weekday on or before `date` (the date-keyed sector-P/E snapshot
-/// returns nothing for a weekend date).
-fn last_weekday(date: chrono::NaiveDate) -> chrono::NaiveDate {
-    use chrono::Datelike;
-    let mut d = date;
-    while matches!(d.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun) {
-        d -= chrono::Duration::days(1);
-    }
-    d
+/// The ordered sector-P/E snapshot dates to try for a run whose **ET session date**
+/// is `today`: that session first, then earlier weekdays, weekends skipped without
+/// spending a request. Shares the report chain's walk
+/// ([`crate::fmp::sector_candidate_dates`]) so both jobs treat holidays alike.
+fn sector_pe_candidates(today: chrono::NaiveDate) -> Vec<chrono::NaiveDate> {
+    crate::fmp::sector_candidate_dates(today, crate::fmp::SECTOR_LOOKBACK_WEEKDAYS)
 }
 
 #[cfg(test)]
@@ -1586,6 +1620,42 @@ mod tests {
     use crate::portfolio::pipeline::StubAnalyst;
     use crate::portfolio::{AssetClass, PositionChange};
     use crate::schwab::{FixtureHoldingsSource, Position};
+
+    /// The sector-P/E snapshot is date-keyed, so an evening-ET run must ask for the
+    /// session that traded, not the UTC calendar day it has already rolled into —
+    /// and it must walk back over holidays rather than accept the empty answer.
+    /// The UTC read returned `Ok(vec![])`, which every priced US-equity fund then
+    /// misattributed to "no P/E-usable sector overlap".
+    #[test]
+    fn sector_pe_candidates_start_at_the_et_session_and_walk_back_weekdays() {
+        // 2026-08-12 01:30 UTC = 2026-08-11 21:30 EDT. The session that traded is
+        // Tuesday the 11th; the UTC date is Wednesday the 12th, whose session has
+        // not happened.
+        let evening = crate::market_clock::et_date_of("2026-08-12T01:30:00+00:00").unwrap();
+        assert_eq!(evening, chrono::NaiveDate::from_ymd_opt(2026, 8, 11).unwrap());
+        let got: Vec<String> = sector_pe_candidates(evening)
+            .iter()
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .collect();
+        assert_eq!(
+            got[0], "2026-08-11",
+            "the ET session leads, never the rolled-over UTC day"
+        );
+        // The walk continues over earlier weekdays so a market holiday gaps one
+        // candidate instead of stranding the whole fund cohort.
+        assert_eq!(
+            got,
+            ["2026-08-11", "2026-08-10", "2026-08-07", "2026-08-06", "2026-08-05"],
+            "weekends cost no request"
+        );
+
+        // A Sunday run starts at the prior Friday, as the report chain does.
+        let sunday = chrono::NaiveDate::from_ymd_opt(2026, 8, 9).unwrap();
+        assert_eq!(
+            sector_pe_candidates(sunday)[0],
+            chrono::NaiveDate::from_ymd_opt(2026, 8, 7).unwrap()
+        );
+    }
 
     #[test]
     fn over_age_dates_the_vintage_on_its_et_session() {
@@ -2415,6 +2485,72 @@ mod tests {
                 );
             }
             other => panic!("expected a priced verdict, got {other:?}"),
+        }
+    }
+
+    /// The snapshot is fetched once and memoized across funds, so its failure must
+    /// be memoized too. Recording the gap only where the fetch happened left every
+    /// later fund abstaining as "no P/E-usable sector overlap" — blaming the fund's
+    /// own weightings for a missing run-level surface.
+    #[test]
+    fn a_failed_sector_pe_snapshot_records_its_gap_on_every_fund_not_just_the_first() {
+        struct NoSnapshot;
+        impl CompanyDataSource for NoSnapshot {
+            fn financials(&self, symbol: &str) -> CompanyFinancials {
+                FundCompanyData.financials(symbol)
+            }
+            fn facts(&self, symbol: &str) -> SecData {
+                FundCompanyData.facts(symbol)
+            }
+            fn fund_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
+                FundCompanyData.fund_data(symbol)
+            }
+            fn sector_pe_snapshot(&self) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+                anyhow::bail!("no sector-P/E snapshot in the 5 weekdays through 2026-08-07")
+            }
+            fn sector_pe_history(
+                &self,
+                sector: &str,
+            ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+                FundCompanyData.sector_pe_history(sector)
+            }
+        }
+
+        let (_dir, paths) = paths();
+        let guard = RunGuard::default();
+        let mut first = stock("VTI", 50.0, 9_750.0);
+        first.asset_class = AssetClass::Etf;
+        let mut second = stock("ITOT", 40.0, 7_800.0);
+        second.asset_class = AssetClass::Etf;
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings_of(vec![first, second])),
+            &NoSnapshot,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            &paths,
+            &guard,
+            &ctx(),
+        )
+        .unwrap();
+        let run = match outcome {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+
+        assert_eq!(run.audit.len(), 2, "both funds analyzed");
+        for audit in &run.audit {
+            assert!(
+                audit
+                    .degraded_inputs
+                    .iter()
+                    .any(|g| g.contains("sector-P/E snapshot unavailable")),
+                "{} lost the snapshot gap: {:?}",
+                audit.symbol,
+                audit.degraded_inputs
+            );
         }
     }
 
