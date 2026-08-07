@@ -24,6 +24,11 @@ use crate::schwab::{OptionChain, Position};
 use crate::sec::CompanyFacts;
 use crate::storage;
 
+/// The audit's source line for the Market Signal house view. Appended by the
+/// interpretation paths in `pipeline`, never by dossier assembly — see the note at the
+/// end of [`assemble`].
+pub const HOUSE_VIEW_SOURCE: &str = "Market Signal Report (house view)";
+
 /// The Market Signal house view loaded as a read-only shared input
 /// (`docs/portfolio-analysis.md`). It enters deterministically — recent report
 /// summaries plus the latest report's relevant prose sections — never via the
@@ -361,9 +366,12 @@ pub fn assemble(
             iv_skew: None,
         });
 
-    // A guard-terminal holding never consulted the statement surface — its audit
-    // must not claim it; the profile identity read is the evidence that actually
-    // drove the verdict (`docs/portfolio-analysis.md` §Asset eligibility).
+    // A holding whose retrieval the loop skipped never consulted the statement
+    // surface — its audit must not claim it (`docs/portfolio-analysis.md` §Asset
+    // eligibility). Two reasons skip it, and the audit names the right one: a
+    // guard-terminal stock, whose profile identity read is the evidence that actually
+    // drove the verdict; and a class the equity pipeline never grades, where the
+    // eligibility routing decided the verdict before any request.
     let guard_terminal = matches!(
         &listing,
         Some(
@@ -374,6 +382,11 @@ pub fn assemble(
     );
     let mut sources = if guard_terminal {
         vec!["FMP company profile (listing-resolution guard)".to_string()]
+    } else if !position.asset_class.is_gradeable() {
+        vec![format!(
+            "Schwab position ({} — not graded by the equity pipeline)",
+            position.asset_class.label()
+        )]
     } else {
         vec!["FMP company financials".to_string()]
     };
@@ -389,9 +402,18 @@ pub fn assemble(
     if fund.is_some() {
         sources.push("FMP fund metadata (etf/info + weightings + sector P/E)".to_string());
     }
-    if !house_view.recent_summaries.is_empty() || house_view.latest_sections.is_some() {
-        sources.push("Market Signal Report (house view)".to_string());
-    }
+    // The house view is deliberately **not** listed here, even though it is loaded once
+    // per run and rides every dossier: whether a holding's verdict actually consulted
+    // it is not knowable at assembly. Many routes through
+    // `pipeline::analyze_holding` return before either 6f prompt — the eligibility
+    // gate, the listing guard, a net-short or fully-offset position, and every
+    // evidence-floor abstention — and listing it here made all of their audits claim a
+    // source the verdict never read.
+    //
+    // Enumerating those exits in the dossier is the shape that keeps going wrong: it
+    // has to be re-derived whenever a new exit lands. So the default is the honest one
+    // — absent — and the interpretation paths, which are the only ones that read it,
+    // add it themselves ([`HOUSE_VIEW_SOURCE`], appended in `pipeline`).
 
     HoldingDossier {
         position,
@@ -1096,6 +1118,60 @@ Sources and footnotes.
         assert!(dossier.sources.iter().any(|s| s.contains("option chain")));
         assert!(dossier.options_signal.put_call_volume.unwrap() > 1.0);
         assert!(dossier.prior_verdict.is_none(), "new holding");
+    }
+
+    #[test]
+    fn assembly_never_claims_the_house_view_because_it_cannot_know() {
+        // The house view is loaded once per run and rides EVERY dossier, so listing it
+        // unconditionally made every ordinary cash, option and bond audit claim a
+        // source that holding's verdict never consulted: both the non-gradeable
+        // eligibility route and the guard-terminal route return from
+        // `pipeline::analyze_holding` ahead of either 6f prompt and the 7b prompt.
+        let house_view = HouseView {
+            recent_summaries: Vec::new(),
+            latest_sections: Some("## Market Signal Thesis\nrisk-on.".into()),
+        };
+        let position = |asset_class| Position {
+            symbol: "SWVXX".into(),
+            description: "Schwab Value Advantage Money Fund".into(),
+            asset_class,
+            quantity: 5_000.0,
+            cost_basis: 5_000.0,
+            market_value: 5_000.0,
+            current_price: Some(1.0),
+        };
+        let assemble_with = |asset_class| {
+            assemble(
+                position(asset_class),
+                PositionDelta::new_position(),
+                fmp_only(),
+                &CompanyFacts::default(),
+                None,
+                InvestorProfile::default_fixture(),
+                house_view.clone(),
+                None,
+                None,
+                None,
+            )
+            .sources
+        };
+
+        // A class the equity pipeline never grades: only the evidence that decided it.
+        assert_eq!(
+            assemble_with(AssetClass::Cash),
+            vec!["Schwab position (cash — not graded by the equity pipeline)".to_string()],
+        );
+
+        // And the same for a GRADEABLE holding: assembly cannot know whether the
+        // verdict will reach an interpretation call, so it claims nothing either way.
+        // The interpretation paths add it themselves — pinned in `pipeline`, both
+        // directions.
+        assert!(
+            !assemble_with(AssetClass::Stock)
+                .iter()
+                .any(|src| src.contains("house view")),
+            "assembly never claims the house view — it cannot know"
+        );
     }
 
     #[test]

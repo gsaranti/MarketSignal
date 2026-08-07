@@ -184,7 +184,12 @@ pub struct LiveCompanyData {
     /// gap, never a fabricated mapping.
     pub cik: crate::sec::CikResolver,
     /// Keyless Stooq daily bars — the deep dated history the v2 anchor join reads.
-    pub stooq: crate::stooq::StooqSource,
+    /// **Shared** with the outcome pass's retrieval surface (`lib.rs`): the
+    /// daily-hits breaker and the politeness pacer are per-instance state, so a
+    /// second adapter would give the outcome pass a fresh breaker and let it hammer
+    /// a source the loop had already found throttled — the one thing a run-wide
+    /// breaker exists to prevent.
+    pub stooq: std::sync::Arc<crate::stooq::StooqSource>,
 }
 
 /// How many days of deep price history the anchor join needs: the ~12-quarter window
@@ -819,7 +824,18 @@ fn run_analysis(
                     | crate::portfolio::listing::ListingResolution::Conflict { .. }
             )
         );
-        let mut fmp_financials = if guard_terminal {
+        // A class the equity pipeline never grades skips the same retrieval, for the
+        // same reason: `pipeline::analyze_holding` routes every non-gradeable class
+        // (options, fixed income, cash, unsupported) to `NotRated` with **default**
+        // metrics before the engine stage, reading none of the statements, SEC facts,
+        // deep history or chain fetched for it — so the gate cannot change any
+        // output, only the budget. Ungated, a book's option and cash-equivalent rows
+        // each spent the full per-symbol FMP surface plus an EDGAR facts call and a
+        // Stooq deep-history leg to reach a verdict fixed before the first request.
+        // This is what `data-sources.md`'s "per-holding (optionable equity)"
+        // cardinality has always described.
+        let skip_retrieval = guard_terminal || !position.asset_class.is_gradeable();
+        let mut fmp_financials = if skip_retrieval {
             CompanyFinancials {
                 symbol: position.symbol.clone(),
                 ..Default::default()
@@ -833,7 +849,7 @@ fn run_analysis(
         // the reduced path (quality is imputed, valuation composite-priced), and the
         // trust entity behind an ETF routinely 404s the facts API — pure gap noise
         // on the audit (the 2026-07-31 run's QQQ finding, F5).
-        let sec_data = if is_fund || guard_terminal {
+        let sec_data = if is_fund || skip_retrieval {
             SecData::default()
         } else {
             company_data.facts(&position.symbol)
@@ -841,7 +857,7 @@ fn run_analysis(
         fmp_financials.gaps.extend(sec_data.gaps);
         // Deep dated history (Stooq, FMP dated-EOD fallback) for the anchor join and
         // drawdown reads.
-        let (deep_closes, deep_gaps) = if guard_terminal {
+        let (deep_closes, deep_gaps) = if skip_retrieval {
             (vec![], vec![])
         } else {
             company_data.deep_price_history(&position.symbol)
@@ -915,7 +931,7 @@ fn run_analysis(
         // recorded in the manifest so it reaches the audit and prompt rather than reading
         // as "no options listed" (`docs/schwab-integration.md §Failure posture`). Never a
         // whole-job failure; the error carries status/context only, never a token.
-        let chain = if guard_terminal {
+        let chain = if skip_retrieval {
             None
         } else {
             match holdings_source.option_chain(&position.symbol) {
@@ -2752,7 +2768,9 @@ mod tests {
             (dir, path)
         };
         let cik = crate::sec::load_cik_resolver(&cik_cache, &sec);
-        let stooq = crate::stooq::StooqSource::new().expect("build Stooq source");
+        let stooq = std::sync::Arc::new(
+            crate::stooq::StooqSource::new().expect("build Stooq source"),
+        );
         let company = LiveCompanyData { fmp, sec, cik, stooq };
 
         let (_dir, paths) = paths();
@@ -3274,6 +3292,32 @@ mod tests {
         match run_portfolio_job(
             &FixtureHoldingsSource::with_holdings(holdings),
             &StubCompanyData,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap()
+        {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    /// [`full_run`] against a caller-supplied company source, for the tests that
+    /// assert on which per-symbol calls the loop actually spent.
+    fn run_with_company(
+        paths: &ReportPaths,
+        holdings: Holdings,
+        company: &dyn CompanyDataSource,
+    ) -> PortfolioRun {
+        match run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings),
+            company,
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
@@ -3843,6 +3887,88 @@ mod tests {
         assert_eq!(
             verdict(&second, "MSFT").action_source,
             crate::portfolio::ActionSource::ModelChosen
+        );
+    }
+
+    /// Wraps [`StubCompanyData`] recording every per-symbol retrieval call, so the
+    /// eligibility gate's saving is measurable rather than asserted.
+    #[derive(Default)]
+    struct CountingCompanyData {
+        financials: std::cell::RefCell<Vec<String>>,
+        facts: std::cell::RefCell<Vec<String>>,
+        deep_history: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl CompanyDataSource for CountingCompanyData {
+        fn financials(&self, symbol: &str) -> CompanyFinancials {
+            self.financials.borrow_mut().push(symbol.to_string());
+            StubCompanyData.financials(symbol)
+        }
+        fn facts(&self, symbol: &str) -> SecData {
+            self.facts.borrow_mut().push(symbol.to_string());
+            StubCompanyData.facts(symbol)
+        }
+        fn deep_price_history(
+            &self,
+            symbol: &str,
+        ) -> (Vec<crate::portfolio::engine::DatedValue>, Vec<String>) {
+            self.deep_history.borrow_mut().push(symbol.to_string());
+            StubCompanyData.deep_price_history(symbol)
+        }
+    }
+
+    #[test]
+    fn a_class_the_pipeline_never_grades_spends_no_per_symbol_retrieval() {
+        let (_dir, paths) = paths();
+        let mut cash = stock("SWVXX", 5_000.0, 5_000.0);
+        cash.asset_class = AssetClass::Cash;
+        cash.description = "Schwab Value Advantage Money Fund".into();
+        let mut option = stock("AAPL  260116C00250000", 5.0, 1_250.0);
+        option.asset_class = AssetClass::OptionContract;
+        option.description = "CALL AAPL 01/16/2026 250".into();
+        let holdings = holdings_of(vec![stock("AAPL", 20.0, 3_900.0), cash, option]);
+
+        let company = CountingCompanyData::default();
+        let run = run_with_company(&paths, holdings, &company);
+
+        // Output-neutral: both non-gradeable rows still reach the same NotRated
+        // verdict they always did — the eligibility routing decides it before the
+        // engine stage, reading none of the retrieval.
+        for symbol in ["SWVXX", "AAPL  260116C00250000"] {
+            assert!(
+                matches!(
+                    &verdict(&run, symbol).disposition,
+                    crate::portfolio::VerdictDisposition::NotRated { .. }
+                ),
+                "{symbol} must still be not-rated"
+            );
+        }
+        // ...and the loop spends nothing on them. Ungated, each cost the full FMP
+        // statement surface, an EDGAR facts call and a Stooq deep-history leg to
+        // reach a verdict fixed before the first request.
+        assert_eq!(
+            *company.financials.borrow(),
+            vec!["AAPL".to_string()],
+            "only the gradeable holding is retrieved"
+        );
+        assert_eq!(*company.facts.borrow(), vec!["AAPL".to_string()]);
+        assert_eq!(*company.deep_history.borrow(), vec!["AAPL".to_string()]);
+
+        // The audit says what it actually consulted, rather than naming a financials
+        // pull the gate skipped.
+        let audit = run
+            .audit
+            .iter()
+            .find(|a| a.symbol == "SWVXX")
+            .expect("the not-rated row still records an audit");
+        // The EXACT set, not merely the presence of the right entry: an
+        // any()-shaped assertion passed while the audit still claimed the house view,
+        // which this holding's verdict never reads (it returns at the eligibility
+        // gate, ahead of both interpretation prompts).
+        assert_eq!(
+            audit.sources,
+            vec!["Schwab position (cash — not graded by the equity pipeline)".to_string()],
+            "a not-rated audit lists only the evidence that decided it"
         );
     }
 

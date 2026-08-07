@@ -739,7 +739,9 @@ pub trait OutcomePriceSource {
 /// the total-return leg — the same rung order as the per-holding deep history
 /// (`docs/data-sources.md §Stooq`).
 pub struct LiveOutcomePrices {
-    pub stooq: crate::stooq::StooqSource,
+    /// The same adapter instance the per-holding loop used (`LiveCompanyData::stooq`)
+    /// — one breaker and one pacer per run, across both retrieval phases.
+    pub stooq: std::sync::Arc<crate::stooq::StooqSource>,
     pub fmp: crate::fmp::FmpDataSource,
 }
 

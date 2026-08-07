@@ -395,6 +395,108 @@ Round 5 confirmed round 4's three portability corrections, and that the non-port
 
 **Verification after the round:** cargo **1008 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 223 vitest** — the reworked pin replaces an assertion rather than adding one, and still fails against the pre-fix ordering.
 
+## Batch B — the code fixes that gate nothing (built)
+
+The ruling round dispositioned all 23 carried findings and split the fixes into two independent batches.
+This branch carries **Batch B** — the four code fixes that gate nothing plus the one built claim — on its own branch off `main` so the run-gating batch (Batch A, with the ruling record and both systemic sweeps) stays reviewable alone.
+Pins are confirmed failing pre-fix where the defect is observable; two items are structural and pinned by mechanism, noted below.
+
+- **12 — `baseline_snapshots`.** Selection and pruning re-keyed on `id`, and `elapsed_days` floored at zero behind one shared `elapsed_days_since`.
+  The prune is the sharper half: the pipeline inserts then prunes, so at the cap a backwards clock step **deleted the row it had just written**, and the pin asserts both — the fresh snapshot answers as latest, and survives its own prune.
+  The interval clamp turned out to be prompt-facing only: `research_executor::cadence_scale` already floors a non-positive interval and names clock skew doing it, and the cadence bands read zero as `Intraday`, which is the honest bucket for two runs at effectively one instant.
+  What was unguarded was the *rendered* number — a negative "days since the last report" reaching the agent.
+- **14 — the duplicate warning row.** Categories merge by kind in `App.vue`, items unioned in first-seen order with identical lines collapsed and the first `dismiss_id` winning (well-defined, since only the cloud gate produces the one dismissible category).
+  The de-duplication is load-bearing, not defensive: the two gates are independent reports that legitimately name the same credential — an unset FMP key is a provider-credentials failure for both — so the concatenation rendered the row twice, against `interface.md`'s one-per-category contract and as a duplicate Vue key.
+  `PersistentWarningArea.vue` now keys on kind **and** position, so a future producer reintroducing a duplicate renders two rows rather than colliding into one.
+  Two specs; the row-count one was confirmed failing pre-fix (two rows). The item-union spec does not discriminate pre-fix — it guards the merge, which did not exist before — and is kept as that guard.
+- **15 — the Stooq breaker.** One `Arc<StooqSource>` per run, shared by the per-holding loop and the outcome pass.
+  The struct's own comment ("constructed per run, so the breaker resets naturally") had become false at two instances, and now says why the sharing is what makes "run-wide" true: the breaker and the pacer are per-instance state, so a second adapter gave the outcome pass a clean breaker and an unpaced first request against a source the loop had already found throttled — and Stooq's daily-hits throttle is the escalating kind.
+  Pinned by mechanism: two `Arc` handles, the first trips, the second observes the trip and spends no request.
+- **16 — the eligibility gate.** The per-holding loop skips retrieval for a class the pipeline never grades, alongside the existing guard-terminal skip.
+  The pin measures it: pre-fix the loop fetched financials for all three holdings, post-fix only the gradeable one, with both non-gradeable rows reaching the same `NotRated` verdict — output-neutral, as ruled.
+  Implementing it surfaced one consequence worth recording: the audit's `sources` still claimed "FMP company financials" for a holding whose financials were no longer fetched, so the non-gradeable branch now names the Schwab position and its class instead.
+  A budget saving must not buy a dishonest audit.
+- **18 — the embedding validator.** Built behind the trait for both embedders: exactly one vector per input, the responding model's echoed identity, all-finite, nonzero norm, and the input byte cap.
+  Scope came out wider than the ruling in two ways its own reasoning implies:
+  - **The byte cap was half-built, not unbuilt.** `bounded_query` existed and was applied at the retrieval query alone — the two persistence paths (a report summary, a durable learning) sent uncapped text, and an oversized one is rejected by the provider and lost, which is the exact failure the cap was written to prevent. The cap moved into the request builders, single-homed, so it binds every call; the pipeline's local constant and helper retire to it.
+  - **Cardinality belongs in the parsers**, not the validator: both took `[0]` from an array they never counted, so a multi-vector envelope silently paired another input's vector with this text.
+  Two claims were corrected rather than built.
+  **Dimensionality** contradicts the dimension-agnostic store, whose search-time skip is the guard that actually survives an embedder change, and both homes now say so.
+  And the **identity check is deliberately tolerant** — case- and whitespace-insensitive, prefix-accepting so a quantization or `:latest` tag is not a false failure, and skipped where the provider echoes no model — because a false failure here costs a run's memory writes.
+  The failure posture needed no change: retrieval already fail-softs and both persistence paths already drop-and-log, exactly as documented.
+
+**Verification at Batch B complete** (against the pre-Batch-A baseline, since this branch is off `main`): cargo **995 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 225 vitest** — seven new lib tests and two new specs, with four existing tests retargeted where a fix moved what they own (the two embedding parse tests assert the sharper cardinality error; the query-cap test moved to the cap's new home).
+
+## External review round 1 (Batch B)
+
+One finding adopted, one pushed back.
+
+- **The non-gradeable audit still claimed a source its verdict never consulted.**
+  The batch removed the false financials line and stopped one line short: the house view is loaded once per run and rides **every** dossier, so it was listed unconditionally — and both the non-gradeable eligibility route and the guard-terminal route return from `pipeline::analyze_holding` ahead of either 6f prompt and the 7b prompt.
+  Every ordinary cash, option and bond audit therefore carried it.
+  Adopted: the append is now gated on the holding reaching a stage that reads it.
+  The batch's own regression test could not have caught this — it asserted only that a "not graded" source *exists*, and an `any()`-shaped assertion passes while the audit carries extra falsehoods.
+  It now asserts the **exact** source set, and because the job-level fixture has no reports at all (so the house-view branch is unreachable there), the real pin sits at the unit that owns the decision, with a house view actually present and a gradeable holding beside it proving the gate suppresses nothing real.
+  This is the same failure as the batch's own finding-16 note — fixing the site the reasoning named and stopping — recorded there and repeated here one line later.
+
+- **Overlapping credentials inside the merged row: pushed back, out of the ruled charter.**
+  The review is factually right that item-level redundancy survives: the cloud gate emits `"Missing for Financial Modeling Prep, FRED, and Tavily."` and the local gate `"Missing for Financial Modeling Prep and FRED."`, so the merged row names two providers twice.
+  But the ruled finding was **duplicate rows** and the duplicate Vue key, and both are fixed; a row reading redundantly is not incorrect information, which is the bar this walk's doc half set and the bar this item falls under.
+  The proposed shape also has a real cost: de-duplicating those composites means **parsing backend-composed English in the frontend**, which inverts the composition boundary and breaks on any wording change.
+  Two facts bound how much is actually at stake.
+  The local gate's credential set (FMP, FRED) is a strict **subset** of the cloud gate's (FMP, FRED, Tavily), so the local item never contributes a provider the cloud item lacks.
+  The two strings are **byte-identical exactly when Tavily is configured** — then both gates name the same shared set and the existing exact-match dedup already collapses them — so the residue is confined to the case where Tavily is *also* missing, where the row is verbose but every clause of it is true.
+  (Round 2 caught this stated the wrong way round on the first pass: the collapse happens when Tavily is **present in configuration**, not when it is missing. The conclusion is unchanged — one case carries the residue either way — but the record said it backwards, which is the failure this whole block exists to stop.)
+  Recorded as a candidate with the honest fix named: have both gates emit the missing credentials as **structured items** rather than a composed sentence, and union them in the merge.
+  That is a contract change to `WarningCategory`, so it belongs to a ruling round, not to this batch.
+
+**Verification after the round:** cargo **996 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 225 vitest** — one further lib test.
+
+## External review round 2 (Batch B)
+
+Two findings, both adopted, and both of them the **same failure as round 1's** — a fix applied to the paths its own reasoning named, stopping short of the invariant it claimed.
+
+- **The house-view audit fix was incomplete, and the shape was wrong.**
+  Round 1's fix defined "decided before interpretation" in the dossier as guard-terminal or non-gradeable.
+  But `analyze_holding` also returns before either 6f prompt for a **net-short or fully-offset** position and for **every evidence-floor abstention**, so those audits still claimed a source their verdict never read — and my own test name asserted the general invariant while covering only cash and an ordinary stock.
+  Enumerating the exits in the dossier is the shape that keeps failing: it has to be re-derived whenever a new exit lands, which is precisely what happened between rounds.
+  So the default is **inverted**: assembly never claims the house view (it cannot know), and the two interpretation paths — the only readers — opt in where they call the model.
+  Fixing it surfaced a second construction site the first fix had missed entirely: the priced path builds its `HoldingAudit` **directly**, not through the shared closure, so it carried `dossier.sources` unfiltered. Both sites now route through one `audit_sources` helper, because duplicating the list is how the claim survived round 1.
+  The pin covers three of the pre-interpretation routes plus the positive case; round 3 correctly caught that as **overstated** — it read "all four routes", and the listing guard and the evidence-floor abstention were not among them (both are covered now).
+
+- **Three factual contradictions, all mine, all corrected.**
+  `data-sources.md`'s session-dating rule said fetch-range bounds stay UTC while Batch A had just moved the option-chain window to ET — the doc now records that one range and why it is not an exception to the *session* rule but a fix for a **per-machine** read.
+  `App.vue`'s comment claimed a credential named by both gates is listed once, which exact-string collapse cannot deliver — corrected to say what it does, with the structured-items alternative named so the next reader does not re-derive it.
+  And the round-1 record stated the byte-identical case **backwards**: the two strings collapse when Tavily is *configured*, not when it is missing.
+  The pushback's conclusion is unaffected — one case carries the residue either way — but a record that says it backwards is exactly the failure this block exists to stop, so the correction is called out where it was made rather than quietly patched.
+
+Round 2 accepted the finding-5 pushback on its substance: repeated true provider names inside one row are verbosity, not incorrect information, and structured provider items are a separate contract change.
+
+**One observation, correctly not raised as a finding:** the COT and option-chain call-site conversions carry no dedicated regression, because both read the real clock at the call and the assertion would need clock injection those adapters do not have.
+Their date *helpers* are pure and pinned, and `market_clock`'s own boundary pins cover the conversion itself; what is untested is which clock each production method selects.
+Recorded rather than papered over with a test that would only re-assert `market_clock`.
+
+**Verification after the round:** cargo **997 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 225 vitest** — one further lib test.
+
+## External review round 3 (Batch B)
+
+One finding, adopted — and it is the **third consecutive round** to find the same shape: a claim asserted more broadly than the thing implementing it.
+
+- **The role/risk audit could still claim an unconsumed house view.**
+  Round 2's fix gated the claim on one shared "is a house view present" test — either the latest sections *or* the recent stances.
+  But the two prompts render **different parts** of the house view: the priced prompt renders the latest sections *and* the stances, the role/risk prompt only the sections.
+  And `load_house_view` deliberately keeps the summaries when the latest report's Markdown is missing or unreadable, so a **summary-only** house view is reachable — and reached a role/risk verdict as nothing at all while its audit recorded the source.
+  The fix moves the predicate to where it cannot drift: `role_risk_prompt_renders_house_view` and `priced_prompt_renders_house_view` are defined **beside their own render sites**, and each interpretation path sets the flag from its own.
+  A shared presence test was the wrong abstraction — it assumed one house view means one rendering, which was never true.
+
+**The coverage claim was overstated and is corrected.**
+Round 2's record said the pin covered "all four routes plus the positive case".
+It covered three (eligibility gate, net-short, fully-offset) and the positive case; the **listing guard** and the **evidence-floor abstention** were not among them, and neither was the role/risk branch the new finding is about.
+All of them are covered now — the guard-terminal route, an abstention triggered by a missing price, and the role/risk branch both ways (summary-only claims nothing, sections-present claims it).
+The correction matters more than the missing cases did: a coverage claim that overstates is how a fix gets believed complete, which is the failure this whole block is about, and this is the second round in a row to catch one of mine.
+
+**Verification after the round:** cargo **998 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 225 vitest** — one further lib test.
+
 ## Verification
 
 At Batch A complete: cargo **1005 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 223 vitest** — seventeen new lib tests against this session's 988 baseline, plus three fixtures corrected (the two house-view stamps and the bridge-exclusion test that had pinned finding 2's hole as intended behavior).

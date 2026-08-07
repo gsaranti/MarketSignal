@@ -58,10 +58,19 @@ pub struct StooqSource {
     progress: Arc<RunContext>,
     /// Set once the daily-hits throttle is detected; every later fetch this run
     /// skips the network and fails fast as throttled (no tracker row — a skipped
-    /// fetch is not an HTTP call). The adapter is constructed per run, so the
-    /// breaker resets naturally.
+    /// fetch is not an HTTP call).
+    ///
+    /// This and [`Self::last_request`] are the reason the adapter is shared, not
+    /// rebuilt: both are **per-instance** state, so "run-wide" holds only while one
+    /// instance serves the whole run. A Portfolio run retrieves in two phases — the
+    /// per-holding loop and the outcome pass's label-time bars — and building one
+    /// adapter per phase gave the second a fresh breaker and an unpaced first
+    /// request, so it re-hammered a source the first had already found throttled.
+    /// `lib.rs` constructs one and hands both phases an `Arc` of it; the run-scoped
+    /// lifetime is what still resets the breaker between runs.
     throttled: AtomicBool,
-    /// The last request's send time, for the politeness spacing.
+    /// The last request's send time, for the politeness spacing. Shared with
+    /// [`Self::throttled`] — see there.
     last_request: Mutex<Option<Instant>>,
 }
 
@@ -326,5 +335,41 @@ mod tests {
         let err = stooq.daily_closes("MSFT", from, to).unwrap_err();
         assert!(err.downcast_ref::<StooqThrottled>().is_some(), "{err}");
         assert_eq!(server.request_targets().len(), 1, "no second HTTP request");
+    }
+
+    #[test]
+    fn the_breaker_is_run_wide_only_because_one_instance_is_shared() {
+        // "Run-wide" is a property of SHARING, not of the type: the breaker and the
+        // pacer are per-instance, so a Portfolio run's two retrieval phases — the
+        // per-holding loop and the outcome pass's label-time bars — must hold the same
+        // instance. `lib.rs` builds one and hands both an `Arc`; this pins that a
+        // second holder observes the first's trip and spends no request.
+        let html = "<html><body>Przekroczony dzienny limit wywolan</body></html>";
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: html,
+        }]);
+        let loop_phase =
+            std::sync::Arc::new(StooqSource::new().unwrap().with_base_url(&server.base_url));
+        let outcome_phase = std::sync::Arc::clone(&loop_phase);
+        let from = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+
+        // The loop trips it.
+        assert!(loop_phase.daily_closes("AAPL", from, to).is_err());
+        assert!(loop_phase.is_throttled());
+
+        // The outcome pass sees the same breaker and fails fast. Given its OWN
+        // instance it would have started clean and re-hammered a source already known
+        // throttled — and Stooq's daily-hits throttle is the escalating kind.
+        assert!(outcome_phase.is_throttled(), "the second phase shares the breaker");
+        let err = outcome_phase.daily_closes("MSFT", from, to).unwrap_err();
+        assert!(err.downcast_ref::<StooqThrottled>().is_some(), "{err}");
+        assert_eq!(
+            server.request_targets().len(),
+            1,
+            "the second phase must spend no request against a throttled source"
+        );
     }
 }

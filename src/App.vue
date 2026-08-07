@@ -44,6 +44,7 @@ import type {
   TrackerStep,
   TruncationStats,
   ValidationReport,
+  WarningCategory,
 } from "./types";
 import { readDark, writeDark } from "./theme";
 import { localDate } from "./format";
@@ -470,13 +471,42 @@ const pullBlockedReason = computed(
 // The warning band shows both gates' categories in one de-duplicated block; the
 // cloud is_blocked keeps its report-gate meaning (the local one never blocks
 // the report — docs/interface.md §Persistent Warning Area).
+//
+// The de-duplication is by KIND, and it is load-bearing rather than defensive: the
+// two gates are independent reports that legitimately name the same missing
+// credential — an unset FMP key is a cloud provider-credentials failure AND a local
+// one — so a plain concatenation rendered the same category twice, against
+// interface.md's one-row-per-category contract (and, since the list keys on kind,
+// as a duplicate Vue key). Items merge in first-seen order with **byte-identical**
+// lines collapsed; the first `dismiss_id` wins, which is well-defined because only
+// the cloud gate produces the one dismissible category.
+//
+// The collapse is exact-string, not semantic: each gate composes its own sentence
+// ("Missing for Financial Modeling Prep, FRED, and Tavily."), so two gates naming an
+// overlapping — but not identical — set leave a verbose row where each clause is
+// still true. Fixing that properly means both gates emitting the missing credentials
+// as structured items rather than composed prose, which is a `WarningCategory`
+// contract change and not this merge's job. Parsing the sentences here would invert
+// the composition boundary.
 const displayedValidation = computed<ValidationReport | null>(() => {
   if (validation.value === null && localValidation.value === null) return null;
+  const byKind = new Map<string, WarningCategory>();
+  for (const cat of [
+    ...(validation.value?.categories ?? []),
+    ...(localValidation.value?.categories ?? []),
+  ]) {
+    const seen = byKind.get(cat.kind);
+    if (seen === undefined) {
+      byKind.set(cat.kind, { ...cat, items: [...cat.items] });
+      continue;
+    }
+    for (const item of cat.items) {
+      if (!seen.items.includes(item)) seen.items.push(item);
+    }
+    seen.dismiss_id ??= cat.dismiss_id;
+  }
   return {
-    categories: [
-      ...(validation.value?.categories ?? []),
-      ...(localValidation.value?.categories ?? []),
-    ],
+    categories: [...byKind.values()],
     is_blocked: validation.value?.is_blocked ?? true,
   };
 });

@@ -184,7 +184,9 @@ Fixed internal stage, non-configurable.
 This call only *vectorizes* text — it performs no reasoning.
 
 **Validation (canonical for every embedding call in this workflow).**
-The response is validated **before any cosine search or persistence**: exactly **one vector per requested input**, the model's fixed **3,072 dimensions**, every element **finite**, and a **nonzero norm** — against a **bounded input** (the query text is capped before the call).
+The response is validated **before any cosine search or persistence**: exactly **one vector per requested input**, from the **responding model's echoed identity**, every element **finite**, and a **nonzero norm** — against a **byte-bounded input**, capped in the request builder so the bound holds for the persistence calls too, not only the retrieval query.
+The two numeric checks are poisoning guards: a non-finite component makes every cosine comparison it touches `NaN`, and a zero vector has no direction.
+The model's **3,072 dimensions are not asserted** — the store is dimension-agnostic and skips rows whose dimension mismatches a query ([storage.md §Vector Memory](storage.md#vector-memory)), which is the guard that actually holds across an embedder change; a fixed-dimension assertion here would contradict it.
 An invalid response **fails softly**: this retrieval is skipped and the run proceeds without memory (Step 10 behaves the same; at Step 17 an invalid vector costs that memory row — dropped and logged — never the run) — the report-side counterpart of the local suite's shared embedding validator ([local-models.md §The local-model adapter seam](local-models.md#the-local-model-adapter-seam)).
 
 **Prompt (input text).**

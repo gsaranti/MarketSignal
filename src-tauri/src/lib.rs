@@ -734,9 +734,16 @@ async fn generate_portfolio_manual(
             .map(|d| d.join("sec_company_tickers.json"))
             .unwrap_or_else(|| std::path::PathBuf::from("sec_company_tickers.json"));
         let cik = sec::load_cik_resolver(&cik_cache, &sec);
-        let stooq = stooq::StooqSource::new()
-            .map_err(|e| e.to_string())?
-            .with_context(ctx.clone());
+        // ONE Stooq adapter for the whole run, shared by the per-holding loop and the
+        // outcome pass below. Its throttle breaker and politeness pacer are instance
+        // state (`stooq::StooqSource`), and Stooq's daily-hits throttle is exactly the
+        // kind that escalates — two adapters meant the loop could trip the breaker and
+        // the outcome pass would then start from a clean one and keep going.
+        let stooq = std::sync::Arc::new(
+            stooq::StooqSource::new()
+                .map_err(|e| e.to_string())?
+                .with_context(ctx.clone()),
+        );
         let company = portfolio::job::LiveCompanyData { fmp, sec, cik, stooq };
         // The run-level rate anchors (FRED DGS2/DGS10 + the DGS10 anchor-window
         // history) — hard-fail inside the job, before any per-holding work.
@@ -787,9 +794,8 @@ async fn generate_portfolio_manual(
         // matured-read durable learnings (`docs/portfolio-analysis.md` §Outcome
         // learning). The embedder is best-effort: a client that fails to build
         // just skips the learning rows, never the run.
-        let out_stooq = stooq::StooqSource::new()
-            .map_err(|e| e.to_string())?
-            .with_context(ctx.clone());
+        // The same instance the loop used — see its construction above.
+        let out_stooq = std::sync::Arc::clone(&company.stooq);
         let out_fmp = FmpDataSource::new(fmp_key)
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());

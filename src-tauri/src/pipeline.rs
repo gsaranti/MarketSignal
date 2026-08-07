@@ -973,9 +973,18 @@ fn compute_cadence(
         let prior_at = chrono::DateTime::parse_from_rfc3339(&captured_at)
             .context("parsing prior snapshot captured_at")?
             .with_timezone(&chrono::Utc);
-        Ok(Some((as_of - prior_at).num_seconds() as f64 / 86_400.0))
+        Ok(Some(elapsed_days_since(as_of, prior_at)))
     });
     cadence::ReportCadence::from_elapsed(elapsed_days)
+}
+
+/// Fractional days from `prior_at` to `as_of`, floored at zero — see
+/// [`compute_prior_deltas`] for why a negative interval must not reach a prompt.
+fn elapsed_days_since(
+    as_of: chrono::DateTime<chrono::Utc>,
+    prior_at: chrono::DateTime<chrono::Utc>,
+) -> f64 {
+    ((as_of - prior_at).num_seconds() as f64 / 86_400.0).max(0.0)
 }
 
 /// Best-effort change view for this run: read the previous report's baseline snapshot and
@@ -1002,7 +1011,15 @@ fn compute_prior_deltas(
         let prior_at = chrono::DateTime::parse_from_rfc3339(&captured_at)
             .context("parsing prior snapshot captured_at")?
             .with_timezone(&chrono::Utc);
-        let elapsed_days = (as_of - prior_at).num_seconds() as f64 / 86_400.0;
+        // Non-negative: the interval is prompt-facing (rendered into the
+        // cadence-posture block and carried on the serialized delta record), and a
+        // backwards clock step between runs would otherwise hand the agent a
+        // negative "days since the last report". The threshold normalization already
+        // floors a non-positive interval (`research_executor::cadence_scale`) and the
+        // cadence bands read zero as `Intraday`, which is the honest bucket for two
+        // runs at effectively the same instant — so clamping here costs nothing the
+        // downstream reads wanted.
+        let elapsed_days = elapsed_days_since(as_of, prior_at);
         Ok(Some(baseline_delta::compute_deltas(
             current,
             &prior,
@@ -1137,31 +1154,6 @@ const LEARNINGS_PER_REPORT_CAP: usize = 5;
 /// ever drop a redundant row, never lose a real one.
 const LEARNING_DEDUP_THRESHOLD: f64 = 0.65;
 
-/// Hard byte cap on a retrieval query before the paid embedding call. The query
-/// builders bound line *counts*, not sizes — the stored summaries' optional
-/// arrays, topic rationales, and web source titles are all length-unbounded — so
-/// a pathological query would draw a 400 from the embedding API and cost the
-/// whole pull. Truncating costs only the recall tail instead. The cap is in
-/// *bytes* because that is what makes the guarantee provable without a tokenizer
-/// dependency: the embedding model's tokenizer is a byte-level BPE, where every
-/// token consumes at least one input byte, so `tokens ≤ bytes` always — 8,000
-/// bytes can never exceed the 8,192-token input limit. (A char cap cannot
-/// promise this: a multi-byte char can fall back to several byte tokens.)
-const MEMORY_QUERY_MAX_BYTES: usize = 8_000;
-
-/// `query` cut to at most `max_bytes` bytes, backed off to a char boundary so
-/// the slice can never split a multi-byte character.
-fn bounded_query(query: &str, max_bytes: usize) -> &str {
-    if query.len() <= max_bytes {
-        return query;
-    }
-    let mut end = max_bytes;
-    while !query.is_char_boundary(end) {
-        end -= 1;
-    }
-    &query[..end]
-}
-
 /// One best-effort vector-memory pull: embed the query text, search the store
 /// across both kinds, and return the hits in their shared prompt form, most
 /// relevant first. Additive context like the reads above, never a gate — any
@@ -1170,9 +1162,14 @@ fn bounded_query(query: &str, max_bytes: usize) -> &str {
 /// [`read_db_fail_soft`] shell. Two cheap guards keep early runs free: an empty
 /// query has nothing to recall against (checked here, before the DB is even
 /// opened), and an empty store can't return hits — both skip the paid embedding
-/// call entirely. The query is capped at [`MEMORY_QUERY_MAX_BYTES`] before
-/// embedding, so an oversized one is truncated rather than rejected by the
-/// provider and lost.
+/// call entirely. An oversized query is truncated rather than rejected by the
+/// provider and lost — the cap now lives in the adapters
+/// ([`crate::embedding::EMBEDDING_INPUT_MAX_BYTES`]) so it holds for the two
+/// persistence paths too, which never capped their own input. The rationale it
+/// carried is single-homed there: the query builders bound line *counts*, not sizes
+/// (the stored summaries' optional arrays, topic rationales and web source titles are
+/// all length-unbounded), so a pathological query would draw a 400 and cost the whole
+/// pull, where truncating costs only the recall tail.
 fn retrieve_memory(
     db_path: &std::path::Path,
     embedder: &dyn Embedder,
@@ -1189,7 +1186,7 @@ fn retrieve_memory(
             if vector_memory::count_memory(conn, MemoryNamespace::Report)? == 0 {
                 return Ok(Vec::new());
             }
-            let embedding = embedder.embed(bounded_query(query, MEMORY_QUERY_MAX_BYTES))?;
+            let embedding = embedder.embed(query)?;
             let hits = vector_memory::search_memory(conn, &embedding, None, MemoryNamespace::Report, MEMORY_TOP_K)?;
             Ok(hits
                 .iter()
@@ -2023,31 +2020,22 @@ mod tests {
     }
 
     #[test]
-    fn retrieve_memory_caps_an_oversized_query_instead_of_losing_the_pull() {
+    fn retrieve_memory_passes_an_oversized_query_through_instead_of_losing_the_pull() {
         let (_dir, path) = seeded_store();
-        // The cap is in bytes (tokens ≤ bytes for a byte-level BPE, so the byte cap
-        // is what guarantees the provider's token limit). The leading ASCII char
-        // shifts every 2-byte `é` onto an odd offset, so the cap lands mid-char and
-        // the cut must back off to the previous boundary rather than split it.
-        let oversized = format!("a{}", "é".repeat(MEMORY_QUERY_MAX_BYTES));
+        // An oversized query must still produce a pull. The byte cap that makes that
+        // true now lives in the adapters (`embedding::bounded_input`), so it applies
+        // to every call rather than only the ones whose caller remembered — the two
+        // persistence paths never did. This seam therefore hands the text through
+        // whole and the cap is pinned at its own home.
+        let oversized = format!("a{}", "é".repeat(crate::embedding::EMBEDDING_INPUT_MAX_BYTES));
         let recording = RecordingEmbedder(Mutex::new(None));
         let hits = retrieve_memory(&path, &recording, &oversized, "test");
-        assert_eq!(hits.len(), 1, "the capped query still pulls");
-        let seen = recording
-            .0
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("embedder was called");
-        assert!(seen.len() <= MEMORY_QUERY_MAX_BYTES, "byte cap respected");
+        assert_eq!(hits.len(), 1, "the oversized query still pulls");
         assert_eq!(
-            seen.len(),
-            MEMORY_QUERY_MAX_BYTES - 1,
-            "the mid-char cut backed off to the previous char boundary"
+            recording.0.lock().unwrap().clone().expect("embedder was called"),
+            oversized,
+            "the seam no longer caps; the adapter does"
         );
-
-        // A query inside the cap passes through untouched.
-        assert_eq!(bounded_query("short", MEMORY_QUERY_MAX_BYTES), "short");
     }
 
     #[test]

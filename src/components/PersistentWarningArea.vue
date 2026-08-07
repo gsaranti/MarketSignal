@@ -105,7 +105,15 @@ function formatItems(items: string[]): string {
           Couldn't check configuration — {{ error }}
         </span>
       </li>
-      <li v-for="cat in categories" :key="cat.kind" class="warning-row">
+      <!-- Keyed on kind AND position: the band merges two independent validation
+           reports, so uniqueness by kind alone depends on that merge holding
+           (App.vue). A future producer reintroducing a duplicate should render
+           two rows, not collide into one. -->
+      <li
+        v-for="(cat, i) in categories"
+        :key="`${cat.kind}-${i}`"
+        class="warning-row"
+      >
         <span class="warning-label">{{ cat.title }}</span>
         <span class="warning-body">
           <span class="warning-text">{{ formatItems(cat.items) }}</span>

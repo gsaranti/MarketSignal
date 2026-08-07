@@ -205,10 +205,34 @@ pub fn analyze_holding(
         .fund
         .as_ref()
         .map(|f| crate::portfolio::fund::exposure_basis(&f.fund));
+    // Whether this holding's verdict actually **received house-view content**. It is
+    // `false` for every route that returns before an interpretation call — the
+    // eligibility gate, the listing guard, a net-short or fully-offset position, and
+    // every evidence-floor abstention — and each interpretation path sets it from the
+    // predicate belonging to the prompt it is about to build.
+    //
+    // Not from a shared "is a house view present" test: the two prompts render
+    // *different* parts of it. The priced prompt renders the latest sections **and**
+    // the recent stances, the role/risk prompt only the latest sections — and
+    // `load_house_view` deliberately keeps the summaries when the latest report's
+    // Markdown is missing or unreadable, so a summary-only house view is reachable and
+    // reaches a role/risk verdict as nothing at all. Each predicate is defined beside
+    // its own render site so the claim cannot drift from what is actually rendered.
+    let house_view_consulted = std::cell::Cell::new(false);
+    // The audit's source list. **Both** audit construction sites go through this — the
+    // closure below for every early return, and the priced path's own record — because
+    // duplicating it is how the house-view claim survived the first fix.
+    let audit_sources = || {
+        let mut sources = dossier.sources.clone();
+        if house_view_consulted.get() {
+            sources.push(crate::portfolio::dossier::HOUSE_VIEW_SOURCE.to_string());
+        }
+        sources
+    };
     let audit = |metrics, target_meta, ledger_audit, pre_profit| HoldingAudit {
         symbol: symbol.clone(),
         metrics,
-        sources: dossier.sources.clone(),
+        sources: audit_sources(),
         model_ids: analyst.model_ids(),
         prompt_version: PROMPT_VERSION.to_string(),
         degraded_inputs: degraded.clone(),
@@ -410,6 +434,7 @@ pub fn analyze_holding(
                 // *hold* stands in until construction overwrites it inside this
                 // same pass (construction is fail-hard, so the placeholder never
                 // persists).
+                house_view_consulted.set(role_risk_prompt_renders_house_view(dossier));
                 let interpretation = analyst
                     .interpret_role_risk(&RoleRiskInput {
                         dossier,
@@ -512,6 +537,7 @@ pub fn analyze_holding(
     });
 
     // Research (stubbed) → distill → interpret.
+    house_view_consulted.set(priced_prompt_renders_house_view(dossier));
     let findings = research(dossier);
     let distilled = analyst
         .distill(dossier, &findings)
@@ -617,7 +643,7 @@ pub fn analyze_holding(
     let audit_record = HoldingAudit {
         symbol: symbol.clone(),
         metrics: engine_output.metrics.clone(),
-        sources: dossier.sources.clone(),
+        sources: audit_sources(),
         model_ids: analyst.model_ids(),
         prompt_version: PROMPT_VERSION.to_string(),
         degraded_inputs,
@@ -1385,6 +1411,16 @@ pub fn role_risk_system_prompt() -> String {
 
 /// The user prompt for the `role_risk_only` interpretation: the engine's typed
 /// readout rendered for the model.
+/// Whether [`role_risk_user_prompt`] will render any house-view content for this
+/// dossier — the **latest sections only**. Defined here, beside the render below, so
+/// the audit's house-view source claim cannot drift from what the prompt actually
+/// carries: this branch never renders the recent stances, so a summary-only house view
+/// (reachable whenever the latest report's Markdown is missing or unreadable, which
+/// `load_house_view` degrades to deliberately) reaches a role/risk verdict as nothing.
+pub(crate) fn role_risk_prompt_renders_house_view(d: &HoldingDossier) -> bool {
+    d.house_view.latest_sections.is_some()
+}
+
 pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     let d = input.dossier;
     let r = input.readout;
@@ -1634,6 +1670,14 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
 /// position, the computed metrics/sub-scores/grade/targets, the options-activity
 /// signal (an activity proxy, not a grade input), the gaps, the distilled research,
 /// the house view, and the prior verdict for continuity.
+/// Whether [`interpretation_user_prompt`] will render any house-view content — the
+/// latest sections **or** the recent stances, both of which this branch renders. The
+/// counterpart of [`role_risk_prompt_renders_house_view`], and deliberately a wider
+/// predicate, because the two prompts carry different parts of the house view.
+pub(crate) fn priced_prompt_renders_house_view(d: &HoldingDossier) -> bool {
+    d.house_view.latest_sections.is_some() || !d.house_view.recent_summaries.is_empty()
+}
+
 pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     let d = input.dossier;
     let e = input.engine;
@@ -3071,6 +3115,154 @@ mod tests {
             country_weights: vec![("United States".into(), 0.99)],
             gaps: vec![],
         }
+    }
+
+    #[test]
+    fn only_a_verdict_that_reached_interpretation_claims_the_house_view() {
+        // The audit's sources must name what the VERDICT consulted, and the house view
+        // is loaded once per run and rides every dossier — so the claim has to be
+        // earned by reaching an interpretation call, not inherited from assembly.
+        //
+        // The routes that return first are the reason: the eligibility gate, the
+        // listing guard, a net-short or fully-offset position, and every
+        // evidence-floor abstention. Enumerating them is the shape that kept going
+        // wrong (the first fix covered two of them), so the default is absent and the
+        // two interpretation paths opt in.
+        let with_house_view = |asset_class, quantity: f64| {
+            let mut d = dossier(asset_class, strong_financials());
+            d.position.quantity = quantity;
+            d.house_view = crate::portfolio::dossier::HouseView {
+                recent_summaries: Vec::new(),
+                latest_sections: Some("## Market Signal Thesis\nrisk-on.".into()),
+            };
+            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03")
+                .unwrap()
+                .1
+                .sources
+        };
+        let claims = |sources: Vec<String>| sources.iter().any(|s| s.contains("house view"));
+
+        // The ordinary priced path reads it, so it is recorded.
+        assert!(
+            claims(with_house_view(AssetClass::Stock, 100.0)),
+            "an interpreted holding records the house view it read"
+        );
+
+        // A net-short position returns not-rated before either 6f prompt — Codex
+        // round 2's reachable case, which the dossier-level gate could not see.
+        assert!(
+            !claims(with_house_view(AssetClass::Stock, -100.0)),
+            "a net-short position never reaches interpretation"
+        );
+        // A fully-offset (zero) netted position, same route.
+        assert!(!claims(with_house_view(AssetClass::Stock, 0.0)));
+        // And a class the equity pipeline never grades.
+        assert!(!claims(with_house_view(AssetClass::Cash, 100.0)));
+
+        // The listing guard: a guard-terminal stock routes to not-rated on the profile
+        // read alone.
+        let mut guarded = dossier(AssetClass::Stock, strong_financials());
+        guarded.house_view = house_view_of(Some("## Thesis\nrisk-on."), 0);
+        guarded.listing = Some(crate::portfolio::listing::ListingResolution::Unresolved);
+        assert!(!claims(
+            analyze_holding(&StubAnalyst, &guarded, 29_500.0, &rates(), "2026-08-03")
+                .unwrap()
+                .1
+                .sources
+        ));
+
+        // An evidence-floor abstention: no current price, so the engine stage exits
+        // below the floor before any interpretation call.
+        let mut floored = dossier(AssetClass::Stock, strong_financials());
+        floored.house_view = house_view_of(Some("## Thesis\nrisk-on."), 0);
+        floored.financials.current_price = None;
+        let (verdict, audit) =
+            analyze_holding(&StubAnalyst, &floored, 29_500.0, &rates(), "2026-08-03").unwrap();
+        assert!(matches!(
+            verdict.disposition,
+            VerdictDisposition::InsufficientEvidence { .. }
+        ));
+        assert!(!claims(audit.sources));
+    }
+
+    /// A house view with the given latest sections and `summaries` recent stances.
+    fn house_view_of(
+        latest_sections: Option<&str>,
+        summaries: usize,
+    ) -> crate::portfolio::dossier::HouseView {
+        crate::portfolio::dossier::HouseView {
+            recent_summaries: (0..summaries)
+                .map(|i| {
+                    use crate::agent::{MarketCycle, RiskPosture, ThesisStance};
+                    crate::agent::ReportSummary {
+                        report_id: format!("rep-{i}"),
+                        report_type: "weekly_market".into(),
+                        created_at: format!("2026-08-0{}", i + 1),
+                        title: "Sample headline".into(),
+                        risk_posture: RiskPosture::Mixed,
+                        market_cycle: MarketCycle::LateCycle,
+                        thesis_stance: ThesisStance::Uncertain,
+                        header_summary_bullets: vec![],
+                        key_risks: vec![],
+                        unresolved_questions: vec![],
+                        forward_outlook_themes: vec![],
+                    }
+                })
+                .collect(),
+            latest_sections: latest_sections.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn a_summary_only_house_view_is_claimed_only_by_the_prompt_that_renders_it() {
+        // The two prompts render DIFFERENT parts of the house view: the priced prompt
+        // renders the latest sections and the recent stances, the role/risk prompt only
+        // the latest sections. And `load_house_view` deliberately keeps the summaries
+        // when the latest report's Markdown is missing or unreadable — so a
+        // summary-only house view is reachable, and reaches a role/risk verdict as
+        // nothing at all while its audit claimed the source.
+        assert!(
+            !role_risk_prompt_renders_house_view(&{
+                let mut d = fund_dossier(us_equity_fund());
+                d.house_view = house_view_of(None, 2);
+                d
+            }),
+            "the role/risk prompt renders no summaries, so it receives nothing"
+        );
+        assert!(
+            priced_prompt_renders_house_view(&{
+                let mut d = dossier(AssetClass::Stock, strong_financials());
+                d.house_view = house_view_of(None, 2);
+                d
+            }),
+            "the priced prompt does render the stances, so it does receive them"
+        );
+
+        // End to end on the role/risk branch, which the earlier pin never covered.
+        let mut bond = us_equity_fund();
+        bond.symbol = "BND".into();
+        bond.asset_class = Some("Fixed Income".into());
+        bond.sector_weights = vec![];
+        let role_risk_sources = |house_view| {
+            let mut d = fund_dossier(bond.clone());
+            d.house_view = house_view;
+            let (verdict, audit) =
+                analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+            assert!(
+                matches!(verdict.disposition, VerdictDisposition::RoleRiskOnly(_)),
+                "the fixture must actually take the role/risk branch"
+            );
+            audit.sources
+        };
+        let claims = |sources: Vec<String>| sources.iter().any(|s| s.contains("house view"));
+        assert!(
+            !claims(role_risk_sources(house_view_of(None, 2))),
+            "summary-only: the role/risk audit must not claim what its prompt omits"
+        );
+        assert!(
+            claims(role_risk_sources(house_view_of(Some("## Thesis\nrisk-on."), 0))),
+            "sections present: it does render them, so the claim is earned"
+        );
     }
 
     #[test]

@@ -874,13 +874,20 @@ pub fn insert_baseline_snapshot(
 }
 
 /// The most recent baseline snapshot's `(captured_at, baseline_json)`, or `None` before
-/// any snapshot exists (the first report). Ordered newest-first by `captured_at` with a
-/// `rowid` tiebreak so same-timestamp inserts resolve to the latest insertion.
+/// any snapshot exists (the first report).
+///
+/// Newest by **insertion order** (`id`), not `captured_at` — the same rule as run
+/// identity across the suite. Under a wall clock a backwards step (an NTP
+/// correction, a manual clock change) makes an older snapshot answer as "latest",
+/// and this snapshot is the next report's delta baseline: the whole change view
+/// would anchor on the wrong report and its elapsed interval would be wrong with it.
+/// `captured_at` remains the snapshot's dated capture instant, which the interval
+/// reads; it is not its identity.
 pub fn latest_baseline_snapshot(conn: &Connection) -> Result<Option<(String, String)>> {
     let row = conn
         .query_row(
             "SELECT captured_at, baseline_json FROM baseline_snapshots
-             ORDER BY captured_at DESC, id DESC
+             ORDER BY id DESC
              LIMIT 1",
             [],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
@@ -889,14 +896,19 @@ pub fn latest_baseline_snapshot(conn: &Connection) -> Result<Option<(String, Str
     Ok(row)
 }
 
-/// Delete all but the newest `keep` baseline snapshots (same newest-first ordering as
+/// Delete all but the newest `keep` baseline snapshots (same insertion-order rule as
 /// [`latest_baseline_snapshot`]). Idempotent; a no-op when at or under the cap.
+///
+/// The ordering matters more here than for a read: the pipeline inserts then prunes,
+/// so under `captured_at` a backwards clock step could sort the just-inserted
+/// snapshot below the keep window and **delete the row it had only just written**,
+/// leaving the next report to diff against an older one.
 pub fn prune_baseline_snapshots(conn: &Connection, keep: u32) -> Result<()> {
     conn.execute(
         "DELETE FROM baseline_snapshots
          WHERE id NOT IN (
              SELECT id FROM baseline_snapshots
-             ORDER BY captured_at DESC, id DESC
+             ORDER BY id DESC
              LIMIT ?1
          )",
         [keep],
@@ -1295,6 +1307,57 @@ mod tests {
     #[test]
     fn latest_baseline_snapshot_is_none_before_any_insert() {
         assert!(latest_baseline_snapshot(&mem()).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_backwards_clock_step_neither_hides_nor_deletes_the_newest_snapshot() {
+        // The snapshot the pipeline just wrote is the next report's delta baseline, so
+        // "latest" and "keep" must both be insertion order. Under `captured_at` a
+        // backwards clock step (an NTP correction, a manual change) sorted the fresh
+        // row below the older ones: the next report would diff against the WRONG
+        // report and compute its elapsed interval from that one — and because the
+        // pipeline inserts then prunes, at the cap the prune deleted the row it had
+        // only just written.
+        let conn = mem();
+        for i in 0..BASELINE_SNAPSHOT_RETENTION {
+            insert_baseline_snapshot(
+                &conn,
+                &format!("rep-{i:02}"),
+                &format!("2026-03-{:02}T00:00:00Z", i + 1),
+                crate::data_sources::BASELINE_SCHEMA_VERSION,
+                &format!("{{\"marker\":{i}}}"),
+            )
+            .unwrap();
+        }
+        // The newest insert, dated BEFORE every row already stored.
+        insert_baseline_snapshot(
+            &conn,
+            "rep-stepped",
+            "2026-01-01T00:00:00Z",
+            crate::data_sources::BASELINE_SCHEMA_VERSION,
+            "{\"marker\":\"stepped\"}",
+        )
+        .unwrap();
+
+        assert_eq!(
+            latest_baseline_snapshot(&conn).unwrap().unwrap().1,
+            "{\"marker\":\"stepped\"}",
+            "the just-inserted snapshot is the latest, whatever its timestamp says"
+        );
+        prune_baseline_snapshots(&conn, BASELINE_SNAPSHOT_RETENTION).unwrap();
+        assert_eq!(
+            latest_baseline_snapshot(&conn).unwrap().unwrap().1,
+            "{\"marker\":\"stepped\"}",
+            "the prune must not delete the row the same run just wrote"
+        );
+        let survived: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM baseline_snapshots WHERE report_id = 'rep-stepped'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(survived, 1);
     }
 
     #[test]

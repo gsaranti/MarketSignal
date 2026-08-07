@@ -29,6 +29,94 @@ pub const EMBEDDING_MODEL: &str = "text-embedding-3-large";
 /// live smoke's assertion, not an enforced schema.
 pub const EMBEDDING_DIM: usize = 3072;
 
+/// Byte cap on any text sent to an embedder.
+///
+/// A byte bound rather than a char or token one because it is the only form that
+/// *promises* the provider's limit is respected: every token consumes at least one
+/// input byte, so `tokens ≤ bytes`, and 8,000 bytes can never exceed
+/// `text-embedding-3-large`'s 8,192-token input limit. A char cap cannot promise it —
+/// a multi-byte char can fall back to several byte tokens.
+///
+/// It is applied inside the adapters, so it holds for **every** call rather than only
+/// the ones whose caller remembered: the retrieval query was capped, but the two
+/// persistence paths (a report summary, a durable learning) were not, and an
+/// oversized one is rejected by the provider and lost rather than truncated.
+pub const EMBEDDING_INPUT_MAX_BYTES: usize = 8_000;
+
+/// `text` cut to at most [`EMBEDDING_INPUT_MAX_BYTES`], backed off to a char boundary
+/// so the slice can never split a multi-byte character.
+pub fn bounded_input(text: &str) -> &str {
+    if text.len() <= EMBEDDING_INPUT_MAX_BYTES {
+        return text;
+    }
+    let mut end = EMBEDDING_INPUT_MAX_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// Validate a parsed embedding before it is stored or searched — the shared
+/// post-parse check both real adapters run (`docs/local-models.md §The local-model
+/// adapter seam`; `docs/report-workflow.md §Step 4`).
+///
+/// A vector is not trusted because the call returned 200. Two of these are
+/// **poisoning** guards rather than hygiene: a non-finite component makes every
+/// cosine comparison it touches `NaN`, and a zero vector has no direction, so its
+/// cosine against anything is either `NaN` or a meaningless zero — both silently
+/// corrupt recall for the life of the row rather than failing. The finiteness check
+/// existed only at persistence (`vector_memory::insert_memory`), which guarded the
+/// store but let a poisoned *query* vector reach the search unchecked.
+///
+/// The identity check catches a roster misconfiguration — a daemon serving a
+/// different embedder than the one configured produces vectors in a different space,
+/// which cosine cannot detect. It is deliberately tolerant: a match is
+/// case-insensitive and accepts either name being a prefix of the other, so a tag
+/// variant (`qwen3-embedding:4b` vs `…:4b-q4_K_M`) is not a false failure, and a
+/// response carrying no model field is not checked at all rather than rejected.
+///
+/// Dimensionality is deliberately **not** checked. The store is dimension-agnostic
+/// by design — `vector_memory` skips rows whose dimension mismatches the query — and
+/// that skip is the guard; asserting a configured dimension here would contradict it.
+fn validate_embedding(
+    vector: Vec<f32>,
+    served_model: Option<&str>,
+    configured_model: &str,
+) -> Result<Vec<f32>> {
+    if let Some(served) = served_model {
+        if !model_matches(served, configured_model) {
+            anyhow::bail!(
+                "embedding response came from {served:?}, not the configured \
+                 {configured_model:?} — a different model embeds into a different space, \
+                 so the vector is not comparable with the stored ones"
+            );
+        }
+    }
+    if vector.is_empty() {
+        anyhow::bail!("embedding response carried an empty vector");
+    }
+    if let Some(bad) = vector.iter().find(|v| !v.is_finite()) {
+        anyhow::bail!(
+            "embedding response carried a non-finite component ({bad}) — it would make \
+             every cosine comparison it touches NaN"
+        );
+    }
+    if vector.iter().all(|v| *v == 0.0) {
+        anyhow::bail!(
+            "embedding response carried a zero vector — it has no direction, so its \
+             cosine against anything is undefined"
+        );
+    }
+    Ok(vector)
+}
+
+/// Whether a served model identity answers for the configured one — see
+/// [`validate_embedding`] for why this is prefix-tolerant.
+fn model_matches(served: &str, configured: &str) -> bool {
+    let (a, b) = (served.trim().to_ascii_lowercase(), configured.trim().to_ascii_lowercase());
+    !a.is_empty() && (a.starts_with(&b) || b.starts_with(&a))
+}
+
 /// The embedding stage. One method: text in, vector out. Sync and pure, like
 /// the other model-stage traits — the blocking HTTP call inside the real
 /// adapter rides the application layer's `spawn_blocking` seam.
@@ -60,7 +148,10 @@ impl Embedder for StubEmbedder {
 
 /// Build the embeddings request body: the fixed model, one input text.
 fn build_request(text: &str) -> Value {
-    json!({ "model": EMBEDDING_MODEL, "input": text })
+    // The byte cap is applied HERE, in the builder, rather than at each call site:
+    // this is what goes on the wire, so capping it is what makes the bound hold for
+    // every call — and it keeps the guarantee unit-testable without a live daemon.
+    json!({ "model": EMBEDDING_MODEL, "input": bounded_input(text) })
 }
 
 /// Pull the vector out of the embeddings response envelope
@@ -68,6 +159,18 @@ fn build_request(text: &str) -> Value {
 /// without a live call. A missing field or a non-numeric component is a typed
 /// error rather than a silent partial vector.
 fn parse_embedding_response(value: &Value) -> Result<Vec<f32>> {
+    // **Exactly one** vector: the request sent one input, so a response carrying
+    // several means the envelope is not the one this code reads, and silently taking
+    // `data[0]` would pair some other input's vector with this text.
+    if let Some(rows) = value.pointer("/data").and_then(Value::as_array) {
+        if rows.len() != 1 {
+            anyhow::bail!(
+                "embedding response carried {} vectors for one input — malformed or \
+                 drifted response",
+                rows.len()
+            );
+        }
+    }
     let embedding = value
         .pointer("/data/0/embedding")
         .and_then(Value::as_array)
@@ -146,7 +249,9 @@ impl Embedder for OpenAiEmbedder {
             .request_started("OpenAI", "memory", "embedding", "Memory embedding");
         let result = (|| -> Result<Vec<f32>> {
             let raw = self.call(&build_request(text))?;
-            parse_embedding_response(&raw)
+            let vector = parse_embedding_response(&raw)?;
+            let served = raw.get("model").and_then(Value::as_str);
+            validate_embedding(vector, served, EMBEDDING_MODEL)
         })();
         match &result {
             Ok(_) => self.progress.request_finished(
@@ -181,7 +286,8 @@ const OLLAMA_EMBED_PATH: &str = "/api/embed";
 /// documented stay-resident set is the reasoner *plus* the embedder
 /// (`docs/local-models.md §The model roster and per-task routing`).
 fn build_local_request(model: &str, text: &str) -> Value {
-    json!({ "model": model, "input": text, "keep_alive": -1 })
+    // Capped in the builder, as in [`build_request`].
+    json!({ "model": model, "input": bounded_input(text), "keep_alive": -1 })
 }
 
 /// Pull the vector out of Ollama's `/api/embed` response envelope (`embeddings[0]`,
@@ -189,6 +295,16 @@ fn build_local_request(model: &str, text: &str) -> Value {
 /// live daemon. A missing field or a non-numeric component is a typed error rather than
 /// a silent partial vector, mirroring [`parse_embedding_response`].
 fn parse_local_embedding_response(value: &Value) -> Result<Vec<f32>> {
+    // Exactly one vector, for the same reason as [`parse_embedding_response`].
+    if let Some(rows) = value.pointer("/embeddings").and_then(Value::as_array) {
+        if rows.len() != 1 {
+            anyhow::bail!(
+                "local embedding response carried {} vectors for one input — malformed \
+                 or drifted response",
+                rows.len()
+            );
+        }
+    }
     let embedding = value
         .pointer("/embeddings/0")
         .and_then(Value::as_array)
@@ -262,7 +378,9 @@ impl Embedder for LocalEmbedder {
             .request_started("Local", "memory", "embedding", "Memory embedding");
         let result = (|| -> Result<Vec<f32>> {
             let raw = self.call(&build_local_request(&self.model, text))?;
-            parse_local_embedding_response(&raw)
+            let vector = parse_local_embedding_response(&raw)?;
+            let served = raw.get("model").and_then(Value::as_str);
+            validate_embedding(vector, served, &self.model)
         })();
         match &result {
             Ok(_) => self.progress.request_finished(
@@ -321,8 +439,105 @@ mod tests {
 
     #[test]
     fn parse_embedding_response_errors_on_a_missing_vector() {
+        // An empty array is a cardinality failure (0 vectors for 1 input) and says so;
+        // an absent envelope has no count to report and names the missing field.
         let err = parse_embedding_response(&json!({ "data": [] })).unwrap_err();
+        assert!(err.to_string().contains("0 vectors for one input"), "{err}");
+        let err = parse_embedding_response(&json!({})).unwrap_err();
         assert!(err.to_string().contains("data[0].embedding"), "{err}");
+    }
+
+    #[test]
+    fn a_poisoning_vector_is_rejected_at_the_call_not_only_at_persistence() {
+        // These two are the reason the validator exists. A non-finite component makes
+        // every cosine comparison it touches NaN; a zero vector has no direction, so
+        // its cosine is undefined. Finiteness was checked only at
+        // `vector_memory::insert_memory` — guarding the store, while a poisoned QUERY
+        // vector reached the search unchecked.
+        let err = validate_embedding(vec![0.1, f32::NAN], None, EMBEDDING_MODEL).unwrap_err();
+        assert!(err.to_string().contains("non-finite"), "{err}");
+        let err = validate_embedding(vec![0.1, f32::INFINITY], None, EMBEDDING_MODEL).unwrap_err();
+        assert!(err.to_string().contains("non-finite"), "{err}");
+        let err = validate_embedding(vec![0.0, 0.0, 0.0], None, EMBEDDING_MODEL).unwrap_err();
+        assert!(err.to_string().contains("zero vector"), "{err}");
+        let err = validate_embedding(vec![], None, EMBEDDING_MODEL).unwrap_err();
+        assert!(err.to_string().contains("empty vector"), "{err}");
+        // A vector with a legitimate zero component is fine — only an ALL-zero one
+        // has no direction.
+        assert!(validate_embedding(vec![0.0, -0.5, 0.0], None, EMBEDDING_MODEL).is_ok());
+    }
+
+    #[test]
+    fn a_wrong_embedder_identity_is_rejected_but_tag_variants_are_not() {
+        // A daemon serving a different embedder than the one configured produces
+        // vectors in a different space, which cosine cannot detect — the vectors look
+        // perfectly valid and recall is quietly wrong.
+        let err = validate_embedding(vec![0.1], Some("nomic-embed-text"), "qwen3-embedding:4b")
+            .unwrap_err();
+        assert!(err.to_string().contains("not the configured"), "{err}");
+
+        // Tolerances that must NOT fail: case, surrounding space, and either name
+        // being a prefix of the other (a quantization or `:latest` tag).
+        for served in [
+            "qwen3-embedding:4b",
+            "Qwen3-Embedding:4b",
+            "  qwen3-embedding:4b  ",
+            "qwen3-embedding:4b-q4_K_M",
+        ] {
+            assert!(
+                validate_embedding(vec![0.1], Some(served), "qwen3-embedding:4b").is_ok(),
+                "{served} must answer for the configured model"
+            );
+        }
+        // A response with no model field is not checked rather than rejected — the
+        // check is only available when the provider echoes an identity.
+        assert!(validate_embedding(vec![0.1], None, "qwen3-embedding:4b").is_ok());
+        // An empty served identity is not a match claim either.
+        assert!(validate_embedding(vec![0.1], Some(""), "qwen3-embedding:4b").is_err());
+    }
+
+    #[test]
+    fn the_input_byte_cap_holds_for_every_call_and_never_splits_a_char() {
+        // The cap is in bytes because that is the only form that promises the
+        // provider's token limit is respected (tokens ≤ bytes). The leading ASCII char
+        // shifts every 2-byte `é` onto an odd offset, so the cut lands mid-char and
+        // must back off to the previous boundary.
+        let oversized = format!("a{}", "é".repeat(EMBEDDING_INPUT_MAX_BYTES));
+        let capped = bounded_input(&oversized);
+        assert_eq!(capped.len(), EMBEDDING_INPUT_MAX_BYTES - 1);
+        assert!(capped.is_char_boundary(capped.len()));
+        assert_eq!(bounded_input("short"), "short");
+
+        // And both request builders apply it, so every call is bounded — including the
+        // two persistence paths (a report summary, a durable learning) that never
+        // capped their own input and would have had an oversized one rejected by the
+        // provider and lost.
+        assert_eq!(
+            build_request(&oversized)["input"].as_str().unwrap().len(),
+            EMBEDDING_INPUT_MAX_BYTES - 1
+        );
+        assert_eq!(
+            build_local_request("qwen3-embedding:4b", &oversized)["input"]
+                .as_str()
+                .unwrap()
+                .len(),
+            EMBEDDING_INPUT_MAX_BYTES - 1
+        );
+    }
+
+    #[test]
+    fn a_response_carrying_several_vectors_for_one_input_is_rejected() {
+        // The request sends ONE input, so a multi-vector response means the envelope
+        // is not the one this code reads. Silently taking `data[0]` would pair some
+        // other input's vector with this text — a wrong vector, stored as if right.
+        let err = parse_embedding_response(&json!({
+            "data": [ { "embedding": [0.1] }, { "embedding": [0.2] } ]
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("2 vectors for one input"), "{err}");
+        let err = parse_local_embedding_response(&json!({ "embeddings": [[0.1], [0.2]] }))
+            .unwrap_err();
+        assert!(err.to_string().contains("2 vectors for one input"), "{err}");
     }
 
     #[test]
@@ -353,6 +568,8 @@ mod tests {
     #[test]
     fn parse_local_embedding_response_errors_on_a_missing_vector() {
         let err = parse_local_embedding_response(&json!({ "embeddings": [] })).unwrap_err();
+        assert!(err.to_string().contains("0 vectors for one input"), "{err}");
+        let err = parse_local_embedding_response(&json!({})).unwrap_err();
         assert!(err.to_string().contains("embeddings[0]"), "{err}");
     }
 

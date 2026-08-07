@@ -989,6 +989,79 @@ describe("App.vue portfolio wiring", () => {
     wrapper.unmount();
   });
 
+  test("a credential both gates name renders one row, not two", async () => {
+    // The two validation reports are independent and legitimately overlap: an unset
+    // FMP key is a provider-credentials failure for the cloud gate AND for the local
+    // suite. Concatenated, the band rendered "Provider credentials" twice — against
+    // the one-row-per-category contract, and as a duplicate Vue key since the list
+    // keys on kind.
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        check_configuration: () => ({
+          categories: [
+            {
+              kind: "provider-credentials",
+              title: "Provider credentials",
+              items: ["Missing for FMP, Tavily."],
+              dismiss_id: null,
+            },
+          ],
+          is_blocked: true,
+        }),
+        check_local_configuration: () => ({
+          categories: [
+            {
+              kind: "provider-credentials",
+              title: "Provider credentials",
+              items: ["Missing for FMP, FRED."],
+              dismiss_id: null,
+            },
+          ],
+          is_blocked: true,
+        }),
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const rows = wrapper.findAll(".warning-row");
+    const credentialRows = rows.filter((r) =>
+      r.text().includes("Provider credentials")
+    );
+    expect(credentialRows).toHaveLength(1);
+    // Neither gate's detail is dropped by the merge — the row carries both.
+    expect(credentialRows[0]!.text()).toContain("Tavily");
+    expect(credentialRows[0]!.text()).toContain("FRED");
+    wrapper.unmount();
+  });
+
+  test("an identical item named by both gates is listed once", async () => {
+    const category = {
+      kind: "provider-credentials",
+      title: "Provider credentials",
+      items: ["Missing for FMP."],
+      dismiss_id: null,
+    };
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        check_configuration: () => ({ categories: [category], is_blocked: true }),
+        check_local_configuration: () => ({
+          categories: [category],
+          is_blocked: true,
+        }),
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const row = wrapper
+      .findAll(".warning-row")
+      .find((r) => r.text().includes("Provider credentials"));
+    expect(row).toBeDefined();
+    expect(row!.text().match(/Missing for FMP\./g) ?? []).toHaveLength(1);
+    wrapper.unmount();
+  });
+
   test("a portfolio run lands its result on the page, and its tracker shows no /8 fraction", async () => {
     const pending = deferred<typeof samplePortfolioRun>();
     // Stateful like the real store: after the run resolves, the defensive
