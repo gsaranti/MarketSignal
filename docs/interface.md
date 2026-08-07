@@ -49,7 +49,6 @@ Market Signal
     ├── Agent model configuration
     ├── API token configuration
     ├── External data provider credentials
-    ├── Report generation
     ├── Local analysis models (daemon endpoint + roster + connection status)
     ├── Web research (SearXNG endpoint + connection status)
     ├── Connected sources (optional paywalled-subscription logins + per-source health)

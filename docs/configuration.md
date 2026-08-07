@@ -6,10 +6,10 @@ The Settings section includes:
 - model selection
 - API token configuration
 - external data provider credentials
-- report generation controls
 - local analysis suite configuration
 
-The report generation controls are described in [scheduling.md](scheduling.md).
+Settings carries **no report-generation controls**: generation is on demand and its only trigger is the footer's *Generate now*, rendered on the report view ([scheduling.md §Generating a Report](scheduling.md#generating-a-report), [interface.md §Main Layout](interface.md#main-layout)).
+A Settings panel for them was retired with the move to on-demand generation — it is not designed-and-unbuilt.
 This file covers model selection, API tokens, external data provider credentials, and the local analysis suite's own configuration.
 
 ## Agent Model Configuration

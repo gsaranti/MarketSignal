@@ -497,6 +497,30 @@ The correction matters more than the missing cases did: a coverage claim that ov
 
 **Verification after the round:** cargo **998 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 225 vitest** — one further lib test.
 
+## Batch C — the doc-only corrections (applied)
+
+The ruling round dispositioned all 23 carried findings and split the fixes three ways.
+This branch carries **Batch C** — the six that gate nothing — on its own branch off `main`, the branch the long-doc-line cleanup the ruling paired them with also belongs on.
+Each corrects a doc claim the walk found contradicted by code; every ruling picked the doc as the wrong side, so no code moves here.
+
+- **17 — `storage.md` omitted a durable store.** The section placed the quick check's attention-flag and evidence-event state in the per-run Portfolio record, and its store enumeration never named the single-row quick-check store at all — which made the closing claim that "each durable store above" joins the portability archive false for a store that was in it (format v2).
+  Both halves are corrected: the per-run record is described as carrying the state **as of that run**, a copy overlaid at ledger carry, and the single-row store is enumerated as the live between-run home — latest row only, deliberately never `portfolio_runs`, and durable rather than regenerable, which is why it is in the archive.
+- **19 — a field with no possible consumer.** The `role_risk_only` episode was documented as recording the grade parameter version; neither the branch body nor the episode wrapper has one.
+  The claim is dropped, and the reason recorded rather than left implicit: every read keyed on a parameter version is a grade-linked or target-calibration read, and this branch is excluded from all of them, so the field could have no consumer.
+- **20 — a price the source does not report.** The pull table's price was described as "the per-unit price as the source reported it (absent where it carries none)". Schwab reports no price field at all; the app always derives market value ÷ signed net quantity, and the only case that leaves it null is **zero net quantity**.
+  Corrected to the derivation, with the null trigger named. The option-contract parenthetical was already consistent with the derivation and stands.
+- **21 — an unbuilt consumer read as built.** The Stooq benchmark row named the input delta's technology-event pre-flag beside the outcome-learning labels, without the *designed* tag every neighbouring row in that table carries; no input delta exists in code, and `portfolio-workflow.md` already lists that leg as designed.
+  The row now tags the two consumers separately — labels built, pre-flag designed — matching the table's own convention.
+- **22 — five legs attributed to the wrong call.** The endpoint row credited the quarterly balance sheet with the pre-profit overlay's operating-income eligibility, burn / runway, capex intensity, margin progression and share change. That call returns four lines, and only **liquid resources** comes from it.
+  Each leg is re-attributed to the statement that carries it: eligibility, margin progression and the diluted-share change to the quarterly income prints, burn / runway and capex intensity to the cash-flow prints.
+- **23 — a panel retired, not unbuilt.** `interface.md`'s Settings tree listed a **Report generation** panel that no longer exists — contradicted eleven lines later by the same file, and repeated in `configuration.md`.
+  Removed from both. `configuration.md` now states the positive fact instead of leaving a hole: Settings carries no report-generation controls, generation is on demand, and its only trigger is the footer's *Generate now* on the report view — and that this was **retired**, so a future pass does not re-add it as designed-and-unbuilt.
+
+**Verification:** doc-only, no code changed. Full set re-run regardless: cargo **988 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 223 vitest** — the pre-Batch-A baseline unchanged, which is the expected result for this batch.
+
+**One adjacent gap noticed and deliberately left.** The same Settings tree omits two panels that *are* built (Data, and the document-truncation diagnostics) while listing three that are designed-and-unbuilt (Web research, Connected sources, Trade Opportunities discovery breadth).
+That is a completeness gap, which the doc half's charter excluded explicitly — it flagged only incorrect claims — so it is recorded here as a candidate rather than folded in.
+
 ## Verification
 
 At Batch A complete: cargo **1005 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 223 vitest** — seventeen new lib tests against this session's 988 baseline, plus three fixtures corrected (the two house-view stamps and the bridge-exclusion test that had pinned finding 2's hole as intended behavior).
