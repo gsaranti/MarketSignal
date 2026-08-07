@@ -592,7 +592,7 @@ Its full endpoint surface, by source, is tabulated under [§Portfolio Analysis �
 ### Portfolio Analysis — endpoint surface
 
 Every endpoint Portfolio Analysis ([portfolio-analysis.md](portfolio-analysis.md)) calls (including the conditional fallback paths, tagged *optional*), by source, paralleling the report's per-source tables above.
-**Cardinality** is the load-bearing axis — it sets the per-run call budget: **per-holding** and **per-fund** calls scale with portfolio size (the budget driver), while **run-level** calls fire once and are shared across all holdings.
+**Cardinality** is the load-bearing axis — it sets the per-run call budget: **per-holding** and **per-fund** calls scale with portfolio size (the budget driver), while **run-level** calls are bounded independently of it and shared across all holdings — most fire once, but **each row's own count governs**: the sector-P/E snapshot walks candidate sessions per exchange, and its historical series is per sector × exchange.
 All FMP paths are on the `https://financialmodelingprep.com/stable` base and run on the shared paid key.
 
 **FMP** — the per-holding / per-fund endpoint surface for Portfolio Analysis on the current plan.

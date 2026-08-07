@@ -137,7 +137,8 @@ One further item was reported below the finding bar and is recorded rather than 
 
 ## Verification
 
-At the converged batch (post external review round 1): cargo **988 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 223 vitest** — four new lib tests against the pre-change baseline of 984 lib.
+At the converged batch (post external review round 2): cargo **988 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 223 vitest** — four new lib tests against the pre-change baseline of 984 lib.
+Round 2 was doc + comment only, so the counts are unchanged from round 1.
 
 Round 1 added `a_failed_sector_pe_snapshot_records_its_gap_on_every_fund_not_just_the_first`, an end-to-end two-ETF run over a snapshot source that errors, asserting **both** audits carry the typed gap.
 It was confirmed to fail against the exact pre-fix shape — the gap pushed inside the memoization branch — where the first fund keeps it and the second reports `ITOT lost the snapshot gap: []`.
@@ -149,6 +150,15 @@ and `base_metrics_price_legs_match_the_window_the_quick_check_evaluates` (a fixt
 
 External review round 1 found three issues, all verified against the code and all adopted: the first-fund-only gap propagation, the cardinality / stale-comment divergence the walk-back introduced, and the record's own inconsistent finding counts (it claimed "eight code and eight documentation" remaining where 13 + 10 = 23 carry, and enumerated eleven items under "eight").
 The negative-equity tier fix and the fund-metric parity fix were confirmed clean through their production consumers.
+
+Round 2 found **one** — and it is this walk's own thesis, committed by this walk.
+Round 1's cardinality fix corrected the two homes its finding cited (the endpoint row, `portfolio-workflow.md` §Step 6a) and missed a third: `data-sources.md`'s **canonical framing sentence** for the very axis in question, which flatly said run-level calls "fire once", plus the `job.rs` cache comment saying the snapshot fires once per exchange.
+Fixing the sites a finding names and stopping there is exactly the failure mode these twelve passes were convened to find, and it recurred one round after being written down as the lesson.
+Both homes now defer to each row's own count.
+
+One correction back to that finding: "fire once" was **already** inaccurate before this branch, independently of the walk-back — `historical-sector-pe` is run-level at *one call per sector × exchange*, which is not once and scales with the held funds' distinct sectors.
+So the sentence was a pre-existing over-statement that the walk-back made visible, not purely its fallout.
+`trade-opportunities-workflow.md` carries the same "run-level calls fire once" phrasing for the TO endpoint table; that surface is unbuilt and unaffected, so it was deliberately left alone.
 
 One further defect was introduced and caught inside this session: the engine test's first insertion landed between an existing doc comment's `#[test]` and its function, stacking two attributes on one test so it registered and ran twice.
 The lib count (984 → 988 for three new functions) is what surfaced it; corrected to 987.

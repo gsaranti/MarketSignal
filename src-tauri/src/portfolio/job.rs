@@ -695,9 +695,10 @@ fn run_analysis(
     let mut deep_history_fallbacks = 0usize;
 
     // The run-level sector-P/E surface, fetched on first need and memoized across
-    // funds (`docs/portfolio-workflow.md` §Step 6a): the snapshot once (per
-    // exchange, inside the source), the per-sector histories as each fund's
-    // weightings introduce sectors.
+    // funds (`docs/portfolio-workflow.md` §Step 6a): the snapshot once per exchange
+    // per candidate session tried (the walk is inside the source and is expected to
+    // stop at the first), the per-sector histories as each fund's weightings
+    // introduce sectors.
     let mut sector_pe_cache: Option<Vec<crate::portfolio::fund::SectorPe>> = None;
     // The snapshot is fetched once and memoized, so its failure has to be memoized
     // too: every fund's composite reads the same empty surface, so every fund's
