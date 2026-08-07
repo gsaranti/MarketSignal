@@ -273,6 +273,12 @@ impl NewsSource for TavilyNewsSource {
     fn gather(&self, cadence: ReportCadence) -> Result<Vec<RawHeadline>> {
         // Size the recency window to the elapsed interval since the last report: a
         // `start_date` of today minus the cadence-sized lookback.
+        //
+        // Deliberately the UTC date, not the ET session: this only anchors a
+        // fetch range's lower bound over a cadence-sized window of days, so a
+        // one-day roll shifts the window's start and keys no session. Only
+        // session-KEYED reads convert (`docs/data-sources.md`, the cross-cutting
+        // session-dating rule).
         let today = chrono::Utc::now().date_naive();
         let start_date = tavily_start_date(today, cadence.elapsed_days());
         Ok(sweep_topics(NEWS_TOPICS, &self.progress, |query| {

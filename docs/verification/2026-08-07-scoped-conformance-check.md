@@ -521,6 +521,24 @@ Each corrects a doc claim the walk found contradicted by code; every ruling pick
 **One adjacent gap noticed and deliberately left.** The same Settings tree omits two panels that *are* built (Data, and the document-truncation diagnostics) while listing three that are designed-and-unbuilt (Web research, Connected sources, Trade Opportunities discovery breadth).
 That is a completeness gap, which the doc half's charter excluded explicitly — it flagged only incorrect claims — so it is recorded here as a candidate rather than folded in.
 
+## Post-merge review (integrated `main`)
+
+Both findings were real. One is the same over-broad-claim shape the whole block kept producing; the other was a false statement in the handoff itself.
+
+- **The Metis invariant overstated its own scope.** `BUILD.md` and `INDEX.md` led with "every episode **and report** selection reads insertion order" and then walked it back in a trailing caveat.
+  The narrow truth is that it covers the episode store's identity and lifecycle plus the **report-retention eviction alone**: the sidebar list, the house view built on it, and the portability export all deliberately stay `created_at`-ordered, because they read reports as dated documents.
+  Both homes now lead with "**identity-or-lifecycle** selection", say explicitly that this is narrower than "every selection", and name what deliberately did not move — a headline claim that needs a caveat to be true is the exact pattern five review rounds spent correcting, and it reappeared in the artifact written to summarize them.
+- **The handoff claimed the branches were force-deleted; two still existed.**
+  Only Batch C had been deleted; A and B survived the `git branch -d` attempt (squash merges are not ancestors) and I reported the intent rather than the result.
+  Both are deleted now, against stronger evidence than my own signature-string check: the review confirmed each squash is **tree-identical** to the reviewed branch head (`b18984c`, `55de4a5`).
+
+**One further imprecision found while verifying, not raised by the review.**
+The session-dating rule's exception read "a fetch range's **upper** bound", but `tavily.rs` uses the UTC date for a range's **lower** bound (the cadence-sized news recency `start_date`) and was deliberately left there too.
+The clause now says "a fetch range's own bounds — either end", with the reason (a range selects a *window of data* rather than keying a session) and an enumeration of the left-alone sites, and `tavily.rs` carries the same in-place annotation as its siblings.
+Left as written, the rule was narrower than the set it governs, so the next conformance pass would have spent a finding re-deriving it — which is what a citable home exists to prevent.
+
+**Verification:** cargo **1018 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 225 vitest** — comment and doc changes only.
+
 ## Verification
 
 At Batch A complete: cargo **1005 lib + 32 integration / 0 fail**, **clippy 0 warnings**, `npm run build` clean, **46 node + 223 vitest** — seventeen new lib tests against this session's 988 baseline, plus three fixtures corrected (the two house-view stamps and the bridge-exclusion test that had pinned finding 2's hole as intended behavior).

@@ -422,14 +422,19 @@ walk's five sites, including `fred.rs`'s rate-anchor floor whose bail
 hard-fails a whole run, the report chain's FRED scan, and three
 `fmp.rs` snapshot walks that were the Tier-1 sector-P/E defect one file
 over), while **fetch-range upper bounds deliberately stay UTC**,
-annotated in place; and every **episode and report selection reads
-insertion order**, never a wall clock (`load_episodes`,
-`prune_matured_episodes`, the four in-memory selections, lost-active
-supersession, construction's sector inheritance, and — ruled in
-separately — the report-retention keep window, where a backwards clock
-step could evict the report the run had just written; the date-ordered
-sidebar and house view deliberately do **not** move, so the two windows
-differ on *which* 30, never on how many).
+annotated in place; and every **identity-or-lifecycle selection reads
+insertion order**, never a wall clock — which is narrower than "every
+selection" by design, so read the scope before extending it. It covers
+the episode store's identity and lifecycle (`load_episodes`,
+`prune_matured_episodes`, the four in-memory latest-episode selections,
+lost-active supersession, construction's sector inheritance) and, ruled
+in separately, the **report-retention eviction** alone, where a
+backwards clock step could delete the report the run had just written.
+Everything that reads reports **as dated documents** deliberately stays
+`created_at`-ordered — the sidebar list, the house view built on it, and
+the portability export — so retention and display differ on *which* 30,
+never on how many, and insertion order is a local artifact the archive
+does not carry.
 Plus the **basis-continuity gate** (a typed `StatementBasis` stamped at
 the `apply_ttm_statement_basis` choke point and **refined at the
 merge**, the only point that knows what finally supplied the levels;
