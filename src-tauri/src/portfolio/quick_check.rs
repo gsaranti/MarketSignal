@@ -434,7 +434,7 @@ pub fn run_quick_check(
     let run = store::latest_run(conn)?
         .context("no Portfolio Analysis run exists yet — nothing to quick-check")?;
     let now = now_rfc3339();
-    let today = now.chars().take(10).collect::<String>();
+    let today = sweep_session_date(&now);
 
     // The prior quick-check state chains streaks / flags — but only against the
     // same run; a newer full run supersedes it wholesale.
@@ -701,7 +701,7 @@ pub struct TailSweep<'a> {
 
 pub fn sweep_tail(input: TailSweep<'_>, ctx: &RunContext) -> Result<Vec<HoldingQuickState>> {
     let now = now_rfc3339();
-    let today = now.chars().take(10).collect::<String>();
+    let today = sweep_session_date(&now);
     let targets: Vec<SweepTarget<'_>> = input
         .current_positions
         .iter()
@@ -743,14 +743,32 @@ pub fn sweep_tail(input: TailSweep<'_>, ctx: &RunContext) -> Result<Vec<HoldingQ
 /// Whether a cached rate print is young enough for the quick paths' fail-soft —
 /// aged against the print's as-of date (falling back to the fetch date), the
 /// drafted rate-cache max age.
+/// The sweep's own date — the **ET session** of its instant, never the UTC date
+/// prefix. Both consumers are session quantities: [`rate_cache_fresh`] compares
+/// it against a FRED observation date (a market date), and it is the `run_date`
+/// the ledger evaluation stamps into `first_breach_at` / `confirmed_at` /
+/// `last_evaluated_at`, which must land on the same calendar the full run's
+/// `run_date` uses or a sweep and the run that consumes it disagree by a day.
+fn sweep_session_date(now: &str) -> String {
+    crate::market_clock::et_date_of(now)
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| now.chars().take(10).collect())
+}
+
 fn rate_cache_fresh(cache: &RatePrints, today: &str) -> bool {
+    // A FRED `as_of` is already a market day, so it parses directly. The
+    // fallback — the cache's own fetch instant, used only where FRED served no
+    // observation date — dates through the **ET session** like every other
+    // session-keyed read: its UTC prefix would put an evening fetch a day ahead
+    // and read the cache one day younger than it is.
     let as_of = cache
         .dgs10_as_of
         .as_deref()
         .or(cache.dgs2_as_of.as_deref())
-        .unwrap_or(&cache.fetched_at[..10.min(cache.fetched_at.len())]);
+        .map(|d| d.chars().take(10).collect::<String>())
+        .unwrap_or_else(|| sweep_session_date(&cache.fetched_at));
     match (
-        chrono::NaiveDate::parse_from_str(&as_of[..10.min(as_of.len())], "%Y-%m-%d"),
+        chrono::NaiveDate::parse_from_str(&as_of, "%Y-%m-%d"),
         chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d"),
     ) {
         (Ok(a), Ok(t)) => (t - a).num_days() <= RATE_CACHE_MAX_AGE_DAYS,
@@ -1263,6 +1281,15 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             eval_fin.daily_closes = closes.clone();
             eval_fin.price_history = closes.iter().map(|d| d.value).collect();
         }
+        // The sweep is **not** the authority on statement-basis continuity, so it
+        // neither fires the gate nor re-stamps: the values it evaluates span two
+        // bases at once — filing series off this refresh, the three multiples
+        // rescaled from the STORED full-pass audit by price alone — and one marker
+        // cannot describe both. Left set, a refresh that flipped basis would adopt
+        // the new stamp while the multiples were still on the old one, and the
+        // genuine flip at the next full pass would then pass unnoticed. The full
+        // pass computes every evaluated value from one basis, so it owns the gate.
+        eval_fin.statement_basis = None;
         let mut metrics = engine::compute_metrics(&eval_fin);
         if let (Some((price, _)), Some(b), Some(stored)) =
             (inp.price, basis, inp.audit.map(|a| &a.metrics))
@@ -1606,6 +1633,25 @@ fn now_rfc3339() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_sweep_dates_itself_on_the_et_session_not_the_utc_prefix() {
+        use super::sweep_session_date;
+        // 9:30 PM ET on 2026-08-04 — the UTC instant has rolled to the 5th, but the
+        // sweep belongs to the 4th's session. The old UTC-prefix read dated it the
+        // 5th, which aged a rate print by one against `RATE_CACHE_MAX_AGE_DAYS` (a
+        // FRED observation date is a market day) and stamped the ledger evaluation's
+        // `first_breach_at` / `confirmed_at` on a session the sweep never saw — a day
+        // ahead of the full run that consumes those states.
+        assert_eq!(sweep_session_date("2026-08-05T01:30:00+00:00"), "2026-08-04");
+        // Mid-session, where the two readings agree.
+        assert_eq!(sweep_session_date("2026-08-05T15:00:00+00:00"), "2026-08-05");
+        // Degradation is the old prefix read, never a panic or an empty date: a
+        // date-only value carries no instant to convert, and a malformed stamp keeps
+        // the pre-conversion behavior rather than vanishing.
+        assert_eq!(sweep_session_date("2026-08-05"), "2026-08-05");
+        assert_eq!(sweep_session_date("2026-08-05T99:99:99"), "2026-08-05");
+    }
+
     use super::*;
     use crate::portfolio::engine::{LedgerSeries, QuickCheckBasis};
     use crate::portfolio::{

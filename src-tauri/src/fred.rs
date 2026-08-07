@@ -812,8 +812,14 @@ impl FredDataSource {
             // an arbitrarily stale print as the current anchor. Ten days covers
             // holiday + weekend clusters with margin; older is a missing anchor,
             // taking the caller's existing hard-fail / unknown posture.
-            let fresh_floor =
-                chrono::Utc::now().date_naive() - chrono::Duration::days(RATE_ANCHOR_MAX_AGE_DAYS);
+            // The floor dates on the **ET session**, not the UTC date: FRED
+            // observation dates are market days, so an evening-ET run under a UTC
+            // date slides the floor a day forward and reads a print sitting exactly
+            // on the bound as stale. That `bail!` is not a degraded read — the
+            // Portfolio job's rate-anchor rule hard-fails the whole run on it
+            // before any per-holding work.
+            let fresh_floor = crate::market_clock::et_session_date(chrono::Utc::now())
+                - chrono::Duration::days(RATE_ANCHOR_MAX_AGE_DAYS);
             let print_date = chrono::NaiveDate::parse_from_str(&latest.date, "%Y-%m-%d")
                 .with_context(|| {
                     format!("undatable observation date {:?} for {series_id}", latest.date)
@@ -1144,7 +1150,10 @@ impl MarketDataSource for FredDataSource {
         let mut gaps = Vec::new();
         // One `today` anchors both the freshness guard (per-series staleness) and the
         // calendar window, so the whole scan reads against a single clock sample.
-        let today = Utc::now().date_naive();
+        // It is the **ET session** date: every observation date FRED serves is a
+        // market day, so a UTC date on an evening-ET run ages each series by one and
+        // drops a print sitting exactly on its staleness bound to a gap.
+        let today = crate::market_clock::et_session_date(Utc::now());
         let internals = self.fetch_series(INTERNALS_SERIES, GroupKind::Internals, today, &mut gaps);
         let macro_levels =
             self.fetch_series(MACRO_SERIES, GroupKind::MacroLevels, today, &mut gaps);

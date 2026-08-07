@@ -380,6 +380,15 @@ pub struct CompanyFinancials {
     /// Tagged inputs a source could not resolve, carried into the prompt so the model
     /// reasons over what is absent rather than inferring it.
     pub gaps: Vec<String>,
+    /// Which statement window the values above were computed on — set at the
+    /// canonicalization choke point (`dossier::apply_ttm_statement_basis`) by every
+    /// producer that adopts or falls back. `None` where no statement basis applies
+    /// (a fund) or was resolved.
+    ///
+    /// Read by the ledger evaluation to detect a basis change: it does not alter any
+    /// value, only whether a statement-derived condition is comparable this pass.
+    #[serde(default)]
+    pub statement_basis: Option<crate::portfolio::StatementBasis>,
 }
 
 /// The shared statement canonicalization policy, applied **in place**: quarterly
@@ -689,6 +698,32 @@ impl LedgerSeries {
         }
     }
 
+    /// Whether this series' VALUE comes off the statement window — and so moves when
+    /// the statement basis changes, independently of the business
+    /// ([`crate::portfolio::StatementBasis`]).
+    ///
+    /// Deliberately wider than the filing *cadence*: the three multiples are keyed to
+    /// the marks' trading day (market cadence) but their denominators are statement
+    /// lines, so a TTM → annual flip steps them exactly as it steps the margins. That
+    /// is the dangerous combination — a market-cadence series confirms in two
+    /// distinct observations, so a basis step can confirm within days.
+    ///
+    /// The expense ratio rides the fund's own print and funds carry no statement
+    /// lines at all; the price-derived series and the portfolio weight are untouched
+    /// by a basis change.
+    pub fn statement_derived(&self) -> bool {
+        matches!(
+            self,
+            LedgerSeries::NetMargin
+                | LedgerSeries::GrossMargin
+                | LedgerSeries::RevenueGrowth
+                | LedgerSeries::DebtToEquity
+                | LedgerSeries::PeRatio
+                | LedgerSeries::PsRatio
+                | LedgerSeries::PbRatio
+        )
+    }
+
     /// The required consecutive distinct breaching observations for this series —
     /// the persistence-semantics count, derived from cadence (drafted constants).
     pub fn required_consecutive(&self) -> u32 {
@@ -769,6 +804,46 @@ pub fn resolve_series(
     let metric = |v: Option<f64>, label: &str| -> Result<f64, String> {
         v.ok_or_else(|| format!("{label} is a gap this run"))
     };
+    // A signed multiple is OFF-SCALE for a threshold comparison, so it resolves
+    // **unevaluable** rather than comparing. Both hazards are real and only one
+    // direction of each is obvious:
+    //
+    // - A negative P/E means the company has just gone loss-making. Compared
+    //   naively it satisfies "P/E below 15" and fires an *add* trigger on
+    //   exactly the evidence that should stop one. The signed derive upstream is
+    //   deliberate (`dossier.rs`, grade-v2.1 — the sign must survive so the
+    //   engine's "a loss-maker is never cheap" valuation guard is reachable), so
+    //   the guard belongs here at the comparator, not at the derive.
+    // - A negative debt/equity means liabilities exceed the equity base —
+    //   maximal leverage. It cannot breach "debt/equity above 3", and the worse
+    //   half is that it then reads as a **clean** observation: the clean arm
+    //   resets `breach_streak`, `first_breach_at`, `confirmed_at` and the
+    //   acknowledgment, silently clearing a standing breach. That silent clear is
+    //   the failure the streak machinery exists to prevent.
+    //
+    // Unevaluable — not a sentinel "maximal" value — because a ledger threshold
+    // is model-authored with an open comparator, so any sentinel would have to
+    // assert a direction that is wrong for the other comparator ("debt/equity
+    // below 1" must not be satisfied by negative equity either), and `f64`
+    // infinities do not survive the `serde_json` round-trip `last_value` takes.
+    // This is a deliberate divergence from `assign_stock_tier`, whose closed
+    // internal predicates CAN express "maximal" safely and do
+    // (`RISK_DEBT_EQUITY_BAND`). Resolving unevaluable moves no state at all, so
+    // it can neither fabricate a crossing nor clear one, and the typed
+    // `unevaluable_series` channel downgrades the family's claimed clear.
+    // `on_scale` names the admissible range per series rather than inferring it:
+    // zero debt is a real debt/equity reading, zero is degenerate for a P/E.
+    let on_scale =
+        |v: Option<f64>, label: &str, admissible: fn(f64) -> bool| -> Result<f64, String> {
+            let value = metric(v, label)?;
+            if !admissible(value) {
+                return Err(format!(
+                    "{label} is {value} — off-scale for a threshold comparison, so this \
+                     condition is unevaluable rather than compared"
+                ));
+            }
+            Ok(value)
+        };
 
     match series {
         LedgerSeries::NetMargin => Ok(ResolvedObservation {
@@ -783,8 +858,9 @@ pub fn resolve_series(
             value: metric(metrics.revenue_growth, "revenue growth")?,
             observation_id: filing_obs()?,
         }),
+        // Negative equity is off-scale, never "low leverage" — see `on_scale`.
         LedgerSeries::DebtToEquity => Ok(ResolvedObservation {
-            value: metric(metrics.debt_to_equity, "debt/equity")?,
+            value: on_scale(metrics.debt_to_equity, "debt/equity", |d| d >= 0.0)?,
             observation_id: filing_obs()?,
         }),
         LedgerSeries::ExpenseRatio => {
@@ -802,8 +878,10 @@ pub fn resolve_series(
             value: metric(metrics.trailing_return, "trailing return")?,
             observation_id: market_obs()?,
         }),
+        // A loss-maker's negative P/E is off-scale, never "cheap" — see
+        // `on_scale`. Zero is degenerate on the same scale and goes with it.
         LedgerSeries::PeRatio => Ok(ResolvedObservation {
-            value: metric(metrics.pe_ratio, "P/E")?,
+            value: on_scale(metrics.pe_ratio, "P/E", |p| p > 0.0)?,
             observation_id: market_obs()?,
         }),
         LedgerSeries::PsRatio => Ok(ResolvedObservation {
@@ -901,6 +979,52 @@ pub fn evaluate_ledger_conditions_gated(
         };
 
         let mut st = cond.eval_state.clone().unwrap_or_default();
+
+        // **Basis continuity.** A statement-derived series compared across a change
+        // of statement basis is comparing two different measurements of the same
+        // business: a one-quarter feed gap fails the contiguity guard, the holding
+        // drops to the SEC annual basis, and a growing issuer's P/S steps (~8.0 →
+        // 10.3) with nothing having happened. The prior ledger is evaluated against
+        // THIS run's metrics, so the step lands on a threshold authored under the
+        // other basis; the streak then carries into the sweep, which rescales the
+        // stored — now flipped — multiples by price alone, and a market-cadence
+        // series needs only one more distinct close to CONFIRM. That is a fabricated
+        // crossing on a thesis that is intact, and on a falsifier it forces archival.
+        //
+        // So the pass types the series unevaluable and re-stamps: no state movement
+        // beyond adopting the new basis, and the streak is dropped rather than
+        // carried, because the observations in it were taken on the other basis. It
+        // is deliberately NOT the clean arm — a clean read would clear the
+        // acknowledgment and report a thesis confirmation the evidence does not
+        // support. Once re-stamped, the condition evaluates normally on the new
+        // basis, so this fires once per flip, not permanently.
+        //
+        // The annual fallback itself is retained: falling back is honest, and the
+        // basis-flip rate is a big-run watch. It is the CROSSING it manufactures
+        // that is not.
+        if quant.series.statement_derived() {
+            if let Some(current_basis) = fin.statement_basis {
+                match st.authored_statement_basis {
+                    Some(prior) if prior != current_basis => {
+                        out.unevaluable.push(format!(
+                            "condition '{}': statement basis changed ({prior:?} →                              {current_basis:?}) — the level moved with the measurement,                              so this pass cannot compare it",
+                            cond.statement
+                        ));
+                        out.unevaluable_series.push(quant.series);
+                        st.authored_statement_basis = Some(current_basis);
+                        st.breach_streak = 0;
+                        st.first_breach_at = None;
+                        st.confirmed_at = None;
+                        out.updated_states.push((cond.condition_id.clone(), st));
+                        continue;
+                    }
+                    // First evaluation, or a pre-stamp state: adopt without a
+                    // discontinuity — there is nothing to disagree with.
+                    _ => st.authored_statement_basis = Some(current_basis),
+                }
+            }
+        }
+
         let margin = quant.margin.max(0.0);
         let breached = match quant.comparator {
             crate::portfolio::LedgerComparator::Below => resolved.value < quant.threshold - margin,
@@ -984,6 +1108,8 @@ pub fn evaluate_ledger_conditions_gated(
         // it — keyed to the RECORDED observation when this pass's print is
         // stale (acking the stale id would let the next sweep's newer print
         // read as past-ack and re-raise the just-consumed breach).
+        // Snapshotted before `st` moves into `final_state`.
+        let st_confirmed_at = st.confirmed_at.clone();
         let (crossing_obs, crossing_val) = if stale_observation {
             (
                 st.last_observation_id
@@ -1003,6 +1129,11 @@ pub fn evaluate_ledger_conditions_gated(
                 observed_value: crossing_val,
                 threshold: quant.threshold,
                 observation_id: crossing_obs,
+                // The date the streak actually reached its count — set once, on the
+                // confirming pass, and held until the streak resets. A between-run
+                // sweep can confirm days before the next full run consumes this
+                // crossing, so the consuming run's date is not the confirmation's.
+                confirmed_at: st_confirmed_at,
             });
         } else if breached && new_observation && !confirmed_now {
             out.crossings.push(ConditionCrossing {
@@ -1013,6 +1144,8 @@ pub fn evaluate_ledger_conditions_gated(
                 observed_value: resolved.value,
                 threshold: quant.threshold,
                 observation_id: resolved.observation_id.clone(),
+                // Nothing has confirmed yet.
+                confirmed_at: None,
             });
         }
         let final_state: ConditionEvalState = st;
@@ -2516,6 +2649,9 @@ mod tests {
         daily_closes.push(DatedValue { date: "2026-07-15".into(), value: 195.0 });
         CompanyFinancials {
             symbol: "AAPL".into(),
+            // The shared fixture stands on a contiguous quarterly window, as the
+            // production adopt path would stamp it.
+            statement_basis: Some(crate::portfolio::StatementBasis::Ttm),
             current_price: Some(195.0),
             market_cap: Some(3.0e12),
             shares_outstanding: Some(1.5e10),
@@ -4096,6 +4232,205 @@ mod tests {
     }
 
     #[test]
+    fn a_statement_basis_flip_cannot_confirm_a_crossing() {
+        use crate::portfolio::StatementBasis;
+        // The holding's thesis is intact; only the MEASUREMENT changed. A
+        // one-quarter feed gap fails the contiguity guard, the levels drop to the
+        // annual basis, and a growing issuer's P/S steps up with nothing having
+        // happened. The condition's streak was accumulated on the TTM basis.
+        let mut fin = strong();
+        fin.statement_basis = Some(StatementBasis::Annual);
+        let mut metrics = compute_metrics(&fin);
+        metrics.ps_ratio = Some(10.3); // was ~8.0 on the TTM window
+        let standing = ConditionEvalState {
+            last_observation_id: Some("2026-07-14".into()),
+            last_value: Some(8.0),
+            breach_streak: 1,
+            first_breach_at: Some("2026-07-14".into()),
+            acknowledged_observation_id: Some("2026-05-01".into()),
+            authored_statement_basis: Some(StatementBasis::Ttm),
+            ..Default::default()
+        };
+        let ledger = ledger_of(vec![quant_cond(
+            "ps",
+            LedgerSeries::PsRatio,
+            LedgerComparator::Above,
+            10.0,
+            0.0,
+            Some(standing),
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        // P/S is market-cadence, so it confirms in two distinct observations: one
+        // more breaching close after this and the falsifier would have tripped and
+        // forced archival — off the basis step alone.
+        assert!(
+            eval.crossings.is_empty(),
+            "a basis step must not cross: {:?}",
+            eval.crossings
+        );
+        assert_eq!(eval.unevaluable.len(), 1);
+        assert_eq!(eval.unevaluable_series, vec![LedgerSeries::PsRatio]);
+        let (_, st) = &eval.updated_states[0];
+        assert_eq!(st.breach_streak, 0, "the old basis's streak cannot carry across");
+        assert_eq!(
+            st.authored_statement_basis,
+            Some(StatementBasis::Annual),
+            "the new basis is adopted, so the gate fires once per flip — not forever"
+        );
+        assert_eq!(
+            st.acknowledged_observation_id,
+            Some("2026-05-01".into()),
+            "NOT the clean arm — a clean read would clear the acknowledgment and \
+             report a confirmation the evidence does not support"
+        );
+
+        // Re-evaluated on the now-adopted basis, the same breaching level counts
+        // normally: the gate suppresses the step, not the series.
+        let mut cond = ledger.conditions[0].clone();
+        cond.eval_state = Some(st.clone());
+        let after = evaluate_ledger_conditions(
+            &ledger_of(vec![cond]),
+            &metrics,
+            &fin,
+            None,
+            "2026-08-04",
+        );
+        assert!(after.unevaluable.is_empty(), "the flip is not permanent");
+    }
+
+    #[test]
+    fn a_price_derived_condition_is_untouched_by_a_basis_flip() {
+        use crate::portfolio::StatementBasis;
+        // Scope check: only statement-DERIVED series gate. A price condition's value
+        // does not move with the statement window, so a flip must not cost it a pass.
+        let mut fin = strong();
+        fin.statement_basis = Some(StatementBasis::Annual);
+        let metrics = compute_metrics(&fin);
+        let standing = ConditionEvalState {
+            authored_statement_basis: Some(StatementBasis::Ttm),
+            ..Default::default()
+        };
+        let ledger = ledger_of(vec![quant_cond(
+            "px",
+            LedgerSeries::Price,
+            LedgerComparator::Below,
+            300.0,
+            0.0,
+            Some(standing),
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        assert!(eval.unevaluable.is_empty(), "{:?}", eval.unevaluable);
+        assert_eq!(eval.crossings.len(), 1, "the price condition still evaluates");
+    }
+
+    #[test]
+    fn a_pre_stamp_state_adopts_the_basis_without_a_discontinuity() {
+        use crate::portfolio::StatementBasis;
+        // Upgrade path: states persisted before the marker existed carry `None`, and
+        // there is nothing for the current basis to disagree with — so the first pass
+        // adopts silently rather than spending every holding's first sweep on a
+        // fabricated discontinuity.
+        let mut fin = strong();
+        fin.statement_basis = Some(StatementBasis::Annual);
+        let metrics = compute_metrics(&fin);
+        let ledger = ledger_of(vec![quant_cond(
+            "nm",
+            LedgerSeries::NetMargin,
+            LedgerComparator::Below,
+            0.9,
+            0.0,
+            Some(ConditionEvalState::default()),
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        assert!(eval.unevaluable.is_empty(), "{:?}", eval.unevaluable);
+        let (_, st) = &eval.updated_states[0];
+        assert_eq!(st.authored_statement_basis, Some(StatementBasis::Annual));
+    }
+
+    #[test]
+    fn a_negative_debt_equity_never_clears_a_standing_breach_streak() {
+        // The defect's teeth. A negative debt/equity (liabilities past the equity
+        // base — maximal leverage) cannot breach "debt/equity above 3", so it used
+        // to land in the CLEAN arm and reset the whole streak: `breach_streak`,
+        // `first_breach_at`, `confirmed_at` and the acknowledgment all wiped, on
+        // the most levered reading the series can produce.
+        let mut fin = strong();
+        fin.total_debt = Some(500.0);
+        fin.total_equity = Some(-100.0);
+        let metrics = compute_metrics(&fin);
+        assert!(
+            metrics.debt_to_equity.is_some_and(|d| d < 0.0),
+            "the fixture must actually produce a negative ratio"
+        );
+        let standing = ConditionEvalState {
+            last_observation_id: Some("2026-03-31".into()),
+            last_value: Some(4.0),
+            breach_streak: 1,
+            first_breach_at: Some("2026-04-01".into()),
+            ..Default::default()
+        };
+        let ledger = ledger_of(vec![quant_cond(
+            "de",
+            LedgerSeries::DebtToEquity,
+            LedgerComparator::Above,
+            3.0,
+            0.0,
+            Some(standing),
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        assert!(eval.crossings.is_empty(), "off-scale must not fabricate a crossing either");
+        assert_eq!(eval.unevaluable.len(), 1, "it resolves unevaluable, not clean");
+        assert_eq!(eval.unevaluable_series, vec![LedgerSeries::DebtToEquity]);
+        assert!(
+            eval.updated_states.is_empty(),
+            "no state movement at all — the standing streak survives"
+        );
+    }
+
+    #[test]
+    fn a_negative_pe_does_not_read_as_cheap_on_a_below_threshold() {
+        // The other direction: a loss-maker's negative P/E compared naively
+        // satisfies "P/E below 15" and fires an add trigger on exactly the
+        // evidence that should stop one.
+        let mut fin = strong();
+        fin.market_cap = Some(1.0e11);
+        fin.net_income = Some(-5.0e9);
+        fin.pe_ratio = None;
+        let mut merged = fin.clone();
+        merged.pe_ratio = Some(-20.0);
+        let metrics = compute_metrics(&merged);
+        assert!(metrics.pe_ratio.is_some_and(|p| p < 0.0));
+        let ledger = ledger_of(vec![quant_cond(
+            "pe",
+            LedgerSeries::PeRatio,
+            LedgerComparator::Below,
+            15.0,
+            0.0,
+            None,
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &merged, None, "2026-08-03");
+        assert!(eval.crossings.is_empty(), "a negative P/E is not a cheap P/E");
+        assert_eq!(eval.unevaluable.len(), 1);
+    }
+
+    #[test]
+    fn the_off_scale_guard_admits_the_legitimate_boundary_readings() {
+        // Zero debt is a real debt/equity reading and must still evaluate — the
+        // guard is off-scale detection, not a blanket non-positive reject. (A P/E
+        // of zero is degenerate on its own scale and stays out, which is why the
+        // two series carry different admissible ranges rather than one shared
+        // floor.)
+        let mut fin = strong();
+        fin.total_debt = Some(0.0);
+        fin.total_equity = Some(1000.0);
+        let metrics = compute_metrics(&fin);
+        assert_eq!(metrics.debt_to_equity, Some(0.0));
+        let resolved = resolve_series(LedgerSeries::DebtToEquity, &metrics, &fin, None)
+            .expect("zero leverage is on-scale");
+        assert_eq!(resolved.value, 0.0);
+    }
+
+    #[test]
     fn cadence_and_counts_derive_from_the_series() {
         assert_eq!(LedgerSeries::NetMargin.cadence(), ConditionCadence::Filing);
         assert_eq!(
@@ -4223,6 +4558,7 @@ mod tests {
             first_breach_at: Some("2026-07-31".into()),
             confirmed_at: Some("2026-08-01".into()),
             acknowledged_observation_id: Some("2026-07-15".into()),
+            authored_statement_basis: None,
         };
         let carried = ledger_of(vec![quant_cond(
             "p",

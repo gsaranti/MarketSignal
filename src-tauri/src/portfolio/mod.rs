@@ -944,6 +944,27 @@ pub struct QuantCore {
     pub margin: f64,
 }
 
+/// Which statement window a holding's fundamentals were computed on
+/// (`docs/portfolio-analysis.md` §Starting parameters — the TTM statement basis and
+/// its annual fallback).
+///
+/// It is persisted on each condition's evaluation state because a change of basis
+/// moves every statement-derived level **without the business changing**: a
+/// one-quarter feed gap fails the contiguity guard, drops the holding to the SEC
+/// annual basis, and a growing issuer's P/S steps (measured ~8.0 → 10.3) purely
+/// because the denominator switched from four trailing quarters to a prior fiscal
+/// year. Compared across that step, a model-authored threshold reads as breached by
+/// evidence that does not exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StatementBasis {
+    /// Four contiguous trailing quarters.
+    Ttm,
+    /// The SEC same-concept annual fallback — adopted when the quarterly window is
+    /// gapped, non-contiguous, or short.
+    Annual,
+}
+
 /// A quantitative condition's **evaluation state** — engine state, distinct from the
 /// model-authored ledger content (`docs/storage.md §Local Analysis Suite Storage`),
 /// observation-identity-keyed so the breach streak advances only on a distinct new
@@ -967,6 +988,16 @@ pub struct ConditionEvalState {
     /// against a *later* observation, never straight back from the one already
     /// examined.
     pub acknowledged_observation_id: Option<String>,
+    /// The statement basis this condition's streak was accumulated under, stamped by
+    /// the engine on first evaluation ([`StatementBasis`]).
+    ///
+    /// A statement-derived series compared across a basis change is comparing two
+    /// different measurements, so the engine types it **unevaluable** for that pass
+    /// and re-stamps — the streak cannot carry across, because the observations in it
+    /// were taken on the other basis. `None` = a pre-stamp state, which adopts the
+    /// current basis without a discontinuity (there is nothing to disagree with).
+    #[serde(default)]
+    pub authored_statement_basis: Option<StatementBasis>,
 }
 
 /// One ledger condition — a key falsifier or an action trigger, **quantitative**
@@ -1118,6 +1149,19 @@ pub struct ConditionCrossing {
     pub threshold: f64,
     /// The distinct observation the evaluation keyed on.
     pub observation_id: String,
+    /// The date the crossing **confirmed** on — the run/sweep whose print pushed the
+    /// streak to its required count, carried from the condition's own
+    /// [`ConditionEvalState::confirmed_at`]. `None` on a `FirstBreach` (nothing has
+    /// confirmed yet) and on a legacy state that reached its count before this field
+    /// existed.
+    ///
+    /// It exists because the confirming pass and the pass that *consumes* the
+    /// crossing are not the same event: a between-run sweep can confirm days before
+    /// the next full run reads it. Anything positioning the confirmation in time —
+    /// the falsifier lead-time read above all — must date it here, not at the
+    /// consuming run.
+    #[serde(default)]
+    pub confirmed_at: Option<String>,
 }
 
 /// A crossing's persistence-semantics outcome: a lone noisy print is a quiet
@@ -2039,6 +2083,7 @@ mod tests {
                     first_breach_at: None,
                     confirmed_at: None,
                     acknowledged_observation_id: None,
+                    authored_statement_basis: None,
                 }),
             }],
             target_weight_low: 0.03,

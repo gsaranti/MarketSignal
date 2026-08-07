@@ -1031,7 +1031,12 @@ impl FmpDataSource {
     /// back. If no candidate has a snapshot, returns empty with no gap — a quiet window,
     /// not a failure.
     fn fetch_sectors(&self, gaps: &mut Vec<DataGap>) -> Vec<SectorPerformance> {
-        let today = Utc::now().date_naive();
+        // The **ET session** the walk starts from, not the UTC date: these
+        // snapshots are keyed by trading day, and an evening-ET run under a
+        // UTC date leads with a session that has not traded — the endpoint
+        // answers 200 with an empty array, so the first candidate is spent
+        // every evening (`market_clock::et_session_date`).
+        let today = crate::market_clock::et_session_date(Utc::now());
         for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
             // Cancel checkpoint: the date-walk can fire several probes, so stop here
             // rather than working through them after a cancel during an earlier group.
@@ -1094,6 +1099,11 @@ impl FmpDataSource {
     /// recorded as a gap so the agent sees the enrichment was lost on this run; a
     /// `Rejected` stops the loop, like the quote groups.
     fn fetch_index_performance(&self, gaps: &mut Vec<DataGap>) -> Vec<IndexPerformance> {
+        // Deliberately the UTC date, not the ET session: this is a fetch range's
+        // inclusive upper bound, so a one-day forward roll asks for an untraded
+        // day that serves no row and shifts a rolling multi-day lookback by one.
+        // Only session-KEYED reads (snapshot dates, staleness bounds, evidence
+        // boundaries) need converting.
         let to = Utc::now().date_naive();
         let from = to - Duration::days(EOD_LOOKBACK_DAYS);
         let (from_s, to_s) = (
@@ -1268,7 +1278,10 @@ impl FmpDataSource {
         if self.progress.is_cancelled() {
             return Vec::new();
         }
-        let today = Utc::now().date_naive();
+        // The **ET session** date: both bounds are trading-day dates, so a UTC
+        // date on an evening run slides the whole window forward one day and
+        // drops an event sitting on its trailing edge.
+        let today = crate::market_clock::et_session_date(Utc::now());
         let from = (today - Duration::days(back_days))
             .format("%Y-%m-%d")
             .to_string();
@@ -1345,7 +1358,12 @@ impl FmpDataSource {
         exchange: &str,
         gaps: &mut Vec<DataGap>,
     ) -> Vec<SectorPe> {
-        let today = Utc::now().date_naive();
+        // The **ET session** the walk starts from, not the UTC date: these
+        // snapshots are keyed by trading day, and an evening-ET run under a
+        // UTC date leads with a session that has not traded — the endpoint
+        // answers 200 with an empty array, so the first candidate is spent
+        // every evening (`market_clock::et_session_date`).
+        let today = crate::market_clock::et_session_date(Utc::now());
         for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
             if self.progress.is_cancelled() {
                 return Vec::new();
@@ -1424,7 +1442,12 @@ impl FmpDataSource {
         exchange: &str,
         gaps: &mut Vec<DataGap>,
     ) -> Vec<IndustrySnapshot> {
-        let today = Utc::now().date_naive();
+        // The **ET session** the walk starts from, not the UTC date: these
+        // snapshots are keyed by trading day, and an evening-ET run under a
+        // UTC date leads with a session that has not traded — the endpoint
+        // answers 200 with an empty array, so the first candidate is spent
+        // every evening (`market_clock::et_session_date`).
+        let today = crate::market_clock::et_session_date(Utc::now());
         for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
             if self.progress.is_cancelled() {
                 return Vec::new();
@@ -1667,6 +1690,11 @@ impl FmpDataSource {
             fin.gaps.push("price history skipped (run cancelled)".to_string());
             return fin;
         }
+        // Deliberately the UTC date, not the ET session: this is a fetch range's
+        // inclusive upper bound, so a one-day forward roll asks for an untraded
+        // day that serves no row and shifts a rolling multi-day lookback by one.
+        // Only session-KEYED reads (snapshot dates, staleness bounds, evidence
+        // boundaries) need converting.
         let to = Utc::now().date_naive();
         let from = to - Duration::days(COMPANY_EOD_LOOKBACK_DAYS);
         self.progress
@@ -4002,7 +4030,13 @@ impl FmpDataSource {
         symbol: &str,
         gaps: &mut Vec<String>,
     ) -> Option<crate::portfolio::engine::ConsensusEstimate> {
-        let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+        // The **ET session** date: `consensus_from_value` selects the two nearest
+        // forward fiscal-year rows and time-weights them by twelve-month overlap
+        // from here, so an evening-ET run under a UTC date shifts the blend a day
+        // and, at a fiscal-year boundary, the row selection itself.
+        let today = crate::market_clock::et_session_date(Utc::now())
+            .format("%Y-%m-%d")
+            .to_string();
         match self.suite_get(
             "company-estimates",
             symbol,
@@ -4037,7 +4071,13 @@ impl FmpDataSource {
         &self,
         symbol: &str,
     ) -> Result<Option<crate::portfolio::engine::ConsensusEstimate>> {
-        let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+        // The **ET session** date: `consensus_from_value` selects the two nearest
+        // forward fiscal-year rows and time-weights them by twelve-month overlap
+        // from here, so an evening-ET run under a UTC date shifts the blend a day
+        // and, at a fiscal-year boundary, the row selection itself.
+        let today = crate::market_clock::et_session_date(Utc::now())
+            .format("%Y-%m-%d")
+            .to_string();
         match self.suite_get(
             "company-estimates",
             symbol,
@@ -4085,7 +4125,12 @@ impl FmpDataSource {
     /// twelve-month total return adds. `None` (with no gap) for a non-payer; a failed
     /// call records the gap.
     pub fn fetch_ttm_dividends(&self, symbol: &str, gaps: &mut Vec<String>) -> Option<f64> {
-        let today = Utc::now().date_naive();
+        // The **ET session** date, not the UTC date: the window is bounded on both
+        // sides against dividend rows dated by market day, so an evening-ET run
+        // rolling `today` forward both admits a next-session declaration and slides
+        // the 365-day cutoff off the oldest in-window payment — re-opening the
+        // fifth-payment inflation the exclusive lower bound closed.
+        let today = crate::market_clock::et_session_date(Utc::now());
         match self.suite_get(
             "company-dividends",
             symbol,
@@ -4170,6 +4215,11 @@ impl FmpDataSource {
         symbol: &str,
         lookback_days: i64,
     ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+        // Deliberately the UTC date, not the ET session: this is a fetch range's
+        // inclusive upper bound, so a one-day forward roll asks for an untraded
+        // day that serves no row and shifts a rolling multi-day lookback by one.
+        // Only session-KEYED reads (snapshot dates, staleness bounds, evidence
+        // boundaries) need converting.
         let to = Utc::now().date_naive();
         let from = (to - Duration::days(lookback_days))
             .format("%Y-%m-%d")

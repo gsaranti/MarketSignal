@@ -4770,6 +4770,9 @@ mod tests {
                 observed_value: -0.45,
                 threshold: -0.40,
                 observation_id: "2026-07-16".into(),
+                // Legacy shape: a pre-field eval state, so the consumer takes its
+                // documented fallback to the consuming run's ET date.
+                confirmed_at: None,
             }],
             unevaluable: vec![],
             unevaluable_series: vec![],
@@ -4972,6 +4975,9 @@ mod tests {
                 observed_value: -0.45,
                 threshold: -0.40,
                 observation_id: "2026-07-16".into(),
+                // Legacy shape: a pre-field eval state, so the consumer takes its
+                // documented fallback to the consuming run's ET date.
+                confirmed_at: None,
             }],
             unevaluable: vec!["condition 'x': net margin is a gap this run".into()],
             unevaluable_series: vec![engine::LedgerSeries::NetMargin],

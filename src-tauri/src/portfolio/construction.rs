@@ -595,10 +595,13 @@ pub fn build_aggregates(inp: &AggregateInputs<'_>) -> BookAggregates {
                     .cloned()
                     .flatten()
                     .or_else(|| {
+                        // Insertion order, like every other "latest episode"
+                        // selection (`outcome::plan_episodes`): the loaded vec is
+                        // `id`-ordered, and under a backwards clock step
+                        // `max_by(anchor_at)` inherited a stale predecessor's sector.
                         inp.episodes
                             .iter()
-                            .filter(|e| e.symbol.eq_ignore_ascii_case(&position.symbol))
-                            .max_by(|a, b| a.anchor_at.cmp(&b.anchor_at))
+                            .rfind(|e| e.symbol.eq_ignore_ascii_case(&position.symbol))
                             .and_then(|e| e.sector.sector.clone())
                     });
                 match &label {

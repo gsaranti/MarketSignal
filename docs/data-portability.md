@@ -151,7 +151,13 @@ The **Import** action in the same Settings section:
 7. Refresh in place: every store-reading surface (reports list + pane, portfolio state, research folders, warnings, job status) re-fetches after the load.
    No restart is needed — commands open the database per call, and the backend keeps no cross-command cache to go stale.
 
-Retention needs no special handling: the archive was produced by a machine that already enforced the caps (30 reports, 14 snapshots, 10 portfolio runs), so it arrives within them and the next run's retention pass is a no-op.
+Retention needs no special handling **at import**: the archive was produced by a machine that already enforced the caps (30 reports, 14 snapshots, 10 portfolio runs), so it arrives within them and the import itself prunes nothing.
+The next run then prunes normally at the cap; the pass is a no-op only while the archive is still under it.
+One consequence worth stating, because it is a real behavior difference rather than a neutral one: the reports' **insertion order is not portable**.
+It is a local database artifact, like the re-derived `markdown_path`, so the export orders reports by date and the import reinserts them in that order — which means the report-retention keep window (insertion order — [storage.md §SQLite](storage.md#sqlite)) follows the archive's *date* order from then on.
+A clock-stepped report — one generated last but dated earliest — therefore **survives on the source machine and can be evicted after an import**, where it is the earliest insertion rather than the latest.
+That is the accepted cost of leaving a machine-local artifact out of the archive, not an equivalence: the retention rule's own guarantee is narrower and unaffected, namely that a run can never evict the report *it just wrote*, since a report generated after the import takes the highest insertion order.
+Where that report sits in the date-ordered sidebar is a separate question and depends on whether the clock has been corrected.
 
 ### Why replace-all, not merge (for v1)
 

@@ -102,6 +102,15 @@ pub struct SkippedEpisodeRow {
     pub anchor_at: String,
     /// The SQL `state` column value ("active" / "matured").
     pub state: String,
+    /// How many **readable** episodes preceded this row in the `id`-ordered scan —
+    /// its position in insertion order, without exposing SQL ids.
+    ///
+    /// It is what lets "is this corrupt row superseded?" be answered in insertion
+    /// order: any readable episode at index `>= readable_before` was inserted after
+    /// it. Answered by comparing `anchor_at` instead, a backwards clock step made a
+    /// later-inserted recovery episode look older, so the symbol stayed flagged lost
+    /// and re-debuted on every subsequent run.
+    pub readable_before: usize,
 }
 
 /// A whole-store episode load: the decodable episodes plus the rows that were
@@ -122,8 +131,16 @@ pub struct EpisodeLoad {
 /// changes), so a whole-store load stays a modest local parse.
 pub fn load_episodes(conn: &Connection) -> Result<EpisodeLoad> {
     let mut stmt = conn.prepare(
+        // **Insertion order** (`id`), not `anchor_at`: run identity in this store is
+        // insertion order everywhere since the piece-3 batch, and the in-memory
+        // "latest episode" selections read this vec's own order. Ordered by a wall
+        // clock, a backwards clock step would place a newly opened episode BEFORE an
+        // older active one and permanently shadow it — every later extension,
+        // falsifier event and inherited sector identity attaching to the stale
+        // predecessor. `anchor_at` stays the episode's dated anchor; it is not its
+        // identity.
         "SELECT episode_id, symbol, anchor_at, state, episode_json \
-         FROM portfolio_outcome_episodes ORDER BY anchor_at ASC, id ASC",
+         FROM portfolio_outcome_episodes ORDER BY id ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -149,6 +166,7 @@ pub fn load_episodes(conn: &Connection) -> Result<EpisodeLoad> {
                     symbol,
                     anchor_at,
                     state,
+                    readable_before: episodes.len(),
                 });
             }
         }
@@ -183,13 +201,16 @@ pub fn save_episode(
 /// Prune **matured** episodes beyond the newest `keep` (by anchor), oldest first —
 /// the matured archive's cap. Active episodes are never evicted: one still
 /// accruing labels is age-bounded, not count-capped.
+// Keeps the newest `keep` matured rows by **insertion order** (`id`), matching
+// `load_episodes`. Under `anchor_at` a backwards clock step could delete the
+// just-matured row while keeping an older one.
 pub fn prune_matured_episodes(conn: &Connection, keep: u32) -> Result<()> {
     conn.execute(
         "DELETE FROM portfolio_outcome_episodes
          WHERE state = 'matured' AND id NOT IN (
              SELECT id FROM portfolio_outcome_episodes
              WHERE state = 'matured'
-             ORDER BY anchor_at DESC, id DESC
+             ORDER BY id DESC
              LIMIT ?1
          )",
         [keep],

@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{Duration, Local, NaiveDate};
+use chrono::{Duration, NaiveDate, Utc};
 use serde_json::Value;
 
 use crate::http_retry::send_with_retry;
@@ -132,7 +132,16 @@ impl HoldingsSource for SchwabApiSource {
 
     fn option_chain(&self, symbol: &str) -> Result<Option<OptionChain>> {
         let token = (self.token)()?;
-        let query = chain_query(symbol, Local::now().date_naive());
+        // The **ET session** date, not the machine's local one. The window's bounds are
+        // expiration dates — market days — and `Local::now()` made them
+        // machine-dependent: on a Pacific-time machine the ET date has already rolled
+        // while the local one has not, so the whole 60-day window sat a session behind
+        // and an expiration exactly at its far edge dropped out of the chain (and with
+        // it out of the options signal). A fetch range's bounds are ordinarily left on
+        // the UTC date by convention, which is why this is not a session-keyed read in
+        // the ET class's sense; the reason to convert is that no adapter should read a
+        // different window on a different machine.
+        let query = chain_query(symbol, crate::market_clock::et_session_date(Utc::now()));
         let (status, body) = self.get(
             &format!("{}/marketdata/v1/chains?{query}", self.base),
             &token,

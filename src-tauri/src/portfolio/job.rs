@@ -134,6 +134,11 @@ impl MarketContextSource for LiveMarketContext {
     fn rates(&self) -> Result<crate::portfolio::engine::RateAnchors> {
         let dgs2 = self.fred.latest_rate_dated("DGS2")?;
         let dgs10 = self.fred.latest_rate_dated("DGS10")?;
+        // Deliberately the UTC date, not the ET session: this is a fetch range's
+        // inclusive upper bound, so a one-day forward roll asks for an untraded
+        // day that serves no row and shifts a rolling multi-day lookback by one.
+        // Only session-KEYED reads (snapshot dates, staleness bounds, evidence
+        // boundaries) need converting.
         let to = chrono::Utc::now().date_naive();
         let from = to - chrono::Duration::days(RATE_HISTORY_LOOKBACK_DAYS);
         // Fail-soft: a failed history request leaves every spread observation
@@ -199,6 +204,11 @@ impl CompanyDataSource for LiveCompanyData {
         &self,
         symbol: &str,
     ) -> (Vec<crate::portfolio::engine::DatedValue>, Vec<String>) {
+        // Deliberately the UTC date, not the ET session: this is a fetch range's
+        // inclusive upper bound, so a one-day forward roll asks for an untraded
+        // day that serves no row and shifts a rolling multi-day lookback by one.
+        // Only session-KEYED reads (snapshot dates, staleness bounds, evidence
+        // boundaries) need converting.
         let to = chrono::Utc::now().date_naive();
         let from = to - chrono::Duration::days(DEEP_HISTORY_LOOKBACK_DAYS);
         match self.stooq.daily_closes(symbol, from, to) {
@@ -293,6 +303,11 @@ impl CompanyDataSource for LiveCompanyData {
     }
 
     fn sector_pe_history(&self, sector: &str) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+        // Deliberately the UTC date, not the ET session: this is a fetch range's
+        // inclusive upper bound, so a one-day forward roll asks for an untraded
+        // day that serves no row and shifts a rolling multi-day lookback by one.
+        // Only session-KEYED reads (snapshot dates, staleness bounds, evidence
+        // boundaries) need converting.
         let to = chrono::Utc::now().date_naive();
         let from = to - chrono::Duration::days(DEEP_HISTORY_LOOKBACK_DAYS);
         let (from, to) = (
@@ -558,10 +573,30 @@ fn run_analysis(
         .flatten()
         .filter(|s| Some(&s.swept_run_id) == prior_run_id.as_ref());
 
+    // The run's one wall-clock instant, minted before any dated decision: the
+    // house-view freshness gate, the over-age reads, the label pass, and the
+    // persisted `created_at` (which the card's stale badge ages against) all
+    // derive from it, so an hours-long run crossing ET midnight cannot demote on
+    // one ET day and render the badge on the next. Run identity is insertion
+    // order (`id`); `created_at` is display and vintage data, so stamping at run
+    // start is a display choice — and the one that matches the session the run's
+    // data belongs to.
+    let created_at = now_rfc3339();
+    // ET, pairing with the ET-dated vintages `over_age` and the house-view gate
+    // compare against.
+    let today = crate::market_clock::et_date_of(&created_at)
+        .unwrap_or_else(|| crate::market_clock::et_session_date(chrono::Utc::now()));
+    // The same session as a `YYYY-MM-DD` string — the one `run_date` every dated
+    // stamp in this run uses (the per-holding ledger evaluation and the label
+    // pass alike), so a run cannot stamp its own book across two ET days.
+    let run_session_date = today.format("%Y-%m-%d").to_string();
+
     // Freshness-gated (`docs/portfolio-workflow.md` §Step 5): a stale latest
     // report drops the whole view; the omission rides the run's data health.
+    // Dated on the run's own ET session, against the report's ET-dated
+    // `created_at` — both legs convert together (see `load_house_view`).
     let (house_view, house_view_omitted) =
-        dossier::load_house_view(conn, &paths.reports_dir, chrono::Utc::now().date_naive());
+        dossier::load_house_view(conn, &paths.reports_dir, today);
 
     // The run-level rate anchors — **hard-fail before any per-holding work** (the
     // suite's canonical rate-anchor rule: the engine consumes the rates numerically
@@ -584,17 +619,8 @@ fn run_analysis(
     // last run; the safety sweep and the deterministic legs below then expand it
     // with every force-inclusion. `None` = the whole-book run — including a
     // selective request with an empty selection or no prior run to carry from.
-    // The run's one wall-clock instant, minted before any dated decision: the
-    // over-age reads, the label pass, and the persisted `created_at` (which the
-    // card's stale badge ages against) all derive from it, so an hours-long run
-    // crossing ET midnight cannot demote on one ET day and render the badge on
-    // the next. Run identity is insertion order (`id`); `created_at` is display
-    // and vintage data, so stamping at run start is a display choice — and the
-    // one that matches the session the run's data belongs to.
-    let created_at = now_rfc3339();
-    // ET, pairing with the ET-dated vintages `over_age` compares against.
-    let today = crate::market_clock::et_date_of(&created_at)
-        .unwrap_or_else(|| crate::market_clock::et_session_date(chrono::Utc::now()));
+    // (`created_at` / `today` are minted above, before the house-view gate — the
+    // run's first dated decision.)
     let mut swept_tail: std::collections::HashMap<
         String,
         crate::portfolio::quick_check::HoldingQuickState,
@@ -874,7 +900,12 @@ fn run_analysis(
                 fund,
                 sector_pe: sector_pe_cache.clone().unwrap_or_default(),
                 sector_pe_history: sector_history_cache.clone(),
-                as_of: chrono::Utc::now().date_naive(),
+                // The run's ET session, not the UTC date: `as_of` drives
+                // `fund::quarter_end_before`, so on a quarter boundary an
+                // evening-ET run under a UTC date would treat the quarter that
+                // has just ended as already complete and sample a snapshot
+                // window the feed cannot serve yet.
+                as_of: today,
             })
         } else {
             None
@@ -944,10 +975,13 @@ fn run_analysis(
         // fails the whole run (`docs/local-models.md §Failure posture`).
         // The run date keys the ledger evaluation's observation identities and
         // timestamps (deterministic under test — injected, never re-derived inside
-        // the engine). It is the UTC date, consistent with stored `created_at` —
-        // engine-internal state, never rendered; a card-facing date must convert to
-        // local per the project's date convention.
-        let run_date = now_rfc3339().chars().take(10).collect::<String>();
+        // the engine). It is the run's **ET session date**, taken from the run's
+        // one instant rather than re-derived per holding: the values it stamps —
+        // `first_breach_at`, `last_evaluated_at`, and the `confirmed_at` the
+        // falsifier lead-time read positions against bar dates — are all session
+        // quantities, and re-deriving per holding let a midnight-crossing run
+        // stamp one book across two days.
+        let run_date = run_session_date.clone();
         let (mut verdict, audit) =
             analyze_holding(analyst, &dossier, holdings.account_total, &rates, &run_date)?;
         if matches!(
@@ -1197,7 +1231,10 @@ fn run_analysis(
     // blob's outcome records.
     ctx.step_started("outcome", "Outcome learning");
     let run_id = uuid::Uuid::new_v4().to_string();
-    let run_date: String = created_at.chars().take(10).collect();
+    // The run's ET session date, the same string the per-holding ledger
+    // evaluation stamped — `mature_labels` takes it beside the ET `today` below,
+    // and a UTC prefix here would disagree with that `today` on an evening run.
+    let run_date: String = run_session_date.clone();
     let (alignment_tags, align_changed) = crate::portfolio::outcome::tag_alignment(
         &mut episodes,
         prior_run_id.as_deref(),
@@ -2919,6 +2956,7 @@ mod tests {
                             first_breach_at: Some("2026-08-02".into()),
                             confirmed_at: Some("2026-08-03".into()),
                             acknowledged_observation_id: None,
+                            authored_statement_basis: None,
                         },
                     )],
                     last_hurdle_state: None,

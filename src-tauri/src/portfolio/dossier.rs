@@ -144,6 +144,36 @@ impl HoldingDossier {
 /// revenue), else stays an honest gap even when SEC has an annual print. Returns
 /// whether the basis was adopted, so the SEC merge confines itself to fallback.
 pub fn apply_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
+    let adopted = adopt_ttm_statement_basis(fin);
+    // Stamp WHICH basis the values now stand on, at the shared choke point every
+    // statement-consuming path already passes through, so no producer can set the
+    // levels without recording their basis. The ledger evaluation reads it to detect
+    // a basis change; it alters no value.
+    //
+    // No quarterly rows at all means FMP alone supports no statement basis, which is
+    // distinct from a resolved fallback: `Annual` asserts a same-concept annual window
+    // is what the levels came from.
+    //
+    // This is what FMP's own pull supports. Where a SEC merge follows
+    // ([`merge_financials`]) it **refines** this: a zero-row quarterly response whose
+    // levels are then filled from SEC annual facts is on the annual basis, and saying
+    // `None` there would exempt it from the ledger's basis-continuity gate — the exact
+    // fabricated crossing that gate exists to stop. The refinement lives at the merge
+    // because only the merge knows what finally supplied the levels; a caller with no
+    // merge (the quick check's `statements_refresh`) is correctly described here.
+    fin.statement_basis = if adopted {
+        Some(crate::portfolio::StatementBasis::Ttm)
+    } else if fin.quarterly_income.is_empty() {
+        None
+    } else {
+        Some(crate::portfolio::StatementBasis::Annual)
+    };
+    adopted
+}
+
+/// The adoption decision itself — `true` when the four newest quarters are a usable
+/// TTM window, `false` onto the annual-fallback path.
+fn adopt_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
     // Canonicalize the statement rows **in place** first — newest-first with the
     // latest filing winning a duplicated period (`engine::canonicalize_statements`,
     // the shared policy): a restatement served twice must resolve to the restated
@@ -235,6 +265,25 @@ pub fn merge_financials(
         fill(&mut fmp.net_income, sec.net_income);
     }
     fill(&mut fmp.total_equity, sec.stockholders_equity);
+
+    // Refine the basis stamp now that the fills have run — see
+    // [`apply_ttm_statement_basis`]. An adopted TTM window stands; otherwise the basis
+    // is `Annual` whenever any statement-derived level is actually present, however it
+    // arrived, and `None` only when there are none at all (a fund, or a holding whose
+    // statement surface resolved to nothing). Stamping `None` while carrying
+    // annual-derived levels would slip them past the basis-continuity gate.
+    if !ttm_statement_basis {
+        let has_statement_level = [
+            fmp.revenue,
+            fmp.revenue_prior,
+            fmp.gross_profit,
+            fmp.net_income,
+            fmp.total_equity,
+        ]
+        .iter()
+        .any(Option::is_some);
+        fmp.statement_basis = has_statement_level.then_some(crate::portfolio::StatementBasis::Annual);
+    }
 
     // Derive multiples from market cap + fundamentals when FMP didn't supply them.
     let derive = |num: Option<f64>, den: Option<f64>| match (num, den) {
@@ -384,10 +433,17 @@ pub fn load_house_view(
     let with_paths = storage::list_recent_reports_with_paths(conn, HOUSE_VIEW_RECENT_REPORTS)
         .unwrap_or_default();
 
-    // The freshness gate reads the newest report's dated `created_at`; an
-    // unparseable date (never app-produced) fails soft to feeding the view.
+    // The freshness gate dates the newest report's `created_at` to its **ET
+    // session**, pairing with the ET `today` the caller passes. Both legs must
+    // convert together: a report's stored `created_at` is a UTC instant, so an
+    // afternoon-ET report keeps its own ET date under a prefix read while an
+    // evening-ET run's `today` has already rolled — the two events straddle the
+    // ~8 PM ET boundary and the gap reads one day long, retiring a 7-ET-day-old
+    // view at the age limit. Converting only `today` would invert the error for
+    // reports written after the boundary. An unparseable stamp (never
+    // app-produced) fails soft to feeding the view.
     let stale = with_paths.first().is_some_and(|(s, _)| {
-        chrono::NaiveDate::parse_from_str(&s.created_at[..10.min(s.created_at.len())], "%Y-%m-%d")
+        crate::market_clock::et_date_of(&s.created_at)
             .map(|d| (today - d).num_days() > HOUSE_VIEW_MAX_AGE_DAYS)
             .unwrap_or(false)
     });
@@ -595,9 +651,12 @@ mod tests {
     fn house_view_older_than_a_week_is_omitted_whole_and_flagged() {
         let conn = Connection::open_in_memory().unwrap();
         storage::init_schema(&conn).unwrap();
-        insert_house_view_report(&conn, "r-old", "2026-07-20T00:00:00Z");
-        // 8 days later — past the pinned window; the whole view drops (summaries
+        insert_house_view_report(&conn, "r-old", "2026-07-20T14:00:00Z");
+        // 8 ET days later — past the pinned window; the whole view drops (summaries
         // included), and the omission is reported for the data-health gap record.
+        // The stamp is mid-session (10 AM ET) so the report's ET date is
+        // unambiguously its own UTC date — a midnight-UTC stamp would belong to
+        // the PRIOR ET session and test a different interval than it reads.
         let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
         let (view, omitted) = load_house_view(&conn, Path::new("/nonexistent"), today);
         assert!(omitted);
@@ -609,12 +668,48 @@ mod tests {
     fn house_view_exactly_a_week_old_is_still_fed() {
         let conn = Connection::open_in_memory().unwrap();
         storage::init_schema(&conn).unwrap();
-        insert_house_view_report(&conn, "r-week", "2026-07-21T00:00:00Z");
-        // "Older than one week" is strict: exactly 7 days still feeds.
+        insert_house_view_report(&conn, "r-week", "2026-07-21T14:00:00Z");
+        // "Older than one week" is strict: exactly 7 ET days still feeds. Mid-session
+        // stamp for the same reason as the sibling test above.
         let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
         let (view, omitted) = load_house_view(&conn, Path::new("/nonexistent"), today);
         assert!(!omitted);
         assert_eq!(view.recent_summaries.len(), 1);
+    }
+
+    #[test]
+    fn an_evening_et_run_does_not_age_out_a_seven_et_day_old_house_view() {
+        let conn = Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        // Written 3 PM ET on 2026-07-21 — still 2026-07-21 in UTC, so the prefix read
+        // and the ET read agree on the report's side.
+        insert_house_view_report(&conn, "r-week", "2026-07-21T19:00:00Z");
+        // The run is 9 PM ET on 2026-07-28: seven ET days later, but its UTC instant
+        // has already rolled to the 29th. Under the old UTC-prefix gate the two events
+        // straddled the ~8 PM ET boundary and the gap read eight days, dropping the
+        // whole view — summaries included — on every evening run at the age limit.
+        let evening = chrono::DateTime::parse_from_rfc3339("2026-07-29T01:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let today = crate::market_clock::et_session_date(evening);
+        assert_eq!(today, chrono::NaiveDate::from_ymd_opt(2026, 7, 28).unwrap());
+        let (view, omitted) = load_house_view(&conn, Path::new("/nonexistent"), today);
+        assert!(!omitted, "a 7-ET-day-old view must survive an evening-ET run");
+        assert_eq!(view.recent_summaries.len(), 1);
+    }
+
+    #[test]
+    fn a_report_written_after_the_et_rollover_ages_from_its_own_session() {
+        let conn = Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        // 9 PM ET on 2026-07-21 — the UTC stamp says the 22nd, the ET session the 21st.
+        // Converting only the run's `today` would have inverted the error here, reading
+        // this report a day YOUNGER than it is; both legs convert, so it ages from the
+        // 21st and is exactly 8 ET days stale.
+        insert_house_view_report(&conn, "r-late", "2026-07-22T01:00:00Z");
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 29).unwrap();
+        let (_, omitted) = load_house_view(&conn, Path::new("/nonexistent"), today);
+        assert!(omitted);
     }
 
     #[test]
@@ -698,6 +793,66 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn a_zero_row_quarterly_response_with_a_sec_fallback_stamps_the_annual_basis() {
+        use crate::portfolio::StatementBasis;
+        // The hole an earlier shape of this stamp left open. FMP returns an EMPTY
+        // quarterly set (the same empty-200 pattern the sector-P/E snapshot serves),
+        // so no TTM window can be adopted and the SEC same-concept annual facts fill
+        // the levels instead. Stamped `None` — "no statement basis applies" — those
+        // annual levels slipped past the ledger's basis-continuity gate entirely,
+        // because the gate only acts on a `Some` basis: a TTM-authored P/S threshold
+        // would then be compared against an annual-basis ratio and could confirm, on
+        // a market cadence, the fabricated crossing the gate exists to stop.
+        //
+        // The multiples are the reachable half: they key their observation on the
+        // marks' trading day, not on a statement print, so they resolve normally even
+        // with zero quarterly rows (the filing-cadence series go unevaluable for want
+        // of a period end to key on).
+        let mut fin = CompanyFinancials {
+            symbol: "AAPL".into(),
+            market_cap: Some(3_000_000_000_000.0),
+            ..Default::default()
+        };
+        assert!(fin.quarterly_income.is_empty());
+        assert!(!apply_ttm_statement_basis(&mut fin), "no window to adopt");
+        assert_eq!(
+            fin.statement_basis, None,
+            "FMP alone supports no basis — the merge refines it"
+        );
+        let sec = CompanyFacts {
+            revenue: Some(400_000_000_000),
+            revenue_prior: Some(360_000_000_000),
+            gross_profit: Some(180_000_000_000),
+            net_income: Some(100_000_000_000),
+            total_assets: Some(350_000_000_000),
+            stockholders_equity: Some(60_000_000_000),
+        };
+        let merged = merge_financials(fin, &sec, false);
+        assert_eq!(
+            merged.statement_basis,
+            Some(StatementBasis::Annual),
+            "levels filled from annual facts stand on the annual basis"
+        );
+        assert!(merged.ps_ratio.is_some(), "the multiple the gate must cover resolves");
+    }
+
+    #[test]
+    fn a_holding_with_no_statement_levels_at_all_carries_no_basis() {
+        // The case `None` is actually for: nothing supplied a statement level, so
+        // there is no basis to disagree with. A fund reaches the engine this way (it
+        // skips the facts call), and `None` must keep meaning this rather than
+        // doubling as "annual".
+        let mut fin = CompanyFinancials {
+            symbol: "ITOT".into(),
+            market_cap: Some(1_000_000.0),
+            ..Default::default()
+        };
+        assert!(!apply_ttm_statement_basis(&mut fin));
+        let merged = merge_financials(fin, &CompanyFacts::default(), false);
+        assert_eq!(merged.statement_basis, None);
     }
 
     #[test]

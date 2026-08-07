@@ -437,7 +437,14 @@ impl MarketDataSource for CotDataSource {
         // One clock sample anchors the freshness guard so a stalled feed can't pass an old
         // snapshot off as current. Cadence is unused — COT carries its own report date and
         // its own week-over-week change, so it's exempt from the report-over-report delta.
-        self.scan(Utc::now().date_naive())
+        //
+        // The sample is the **ET session** date, not the UTC date: `is_stale` compares it
+        // against the CFTC's own `report_date`, a market day, so this is a
+        // provider-observation-date staleness bound and dates like every other one
+        // (`docs/data-sources.md`, the cross-cutting session-dating rule). Under a UTC
+        // date an evening-ET run ages a report by one and drops a snapshot exactly at
+        // the bound a session early.
+        self.scan(crate::market_clock::et_session_date(Utc::now()))
     }
 }
 

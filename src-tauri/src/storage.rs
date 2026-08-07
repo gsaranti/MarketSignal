@@ -737,11 +737,20 @@ pub fn migrate_legacy_job_type(conn: &Connection) -> Result<()> {
 }
 
 /// How many reports the retention cascade keeps (`docs/storage.md` — only the
-/// most recent 30 Market Signal reports are retained; older reports are deleted
-/// automatically). Deliberately a separate constant from [`RECENT_REPORTS_LIMIT`],
-/// which bounds the sidebar's display query; the two agree today, and the shared
-/// `created_at DESC, rowid DESC` ordering keeps the display window and the
-/// retention window from ever disagreeing about which reports those are.
+/// 30 most recently generated Market Signal reports are retained; older reports are
+/// deleted automatically). Deliberately a separate constant from
+/// [`RECENT_REPORTS_LIMIT`], which bounds the sidebar's display query.
+///
+/// The two windows are sized alike but **no longer keyed alike**: the sidebar reads
+/// `created_at DESC, rowid DESC` because a report is a dated document, while
+/// [`select_reports_beyond_retention`] keys the keep window on insertion order so a
+/// backwards clock step cannot evict the report a run just wrote.
+///
+/// They therefore disagree about *which* 30, never about how many: a clock-stepped
+/// report is preserved by evicting the oldest **insertion** instead, so the store still
+/// holds exactly 30 rows and the sidebar then lists all of them — placing the stepped
+/// report last, since it is the oldest by date. Nothing is retained "extra".
+/// See [`select_reports_beyond_retention`] for why only the eviction decision moved.
 pub const REPORT_RETENTION: u32 = 30;
 
 /// One report selected for eviction by the retention cascade: the id joins the
@@ -753,15 +762,26 @@ pub struct ReportEvictee {
 }
 
 /// The reports outside the newest-`keep` window, oldest first — selection only;
-/// the caller owns the per-evictee cascade. Uses the same `created_at DESC,
-/// rowid DESC` ordering as [`list_recent_reports`], so retention evicts exactly
-/// the reports the sidebar no longer shows. Empty at or under the cap.
+/// the caller owns the per-evictee cascade. Empty at or under the cap.
+///
+/// The keep window is **insertion order** (`rowid`), not `created_at`. This selection
+/// deletes a report's Markdown file, its row, its vector summary and its baseline
+/// snapshots, and the pipeline inserts a report and then prunes — so keyed on the wall
+/// clock, a backwards step (an NTP correction, a manual change) sorted the
+/// just-written report below the window and **evicted the report the run had only just
+/// produced**. Insertion order cannot invert.
+///
+/// This deliberately diverges from [`list_recent_reports`], which stays
+/// `created_at`-ordered: a report is a *dated document*, so the sidebar and the house
+/// view are right to read it by date. Only the eviction decision is identity-like, so
+/// only it moves — the two can disagree about a clock-stepped report, and keeping the
+/// extra report is the safe side of that disagreement.
 pub fn select_reports_beyond_retention(conn: &Connection, keep: u32) -> Result<Vec<ReportEvictee>> {
     let mut stmt = conn.prepare(
         "SELECT report_id, markdown_path FROM reports
          WHERE report_id NOT IN (
              SELECT report_id FROM reports
-             ORDER BY created_at DESC, rowid DESC
+             ORDER BY rowid DESC
              LIMIT ?1
          )
          ORDER BY created_at ASC, rowid ASC",
@@ -1153,6 +1173,58 @@ mod tests {
         assert_eq!(evictees[0].report_id, "id-00");
         assert_eq!(evictees[1].report_id, "id-01");
         assert_eq!(evictees[0].markdown_path, "/tmp/id-00.md");
+    }
+
+    #[test]
+    fn a_backwards_clock_step_does_not_evict_the_report_the_run_just_wrote() {
+        let conn = mem();
+        // A full store, then one more report whose timestamp is EARLIER than every row
+        // already in it — an NTP correction or a manual clock change between runs.
+        //
+        // Keyed on `created_at`, that fresh report sorted below the keep window and was
+        // returned as an evictee, so the cascade deleted the Markdown, row, vector
+        // summary and baseline snapshots of the report the run had only just produced.
+        // The existing tests could not catch it: one covers strictly ascending
+        // timestamps and the other a tie, and neither is a newly inserted OLDER one.
+        for i in 0..REPORT_RETENTION {
+            insert_sample(
+                &conn,
+                &format!("id-{i:02}"),
+                &format!("2026-05-{:02}T00:00:00Z", i + 1),
+            );
+        }
+        insert_sample(&conn, "id-stepped", "2026-01-01T00:00:00Z");
+
+        let evictees = select_reports_beyond_retention(&conn, REPORT_RETENTION).unwrap();
+        assert_eq!(evictees.len(), 1, "one over the cap");
+        assert_eq!(
+            evictees[0].report_id, "id-00",
+            "the genuinely-oldest INSERTION is evicted, not the newest write"
+        );
+        assert!(
+            !evictees.iter().any(|e| e.report_id == "id-stepped"),
+            "the report this run just wrote must survive its own prune"
+        );
+
+        // Model production, which prunes as part of the same run
+        // (`pipeline::prune_old_reports`, called after the insert): once the evictee is
+        // gone the store holds exactly 30 rows again.
+        //
+        // Asserting the sidebar against the un-pruned 31-row store would describe a
+        // state production never renders — and would read as "the sidebar excludes the
+        // stepped report", which is true of 31 rows and false of the 30 that remain.
+        delete_report_row(&conn, &evictees[0].report_id).unwrap();
+        let listed = list_recent_reports(&conn, REPORT_RETENTION).unwrap();
+        assert_eq!(listed.len(), REPORT_RETENTION as usize, "still exactly 30 rows");
+        assert!(
+            listed.iter().any(|r| r.report_id == "id-stepped"),
+            "the preserved report is shown — the windows differ on WHICH 30, not how many"
+        );
+        assert_eq!(
+            listed.last().unwrap().report_id,
+            "id-stepped",
+            "and the date-ordered view places it last, because its own date is the oldest"
+        );
     }
 
     #[test]
