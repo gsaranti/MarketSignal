@@ -1147,7 +1147,33 @@ the **structured warning items** above, and the Settings tree's
 the document-truncation diagnostics — while listing three
 designed-and-unbuilt ones), which the doc half's flag-only-incorrect
 charter excluded.
-Next: the long-doc-line cleanup; then the single big confirmation run banks the
+**The long-doc-line cleanup landed 2026-08-08** (`5fde483`, direct to
+main; one Codex round to approval) — the pre-run block's last item. The
+scope question it was blocked on resolved against the obvious answer:
+multi-sentence lines are **not** the defect (0–12% of long lines — the
+corpus already satisfied sentence-per-line); sentences had absorbed
+clauses instead of the docs absorbing sentences, each ruling round
+appending "— and since <date>, X" to an existing one, leaving
+`storage.md`'s run-audit record one 6,323-character sentence carrying
+~15 separately-checkable claims. A character ceiling was **rejected** as
+the fix: breaking such a sentence at its clauses yields fragments that
+mean nothing without their neighbours, so the grep hit gets smaller and
+less useful in the same proportion — the retrievable unit has to be a
+self-contained proposition, which means splitting sentences into
+sentences, the existing convention then giving each its own line for
+free. `CLAUDE.md §Docs formatting` therefore gained a **judgment rule,
+not a ceiling** (a sentence that splits into sentences which each stand
+alone must split; a genuinely single claim needing the length is fine;
+"append a sentence, not a clause"; never satisfy it by clause-breaking),
+deliberately unenforceable by script, since a number was only ever a
+proxy for propositions-per-sentence. 99 prose lines over 1,000 chars
+were split across ten docs — >2,000 chars 23 → 5, >1,000 112 → 13 (all
+table rows, which cannot split) — every link target, identifier and
+number surviving, all 1,568 internal links resolving unchanged, and
+headings byte-identical. The **600–1,000 band is not a queued item**:
+the rule binds **on touch**, so it never returns as work competing with
+the run.
+Next: the single big confirmation run banks the
 stacked runtime confirmations above, now also carrying piece 3's probe
 set (the Schwab `averagePrice` multiplier behind the option/bond render
 suppression, `^GSPC`-mapping sufficiency, analyst-estimates page
