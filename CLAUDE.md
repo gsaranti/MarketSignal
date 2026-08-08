@@ -37,6 +37,14 @@ line, continuation sentences indented to the bullet's content column;
 headings, fenced blocks, and tables stay verbatim — maintain this on every
 docs edit (format-only reflow commits are listed in `.git-blame-ignore-revs`).
 
+Sentence length must earn itself: if a sentence splits into sentences that
+each stand alone, split it — the sentence-per-line rule then gives each its
+own line — and a genuinely single claim that needs the length is fine. This
+binds hardest when recording a new ruling into existing prose: append a
+sentence, not a clause. Never satisfy it by breaking one sentence at its
+clauses instead; a fragment that needs its neighbors defeats the purpose,
+which is that a grep hit or a targeted read returns a self-contained claim.
+
 ## Design system
 
 This project has a design package at `./market-signal-design-system/`.
