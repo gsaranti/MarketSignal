@@ -2,35 +2,33 @@
 
 ## What happened
 
-**The long-doc-line cleanup — the pre-run block's last item — is built, reviewed, merged and pushed** (`5fde483`; BUILD alignment `a9dab3a`).
+**The BUILD.md half of the audit is done, merged and pushed** (`98483fa`). BUILD.md went 1,218 → 667 lines (~21.6k → ~11k tokens), and now carries **zero** dates, PR references, commit hashes, branch names or review-round counts (was 76 / 23 / 20 / 15).
 
-Its blocking scope question resolved **against the way it was framed**: multi-sentence lines are not the defect (0–12% of long lines — the corpus already satisfied sentence-per-line). Sentences had absorbed clauses instead of the docs absorbing sentences, leaving `storage.md`'s run-audit record **one 6,323-character sentence** carrying ~15 separately-checkable claims. **A character ceiling was rejected as the fix**, and that is the durable part: breaking such a sentence at its clauses yields fragments meaningless without their neighbours, so the grep hit gets smaller and less useful in the same proportion. The retrievable unit has to be a self-contained *proposition* — split sentences into sentences, and the existing convention gives each its own line for free. `CLAUDE.md §Docs formatting` gained a **judgment rule, not a ceiling**, deliberately unenforceable by script.
+**Audit ruling 1 resolved by evidence, not preference** — compress in place, because nothing needed relocating: of 142 bolded concepts in the chronicle, 85 appear verbatim in `docs/`, and 15 of 16 sampled non-matches have a `docs/` home under BUILD's own paraphrase. **The user's framing is the durable part:** BUILD tracks what is done and what is left, never how something was implemented, and never a date or hash.
 
-99 prose lines were split across ten docs; **one Codex round, approved**, after two valid P2 fixes — an exhaustive inventory weakened to "Some", and a verb-less "Plus …" fragment, the exact anti-pattern the new rule names. Both classes were swept for siblings, not fixed only where cited.
+Compression removed things a planner uses, so **§Seams a plan builds on**, **§Standing constraints** and **§What each built slice left for the next** were added — module homes, shared entry points, and version *constants* rather than their current values. §What remains is now a complete ledger, collecting nine unbuilt items that had been scattered through the body.
+
+**The lesson from eight Codex rounds, all approved by the end:** every single finding was a scope error inside a *restatement* of a contract `docs/` owns — never in a pointer, seam, or constraint. Compressing two per-job statements into one sentence is exactly what drops the qualifier doing the scoping work. The fix was to stop restating and start pointing. The same rule now binds inside the file: one obligation had been stated three times and drifted between copies.
 
 ## Current state
 
-Nothing in flight. Tree clean, `main` == `origin/main` at `a9dab3a`, no other branches. Gates green at the tip (docs-only diff; Codex re-ran them): cargo **1018 + 32**, clippy clean, `npm run build` clean, **46 node + 225 vitest**.
+Nothing in flight. Tree clean, `main` == `origin/main` at `98483fa`, no other branches. Full gate set re-run before commit: cargo **1050 / 0 failed / 28 ignored**, clippy clean, `npm run build` clean, **46 node + 225 vitest**.
 
-Queue: **BUILD.md + INDEX.md audit → the big confirmation run.**
+Queue: **INDEX.md audit → the big confirmation run.**
 
-Audit scope, measured this session: BUILD.md is **~21k tokens** against the ~1.5–4.5k as-built brief it declares. The brief is healthy (first six sections = 280 lines); the drift is **§Local analysis suite (667 lines) + §What remains (255) — 76% of the file** — and §Local analysis suite is a slice-by-slice chronicle its own header rules out ("not the construction history"). INDEX.md has **15 rows over 1,000 chars, longest 3,209**, against a header calling rows "lookup pointers, not summaries". Both audit against a charter they declare themselves — a conformance check, not a taste argument.
+**INDEX.md audit — the ruling is already settled: rewrite in place, never a prune.** Rows get shorter, none disappear. Scope: **15 rows over 1,000 chars, longest 3,209**, against a header stating rows are "lookup pointers, not summaries: open the cited doc section rather than working from the clause here." Like BUILD, it audits against a charter it declares itself — a conformance check, not a taste argument.
 
-**The 600–1,000-char docs band is not queued work** — the new rule binds on touch. Do not re-propose it as a slice.
+**Method that transferred from the BUILD half, and should again:** verify every claim against code and `docs/` *before* rewriting, and sweep the class rather than the cited instance. That found two stale claims this session — `research_forward_assumption` is docs-only, never built; and the `run_date` / `ScoredLabel.labeled_at` "stays UTC" note was **disproven** (`job.rs` derives one ET session date and `outcome.rs` copies it into `labeled_at`). INDEX's rows are older accretions than BUILD's, so expect the audit to be as much a correctness pass as a compression one.
+
+**Open items now live in BUILD.md, not here** — §Remaining in order, §Owned by no slice, §Awaiting a ruling, §Deferred by decision. The big-run watch set moved to `docs/verification/big-run-watch-set.md`. Don't re-list either here.
 
 ## Open questions
 
-- **Audit ruling 1 — BUILD.md's slice chronicle compressed in place, or moved out?** Git and `docs/verification/` already carry the construction history and the header disclaims it, so compression is the standing read; the ruling is unmade.
-- **Audit ruling 2 — INDEX.md is a rewrite-in-place, never a prune** (no-row-deletion rule): rows get shorter, none disappear. Confirm before starting.
-- **TO hard-trigger acceptance cases** — five parked for the TO implementation slice, no other home: carried + deep hard trigger → archived with no shadow entry; identical through all three deep-pass routes; cheap-pass hard signal → warning only; debut hard trigger → shadow rejection; soft trigger → stand-in capped, conviction preserved, no forced archival.
-- **Big-run watches** — the carried set enumerated in BUILD.md §What remains, plus the conformance block's four: sector-P/E walk-back depth; the risk-tier distribution now negative-book issuers take High; priced-fund ledger flag rates on the shared 180-day window; the basis-flip rate on a one-quarter feed gap.
-- **Design notes awaiting rulings** (piece-3 record) — carried-audit data-health mixing on selective runs; unbounded model-arm renders; "rated N" sidebar wording; `rate_prints.fetched_at` stamp; `ScoredLabel.labeled_at` / `run_date` staying UTC display stamps.
-- **Live-evidence caveat** — the sector-P/E walk-back's "holidays serve carried values" warrant rests on the adapter's recorded 2026-07-16 verification, not re-probed; if invalidated, the cardinality claim moves with it.
-- **Two items for a later ruling round** (BUILD.md §What remains) — structured warning items (a `WarningCategory` contract change) and the Settings tree's completeness gap in `interface.md`.
-- **Two-arm follow-ups / research-loop activation obligation / standing list** — unchanged.
+- **Do INDEX's long rows compress the way BUILD's chronicle did?** The hypothesis is yes — they summarize `docs/verification/` records, so the content already has a home. Test it before assuming it; that is what made the BUILD half safe.
+- **Live-evidence caveat** — the sector-P/E walk-back's "holidays serve carried values" warrant rests on the adapter's recorded 2026-07-16 verification, not re-probed. If invalidated, the cardinality claim moves with it.
 
 ## Where to start
 
-Settle the two audit rulings, then run the **BUILD.md + INDEX.md audit**, each file against the charter its own header states. Then the **big confirmation run** (dev app, process name `market-signal`), reading `data-health` early: Stooq's PoW interstitial may have made the FMP dated-EOD rung de facto primary, and the run's evidence decides the rung-order slice.
+Run the **INDEX.md audit** against the charter its own header states, under the settled rewrite-in-place ruling. Verify each row's claims before shortening it — several are old enough to have drifted.
 
-**BUILD.md §What remains still reads "Next: the single big confirmation run"** — it does not yet carry the audit. Correct that as part of the audit.
+Then the **big confirmation run** (dev app, process name `market-signal`), reading `data-health` early against `docs/verification/big-run-watch-set.md`. Stooq's PoW interstitial may have made the FMP dated-EOD rung de facto primary, and the run's evidence is what decides the rung-order slice.
