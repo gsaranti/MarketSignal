@@ -72,8 +72,8 @@ Three stores, by responsibility (`docs/storage.md`):
   and `/research-archive` folders.
 - **SQLite** — report records, metadata, job history, warning state, per-report
   baseline snapshots, and the vector-memory table. Structured blobs persist as
-  serde_json text, and the crate's **`float_roundtrip` feature is load-bearing**
-  (2026-08-03): round-trips are bit-exact, so carried numerics compare exactly
+  serde_json text, and the crate's **`float_roundtrip` feature is load-bearing** —
+  round-trips are bit-exact, so carried numerics compare exactly
   (a store test pins the guarantee against a silent dependency edit).
 - **Vector memory** — one embedding per report summary and per durable learning
   (`text-embedding-3-large`), each an atomic unit (no chunking). It lives as a
@@ -132,7 +132,7 @@ to not-connected is a named, unbuilt candidate). One deliberate exception to
 in webview `localStorage` — pure presentation with no backend consumer, read
 synchronously pre-mount to avoid a first-paint flash.
 
-**Data portability (built — PRs #53/#54, `portability.rs`).** A whole-corpus
+**Data portability (built — `portability.rs`).** A whole-corpus
 backup/restore — distinct from per-report export — that carries a machine's
 accumulated analytical history to new hardware as one archive
 (`docs/data-portability.md`). The load-bearing line: **durable analytical data
@@ -169,8 +169,8 @@ stage-and-swap is a named, unscheduled hardening.
   adds Commitments-of-Traders positioning — the one signal the price /
   valuation / macro / credit groups can't give (how crowded the speculative
   cohort is) — as a fail-soft, additive group. Gated adapters share a bounded,
-  `Retry-After`-aware retry/backoff, parameterized per provider since
-  2026-08-05: **FMP rides a minute-crossing 429 ladder** (63 s cumulative
+  `Retry-After`-aware retry/backoff, parameterized per provider:
+  **FMP rides a minute-crossing 429 ladder** (63 s cumulative
   over seven attempts — probe-verified that the paid plan's per-minute limit
   arrives as an HTTP 429 with a burst bucket tripping well under the headline
   200/min; 5xx keeps the short schedule so a down provider fails fast, and
@@ -296,923 +296,372 @@ cost (`npm run tauri:demo`).
 
 A second capability set: two on-demand, **local-model-only**, deliberately
 **prescriptive** features (grades, actions, targets — a departure from the
-report's no-buy/sell stance) — **Portfolio Analysis** (grades the user's Schwab
-holdings and recommends actions + price targets; a typed role/risk read where a
-vehicle class is unpriceable) and **Trade Opportunities**
-(researches new ideas across a 3×3 risk×horizon matrix). Full design lives in
+report's no-buy/sell stance). **Portfolio Analysis** grades the user's Schwab
+holdings and recommends actions + price targets, typing a role/risk read where a
+vehicle class is structurally unpriceable. **Trade Opportunities** (designed, not
+built) researches new ideas across a 3×3 risk×horizon matrix. Full design lives in
 `docs/local-models.md`, `web-research.md`, `schwab-integration.md`,
-`portfolio-analysis.md`, `portfolio-workflow.md`, and `trade-opportunities.md`.
-**As-built:** the shared substrate, the single-equity Portfolio slice
-(fixture Schwab + FMP + SEC + local models — and since 2026-07-31 **live-verified
-end-to-end**: the first live run over a real 47-position book completed
-successfully in the dev app, all disposition branches exercised, evidence in
-`docs/verification/2026-07-31-first-live-portfolio-run.md`), the live Schwab
-OAuth adapter + token lifecycle + Connect surface,
-the deterministic holdings-snapshot diff, the Portfolio page with the
-presence-only local warning categories, and the **full Portfolio (funds) slice**
-(2026-07-16): book-level netting, the full ticker→CIK resolver, the per-symbol
-FMP / Stooq / FRED evidence surface (dated DGS10 anchor-window history —
-fail-soft to the raw-percentile fallback; the two run-level prints hard-fail),
-the **v2 rate-anchored scenario-target function** with per-branch risk tiers,
-the three-state hurdle + new-money admission and the engine-bounded feasible
-set (momentum-free letter, rolling-window target names, add-family floors),
-the strategy-classified fund path (exposure-priced composite under both ≥ 70%
-guards, priced-fund grade contract, fund-form v2 targets, option-overlay
-structural flag; net-short → not-rated), the `priced` / `role_risk_only`
-verdict union rendered as the Portfolio page's two card branches, and
-FMP / FRED presence on the local gate — triaged through two external review
-rounds to convergence — and the **Local-analysis-models Settings section +
-sidebar Portfolio-runs history** (2026-07-16): the provider-credential save
-split (the two-token gate scoped to the cloud submission alone; FMP / FRED /
-Tavily and the local-model config save **ungated** — the cloud-keyless setup
-path), the local-models save with the **atomic embedder-identity guard** (an
-identity change clears both local vector namespaces in the same transaction
-as the write; re-embed-from-content stays M5-deferred), the manual daemon
-**Test Connection** (untested / unreachable / model-missing / connected — the
-in-app clear path for the shipped presence warning), and the read-only
-past-run view — two Codex rounds to convergence — and the **thesis ledger
-slice** (2026-08-03, `portfolio-v4`; five review rounds to convergence):
-the persisted per-holding standing thesis, as-built under Portfolio
-Analysis below — and the **quick check slice** (2026-08-03, PR #56; eight
-external review rounds to convergence), the engine-only between-run sweep,
-as-built under Portfolio Analysis below — and the **selective re-analysis
-slice** (2026-08-04, PR #57; internal + two Codex rounds to convergence),
-the chosen-subset re-run, as-built under Portfolio Analysis below — and the
-**pre-profit overlay slice** (2026-08-04, PR #58; internal + four Codex
-rounds to convergence), the deterministic execution/financing overlay,
-as-built under Portfolio Analysis below — and the **outcome-learning
-slice** (2026-08-04, PR #59; internal + four Codex rounds to convergence),
-the recommendation-state-keyed decision-episode machinery, as-built under
-Portfolio Analysis below — and the **construction stage** (2026-08-04,
-PR #60; internal + four Codex rounds to convergence), the Step 7a+7b
-whole-book reconciliation, as-built under Portfolio Analysis below — and
-the **listing-resolution guard** (2026-08-05, `22534fd` + one Codex round),
-the stocks-only loop-time issuer cross-check, as-built under Portfolio
-Analysis below — and the **two-arm verdict** (2026-08-05, `portfolio-v7`,
-branch `portfolio-v7-two-arm`; internal review + eleven Codex rounds to
-convergence), the engine-baseline + unrestricted-model-arm repositioning,
-as-built under Portfolio Analysis below — and the **piece-3 value-chain
-fix batch** (2026-08-06, PR #63 squash `cdb7977`; internal review + three
-Codex rounds to approval), the ruled correctness repairs across the
-deterministic chain: monotonic date-keyed ledger observation identity
-(+ ack-clear on clean reset, same-id corrected-clean reset), the
-quarter-contiguity guard on every fixed-width statement window, the
-signed P/E derive (**`grade-v2.1`**), always-percent fund weights with
-**absolute** composite coverage, the role-risk full pass computing the
-price-derived ledger legs, **insertion-order run identity**, parsed-date
-consensus ordering with the strict undatable-row split, the FRED 10-day
-anchor bound, duration-phrase guards for "short"/"ultra", and the
-option/bond cost-basis render suppression — full dispositions in
-`docs/verification/2026-08-05-piece3-value-chain-walk.md` — and the
-**ET-dating / outcome-hardening slice** (2026-08-06, PR #64 squash
-`512d5ec`; internal review + four Codex rounds to approval), the walk's
-ruled follow-up (rulings 1 + 9): **ET session dating** via
-`market_clock` (`et_session_date` / `et_date_of`) for the per-holding
-evidence boundary, the over-age carry boundary and its `today`, the
-outcome entry anchor + episode-open window stamping, and the
-retrospective bridge — the filings/earnings evidence legs **inclusive**,
-matching the news leg, the true noise bound documented (recurring badge
-+ at most one redundant forced re-analysis until a later-ET-day full
-pass) — the basis bridge keyed at the **intrinsic vintage**
-(excluded-not-guessed when uncovered), the per-symbol price-bar fetch
-floored at the **earliest active-episode anchor** (benchmark series
-included), the frontend ET mirror (`src/etDate.ts` byte-for-byte with
-`market_clock`, the exotic-forms contract pinned case-for-case on both
-sides; the carried/stale tag on whole ET days), and the review
-hardening — legacy UTC-keyed pending window ends self-heal at the label
-pass, `created_at` minted at run start (one ET day for the over-age
-decisions, the label pass, and the rendered badge), ET-stamped
-`confirmed_at` — and the **scoped conformance Tier-1 batch**
-(2026-08-07, PR #67; internal fan-out + two Codex rounds to approval),
-the three defects the cross-path walk found in the two commits above:
-the **sector-P/E snapshot** now dates through `market_clock`'s ET
-session and walks weekday candidates (sharing the report chain's
-`sector_candidate_dates`), an exhausted walk returning `Err` with the
-gap **memoized onto every fund** — the UTC read asked for an untraded
-session, and the endpoint's empty 200 silently abstained every priced
-US-equity fund as "no sector overlap" on five evenings in seven;
-`assign_stock_tier`'s debt/equity legs are **sign-bounded**, so
-negative equity reads as maximal leverage (it had taken `RiskTier::Low`
-— a 7% hurdle, `Clears`, and an engine `Add` where the correct tier
-holds — while `risk_score` scored the same input 0); and
-`fund::base_metrics` takes both price legs from
-`engine::compute_metrics`, so a priced fund's `TrailingReturn` /
-`ReturnVolatility` ledger conditions are **authored on the window the
-quick check evaluates** (~1,600-day authoring vs 180-day sweeping could
-confirm a breach with the thesis intact). Full record — twelve passes,
-26 findings, four cross-pass convergences, and the **23 carried to the
-next ruling round enumerated with evidence** — in
-`docs/verification/2026-08-07-scoped-conformance-check.md`
-— and the **conformance ruling round** (2026-08-07, three merges:
-`859bef4` Batch A, `4ea18c8` Batch B, `e52a0cc` Batch C; internal
-verification + five external rounds on A, three on B), which ruled all
-23 carried findings and built them in three independently-ruled
-batches. Two rulings reversed how a finding was carried: the
-statement-basis flip was nominated accept-with-note and ruled a
-**defect** on the Tier-1 fund fix's own precedent (authored on one
-statement *basis*, evaluated on another), and the `/chains` cardinality
-item ruled one way rather than either, since `pipeline` routes a
-non-gradeable class to `NotRated` reading none of the retrieval spent
-on it. The load-bearing outcomes:
-**two systemic classes swept whole**, each now with a citable home so a
-later pass can check conformance against one statement rather than
-re-deriving the inventory — every **session-keyed date** reads the ET
-session (`docs/data-sources.md` intro; the class ran wider than the
-walk's five sites, including `fred.rs`'s rate-anchor floor whose bail
-hard-fails a whole run, the report chain's FRED scan, and three
-`fmp.rs` snapshot walks that were the Tier-1 sector-P/E defect one file
-over), while **fetch-range upper bounds deliberately stay UTC**,
-annotated in place; and every **identity-or-lifecycle selection reads
-insertion order**, never a wall clock — which is narrower than "every
-selection" by design, so read the scope before extending it. It covers
-the episode store's identity and lifecycle (`load_episodes`,
-`prune_matured_episodes`, the four in-memory latest-episode selections,
-lost-active supersession, construction's sector inheritance) and, ruled
-in separately, the **report-retention eviction** alone, where a
-backwards clock step could delete the report the run had just written.
-Everything that reads reports **as dated documents** deliberately stays
-`created_at`-ordered — the sidebar list, the house view built on it, and
-the portability export — so retention and display differ on *which* 30,
-never on how many, and insertion order is a local artifact the archive
-does not carry.
-Plus the **basis-continuity gate** (a typed `StatementBasis` stamped at
-the `apply_ttm_statement_basis` choke point and **refined at the
-merge**, the only point that knows what finally supplied the levels;
-a statement-derived series compared across a basis change types
-unevaluable once per flip, the full pass owning the gate because the
-sweep's values span two bases at once), the **off-scale guard** (a
-signed P/E or debt/equity resolves unevaluable rather than comparing —
-deliberately not a sentinel, since a ledger threshold is
-model-authored with an open comparator and `f64` infinities do not
-survive the `serde_json` round-trip), a falsifier event stamped from
-the **confirming** pass and deduped on that rather than an observation
-id designed to change on every re-raise, the total-return dividend
-window bounded at the **end bar's** session, the abstention comparing
-against the **standing episode's** own action and lean, the bridge
-floored at `min(anchor, intrinsic vintage)`, the shared **embedding
-validator** behind the trait (cardinality, echoed identity, finiteness,
-nonzero norm, and an input byte cap moved into the request builders so
-it binds the persistence paths too — dimensionality deliberately
-**not** asserted, since the store is dimension-agnostic and its
-search-time skip is the guard), one `Arc<StooqSource>` per run so
-"run-wide breaker" is true across both retrieval phases, warning
-categories de-duplicated by kind, and the eligibility gate sparing a
-non-gradeable class its whole per-symbol retrieval.
-An audit's `sources` now names only what the **verdict** consulted: the
-house-view claim is opted into by the two interpretation paths from
-predicates living beside their own render sites, because the two prompts
-render different parts of it.
-The block's durable lesson is recorded with it: the code fixes held from
-the first round, and **every later finding was the accuracy of a claim
-made around them** — enumerated exits standing in for an invariant, a
-shared presence test for two renderers, "all four routes" for three,
-equivalence claims for a narrow guarantee, and finally the pin whose
-un-pruned assertion was what made a wrong sidebar claim look true, which
-the prose then quoted four times. When a round corrects a claim,
-re-check the test it cites.
-**Trade Opportunities and the remaining Portfolio depth slices (held-name
-refresh lane, the live research loop) remain designed, not built.** The
-load-bearing decisions:
+`portfolio-analysis.md`, `portfolio-workflow.md` and `trade-opportunities.md`;
+this section carries only the decisions a plan must not work against.
 
 - **A local-only model layer, distinct from the cloud report (built).** A
-  flexible local-model adapter (`local_model.rs`) calls one **user-installed,
-  app-supervised** Ollama daemon over its native `/api/chat`
-  (grammar-constrained `format` for schema-valid output; token / reasoning
-  streaming on the existing `progress` seam), through the same
+  flexible local-model adapter calls one **user-installed, app-supervised**
+  Ollama daemon over its native `/api/chat`, through the same
   `reqwest::blocking` / `spawn_blocking` seam the cloud agents use — **added
   rather than extending the closed cloud `AgentModel` enum**, so the roster
-  changes through configuration. The app **bundles neither the daemon nor the
-  models**; it makes setup turnkey *around* a user-installed Ollama (guided
-  install + in-app pull with progress). The suite gate holds the report's
-  **presence-not-connectivity** posture: *presence* of config gates
-  **proactively** (locked Run buttons + a persistent warning) while
-  *connectivity* is checked only at the **run-gate** and on a manual Test
-  Connection, **never at startup** — a config-set-but-daemon-down state is blind
-  on re-open, the deliberate cost of no startup probe. A `LocalEmbedder` reuses
-  the existing `Embedder` trait so `vector_memory` is unchanged. The roster
-  default is **settled**: one frontier reasoner (Qwen3.5-122B-A10B) **plus the
-  embedder stay resident**, the 122B filling *every* reasoning role by thinking
-  mode (bug #14645 verified fixed live on the pinned Ollama v0.32.5, so
-  non-thinking distillation is unlocked on this version — it re-locks on any
-  unverified bump); the 35B fast tier is **demoted to a benchmark-gated
-  option**. Its serving path is **verified live** (M5 pre-flight, 2026-07-28):
-  the 122B serves on the llama.cpp Metal/GGUF fallback, not MLX, fitting 128 GB
-  with ~40 GB headroom at full native context, with effective context measured
-  clean to 160.6 K (`docs/local-model-operations.md`; evidence record in
-  `docs/verification/2026-07-28-m5-preflight.md`).
+  changes through configuration rather than code. The app **bundles neither the
+  daemon nor the models**; it makes setup turnkey *around* a user-installed
+  Ollama. The suite gate holds the report's **presence-not-connectivity**
+  posture: *presence* of config gates **proactively** (locked Run buttons + a
+  persistent warning) while *connectivity* is checked only at the **run-gate**
+  and on a manual Test Connection, **never at startup** — a
+  config-set-but-daemon-down state is blind on re-open, the deliberate cost of
+  no startup probe. A `LocalEmbedder` reuses the existing `Embedder` trait so
+  `vector_memory` is unchanged. The roster default is settled: one frontier
+  reasoner plus the embedder stay resident, that reasoner filling *every*
+  reasoning role by thinking mode. Model identities, the serving path and the
+  Ollama pin live in `docs/local-model-operations.md` — a version bump is a
+  re-verification event, not a routine upgrade.
 - **Per-job isolation (learnings only).** Each feature stores its own runs
-  (last-N retention; run identity is **insertion order** — `id`-primary in
-  every store query since the piece-3 batch, so a stepped wall clock can
-  never demote the just-persisted run from `latest` or shift the diff
-  baseline — `created_at` is display data) and its own vector-memory
-  partition; no job reads another's
-  *learnings*. The Market Signal Report stays a read-only shared input, loaded
-  deterministically (not vector-searched), additionally isolated by embedder
-  dimensionality.
+  (last-N retention; run identity is **insertion order**, `id`-primary in every
+  store query, so a stepped wall clock can never demote the just-persisted run
+  from `latest` or shift the diff baseline — `created_at` is display data) and
+  its own vector-memory partition; no job reads another's *learnings*. The
+  Market Signal Report stays a read-only shared input, loaded deterministically
+  (not vector-searched), additionally isolated by embedder dimensionality.
 - **A cost-free web tool.** Self-hosted, keyless SearXNG for search plus a Rust
   fetch/readability-extract layer, Tavily as fallback; the orchestrator runs the
   tool, the model only requests it — holding the pure-stage boundary. SearXNG
-  isn't bundled — the app *ships configuration, not the server* (a pinned
-  `docker-compose.yml` with the two load-bearing settings baked in). The fetch
-  is a plain GET with realistic browser-like headers; thin extraction trips a
-  **selective rendered-retrieval tier reusing the already-embedded Tauri
+  isn't bundled: the app *ships configuration, not the server*. Thin extraction
+  trips a **selective rendered-retrieval tier reusing the already-embedded Tauri
   webview** — not a bundled browser or Python sidecar — gated on telemetry so
   rendering stays **measured, never blanket**. SearXNG sits **off the execution
-  gate**: unreachable means a degraded run (Tavily fallback; fewer candidates on
-  the SearXNG-only TO discovery lane) behind a pre-run notice, never a block.
-  The per-item research loop is bounded (per-topic passes, depth ≤2, a
-  fetch+wall-clock budget that binds first), SSRF-guarded, every finding keeping
-  its source URL + timestamp; consolidation is one shared **distillation
-  primitive** — single pass by default, map-reduce chosen deterministically by
-  evidence-ledger size, tier-1 always seeing *complete* findings. Optional
-  **Connected Sources** (in-app login → Keychain session, on the Schwab
-  credential rails) enrich fetching and are **never part of the execution
-  gate**.
+  gate**: unreachable means a degraded run behind a pre-run notice, never a
+  block. The per-item research loop is bounded and SSRF-guarded, every finding
+  keeping its source URL + timestamp, and consolidation is one shared
+  **distillation primitive** whose mode is chosen deterministically by
+  evidence-ledger size. Optional **Connected Sources** (in-app login → Keychain
+  session, on the Schwab credential rails) enrich fetching and are **never part
+  of the execution gate**.
 - **Holdings & options ingestion (built).** Schwab Trader API via an OAuth
   loopback (30-min access / 7-day refresh → a weekly re-login), supplying
   holdings *and* live option chains, from which a deterministic put/call +
   IV/skew signal is computed — an activity proxy, not positioning truth, kept
   out of grade sub-scores until calibrated. **A connected Schwab account is
-  required to run either local job** — manual CSV/paste import (designed, not
-  built — ruled 2026-08-04) only supplements holdings. Same-symbol rows across granted accounts (and future manual
-  supplements) **net at snapshot assembly** into one signed book-level position
-  per symbol — the holdings-normalization contract
-  (`docs/schwab-integration.md §What is pulled`), built with the fund slice;
-  per-source rows survive for display and audit, and a net-short book-level
-  equity takes the not-rated treatment. The live
-  source is chosen over the offline fixture by a connection
-  gate (`MARKET_SIGNAL_SCHWAB_FIXTURE` keeps the fixture for offline runs). The surface is **read-only by construction** — the adapter
+  required to run either local job**; manual CSV/paste import (designed, not
+  built) only supplements holdings. Same-symbol rows across granted accounts
+  **net at snapshot assembly** into one signed book-level position per symbol
+  (`docs/schwab-integration.md §What is pulled`); per-source rows survive for
+  display and audit, and a net-short book-level equity takes the not-rated
+  treatment. The surface is **read-only by construction** — the adapter
   implements only holdings/positions/option-chain `GET`s and never an
   order/trading endpoint. This is a code-enforced guarantee, not a token scope:
   the Trader API bundles trading into the same product with **no read-only
-  scope**, and it exposes **no money-movement endpoints at all** (money
-  movement is a separate Advisor Services API), so the read-only boundary lives
-  in our code while the worst-case blast radius of a leaked credential stays
-  bounded to in-account trades the app never issues. Access/refresh tokens and
-  the app secret ride the Keychain and **never enter logs or the run tracker**;
-  the client id is a non-secret in `app_settings`. The loopback's HTTPS server
-  is an **in-house one-shot rustls acceptor** (`loopback_https`): the security
-  audit found the original tiny_http server hard-pinned an EOL rustls/ring
-  stack (RUSTSEC-2024-0336 unfixed) and no maintained minimal blocking-HTTPS
-  crate exists, so the ~150-line acceptor rides the same rustls + ring stack
-  outbound HTTP already uses, and the capture loop is offline-tested over real
-  TLS. Only the interactive browser round-trip stays a live `#[ignore]` smoke.
+  scope**, so the boundary lives in our code while the worst-case blast radius
+  of a leaked credential stays bounded to in-account trades the app never
+  issues. Tokens and the app secret ride the Keychain and **never enter logs or
+  the run tracker**. The loopback's HTTPS server is an in-house one-shot rustls
+  acceptor on the same stack outbound HTTP already uses — no maintained minimal
+  blocking-HTTPS crate exists that isn't pinned to an EOL stack.
 - **Reuses the spine.** Each feature is a new Tauri command + job under the
   **single global run slot** (report + both local jobs are mutually exclusive,
   matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
   and the `vector_memory` / `Embedder` modules. Local-gate failures get their
-  own warning categories (`schwab_gate` + `local_gate`), kept **off the cloud
-  `validate` gate** — a disconnected account blocks only the local jobs, never
-  the report. (Built with the fund slice: FMP / FRED presence joins the
-  local gate through the shared missing-credentials category —
-  `portfolio-workflow.md §Step 1`.) Both jobs are personalized by a **fixed default investor-profile
-  preset** (user config deferred; aligned as-built to the documented posture
-  2026-08-05, B7 — a typed profit-maximization `objective`, the medium-to-high
-  default represented as the aggressive rung, and **one shared Rust label
-  source** rendering both the 7b prompt line and the read-only Settings
-  block's backend-composed rows) that frames the prescription, never which
-  holdings or ideas qualify — nor the intrinsic verdict (profile-independence
-  is declared **and input-isolation-enforced** since 2026-08-04: the 6f
-  intrinsic prompt carries no profile — it reaches the model at 7b
-  construction only, test-pinned; the loop's one read is mechanical, the
-  engine bounding a sizing delta by available cash).
-- **Invariants governing the designed features** (full specs in the docs; a
-  plan must not work against these):
+  own warning categories, kept **off the cloud `validate` gate** — a
+  disconnected account blocks only the local jobs, never the report. Both jobs
+  are personalized by a **fixed default investor-profile preset** (user config
+  deferred) that frames the prescription, never which holdings or ideas qualify
+  — nor the intrinsic verdict, whose profile-independence is declared **and
+  input-isolation-enforced**: the intrinsic prompt carries no profile, which
+  reaches the model at whole-book construction only.
+- **Invariants governing the suite** (full specs in the docs; a plan must not
+  work against these; each states its own reach):
   - **Deterministic finance, primary-source evidence** — a shared Rust engine
-    over FMP + keyless SEC EDGAR / Stooq / FINRA / CBOE (the FINRA and CBOE
-    legs designed, unbuilt) computes every **engine-arm** sub-score, risk
-    tier, metric, and scenario target. Since 2026-08-05 (`portfolio-v7`) the
-    verdict is **two-arm**: the engine's values are the incorruptible
-    baseline beside an **unrestricted model arm** authoring its own
-    sub-scores, derived letter, target bands, conviction, outlook, lean, and
-    7b action — scored head-to-head by a deterministic scoreboard.
-    **Model-arm judgment values never alter or bind the engine baseline**
-    (the boundary statement, with its intentional downstream consumers and
-    typed validated channels, single-homed at `docs/portfolio-analysis.md`
-    §The holding verdict). One shared FMP key, upgraded to paid (`*-bulk`,
-    transcripts, 13F-institutional, fund-holdings, and press-releases are
-    **off-plan** → SEC EDGAR / 8-K / web-loop / N-PORT fallbacks); the report's
-    data-source logic is unchanged. An **evidence floor** returns
-    `insufficient-evidence` over a low-conviction guess — with **debut
-    semantics**: a carried live name's inconclusive re-read holds its last
-    verdict, never a turn-away; long jobs **checkpoint/resume** (resume is its
-    own entry path on the run's pinned snapshot); early runs are
-    **shadow/calibration**.
-  - **Anti-reflexivity / no-double-count** — since the two-arm repositioning
-    conviction is the model's own (the raise triple and app-derived final
-    conviction are retired; `validated_leading_indicator` survives as
-    evidence), the cap-only since-flagged stance is prompt-side discipline,
-    and the guard binds where it has deterministic consumers — the
-    confirmed-crossing validation on stored falsifiers / milestone conditions
-    and the cheap sweep's tripwires; the archive never self-promotes.
+    over FMP + keyless SEC EDGAR / Stooq / FINRA / CBOE (the last two designed,
+    unbuilt) computes the engine arm for both jobs. Both are **two-arm**: the
+    engine's values are the incorruptible baseline beside an **unrestricted
+    model arm**, structurally validated only, the two scored head-to-head by a
+    deterministic scoreboard. The per-job field schemas differ — BUILD does not
+    restate them; they are enumerated once at `docs/local-models.md`. The
+    boundary — **model-arm judgment values never alter or bind the engine
+    baseline** — is single-homed per job at `docs/portfolio-analysis.md §The
+    holding verdict` and `docs/trade-opportunities.md §The opportunity`. Both
+    jobs hold an **evidence floor** that returns insufficient evidence over a
+    low-conviction guess, but each specifies its own —
+    `docs/portfolio-analysis.md §Evidence floor` and
+    `docs/trade-opportunities.md §Evidence floor` — and their exit semantics
+    differ, so read the one for the job in hand.
+  - **Anti-reflexivity / no-double-count** — conviction is the model's own, so
+    the cap-only since-flagged stance is prompt-side discipline, and the guard
+    binds only where it has deterministic consumers: the confirmed-crossing
+    validation over each job's own stored conditions, and the cheap
+    re-derivation's tripwires. Which conditions each job stores is specified in
+    that job's doc, not here. Trade Opportunities adds one rule of its own —
+    re-entry is a fresh start, and the archive never promotes itself.
   - **Source quality informs conviction, never gates discovery** — tiers grade;
     only the explicit deny list drops.
   - **Only a deep re-evaluation can archive an opportunity; the cheap
     re-derivation never does** — it refreshes the quant read and raises a
-    non-destructive attention warning.
-- **Portfolio Analysis (per-holding spine + fund path + thesis ledger built;
-  remaining depth slices designed — `docs/portfolio-analysis.md`,
-  `portfolio-workflow.md`; strategy
-  audit converged 2026-07-10; the fund-form target methodology settled
-  2026-07-16 — the v2 function over the exposure-priced composite).** Every
-  stock enters behind the **loop-time listing-resolution guard** (built
-  2026-08-05): the one per-stock FMP `profile` read — also the outcome
-  episodes' entry-stamped sector identity — cross-checks issuer name +
-  exchange against Schwab's; US = the NYSE / NASDAQ / AMEX exchange
-  allowlist (OTC/PNK → not-rated `unsupported listing`), a zero-shared-token
-  name conflict → `insufficient-evidence` with standing-ledger +
-  prior-vintage retention, an unverifiable read proceeds as a degraded input
-  (only FMP's definitive empty body reads no-resolution), and a
-  guard-terminal stock skips its remaining per-symbol retrieval. The
-  intrinsic verdict is a **discriminated union**: the **`priced`** branch is
-  the four-part read — deterministic grade (momentum settled out of the
-  letter; since the 2026-08-03 shadow-tune computed on a one-basis-per-holding
-  **TTM statement basis** — the four newest quarterly income prints summed
-  (contiguity-guarded since the piece-3 batch — a gapped window fails
-  adoption to the annual fallback, never a >12-month "TTM"), a
-  quarterly balance-sheet leg for debt / equity, SEC company-facts the
-  **same-concept annual fallback**, fund holdings skipping the facts call
-  entirely — under the recentered **`grade-v2`** bands (current stamp
-  **`grade-v2.1`**, 2026-08-06: the signed P/E derive made the loss-maker
-  valuation guard reachable — an input-semantics change, bands unmoved),
-  each audit stamped
-  with its **grade-parameter version** so a recalibration stays attributable;
-  weights and A–F cutoffs untouched, reserved for the normalization slice),
-  first-class forward outlook, bidirectional conviction, portfolio action —
-  and a structurally unpriceable vehicle class returns
-  **`role_risk_only`** (no letter / targets / lean / conviction; a reduced
-  {sell all, trim, hold} spine) so no fabricated number rides an unpriceable
-  fund. The intrinsic verdict stays separated from the portfolio action: the
-  per-holding loop emits the verdict plus a standalone lean (`priced`
-  branch only), and a
-  post-roll-up construction stage (deterministic aggregates → model
-  reconciliation, coherence-checked) sets the final action + sizing — the
-  engine computes **its own action set** and the model chooses freely, an
-  outside-the-set choice persisting with an engine-bound annotation since
-  `portfolio-v7`, never a schema bar — so "A-grade business, trim because
-  oversized" is expressible (an allocation optimizer is **deferred, not
-  adopted**). Capital efficiency tests **total
-  return** against a DGS2-anchored, tier-scaled, **three-state hurdle** —
-  only *fails* is dead money (exit-side hysteresis) — and under the
-  **`portfolio-v3`** interpretation contract (2026-08-03) a *fails* read
-  reaches the model as a **weighed exit input**, set against the targets'
-  **typed provenance** (the `TargetMeta` derivation flags — rate-anchored vs
-  current-multiple carry, flat / clamp-flattened driver, dispersion floor —
-  rendered into every priced interpretation, a floor-widened band inheriting
-  its base's signal quality) and the data quality, never an exit instruction;
-  the same contract defines **conviction against the action's decisiveness**,
-  scopes the **house view** to horizon reads / market-setup context (never by
-  itself a per-holding exit reason), and fires a **band-recalibration
-  continuity NOTE** when the prior verdict's stamped grade version differs
-  from the current bands; **new money passes its own base-case admission
-  test**. The persisted per-holding **thesis ledger** (built 2026-08-03,
-  `portfolio-v4`) is the standing thesis typed by verdict branch (`priced`
-  full shape; `role_risk_only` a condition-only monitor + trim/sell-only
-  triggers, enforced in the schema **and** at validation), its quantitative
-  falsifiers / triggers machine-evaluable over a **closed 12-series engine
-  surface** (cadence derived from the series; consecutive counts drafted
-  1-filing / 2-market-data) under **distinct-observation streak identities**
-  — market series keyed to the marks' trading day, filing series to the
-  newest period end, the expense ratio to the changed print itself, **never
-  calendar-keyed**; a no-dated-print read is typed unevaluable, with a
-  margin noise guard and an acknowledgment transition blocking re-raise off
-  the examined observation. The prior ledger + confirmed crossings render
-  into both interpretation prompts (the first prior-run content the prompts
-  carry); the model's rewritten ledger (required in both response schemas;
-  it authors no ids, eval state, or target numbers) passes **6g
-  validation** — executability downgrades rather than drops, identity carry
-  is **order-independent** (exact-core reservation, then a global min-cost
-  supersession assignment per (role, family, series) over the complete
-  machine core; trigger families never exchange identity or crossing
-  lineage), tripped/fired claims are honored only against a confirmed
-  crossing on the carried id, superseded/closed conditions are preserved
-  whole in the typed `LedgerAudit`, and monitor targets are app-stamped
-  from the engine scenario set (structurally `None` on `role_risk_only`).
-  The ledger rides `HoldingVerdict` in the run blob (pre-ledger runs decode
-  as the debut path; insufficient-evidence retains it unchanged), anchored
-  on the Portfolio card by the kit's ThesisAnchor (3-line clamp, measured
-  reveal) — and since 2026-08-05 (B10+B13, one combined UI slice,
-  `1bc21d2`) the card renders the ledger's bear/base/bull **monitor** on
-  both verdict branches (the kit-Scenarios strip + the monitor-level
-  goalposts; condition-only on `role_risk_only` — the target line drops on
-  the structural null; historical views included — run content, not live
-  state), with the momentum tile set apart from the three letter tiles as
-  the **"Setup" market-setup read** under an always-visible caption (the
-  hover-only forms were ruled insufficient — no in-system hairline clears
-  3:1). Between runs the **quick check** keeps it live (built
-  2026-08-03, PR #56; eight review rounds to convergence) — engine-only,
-  no model / web / Schwab call, a single-row `portfolio_quick_checks`
-  store deliberately **never** `portfolio_runs` (history, `latest_run`,
-  and the diff baseline stay uncontaminated): per-holding typed
-  `fresh_clear` / `flagged` / `unknown` family sweeps (an
-  allowed-but-unresolvable condition **downgrades its family's claimed
-  clear** via the typed `unevaluable_series` channel; `unknown`
-  force-includes), the four flag triggers — confirmed falsifier breach,
-  fired trigger, hurdle newly failing on the **closed-form re-anchor**
-  (`engine::reanchor_scenarios` over the stored `QuickCheckBasis`
-  percentiles / drivers; the filing re-pull's dividend leg refreshes the
-  payout under the adapter's None-with-no-gap = confirmed-non-payer
-  contract), and — since the 2026-08-03 open-questions sweep — a **change
-  in spot's relation to the frozen monitor band** (inside / below / above,
-  tested against the authoring-time relation 6g stamps beside the engine
-  targets, `ThesisLedger.authored_band_relation`; leave / re-enter /
-  side-cross flags, an authored-outside standing state never re-flags, a
-  pre-stamp ledger reads authored-inside) —
-  merge-not-replace flag carry with eval-state chaining sweep-to-sweep,
-  equity + fund evidence-event legs (the fund mandate / label /
-  overlay-flag comparisons independently gated on what each actually
-  derives from — `FundExposureBasis` carries the overlay
-  `structural_flag` as `Option<bool>`, a legacy `None` degrading rather
-  than fabricating; degraded retrievals type `unknown`, never a
-  fabricated change; blank `etf/info` strings normalize to `None` at the
-  adapter), and the full-run seam: sweep eval states overlay at ledger
-  carry, confirmed crossings are consumed and acknowledged at 6g, and
-  clearing is **per successful pass** — an abstention retains its
-  carried state re-stamped to the new run, its rate cache following the
-  run's prints. The store rides data portability as **format v2**
-  (versioned closed entry set); quick-check job rows are excluded from the
-  footer's last-run stamps (`job_status` filters `portfolio_quick_check` —
-  a sweep is not analysis freshness; failures still reach the failed-jobs
-  warning). Deliberate reductions, all surfaced: FMP
-  quote + dated-EOD (no Stooq cache exists), no cash-flow re-pull, no
-  breadth-flip sub-leg, material filings = 10-K/10-Q/8-K prefix, the
-  FINRA leg structurally unreachable (no short-interest series in the
-  closed 12-series surface).
-  **Selective re-analysis** (built 2026-08-04, PR #57): Run analysis with a
-  per-card selection analyzes the work-list — selection ∪ new-since-last-run
-  ∪ no-prior-verdict, side reversals (`PositionDelta::side_reversed`),
-  over-age exit-family carries, plus the **in-run tail sweep's** flags /
-  `unknown` families / unexamined evidence events (the quick-check core made
-  subset-capable, `quick_check::sweep_tail`; it reuses the run's fresh rate
-  prints, no second FRED call) — and carries the rest forward
-  **vintage-stamped**: `HoldingVerdict.analyzed_at` (a fresh pass stamps the
-  run's `created_at`; an insufficient-evidence exit preserves its prior
-  vintage), with the **evidence-event boundary now the per-holding vintage**,
-  never the run's `created_at`, in the standalone quick check too. A carried
-  verdict keeps its ledger with the sweep's eval states overlaid, its prior
-  audit row whole (`quick_basis` / `fund_exposure` survive the carry), its
-  `position_change` refreshed from this run's diff, and its **action sizing
-  recomputed at current weights** on both branches (sizing is engine
-  context, never carried stale); an over-age carried add-family action
-  rule-demotes to *hold*, stamped **`action_source: rule-demoted`** (the
-  canonical `model-chosen` / `rule-demoted` vocabulary, persisted on every
-  verdict). The persist seam retains carried holdings' sweep state
-  re-stamped to the new run, beside the abstention retention. Deliberate
-  waits: the transition rule's model-facing validation (incl. the
-  context-trim carve-out) rides the 7b stage — with no construction call,
-  carried actions only re-affirm or demote toward hold, so the rule holds by
-  construction — and the refresh-lane force-include leg rides its lane.
-  Frontend: per-card selection + select-all/clear, the "Analyze N selected"
-  trigger, carried / stale vintage tags and the demotion tag in the quiet
-  badge family. The **held-name research refresh lane** checks at most two
-  otherwise-reused-or-carried holdings per run against one named qualitative
-  ledger driver / falsifier and can only force the normal full pass; it never
-  changes a verdict. The **pre-profit execution / financing overlay** (built
-  2026-08-04, PR #58, `portfolio/pre_profit.rs`; prompt contract
-  **portfolio-v5**): every priced stock records an overlay — eligibility
-  (TTM operating income ≤ 0, or no positive forward-EPS consensus with
-  negative TTM FCF; missing inputs = **not entered, gap recorded**) gating a
-  statement leg off the new quarterly cash-flow pull + balance-sheet cash
-  lines — liquid resources (an absent STI line reads zero, recorded), TTM
-  burn, runway months under the 24/12-month financing bands, capex intensity,
-  split-adjusted YoY diluted-share change (FMP's retroactive split adjustment
-  live-verified on NVDA's 10:1), and the two-quarter gross-margin
-  progression. The observation machinery — typed rows, structural validation
-  with typed rejections, period-keyed dedup merge, the ≥5% /
-  ≥2-of-latest-four-periods / ≥20% miss rules, the conjunctive severe state
-  (financing + dilution alone never suffices) — is built **producer-dormant**
-  (research stubbed, candidate list empty; the research-loop slice **must**
-  add holding-identity + source-text validation before activating the
-  producer). Consequences are engine-owned and, since `portfolio-v7`, bind
-  the **engine arm alone** — its stand-in conviction observes the matched
-  ceiling (the re-scoped `clamp_conviction`), its action set drops the add
-  family under constrained runway / severe (severe → {trim, sell all}) —
-  rendered to the model as engine rules with departures annotated; repeated
-  miss caps Medium, severe caps Low on the engine arm, the letter and
-  targets never move. The full record rides
-  `HoldingAudit.pre_profit` (boundary-epsilon-tolerant thresholds; carried
-  whole by the selective carry; retained through abstention like the standing
-  ledger), and statement canonicalization is a **shared policy** with a named
-  home — `engine::canonicalize_statements`, applied in place at the
-  `dossier::apply_ttm_statement_basis` choke point (2026-08-04, `eb9295c`), so
-  every statement-consuming engine read — the TTM basis, the driver ladder's
-  growth-clamp trailing prints and share basis, the anchor windows — sees
-  both quarterly statement vecs sorted (period_end, filing_date) descending +
-  period-end-deduped, and a served-twice restatement resolves to the latest
-  filing, never wire order (`pre_profit::statement_inputs` keeps its local
-  sort — order-independence there is a test-pinned standalone contract). **Outcome
-  learning** (built 2026-08-04, PR #59, `portfolio/outcome.rs`; internal +
-  four Codex rounds to convergence): branch-typed decision episodes carrying
-  the calibration-feature snapshot open on **observable state changes only**
-  — debut (incl. the upgrade and lost-active-row re-seed seams), branch
-  flip, action change, weight-range change, rule demotion; the
-  standing-thesis leg and the self-correction read ship **dormant** behind
-  the unbuilt 6g attribution validator — extend the **latest** active
-  episode on re-affirmation / carry / abstention, and persist in their own
-  store independent of the 10-run retention (matured archive capped;
-  per-row fail-soft load — an unreadable row is skipped and reported, never
-  deleted). Engine-computed 1/3/6/12-month labels read through the shared
-  `price_bars` cache: session-proximity-bounded next-session entry,
-  total-return primary off a label-time dividends re-pull (a failed pull =
-  the labeled price-only fallback), typed price-coverage / terminal
-  closures past the shared grace — and every authored-price comparison
-  (band calibration, the falsifier lead-time line) crosses bases through
-  the **anchor-close bridge** (the **intrinsic-vintage session's** close
-  `× price ⁄ authoring spot` — ET-session-dated since the ET slice),
-  split- and gap-safe, **excluded rather than guessed** when the spot or
-  bridge bar is missing. Derived reads are unique-holding-counted —
-  lean-keyed cohorts (vintage-fresh, model-chosen; rule-demoted and
-  role-risk their own classes; a missing TR leg quotes price-only, the
-  labeled-mix rule), target calibration split per parameter version
-  (return-space Winkler interval score), falsifier lead times, and the
-  typed below-bar eligibility record (proposal statistics deferred behind
-  the ≥ 30-unique-matured-holdings bar) — intrinsic calibration keyed on
-  the standalone lean, never the construction-shaped final action, feeding
-  a propose-only calibration. Alignment tags come from the next run's
-  deterministic diff; sector identity is entry-stamped via a fail-soft FMP
-  `/profile` read + the static sector→SPDR map; the run's records ride
-  `PortfolioRun.outcome`, and the episode store + price-bar cache join
-  portability as **format v3**.
-  The **construction stage** (built 2026-08-04, PR #60,
-  `portfolio/construction.rs`; prompt contract **portfolio-v6**, since
-  superseded by **portfolio-v7**; internal + four Codex rounds to
-  convergence): 6f authors the **standalone lean** on the full ladder (the
-  engine's intrinsic set — severe pre-profit deterioration restricting it to
-  the exit family — rides as evidence since `portfolio-v7`, the lean
-  schema-unrestricted; the role-risk 6f call authors no action), and the new
-  module owns Step 7a+7b —
-  per-holding spine rows (the role-risk decision surface riding the row:
-  class label, role read, expense drag, observable risk, tilt, gaps; prior
-  action / prior lean baselines) + whole-book aggregates (fund-folded sector
-  table, overlap clusters, OCC not-rated notional, and the snapshot-derived
-  **same-underlying option-overlay classification** — covered /
-  partial-never-covered / protective / collar / other, per-leg strike +
-  expiry, zero-net legs filtered, no delta at 7a — the dossier overlay leg's
-  stand-in), the joint-feasibility solve — since `portfolio-v7` split two
-  ways: the self-coherence checks (exact ordering / non-negativity /
-  sell-all-0–0 / stated-range-contains-implied-weight, drift tolerance on
-  implied-book checks only) still return typed violations with the one
-  named-violation re-run, while the engine-bound checks (rung band,
-  concentration cap, funding, the transition rule) record as
-  `engine_bound_annotations`, never a violation — the full-ladder
-  per-holding schema (minimum-0 weights), and both prompts (the ENGINE SET +
-  numeric rung bands as decimal fractions — the engine's own read, an
-  outside-the-set choice annotated, never schema-barred). The merge
-  (`construction::merge_validated_actions`) sets the final action,
-  `sizing_from_range` deltas + rationale, and the action-half
-  `ActionWhatChanged`, **restores `model-chosen`** on a construction-moved
-  demoted action, and app-stamps `carried-stale-lean`; two further
-  attribution paths are app-stamped from the closed cause vocabulary — the
-  **engine-barred lean** and an **action reverting to an unchanged lean**
-  (moved-context, cause-less). Episodes record `lean` + `lean_divergence`
-  (the outcome slice's reserved pair — no schema migration) with the new
-  `LeanChange` open reason and the **decided-range payload** (episode
-  identity stays on the ledger's pre-committed range — a band-anchored
-  range comparison would mint episodes from weight drift; the band-relative
-  trigger is a big-run watch). Frontend renders the lean tag, sizing
-  rationale, action-half line, and the roll-up construction view.
-  The **two-arm verdict** (built 2026-08-05, `portfolio-v7`, branch
-  `portfolio-v7-two-arm`; internal review + eleven Codex rounds to
-  convergence): the deliberate repositioning — *the tool is about the model,
-  not the engine* — makes every priced verdict two-arm. The **engine arm**
-  is the existing deterministic read plus three mechanical stand-ins
-  (outlook = 21/126/252-session trailing returns @ 2/5/8% flat thresholds;
-  conviction = disclosed degradation count 0 / 1–2 / ≥3 → High/Medium/Low;
-  action = feasible∩hurdle∩grade formalized to a single rung, tiebreak
-  toward hold, sized on the shared rung bands), obeying its own bars (the
-  overlay ceilings via the re-scoped `clamp_conviction`). The **model arm**
-  (priced branch only) authors its own sub-scores (letter derived app-side
-  through the shared cutoffs), freely-authored 1-/12-mo low/base/high bands,
-  conviction, outlook, lean, retrospective `self_assessment`, and the 7b
-  action + range on the full ladder — structural / self-coherence validation
-  only; every engine-bound check annotates (the construction split above).
-  The 6f prompt carries a **retrospective** (deliberately reversing the v4
-  anchoring guard): prior both-arm values plus the realized move through the
-  outcome slice's **split-safe anchor-close bridge**, dated by the prior
-  verdict's **effective vintage** — excluded, never guessed, without an
-  anchor bar inside the proximity bound. Outcome learning freezes both arms
-  on the episode snapshot and scores them with one extracted scorer —
-  per-arm full-population calibrations plus the **paired-population
-  `HeadToHeadRead`** (the only arm-comparison read) and the outlook
-  direction read; model sub-scores / conviction are recorded unscored behind
-  the ≥30 bar. The conviction-raise triple is **retired unbuilt**
-  (anti-reflexivity survives in the ledger's tripped/fired validation); no
-  portability bump (additive-optional fields, pre-v7 blobs decode `None`);
-  the card renders paired Engine-baseline | Model-view columns with
-  divergence tags and the roll-up scoreboard (a recorded design-system
-  extension — the kit has no paired-comparison component). The boundary
-  contract is **single-homed** at `docs/portfolio-analysis.md` §The holding
-  verdict — model-arm judgment values never alter or bind the engine
-  baseline; the typed validated channels (ledger conditions,
-  `research_forward_assumption`, the dormant pre-profit observations) are
-  the deliberate, validated model→engine inputs — every other doc and
-  module-doc mention a one-line pointer.
-  Funds are strategy-classified at loop time and routed (exposure-priced
-  proxy valuation for ≥70%-US equity funds; their structurally absent quality
-  axis uses the shared neutral-50 imputation; honest gaps elsewhere).
-- **Trade Opportunities (designed — `docs/trade-opportunities.md`,
-  `trade-opportunities-workflow.md`).** Discovery through three feeders —
-  **model-led hypothesis research** (the edge: hypothesis cards + a score
-  gating promotion *before any ticker*), with an app-owned **calendar-time
-  coverage rotation** backed by a discovery-coverage ledger; stratified
-  structured feeders (the screener stratifies — stratification IS the breadth
-  mechanism, no bulk pre-scoring); and a persisted **opportunity-graph
-  watchlist**, whose structured / filing metrics refresh at class cadence and
-  whose research-class nodes have a small, current-search refresh lane. It then
-  performs per-candidate validation under an archetype lens, a mandatory bear
-  case, and a leading-metric hard gate. App-eligible new-listing,
-  spin-off/carve-out, or new-economic-perimeter cases may contribute identity-,
-  perimeter-, and comparability-validated direct or recast **limited-history
-  evidence** without weakening any normal floor or gate; proxies remain
-  corroboration only. The engine retains a structured-only
-  target counterfactual while the app validates any sourced, claim-id-based
-  **research target scenario** and computes the resulting targets; a validated
-  thesis-milestone DAG supplies the `milestone-chain` horizon basis and carries
-  condition-identity-keyed evaluation state. Runs as two jobs sharing one page
-  (**Discover** / **Audit**, the latter forking Quick/Deep); a reserved,
-  maintenance-priority **rotation slice** of the deep budget keeps the live
-  matrix's research bounded-stale (non-disableable — floored at one slot).
-  Deterministic outcome labels on prior picks (recorded onto durable,
-  **lifecycle-keyed picked episodes** that outlive matrix / archive / run
-  retention) **and a shadow scorecard over every name the funnel turned away**
-  (typed decision episodes, a strict measurement contract) feed a
-  **propose-only, never auto-applied** calibration.
-  Since the **two-arm repositioning** (2026-08-06, docs-only — the
-  model-decision-power audit's five rulings plus the final logic sweep and
-  its carried-name hard-trigger ruling), every judgment field is carried in
-  **two arms**: the engine baseline beside the model's **own** sub-scores,
-  twelve-month bands, implied-expectations read, and conviction —
-  structurally validated only, the raise triple and app-derived
-  `final_conviction` retired. **Admission is either-arm** — both arms run
-  the same entry-asymmetry gate and a name clearing either enters, stamped
-  `admitted_by` with both gate vectors persisted — the grant scoped to that
-  gate alone: the evidence floor, the forensic hard triggers, and anchorless
-  `hype` bind absolutely on both arms, and a deep-pass-validated hard
-  trigger on a **carried** pick app-forces `invalidated` → archive with a
-  typed status-override divergence. Three classes stay single-valued: facts
-  and their arithmetic; tier / horizon placement (the model's views persist
-  as advisory divergences); and the outcome machinery, which scores both
-  arms identically and slices by admission provenance, the run-level band /
-  conviction **divergence rates** standing recorded reads. A **blind-first
-  diagnostic** (engine-blind + realized-move-blind) is reserved
-  diagnostic-only with reconstructability required, its execution
-  **deliberately unspecified until built**. Persistence separates six
-  structures: matrix, opportunity graph, discovery-coverage ledger,
-  price-tracked departed-pick archive, shadow ledger, and picked-episode store.
+    non-destructive attention warning. This one is Trade Opportunities' framing
+    invariant. Portfolio holds the analog rather than the rule: its quick check
+    borrows the same warn-don't-decide split, having no archive to write to.
+
+### Seams a plan builds on
+
+The suite's Rust modules sit under `src-tauri/src/portfolio/` — `pipeline` (the
+job spine), `dossier` (per-symbol evidence assembly), `engine` (all
+deterministic finance), plus `fund`, `listing`, `quick_check`, `construction`,
+`pre_profit`, `outcome`, `store` and `diff` — beside `local_model.rs`,
+`market_clock.rs` and `loopback_https.rs` at the crate root.
+
+Shared entry points exist so a slice computes nothing twice. Reach for these
+rather than re-deriving:
+
+- `engine::compute_metrics`, `engine::resolve_series`,
+  `engine::evaluate_ledger_conditions[_gated]` and
+  `engine::reanchor_scenarios` — every metric, series resolution, ledger
+  evaluation and closed-form re-anchor.
+- `engine::canonicalize_statements`, applied in place at the single
+  `dossier::apply_ttm_statement_basis` choke point, so every statement-consuming
+  read sees the same sorted, period-deduped vectors and a served-twice
+  restatement resolves to the latest filing rather than wire order.
+- `market_clock::et_session_date` / `et_date_of` — the ET dating seam. The
+  frontend mirror `src/etDate.ts` is a separate implementation (a hand-rolled
+  RFC3339 regex plus calendar validation against Chrono's strict parser),
+  **behaviorally equivalent on the pinned contract** rather than a port; its two
+  known divergences are unreachable. Change one side and re-pin both case
+  tables.
+- `quick_check::sweep_tail` — the subset-capable sweep, built so later slices
+  reuse the quick-check core instead of forking it.
+- `construction::merge_validated_actions` — the one place the final action,
+  sizing and attribution are set.
+- `pre_profit::clamp_conviction` — the overlay's engine-arm ceiling.
+- `store::load_episodes` / `prune_matured_episodes` — episode identity and
+  lifecycle.
+
+BUILD cites version constants rather than duplicating their current values,
+so this brief cannot go stale as they move:
+`portfolio::PROMPT_VERSION`, `engine::GRADE_PARAMETER_VERSION`,
+`engine::SCENARIO_TARGET_PARAMETER_VERSION`,
+`pre_profit::PRE_PROFIT_PARAMETER_VERSION` and `portability::FORMAT_VERSION`.
+Persisted records carry the stamp they were written under, so a recalibration
+stays attributable and old rows never silently re-grade.
+
+### Standing constraints
+
+Each is easy to break by accident, so a plan should say how it honors them:
+
+- **Every session-keyed date reads the ET session** through `market_clock`.
+  Fetch-range *upper bounds* deliberately stay UTC, annotated where they occur.
+- **Identity-or-lifecycle selections read insertion order**, never a wall clock
+  — `id`-primary store queries. This is deliberately narrower than "every
+  selection": everything reading reports *as dated documents* stays
+  `created_at`-ordered, so retention and display differ on *which* records,
+  never on how many.
+- **`portfolio_quick_checks` is deliberately never `portfolio_runs`** — a sweep
+  must not contaminate run history, `latest_run`, or the diff baseline.
+- **One `num_ctx` per model.** Changing it reloads the resident Ollama runner
+  despite `keep_alive`, so context pressure is answered by compressing digests,
+  never by raising `num_ctx`.
+- **The pre-profit producer stays dormant** until the research-loop slice adds
+  holding-identity and source-text observation validation, and normalizes
+  reported periods to one convention per issuer. Both obligations are recorded
+  in `pre_profit.rs` — the validation pair on the validator's doc comment, the
+  normalization rule on the `period` field's.
+- **Model-arm values never bind the engine baseline.** The typed validated
+  channels are the only model→engine inputs: ledger conditions today, with the
+  dormant pre-profit observations and the research loop's forward assumption
+  joining them when those slices land.
+- **The Schwab adapter implements no order or trading endpoint.** The read-only
+  boundary is code-enforced, not scope-enforced, so it survives a token scope
+  change.
+
+### What each built slice left for the next
+
+The ledger and sweep supply the selective machinery's triggering surface —
+validated conditions with eval state and cadence tags, app-stamped monitor
+bands, and the acknowledgment transition. Selective re-analysis adds the seams
+later slices consume: per-holding vintages (`effective_vintage`), the persisted
+`action_source` vocabulary, and the subset sweep. Outcome learning adds the
+episode store and the `HoldingAudit.hurdle` snapshot the calibration-proposal
+slice will consume, and reserved the episode `lean` / `lean_divergence` pair
+that the construction stage now populates without a schema migration.
+
+Deliberate reductions in the quick check, surfaced rather than latent so they
+are not mistaken for defects: FMP quote plus dated-EOD only (no Stooq cache
+exists), no cash-flow re-pull, no breadth-flip sub-leg, material filings are the
+10-K/10-Q/8-K prefix, and the FINRA leg is structurally unreachable from the
+closed ledger series surface.
+
+**Portfolio Analysis — built**, less two depth slices. Built: the per-holding
+spine and fund path, the persisted **thesis ledger** with machine-evaluable
+falsifiers over a closed engine series surface, the engine-only **quick check**
+between runs, **selective re-analysis** with vintage-stamped carries, the
+deterministic **pre-profit execution/financing overlay** (producer-dormant;
+§Standing constraints carries what activating it requires), **outcome
+learning** over branch-typed decision episodes, the
+whole-book **construction stage** setting the final action and sizing, and the
+**two-arm verdict** across all of it. The intrinsic verdict is a discriminated
+union — a `priced` branch (grade, forward outlook, bidirectional conviction,
+portfolio action) and a `role_risk_only` branch for structurally unpriceable
+vehicle classes (no letter, targets, lean or conviction; a reduced {sell all,
+trim, hold} spine), so no fabricated number rides an unpriceable fund. The
+intrinsic verdict stays separated from the portfolio action, which is why
+"A-grade business, trim because oversized" is expressible; an allocation
+optimizer is **deferred, not adopted**. Designed and unbuilt: the **live
+research loop** and the **held-name research refresh lane**.
+
+**Trade Opportunities — designed, not built** (`docs/trade-opportunities.md`,
+`trade-opportunities-workflow.md`). Discovery runs through three feeders —
+**model-led hypothesis research** (the edge: hypothesis cards + a score gating
+promotion *before any ticker*) under an app-owned coverage rotation, stratified
+structured feeders (the screener stratifies — stratification IS the breadth
+mechanism, no bulk pre-scoring), and a persisted **opportunity-graph watchlist**
+refreshing at class cadence. Per-candidate validation runs under an archetype
+lens, a mandatory bear case and a leading-metric hard gate. It runs as two jobs
+sharing one page (**Discover** / **Audit**, the latter forking Quick/Deep).
+Judgment fields carry in the same **two arms** as Portfolio, and **admission is
+either-arm** — both arms run the same entry-asymmetry gate and a name clearing
+either enters, with both gate vectors persisted — the grant scoped to that gate
+alone: the evidence floor, the forensic hard triggers and anchorless `hype` bind
+absolutely on both arms. Three classes stay single-valued: facts and their
+arithmetic, tier/horizon placement, and the outcome machinery. Deterministic
+outcome labels on prior picks **and a shadow scorecard over every name the
+funnel turned away** feed a **propose-only, never auto-applied** calibration.
+Persistence separates six structures: matrix, opportunity graph,
+discovery-coverage ledger, price-tracked departed-pick archive, shadow ledger
+and picked-episode store.
 
 ## What remains
 
-The queue is governed by the **locked pre-test block** (user decision
-2026-08-02): **no further live runs until the block is fully built** — the
-calibration tier, the two result-review UI micro-slices, and every remaining
-Portfolio depth slice except the live research loop and the held-name refresh
-lane (which rides with it) — then one **single big confirmation run** banks
-all the stacked runtime confirmations (grade-v2 letter distribution and
-whether ordering holds; TTM-basis adoption + the balance-sheet leg live;
-target provenance vs the sell-all cascade; the recalibration NOTE and its
-what-changed attribution; conviction/action pairing; the fails →
-indeterminate action distribution; fund-SEC-skip noise reduction; the fund
-carry-path floor; debut ledger authorship quality at 47-position scale;
-live condition carry / supersession behavior; tripped-claim discipline; the
-ThesisAnchor + clamp render; the data-health render; the reasoning panes;
-the first live quick-check sweep at 47-position scale (flag / badge /
-degraded-note render, the card overlay) and the debut-gap self-resolution
-(the rate-anchor and pre-basis fund families read `unknown` until the big
-run re-persists); the first live **selective run** (selection UI, the
-in-run tail sweep, carried-card vintage / stale / demotion render at
-scale — and the transition-only `PriceOutsideBand` flag's live behavior:
-leave / re-enter / side-cross flag rates against the stamped authoring
-relation, since the authoring-time-outside design question was settled in
-code 2026-08-03 — the standing state no longer flags; note pre-sweep
-ledgers carry no stamp and read authored-inside until re-analyzed); the
-first live **pre-profit overlay** read at 47-position scale (eligibility
-rates, financing-state distribution, unscorable-gap rates — including the
-STI-absent-reads-zero liquid-resources convention and the YoY share-change
-quarter-contiguity assumption); the first live **outcome-learning** pass
-(episode-debut volume at 47-position scale, sector-resolution rates
-through the fail-soft profile read, the below-bar eligibility note); the
-first live **construction pass** (lean-divergence / engine-bar /
-carried-stale-lean rates at 47-position scale, the construction prompt's
-fit in the shared 131k `num_ctx` — the settled response is compress
-digests, never `num_ctx`, and the fit is now instrumented (B12,
-2026-08-04: per-call prompt counts + sent size, pressure/truncation
-flags on the data-health read) — the overlay-classification read against real
-Schwab OCC rows, and the 7b sizing-only decided-range movement rate that
-would justify a band-relative episode trigger); the **listing guard**
-against real Schwab identity shapes (slash-notation class-share symbols
-read unsupported under the verbatim FMP lookup; ticker-noise
-descriptions' false-conflict risk); the first **two-arm vintage**
-(the retrospective + model-arm brief's prompt fit under the B12
-instrumentation, feasibility-annotation rates, model-vs-engine divergence
-rates, the paired two-arm card render at 47-position scale); 128 K runner
-stability; distill speed; whether Stooq's PoW gate is permanent). **Trade
-Opportunities waits behind the whole block** (design settled — full strategy
-audit plus three external review rounds to convergence, 2026-07-09; the paid
-FMP key's shapes live-verified 2026-07-16, so implementation planning codes
-against verified shapes).
+The queue is governed by the **locked pre-test block** (standing user decision):
+no further live runs until the block is fully built, after which one **single big
+confirmation run** banks every stacked runtime confirmation at once. **The block
+is now fully built.**
 
-The **calibration tier is done** — four slices tuned against the first live
-run's persisted dataset (run `3b21ae85`; the run completed 2026-07-31 over a
-real 47-position book with zero mechanical failures — findings in
-`docs/verification/2026-07-31-first-live-portfolio-run.md`; the model-serving
-pre-flight completed 2026-07-28, Ollama pinned v0.32.5 —
-`docs/verification/2026-07-28-m5-preflight.md`):
+### Built
 
-- the **adapter options-wiring slice** (2026-08-01) — explicit tri-state
-  per-stage `think` (F3 closed — `Some(false)` always serializes, distill
-  runs non-thinking on the verified pinned Ollama), per-mode sampling
-  profiles, per-stage `num_ctx` under the **one-`num_ctx`-per-model** rule
-  (an Ollama `num_ctx` change reloads the resident runner despite
-  `keep_alive`), `keep_alive:-1` residency including the embedder, and the
-  **step-scoped live thinking channel** (F8);
-- the **target-function calibration slice** (2026-08-01, `targets-v3` —
-  F1/F2 closed) — the **NTM consensus read** (the two nearest forward
-  fiscal-year rows blended time-weighted by twelve-month overlap, the
-  selection persisted on the target meta), the **volatility-scaled
-  widen-only dispersion floor** plus the recorded growth-clamp collapse,
-  **Stooq resilience** (typed daily-hits notice, run-wide breaker,
-  politeness pacing, the FMP dated-EOD second rung), and the **run-level
-  data-health roll-up** rendered with an attention state;
-- the **grade-band shadow-tune** (2026-08-03, `grade-v2` — F4/F5 closed) —
-  the sub-score formulas **certified exact** against run `3b21ae85`'s
-  persisted audits before any retune, the statement-input gaps closed (the
-  **TTM statement basis**, the quarterly **balance-sheet leg**, the SEC
-  **same-concept prior-year** annual fallback with latest-filed dedup, the
-  **fund facts-call skip**), the calibration surface refreshed via a
-  user-approved bounded probe, and the recentered bands user-picked off a
-  sweep — **weights and A–F cutoffs deliberately untouched** (no A letters
-  yet — META 84.0 vs the ≥ 85 cutoff — reserved for the sector-aware
-  normalization slice or the big run's evidence); evidence in
-  `docs/verification/2026-08-03-grade-band-shadow-tune.md`;
-- the **interpretation-prompt adjustments slice** (2026-08-03,
-  `portfolio-v3`) — the prompt contract described in §Local analysis suite
-  above (target provenance, the softened dead-money weighing, the conviction
-  definition, house-view scoping, the band-recalibration continuity NOTE).
+- **The cloud Market Signal Report** — the full 18-step pipeline, the agent
+  layer, vector memory and continuity, the run tracker, and whole-corpus data
+  portability.
+- **The local suite's shared substrate** — the local-model layer and its
+  Settings section, Schwab OAuth with holdings and options ingestion, the
+  deterministic holdings-snapshot diff, the Portfolio page, and the
+  Portfolio-runs history.
+- **Portfolio Analysis** — the per-holding spine, the fund path, the thesis
+  ledger, the quick check, selective re-analysis, the pre-profit overlay,
+  outcome learning, the construction stage, and the two-arm verdict.
+- **The calibration tier** — adapter options wiring, the target function, the
+  grade bands, and the interpretation-prompt contract, each tuned against the
+  first live run's persisted dataset.
+- **The pre-run correctness program** — the conformance walks and their ruling
+  rounds, the per-doc sweeps, and the long-doc-line cleanup.
 
-The **first six depth slices are done** — the **thesis ledger**
-(2026-08-03, `portfolio-v4`), the **quick check** (2026-08-03, PR #56),
-**selective re-analysis** (2026-08-04, PR #57), the **pre-profit
-overlay** (2026-08-04, PR #58), **outcome learning** (2026-08-04,
-PR #59), and the **construction stage** (2026-08-04, PR #60,
-`portfolio-v6`) — as-built contracts in
-§Local analysis suite. The ledger + sweep supplied the selective
-machinery's triggering surface (validated conditions with eval state +
-cadence tags, app-stamped monitor bands, the acknowledgment transition,
-the engine seams — `engine::resolve_series`,
-`engine::evaluate_ledger_conditions[_gated]`,
-`engine::reanchor_scenarios`); the selective slice adds the seams the
-later slices consume: per-holding vintages (`effective_vintage`), the
-persisted `action_source` vocabulary, and the subset sweep
-(`quick_check::sweep_tail`); the outcome slice adds the episode store +
-`HoldingAudit.hurdle` snapshot the calibration-proposal slice will
-consume, and reserved the episode `lean` / `lean_divergence` pair — which
-the construction stage now populates (lean divergence recorded without an
-episode-schema migration, exactly as reserved).
+### Remaining, in order
 
-**The pre-test block is built; the 2026-08-04 B-ruling batch (piece-2
-record §Rulings, `a5992f4`) queued five further pre-run slices — all
-five landed: B12 (the context-fit instrumentation) same day, B3 (the
-listing-resolution guard), B7 (the investor-profile alignment), and the
-B10+B13 card-display pair (one combined UI slice, `1bc21d2`) on
-2026-08-05.** The
-last result-review UI fix, the **section-scoped footer + report-nav
-slice**, landed 2026-08-04 (`c9b660e`, direct to main): `jobs::JobStatus`
-reshaped to per-section `report` / `portfolio` stamp groups scoped by
-`job_type` equality — both scopes on one parameterless payload, all four
-"last X" stamps scoping together, the quick-check exclusion now implicit,
-the failed-jobs warning deliberately unscoped, the run-slot fields global
-— plus the sidebar's leading **"Latest Market Report"** nav entry closing
-the Portfolio-view dead-end, and **Generate now gated report-view-only**
-via a dedicated `showGenerate` flag independent of the stamp section (the
-neutral inbox / archive / settings views keep report stamps without the
-button); internal review + two Codex rounds to convergence. (The
-Portfolio-page polish micro-slice landed the same day, `f24c852`:
-wrap-safe key-figure-strip lattice — an app-side flex-gap extension of
-the kit's single-row `.keyfig` — the card-header position block with
-price / avg cost / cost basis under the unrealized figure, sub-2%
-weight-band decimal precision, and Hold's "maintain" phrasing; one Codex
-round, the short-position finding disputed on engine-reachability
-evidence — net-short is not-rated pre-routing, so no full card pairs with
-a signed row — with its regression-case half adopted.) **Review piece 3 —
-the value-chain correctness walk — completed and merged 2026-08-06**
-(PR #63; the fix batch in §Local analysis suite above), **and its ruled
-follow-up — the ET-dating / outcome-hardening slice — built and merged
-2026-08-06** (PR #64 squash `512d5ec`; the as-built entry in §Local
-analysis suite above). The **TO docs model-decision-power audit landed
-2026-08-06** (PR #65 — five rulings: the two-arm TO repositioning,
-either-arm admission, the deferred blind-first reservation) **with the
-final TO logic sweep riding the same merge** (four incorrect-information
-fixes plus the carried-name hard-trigger ruling and its typed
-status-override divergence; five Codex review rounds to approval).
-**The Portfolio docs sweep landed 2026-08-06** — the flag-only-incorrect
-walk of `portfolio-workflow.md` Steps 1–9 + the quick check against the
-owning docs (six parallel passes with targeted code reads): six findings
-and two user rulings — the whole-book fund fold is **sector-only** (the
-country leg unbuilt by decision, though `etf/country-weightings` still
-feeds the per-holding tilt), and the investor profile reaches **no model
-call before 7b**, the loop's one read being the engine's available-cash
-sizing bound. Three Codex rounds then corrected the **option / bond
-cost-basis display contract**: the derived basis leaves the contract /
-par multiplier unapplied — an option's understated, a bond's overstated
-— so those rows withhold every cost-derived figure and sort last on
-those keys until the `averagePrice` probe settles it; four further
-claims were pushed back as out-of-charter.
-**The scoped conformance check + off-spine doc pass landed 2026-08-07**
-(PR #67) — the follow-up all four sweeps left owed, since each corrected
-docs to match code (implicitly ruling the code right) while verifying
-only the one site it cited. Twelve parallel passes: seven re-checking
-each changed behavior of the two unwalked commits across **all** paths,
-five walking the owning-doc sections no spine ever covered. Both of its
-own leads resolved **negative** — the `quarters_contiguous` call-site
-discrepancy was prose imprecision (all eight fixed-width statement
-windows are guarded), and three passes independently confirmed the
-option/bond display contract leaks nowhere. It found 26 findings with
-four cross-pass convergences; the **three Tier-1 defects are built**
-(as-built above), and 23 carried to their own ruling round, enumerated
-with `file:line` evidence in the record. **That round completed and
-merged 2026-08-07** in three batches (`859bef4` / `4ea18c8` /
-`e52a0cc`) — all 23 ruled, the run-gating twelve built first, both
-systemic classes swept whole, as-built above. Two findings were
-**pushed back and the pushback granted**: repeated true provider names
-inside one warning row are verbosity rather than incorrect information
-(the honest fix — structured items from both gates — is a
-`WarningCategory` contract change, recorded as a candidate), and
-reports' insertion order is deliberately **not portable**, a
-machine-local artifact like the re-derived `markdown_path`, so a
-clock-stepped report that survives on the source machine can be evicted
-after an import.
-Two items are recorded for a later ruling round rather than absorbed:
-the **structured warning items** above, and the Settings tree's
-**completeness** gap (`interface.md` omits two built panels — Data and
-the document-truncation diagnostics — while listing three
-designed-and-unbuilt ones), which the doc half's flag-only-incorrect
-charter excluded.
-**The long-doc-line cleanup landed 2026-08-08** (`5fde483`, direct to
-main; one Codex round to approval) — the pre-run block's last item. The
-scope question it was blocked on resolved against the obvious answer:
-multi-sentence lines are **not** the defect (0–12% of long lines — the
-corpus already satisfied sentence-per-line); sentences had absorbed
-clauses instead of the docs absorbing sentences, each ruling round
-appending "— and since <date>, X" to an existing one, leaving
-`storage.md`'s run-audit record one 6,323-character sentence carrying
-~15 separately-checkable claims. A character ceiling was **rejected** as
-the fix: breaking such a sentence at its clauses yields fragments that
-mean nothing without their neighbours, so the grep hit gets smaller and
-less useful in the same proportion — the retrievable unit has to be a
-self-contained proposition, which means splitting sentences into
-sentences, the existing convention then giving each its own line for
-free. `CLAUDE.md §Docs formatting` therefore gained a **judgment rule,
-not a ceiling** (a sentence that splits into sentences which each stand
-alone must split; a genuinely single claim needing the length is fine;
-"append a sentence, not a clause"; never satisfy it by clause-breaking),
-deliberately unenforceable by script, since a number was only ever a
-proxy for propositions-per-sentence. 99 prose lines over 1,000 chars
-were split across ten docs — >2,000 chars 23 → 5, >1,000 112 → 13 (all
-table rows, which cannot split) — every link target, identifier and
-number surviving, all 1,568 internal links resolving unchanged, and
-headings byte-identical. The **600–1,000 band is not a queued item**:
-the rule binds **on touch**, so it never returns as work competing with
-the run.
-Next: the single big confirmation run banks the
-stacked runtime confirmations above, now also carrying piece 3's probe
-set (the Schwab `averagePrice` multiplier behind the option/bond render
-suppression, `^GSPC`-mapping sufficiency, analyst-estimates page
-ordering, SEC sub-annual durations, FMP in-progress-bar behavior,
-sector-label taxonomy joins, SHV-style short-screen labels) and the
-conformance check's four (sector-P/E walk-back depth — how often the
-first candidate misses; the risk-tier distribution now that
-negative-book issuers take High, against the stacked conviction/action
-watches; priced-fund ledger flag rates once authoring and evaluation
-share the 180-day window; and the basis-flip rate when a one-quarter
-feed gap drops a holding to the SEC annual basis). Excluded from the block and still designed-not-built: the
-**live research loop** and the **held-name research refresh lane**; the
-shipped schemas don't preclude them — but the research-loop slice **must**
-add holding-identity + source-text observation validation (plus a period-
-normalization hard rule) before activating the pre-profit producer, the
-obligation recorded in `pre_profit.rs`'s validator doc comment. Two structural gaps ride the queue
-rather than any one slice: **checkpoint/resume** stays docs-promised but
-unbuilt (the ledger persists only at run end), and only the **ledger legs
-of the 6g validator** exist — the metric-level input delta / what-changed
-attribution validator remains designed, owned by no shipped slice, and now
-also gates the outcome slice's dormant legs (the standing-thesis creation
-leg and the self-correction read).
+1. **The single big confirmation run** — the gate everything else waits behind.
+   Its checklist is `docs/verification/big-run-watch-set.md`; read `data-health`
+   early, since several items resolve off that surface alone.
+2. **Trade Opportunities** — designed, not built, and waiting behind the whole
+   block. The design is settled and the paid FMP shapes are live-verified, so
+   implementation planning codes against verified shapes. Five hard-trigger
+   acceptance cases are parked for this slice and have no other home: a carried
+   pick with a deep hard trigger archives with no shadow entry; a name arriving
+   identically through all three deep-pass routes; a cheap-pass hard signal
+   raises a warning only; a debut hard trigger becomes a shadow rejection; and a
+   soft trigger caps the stand-in while preserving conviction, with no forced
+   archival.
+3. **The two remaining Portfolio depth slices** — the **live research loop** and
+   the **held-name research refresh lane**, which rides with it. The shipped
+   schemas don't preclude either, but the research loop carries the pre-profit
+   producer's activation obligation (§Standing constraints) and must discharge
+   it before connecting the producer.
+4. **The rung-order slice**, contingent on the run's evidence. Stooq now serves a
+   JS-PoW interstitial to non-JS clients, so the FMP dated-EOD rung may be de
+   facto primary. Stooq stays the primary rung by user decision, revisited only
+   on the run's data-health read; FMP re-homing is the contingent follow-up.
 
-Watches and deferrals: **Stooq now serves a
-JS-PoW interstitial to non-JS clients** (observed 2026-08-02 during the FMP light-EOD desk probe, which
-closed the adjustment-basis question — FMP's basis is Stooq's exact
-split-adjusted dividend-unadjusted convention —
-`docs/verification/2026-08-02-fmp-light-eod-adjustment-basis.md`), so the
-FMP dated-EOD rung may be de facto primary; Stooq stays the primary rung by
-user decision, revisited only on the big run's data-health evidence (a
-rung-order slice + FMP re-homing the contingent follow-up). A named,
-unscheduled **local-suite guided-setup follow-up** carries the
-Settings-slice deferrals: in-app `ollama pull` with Run-Tracker progress +
-`ollama serve` start, an Install-Ollama deep-link (needs an opener
-capability), reflecting the run-gate connectivity check in the Settings
-daemon indicator (today it reflects manual tests only — an accepted,
-recorded deviation from `interface.md §Connection status`), and embedder
-re-embed-from-content (M5-gated; today an identity change clears the local
-namespaces atomically). Still M5-gated: the fund slice's remaining drafted
-constants (the ≥ 70% coverage / US guards, tier premiums, add floors,
-CIK-cache staleness); the FMP paid-key shape checkpoint closed 2026-07-16
-(`78df109`).
+### Owned by no slice
+
+These ride the queue rather than any one slice. They are collected here because
+each is unbuilt work that no scheduled slice will pick up on its own.
+
+- **Checkpoint/resume** — docs-promised but unbuilt; the ledger persists only at
+  run end.
+- **The metric-level 6g validator** — only the ledger legs exist. The
+  input-delta and what-changed attribution validator remains designed, and now
+  also gates the outcome slice's dormant legs (the standing-thesis creation leg
+  and the self-correction read).
+- **The `hard_forensic_bar` consumer seam** — the construction spine's field is
+  producer-dormant *and* consumer-unread (nothing reads it in `feasible_actions`,
+  the digest, or validation). When the forensic producer lands, its consumer
+  seam needs wiring in the same slice.
+- **Cash-residual drawdown** — the joint-feasibility solve never draws the cash
+  residual down to fund buys; funded buys enter the implied book as external
+  growth. Inert while the fixed preset leaves cash unconstrained, this becomes a
+  real asymmetry the moment configurable profiles land, and must be built with
+  them.
+- **Configurable investor profiles** — user config for the profile preset,
+  deferred. The cash-residual drawdown above is gated on it.
+- **Paid-FMP baseline enrichment** — three additive report signals the paid key
+  unlocks (calendar consensus + surprise, historical valuation percentile/band +
+  performance trend, IPO/M&A froth), all engine-derived and outside the
+  level-delta engine.
+- **Keychain fail-soft** — a denied Keychain read currently errors the whole
+  local-config report, which the frontend fail-safes to locked triggers with no
+  local warning categories for that session. Fail-softing a failed token read to
+  not-connected is a named, unbuilt candidate.
+- **Stage-and-swap import** — a mid-import I/O failure can leave partial files
+  (the row transaction holds, and the intact archive is the retry path). The
+  hardening is named and unscheduled.
+- **The local-suite guided-setup follow-up** — the Settings deferrals: in-app
+  `ollama pull` with run-tracker progress, `ollama serve` start, an
+  Install-Ollama deep link (needs an opener capability), reflecting the run-gate
+  connectivity check in the Settings daemon indicator (today it reflects manual
+  tests only — an accepted, recorded deviation from `interface.md §Connection
+  status`), and embedder re-embed-from-content (today an identity change clears
+  the local namespaces atomically).
+
+### Awaiting a ruling
+
+Recorded rather than absorbed, each needing a decision before it becomes work:
+
+- **Structured warning items** — emitting missing credentials as structured
+  items from both gates instead of composed prose; a `WarningCategory` contract
+  change.
+- **The Settings tree's completeness gap** — `interface.md` omits two built
+  panels while listing three designed-and-unbuilt ones.
+- **Carried-audit data-health mixing** — carried audits mix prior-run retrieval
+  outcomes into the run-level counts on selective runs, so one stale
+  multiple-carry audit re-trips attention every run.
+- **Unannotated off-scale model-arm renders** — model-arm sub-scores and targets
+  are grammar-unbounded and render unannotated when off-scale; the inverted-band
+  case got a tag, off-scale values did not.
+- **The sidebar's "rated N" wording** — it reads broader than the priced-only
+  count it renders.
+- **`rate_prints.fetched_at`** — stamped with the run's `created_at` though the
+  FRED fetch precedes the per-holding loop; consumed only by a last-resort
+  fallback.
+- **A reliability rule for model sub-scores and conviction** — both arms record
+  them on the episode snapshot, but neither arm's are scored, because
+  sub-scores have no per-episode ground truth. Portfolio's scoreboard, the only
+  one built, scores the target bands (an interval scorer over each arm's
+  entry-vintage values) and the outlook-direction hit-rate; Trade Opportunities
+  is designed to the same target-band contract, unbuilt — the outlook-direction
+  read is Portfolio-only. Extending either to sub-scores and
+  conviction is a calibration-tier question neither job has settled.
+
+### Deferred by decision
+
+Manual CSV/paste import supplements holdings but is not built. The
+**sector-aware grade normalization slice** is reserved against the run's letter
+distribution. An **allocation optimizer** is deferred, not adopted. The FINRA
+and CBOE evidence legs are designed, unbuilt. Trade Opportunities' blind-first
+diagnostic is reserved diagnostic-only, its execution deliberately unspecified
+until built. The fund slice's remaining drafted constants — the coverage and US
+guards, tier premiums, add floors, and CIK-cache staleness — stay pinned until
+the run supplies evidence to move them. The **engine stand-in arm** rides the
+same rule: its outlook windows and flat thresholds, the conviction
+degradation-count mapping, the action rung rule, and the scoreboard's
+outlook-window mapping are all drafted, calibratable, and none yet calibrated
+against live evidence.
