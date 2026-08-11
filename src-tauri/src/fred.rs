@@ -2029,7 +2029,11 @@ mod tests {
         // semantics — but the fallback is bounded: a print older than the
         // anchor max age must error onto the callers' hard-fail / unknown
         // postures, never serve as a current anchor.
-        let today = chrono::Utc::now().date_naive();
+        // Dates build on the **ET session**, the basis the bound itself uses.
+        // Under `Utc::now().date_naive()` this test failed for the evening-ET
+        // hours after the UTC rollover: the fixture's stale date landed exactly
+        // on the ET-dated floor and read fresh.
+        let today = crate::market_clock::et_session_date(chrono::Utc::now());
         let recent = (today - Duration::days(2)).format("%Y-%m-%d").to_string();
         let marker = today.format("%Y-%m-%d").to_string();
         let fresh_body = format!(
