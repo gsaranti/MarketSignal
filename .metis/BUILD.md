@@ -561,7 +561,11 @@ is now fully built.**
 
 1. **The single big confirmation run** — the gate everything else waits behind.
    Its checklist is `docs/verification/big-run-watch-set.md`; read `data-health`
-   early, since several items resolve off that surface alone.
+   early, since several items resolve off that surface alone. The first attempt
+   failed at Step 7b after completing the per-holding pass, and persisted
+   nothing, so the run is itself gated on that stage carrying a whole-book plan
+   at book scale — evidence in
+   `docs/verification/2026-08-10-big-run-attempt-1.md`.
 2. **Trade Opportunities** — designed, not built, and waiting behind the whole
    block. The design is settled and the paid FMP shapes are live-verified, so
    implementation planning codes against verified shapes. Five hard-trigger

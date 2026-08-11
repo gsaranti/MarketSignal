@@ -2,29 +2,71 @@
 
 ## What happened
 
-**The INDEX.md half of the audit is done, merged and pushed** (`c713e58`). INDEX.md went 314 → 300 lines (~24.8k → ~8.3k tokens) and carries no date outside a cited filename. Both Metis-file audits are now landed; the docs corpus and its map are clean going into the run.
+**The big confirmation run was attempted and failed at Step 7b**, after 2 h 46 m and a completed
+per-holding pass, with 44 self-coherence violations across 38 symbols. **Nothing persisted** —
+checkpoint/resume is unbuilt, so every verdict, ledger, overlay and episode was discarded. Full
+analysis: `docs/verification/2026-08-10-big-run-attempt-1.md`.
 
-**The prior session's settled ruling was reversed, on evidence.** "Rewrite in place, never a prune" did not survive contact: 23 rows had a *slice, record or review batch* as their subject, and every Portfolio one already had a concept row citing the same doc sections. They were duplicated navigation wrapped around build history, so they were deleted, not shortened. Four concepts reachable *only* through a chronicle row gained rows of their own — Portfolio's two-arm verdict, grade bands + parameter versioning, ET session dating, run data-health.
+**Root cause is output-budget exhaustion, not a validator defect.** `num_ctx` 131,072 covers input
+*and* output, and `num_predict` is set nowhere in the crate. The model said so in its own reasoning
+("Token limit is tight if I output 60+ objects with full detail") and emitted a "representative
+corrected set", dropping the attribution fields the validator enforces. **The named-violation re-run
+makes this worse, not better** — it resends the full plan plus the violation list, so the recovery
+path has a bigger prompt and less output room than the attempt it rescues.
 
-**Pointers are the payload, so every revision was checked by diffing the full `file.md §section` set against the previous one.** That caught the single regression the audit could have caused — `portfolio-analysis.md §What changed`, cited only by a deleted chronicle row. Worth reusing on any future INDEX edit.
+**The attribution baseline is the *prior run's* action** (`construction.rs:1345`), not this run's
+engine read. 21 of the 26 unattributed moves are off `sell-all`, and 2026-07-31 recorded 36 sell-alls
+of 44 priced. A degenerate run therefore taxes the next run that disagrees with it — a coupling worth
+keeping in view when scoping the fix.
 
-**Three rules now sit in INDEX's header, one per review round**, because each round found the *class* after the previous fix had addressed only the cited instances: a row never states what a concept does (binding the subject as hard as the parenthetical — subjects are noun phrases, not propositions); a parenthetical only disambiguates or names the canonical section (113 glosses failed, 14 survive); and naming is not specifying.
+**Five further findings** came from the reasoning panes, each verified against code: the response
+schema is enforced but never declared (the model re-derives keys and fence-or-not every call, on the
+same shared budget); `"pre-v7 run"` leaks build vocabulary into the prompt; the holding header omits
+units and often the company name (`HOLDING: PSX ()`); the engine arm shows a lean *set* but no pick;
+and Portfolio request rows fall through `App.vue`'s report-pipeline routing into a frontend-synthesized
+"Baseline market data" step that no backend ever finishes.
+
+**User ruling: `BUILD.md` stays forward-looking** — what we are building toward, not what needs fixing.
+Fix queues live in the verification record. BUILD gained only the gating fact on §Remaining item 1.
 
 ## Current state
 
-Nothing in flight. Tree clean, `main` == `origin/main` at `c713e58`, no other branches.
+Nothing in flight. **The run is blocked on the 7b repair** — a repeat attempt would hit the same wall
+on a more constrained path.
 
-Queue: **the big confirmation run** — the gate everything else waits behind. The locked pre-test block is fully built; nothing in `BUILD.md §Remaining` sits ahead of it.
+Fix candidates are scoped with code references in the record, in recovery-value order: persist a run
+whose construction fails (`roll_up.construction`/`.aggregates` are already `Option`, so the record
+shape already admits it — but this contradicts §Step 7b and needs a ruling first); send the re-run only
+the violating names; compress the construction digest; reserve output explicitly. The prompt fixes are
+all in `pipeline.rs` and cheap; the routing fix is one default in `App.vue:196`.
 
-**Gates were not run this session and could not be** — the change was `.metis/INDEX.md`-only. The last recorded green set is from `98483fa` (cargo 1050 / 0 failed / 28 ignored, clippy clean, `npm run build` clean, 46 node + 225 vitest). Re-run in full before the next code commit rather than trusting that line.
+**Confirmed despite the failure:** 128 K runner stability across 2 h 46 m — one runner, 131072, 100 %
+GPU, `Forever`, no reload or spill. 98 % of wall-clock was model time (95 chat calls).
 
-**Open items live in BUILD.md, not here** — §Remaining in order, §Owned by no slice, §Awaiting a ruling, §Deferred by decision. The run's checklist is `docs/verification/big-run-watch-set.md`. Don't re-list either here.
+**Dev DB is deliberately unchanged** — still only the 07-31 run, whose pre-`grade-v2.1` stamp is the
+only input exercising the band-recalibration continuity path.
+
+**Session-scoped evidence will be lost:** 120 tracker captures, the Ollama server log (the most durable
+artifact a failed run leaves), and `analyze-run.sh` — the 13-section watch-set analyzer, already
+smoke-proven against the v2 run. Copy out of the scratchpad if any should survive.
 
 ## Open questions
 
-- **Live-evidence caveat** — the sector-P/E walk-back's "holidays serve carried values" warrant rests on the adapter's recorded 2026-07-16 verification, not re-probed. If invalidated, the cardinality claim moves with it.
-- **Is the FMP dated-EOD rung de facto primary?** Stooq now serves a JS-PoW interstitial to non-JS clients. Stooq stays the primary rung by user decision; the run's `data-health` read is what decides the contingent rung-order slice.
+- **Should persisting 7b incoherence stop being run-terminal?** §Step 7b currently ties it to a hard
+  model failure, so persisting a degraded run is a spec change, not just a code change.
+- **Should the current engine arm's chosen stand-in be shown at Step 6f?** The prior run's pick is
+  rendered but this run's is not; showing it may anchor the model arm against `portfolio-v7`'s intent.
+- **Were this run's engine targets degenerate?** The one sample (SBUX) was steeply *bearish*, not flat
+  — 12m base 34 % below spot — which is a different shape from the 07-31 flat-target syndrome. Nothing
+  persisted to settle it.
+- **Is the FMP dated-EOD rung de facto primary?** Still unresolved: `data-health` never persisted.
+- **Live-evidence caveat** — the sector-P/E walk-back's "holidays serve carried values" warrant rests
+  on the adapter's recorded 2026-07-16 verification, not re-probed.
 
 ## Where to start
 
-Run the **big confirmation run**. Drive the dev app by process name (`market-signal`), never `tell application`. Read `data-health` **early** — several watch-set items resolve off that surface alone, and the run banks every stacked confirmation at once, so a missed read costs a repeat run. Work against `docs/verification/big-run-watch-set.md`, grouped by producing surface. Findings go into a new dated record under `docs/verification/`, which the watch set is the index of.
+Rule the **persist-on-failure question** first — it is the one change that converts a failed attempt
+from a total loss, and everything else is cheaper than re-running blind. Then take the output-budget
+fix (re-run only violating names, compress the digest), the `pipeline.rs` prompt fixes, and the
+`App.vue` routing fix. Only re-attempt the run once 7b can carry a whole-book plan at book scale; read
+`data-health` early when it happens.
