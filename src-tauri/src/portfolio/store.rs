@@ -437,6 +437,18 @@ pub fn latest_run(conn: &Connection) -> Result<Option<PortfolioRun>> {
         match serde_json::from_str::<PortfolioRun>(&json) {
             Ok(mut run) => {
                 run.resolve_constructed();
+                // Belt over the SQL filter: the column is the eligibility
+                // accelerator, the blob is truth. Every write path mirrors the
+                // predicate, so a desynced row means a hand edit or a future
+                // write-path bug — either way it must not hand out a degraded
+                // baseline, so it skips loudly like a corrupt row.
+                if !run.has_constructed_book() {
+                    eprintln!(
+                        "[portfolio-store] latest_run: skipping {run_id}: the column \
+                         says constructed, the blob says degraded"
+                    );
+                    continue;
+                }
                 return Ok(Some(run));
             }
             Err(e) => {
@@ -537,8 +549,12 @@ pub fn run_by_id(conn: &Connection, run_id: &str) -> Result<Option<PortfolioRun>
 /// refuse honestly (a "no runs yet" message over persisted work misdescribes
 /// the store).
 pub fn any_runs(conn: &Connection) -> Result<bool> {
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM portfolio_runs", [], |r| r.get(0))?;
-    Ok(n > 0)
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM portfolio_runs)",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(exists)
 }
 
 /// Prune runs beyond the newest `keep`, oldest first — the per-feature retention
@@ -955,6 +971,29 @@ mod tests {
         )
         .unwrap();
         let latest = latest_run(&conn).unwrap().expect("the older constructed run is served");
+        assert_eq!(latest.run_id, "run-good");
+    }
+
+    #[test]
+    fn latest_run_skips_a_row_whose_column_and_blob_disagree() {
+        // No write path produces this (insert, migration, and import all
+        // mirror the blob's predicate into the column) — but the blob is
+        // truth, so a hand-edited or future-bug desync must not hand out a
+        // degraded baseline on the column's word alone.
+        let conn = mem();
+        record_run(&conn, &constructed_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
+        let degraded = degraded_run("run-desynced", "2026-08-11T00:00:00Z");
+        conn.execute(
+            "INSERT INTO portfolio_runs (run_id, created_at, run_json, constructed) \
+             VALUES (?1, ?2, ?3, 1)",
+            params![
+                degraded.run_id,
+                degraded.created_at,
+                serde_json::to_string(&degraded).unwrap()
+            ],
+        )
+        .unwrap();
+        let latest = latest_run(&conn).unwrap().expect("the honest older run is served");
         assert_eq!(latest.run_id, "run-good");
     }
 
