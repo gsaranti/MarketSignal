@@ -1614,6 +1614,23 @@ fn parse_action(s: &str) -> Option<Action> {
 /// transition / reduced spine) renders into the prompt as the engine arm's own
 /// read, an outside-the-set rung persisting with an engine-bound annotation,
 /// never a schema bar (`docs/portfolio-workflow.md` §Step 7b).
+/// The fields the model must return for **every** holding in the plan. The schema's
+/// per-holding `required` set is built from this list and the prompt-declaration test
+/// reads it, so a field added here fails that test until the prompt declares it —
+/// the drift Finding 2 describes, closed structurally rather than by discipline
+/// (`docs/verification/2026-08-10-big-run-attempt-1.md`).
+pub const PER_HOLDING_PLAN_KEYS: [&str; 9] = [
+    "action",
+    "target_weight_low",
+    "target_weight_high",
+    "rationale",
+    "divergence_cause",
+    "divergence_note",
+    "changed_attribution",
+    "changed_cause",
+    "changed_note",
+];
+
 pub fn construction_schema(spine: &[SizingSpineRow]) -> Value {
     let causes = ["became-oversized", "overlap-emerged", "cash-freed"];
     let mut cause_or_null: Vec<Value> = causes.iter().map(|c| json!(c)).collect();
@@ -1653,11 +1670,7 @@ pub fn construction_schema(spine: &[SizingSpineRow]) -> Value {
                     "changed_cause": { "type": ["string", "null"], "enum": cause_or_null },
                     "changed_note": { "type": ["string", "null"] }
                 },
-                "required": [
-                    "action", "target_weight_low", "target_weight_high", "rationale",
-                    "divergence_cause", "divergence_note",
-                    "changed_attribution", "changed_cause", "changed_note"
-                ]
+                "required": PER_HOLDING_PLAN_KEYS
             }),
         );
         required_symbols.push(json!(row.symbol));

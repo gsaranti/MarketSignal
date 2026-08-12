@@ -490,8 +490,10 @@ Each finding's own section carries any correction to its scope, found while buil
 
 ### Built — 2026-08-11
 
-- **Findings 2, 3, 4 and 6**, verified against the full gate (1018 lib + 32 integration tests, clippy
-  clean at `--all-targets --all-features`, `npm run build` clean, 46 node + 225 vitest).
+- **Findings 2, 3, 4 and 6**, verified against the full gate (1020 lib + 32 integration tests, clippy
+  clean at `--all-targets --all-features`, `npm run build` clean, 46 node + 227 vitest).
+  The lib and vitest counts are higher than §Environment's pre-run gate because this work added the
+  regression tests below; that earlier line stays at its historical 1018 / 225.
   All three undeclared-schema closers now name their exact keys and state that the format is enforced.
   The two holding-header sites share one helper that marks the money figures as dollar totals and falls
   back to the threaded profile name.

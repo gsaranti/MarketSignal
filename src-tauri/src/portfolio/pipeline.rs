@@ -3725,6 +3725,9 @@ mod tests {
         assert!(line.contains("INCREASED"), "{line}");
         assert!(line.contains("100") && line.contains("140"), "quantity move: {line}");
         assert!(line.contains("14000") && line.contains("19500"), "cost-basis move: {line}");
+        // Dollar-marked like the header this line sits under: bare integers here read
+        // as per-share against a header that says total (Finding 4).
+        assert!(line.contains("$14000") && line.contains("$19500 total"), "units: {line}");
         assert_eq!(
             describe_position_change(&PositionDelta::new_position(), 10.0, 1_000.0),
             "NEW (not held last run)"
@@ -5296,31 +5299,51 @@ mod tests {
 
     /// Finding 2: each grammar-constrained call declares the object it is enforced
     /// to produce, so the model does not re-derive the key set on the shared budget.
+    /// The required-key list is read off each schema rather than restated here, so a
+    /// field added to a grammar fails this test until its prompt declares it. A
+    /// hand-copied list would drift silently, which is the whole defect Finding 2
+    /// describes: a contract enforced in one place and unstated in the other.
+    fn required_keys(schema: &serde_json::Value) -> Vec<String> {
+        schema["required"]
+            .as_array()
+            .expect("every schema pins its required set")
+            .iter()
+            .map(|k| k.as_str().expect("required entries are strings").to_string())
+            .collect()
+    }
+
+    /// Guards the loops below against reading an empty set and passing vacuously.
+    fn non_empty(keys: Vec<String>, what: &str) -> Vec<String> {
+        assert!(!keys.is_empty(), "{what} declared no required keys");
+        keys
+    }
+
     #[test]
     fn every_constrained_prompt_declares_its_own_response_keys() {
         let priced = interpretation_system_prompt();
-        for key in [
-            "action", "conviction", "horizon_outlook", "financial_summary",
-            "price_target_rationale", "what_changed", "ledger", "model_sub_scores",
-            "model_price_targets", "self_assessment",
-        ] {
-            assert!(priced.contains(key), "priced prompt omits `{key}`");
+        for key in non_empty(required_keys(&crate::portfolio::interpretation_schema()), "priced") {
+            assert!(priced.contains(&key), "priced prompt omits `{key}`");
         }
 
         let role = role_risk_system_prompt();
-        for key in ["role_summary", "what_changed", "ledger"] {
-            assert!(role.contains(key), "role-risk prompt omits `{key}`");
+        for key in non_empty(
+            required_keys(&crate::portfolio::role_risk_interpretation_schema()),
+            "role-risk",
+        ) {
+            assert!(role.contains(&key), "role-risk prompt omits `{key}`");
         }
         // The branch carries no action of its own — declaring one would invite it.
         assert!(!role.contains("model_price_targets"), "{role}");
 
+        // Construction is keyed by ticker, so both levels are declared: the envelope
+        // and the per-holding object the model repeats for every symbol.
+        let spine_schema = crate::portfolio::construction::construction_schema(&[]);
         let build = crate::portfolio::construction::construction_system_prompt();
-        for key in [
-            "holdings", "risk_posture", "deployment_stance", "concentration_read",
-            "closed_positions_note", "target_weight_low", "target_weight_high",
-            "changed_attribution", "changed_cause", "divergence_cause",
-        ] {
-            assert!(build.contains(key), "construction prompt omits `{key}`");
+        for key in non_empty(required_keys(&spine_schema), "construction envelope") {
+            assert!(build.contains(&key), "construction prompt omits `{key}`");
+        }
+        for key in crate::portfolio::construction::PER_HOLDING_PLAN_KEYS {
+            assert!(build.contains(key), "construction prompt omits per-holding `{key}`");
         }
 
         // The internal build vocabulary of Finding 3 stays out of every prompt.
