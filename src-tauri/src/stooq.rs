@@ -168,7 +168,15 @@ impl StooqSource {
         })();
         if let Err(e) = &result {
             if e.downcast_ref::<StooqThrottled>().is_some() {
-                self.throttled.store(true, Ordering::Relaxed);
+                // The breaker trip is otherwise traceless outside per-holding
+                // gap strings, which die with an unpersisted run — and the
+                // skipped fetches behind the breaker emit no tracker row at all.
+                if !self.throttled.swap(true, Ordering::Relaxed) {
+                    eprintln!(
+                        "Stooq: daily-hits throttle detected on {symbol} — remaining Stooq \
+                         fetches this run fail fast to the FMP fallback rung"
+                    );
+                }
             }
         }
         match &result {

@@ -119,6 +119,46 @@ pub trait ProgressReporter: Send + Sync {
     fn report(&self, message: &ProgressMessage);
 }
 
+/// One stderr line per run / step / request event — the durable diagnostic trace
+/// a failed run leaves even when nothing persists. The tracker's rows are
+/// render-only (the Tauri reporter emits to a window that may not be listening,
+/// and nothing is stored), so before this tee a 2h46m failed run left a 17-line
+/// app log with no adapter trace and the failure analysis rested on screenshots
+/// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Residue). Token and
+/// thinking deltas are deliberately skipped — high-frequency stream chatter, not
+/// run structure.
+fn tee_to_stderr(run_id: &str, event: &ProgressEvent) {
+    match event {
+        ProgressEvent::RunStarted { label } => {
+            eprintln!("[run {run_id}] started: {label}");
+        }
+        ProgressEvent::StepStarted { step, label } => {
+            eprintln!("[run {run_id}] step {step}: started ({label})");
+        }
+        ProgressEvent::StepFinished { step, status, detail } => match detail {
+            Some(d) => eprintln!("[run {run_id}] step {step}: {status} — {d}"),
+            None => eprintln!("[run {run_id}] step {step}: {status}"),
+        },
+        ProgressEvent::RequestStarted { provider, group, series_id, .. } => {
+            eprintln!("[run {run_id}] {provider} {group}/{series_id}: sent");
+        }
+        ProgressEvent::RequestFinished { provider, group, series_id, status, detail, .. } => {
+            match detail {
+                Some(d) => eprintln!("[run {run_id}] {provider} {group}/{series_id}: {status} — {d}"),
+                None => eprintln!("[run {run_id}] {provider} {group}/{series_id}: {status}"),
+            }
+        }
+        ProgressEvent::RunFinished { status, detail, .. } => match detail {
+            Some(d) => eprintln!("[run {run_id}] finished: {status} — {d}"),
+            None => eprintln!("[run {run_id}] finished: {status}"),
+        },
+        ProgressEvent::AgentToken { .. }
+        | ProgressEvent::AgentThinking { .. }
+        | ProgressEvent::AnalystThinking { .. }
+        | ProgressEvent::StepThinking { .. } => {}
+    }
+}
+
 /// Drops every event. The default reporter for tests and offline smokes.
 pub struct NoopReporter;
 
@@ -185,8 +225,11 @@ impl RunContext {
     }
 
     /// Stamp an event with the run id and the next sequence, then hand it to the
-    /// reporter. The single choke point every helper below routes through.
+    /// reporter. The single choke point every helper below routes through — and
+    /// the stderr tee's one home, so every job's run structure leaves a durable
+    /// trace regardless of which reporter is attached.
     fn emit(&self, event: ProgressEvent) {
+        tee_to_stderr(&self.run_id, &event);
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         self.reporter.report(&ProgressMessage {
             run_id: self.run_id.clone(),

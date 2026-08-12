@@ -1175,9 +1175,48 @@ fn run_analysis(
         exited: &holdings_diff.exited,
         house_view: &house_view,
         profile,
-        violations: None,
+        repair: None,
     };
-    let draft = analyst.construct(&construction_input)?;
+    // Any construction-stage failure after the completed per-holding pass persists
+    // the degraded row before the run fails (ruled 2026-08-11, extended the same
+    // day to construct *errors* — a schema parse failure is exactly what an
+    // output truncation becomes, and an HTTP/stream error discards the same
+    // completed pass). A cancel is not a failure and leaves no row; the outer
+    // wrapper maps it via the shared flag.
+    macro_rules! construct_or_persist_degraded {
+        ($call:expr) => {
+            match $call {
+                Ok(d) => d,
+                Err(e) => {
+                    if ctx.is_cancelled() {
+                        return Err(e);
+                    }
+                    ctx.step_finished(
+                        construction_step,
+                        "failed",
+                        Some(format!("{e:#}")),
+                    );
+                    persist_degraded_run(
+                        conn,
+                        &created_at,
+                        holdings,
+                        verdicts,
+                        audits,
+                        aggregates,
+                        &holdings_diff.exited,
+                        deep_history_failures,
+                        deep_history_fallbacks,
+                        rates.history_gap.is_some(),
+                        house_view_omitted,
+                        analyst.take_prompt_usage(),
+                        &rates,
+                    );
+                    return Err(e.context("portfolio construction call failed"));
+                }
+            }
+        };
+    }
+    let draft = construct_or_persist_degraded!(analyst.construct(&construction_input));
     let (mut validated, retried) = match crate::portfolio::construction::validate_construction(
         &draft,
         &aggregates,
@@ -1186,16 +1225,40 @@ fn run_analysis(
     ) {
         Ok(v) => (v, false),
         Err(violations) => {
-            // The single named-violation re-run — the same model-proposes /
-            // app-validates seam as the continuity check.
+            // The single named-violation repair re-run — the same model-proposes /
+            // app-validates seam as the continuity check, scoped to the violating
+            // names: the model returns corrected objects for those holdings only
+            // (the narrowed schema demands nothing else), the corrections overlay
+            // the first draft, and the merged plan re-validates **whole** — the
+            // implied weights are book-coupled, so a repair can shift every
+            // holding's containment, not just the named ones.
             if ctx.is_cancelled() {
                 anyhow::bail!("run cancelled");
             }
             let named: Vec<String> = violations.iter().map(|v| format!("- {v}")).collect();
-            construction_input.violations = Some(named.join("\n"));
-            let second = analyst.construct(&construction_input)?;
+            let scope =
+                crate::portfolio::construction::repair_scope(&violations, &aggregates.spine);
+            let corrected = if scope.is_empty() {
+                // Every violation names a non-spine key — droppable
+                // deterministically by the overlay, no model call needed.
+                std::collections::BTreeMap::new()
+            } else {
+                construction_input.repair =
+                    Some(crate::portfolio::construction::ConstructionRepair {
+                        symbols: scope.clone(),
+                        violations: named.join("\n"),
+                        prior_plan: crate::portfolio::construction::render_prior_plan(&draft),
+                    });
+                construct_or_persist_degraded!(analyst.construct(&construction_input)).holdings
+            };
+            let merged = crate::portfolio::construction::overlay_repair(
+                &draft,
+                corrected,
+                &aggregates.spine,
+                &scope,
+            );
             match crate::portfolio::construction::validate_construction(
-                &second,
+                &merged,
                 &aggregates,
                 &holdings,
                 profile,
@@ -1205,61 +1268,21 @@ fn run_analysis(
                     let msg: Vec<String> = persisting.iter().map(|v| v.to_string()).collect();
                     let msg = msg.join("; ");
                     ctx.step_finished(construction_step, "failed", Some(msg.clone()));
-                    // Persist the completed per-holding work as a **degraded** run
-                    // before failing (ruled 2026-08-11,
-                    // `docs/verification/2026-08-10-big-run-attempt-1.md`
-                    // §Disposition): the run's terminal state stays failed — the
-                    // bail below still records the failed-job row — but the
-                    // verdicts, audits and 7a aggregates survive as a
-                    // `portfolio_runs` row with no constructed book, listed in
-                    // the history and excluded from `latest_run`
-                    // (`PortfolioRun::has_constructed_book`). No merge ran, so
-                    // each verdict's action is its pre-construction value — a
-                    // fresh row's standalone lean, a carried row's carried
-                    // action, a role-risk placeholder; the outcome pass is skipped
-                    // — episodes anchor decisions, and no final decisions exist.
-                    let mut roll_up = build_roll_up(
-                        &holdings,
-                        &verdicts,
+                    persist_degraded_run(
+                        conn,
+                        &created_at,
+                        holdings,
+                        verdicts,
+                        audits,
+                        aggregates,
                         &holdings_diff.exited,
-                        &audits,
                         deep_history_failures,
                         deep_history_fallbacks,
                         rates.history_gap.is_some(),
                         house_view_omitted,
                         analyst.take_prompt_usage(),
+                        &rates,
                     );
-                    roll_up.aggregates = Some(aggregates);
-                    let degraded = PortfolioRun {
-                        run_id: uuid::Uuid::new_v4().to_string(),
-                        created_at: created_at.clone(),
-                        holdings,
-                        verdicts,
-                        roll_up,
-                        audit: audits,
-                        rate_prints: Some(crate::portfolio::RatePrints {
-                            dgs2: rates.dgs2,
-                            dgs10: rates.dgs10,
-                            dgs2_as_of: rates.dgs2_date.clone(),
-                            dgs10_as_of: rates.dgs10_date.clone(),
-                            fetched_at: created_at.clone(),
-                        }),
-                        outcome: None,
-                    };
-                    // Insert + prune land atomically, matching the success
-                    // path's transactional persist. Best-effort either way: a
-                    // persist failure must not mask the construction error the
-                    // run is failing on.
-                    let persisted = conn
-                        .unchecked_transaction()
-                        .map_err(anyhow::Error::new)
-                        .and_then(|tx| {
-                            store::record_run(&tx, &degraded)?;
-                            tx.commit().map_err(anyhow::Error::new)
-                        });
-                    if let Err(pe) = persisted {
-                        eprintln!("portfolio construction: degraded-run persist failed: {pe}");
-                    }
                     anyhow::bail!(
                         "portfolio construction jointly infeasible after the named-violation \
                          re-run: {msg}"
@@ -1574,6 +1597,77 @@ fn build_roll_up(
     }
 }
 
+/// Persist a construction-failed run's completed per-holding work as a
+/// **degraded** row before the run fails (ruled 2026-08-11,
+/// `docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition — extended
+/// the same slice to any Step-7b construction-call failure, not just persisting
+/// incoherence): the run's terminal state stays failed — the caller still
+/// records the failed-job row — but the verdicts, audits and 7a aggregates
+/// survive as a `portfolio_runs` row with no constructed book, listed in the
+/// history and excluded from `latest_run`
+/// (`PortfolioRun::has_constructed_book`). No merge ran, so each verdict's
+/// action is its pre-construction value — a fresh row's standalone lean, a
+/// carried row's carried action, a role-risk placeholder; the outcome pass is
+/// skipped — episodes anchor decisions, and no final decisions exist.
+/// Insert + prune land atomically, matching the success path's transactional
+/// persist. Best-effort: a persist failure must not mask the construction error
+/// the run is failing on.
+#[allow(clippy::too_many_arguments)]
+fn persist_degraded_run(
+    conn: &Connection,
+    created_at: &str,
+    holdings: Holdings,
+    verdicts: Vec<HoldingVerdict>,
+    audits: Vec<HoldingAudit>,
+    aggregates: crate::portfolio::construction::BookAggregates,
+    exited: &[ExitedPosition],
+    deep_history_failures: usize,
+    deep_history_fallbacks: usize,
+    dgs10_history_gap: bool,
+    house_view_omitted: bool,
+    prompt_usage: Vec<crate::local_model::PromptUsage>,
+    rates: &crate::portfolio::engine::RateAnchors,
+) {
+    let mut roll_up = build_roll_up(
+        &holdings,
+        &verdicts,
+        exited,
+        &audits,
+        deep_history_failures,
+        deep_history_fallbacks,
+        dgs10_history_gap,
+        house_view_omitted,
+        prompt_usage,
+    );
+    roll_up.aggregates = Some(aggregates);
+    let degraded = PortfolioRun {
+        run_id: uuid::Uuid::new_v4().to_string(),
+        created_at: created_at.to_string(),
+        holdings,
+        verdicts,
+        roll_up,
+        audit: audits,
+        rate_prints: Some(crate::portfolio::RatePrints {
+            dgs2: rates.dgs2,
+            dgs10: rates.dgs10,
+            dgs2_as_of: rates.dgs2_date.clone(),
+            dgs10_as_of: rates.dgs10_date.clone(),
+            fetched_at: created_at.to_string(),
+        }),
+        outcome: None,
+    };
+    let persisted = conn
+        .unchecked_transaction()
+        .map_err(anyhow::Error::new)
+        .and_then(|tx| {
+            store::record_run(&tx, &degraded)?;
+            tx.commit().map_err(anyhow::Error::new)
+        });
+    if let Err(pe) = persisted {
+        eprintln!("portfolio construction: degraded-run persist failed: {pe}");
+    }
+}
+
 /// Aggregate the run-level data-health read from the per-holding audits' typed
 /// `target_meta` plus the run-scoped deep-history counters — no string matching on
 /// gap notes. `attention` marks *infrastructure* degradation (a failed deep-history
@@ -1641,6 +1735,15 @@ fn build_data_health(
         .filter(|u| u.num_ctx > 0)
         .max_by(|a, b| fill(a).total_cmp(&fill(b)))
         .cloned();
+    // The output-budget read (`num_predict` — `docs/verification/
+    // 2026-08-10-big-run-attempt-1.md` §Fix candidates 4): a length stop
+    // already failed its call typed, and the observation lands here so the
+    // run-level surface names it too — a degraded run's roll-up carries it.
+    let output_limited: Vec<crate::local_model::PromptUsage> = prompt_usage
+        .iter()
+        .filter(|u| u.output_limited)
+        .cloned()
+        .collect();
     let context_pressure: Vec<crate::local_model::PromptUsage> = prompt_usage
         .into_iter()
         .filter(|u| {
@@ -1648,6 +1751,38 @@ fn build_data_health(
                 && (fill(u) >= crate::portfolio::CONTEXT_PRESSURE_FRACTION || truncated(u))
         })
         .collect();
+    if let Some(worst) = output_limited
+        .iter()
+        .max_by_key(|u| u.completion_tokens.unwrap_or(0))
+    {
+        // `done_reason: "length"` covers two stops with different levers — the
+        // call's own output reservation, or the shared context filling first —
+        // so the line says which one the worst row's counts show.
+        let at_reservation = matches!(
+            (worst.completion_tokens, worst.num_predict),
+            (Some(g), Some(r)) if g >= u64::from(r)
+        );
+        parts.push(format!(
+            "generation length-stopped on {} local call{} (worst: {} generated {} of {} \
+             reserved — {})",
+            output_limited.len(),
+            if output_limited.len() == 1 { "" } else { "s" },
+            worst.stage,
+            worst
+                .completion_tokens
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "unreported".into()),
+            worst
+                .num_predict
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "unset".into()),
+            if at_reservation {
+                "at the output reservation"
+            } else {
+                "under it; context exhaustion suspected"
+            },
+        ));
+    }
     let truncation_suspects: Vec<&crate::local_model::PromptUsage> =
         context_pressure.iter().filter(|u| truncated(u)).collect();
     if let Some(worst) = truncation_suspects
@@ -1686,7 +1821,8 @@ fn build_data_health(
     let attention = deep_history_failures > deep_history_fallbacks
         || carry > 0
         || dgs10_history_gap
-        || !context_pressure.is_empty();
+        || !context_pressure.is_empty()
+        || !output_limited.is_empty();
     let summary = if parts.is_empty() {
         "no priced targets this run".to_string()
     } else {
@@ -1793,12 +1929,18 @@ mod tests {
                 prompt_tokens: 50_000,
                 num_ctx: 131_072,
                 prompt_chars: 200_000,
+                completion_tokens: None,
+                num_predict: None,
+                output_limited: false,
             },
             crate::local_model::PromptUsage {
                 stage: "construction".into(),
                 prompt_tokens: 125_000,
                 num_ctx: 131_072,
                 prompt_chars: 500_000,
+                completion_tokens: None,
+                num_predict: None,
+                output_limited: false,
             },
         ];
         let dh = build_data_health(&[], 0, 0, false, false, usage);
@@ -1818,6 +1960,9 @@ mod tests {
             prompt_tokens: 90_000,
             num_ctx: 131_072,
             prompt_chars: 360_000,
+            completion_tokens: None,
+            num_predict: None,
+            output_limited: false,
         }];
         let dh = build_data_health(&[], 0, 0, false, false, usage);
         assert!(dh.context_pressure.is_empty());
@@ -1825,6 +1970,28 @@ mod tests {
         assert_eq!(peak.prompt_tokens, 90_000);
         assert!(!dh.attention, "{}", dh.summary);
         assert!(!dh.summary.contains("context pressure"), "{}", dh.summary);
+    }
+
+    /// The output-budget line: a `done_reason: "length"` observation is named in
+    /// the summary with the stage and counts, and trips attention — the
+    /// run-level surface of the typed per-call truncation error.
+    #[test]
+    fn data_health_names_an_output_limited_call() {
+        let usage = vec![crate::local_model::PromptUsage {
+            stage: "construction".into(),
+            prompt_tokens: 60_000,
+            num_ctx: 131_072,
+            prompt_chars: 240_000,
+            completion_tokens: Some(65_536),
+            num_predict: Some(65_536),
+            output_limited: true,
+        }];
+        let dh = build_data_health(&[], 0, 0, false, false, usage);
+        assert!(dh.attention, "{}", dh.summary);
+        let expected =
+            "generation length-stopped on 1 local call (worst: construction generated 65536 of \
+             65536 reserved — at the output reservation)";
+        assert!(dh.summary.contains(expected), "{}", dh.summary);
     }
 
     /// The demonstrated truncation signature
@@ -1839,6 +2006,9 @@ mod tests {
             prompt_tokens: 1_026,
             num_ctx: 2_048,
             prompt_chars: 18_400,
+            completion_tokens: None,
+            num_predict: None,
+            output_limited: false,
         }];
         let dh = build_data_health(&[], 0, 0, false, false, usage);
         assert_eq!(dh.context_pressure.len(), 1);
@@ -4104,10 +4274,11 @@ mod tests {
 
     /// A construction analyst that sabotages its drafts: always on `fail_both`,
     /// else only the violation-free first attempt — recording each call's
-    /// violations input so the named re-run is observable.
+    /// repair input (violations text + scope) so the named re-run is observable.
     struct RogueConstruction {
         fail_both: bool,
         calls: std::cell::RefCell<Vec<Option<String>>>,
+        repair_scopes: std::cell::RefCell<Vec<Vec<String>>>,
     }
 
     impl HoldingAnalyst for RogueConstruction {
@@ -4134,13 +4305,23 @@ mod tests {
             &self,
             input: &crate::portfolio::pipeline::ConstructionInput,
         ) -> Result<crate::portfolio::construction::ConstructionDraft> {
-            self.calls.borrow_mut().push(input.violations.clone());
+            self.calls
+                .borrow_mut()
+                .push(input.repair.as_ref().map(|r| r.violations.clone()));
+            if let Some(r) = &input.repair {
+                self.repair_scopes.borrow_mut().push(r.symbols.clone());
+            }
             let mut draft = StubAnalyst.construct(input)?;
-            if self.fail_both || input.violations.is_none() {
+            if self.fail_both || input.repair.is_none() {
                 if let Some(p) = draft.holdings.get_mut("AAPL") {
-                    // A hold range far outside the rung's engine band.
-                    p.target_weight_low = 0.90;
-                    p.target_weight_high = 0.95;
+                    // A sell-all with a non-zero range: the enforced 0–0
+                    // self-coherence rail, tripped on exactly one name. (A
+                    // weight-range distortion would couple through the implied
+                    // book and legitimately trip MSFT's containment too, so it
+                    // can't pin a single-name repair scope.)
+                    p.action = "sell-all".to_string();
+                    p.target_weight_low = 0.10;
+                    p.target_weight_high = 0.12;
                 }
             }
             Ok(draft)
@@ -4156,6 +4337,7 @@ mod tests {
         let analyst = RogueConstruction {
             fail_both: false,
             calls: Default::default(),
+            repair_scopes: Default::default(),
         };
         let run = match run_portfolio_job(
             &FixtureHoldingsSource::with_holdings(two_stocks()),
@@ -4179,14 +4361,183 @@ mod tests {
         assert!(calls[0].is_none());
         let named = calls[1].as_deref().expect("the re-run names the violations");
         assert!(named.contains("AAPL"), "{named}");
-        // The rogue range trips the coherence check (the implied weight falls
-        // outside the stated range) — the engine-band departure itself only
-        // annotates under v7 and never drives the re-run.
-        assert!(named.contains("does not hold simultaneously"), "{named}");
+        // The rogue proposal trips a self-coherence rail (the sell-all 0–0
+        // range) — the enforced family; engine-bound departures only annotate
+        // under v7 and never drive the re-run.
+        assert!(named.contains("sell-all target range must be 0"), "{named}");
+        // The repair is scoped to the violating name alone: the re-run demands
+        // a corrected object for AAPL only, and MSFT keeps its first-draft
+        // proposal through the overlay.
+        assert_eq!(
+            analyst.repair_scopes.borrow().as_slice(),
+            &[vec!["AAPL".to_string()]],
+            "the repair scope names only the violating symbol"
+        );
         assert!(
             run.roll_up.construction.as_ref().unwrap().retried,
             "the view records the re-run"
         );
+    }
+
+    /// A first draft whose only violation is a non-spine key: the repair is
+    /// deterministic — the overlay drops the key with **no** second model call —
+    /// and the run succeeds with the repair pass recorded.
+    struct ExtraKeyConstruction {
+        calls: std::cell::RefCell<usize>,
+    }
+
+    impl HoldingAnalyst for ExtraKeyConstruction {
+        fn distill(
+            &self,
+            d: &crate::portfolio::dossier::HoldingDossier,
+            f: &crate::portfolio::pipeline::ResearchFindings,
+        ) -> Result<String> {
+            StubAnalyst.distill(d, f)
+        }
+        fn interpret(
+            &self,
+            input: &crate::portfolio::pipeline::InterpretationInput,
+        ) -> Result<crate::portfolio::Interpretation> {
+            StubAnalyst.interpret(input)
+        }
+        fn interpret_role_risk(
+            &self,
+            input: &crate::portfolio::pipeline::RoleRiskInput,
+        ) -> Result<crate::portfolio::RoleRiskInterpretation> {
+            StubAnalyst.interpret_role_risk(input)
+        }
+        fn construct(
+            &self,
+            input: &crate::portfolio::pipeline::ConstructionInput,
+        ) -> Result<crate::portfolio::construction::ConstructionDraft> {
+            *self.calls.borrow_mut() += 1;
+            let mut draft = StubAnalyst.construct(input)?;
+            let filler = draft
+                .holdings
+                .values()
+                .next()
+                .expect("the stub proposes every spine row")
+                .clone();
+            draft.holdings.insert("ZZZT".into(), filler);
+            Ok(draft)
+        }
+        fn model_ids(&self) -> Vec<String> {
+            vec!["extra-key-construction".into()]
+        }
+    }
+
+    #[test]
+    fn an_unknown_key_violation_repairs_deterministically_without_a_model_call() {
+        let (_dir, paths) = paths();
+        let analyst = ExtraKeyConstruction {
+            calls: Default::default(),
+        };
+        let run = match run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &analyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap()
+        {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success after the deterministic drop, got {other:?}"),
+        };
+        assert_eq!(
+            *analyst.calls.borrow(),
+            1,
+            "a non-spine key is dropped app-side — no repair model call"
+        );
+        let view = run.roll_up.construction.as_ref().unwrap();
+        assert!(view.retried, "the repair pass is recorded");
+        assert_eq!(run.verdicts.len(), 2, "the dropped key never became a verdict");
+    }
+
+    /// A construction analyst whose call itself errors — the truncation /
+    /// parse-failure / transport shape, distinct from a parseable-but-infeasible
+    /// draft.
+    struct ErroringConstruction;
+
+    impl HoldingAnalyst for ErroringConstruction {
+        fn distill(
+            &self,
+            d: &crate::portfolio::dossier::HoldingDossier,
+            f: &crate::portfolio::pipeline::ResearchFindings,
+        ) -> Result<String> {
+            StubAnalyst.distill(d, f)
+        }
+        fn interpret(
+            &self,
+            input: &crate::portfolio::pipeline::InterpretationInput,
+        ) -> Result<crate::portfolio::Interpretation> {
+            StubAnalyst.interpret(input)
+        }
+        fn interpret_role_risk(
+            &self,
+            input: &crate::portfolio::pipeline::RoleRiskInput,
+        ) -> Result<crate::portfolio::RoleRiskInterpretation> {
+            StubAnalyst.interpret_role_risk(input)
+        }
+        fn construct(
+            &self,
+            _input: &crate::portfolio::pipeline::ConstructionInput,
+        ) -> Result<crate::portfolio::construction::ConstructionDraft> {
+            anyhow::bail!("response truncated at the output budget")
+        }
+        fn model_ids(&self) -> Vec<String> {
+            vec!["erroring-construction".into()]
+        }
+    }
+
+    #[test]
+    fn a_construction_call_error_persists_the_degraded_row_too() {
+        // The extension of the 2026-08-11 ruling: a construct *error* — a parse
+        // failure (what an output truncation becomes), an HTTP or stream error —
+        // persists the same degraded row as persisting incoherence, instead of
+        // discarding the completed per-holding pass with nothing but the
+        // failed-job row.
+        let (_dir, paths) = paths();
+        let first = full_run(&paths, two_stocks());
+        let conn = storage::open(&paths.db_path).unwrap();
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &ErroringConstruction,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        match outcome {
+            PortfolioJobOutcome::Failed(msg) => {
+                assert!(msg.contains("portfolio construction call failed"), "{msg}");
+            }
+            other => panic!("expected a failed run, got {other:?}"),
+        }
+        let summaries = store::list_run_summaries(&conn, 10).unwrap();
+        assert_eq!(summaries.len(), 2, "the erroring attempt persisted a row");
+        assert!(!summaries[0].constructed, "the degraded head is marked");
+        assert_eq!(
+            store::latest_run(&conn).unwrap().unwrap().run_id,
+            first.run_id,
+            "the degraded run never becomes the diff/carry baseline"
+        );
+        let degraded = store::run_by_id(&conn, &summaries[0].run_id)
+            .unwrap()
+            .unwrap();
+        assert!(!degraded.has_constructed_book());
+        assert!(degraded.roll_up.aggregates.is_some(), "7a work survives");
+        assert!(degraded.roll_up.construction.is_none());
     }
 
     #[test]
@@ -4195,6 +4546,7 @@ mod tests {
         let analyst = RogueConstruction {
             fail_both: true,
             calls: Default::default(),
+            repair_scopes: Default::default(),
         };
         let outcome = run_portfolio_job(
             &FixtureHoldingsSource::with_holdings(two_stocks()),
@@ -4235,6 +4587,7 @@ mod tests {
         let analyst = RogueConstruction {
             fail_both: true,
             calls: Default::default(),
+            repair_scopes: Default::default(),
         };
         let outcome = run_portfolio_job(
             &FixtureHoldingsSource::with_holdings(two_stocks()),
@@ -4334,6 +4687,7 @@ mod tests {
         let analyst = RogueConstruction {
             fail_both: true,
             calls: Default::default(),
+            repair_scopes: Default::default(),
         };
         let outcome = run_portfolio_job(
             &FixtureHoldingsSource::with_holdings(holdings_of(positions)),
@@ -4375,6 +4729,7 @@ mod tests {
         let analyst = RogueConstruction {
             fail_both: true,
             calls: Default::default(),
+            repair_scopes: Default::default(),
         };
         let outcome = run_portfolio_job(
             &FixtureHoldingsSource::with_holdings(two_stocks()),

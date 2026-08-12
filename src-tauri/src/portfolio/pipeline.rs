@@ -96,14 +96,17 @@ pub struct RoleRiskInput<'a> {
 /// What the run-level **portfolio construction** call reads
 /// (`docs/portfolio-workflow.md` §Step 7b): the Step-7a aggregates + spine, the
 /// exited names, the house view, and the investor profile — plus, on the single
-/// re-run, the named violations of the failed first attempt.
+/// re-run, the repair context scoping the call to the violating names.
 pub struct ConstructionInput<'a> {
     pub aggregates: &'a crate::portfolio::construction::BookAggregates,
     pub exited: &'a [crate::portfolio::ExitedPosition],
     pub house_view: &'a crate::portfolio::dossier::HouseView,
     pub profile: &'a crate::portfolio::InvestorProfile,
-    /// `Some` only on the named-violation re-run.
-    pub violations: Option<String>,
+    /// `Some` only on the named-violation repair re-run: the violating symbols
+    /// (the narrowed schema's required set), the rendered violations, and the
+    /// first draft's plan the corrected objects merge into
+    /// ([`crate::portfolio::construction::ConstructionRepair`]).
+    pub repair: Option<crate::portfolio::construction::ConstructionRepair>,
 }
 
 /// The model-backed stages of the pipeline, behind a trait so the orchestration is
@@ -1858,7 +1861,15 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     );
     let engine_set: Vec<&str> = input.lean_set.iter().map(Action::as_kebab).collect();
     p.push_str(&engine_set.join(", "));
-    p.push('\n');
+    // Ruled 2026-08-11 (attempt 1's Finding 5): the pick is withheld on purpose,
+    // and the prompt says so — the model litigated the omission when the prompt
+    // was silent, and naming the pick would anchor the arm the scoreboard needs
+    // independent.
+    p.push_str(
+        "\nWhich rung the engine arm itself picked is deliberately not shown: the set \
+         above is the engine's restriction, not a hint to reproduce — form your own \
+         lean and let the scoreboard compare the two arms.\n",
+    );
 
     p.push_str(
         "\nYOUR MODEL ARM (authored by you, unrestricted, scored against realized \
@@ -2587,6 +2598,21 @@ impl HoldingAnalyst for StubAnalyst {
                 },
             );
         }
+        // The repair re-run's response is holdings-only, scoped to the violating
+        // names — the stub mirrors the live repair schema's shape so job-level
+        // tests exercise the real overlay semantics.
+        if let Some(repair) = &input.repair {
+            holdings.retain(|key, _| {
+                repair.symbols.iter().any(|s| s.eq_ignore_ascii_case(key))
+            });
+            return Ok(ConstructionDraft {
+                holdings,
+                risk_posture: String::new(),
+                deployment_stance: String::new(),
+                concentration_read: String::new(),
+                closed_positions_note: None,
+            });
+        }
         Ok(ConstructionDraft {
             holdings,
             risk_posture: "Balanced (stub read).".to_string(),
@@ -2672,8 +2698,53 @@ impl LocalAnalyst {
                 prompt_tokens,
                 num_ctx,
                 prompt_chars,
+                completion_tokens: resp.eval_count,
+                num_predict: crate::local_model::request_num_predict(req),
+                output_limited: resp.done_reason.as_deref() == Some("length"),
             });
     }
+}
+
+/// Fail a stage whose generation stopped at the output budget — a length stop
+/// still returns `Ok` with a partial body and HTTP 200, so without this check
+/// the truncation surfaces only as an opaque downstream parse failure
+/// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Fix candidates 4).
+/// Called after `record_usage`, so the observation survives on the run's
+/// data-health read even though the call fails.
+fn ensure_not_output_limited(
+    stage: &str,
+    req: &ChatRequest,
+    resp: &crate::local_model::ChatResponse,
+) -> Result<()> {
+    if resp.done_reason.as_deref() == Some("length") {
+        let generated = resp.eval_count;
+        let reservation = crate::local_model::request_num_predict(req);
+        let show = |n: Option<u64>| n.map(|v| v.to_string()).unwrap_or_else(|| "unreported".into());
+        let show_res =
+            |n: Option<u32>| n.map(|v| v.to_string()).unwrap_or_else(|| "unset".into());
+        // `done_reason: "length"` covers two stops with different levers: the
+        // request's own `num_predict` reservation (generated ≈ reservation), or
+        // the shared context filling first (generated well under it). The error
+        // names which one the counts show rather than blaming the reservation
+        // for both.
+        if matches!((generated, reservation), (Some(g), Some(r)) if g >= u64::from(r)) {
+            anyhow::bail!(
+                "{stage}: response truncated at the output reservation (num_predict {}, \
+                 generated {} tokens) — a runaway chain or a genuinely undersized \
+                 reservation; raise it only on evidence",
+                show_res(reservation),
+                show(generated),
+            );
+        }
+        anyhow::bail!(
+            "{stage}: generation length-stopped under the output reservation (generated {} \
+             of {} reserved) — context exhaustion suspected; the sanctioned lever is \
+             compressing the digest, never raising num_ctx",
+            show(generated),
+            show_res(reservation),
+        );
+    }
+    Ok(())
 }
 
 // Per-stage context sizes (`docs/local-model-operations.md §The num_ctx trap`):
@@ -2690,6 +2761,22 @@ const NUM_CTX_INTERPRET: u32 = 131_072;
 /// the reasoner (and embedder) stay resident between calls and runs
 /// (`docs/local-models.md §The model roster and per-task routing`).
 const KEEP_ALIVE_RESIDENT: i64 = -1;
+
+// Per-stage output reservations (`num_predict`) — diagnostic ceilings, drafted
+// and calibratable like the engine's other starting parameters, none yet
+// calibrated against live evidence. Attempt 1's construction calls generated
+// for 7–8 minutes (`docs/verification/2026-08-10-big-run-attempt-1.md` §Cost of
+// the failed stage), roughly 12–15 K tokens with thinking included, so these sit
+// far above any legitimate answer: a stop at the limit is evidence of a runaway
+// or a squeeze, surfaced as a typed truncation error rather than an opaque
+// parse failure. Generation shares `num_ctx` with the prompt, so a large prompt
+// can exhaust the context before the ceiling binds — that stop reports the same
+// `done_reason: "length"` and lands in the same typed guard.
+/// Thinking stages (interpretation, role-risk, construction): chains run tens
+/// of thousands of tokens and count against the same budget as the answer.
+const NUM_PREDICT_THINKING: u32 = 65_536;
+/// Distillation emits 2–3 sentences; generous by two orders of magnitude.
+const NUM_PREDICT_DISTILL: u32 = 8_192;
 
 /// The distill stage's context size, resolved per *model*, not per call: Ollama
 /// reloads a resident runner whenever a request's load-time options — `num_ctx`
@@ -2727,7 +2814,7 @@ fn distill_request(
     );
     let mut req = ChatRequest::new(fast_model, vec![ChatMessage::user(prompt)]);
     req.think = Some(false);
-    req.options = Some(options::non_thinking_general(num_ctx));
+    req.options = Some(options::non_thinking_general(num_ctx, NUM_PREDICT_DISTILL));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
     req
 }
@@ -2748,7 +2835,7 @@ fn interpret_request(reasoner_model: &str, input: &InterpretationInput) -> ChatR
     // the two-arm contract).
     req.format_schema = Some(interpretation_schema());
     req.think = Some(true);
-    req.options = Some(options::thinking_general(NUM_CTX_INTERPRET));
+    req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
     req
 }
@@ -2765,7 +2852,7 @@ fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest
     );
     req.format_schema = Some(role_risk_interpretation_schema());
     req.think = Some(true);
-    req.options = Some(options::thinking_general(NUM_CTX_INTERPRET));
+    req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
     req
 }
@@ -2778,24 +2865,34 @@ fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest
 /// call must not bounce the runner between sizes. On prompt overrun the sanctioned
 /// response is compressing the per-holding digests, never a `num_ctx` change.
 fn construction_request(reasoner_model: &str, input: &ConstructionInput) -> ChatRequest {
+    let repair = input.repair.as_ref();
     let mut req = ChatRequest::new(
         reasoner_model,
         vec![
-            ChatMessage::system(crate::portfolio::construction::construction_system_prompt()),
+            ChatMessage::system(crate::portfolio::construction::construction_system_prompt(
+                repair.is_some(),
+            )),
             ChatMessage::user(crate::portfolio::construction::construction_user_prompt(
                 input.aggregates,
                 input.exited,
                 input.house_view.latest_sections.as_deref(),
                 input.profile,
-                input.violations.as_deref(),
+                repair,
             )),
         ],
     );
-    req.format_schema = Some(crate::portfolio::construction::construction_schema(
-        &input.aggregates.spine,
-    ));
+    // The repair re-run narrows the schema to the violating names — the demanded
+    // output shrinks exactly when the violation list is longest
+    // (`docs/portfolio-analysis.md` §Portfolio roll-up and construction).
+    req.format_schema = Some(match repair {
+        Some(r) => crate::portfolio::construction::construction_repair_schema(
+            &input.aggregates.spine,
+            &r.symbols,
+        ),
+        None => crate::portfolio::construction::construction_schema(&input.aggregates.spine),
+    });
     req.think = Some(true);
-    req.options = Some(options::thinking_general(NUM_CTX_INTERPRET));
+    req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
     req
 }
@@ -2819,6 +2916,13 @@ impl HoldingAnalyst for LocalAnalyst {
             &req,
             &resp,
         );
+        // A truncated distillation is otherwise fully silent — no schema guards
+        // this stage, so the cut-off digest would flow onward as if complete.
+        ensure_not_output_limited(
+            &format!("distill {}", dossier.position.symbol),
+            &req,
+            &resp,
+        )?;
         Ok(resp.content)
     }
 
@@ -2835,6 +2939,11 @@ impl HoldingAnalyst for LocalAnalyst {
             &req,
             &resp,
         );
+        ensure_not_output_limited(
+            &format!("interpret {}", input.dossier.position.symbol),
+            &req,
+            &resp,
+        )?;
         serde_json::from_str(&resp.content)
             .with_context(|| format!("parsing interpretation JSON: {}", resp.content))
     }
@@ -2848,6 +2957,11 @@ impl HoldingAnalyst for LocalAnalyst {
             &req,
             &resp,
         );
+        ensure_not_output_limited(
+            &format!("role-risk {}", input.dossier.position.symbol),
+            &req,
+            &resp,
+        )?;
         serde_json::from_str(&resp.content)
             .with_context(|| format!("parsing role/risk interpretation JSON: {}", resp.content))
     }
@@ -2864,6 +2978,28 @@ impl HoldingAnalyst for LocalAnalyst {
             .client
             .chat_streaming(&req, StreamRole::Step(CONSTRUCTION_STEP_KEY))?;
         self.record_usage(CONSTRUCTION_STEP_KEY.to_string(), &req, &resp);
+        // A construction-stage truncation fails the call typed — and the caller
+        // persists the degraded row on any construct error, so the completed
+        // per-holding pass survives it.
+        ensure_not_output_limited(CONSTRUCTION_STEP_KEY, &req, &resp)?;
+        // Two decode contracts, deliberately not shared: the repair response is
+        // holdings-only (its envelope is discarded by the caller's overlay,
+        // which keeps the first draft's), while the full call decodes the
+        // envelope strictly — a missing portfolio-level field fails here rather
+        // than persisting a blank construction view.
+        if input.repair.is_some() {
+            let wire: crate::portfolio::construction::RepairResponse =
+                serde_json::from_str(&resp.content).with_context(|| {
+                    format!("parsing construction repair JSON: {}", resp.content)
+                })?;
+            return Ok(crate::portfolio::construction::ConstructionDraft {
+                holdings: wire.holdings,
+                risk_posture: String::new(),
+                deployment_stance: String::new(),
+                concentration_read: String::new(),
+                closed_positions_note: None,
+            });
+        }
         serde_json::from_str(&resp.content)
             .with_context(|| format!("parsing construction JSON: {}", resp.content))
     }
@@ -2909,17 +3045,21 @@ mod tests {
             String::new(),
         );
         let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
-        req.options = Some(options::thinking_general(131_072));
+        req.options = Some(options::thinking_general(131_072, NUM_PREDICT_THINKING));
         let counted = crate::local_model::ChatResponse {
             content: String::new(),
             thinking: None,
             prompt_eval_count: Some(120_000),
+            eval_count: Some(NUM_PREDICT_THINKING as u64),
+            done_reason: Some("length".into()),
         };
         analyst.record_usage("construction".to_string(), &req, &counted);
         let uncounted = crate::local_model::ChatResponse {
             content: String::new(),
             thinking: None,
             prompt_eval_count: None,
+            eval_count: None,
+            done_reason: None,
         };
         analyst.record_usage("interpret AAPL".to_string(), &req, &uncounted);
         let drained = analyst.take_prompt_usage();
@@ -2928,6 +3068,10 @@ mod tests {
         assert_eq!(drained[0].prompt_tokens, 120_000);
         assert_eq!(drained[0].num_ctx, 131_072);
         assert_eq!(drained[0].prompt_chars, 1, "the one-char user message");
+        // The output-side half rides the same observation.
+        assert_eq!(drained[0].completion_tokens, Some(NUM_PREDICT_THINKING as u64));
+        assert_eq!(drained[0].num_predict, Some(NUM_PREDICT_THINKING));
+        assert!(drained[0].output_limited, "a length stop is recorded");
         assert!(
             analyst.take_prompt_usage().is_empty(),
             "drain empties the buffer"
@@ -3760,6 +3904,10 @@ mod tests {
             .find(|l| l.contains("sell-all, trim, hold"))
             .expect("the engine set line lists the restricted rungs");
         assert!(!engine_set_line.contains("add,"), "{engine_set_line}");
+        // Finding 5 (ruled 2026-08-11): the engine arm's own pick is withheld,
+        // and the prompt says so explicitly instead of leaving the model to
+        // litigate the omission.
+        assert!(user.contains("deliberately not shown"), "{user}");
         assert!(user.contains("YOUR MODEL ARM"), "{user}");
         assert!(user.contains("unrestricted"), "{user}");
         let system = interpretation_system_prompt();
@@ -4149,6 +4297,7 @@ mod tests {
         assert_eq!(distill.keep_alive, Some(-1));
         let opts = distill.options.as_ref().unwrap();
         assert_eq!(opts["num_ctx"], NUM_CTX_DISTILL);
+        assert_eq!(opts["num_predict"], NUM_PREDICT_DISTILL, "output reservation");
         assert_eq!(opts["temperature"], 0.7, "non-thinking-general row");
         assert!(distill.format_schema.is_none(), "distill is free prose");
 
@@ -4172,6 +4321,7 @@ mod tests {
         assert_eq!(interpret.keep_alive, Some(-1));
         let opts = interpret.options.as_ref().unwrap();
         assert_eq!(opts["num_ctx"], NUM_CTX_INTERPRET);
+        assert_eq!(opts["num_predict"], NUM_PREDICT_THINKING, "output reservation");
         assert_eq!(opts["temperature"], 1.0, "thinking-general row");
         assert!(interpret.format_schema.is_some(), "grammar-constrained");
 
@@ -4195,7 +4345,53 @@ mod tests {
         assert_eq!(role_risk.keep_alive, Some(-1));
         let opts = role_risk.options.as_ref().unwrap();
         assert_eq!(opts["num_ctx"], NUM_CTX_INTERPRET);
+        assert_eq!(opts["num_predict"], NUM_PREDICT_THINKING, "output reservation");
         assert!(role_risk.format_schema.is_some(), "grammar-constrained");
+    }
+
+    /// The output-budget guard: a `done_reason: "length"` response fails typed —
+    /// naming the stage, the reservation, and the generated count — instead of
+    /// surfacing as an opaque schema parse failure downstream.
+    #[test]
+    fn a_length_stop_fails_the_stage_with_a_typed_truncation_error() {
+        let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
+        req.options = Some(options::thinking_general(131_072, 65_536));
+        let truncated = crate::local_model::ChatResponse {
+            content: "{\"partial\":".into(),
+            thinking: None,
+            prompt_eval_count: Some(100_000),
+            eval_count: Some(65_536),
+            done_reason: Some("length".into()),
+        };
+        let err = ensure_not_output_limited("construction", &req, &truncated).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("construction"), "{msg}");
+        assert!(msg.contains("truncated at the output reservation"), "{msg}");
+        assert!(msg.contains("65536"), "{msg}");
+
+        // A length stop well UNDER the reservation is the other cause — the
+        // shared context filled first — and must not be blamed on the
+        // reservation (the two have different levers).
+        let context_stopped = crate::local_model::ChatResponse {
+            content: "{\"partial\":".into(),
+            thinking: None,
+            prompt_eval_count: Some(120_000),
+            eval_count: Some(11_000),
+            done_reason: Some("length".into()),
+        };
+        let err = ensure_not_output_limited("construction", &req, &context_stopped).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("context exhaustion suspected"), "{msg}");
+        assert!(!msg.contains("truncated at the output reservation"), "{msg}");
+
+        let complete = crate::local_model::ChatResponse {
+            content: "{}".into(),
+            thinking: None,
+            prompt_eval_count: Some(100_000),
+            eval_count: Some(9_000),
+            done_reason: Some("stop".into()),
+        };
+        assert!(ensure_not_output_limited("construction", &req, &complete).is_ok());
     }
 
     #[test]
@@ -5354,7 +5550,14 @@ mod tests {
                 required: required_keys(&build_stage::construction_schema(&[])),
                 keys: build_stage::PLAN_ENVELOPE_KEYS.to_vec(),
                 contract: build_stage::construction_response_contract(),
-                prompt: build_stage::construction_system_prompt(),
+                prompt: build_stage::construction_system_prompt(false),
+            },
+            ContractCase {
+                what: "construction repair envelope",
+                required: required_keys(&build_stage::construction_repair_schema(&[], &[])),
+                keys: build_stage::REPAIR_ENVELOPE_KEYS.to_vec(),
+                contract: build_stage::construction_repair_response_contract(),
+                prompt: build_stage::construction_system_prompt(true),
             },
         ];
 
@@ -5394,7 +5597,8 @@ mod tests {
         for p in [
             interpretation_system_prompt(),
             role_risk_system_prompt(),
-            build_stage::construction_system_prompt(),
+            build_stage::construction_system_prompt(false),
+            build_stage::construction_system_prompt(true),
         ] {
             assert!(!p.contains("pre-v7"), "internal version vocabulary leaked: {p}");
         }

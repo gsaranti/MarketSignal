@@ -878,7 +878,11 @@ pub struct HoldingProposalDraft {
 }
 
 /// The construction call's decoded response
-/// (`docs/portfolio-workflow.md` §Step 7b Returns).
+/// (`docs/portfolio-workflow.md` §Step 7b Returns). The full call decodes this
+/// **strictly** — a response missing the portfolio-level envelope fails the
+/// decode rather than defaulting to blanks; the holdings-only repair response
+/// decodes through [`RepairResponse`] instead, so the two contracts never share
+/// leniency.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConstructionDraft {
     /// Per-holding proposals, keyed by symbol (exactly the spine's actionable
@@ -891,6 +895,33 @@ pub struct ConstructionDraft {
     pub concentration_read: String,
     #[serde(default)]
     pub closed_positions_note: Option<String>,
+}
+
+/// The repair re-run's decoded response: holdings only — corrected objects for
+/// the violating names, nothing else (the first draft's envelope is reused, so
+/// its schema never demands one). A dedicated type rather than leniency on
+/// [`ConstructionDraft`], so the full call keeps its strict envelope decode.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RepairResponse {
+    pub holdings: BTreeMap<String, HoldingProposalDraft>,
+}
+
+/// The named-violation repair context — `Some` only on the single re-run
+/// (`docs/portfolio-analysis.md` §Portfolio roll-up and construction). The re-run
+/// asks for corrected objects **only for the violating names**: the required
+/// output shrinks exactly when the violation list is longest, instead of the
+/// recovery path demanding a larger answer than the attempt it rescues
+/// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Fix candidates 2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstructionRepair {
+    /// The violating symbols (spine casing) — the repair schema's required set.
+    pub symbols: Vec<String>,
+    /// The rendered `- symbol: …` violation lines the model must fix.
+    pub violations: String,
+    /// A compact rendering of the first draft's plan — every holding not named
+    /// keeps its previous proposal, and the corrected weights must cohere with
+    /// them simultaneously, so the model must see the book it repairs into.
+    pub prior_plan: String,
 }
 
 /// The validated, persisted portfolio-level view (rides the roll-up).
@@ -909,8 +940,10 @@ pub struct ConstructionView {
     pub external_funding: Option<f64>,
     /// The implied post-action book total the weights were validated against.
     pub implied_total: Option<f64>,
-    /// The single named-violation re-run was used
-    /// (`docs/portfolio-workflow.md` §Step 7b).
+    /// The plan needed the single named-violation repair pass
+    /// (`docs/portfolio-workflow.md` §Step 7b) — a model re-run scoped to the
+    /// violating names, or, when every violation named a non-spine key, the
+    /// deterministic drop that needs no model call.
     #[serde(default)]
     pub retried: bool,
     /// Engine-bound findings recorded against the model's plan — a rung outside
@@ -969,6 +1002,36 @@ pub enum Violation {
     UnknownAttribution { symbol: String, value: String },
     IntrinsicAttributionUnsupported { symbol: String },
     ContextCauseRequired { symbol: String },
+}
+
+impl Violation {
+    /// The symbol the violation names — the repair re-run's scoping key. Every
+    /// *enforced* variant carries one; `UnfundedBuys` is the lone symbol-less
+    /// variant, and under `portfolio-v7` it is annotation-only, so it can never
+    /// reach the repair path.
+    pub fn symbol(&self) -> Option<&str> {
+        match self {
+            Violation::MissingHolding { symbol }
+            | Violation::UnknownHolding { symbol }
+            | Violation::DuplicateHolding { symbol }
+            | Violation::UnparseableAction { symbol, .. }
+            | Violation::ActionOutsideOffered { symbol, .. }
+            | Violation::RangeInverted { symbol }
+            | Violation::RangeOutsideRungBand { symbol, .. }
+            | Violation::SellAllNonZeroRange { symbol }
+            | Violation::ImpliedWeightOutsideRange { symbol, .. }
+            | Violation::CapBreach { symbol, .. }
+            | Violation::ContextTrimUnattributed { symbol }
+            | Violation::DivergenceMissing { symbol, .. }
+            | Violation::UnknownContextCause { symbol, .. }
+            | Violation::ContextCauseUnsupported { symbol, .. }
+            | Violation::WhatChangedMissing { symbol, .. }
+            | Violation::UnknownAttribution { symbol, .. }
+            | Violation::IntrinsicAttributionUnsupported { symbol }
+            | Violation::ContextCauseRequired { symbol } => Some(symbol),
+            Violation::UnfundedBuys { .. } => None,
+        }
+    }
 }
 
 impl std::fmt::Display for Violation {
@@ -1630,6 +1693,82 @@ fn parse_action(s: &str) -> Option<Action> {
     }
 }
 
+// ---- The named-violation repair ------------------------------------------------
+
+/// The repair re-run's scope: the violating symbols that resolve to spine rows,
+/// spine-cased, in spine order, deduped. A violation naming a non-spine key
+/// (`UnknownHolding`) contributes nothing here — there is no valid object a model
+/// could author for a non-holding, so those keys are dropped deterministically by
+/// [`overlay_repair`] instead. An empty scope therefore means every violation is
+/// droppable and the repair needs no model call.
+pub fn repair_scope(violations: &[Violation], spine: &[SizingSpineRow]) -> Vec<String> {
+    spine
+        .iter()
+        .filter(|row| {
+            violations.iter().any(|v| {
+                v.symbol()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(&row.symbol))
+            })
+        })
+        .map(|row| row.symbol.clone())
+        .collect()
+}
+
+/// Render the first draft's plan compactly for the repair prompt — one line per
+/// holding (action + stated range), so the model sees the book its corrected
+/// objects must cohere with: the implied post-action weights are book-coupled,
+/// and every holding it is not correcting keeps exactly these proposals.
+pub fn render_prior_plan(draft: &ConstructionDraft) -> String {
+    let mut out = String::new();
+    for (symbol, p) in &draft.holdings {
+        out.push_str(&format!(
+            "- {}: {} [{:.4}\u{2013}{:.4}]\n",
+            symbol, p.action, p.target_weight_low, p.target_weight_high
+        ));
+    }
+    out
+}
+
+/// Overlay the repair response onto the first draft: a corrected object replaces
+/// every case-variant of its symbol, a key resolving to no spine row is dropped
+/// (the `UnknownHolding` / `DuplicateHolding` repairs — an overlay alone cannot
+/// delete a bad key), and the first draft's envelope is kept (the repair response
+/// is holdings-only). Scope is enforced both ways: a corrected object for a
+/// holding *outside* the repair scope is ignored — the documented contract is
+/// that every un-named holding keeps its first-draft proposal, and the grammar
+/// cannot bar extra keys (that reachability is exactly why `UnknownHolding`
+/// exists on the full call). The merged draft is then re-validated **whole** —
+/// the implied post-action weights are book-coupled through the implied total,
+/// so a per-symbol re-check would miss a repair that breaks a previously-clean
+/// holding's containment.
+pub fn overlay_repair(
+    first: &ConstructionDraft,
+    corrected: BTreeMap<String, HoldingProposalDraft>,
+    spine: &[SizingSpineRow],
+    repair_symbols: &[String],
+) -> ConstructionDraft {
+    let in_scope =
+        |key: &str| repair_symbols.iter().any(|s| s.eq_ignore_ascii_case(key));
+    let mut holdings = first.holdings.clone();
+    holdings.retain(|key, _| !in_scope(key));
+    for (key, proposal) in corrected {
+        if in_scope(&key) {
+            holdings.insert(key, proposal);
+        }
+    }
+    // Non-spine keys are dropped from *both* maps — a key that resolves to no
+    // spine row can never carry a valid proposal, so the app repairs it
+    // deterministically rather than asking a model to author the impossible.
+    holdings.retain(|key, _| spine.iter().any(|r| r.symbol.eq_ignore_ascii_case(key)));
+    ConstructionDraft {
+        holdings,
+        risk_posture: first.risk_posture.clone(),
+        deployment_stance: first.deployment_stance.clone(),
+        concentration_read: first.concentration_read.clone(),
+        closed_positions_note: first.closed_positions_note.clone(),
+    }
+}
+
 // ---- The construction schema ---------------------------------------------------
 
 /// The JSON Schema handed to Ollama's `format` for the construction call — one
@@ -1663,59 +1802,70 @@ pub const PER_HOLDING_PLAN_KEYS: [&str; 9] = [
     "changed_note",
 ];
 
-pub fn construction_schema(spine: &[SizingSpineRow]) -> Value {
+/// The repair re-run's envelope: holdings only — the first draft's envelope is
+/// reused, so re-demanding it would spend the exact output budget the repair
+/// exists to save. The repair contract sentence and schema `required` are both
+/// built from this, mirroring [`PLAN_ENVELOPE_KEYS`].
+pub const REPAIR_ENVELOPE_KEYS: [&str; 1] = ["holdings"];
+
+/// One holding's plan-object schema — identical for every row since
+/// `portfolio-v7`: the action enum lists the full ladder, the engine's offered
+/// set rendering into the prompt as its own arm's read, an outside-the-set rung
+/// recorded as an engine-bound annotation, never a schema bar
+/// (`docs/portfolio-analysis.md` §Portfolio roll-up and construction).
+fn holding_plan_schema() -> Value {
     let causes = ["became-oversized", "overlap-emerged", "cash-freed"];
     let mut cause_or_null: Vec<Value> = causes.iter().map(|c| json!(c)).collect();
     cause_or_null.push(Value::Null);
     let attribution_or_null = vec![json!("moved-intrinsic"), json!("moved-context"), Value::Null];
-
-    let mut holding_props = serde_json::Map::new();
-    let mut required_symbols: Vec<Value> = Vec::new();
-    for row in spine {
-        // The v7 unrestricted contract: every holding's action enum lists the
-        // full ladder. The engine's offered set still renders into the prompt as
-        // its own arm's read, and an outside-the-set rung is recorded as an
-        // engine-bound annotation, never a schema bar
-        // (`docs/portfolio-analysis.md` §Portfolio roll-up and construction).
-        let offered: Vec<&str> = [
-            Action::SellAll,
-            Action::Trim,
-            Action::Hold,
-            Action::Add,
-            Action::AddAggressively,
-        ]
-        .iter()
-        .map(Action::as_kebab)
-        .collect();
-        holding_props.insert(
-            row.symbol.clone(),
-            json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": offered },
-                    "target_weight_low": { "type": "number", "minimum": 0 },
-                    "target_weight_high": { "type": "number", "minimum": 0 },
-                    "rationale": { "type": "string" },
-                    "divergence_cause": { "type": ["string", "null"], "enum": cause_or_null },
-                    "divergence_note": { "type": ["string", "null"] },
-                    "changed_attribution": { "type": ["string", "null"], "enum": attribution_or_null },
-                    "changed_cause": { "type": ["string", "null"], "enum": cause_or_null },
-                    "changed_note": { "type": ["string", "null"] }
-                },
-                "required": PER_HOLDING_PLAN_KEYS
-            }),
-        );
-        required_symbols.push(json!(row.symbol));
-    }
-
+    let offered: Vec<&str> = [
+        Action::SellAll,
+        Action::Trim,
+        Action::Hold,
+        Action::Add,
+        Action::AddAggressively,
+    ]
+    .iter()
+    .map(Action::as_kebab)
+    .collect();
     json!({
         "type": "object",
         "properties": {
-            "holdings": {
-                "type": "object",
-                "properties": Value::Object(holding_props),
-                "required": required_symbols
-            },
+            "action": { "type": "string", "enum": offered },
+            "target_weight_low": { "type": "number", "minimum": 0 },
+            "target_weight_high": { "type": "number", "minimum": 0 },
+            "rationale": { "type": "string" },
+            "divergence_cause": { "type": ["string", "null"], "enum": cause_or_null },
+            "divergence_note": { "type": ["string", "null"] },
+            "changed_attribution": { "type": ["string", "null"], "enum": attribution_or_null },
+            "changed_cause": { "type": ["string", "null"], "enum": cause_or_null },
+            "changed_note": { "type": ["string", "null"] }
+        },
+        "required": PER_HOLDING_PLAN_KEYS
+    })
+}
+
+/// The `holdings` object schema over the given rows — one required property per
+/// row, shared by the full and repair schemas.
+fn holdings_object_schema<'a>(rows: impl Iterator<Item = &'a SizingSpineRow>) -> Value {
+    let mut holding_props = serde_json::Map::new();
+    let mut required_symbols: Vec<Value> = Vec::new();
+    for row in rows {
+        holding_props.insert(row.symbol.clone(), holding_plan_schema());
+        required_symbols.push(json!(row.symbol));
+    }
+    json!({
+        "type": "object",
+        "properties": Value::Object(holding_props),
+        "required": required_symbols
+    })
+}
+
+pub fn construction_schema(spine: &[SizingSpineRow]) -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "holdings": holdings_object_schema(spine.iter()),
             "risk_posture": { "type": "string" },
             "deployment_stance": { "type": "string" },
             "concentration_read": { "type": "string" },
@@ -1725,10 +1875,34 @@ pub fn construction_schema(spine: &[SizingSpineRow]) -> Value {
     })
 }
 
+/// The repair re-run's schema: corrected objects for the violating names only —
+/// the spine filtered to the repair scope, the envelope reduced to `holdings`.
+/// The subset `required` list is what shrinks the demanded output exactly when
+/// the violation list is longest.
+pub fn construction_repair_schema(spine: &[SizingSpineRow], repair_symbols: &[String]) -> Value {
+    let rows = spine.iter().filter(|row| {
+        repair_symbols
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(&row.symbol))
+    });
+    json!({
+        "type": "object",
+        "properties": { "holdings": holdings_object_schema(rows) },
+        "required": REPAIR_ENVELOPE_KEYS
+    })
+}
+
 // ---- Prompt construction (pure, testable) --------------------------------------
 
-/// The construction call's system prompt.
-pub fn construction_system_prompt() -> String {
+/// The construction call's system prompt. `repair` selects the closing response
+/// contract: the full-plan declaration, or the repair re-run's
+/// corrected-objects-only declaration ([`construction_repair_response_contract`]).
+pub fn construction_system_prompt(repair: bool) -> String {
+    let contract = if repair {
+        construction_repair_response_contract()
+    } else {
+        construction_response_contract()
+    };
     format!(
         "You are the portfolio-construction stage of a prescriptive portfolio review. \
      Every holding has already been analyzed in isolation — its grade, conviction, \
@@ -1757,7 +1931,7 @@ pub fn construction_system_prompt() -> String {
      and the redeployment optionality of the proceeds as supporting rationale, framed \
      high-level (the user acts on the specifics). Do NOT invent numbers: every figure \
      you cite must come from the aggregates given. {}",
-        construction_response_contract()
+        contract
     )
 }
 
@@ -1776,6 +1950,23 @@ pub fn construction_response_contract() -> String {
          not apply. The response format is enforced by the decoder, so spend no \
          reasoning on shape — put it into the plan.",
         PLAN_ENVELOPE_KEYS.join(", "),
+        PER_HOLDING_PLAN_KEYS.join(", "),
+    )
+}
+
+/// The repair re-run's response contract — generated from [`REPAIR_ENVELOPE_KEYS`]
+/// the same way the full contract is generated from [`PLAN_ENVELOPE_KEYS`], so the
+/// declaration cannot drift from what the repair schema enforces.
+pub fn construction_repair_response_contract() -> String {
+    format!(
+        "Respond with a single JSON object carrying exactly these keys: {}. \
+         `holdings` is keyed by ticker with one corrected entry per holding named in \
+         the VALIDATION FAILURE block — those holdings ONLY; every other holding \
+         keeps its previous proposal exactly as already stated — each entry carrying \
+         exactly: {} — the nullable ones present, holding null where they do not \
+         apply. The response format is enforced by the decoder, so spend no \
+         reasoning on shape — put it into the corrections.",
+        REPAIR_ENVELOPE_KEYS.join(", "),
         PER_HOLDING_PLAN_KEYS.join(", "),
     )
 }
@@ -1895,19 +2086,28 @@ fn spine_digest(row: &SizingSpineRow) -> String {
 
 /// The construction call's user prompt: the aggregates, the per-holding digests,
 /// the exited names, the house view, and the investor profile — plus, on the
-/// single re-run, the named violations of the failed attempt.
+/// single re-run, the repair block: the named violations, the first draft's plan
+/// (kept for every holding not named), and the corrected-objects-only scope.
 pub fn construction_user_prompt(
     agg: &BookAggregates,
     exited: &[ExitedPosition],
     house_view_sections: Option<&str>,
     profile: &InvestorProfile,
-    violations: Option<&str>,
+    repair: Option<&ConstructionRepair>,
 ) -> String {
     let mut p = String::new();
-    if let Some(v) = violations {
+    if let Some(r) = repair {
         p.push_str(&format!(
             "VALIDATION FAILURE — your previous proposal violated the construction \
-             contract. Fix every violation below and return the corrected full plan:\n{v}\n\n"
+             contract on the holdings named below. Return corrected objects for ONLY \
+             these holdings: {}. Every other holding keeps its previous proposal \
+             exactly as stated in YOUR PREVIOUS PLAN, so your corrected weights must \
+             cohere with those kept proposals SIMULTANEOUSLY on the implied \
+             post-action book.\nViolations to fix:\n{}\n\nYOUR PREVIOUS PLAN (kept \
+             verbatim for every holding you are not correcting):\n{}\n",
+            r.symbols.join(", "),
+            r.violations,
+            r.prior_plan,
         ));
     }
     p.push_str(&format!(
@@ -3395,7 +3595,7 @@ mod tests {
 
     #[test]
     fn construction_prompts_carry_the_load_bearing_content() {
-        let sys = construction_system_prompt();
+        let sys = construction_system_prompt(false);
         assert!(sys.contains("STANDALONE ACTION LEAN"));
         assert!(sys.contains("toward hold only"));
         assert!(sys.contains("SIMULTANEOUSLY"));
@@ -3442,15 +3642,205 @@ mod tests {
         ), "{p}");
         assert!(!p.contains("VALIDATION FAILURE"));
 
-        let retry = construction_user_prompt(
-            &agg,
-            &exited,
-            Some("House view text"),
-            &profile,
-            Some("AAA: sell-all must carry a 0-0 weight range"),
-        );
+        let repair = ConstructionRepair {
+            symbols: vec!["AAA".into()],
+            violations: "- AAA: sell-all must carry a 0-0 weight range".into(),
+            prior_plan: "- AAA: hold [0.1620\u{2013}0.1980]\n".into(),
+        };
+        let retry =
+            construction_user_prompt(&agg, &exited, Some("House view text"), &profile, Some(&repair));
         assert!(retry.starts_with("VALIDATION FAILURE"));
         assert!(retry.contains("sell-all must carry a 0-0 weight range"));
+        // The repair block carries the corrected-objects-only scope and the kept
+        // first-draft plan the corrections must cohere with.
+        assert!(retry.contains("ONLY these holdings: AAA"), "{retry}");
+        assert!(retry.contains("YOUR PREVIOUS PLAN"), "{retry}");
+        assert!(retry.contains("- AAA: hold [0.1620\u{2013}0.1980]"), "{retry}");
+
+        // The repair system prompt swaps in the corrected-objects contract.
+        let repair_sys = construction_system_prompt(true);
+        assert!(
+            repair_sys.contains(&construction_repair_response_contract()),
+            "{repair_sys}"
+        );
+        assert!(!repair_sys.contains(&construction_response_contract()));
+    }
+
+    // ---- the named-violation repair ---------------------------------------------
+
+    #[test]
+    fn repair_scope_is_spine_cased_deduped_and_skips_non_spine_keys() {
+        let spine = vec![
+            spine_row("AAA", 0.10, vec![Action::Hold]),
+            spine_row("BBB", 0.10, vec![Action::Hold]),
+            spine_row("CCC", 0.10, vec![Action::Hold]),
+        ];
+        let violations = vec![
+            Violation::RangeInverted { symbol: "bbb".into() },
+            Violation::SellAllNonZeroRange { symbol: "BBB".into() },
+            Violation::MissingHolding { symbol: "AAA".into() },
+            Violation::UnknownHolding { symbol: "ZZZT".into() },
+        ];
+        assert_eq!(
+            repair_scope(&violations, &spine),
+            vec!["AAA".to_string(), "BBB".to_string()],
+            "spine order, spine casing, deduped; the non-spine key contributes nothing"
+        );
+        // A pure-unknown violation list yields the empty scope — the deterministic
+        // no-model-call repair.
+        let unknown_only = vec![Violation::UnknownHolding { symbol: "ZZZT".into() }];
+        assert!(repair_scope(&unknown_only, &spine).is_empty());
+    }
+
+    fn proposal(action: &str, low: f64, high: f64) -> HoldingProposalDraft {
+        HoldingProposalDraft {
+            action: action.into(),
+            target_weight_low: low,
+            target_weight_high: high,
+            rationale: "r".into(),
+            divergence_cause: None,
+            divergence_note: None,
+            changed_attribution: None,
+            changed_cause: None,
+            changed_note: None,
+        }
+    }
+
+    #[test]
+    fn overlay_repair_replaces_scoped_keys_drops_non_spine_keys_and_keeps_the_envelope() {
+        let spine = vec![
+            spine_row("AAA", 0.10, vec![Action::Hold]),
+            spine_row("BBB", 0.10, vec![Action::Hold]),
+        ];
+        let mut first_holdings = BTreeMap::new();
+        first_holdings.insert("aaa".to_string(), proposal("hold", 0.9, 0.95));
+        first_holdings.insert("BBB".to_string(), proposal("hold", 0.08, 0.12));
+        first_holdings.insert("ZZZT".to_string(), proposal("hold", 0.0, 0.01));
+        let first = ConstructionDraft {
+            holdings: first_holdings,
+            risk_posture: "kept".into(),
+            deployment_stance: "kept".into(),
+            concentration_read: "kept".into(),
+            closed_positions_note: Some("kept".into()),
+        };
+        let mut corrected = BTreeMap::new();
+        corrected.insert("AAA".to_string(), proposal("hold", 0.08, 0.12));
+
+        let merged = overlay_repair(&first, corrected, &spine, &["AAA".to_string()]);
+        // The corrected object replaced the case-variant key rather than
+        // coexisting with it.
+        assert_eq!(
+            merged.holdings.keys().collect::<Vec<_>>(),
+            vec!["AAA", "BBB"],
+            "case-variant replaced, non-spine key dropped"
+        );
+        assert_eq!(merged.holdings["AAA"].target_weight_low, 0.08);
+        assert_eq!(
+            merged.holdings["BBB"].target_weight_low, 0.08,
+            "an un-named holding keeps its first-draft proposal"
+        );
+        // The repair response is holdings-only: the first draft's envelope rides.
+        assert_eq!(merged.risk_posture, "kept");
+        assert_eq!(merged.closed_positions_note.as_deref(), Some("kept"));
+
+        // Scope is enforced both ways: a corrected object for an un-named spine
+        // holding is ignored (the documented contract — every other holding
+        // keeps its first-draft proposal), and a non-spine stray is dropped.
+        let mut over_reach = BTreeMap::new();
+        over_reach.insert("AAA".to_string(), proposal("hold", 0.08, 0.12));
+        over_reach.insert("BBB".to_string(), proposal("sell-all", 0.0, 0.0));
+        over_reach.insert("YYYT".to_string(), proposal("hold", 0.0, 0.01));
+        let merged = overlay_repair(&first, over_reach, &spine, &["AAA".to_string()]);
+        assert_eq!(merged.holdings.keys().collect::<Vec<_>>(), vec!["AAA", "BBB"]);
+        assert_eq!(
+            merged.holdings["BBB"].action, "hold",
+            "an unsolicited correction outside the scope is ignored"
+        );
+    }
+
+    #[test]
+    fn a_repair_can_break_a_clean_holdings_containment_and_still_fails_whole() {
+        // The book-coupling case the whole re-validation exists for: the
+        // corrected object is coherent for its own name, but its implied-book
+        // shift drags a previously-clean holding's implied weight below that
+        // holding's stated floor — the fresh violation fails the merged plan
+        // (and at the job seam the single-re-run rule then degraded-persists).
+        let spine = vec![
+            spine_row("AAA", 0.20, vec![Action::SellAll, Action::Trim, Action::Hold]),
+            spine_row("BBB", 0.20, vec![Action::Hold]),
+        ];
+        let holdings = holdings_for(&spine, 60_000.0);
+        let agg = agg_for(spine);
+        let profile = InvestorProfile::default_fixture();
+        // Draft 1: AAA trips the sell-all rail (book-neutral, one name); BBB is
+        // a coherent hold at its band.
+        let mut bad = hold_proposal(0.20);
+        bad.action = "sell-all".into();
+        bad.target_weight_low = 0.10;
+        bad.target_weight_high = 0.12;
+        let first = draft_for(vec![("AAA", bad), ("BBB", hold_proposal(0.20))]);
+        let violations = validate_construction(&first, &agg, &holdings, &profile).unwrap_err();
+        assert!(
+            violations.iter().all(|v| v.symbol() == Some("AAA")),
+            "{violations:?}"
+        );
+        let scope = repair_scope(&violations, &agg.spine);
+        assert_eq!(scope, vec!["AAA".to_string()]);
+        // The corrected AAA holds its own containment (implied ≈ 0.31 inside
+        // [0.28, 0.44]) but funds a large add, inflating the implied total so
+        // BBB's implied weight (≈ 0.172) falls below its stated 0.18 floor.
+        let mut fix = hold_proposal(0.20);
+        fix.target_weight_low = 0.28;
+        fix.target_weight_high = 0.44;
+        let mut corrected = BTreeMap::new();
+        corrected.insert("AAA".to_string(), fix);
+        let merged = overlay_repair(&first, corrected, &agg.spine, &scope);
+        let fresh = validate_construction(&merged, &agg, &holdings, &profile).unwrap_err();
+        assert!(
+            fresh.iter().any(|v| matches!(
+                v,
+                Violation::ImpliedWeightOutsideRange { symbol, .. } if symbol == "BBB"
+            )),
+            "the fresh violation lands on the previously-clean name: {fresh:?}"
+        );
+        assert!(fresh.iter().all(|v| v.symbol() != Some("AAA")), "{fresh:?}");
+    }
+
+    #[test]
+    fn the_full_call_decodes_the_envelope_strictly_and_the_repair_decodes_holdings_only() {
+        // The strict boundary: a full response missing the portfolio-level
+        // envelope must fail decode (schema drift or a daemon ignoring `format`
+        // must not persist a blank construction view), while the repair
+        // response is holdings-only by contract through its own type.
+        let holdings_only = r#"{"holdings":{}}"#;
+        assert!(
+            serde_json::from_str::<ConstructionDraft>(holdings_only).is_err(),
+            "a full-call decode must reject a missing envelope"
+        );
+        assert!(serde_json::from_str::<RepairResponse>(holdings_only).is_ok());
+    }
+
+    #[test]
+    fn the_repair_schema_requires_only_the_violating_names() {
+        let spine = vec![
+            spine_row("AAA", 0.10, vec![Action::Hold]),
+            spine_row("BBB", 0.10, vec![Action::Hold]),
+            spine_row("CCC", 0.10, vec![Action::Hold]),
+        ];
+        let schema = construction_repair_schema(&spine, &["BBB".to_string()]);
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(REPAIR_ENVELOPE_KEYS),
+            "the repair envelope is holdings-only"
+        );
+        let holdings = &schema["properties"]["holdings"];
+        assert_eq!(holdings["required"], serde_json::json!(["BBB"]));
+        assert!(holdings["properties"].get("AAA").is_none());
+        // The per-holding object keeps the full-ladder v7 shape.
+        assert_eq!(
+            holdings["properties"]["BBB"]["required"],
+            serde_json::json!(PER_HOLDING_PLAN_KEYS)
+        );
     }
 
     // ---- the construction merge ---------------------------------------------------

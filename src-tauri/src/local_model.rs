@@ -150,7 +150,14 @@ pub mod options {
     use serde_json::{json, Value};
 
     /// The "Thinking — general" row: research / interpretation stages.
-    pub fn thinking_general(num_ctx: u32) -> Value {
+    /// `num_predict` is the stage's explicit output reservation — a generous
+    /// diagnostic ceiling, not a constraint: a stop at the limit surfaces as
+    /// `done_reason: "length"` and becomes a legible truncation error instead of
+    /// an opaque downstream parse failure
+    /// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Fix candidates 4).
+    /// A load-time option it is not — unlike `num_ctx`, changing it never
+    /// reloads the resident runner.
+    pub fn thinking_general(num_ctx: u32, num_predict: u32) -> Value {
         json!({
             "temperature": 1.0,
             "top_p": 0.95,
@@ -158,11 +165,12 @@ pub mod options {
             "min_p": 0.0,
             "presence_penalty": 1.5,
             "num_ctx": num_ctx,
+            "num_predict": num_predict,
         })
     }
 
     /// The "Non-thinking — general" row: consolidation / distillation stages.
-    pub fn non_thinking_general(num_ctx: u32) -> Value {
+    pub fn non_thinking_general(num_ctx: u32, num_predict: u32) -> Value {
         json!({
             "temperature": 0.7,
             "top_p": 0.8,
@@ -170,6 +178,7 @@ pub mod options {
             "min_p": 0.0,
             "presence_penalty": 1.5,
             "num_ctx": num_ctx,
+            "num_predict": num_predict,
         })
     }
 }
@@ -188,6 +197,16 @@ pub struct ChatResponse {
     /// the request's `num_ctx` is the only in-app way to see it. `None` when the
     /// daemon omits the field.
     pub prompt_eval_count: Option<u64>,
+    /// Ollama's generated-token count (`eval_count`, same sources) — thinking and
+    /// content together. Against the request's `num_predict` it is the
+    /// output-budget read. `None` when the daemon omits the field.
+    pub eval_count: Option<u64>,
+    /// Why generation stopped (`done_reason`, same sources) — `"stop"` for a
+    /// natural end, `"length"` for a `num_predict`/context stop. A length stop
+    /// still arrives with `done: true` and HTTP 200, so this field is the only
+    /// way a truncated body is told apart from a complete one before it fails a
+    /// downstream parse. `None` when the daemon omits the field.
+    pub done_reason: Option<String>,
 }
 
 /// One chat call's prompt-size observation — the stage label, Ollama's reported
@@ -211,6 +230,18 @@ pub struct PromptUsage {
     /// is checked against.
     #[serde(default)]
     pub prompt_chars: u64,
+    /// Ollama's generated-token count for the call (`eval_count` — thinking and
+    /// content together), when reported. The output-side half of the read.
+    #[serde(default)]
+    pub completion_tokens: Option<u64>,
+    /// The `num_predict` the request declared, when set.
+    #[serde(default)]
+    pub num_predict: Option<u32>,
+    /// The call stopped at a length limit (`done_reason: "length"`) — its own
+    /// output reservation, or the shared context filling first. The consumers
+    /// disambiguate by comparing `completion_tokens` against `num_predict`.
+    #[serde(default)]
+    pub output_limited: bool,
 }
 
 /// The `num_ctx` a request declares in its generation options, when one is set.
@@ -219,6 +250,16 @@ pub fn request_num_ctx(req: &ChatRequest) -> Option<u32> {
     req.options
         .as_ref()?
         .get("num_ctx")?
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+}
+
+/// The `num_predict` a request declares in its generation options, when one is
+/// set — the [`request_num_ctx`] mirror for the output side.
+pub fn request_num_predict(req: &ChatRequest) -> Option<u32> {
+    req.options
+        .as_ref()?
+        .get("num_predict")?
         .as_u64()
         .and_then(|n| u32::try_from(n).ok())
 }
@@ -267,6 +308,10 @@ struct ChatReplyWire {
     message: ChatReplyMessage,
     #[serde(default)]
     prompt_eval_count: Option<u64>,
+    #[serde(default)]
+    eval_count: Option<u64>,
+    #[serde(default)]
+    done_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -287,6 +332,8 @@ fn parse_chat_reply(body: &str) -> Result<ChatResponse> {
         content: wire.message.content,
         thinking: wire.message.thinking.filter(|t| !t.is_empty()),
         prompt_eval_count: wire.prompt_eval_count,
+        eval_count: wire.eval_count,
+        done_reason: wire.done_reason,
     })
 }
 
@@ -581,6 +628,8 @@ fn stream_chat_response(
     let mut thinking_pending = String::new();
     let mut saw_done = false;
     let mut prompt_eval_count = None;
+    let mut eval_count = None;
+    let mut done_reason = None;
 
     for line in reader.lines() {
         if progress.is_cancelled() {
@@ -621,8 +670,15 @@ fn stream_chat_response(
         }
         if event.get("done").and_then(Value::as_bool) == Some(true) {
             saw_done = true;
-            // The terminal chunk carries the run counters (`prompt_eval_count` …).
+            // The terminal chunk carries the run counters (`prompt_eval_count` …)
+            // and the stop reason — a `num_predict`/length stop still ends with
+            // `done: true`, so this is where a truncation becomes visible.
             prompt_eval_count = event.get("prompt_eval_count").and_then(Value::as_u64);
+            eval_count = event.get("eval_count").and_then(Value::as_u64);
+            done_reason = event
+                .get("done_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             break;
         }
     }
@@ -648,6 +704,8 @@ fn stream_chat_response(
         content,
         thinking: (!thinking.is_empty()).then_some(thinking),
         prompt_eval_count,
+        eval_count,
+        done_reason,
     })
 }
 
@@ -882,21 +940,23 @@ mod tests {
     fn option_profiles_match_the_vendor_sampling_rows() {
         // The two rows from `docs/local-model-operations.md §Sampling settings`,
         // exact — and never greedy (temperature 0 is explicitly warned against).
-        let think = options::thinking_general(131_072);
+        let think = options::thinking_general(131_072, 65_536);
         assert_eq!(think["temperature"], 1.0);
         assert_eq!(think["top_p"], 0.95);
         assert_eq!(think["top_k"], 20);
         assert_eq!(think["min_p"], 0.0);
         assert_eq!(think["presence_penalty"], 1.5);
         assert_eq!(think["num_ctx"], 131_072);
+        assert_eq!(think["num_predict"], 65_536);
 
-        let fast = options::non_thinking_general(32_768);
+        let fast = options::non_thinking_general(32_768, 8_192);
         assert_eq!(fast["temperature"], 0.7);
         assert_eq!(fast["top_p"], 0.8);
         assert_eq!(fast["top_k"], 20);
         assert_eq!(fast["min_p"], 0.0);
         assert_eq!(fast["presence_penalty"], 1.5);
         assert_eq!(fast["num_ctx"], 32_768);
+        assert_eq!(fast["num_predict"], 8_192);
         for profile in [&think, &fast] {
             assert_ne!(profile["temperature"], 0.0, "greedy decoding is forbidden");
         }
@@ -1239,20 +1299,42 @@ mod tests {
         let ndjson = concat!(
             r#"{"message":{"content":"body"}}"#,
             "\n",
-            r#"{"message":{"content":""},"done":true,"prompt_eval_count":131000,"eval_count":9}"#,
+            r#"{"message":{"content":""},"done":true,"prompt_eval_count":131000,"eval_count":9,"done_reason":"stop"}"#,
             "\n",
         );
         let resp = stream_chat_response(ndjson.as_bytes(), &ctx, StreamRole::Silent).unwrap();
         assert_eq!(resp.content, "body");
         assert_eq!(resp.prompt_eval_count, Some(131_000));
+        assert_eq!(resp.eval_count, Some(9));
+        assert_eq!(resp.done_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn a_length_stop_is_a_done_stream_with_the_reason_captured() {
+        // Ollama ends a `num_predict` stop with `done: true` and HTTP 200 — the
+        // stream is NOT the "ended before completion" truncation, so the decoder
+        // returns Ok and `done_reason` is the only truncation witness.
+        let (_rec, ctx) = recording_ctx();
+        let ndjson = concat!(
+            r#"{"message":{"content":"partial"}}"#,
+            "\n",
+            r#"{"message":{"content":""},"done":true,"eval_count":65536,"done_reason":"length"}"#,
+            "\n",
+        );
+        let resp = stream_chat_response(ndjson.as_bytes(), &ctx, StreamRole::Silent).unwrap();
+        assert_eq!(resp.content, "partial");
+        assert_eq!(resp.done_reason.as_deref(), Some("length"));
+        assert_eq!(resp.eval_count, Some(65_536));
     }
 
     #[test]
     fn request_num_ctx_reads_the_options_field() {
         let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
         assert_eq!(request_num_ctx(&req), None); // no options at all
-        req.options = Some(options::thinking_general(131_072));
+        assert_eq!(request_num_predict(&req), None);
+        req.options = Some(options::thinking_general(131_072, 65_536));
         assert_eq!(request_num_ctx(&req), Some(131_072));
+        assert_eq!(request_num_predict(&req), Some(65_536));
     }
 
     #[test]

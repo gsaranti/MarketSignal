@@ -2046,6 +2046,57 @@ mod tests {
     }
 
     #[test]
+    fn a_suite_row_carries_the_gap_reason_and_transport_detail() {
+        // `suite_get` previously emitted status "empty" with `detail: None` for
+        // every gap; the row now carries the gap's kebab reason and, on a
+        // transport error, the error text — the per-fetch trace the 2026-08-10
+        // failure analysis had to reconstruct from screenshots.
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        // An unroutable endpoint: a transport error on every attempt; the
+        // millisecond schedule keeps the retries instant.
+        let source = test_source("http://127.0.0.1:1")
+            .with_retry_policy(crate::http_retry::RetryPolicy {
+                rate_limit: crate::http_retry::Schedule {
+                    attempts: 2,
+                    base: StdDuration::from_millis(1),
+                },
+                server_error: crate::http_retry::Schedule {
+                    attempts: 2,
+                    base: StdDuration::from_millis(1),
+                },
+                retry_after_cap: StdDuration::from_millis(50),
+            })
+            .with_context(ctx);
+        let mut gaps = Vec::new();
+        let income = source.fetch_quarterly_income("AAPL", &mut gaps);
+        assert!(income.is_empty());
+        let finished: Vec<(String, Option<String>)> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished { status, detail, .. } => {
+                    Some((status, detail))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(finished.len(), 1, "one suite row for the one fetch");
+        assert_eq!(finished[0].0, "unavailable", "the gap reason is the status");
+        let detail = finished[0].1.as_deref().expect(
+            "the transport error reaches the row's detail",
+        );
+        // The detail must never carry the request URL: the FMP key rides as a
+        // query param, and this string reaches stderr (the tee) and the tracker.
+        assert!(!detail.contains("test-key"), "{detail}");
+        assert!(!detail.contains("apikey"), "{detail}");
+    }
+
+    #[test]
     fn company_quote_and_eod_parse_into_financials() {
         // The per-company pull makes six calls — quote, EOD, quarterly income,
         // balance sheet, analyst estimates, dividends — so the mock scripts six
@@ -3905,16 +3956,24 @@ impl FmpDataSource {
             return Disposition::Gap(GapReason::Unavailable);
         }
         self.progress.request_started("FMP", kind, symbol, label);
-        let disposition = match self.get(path, extra) {
-            Ok((status, body)) => interpret_response(status, &body),
-            Err(_) => Disposition::Gap(GapReason::Unavailable),
+        // The failure reason reaches the row: the gap's kebab label as the
+        // status (the documented tracker vocabulary, like the baseline rows)
+        // and the transport error as the detail — a degraded suite fetch was
+        // previously an undifferentiated `empty` with no reason anywhere
+        // (`docs/verification/2026-08-10-big-run-attempt-1.md` §Residue).
+        let (disposition, detail) = match self.get(path, extra) {
+            Ok((status, body)) => (interpret_response(status, &body), None),
+            Err(e) => (
+                Disposition::Gap(GapReason::Unavailable),
+                Some(format!("{e:#}")),
+            ),
         };
         let status = match &disposition {
             Disposition::Value(_) => "ok",
-            Disposition::Gap(_) => "empty",
+            Disposition::Gap(r) => r.as_str(),
         };
         self.progress
-            .request_finished("FMP", kind, symbol, label, status, None);
+            .request_finished("FMP", kind, symbol, label, status, detail);
         disposition
     }
 

@@ -185,6 +185,17 @@ pub fn send_with_retry_policy(
                             retry_after_of(&resp),
                             policy.retry_after_cap,
                         );
+                        // The one place ladder engagement is observable — the
+                        // tracker's request rows can't see retries (one row per
+                        // logical request), so a ridden 429 ladder was invisible
+                        // outside a run row a failed run never writes
+                        // (`docs/verification/2026-08-10-big-run-attempt-1.md`
+                        // §Residue).
+                        eprintln!(
+                            "[http-retry] {label}: HTTP {status} on attempt {attempt}, \
+                             backing off {}ms",
+                            wait.as_millis()
+                        );
                         if !sleep_abortable(wait, abort) {
                             attempt += 1;
                             continue;
@@ -205,6 +216,11 @@ pub fn send_with_retry_policy(
                             None,
                             policy.retry_after_cap,
                         );
+                        eprintln!(
+                            "[http-retry] {label}: response body dropped on attempt {attempt}, \
+                             backing off {}ms",
+                            wait.as_millis()
+                        );
                         if sleep_abortable(wait, abort) {
                             return Err(anyhow::anyhow!(
                                 "aborted while retrying a dropped {label} response body"
@@ -219,12 +235,24 @@ pub fn send_with_retry_policy(
                 }
             }
             Err(e) => {
+                // Strip the URL before the error is printed OR returned: FMP and
+                // FRED carry their API keys as query params, and a reqwest
+                // transport error's Display includes the full URL — so an
+                // unstripped error leaks the credential into stderr, the
+                // tracker-row detail, and the persisted `job_runs.detail` its
+                // context chain can reach.
+                let e = e.without_url();
                 if attempt < policy.server_error.attempts {
                     let wait = backoff(
                         policy.server_error.base,
                         attempt,
                         None,
                         policy.retry_after_cap,
+                    );
+                    eprintln!(
+                        "[http-retry] {label}: transport error on attempt {attempt}, backing \
+                         off {}ms ({e})",
+                        wait.as_millis()
                     );
                     if sleep_abortable(wait, abort) {
                         return Err(e).with_context(|| format!("sending {label} request"));
@@ -284,6 +312,37 @@ mod tests {
             DEFAULT_RETRY.cumulative_rate_limit_backoff(),
             Duration::from_secs(3)
         );
+    }
+
+    #[test]
+    fn a_transport_error_never_carries_the_query_string() {
+        // FMP and FRED ride their API keys as query params, and a reqwest
+        // transport error's Display includes the request URL — the Err arm must
+        // strip it before the error is printed or returned (the context chain
+        // reaches the tracker-row detail and the persisted job detail).
+        let client = reqwest::blocking::Client::new();
+        let err = send_with_retry_policy(
+            "FMP",
+            &RetryPolicy {
+                rate_limit: Schedule {
+                    attempts: 2,
+                    base: Duration::from_millis(1),
+                },
+                server_error: Schedule {
+                    attempts: 2,
+                    base: Duration::from_millis(1),
+                },
+                retry_after_cap: Duration::from_millis(10),
+            },
+            None,
+            // Unroutable port: connection refused on every attempt.
+            || client.get("http://127.0.0.1:1/quote?apikey=sekrit-value"),
+        )
+        .unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(!chain.contains("sekrit-value"), "{chain}");
+        assert!(!chain.contains("apikey"), "{chain}");
+        assert!(chain.contains("sending FMP request"), "{chain}");
     }
 
     /// A millisecond-scale policy so class-split and abort tests run fast; the
