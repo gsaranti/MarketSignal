@@ -5335,16 +5335,27 @@ mod tests {
         // The branch carries no action of its own — declaring one would invite it.
         assert!(!role.contains("model_price_targets"), "{role}");
 
-        // Construction is keyed by ticker, so both levels are declared: the envelope
-        // and the per-holding object the model repeats for every symbol.
-        let spine_schema = crate::portfolio::construction::construction_schema(&[]);
-        let build = crate::portfolio::construction::construction_system_prompt();
-        for key in non_empty(required_keys(&spine_schema), "construction envelope") {
-            assert!(build.contains(&key), "construction prompt omits `{key}`");
+        // Construction cannot be checked by containment: `action`, `rationale` and
+        // `divergence_cause` all appear in the prose above the declaration, so dropping
+        // them from it would still "contain" them. The contract is generated from the
+        // key constants instead, and the two things worth pinning are that the schema
+        // is built from those same constants and that the prompt carries the result.
+        use crate::portfolio::construction as build_stage;
+        let spine_schema = build_stage::construction_schema(&[]);
+        assert_eq!(
+            non_empty(required_keys(&spine_schema), "construction envelope"),
+            build_stage::PLAN_ENVELOPE_KEYS.to_vec(),
+            "envelope schema drifted from the key constant"
+        );
+        let contract = build_stage::construction_response_contract();
+        for key in build_stage::PLAN_ENVELOPE_KEYS
+            .iter()
+            .chain(build_stage::PER_HOLDING_PLAN_KEYS.iter())
+        {
+            assert!(contract.contains(key), "contract omits `{key}`");
         }
-        for key in crate::portfolio::construction::PER_HOLDING_PLAN_KEYS {
-            assert!(build.contains(key), "construction prompt omits per-holding `{key}`");
-        }
+        let build = build_stage::construction_system_prompt();
+        assert!(build.contains(&contract), "the prompt does not carry the contract");
 
         // The internal build vocabulary of Finding 3 stays out of every prompt.
         for p in [&priced, &role, &build] {

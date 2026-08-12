@@ -1619,6 +1619,14 @@ fn parse_action(s: &str) -> Option<Action> {
 /// reads it, so a field added here fails that test until the prompt declares it —
 /// the drift Finding 2 describes, closed structurally rather than by discipline
 /// (`docs/verification/2026-08-10-big-run-attempt-1.md`).
+pub const PLAN_ENVELOPE_KEYS: [&str; 5] = [
+    "holdings",
+    "risk_posture",
+    "deployment_stance",
+    "concentration_read",
+    "closed_positions_note",
+];
+
 pub const PER_HOLDING_PLAN_KEYS: [&str; 9] = [
     "action",
     "target_weight_low",
@@ -1689,10 +1697,7 @@ pub fn construction_schema(spine: &[SizingSpineRow]) -> Value {
             "concentration_read": { "type": "string" },
             "closed_positions_note": { "type": ["string", "null"] }
         },
-        "required": [
-            "holdings", "risk_posture", "deployment_stance",
-            "concentration_read", "closed_positions_note"
-        ]
+        "required": PLAN_ENVELOPE_KEYS
     })
 }
 
@@ -1700,7 +1705,8 @@ pub fn construction_schema(spine: &[SizingSpineRow]) -> Value {
 
 /// The construction call's system prompt.
 pub fn construction_system_prompt() -> String {
-    "You are the portfolio-construction stage of a prescriptive portfolio review. \
+    format!(
+        "You are the portfolio-construction stage of a prescriptive portfolio review. \
      Every holding has already been analyzed in isolation — its grade, conviction, \
      scenario targets, and a STANDALONE ACTION LEAN (what the action would be if the \
      holding stood alone). Your job is the one judgment that needs the whole book: \
@@ -1726,16 +1732,28 @@ pub fn construction_system_prompt() -> String {
      raising cash from one may cite the possible tax benefit of realizing the loss \
      and the redeployment optionality of the proceeds as supporting rationale, framed \
      high-level (the user acts on the specifics). Do NOT invent numbers: every figure \
-     you cite must come from the aggregates given. Respond with a single JSON object carrying exactly these \
-     keys: holdings, risk_posture, deployment_stance, concentration_read, \
-     closed_positions_note. `holdings` is keyed by ticker with one entry per \
-     holding listed above, each carrying exactly: action, target_weight_low, \
-     target_weight_high, rationale, divergence_cause, divergence_note, \
-     changed_attribution, changed_cause, changed_note — the nullable ones \
-     present, holding null where they do not apply. The response format is \
-     enforced by the decoder, so spend no reasoning on shape — put it into the \
-     plan."
-        .to_string()
+     you cite must come from the aggregates given. {}",
+        construction_response_contract()
+    )
+}
+
+/// The response-contract sentence, generated from the same constants the schema's
+/// `required` sets are built from, so the declaration cannot drift from what is
+/// enforced. Generated rather than asserted: `action`, `rationale` and
+/// `divergence_cause` all appear in the instructional prose above this clause, so a
+/// containment test over the whole prompt cannot distinguish a real declaration from
+/// an incidental mention (`docs/verification/2026-08-10-big-run-attempt-1.md`
+/// §Finding 2).
+pub fn construction_response_contract() -> String {
+    format!(
+        "Respond with a single JSON object carrying exactly these keys: {}. \
+         `holdings` is keyed by ticker with one entry per holding listed above, each \
+         carrying exactly: {} — the nullable ones present, holding null where they do \
+         not apply. The response format is enforced by the decoder, so spend no \
+         reasoning on shape — put it into the plan.",
+        PLAN_ENVELOPE_KEYS.join(", "),
+        PER_HOLDING_PLAN_KEYS.join(", "),
+    )
 }
 
 /// Render one spine row's digest line for the user prompt.
