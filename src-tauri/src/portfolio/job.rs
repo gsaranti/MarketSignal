@@ -1240,9 +1240,20 @@ fn run_analysis(
             if ctx.is_cancelled() {
                 anyhow::bail!("run cancelled");
             }
-            let named: Vec<String> = violations.iter().map(|v| format!("- {v}")).collect();
             let scope =
                 crate::portfolio::construction::repair_scope(&violations, &aggregates.spine);
+            // Only the violations the narrowed schema gives the model a slot to
+            // fix: a non-spine key's violation (`UnknownHolding`) is repaired
+            // deterministically by the overlay, and naming it to the model
+            // would demand a correction it cannot author.
+            let named: Vec<String> = violations
+                .iter()
+                .filter(|v| {
+                    v.symbol()
+                        .is_some_and(|s| scope.iter().any(|c| c.eq_ignore_ascii_case(s)))
+                })
+                .map(|v| format!("- {v}"))
+                .collect();
             let corrected = if scope.is_empty() {
                 // Every violation names a non-spine key — droppable
                 // deterministically by the overlay, no model call needed.
@@ -1252,7 +1263,11 @@ fn run_analysis(
                     Some(crate::portfolio::construction::ConstructionRepair {
                         symbols: scope.clone(),
                         violations: named.join("\n"),
-                        prior_plan: crate::portfolio::construction::render_prior_plan(&draft),
+                        prior_plan: crate::portfolio::construction::render_prior_plan(
+                            &draft,
+                            &aggregates.spine,
+                            &scope,
+                        ),
                     });
                 construct_or_persist_degraded!(analyst.construct(&construction_input)).holdings
             };

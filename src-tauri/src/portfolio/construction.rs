@@ -916,11 +916,15 @@ pub struct RepairResponse {
 pub struct ConstructionRepair {
     /// The violating symbols (spine casing) — the repair schema's required set.
     pub symbols: Vec<String>,
-    /// The rendered `- symbol: …` violation lines the model must fix.
+    /// The rendered `- symbol: …` violation lines the model must fix — scoped
+    /// to the symbols above: a non-spine key's violation is repaired
+    /// deterministically by the overlay, and naming it here would demand a fix
+    /// the narrowed schema gives the model no slot to author.
     pub violations: String,
-    /// A compact rendering of the first draft's plan — every holding not named
-    /// keeps its previous proposal, and the corrected weights must cohere with
-    /// them simultaneously, so the model must see the book it repairs into.
+    /// A compact rendering of the plan the overlay keeps
+    /// ([`render_prior_plan`]) — every kept holding retains its previous
+    /// proposal, and the corrected weights must cohere with them
+    /// simultaneously, so the model must see the true book it repairs into.
     pub prior_plan: String,
 }
 
@@ -1714,13 +1718,33 @@ pub fn repair_scope(violations: &[Violation], spine: &[SizingSpineRow]) -> Vec<S
         .collect()
 }
 
-/// Render the first draft's plan compactly for the repair prompt — one line per
-/// holding (action + stated range), so the model sees the book its corrected
-/// objects must cohere with: the implied post-action weights are book-coupled,
-/// and every holding it is not correcting keeps exactly these proposals.
-pub fn render_prior_plan(draft: &ConstructionDraft) -> String {
+/// Whether a first-draft key survives the overlay: outside the repair scope
+/// (its holding is not being corrected) and resolving to a spine row (a key
+/// naming no holding is deterministically dropped). Shared by
+/// [`overlay_repair`] and [`render_prior_plan`], so the plan the repair prompt
+/// calls kept is exactly the plan the overlay keeps.
+fn overlay_keeps(key: &str, spine: &[SizingSpineRow], repair_symbols: &[String]) -> bool {
+    !repair_symbols.iter().any(|s| s.eq_ignore_ascii_case(key))
+        && spine.iter().any(|r| r.symbol.eq_ignore_ascii_case(key))
+}
+
+/// Render the plan the overlay will actually keep — the first draft minus the
+/// repair scope and minus non-spine keys — one line per holding (action +
+/// stated range), so the model sees the true book its corrected objects must
+/// cohere with: the implied post-action weights are book-coupled. Rendering a
+/// key the overlay drops would tell the model a phantom position is kept, and
+/// it would size its corrections to cohere with weight that will not exist
+/// (attempt-1 review sweep).
+pub fn render_prior_plan(
+    draft: &ConstructionDraft,
+    spine: &[SizingSpineRow],
+    repair_symbols: &[String],
+) -> String {
     let mut out = String::new();
     for (symbol, p) in &draft.holdings {
+        if !overlay_keeps(symbol, spine, repair_symbols) {
+            continue;
+        }
         out.push_str(&format!(
             "- {}: {} [{:.4}\u{2013}{:.4}]\n",
             symbol, p.action, p.target_weight_low, p.target_weight_high
@@ -1737,9 +1761,13 @@ pub fn render_prior_plan(draft: &ConstructionDraft) -> String {
 /// holding *outside* the repair scope is ignored — the documented contract is
 /// that every un-named holding keeps its first-draft proposal, and the grammar
 /// cannot bar extra keys (that reachability is exactly why `UnknownHolding`
-/// exists on the full call). The merged draft is then re-validated **whole** —
-/// the implied post-action weights are book-coupled through the implied total,
-/// so a per-symbol re-check would miss a repair that breaks a previously-clean
+/// exists on the full call). Corrected keys insert under the scope's (spine)
+/// casing: two in-scope case variants would otherwise land as distinct map keys
+/// and re-fail whole-book validation as `DuplicateHolding`, burning the single
+/// repair pass on a shape the app collapses deterministically (the response's
+/// later key wins). The merged draft is then re-validated **whole** — the
+/// implied post-action weights are book-coupled through the implied total, so a
+/// per-symbol re-check would miss a repair that breaks a previously-clean
 /// holding's containment.
 pub fn overlay_repair(
     first: &ConstructionDraft,
@@ -1747,19 +1775,13 @@ pub fn overlay_repair(
     spine: &[SizingSpineRow],
     repair_symbols: &[String],
 ) -> ConstructionDraft {
-    let in_scope =
-        |key: &str| repair_symbols.iter().any(|s| s.eq_ignore_ascii_case(key));
     let mut holdings = first.holdings.clone();
-    holdings.retain(|key, _| !in_scope(key));
+    holdings.retain(|key, _| overlay_keeps(key, spine, repair_symbols));
     for (key, proposal) in corrected {
-        if in_scope(&key) {
-            holdings.insert(key, proposal);
+        if let Some(canonical) = repair_symbols.iter().find(|s| s.eq_ignore_ascii_case(&key)) {
+            holdings.insert(canonical.clone(), proposal);
         }
     }
-    // Non-spine keys are dropped from *both* maps — a key that resolves to no
-    // spine row can never carry a valid proposal, so the app repairs it
-    // deterministically rather than asking a model to author the impossible.
-    holdings.retain(|key, _| spine.iter().any(|r| r.symbol.eq_ignore_ascii_case(key)));
     ConstructionDraft {
         holdings,
         risk_posture: first.risk_posture.clone(),
@@ -2100,11 +2122,13 @@ pub fn construction_user_prompt(
         p.push_str(&format!(
             "VALIDATION FAILURE — your previous proposal violated the construction \
              contract on the holdings named below. Return corrected objects for ONLY \
-             these holdings: {}. Every other holding keeps its previous proposal \
-             exactly as stated in YOUR PREVIOUS PLAN, so your corrected weights must \
-             cohere with those kept proposals SIMULTANEOUSLY on the implied \
-             post-action book.\nViolations to fix:\n{}\n\nYOUR PREVIOUS PLAN (kept \
-             verbatim for every holding you are not correcting):\n{}\n",
+             these holdings: {}. Every holding in THE KEPT PLAN keeps its previous \
+             proposal exactly as stated, so your corrected weights must cohere with \
+             those kept proposals SIMULTANEOUSLY on the implied post-action book. Any \
+             key from your previous response naming no actual holding has been \
+             removed and is not part of the book — do not re-emit it.\nViolations to \
+             fix:\n{}\n\nTHE KEPT PLAN (kept verbatim; your corrected objects replace \
+             only the holdings named above):\n{}\n",
             r.symbols.join(", "),
             r.violations,
             r.prior_plan,
@@ -3652,9 +3676,11 @@ mod tests {
         assert!(retry.starts_with("VALIDATION FAILURE"));
         assert!(retry.contains("sell-all must carry a 0-0 weight range"));
         // The repair block carries the corrected-objects-only scope and the kept
-        // first-draft plan the corrections must cohere with.
+        // plan the corrections must cohere with — plus the removed-keys notice,
+        // so a dropped phantom key is never re-emitted to "fix" its violation.
         assert!(retry.contains("ONLY these holdings: AAA"), "{retry}");
-        assert!(retry.contains("YOUR PREVIOUS PLAN"), "{retry}");
+        assert!(retry.contains("THE KEPT PLAN"), "{retry}");
+        assert!(retry.contains("do not re-emit it"), "{retry}");
         assert!(retry.contains("- AAA: hold [0.1620\u{2013}0.1980]"), "{retry}");
 
         // The repair system prompt swaps in the corrected-objects contract.
@@ -3756,6 +3782,63 @@ mod tests {
             merged.holdings["BBB"].action, "hold",
             "an unsolicited correction outside the scope is ignored"
         );
+    }
+
+    #[test]
+    fn overlay_repair_collapses_case_variant_corrected_keys() {
+        // The narrowed schema cannot bar extra keys, so a repair response can
+        // carry two case variants of one scoped name. Both must land on the
+        // spine-cased key — as distinct map keys they would re-fail whole-book
+        // validation as DuplicateHolding and burn the single repair pass.
+        let spine = vec![spine_row("AAA", 0.10, vec![Action::Hold])];
+        let mut first_holdings = BTreeMap::new();
+        first_holdings.insert("AAA".to_string(), proposal("hold", 0.9, 0.95));
+        let first = ConstructionDraft {
+            holdings: first_holdings,
+            risk_posture: "kept".into(),
+            deployment_stance: "kept".into(),
+            concentration_read: "kept".into(),
+            closed_positions_note: None,
+        };
+        let mut corrected = BTreeMap::new();
+        corrected.insert("AAA".to_string(), proposal("hold", 0.08, 0.12));
+        corrected.insert("aaa".to_string(), proposal("trim", 0.04, 0.07));
+        let merged = overlay_repair(&first, corrected, &spine, &["AAA".to_string()]);
+        assert_eq!(
+            merged.holdings.keys().collect::<Vec<_>>(),
+            vec!["AAA"],
+            "case variants collapse onto the spine casing"
+        );
+        // Deterministic winner: the response's later key ("aaa" after "AAA" in
+        // BTreeMap order) overwrites, so the merge never depends on chance.
+        assert_eq!(merged.holdings["AAA"].action, "trim");
+    }
+
+    #[test]
+    fn render_prior_plan_renders_exactly_the_kept_set() {
+        // The kept-plan rendering must match the overlay's kept set: a scoped
+        // (being-corrected) key and a non-spine (deterministically dropped) key
+        // rendered as "kept" would make the model cohere its corrections with
+        // weight that will not exist in the merged book.
+        let spine = vec![
+            spine_row("AAA", 0.10, vec![Action::Hold]),
+            spine_row("BBB", 0.10, vec![Action::Hold]),
+        ];
+        let mut holdings = BTreeMap::new();
+        holdings.insert("AAA".to_string(), proposal("hold", 0.09, 0.11));
+        holdings.insert("bbb".to_string(), proposal("trim", 0.04, 0.07));
+        holdings.insert("ZZZT".to_string(), proposal("hold", 0.0, 0.05));
+        let draft = ConstructionDraft {
+            holdings,
+            risk_posture: String::new(),
+            deployment_stance: String::new(),
+            concentration_read: String::new(),
+            closed_positions_note: None,
+        };
+        let rendered = render_prior_plan(&draft, &spine, &["AAA".to_string()]);
+        assert!(!rendered.contains("AAA"), "scoped key is not kept: {rendered}");
+        assert!(!rendered.contains("ZZZT"), "non-spine key is not kept: {rendered}");
+        assert_eq!(rendered, "- bbb: trim [0.0400\u{2013}0.0700]\n");
     }
 
     #[test]
