@@ -487,6 +487,15 @@ Each finding's own section carries any correction to its scope, found while buil
   evidence at all about what the model reaches for when a fitting term exists.
   Any new cause must be checkable against a real Step-7a aggregate, and `BookAggregates.cash_weight`
   with the solve's implied weights makes a cash-overshoot cause checkable when it is built.
+- **Finding 5 — the engine arm's pick stays withheld at Step 6f, and the prompt now says so.**
+  Naming the pick would anchor the model arm the scoreboard needs independent, so the
+  menu-without-a-choice rendering is deliberate.
+  The defect was the prompt's silence, not the omission: the model litigated a gap it could not see
+  the reason for.
+  The lean-set closer now states the pick is deliberately not shown — the set is the engine's
+  restriction, not a hint to reproduce — and tells the model to form its own lean for the scoreboard
+  to compare.
+  Ruled and built together in the pre-run slice (`b634c23`) rather than in the ruling round above.
 
 ### Built — 2026-08-11
 
@@ -499,15 +508,34 @@ Each finding's own section carries any correction to its scope, found while buil
   back to the threaded profile name.
   Request rows follow the running step only when a real `step-started` opened it, which also closes the
   latent hazard in the pre-existing `memory` branch.
-- **Finding 5 is unruled**, and gates nothing, so it rides with the pre-run slice.
+- **Candidates 2 and 4, and the §Residue adapter-diagnostics gap** — the pre-run slice (`b634c23`),
+  verified against its own full gate (1074 cargo tests, clippy clean at
+  `--all-targets --all-features`, `npm run build` clean, 46 node + 231 vitest) and reviewed to
+  approval, internal approve-with-nits plus one Codex round.
+  The named-violation re-run now asks for corrected objects only for the violating names, under a
+  narrowed holdings-only schema that reuses the first draft's envelope.
+  The corrections are overlaid onto the first draft and the merged plan is re-validated whole,
+  because implied weights are book-coupled.
+  Non-spine keys drop deterministically, scope is enforced both ways, and an unknown-key-only
+  failure repairs with no model call.
+  Every portfolio stage now sets `num_predict`.
+  A `done_reason: "length"` stop fails typed, the token counts disambiguating a reservation hit from
+  context exhaustion, and the observation rides data-health.
+  The `NUM_PREDICT_*` values are drafted, calibratable, and none yet calibrated.
+  Degraded persistence widened in the same slice to any Step 7b construction-call failure — a parse
+  failure is exactly what an output truncation becomes — with a user cancel still leaving no row.
+  The adapter seams that already know now say so: a stderr tee at `RunContext::emit`, `http_retry`
+  backoff lines with URLs stripped from transport errors (a query-string API key can no longer reach
+  a log, tracker row, or persisted job detail — this also closed a pre-existing leak through
+  returned error chains), suite request rows carrying the gap reason and detail, and a Stooq
+  breaker-trip line.
 
 ### Still open
 
-Candidates 2 and 3, and candidate 4 as the diagnostic its own entry now describes.
-Candidate 3 stays un-targeted until a run persists: `record_usage` already captures prompt tokens,
-`num_ctx` and sent size for the construction stage specifically, and it ran during this attempt into an
-in-memory buffer that reached disk only through the run record, so it was computed and discarded with
-everything else.
-That makes candidate 1 the instrument for candidate 3 as well as insurance against a repeat.
-The adapter-diagnostics gap under §Residue is unaddressed and belongs with the pre-run work: it is the
-reason this analysis rests on screenshots, and candidate 1 covers only a failure that reaches Step 7b.
+Candidate 3 alone.
+Digest compression stays un-targeted until a run persists, and it is now doubly instrumented:
+`record_usage` captures prompt tokens, `num_ctx` and sent size for the construction stage
+specifically, and since the pre-run slice its completion fields persist even when Step 7b fails.
+Attempt 2 therefore supplies the targeting evidence whether or not it constructs a book.
+The deferred "declined an engine exit" vocabulary waits on the same run, as its ruling above already
+records.

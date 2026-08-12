@@ -571,12 +571,13 @@ is now fully built.**
    early, since several items resolve off that surface alone. The first attempt
    failed at Step 7b after completing the per-holding pass, and persisted
    nothing — evidence in `docs/verification/2026-08-10-big-run-attempt-1.md`.
-   The repair is now fully built: both rulings applied, the prompt and
-   tracker-routing half and the persistence and attribution half alike, so a
-   repeat failure at 7b preserves its evidence as a degraded run instead of
-   discarding the pass. What stands between here and a second attempt is the
-   re-run-only-violating-names fix; that record's §Disposition owns the queue,
-   not this brief.
+   The repair and the pre-run slice behind it are both fully built: a repeat
+   failure at 7b preserves its evidence as a degraded run instead of
+   discarding the pass, the named-violation re-run repairs only the violating
+   names, and the output budget and adapter seams are instrumented. Nothing
+   stands between here and a second attempt; what stays open behind the run
+   (digest compression) is owned by that record's §Disposition, not this
+   brief.
 2. **Trade Opportunities** — designed, not built, and waiting behind the whole
    block. The design is settled and the paid FMP shapes are live-verified, so
    implementation planning codes against verified shapes. Five hard-trigger
