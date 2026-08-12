@@ -507,7 +507,12 @@ pub fn run_portfolio_job(
         }
         Err(e) => {
             let finished_at = now_rfc3339();
-            let msg = e.to_string();
+            // Alternate (chain) format, not `to_string()`: a context-wrapped
+            // failure (e.g. the construction macro's) would otherwise persist
+            // only its outermost message, hiding the typed root cause — the
+            // length stop, the parse failure, the HTTP error — from
+            // `job_runs.detail`, the forensic surface a failed run leaves.
+            let msg = format!("{e:#}");
             let recorded = record_run(
                 &conn,
                 &JobRun {
@@ -1724,15 +1729,20 @@ fn build_data_health(
     // *below* `num_ctx`, so the fill fraction alone cannot see it — the preflight
     // marker test's 1,026-of-2,048 signature). The peak fill is recorded
     // regardless — the big-run prompt-fit watch's measurement.
-    let fill = |u: &crate::local_model::PromptUsage| u.prompt_tokens as f64 / u.num_ctx as f64;
+    // A daemon-omitted `prompt_eval_count` records as `None` (the row survives
+    // for its output-side observation): fill reads 0 and truncation reads
+    // false, so a count-less row can never enter a context-fit line.
+    let fill = |u: &crate::local_model::PromptUsage| {
+        u.prompt_tokens.unwrap_or(0) as f64 / u.num_ctx as f64
+    };
     let truncated = |u: &crate::local_model::PromptUsage| {
-        u.prompt_tokens
-            .saturating_mul(crate::portfolio::TRUNCATION_CHARS_PER_TOKEN)
-            < u.prompt_chars
+        u.prompt_tokens.is_some_and(|t| {
+            t.saturating_mul(crate::portfolio::TRUNCATION_CHARS_PER_TOKEN) < u.prompt_chars
+        })
     };
     let peak_prompt = prompt_usage
         .iter()
-        .filter(|u| u.num_ctx > 0)
+        .filter(|u| u.num_ctx > 0 && u.prompt_tokens.is_some())
         .max_by(|a, b| fill(a).total_cmp(&fill(b)))
         .cloned();
     // The output-budget read (`num_predict` — `docs/verification/
@@ -1757,10 +1767,13 @@ fn build_data_health(
     {
         // `done_reason: "length"` covers two stops with different levers — the
         // call's own output reservation, or the shared context filling first —
-        // so the line says which one the worst row's counts show.
-        let at_reservation = matches!(
-            (worst.completion_tokens, worst.num_predict),
-            (Some(g), Some(r)) if g >= u64::from(r)
+        // so the line says which one the worst row's counts show, through the
+        // same single-homed predicate the per-call typed failure used
+        // (`local_model::length_stop_reading`), and claims nothing when the
+        // counts are incomplete.
+        let reading = crate::local_model::length_stop_reading(
+            worst.completion_tokens,
+            worst.num_predict,
         );
         parts.push(format!(
             "generation length-stopped on {} local call{} (worst: {} generated {} of {} \
@@ -1776,10 +1789,16 @@ fn build_data_health(
                 .num_predict
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| "unset".into()),
-            if at_reservation {
-                "at the output reservation"
-            } else {
-                "under it; context exhaustion suspected"
+            match reading {
+                crate::local_model::LengthStopReading::AtReservation => {
+                    "at the output reservation"
+                }
+                crate::local_model::LengthStopReading::UnderReservation => {
+                    "under it; context exhaustion suspected"
+                }
+                crate::local_model::LengthStopReading::Unattributed => {
+                    "counts incomplete; stop unattributed"
+                }
             },
         ));
     }
@@ -1795,7 +1814,8 @@ fn build_data_health(
             truncation_suspects.len(),
             if truncation_suspects.len() == 1 { "" } else { "s" },
             worst.stage,
-            worst.prompt_tokens,
+            // `truncated` requires a reported count, so this is always Some.
+            worst.prompt_tokens.unwrap_or(0),
             worst.prompt_chars,
             worst.num_ctx
         ));
@@ -1811,7 +1831,8 @@ fn build_data_health(
             "context pressure on {near_full} local call{} (worst: {} at {} of {} tokens)",
             if near_full == 1 { "" } else { "s" },
             worst.stage,
-            worst.prompt_tokens,
+            // A near-full fill requires a reported count, so this is always Some.
+            worst.prompt_tokens.unwrap_or(0),
             worst.num_ctx
         ));
     }
@@ -1926,7 +1947,7 @@ mod tests {
         let usage = vec![
             crate::local_model::PromptUsage {
                 stage: "interpret AAPL".into(),
-                prompt_tokens: 50_000,
+                prompt_tokens: Some(50_000),
                 num_ctx: 131_072,
                 prompt_chars: 200_000,
                 completion_tokens: None,
@@ -1935,7 +1956,7 @@ mod tests {
             },
             crate::local_model::PromptUsage {
                 stage: "construction".into(),
-                prompt_tokens: 125_000,
+                prompt_tokens: Some(125_000),
                 num_ctx: 131_072,
                 prompt_chars: 500_000,
                 completion_tokens: None,
@@ -1957,7 +1978,7 @@ mod tests {
     fn data_health_records_the_peak_without_pressure() {
         let usage = vec![crate::local_model::PromptUsage {
             stage: "interpret MSFT".into(),
-            prompt_tokens: 90_000,
+            prompt_tokens: Some(90_000),
             num_ctx: 131_072,
             prompt_chars: 360_000,
             completion_tokens: None,
@@ -1967,7 +1988,7 @@ mod tests {
         let dh = build_data_health(&[], 0, 0, false, false, usage);
         assert!(dh.context_pressure.is_empty());
         let peak = dh.peak_prompt.expect("peak recorded regardless of pressure");
-        assert_eq!(peak.prompt_tokens, 90_000);
+        assert_eq!(peak.prompt_tokens, Some(90_000));
         assert!(!dh.attention, "{}", dh.summary);
         assert!(!dh.summary.contains("context pressure"), "{}", dh.summary);
     }
@@ -1979,7 +2000,7 @@ mod tests {
     fn data_health_names_an_output_limited_call() {
         let usage = vec![crate::local_model::PromptUsage {
             stage: "construction".into(),
-            prompt_tokens: 60_000,
+            prompt_tokens: Some(60_000),
             num_ctx: 131_072,
             prompt_chars: 240_000,
             completion_tokens: Some(65_536),
@@ -1994,6 +2015,33 @@ mod tests {
         assert!(dh.summary.contains(expected), "{}", dh.summary);
     }
 
+    /// A daemon-omitted `prompt_eval_count` must not cost the run its
+    /// length-stop observation: the row records, the summary names the stop
+    /// without attributing it, attention trips, and no context-fit line is
+    /// faked from the count-less row (attempt-1 review sweep).
+    #[test]
+    fn data_health_keeps_a_length_stop_with_no_prompt_count() {
+        let usage = vec![crate::local_model::PromptUsage {
+            stage: "construction".into(),
+            prompt_tokens: None,
+            num_ctx: 131_072,
+            prompt_chars: 240_000,
+            completion_tokens: None,
+            num_predict: Some(65_536),
+            output_limited: true,
+        }];
+        let dh = build_data_health(&[], 0, 0, false, false, usage);
+        assert!(dh.attention, "{}", dh.summary);
+        let expected = "generation length-stopped on 1 local call (worst: construction \
+                        generated unreported of 65536 reserved — counts incomplete; stop \
+                        unattributed)";
+        assert!(dh.summary.contains(expected), "{}", dh.summary);
+        // The count-less row must not fake a context-fit read.
+        assert!(dh.context_pressure.is_empty(), "{}", dh.summary);
+        assert!(!dh.summary.contains("front-truncation"), "{}", dh.summary);
+        assert!(dh.peak_prompt.is_none(), "{:?}", dh.peak_prompt);
+    }
+
     /// The demonstrated truncation signature
     /// (`docs/verification/2026-07-28-m5-preflight.md` §Truncation behavior): the
     /// post-truncation count reads as a *comfortable* ~50% fill, so only the
@@ -2003,7 +2051,7 @@ mod tests {
     fn data_health_flags_likely_truncation_despite_comfortable_fill() {
         let usage = vec![crate::local_model::PromptUsage {
             stage: "interpret NVDA".into(),
-            prompt_tokens: 1_026,
+            prompt_tokens: Some(1_026),
             num_ctx: 2_048,
             prompt_chars: 18_400,
             completion_tokens: None,

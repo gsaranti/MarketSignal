@@ -428,6 +428,35 @@ fn interpret_response(status: u16, body: &str) -> Disposition {
     }
 }
 
+/// Cap on the body text an HTTP-level gap detail embeds — FMP error sentences
+/// fit comfortably; the cap only bites on an HTML error page or similar.
+const GAP_DETAIL_BODY_CAP: usize = 300;
+
+/// The one sentence an HTTP-level gap leaves on its tracker row: the status,
+/// plus FMP's own `{"Error Message"}` sentence when the body carries one (the
+/// plan / rate-limit signal `interpret_response` classifies as `Rejected`),
+/// else a capped head of the body. The transport arm formats the reqwest
+/// chain instead ([`FmpDataSource::suite_get`]).
+fn http_gap_detail(status: u16, body: &str) -> String {
+    let text = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("Error Message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| body.trim().to_owned());
+    if text.is_empty() {
+        return format!("HTTP {status} (empty body)");
+    }
+    let capped: String = text.chars().take(GAP_DETAIL_BODY_CAP).collect();
+    if capped.len() < text.len() {
+        format!("HTTP {status}: {capped} …(truncated)")
+    } else {
+        format!("HTTP {status}: {capped}")
+    }
+}
+
 /// One gap for the `sectors` group, which is a whole-snapshot (no per-series symbols),
 /// so it carries a synthetic series id / name rather than one per sector.
 fn sector_gap(reason: GapReason) -> DataGap {
@@ -2094,6 +2123,65 @@ mod tests {
         // query param, and this string reaches stderr (the tee) and the tracker.
         assert!(!detail.contains("test-key"), "{detail}");
         assert!(!detail.contains("apikey"), "{detail}");
+    }
+
+    #[test]
+    fn a_suite_row_carries_the_http_level_cause_too() {
+        // The transport arm was only half the fix: FMP's plan/quota signal
+        // arrives as HTTP 200 with an `{"Error Message"}` body — the 2026-08-10
+        // failure class — and a 403 is a rejection with a plain body. Both must
+        // leave their cause on the row, not a bare status word (review sweep).
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"Error Message": "Limit Reach. Please upgrade your plan."}"#,
+            },
+            Canned::Reply {
+                status: 403,
+                headers: vec![],
+                body: "Forbidden",
+            },
+        ]);
+        let source = test_source(&server.base_url).with_context(ctx);
+        let mut gaps = Vec::new();
+        assert!(source.fetch_quarterly_income("AAPL", &mut gaps).is_empty());
+        assert!(source.fetch_quarterly_income("AAPL", &mut gaps).is_empty());
+        let finished: Vec<(String, Option<String>)> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished { status, detail, .. } => {
+                    Some((status, detail))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(finished.len(), 2, "one suite row per fetch");
+        assert_eq!(finished[0].0, "rejected", "{:?}", finished[0]);
+        let detail = finished[0].1.as_deref().expect("the plan signal reaches the row");
+        assert!(detail.contains("HTTP 200"), "{detail}");
+        assert!(detail.contains("Limit Reach"), "{detail}");
+        assert_eq!(finished[1].0, "rejected", "{:?}", finished[1]);
+        let detail = finished[1].1.as_deref().expect("the 403 reaches the row");
+        assert!(detail.contains("HTTP 403"), "{detail}");
+        assert!(detail.contains("Forbidden"), "{detail}");
+    }
+
+    #[test]
+    fn http_gap_detail_caps_and_names_the_empty_body() {
+        let long = "x".repeat(1_000);
+        let capped = http_gap_detail(500, &long);
+        assert!(capped.starts_with("HTTP 500: "), "{capped}");
+        assert!(capped.ends_with("…(truncated)"), "{capped}");
+        assert!(capped.len() < 400, "{}", capped.len());
+        assert_eq!(http_gap_detail(502, "  "), "HTTP 502 (empty body)");
     }
 
     #[test]
@@ -3958,11 +4046,21 @@ impl FmpDataSource {
         self.progress.request_started("FMP", kind, symbol, label);
         // The failure reason reaches the row: the gap's kebab label as the
         // status (the documented tracker vocabulary, like the baseline rows)
-        // and the transport error as the detail — a degraded suite fetch was
-        // previously an undifferentiated `empty` with no reason anywhere
+        // and the cause as the detail — the transport error on the Err arm,
+        // and the HTTP status plus FMP's own error sentence on an HTTP-level
+        // gap (a 200 `{"Error Message"}` plan/quota signal, a 401/403, a
+        // malformed body). A degraded suite fetch was previously an
+        // undifferentiated `empty` with no reason anywhere
         // (`docs/verification/2026-08-10-big-run-attempt-1.md` §Residue).
         let (disposition, detail) = match self.get(path, extra) {
-            Ok((status, body)) => (interpret_response(status, &body), None),
+            Ok((status, body)) => {
+                let disposition = interpret_response(status, &body);
+                let detail = match &disposition {
+                    Disposition::Value(_) => None,
+                    Disposition::Gap(_) => Some(http_gap_detail(status, &body)),
+                };
+                (disposition, detail)
+            }
             Err(e) => (
                 Disposition::Gap(GapReason::Unavailable),
                 Some(format!("{e:#}")),

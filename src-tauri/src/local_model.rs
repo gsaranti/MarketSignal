@@ -221,9 +221,13 @@ pub struct PromptUsage {
     /// `num_ctx` overflow the daemon front-truncates and reports only the kept
     /// tokens (live-verified far *below* `num_ctx`, not near it —
     /// `docs/verification/2026-07-28-m5-preflight.md` §Truncation behavior), so
-    /// this count alone cannot witness a truncation.
-    pub prompt_tokens: u64,
-    /// The `num_ctx` the request was sent with.
+    /// this count alone cannot witness a truncation. `None` when the daemon
+    /// omits the count — the row still records the output-side observation.
+    #[serde(default)]
+    pub prompt_tokens: Option<u64>,
+    /// The `num_ctx` the request was sent with; `0` when the request declared
+    /// none. Every context-fit consumer gates on `num_ctx > 0`, so a
+    /// count-less row can never fake a fill or truncation read.
     pub num_ctx: u32,
     /// The size of the prompt the app actually sent (chars across all message
     /// contents) — the app-side ground truth a post-truncation `prompt_tokens`
@@ -239,9 +243,35 @@ pub struct PromptUsage {
     pub num_predict: Option<u32>,
     /// The call stopped at a length limit (`done_reason: "length"`) — its own
     /// output reservation, or the shared context filling first. The consumers
-    /// disambiguate by comparing `completion_tokens` against `num_predict`.
+    /// disambiguate through [`length_stop_reading`].
     #[serde(default)]
     pub output_limited: bool,
+}
+
+/// How a `done_reason: "length"` stop reads against its counts. The one
+/// predicate the per-call typed failure and the run-level data-health line
+/// both consume, so the two renderings can never drift apart on the same stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LengthStopReading {
+    /// Generated at least the reservation: the call's own `num_predict` bound —
+    /// a runaway chain or a genuinely undersized reservation.
+    AtReservation,
+    /// Generated well under a declared reservation: the shared context filled
+    /// first — the digest-compression lever, never a bigger `num_ctx`.
+    UnderReservation,
+    /// A daemon-omitted count or an unset reservation: the stop is real but
+    /// unattributable, and no lever should be named on a guess.
+    Unattributed,
+}
+
+/// Classify a length stop by its counts (`eval_count` vs the declared
+/// `num_predict`).
+pub fn length_stop_reading(generated: Option<u64>, reservation: Option<u32>) -> LengthStopReading {
+    match (generated, reservation) {
+        (Some(g), Some(r)) if g >= u64::from(r) => LengthStopReading::AtReservation,
+        (Some(_), Some(_)) => LengthStopReading::UnderReservation,
+        _ => LengthStopReading::Unattributed,
+    }
 }
 
 /// The `num_ctx` a request declares in its generation options, when one is set.
@@ -1365,6 +1395,22 @@ mod tests {
         let ndjson = "{\"error\":\"model not found\"}\n";
         let err = stream_chat_response(ndjson.as_bytes(), &ctx, StreamRole::Main).unwrap_err();
         assert!(err.to_string().contains("model not found"), "{err}");
+    }
+
+    // ---- length-stop classification ----
+
+    #[test]
+    fn length_stop_reading_attributes_only_on_full_counts() {
+        use LengthStopReading::*;
+        // At or past the reservation: the reservation bound.
+        assert_eq!(length_stop_reading(Some(65_536), Some(65_536)), AtReservation);
+        assert_eq!(length_stop_reading(Some(70_000), Some(65_536)), AtReservation);
+        // Well under a declared reservation: context filled first.
+        assert_eq!(length_stop_reading(Some(1_200), Some(65_536)), UnderReservation);
+        // A missing count or reservation never earns a confident lever.
+        assert_eq!(length_stop_reading(None, Some(65_536)), Unattributed);
+        assert_eq!(length_stop_reading(Some(1_200), None), Unattributed);
+        assert_eq!(length_stop_reading(None, None), Unattributed);
     }
 
     // ---- config helpers ----

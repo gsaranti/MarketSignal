@@ -145,7 +145,7 @@ pub fn run_test(provider: CredentialProvider, api_key: &str) -> ConnectionTestRe
             let sent = http.get(TAVILY_USAGE_URL).bearer_auth(api_key).send();
             match sent {
                 Ok(r) => interpret_tavily(r.status().as_u16()),
-                Err(e) => network_failure(provider, &e),
+                Err(e) => network_failure(provider, e),
             }
         }
         CredentialProvider::Fmp => {
@@ -162,7 +162,7 @@ pub fn run_test(provider: CredentialProvider, api_key: &str) -> ConnectionTestRe
                     let body = r.text().unwrap_or_default();
                     interpret_fmp(status, &body)
                 }
-                Err(e) => network_failure(provider, &e),
+                Err(e) => network_failure(provider, e),
             }
         }
         CredentialProvider::Fred => {
@@ -185,13 +185,19 @@ pub fn run_test(provider: CredentialProvider, api_key: &str) -> ConnectionTestRe
                     let body = r.text().unwrap_or_default();
                     interpret_fred(status, &body)
                 }
-                Err(e) => network_failure(provider, &e),
+                Err(e) => network_failure(provider, e),
             }
         }
     }
 }
 
-fn network_failure(provider: CredentialProvider, err: &reqwest::Error) -> ConnectionTestResult {
+fn network_failure(provider: CredentialProvider, err: reqwest::Error) -> ConnectionTestResult {
+    // Strip the URL before the error is formatted: FMP and FRED carry their API
+    // keys as query params, and a reqwest transport error's Display includes the
+    // full request URL — unstripped, the key would render verbatim in the
+    // user-facing Settings connection row (the same invariant `http_retry`
+    // holds on the run path).
+    let err = err.without_url();
     ConnectionTestResult::fail(format!("Couldn't reach {}: {err}", provider.display_name()))
 }
 
@@ -202,7 +208,7 @@ fn from_status_only(
 ) -> ConnectionTestResult {
     match status {
         Ok(code) => interpret_status_only(provider, code),
-        Err(e) => network_failure(provider, &e),
+        Err(e) => network_failure(provider, e),
     }
 }
 
@@ -308,6 +314,29 @@ mod tests {
             assert_eq!(CredentialProvider::from_label(label).unwrap(), want);
         }
         assert!(CredentialProvider::from_label("bogus").is_err());
+    }
+
+    #[test]
+    fn a_network_failure_never_carries_the_query_string() {
+        // FMP and FRED ride their API keys as query params, and a reqwest
+        // transport error's Display includes the request URL — the user-facing
+        // Settings string must strip it (the `http_retry` invariant, held on
+        // this producer too).
+        let client = reqwest::blocking::Client::new();
+        // Unroutable port: connection refused, error carries the full URL.
+        let err = client
+            .get("http://127.0.0.1:1/quote?apikey=sekrit-value")
+            .send()
+            .unwrap_err();
+        let result = network_failure(CredentialProvider::Fmp, err);
+        assert!(!result.ok);
+        assert!(!result.detail.contains("sekrit-value"), "{}", result.detail);
+        assert!(!result.detail.contains("apikey"), "{}", result.detail);
+        assert!(
+            result.detail.contains("Financial Modeling Prep"),
+            "{}",
+            result.detail
+        );
     }
 
     #[test]

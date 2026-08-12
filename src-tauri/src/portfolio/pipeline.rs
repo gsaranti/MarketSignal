@@ -2669,20 +2669,18 @@ impl LocalAnalyst {
         }
     }
 
-    /// Record one call's prompt-size observation when the daemon reported a count
-    /// and the request declared a `num_ctx` — the pair the data-health context-fit
-    /// read compares.
+    /// Record one call's usage observation. Recorded unconditionally: the
+    /// context-fit pair (`prompt_eval_count` × `num_ctx`) may be daemon-omitted,
+    /// but the output-side observation (`eval_count`, `done_reason`) must survive
+    /// regardless — a length stop whose row was dropped for a missing prompt
+    /// count would vanish from the run's data-health read. Context-fit consumers
+    /// gate on the fields being present (`build_data_health`).
     fn record_usage(
         &self,
         stage: String,
         req: &ChatRequest,
         resp: &crate::local_model::ChatResponse,
     ) {
-        let (Some(prompt_tokens), Some(num_ctx)) =
-            (resp.prompt_eval_count, crate::local_model::request_num_ctx(req))
-        else {
-            return;
-        };
         // The sent size in chars — the ground truth a post-truncation
         // `prompt_eval_count` is checked against (`build_data_health`).
         let prompt_chars = req
@@ -2695,13 +2693,31 @@ impl LocalAnalyst {
             .expect("prompt-usage lock is never poisoned")
             .push(crate::local_model::PromptUsage {
                 stage,
-                prompt_tokens,
-                num_ctx,
+                prompt_tokens: resp.prompt_eval_count,
+                num_ctx: crate::local_model::request_num_ctx(req).unwrap_or(0),
                 prompt_chars,
                 completion_tokens: resp.eval_count,
                 num_predict: crate::local_model::request_num_predict(req),
                 output_limited: resp.done_reason.as_deref() == Some("length"),
             });
+    }
+}
+
+/// Cap on how much of a model body a parse-failure context embeds. serde's own
+/// error names the line/column; the head is for eyeballing shape — the full
+/// body (up to ~250 KB at the construction reservation) must never ride an
+/// error chain into a tracker step detail, a stderr tee line, or the persisted
+/// `job_runs.detail`. Mirrors the `analyst_agent` snippet idiom.
+const PARSE_CONTEXT_BODY_CAP: usize = 500;
+
+/// Truncate a model body to [`PARSE_CONTEXT_BODY_CAP`] chars on a char
+/// boundary, marking the cut with the full length.
+fn body_snippet(content: &str) -> String {
+    let snippet: String = content.chars().take(PARSE_CONTEXT_BODY_CAP).collect();
+    if snippet.len() < content.len() {
+        format!("{snippet} …(truncated, {} chars total)", content.chars().count())
+    } else {
+        snippet
     }
 }
 
@@ -2724,25 +2740,33 @@ fn ensure_not_output_limited(
             |n: Option<u32>| n.map(|v| v.to_string()).unwrap_or_else(|| "unset".into());
         // `done_reason: "length"` covers two stops with different levers: the
         // request's own `num_predict` reservation (generated ≈ reservation), or
-        // the shared context filling first (generated well under it). The error
-        // names which one the counts show rather than blaming the reservation
-        // for both.
-        if matches!((generated, reservation), (Some(g), Some(r)) if g >= u64::from(r)) {
-            anyhow::bail!(
+        // the shared context filling first (generated well under it). The
+        // classification is single-homed in `length_stop_reading` — the
+        // data-health line reads the same stop through the same predicate —
+        // and a stop with incomplete counts names no lever at all.
+        match crate::local_model::length_stop_reading(generated, reservation) {
+            crate::local_model::LengthStopReading::AtReservation => anyhow::bail!(
                 "{stage}: response truncated at the output reservation (num_predict {}, \
                  generated {} tokens) — a runaway chain or a genuinely undersized \
                  reservation; raise it only on evidence",
                 show_res(reservation),
                 show(generated),
-            );
+            ),
+            crate::local_model::LengthStopReading::UnderReservation => anyhow::bail!(
+                "{stage}: generation length-stopped under the output reservation (generated {} \
+                 of {} reserved) — context exhaustion suspected; the sanctioned lever is \
+                 compressing the digest, never raising num_ctx",
+                show(generated),
+                show_res(reservation),
+            ),
+            crate::local_model::LengthStopReading::Unattributed => anyhow::bail!(
+                "{stage}: generation length-stopped with incomplete counts (generated {}, \
+                 num_predict {}) — reservation-hit vs context exhaustion cannot be told \
+                 apart; read the Ollama server log before reaching for either lever",
+                show(generated),
+                show_res(reservation),
+            ),
         }
-        anyhow::bail!(
-            "{stage}: generation length-stopped under the output reservation (generated {} \
-             of {} reserved) — context exhaustion suspected; the sanctioned lever is \
-             compressing the digest, never raising num_ctx",
-            show(generated),
-            show_res(reservation),
-        );
     }
     Ok(())
 }
@@ -2945,7 +2969,7 @@ impl HoldingAnalyst for LocalAnalyst {
             &resp,
         )?;
         serde_json::from_str(&resp.content)
-            .with_context(|| format!("parsing interpretation JSON: {}", resp.content))
+            .with_context(|| format!("parsing interpretation JSON: {}", body_snippet(&resp.content)))
     }
 
     fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
@@ -2962,8 +2986,12 @@ impl HoldingAnalyst for LocalAnalyst {
             &req,
             &resp,
         )?;
-        serde_json::from_str(&resp.content)
-            .with_context(|| format!("parsing role/risk interpretation JSON: {}", resp.content))
+        serde_json::from_str(&resp.content).with_context(|| {
+            format!(
+                "parsing role/risk interpretation JSON: {}",
+                body_snippet(&resp.content)
+            )
+        })
     }
 
     fn construct(
@@ -2990,7 +3018,10 @@ impl HoldingAnalyst for LocalAnalyst {
         if input.repair.is_some() {
             let wire: crate::portfolio::construction::RepairResponse =
                 serde_json::from_str(&resp.content).with_context(|| {
-                    format!("parsing construction repair JSON: {}", resp.content)
+                    format!(
+                        "parsing construction repair JSON: {}",
+                        body_snippet(&resp.content)
+                    )
                 })?;
             return Ok(crate::portfolio::construction::ConstructionDraft {
                 holdings: wire.holdings,
@@ -3001,7 +3032,7 @@ impl HoldingAnalyst for LocalAnalyst {
             });
         }
         serde_json::from_str(&resp.content)
-            .with_context(|| format!("parsing construction JSON: {}", resp.content))
+            .with_context(|| format!("parsing construction JSON: {}", body_snippet(&resp.content)))
     }
 
     fn model_ids(&self) -> Vec<String> {
@@ -3035,8 +3066,9 @@ mod tests {
     use std::collections::HashMap;
 
     /// The prompt-usage collector: a counted response records against the request's
-    /// `num_ctx`, a count-less one (an older daemon) records nothing rather than a
-    /// zero, and draining empties the buffer.
+    /// `num_ctx`; a count-less one (an older daemon) still records — with a `None`
+    /// prompt count, so its output-side observation (a length stop above all)
+    /// survives to the data-health read; and draining empties the buffer.
     #[test]
     fn local_analyst_records_and_drains_prompt_usage() {
         let analyst = LocalAnalyst::new(
@@ -3059,19 +3091,24 @@ mod tests {
             thinking: None,
             prompt_eval_count: None,
             eval_count: None,
-            done_reason: None,
+            done_reason: Some("length".into()),
         };
         analyst.record_usage("interpret AAPL".to_string(), &req, &uncounted);
         let drained = analyst.take_prompt_usage();
-        assert_eq!(drained.len(), 1);
+        assert_eq!(drained.len(), 2);
         assert_eq!(drained[0].stage, "construction");
-        assert_eq!(drained[0].prompt_tokens, 120_000);
+        assert_eq!(drained[0].prompt_tokens, Some(120_000));
         assert_eq!(drained[0].num_ctx, 131_072);
         assert_eq!(drained[0].prompt_chars, 1, "the one-char user message");
         // The output-side half rides the same observation.
         assert_eq!(drained[0].completion_tokens, Some(NUM_PREDICT_THINKING as u64));
         assert_eq!(drained[0].num_predict, Some(NUM_PREDICT_THINKING));
         assert!(drained[0].output_limited, "a length stop is recorded");
+        // The count-less row keeps its length-stop observation instead of
+        // being dropped with it (attempt-1 review sweep).
+        assert_eq!(drained[1].stage, "interpret AAPL");
+        assert_eq!(drained[1].prompt_tokens, None);
+        assert!(drained[1].output_limited, "the observation survives a missing count");
         assert!(
             analyst.take_prompt_usage().is_empty(),
             "drain empties the buffer"
@@ -4382,6 +4419,21 @@ mod tests {
         let err = ensure_not_output_limited("construction", &req, &context_stopped).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("context exhaustion suspected"), "{msg}");
+        assert!(!msg.contains("truncated at the output reservation"), "{msg}");
+
+        // A daemon that omits `eval_count` leaves the stop unattributable: the
+        // error must fail typed without naming either lever on a guess.
+        let uncounted = crate::local_model::ChatResponse {
+            content: "{\"partial\":".into(),
+            thinking: None,
+            prompt_eval_count: None,
+            eval_count: None,
+            done_reason: Some("length".into()),
+        };
+        let err = ensure_not_output_limited("construction", &req, &uncounted).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("cannot be told apart"), "{msg}");
+        assert!(!msg.contains("context exhaustion suspected"), "{msg}");
         assert!(!msg.contains("truncated at the output reservation"), "{msg}");
 
         let complete = crate::local_model::ChatResponse {

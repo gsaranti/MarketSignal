@@ -653,7 +653,11 @@ export interface DataHealth {
 // prompt size the app actually sent.
 export interface PromptUsage {
   stage: string;
-  prompt_tokens: number;
+  // Ollama's reported prompt count; null when the daemon omitted it (the row
+  // then carries only the output-side observation and enters no context-fit
+  // read, so rows shipped inside context_pressure/peak_prompt are counted in
+  // practice).
+  prompt_tokens: number | null;
   num_ctx: number;
   prompt_chars: number;
 }
