@@ -133,15 +133,47 @@ fn compare_names(schwab: &str, fmp: &str) -> NameComparison {
     }
 }
 
+/// How much identity an account description carries, relative to the ticker.
+enum DescriptionIdentity {
+    /// At least one significant token beyond the ticker's own — a real name.
+    Issuer,
+    /// Significant tokens, but every one is a ticker token: the ticker
+    /// repeated, or a ticker-plus-stopword shape like `"PSX COM"`. Weak
+    /// evidence — some issuers ARE named by their ticker (ASML), so the
+    /// guard tests this shape against the profile name rather than comparing
+    /// it as a name or skipping it outright. Token-set comparison (not raw
+    /// string equality) keeps a slash-class self-description (`"BRK/B"` for
+    /// `BRK/B`) in this family too.
+    TickerOnly,
+    /// Nothing significant at all — blank, whitespace, or corporate-form
+    /// noise like `"COMMON STOCK"` that tokenizes to nothing.
+    None,
+}
+
+fn description_identity(schwab_description: &str, symbol: &str) -> DescriptionIdentity {
+    let tokens = significant_tokens(schwab_description);
+    if tokens.is_empty() {
+        return DescriptionIdentity::None;
+    }
+    let ticker_tokens = significant_tokens(symbol);
+    if tokens.iter().any(|t| !ticker_tokens.contains(t)) {
+        DescriptionIdentity::Issuer
+    } else {
+        DescriptionIdentity::TickerOnly
+    }
+}
+
 /// Whether an account description carries an issuer identity at all — the one
 /// definition, shared by the guard below and the interpretation prompt's issuer
-/// fallback so the two cannot drift apart. Identity is what `significant_tokens`
-/// finds, not merely non-emptiness: blank, whitespace, and corporate-form noise
-/// like `"COMMON STOCK"` all tokenize to nothing and are the same shape. The ticker
-/// repeated needs its own clause — it tokenizes to itself, yet names no issuer.
+/// fallback so the two cannot drift apart. Identity is a significant token
+/// **beyond the ticker's own tokens** ([`DescriptionIdentity::Issuer`]), not
+/// merely non-emptiness: blank, noise, the ticker repeated, and the
+/// ticker-plus-stopword shape all name no issuer for a prompt header to show.
 pub fn describes_issuer(schwab_description: &str, symbol: &str) -> bool {
-    let d = schwab_description.trim();
-    !d.eq_ignore_ascii_case(symbol.trim()) && !significant_tokens(d).is_empty()
+    matches!(
+        description_identity(schwab_description, symbol),
+        DescriptionIdentity::Issuer
+    )
 }
 
 /// Route one stock's profile lookup to its listing resolution. The exchange test
@@ -178,19 +210,37 @@ pub fn resolve_listing(
                     detail: "resolved profile carried no issuer name".to_string(),
                 };
             };
-            if !describes_issuer(schwab_description, symbol) {
-                return ListingResolution::Unverified {
+            match description_identity(schwab_description, symbol) {
+                DescriptionIdentity::None => ListingResolution::Unverified {
                     detail: "account description carries no issuer name to cross-check"
                         .to_string(),
-                };
-            }
-            match compare_names(schwab_description, fmp_name) {
-                NameComparison::Match => ListingResolution::SupportedUs,
-                NameComparison::Conflict => ListingResolution::Conflict {
-                    fmp_name: fmp_name.to_string(),
                 },
-                NameComparison::Unverifiable => ListingResolution::Unverified {
-                    detail: "issuer names carried no comparable tokens".to_string(),
+                // The ticker is the description's only identity token. Some
+                // issuers are named by their ticker (ASML), so test it against
+                // the profile name directly: a hit verifies, a miss reads
+                // unverifiable — never a conflict, since a "PSX COM" shape
+                // names no issuer to conflict with (attempt-1 review sweep).
+                DescriptionIdentity::TickerOnly => {
+                    let ticker = significant_tokens(symbol);
+                    let profile_tokens = significant_tokens(fmp_name);
+                    if ticker.iter().any(|t| profile_tokens.contains(t)) {
+                        ListingResolution::SupportedUs
+                    } else {
+                        ListingResolution::Unverified {
+                            detail: "account description carries only the ticker, which \
+                                     the resolved issuer name does not contain"
+                                .to_string(),
+                        }
+                    }
+                }
+                DescriptionIdentity::Issuer => match compare_names(schwab_description, fmp_name) {
+                    NameComparison::Match => ListingResolution::SupportedUs,
+                    NameComparison::Conflict => ListingResolution::Conflict {
+                        fmp_name: fmp_name.to_string(),
+                    },
+                    NameComparison::Unverifiable => ListingResolution::Unverified {
+                        detail: "issuer names carried no comparable tokens".to_string(),
+                    },
                 },
             }
         }
@@ -313,6 +363,12 @@ mod tests {
         // A description that is all corporate-form noise tokenizes to nothing.
         let r = resolve_listing("XYZ", "COMMON STOCK", &profile("Xyz Industries Inc", "NYSE"));
         assert!(matches!(r, ListingResolution::Unverified { .. }), "{r:?}");
+        // Ticker-plus-stopword — the real account-description shape "PSX COM"
+        // tokenizes back to just the ticker, naming no issuer: it must read
+        // unverifiable, never make a good listing guard-terminal by comparing
+        // {PSX} against {PHILLIPS, 66} (attempt-1 review sweep).
+        let r = resolve_listing("PSX", "PSX COM", &profile("Phillips 66", "NYSE"));
+        assert!(matches!(r, ListingResolution::Unverified { .. }), "{r:?}");
         // A resolved profile missing its exchange or name cannot be verified —
         // and is never routed terminal.
         let no_exchange = ProfileLookup::Resolved(ProfileIdentity {
@@ -333,5 +389,23 @@ mod tests {
             resolve_listing("AAPL", "APPLE INC", &no_name),
             ListingResolution::Unverified { .. }
         ));
+    }
+
+    #[test]
+    fn describes_issuer_demands_a_token_beyond_the_ticker() {
+        // Identity-bearing shapes.
+        assert!(describes_issuer("PHILLIPS 66", "PSX"));
+        assert!(describes_issuer("Apple Inc.", "AAPL"));
+        // No-identity shapes: blank, noise, the ticker itself, and the
+        // ticker-plus-stopword account form.
+        assert!(!describes_issuer("", "PSX"));
+        assert!(!describes_issuer("COMMON STOCK", "PSX"));
+        assert!(!describes_issuer("PSX", "PSX"));
+        assert!(!describes_issuer("PSX COM", "PSX"));
+        assert!(!describes_issuer("psx common stock", "PSX"));
+        // A slash-class symbol's self-description compares by token set, not
+        // raw string equality.
+        assert!(!describes_issuer("BRK/B", "BRK/B"));
+        assert!(describes_issuer("BERKSHIRE HATHAWAY INC", "BRK/B"));
     }
 }

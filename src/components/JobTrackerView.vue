@@ -297,6 +297,17 @@ watch(contentSignature, async () => {
                 ></span>
                 <template v-else>{{ r.status }}</template>
               </span>
+              <!-- The failure's cause (the transport error or HTTP status +
+                   provider sentence the backend leaves on the row) — rendered,
+                   not tooltip-only, so the diagnosis no longer needs a
+                   screenshot or stderr. -->
+              <span
+                v-if="reqTone(r.status) === 'fail' && r.detail"
+                class="req-detail"
+                :title="r.detail"
+              >
+                {{ r.detail }}
+              </span>
             </li>
           </ul>
 
@@ -549,6 +560,7 @@ watch(contentSignature, async () => {
 }
 .req {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: var(--s-4);
   padding: var(--s-2) 0;
@@ -597,6 +609,22 @@ watch(contentSignature, async () => {
 }
 .req-status[data-tone="fail"] {
   color: var(--accent-text);
+}
+
+/* The failure's cause sentence — a quiet full-width line under the row,
+   clamped to two lines (the backend caps the text; a long HTML body head
+   still must not swallow the list), full text on hover. */
+.req-detail {
+  flex-basis: 100%;
+  min-width: 0;
+  padding-left: calc(9ch + var(--s-4));
+  font-size: var(--t-caption);
+  color: var(--ink-3);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 /* In-flight indicator: a small accent square, matching the step running marker and

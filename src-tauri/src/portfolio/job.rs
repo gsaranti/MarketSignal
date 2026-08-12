@@ -2560,10 +2560,22 @@ mod tests {
             }
         }
         let (_dir, paths) = paths();
-        let first = full_run(&paths, two_stocks());
+        // The fixture's default "MSFT Inc." description is ticker-only-token —
+        // the shape the guard deliberately reads unverifiable, never conflict —
+        // so the conflict under test needs a real issuer name to collide.
+        let named = || {
+            let mut h = two_stocks();
+            for p in &mut h.positions {
+                if p.symbol == "MSFT" {
+                    p.description = "Microsoft Corporation".into();
+                }
+            }
+            h
+        };
+        let first = full_run(&paths, named());
         let second = match run_portfolio_job(
             &ChainTripwire {
-                inner: FixtureHoldingsSource::with_holdings(two_stocks()),
+                inner: FixtureHoldingsSource::with_holdings(named()),
                 barred: "MSFT",
             },
             &ConflictData,

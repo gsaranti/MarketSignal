@@ -1443,9 +1443,12 @@ fn holding_header(d: &HoldingDossier) -> String {
         // FMP's parser accepts any non-blank `companyName`, and the listing guard
         // returns before comparing names whenever the description carries no
         // identity — so a profile name that is itself noise, or the ticker, reaches
-        // here unchecked and would rebuild the very header this fixes.
+        // here unchecked and would rebuild the very header this fixes. Funds have
+        // no profile call, so their identity rides the fund data's own name —
+        // the role-risk branch's only naming source (attempt-1 review sweep).
         d.company_name
             .as_deref()
+            .or_else(|| d.fund.as_ref().and_then(|f| f.fund.name.as_deref()))
             .map(str::trim)
             .filter(|n| crate::portfolio::listing::describes_issuer(n, &d.position.symbol))
             .unwrap_or("name unavailable")
@@ -5540,6 +5543,33 @@ mod tests {
         let h = holding_header(&d);
         assert!(h.contains("name unavailable"), "{h}");
         assert!(!h.contains("()"), "an empty name pair is the defect itself: {h}");
+    }
+
+    /// The fund half of Finding 4's fallback: funds get no /profile call, so
+    /// `company_name` is structurally `None` on the role-risk branch — the
+    /// fetched fund data's own name is that branch's only naming source, and a
+    /// blank Schwab description must reach it rather than "name unavailable".
+    #[test]
+    fn the_holding_header_falls_back_to_the_fund_name_for_funds() {
+        let mut d = dossier(AssetClass::Etf, strong_financials());
+        d.position.description = String::new();
+        d.company_name = None;
+        d.fund = Some(FundContext {
+            fund: us_equity_fund(),
+            sector_pe: vec![],
+            sector_pe_history: Default::default(),
+            as_of: chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap(),
+        });
+        let h = holding_header(&d);
+        assert!(h.contains("Total US Market ETF"), "{h}");
+
+        // The fund name is held to the same identity standard: noise or the
+        // ticker repeated must not rebuild the header.
+        if let Some(f) = d.fund.as_mut() {
+            f.fund.name = Some(d.position.symbol.clone());
+        }
+        let h = holding_header(&d);
+        assert!(h.contains("name unavailable"), "{h}");
     }
 
     /// Finding 2: each grammar-constrained call declares the object it is enforced

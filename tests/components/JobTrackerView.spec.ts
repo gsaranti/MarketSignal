@@ -222,6 +222,14 @@ test("request rows map status to tone and show the raw word for non-ok/non-runni
   expect(reqs[0].find(".req-status svg").exists()).toBe(true);
   expect(reqs[2].find(".req-status").text()).toBe("rejected");
   expect(reqs[3].find(".req-status .req-dot").exists()).toBe(true);
+  // A failed row renders its cause — the detail the backend leaves on the
+  // row — visibly, with the full text mirrored as a title; non-fail rows
+  // render no detail line.
+  const detail = reqs[2].find(".req-detail");
+  expect(detail.text()).toBe("402 premium");
+  expect(detail.attributes("title")).toBe("402 premium");
+  expect(reqs[0].find(".req-detail").exists()).toBe(false);
+  expect(reqs[1].find(".req-detail").exists()).toBe(false);
 });
 
 test("the streamed agent text renders only where present", () => {

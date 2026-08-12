@@ -616,6 +616,13 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
         std::collections::HashMap::new();
     let mut price_errors: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // The price pass runs under its own step: its per-symbol fetches emit
+    // request rows, and a row arriving while no backend step runs falls
+    // through to the tracker's synthesized never-finished "Baseline market
+    // data" step — the exact Finding 6 phantom, reachable on the quick-check
+    // and selective-tail paths after the report-pipeline half was fixed
+    // (attempt-1 review sweep).
+    ctx.step_started("sweep-prices", "Refresh prices (sweep)");
     for target in &pass.targets {
         if ctx.is_cancelled() {
             anyhow::bail!("run cancelled");
@@ -629,6 +636,17 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
             }
         }
     }
+    ctx.step_finished(
+        "sweep-prices",
+        "ok",
+        (!price_errors.is_empty()).then(|| {
+            format!(
+                "{} of {} price refreshes failed; those holdings sweep from last values",
+                price_errors.len(),
+                pass.targets.len()
+            )
+        }),
+    );
     // Fresh book total: swept positions at fresh marks, everything else (and any
     // failed refresh) at its last persisted value; cash unchanged.
     let fresh_total: f64 = pass.cash
@@ -2074,6 +2092,47 @@ mod tests {
         let err = run_quick_check(&StubData::quiet(195.0, "2026-08-01"), &conn, &noop_ctx())
             .unwrap_err();
         assert!(err.to_string().contains("no Portfolio Analysis run"), "{err}");
+    }
+
+    #[test]
+    fn the_sweep_price_pass_runs_under_its_own_step() {
+        // Every request row needs an owning backend step: a row arriving while
+        // nothing runs synthesizes the tracker's phantom never-finished
+        // "Baseline market data" step (Finding 6's quick-check half — the
+        // price pass fetches per symbol before the first per-holding step).
+        let conn = mem();
+        let run = sample_run(priced_verdict("AAPL", vec![]), audit_for("AAPL", None));
+        store::record_run(&conn, &run).unwrap();
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        run_quick_check(&StubData::quiet(195.0, "2026-08-01"), &conn, &ctx).unwrap();
+        let steps: Vec<(bool, String)> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::StepStarted { step, .. } => Some((true, step)),
+                crate::progress::ProgressEvent::StepFinished { step, .. } => Some((false, step)),
+                _ => None,
+            })
+            .collect();
+        let started = steps
+            .iter()
+            .position(|(s, k)| *s && k == "sweep-prices")
+            .expect("the price pass opens its own step");
+        let finished = steps
+            .iter()
+            .position(|(s, k)| !*s && k == "sweep-prices")
+            .expect("the price pass closes its step");
+        let first_holding = steps
+            .iter()
+            .position(|(s, k)| *s && k.starts_with("holding-"))
+            .expect("a per-holding step follows");
+        assert!(started < finished, "{steps:?}");
+        assert!(finished < first_holding, "{steps:?}");
     }
 
     #[test]
