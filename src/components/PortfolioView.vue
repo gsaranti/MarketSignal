@@ -63,6 +63,10 @@ const props = defineProps<{
   // though per-holding work is persisted, so the empty latest view must say
   // so rather than claim nothing ever ran.
   degradedOnlyHistory?: boolean;
+  // The runs-history listing itself failed to load: with `run` null the page
+  // cannot tell a never-ran store from one whose listing errored, so the
+  // empty state must not claim either.
+  historyUnknown?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -1054,6 +1058,17 @@ const keyFigures = computed(() => {
       <div v-else-if="loadError && !run && !pull" class="pane-quiet" role="alert">
         <span class="pane-error-label">Couldn't load the portfolio</span>
         <span class="pane-error-detail">{{ loadError }}</span>
+      </div>
+
+      <!-- The listing failed with nothing else to show: a never-ran store and
+           a degraded-only one are indistinguishable here, so claim neither. -->
+      <div v-else-if="!run && !pull && historyUnknown" class="empty-state">
+        <h2 class="empty-title">Portfolio state unavailable.</h2>
+        <p class="empty-body">
+          The runs history couldn't be read, so whether a prior analysis exists
+          can't be told from here — the sidebar carries the error. Leaving and
+          re-opening this page retries the read.
+        </p>
       </div>
 
       <!-- Empty latest view over a degraded-only history: per-holding work is

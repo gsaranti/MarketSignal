@@ -247,6 +247,16 @@ describe("PortfolioView states", () => {
     expect(wrapper.text()).toContain("Pull holdings");
   });
 
+  test("an errored runs listing renders the unknown state, claiming neither", () => {
+    // With the listing failed and nothing else loaded, a never-ran store and
+    // a degraded-only one are indistinguishable — the empty state must not
+    // assert either shape.
+    const wrapper = mountView({ historyUnknown: true });
+    expect(wrapper.text()).toContain("Portfolio state unavailable.");
+    expect(wrapper.text()).not.toContain("No holdings yet.");
+    expect(wrapper.text()).not.toContain("No constructed run yet.");
+  });
+
   test("a degraded-only history reads as no-constructed-run, never never-ran", () => {
     // The store holds persisted per-holding work (visible in the runs
     // history), so "No holdings yet." would misdescribe it.

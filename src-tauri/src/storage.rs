@@ -232,7 +232,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 /// Whether `table` has a column named `column`, via `PRAGMA table_info`. Used to
 /// keep additive `ALTER TABLE ADD COLUMN` migrations idempotent in the absence of
 /// a `user_version` framework.
-fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let found = stmt
         .query_map([], |row| row.get::<_, String>(1))?

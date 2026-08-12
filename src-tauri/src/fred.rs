@@ -1017,6 +1017,7 @@ impl FredDataSource {
                 gaps,
                 gaps_before,
                 out.len() > out_before,
+                None,
             );
         }
         out
@@ -1133,6 +1134,7 @@ impl FredDataSource {
                 gaps,
                 gaps_before,
                 out.len() > out_before,
+                None,
             );
         }
         out

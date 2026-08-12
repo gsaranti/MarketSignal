@@ -413,7 +413,7 @@ fn interpret_response(status: u16, body: &str) -> Disposition {
     match status {
         200..=299 => match serde_json::from_str::<Value>(body) {
             Ok(value) => {
-                if value.get("Error Message").and_then(Value::as_str).is_some() {
+                if fmp_error_message(&value).is_some() {
                     Disposition::Gap(GapReason::Rejected) // rate-limit / plan signal
                 } else {
                     Disposition::Value(value)
@@ -428,32 +428,36 @@ fn interpret_response(status: u16, body: &str) -> Disposition {
     }
 }
 
+/// FMP's error-envelope probe — the `{"Error Message": …}` rate-limit / plan
+/// signal — single-homed for [`interpret_response`]'s classification and
+/// [`http_gap_detail`]'s cause sentence, so the shape cannot drift between
+/// the two readers of the same body.
+fn fmp_error_message(v: &Value) -> Option<&str> {
+    v.get("Error Message").and_then(Value::as_str)
+}
+
 /// Cap on the body text an HTTP-level gap detail embeds — FMP error sentences
 /// fit comfortably; the cap only bites on an HTML error page or similar.
 const GAP_DETAIL_BODY_CAP: usize = 300;
 
 /// The one sentence an HTTP-level gap leaves on its tracker row: the status,
-/// plus FMP's own `{"Error Message"}` sentence when the body carries one (the
-/// plan / rate-limit signal `interpret_response` classifies as `Rejected`),
-/// else a capped head of the body. The transport arm formats the reqwest
-/// chain instead ([`FmpDataSource::suite_get`]).
+/// plus FMP's own error sentence when the body carries one
+/// ([`fmp_error_message`] — the signal `interpret_response` classifies as
+/// `Rejected`), else a capped head of the body. The transport arm formats the
+/// reqwest chain instead ([`FmpDataSource::suite_get`]).
 fn http_gap_detail(status: u16, body: &str) -> String {
     let text = serde_json::from_str::<Value>(body)
         .ok()
-        .and_then(|v| {
-            v.get("Error Message")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
+        .and_then(|v| fmp_error_message(&v).map(str::to_owned))
         .unwrap_or_else(|| body.trim().to_owned());
     if text.is_empty() {
         return format!("HTTP {status} (empty body)");
     }
-    let capped: String = text.chars().take(GAP_DETAIL_BODY_CAP).collect();
-    if capped.len() < text.len() {
-        format!("HTTP {status}: {capped} …(truncated)")
+    let (head, cut) = crate::data_sources::cap_chars(&text, GAP_DETAIL_BODY_CAP);
+    if cut {
+        format!("HTTP {status}: {head} …(truncated)")
     } else {
-        format!("HTTP {status}: {capped}")
+        format!("HTTP {status}: {head}")
     }
 }
 
@@ -1008,10 +1012,8 @@ impl FmpDataSource {
                 .request_started("FMP", group.as_str(), *symbol, *fallback_name);
             let gaps_before = gaps.len();
             let out_before = out.len();
-            let disposition = match self.get(FMP_QUOTE_PATH, &[("symbol", symbol)]) {
-                Ok((status, body)) => interpret_response(status, &body),
-                Err(_) => Disposition::Gap(GapReason::Unavailable), // transport — unreachable
-            };
+            let (disposition, gap_detail) =
+                self.get_interpreted(FMP_QUOTE_PATH, &[("symbol", symbol)]);
             match disposition {
                 Disposition::Value(value) => match quotes_from_value(value, fallback_name, unit) {
                     // An empty "no data" 2xx array for an expected symbol is a this-run
@@ -1047,6 +1049,7 @@ impl FmpDataSource {
                 gaps,
                 gaps_before,
                 out.len() > out_before,
+                gap_detail,
             );
         }
         out
@@ -1163,17 +1166,14 @@ impl FmpDataSource {
             );
             let gaps_before = gaps.len();
             let out_before = out.len();
-            let disposition = match self.get(
+            let (disposition, gap_detail) = self.get_interpreted(
                 FMP_EOD_PATH,
                 &[
                     ("symbol", symbol),
                     ("from", from_s.as_str()),
                     ("to", to_s.as_str()),
                 ],
-            ) {
-                Ok((status, body)) => interpret_response(status, &body),
-                Err(_) => Disposition::Gap(GapReason::Unavailable),
-            };
+            );
             match disposition {
                 Disposition::Value(value) => match eod_to_performance(value, symbol, name) {
                     Ok(Some(perf)) => out.push(perf),
@@ -1209,6 +1209,7 @@ impl FmpDataSource {
                 gaps,
                 gaps_before,
                 out.len() > out_before,
+                gap_detail,
             );
         }
         out
@@ -1262,10 +1263,7 @@ impl FmpDataSource {
                 .request_started("FMP", GroupKind::Movers.as_str(), series_id, name);
             let gaps_before = gaps.len();
             let out_before = out.len();
-            let disposition = match self.get(url, &[]) {
-                Ok((status, body)) => interpret_response(status, &body),
-                Err(_) => Disposition::Gap(GapReason::Unavailable),
-            };
+            let (disposition, gap_detail) = self.get_interpreted(url, &[]);
             match disposition {
                 Disposition::Value(value) => match movers_from_value(value, category) {
                     Ok(movers) => out.extend(filter_movers(movers)),
@@ -1294,6 +1292,7 @@ impl FmpDataSource {
                 gaps,
                 gaps_before,
                 out.len() > out_before,
+                gap_detail,
             );
         }
         out
@@ -1322,13 +1321,10 @@ impl FmpDataSource {
         self.progress
             .request_started("FMP", GroupKind::Earnings.as_str(), series_id, name);
         let gaps_before = gaps.len();
-        let disposition = match self.get(
+        let (disposition, gap_detail) = self.get_interpreted(
             FMP_EARNINGS_PATH,
             &[("from", from.as_str()), ("to", to.as_str())],
-        ) {
-            Ok((status, body)) => interpret_response(status, &body),
-            Err(_) => Disposition::Gap(GapReason::Unavailable),
-        };
+        );
         let out = match disposition {
             Disposition::Value(value) => match earnings_from_value(value) {
                 Ok(events) => filter_earnings(events),
@@ -1358,6 +1354,7 @@ impl FmpDataSource {
             gaps,
             gaps_before,
             !out.is_empty(),
+            gap_detail,
         );
         out
     }
@@ -1612,10 +1609,7 @@ impl FmpDataSource {
             name,
         );
         let gaps_before = gaps.len();
-        let disposition = match self.get(FMP_RISK_PREMIUM_PATH, &[]) {
-            Ok((status, body)) => interpret_response(status, &body),
-            Err(_) => Disposition::Gap(GapReason::Unavailable),
-        };
+        let (disposition, gap_detail) = self.get_interpreted(FMP_RISK_PREMIUM_PATH, &[]);
         let out = match disposition {
             Disposition::Value(value) => match risk_premium_from_value(value) {
                 Ok(rows) => rows,
@@ -1649,6 +1643,7 @@ impl FmpDataSource {
             gaps,
             gaps_before,
             !out.is_empty(),
+            gap_detail,
         );
         out
     }
@@ -1680,14 +1675,19 @@ impl FmpDataSource {
             return fin;
         }
 
-        // 1) Quote: current price, market cap, shares outstanding.
-        self.progress
-            .request_started("FMP", "company-quote", symbol, "Company quote");
-        let quote_disp = match self.get(FMP_QUOTE_PATH, &[("symbol", symbol)]) {
-            Ok((status, body)) => interpret_response(status, &body),
-            Err(_) => Disposition::Gap(GapReason::Unavailable),
-        };
-        match quote_disp {
+        // 1) Quote: current price, market cap, shares outstanding. Through
+        // `suite_get` like every sibling suite call, so the row carries the
+        // gap reason as its status and the cause as its detail — these two
+        // rows previously hard-coded "empty"/None and painted a quota
+        // rejection as a benign non-result (combined-range review; the
+        // 2026-08-10 failure class).
+        match self.suite_get(
+            "company-quote",
+            symbol,
+            "Company quote",
+            FMP_QUOTE_PATH,
+            &[("symbol", symbol)],
+        ) {
             Disposition::Value(value) => match company_quote_from_value(&value) {
                 Some(q) => {
                     fin.current_price = q.price;
@@ -1703,14 +1703,6 @@ impl FmpDataSource {
                 .gaps
                 .push(format!("FMP quote unavailable ({})", reason.as_str())),
         }
-        self.progress.request_finished(
-            "FMP",
-            "company-quote",
-            symbol,
-            "Company quote",
-            if fin.current_price.is_some() { "ok" } else { "empty" },
-            None,
-        );
 
         // 2) EOD price history for momentum + volatility.
         // Cancel checkpoint between the two requests: a cancel after the quote skips the
@@ -1726,9 +1718,10 @@ impl FmpDataSource {
         // boundaries) need converting.
         let to = Utc::now().date_naive();
         let from = to - Duration::days(COMPANY_EOD_LOOKBACK_DAYS);
-        self.progress
-            .request_started("FMP", "company-eod", symbol, "Company price history");
-        let eod_disp = match self.get(
+        match self.suite_get(
+            "company-eod",
+            symbol,
+            "Company price history",
             FMP_EOD_PATH,
             &[
                 ("symbol", symbol),
@@ -1736,10 +1729,6 @@ impl FmpDataSource {
                 ("to", to.format("%Y-%m-%d").to_string().as_str()),
             ],
         ) {
-            Ok((status, body)) => interpret_response(status, &body),
-            Err(_) => Disposition::Gap(GapReason::Unavailable),
-        };
-        match eod_disp {
             Disposition::Value(value) => match eod_prices_from_value(&value) {
                 Ok(history) if !history.is_empty() => fin.price_history = history,
                 Ok(_) => fin.gaps.push("FMP price history was empty".to_string()),
@@ -1749,14 +1738,6 @@ impl FmpDataSource {
                 .gaps
                 .push(format!("FMP price history unavailable ({})", reason.as_str())),
         }
-        self.progress.request_finished(
-            "FMP",
-            "company-eod",
-            symbol,
-            "Company price history",
-            if fin.price_history.is_empty() { "empty" } else { "ok" },
-            None,
-        );
 
         fin
     }
@@ -4031,6 +4012,32 @@ const INCOME_QUARTERS_LIMIT: &str = "16";
 const CASH_FLOW_QUARTERS_LIMIT: &str = "8";
 
 impl FmpDataSource {
+    /// One GET interpreted with its cause retained: the disposition, plus — on
+    /// a gap — the sentence that names why ([`http_gap_detail`] for HTTP-level
+    /// gaps, the reqwest chain for transport errors). The one home for the
+    /// cause-on-the-row contract, shared by [`Self::suite_get`] and the
+    /// baseline call sites' [`crate::data_sources::emit_series_row`] rows.
+    fn get_interpreted(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> (Disposition, Option<String>) {
+        match self.get(path, query) {
+            Ok((status, body)) => {
+                let disposition = interpret_response(status, &body);
+                let detail = match &disposition {
+                    Disposition::Value(_) => None,
+                    Disposition::Gap(_) => Some(http_gap_detail(status, &body)),
+                };
+                (disposition, detail)
+            }
+            Err(e) => (
+                Disposition::Gap(GapReason::Unavailable),
+                Some(format!("{e:#}")),
+            ),
+        }
+    }
+
     /// One suite GET with a tracker row and the shared fail-soft disposition.
     fn suite_get(
         &self,
@@ -4052,20 +4059,7 @@ impl FmpDataSource {
         // malformed body). A degraded suite fetch was previously an
         // undifferentiated `empty` with no reason anywhere
         // (`docs/verification/2026-08-10-big-run-attempt-1.md` §Residue).
-        let (disposition, detail) = match self.get(path, extra) {
-            Ok((status, body)) => {
-                let disposition = interpret_response(status, &body);
-                let detail = match &disposition {
-                    Disposition::Value(_) => None,
-                    Disposition::Gap(_) => Some(http_gap_detail(status, &body)),
-                };
-                (disposition, detail)
-            }
-            Err(e) => (
-                Disposition::Gap(GapReason::Unavailable),
-                Some(format!("{e:#}")),
-            ),
-        };
+        let (disposition, detail) = self.get_interpreted(path, extra);
         let status = match &disposition {
             Disposition::Value(_) => "ok",
             Disposition::Gap(r) => r.as_str(),

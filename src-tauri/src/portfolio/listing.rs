@@ -176,6 +176,19 @@ pub fn describes_issuer(schwab_description: &str, symbol: &str) -> bool {
     )
 }
 
+/// Whether a **canonical-source** name (the FMP profile's `companyName`, the
+/// fund data's `name`) is displayable for `symbol`. Deliberately looser than
+/// [`describes_issuer`]: a canonical source's name field is an issuer name by
+/// construction, so a ticker-token-only *legal* name — "ASML Holding N.V.",
+/// "eBay Inc." — is real identity there, while the same token shape in an
+/// account description ("PSX COM") is noise. Only emptiness-after-tokenizing
+/// and the bare ticker are rejected (FMP's parser accepts any non-blank
+/// string, so those shapes do reach the fallback).
+pub fn displayable_source_name(name: &str, symbol: &str) -> bool {
+    let n = name.trim();
+    !n.eq_ignore_ascii_case(symbol.trim()) && !significant_tokens(n).is_empty()
+}
+
 /// Route one stock's profile lookup to its listing resolution. The exchange test
 /// runs before the name comparison — the exchange, not the profile's HQ country,
 /// is what lets a US-listed ADR pass — and a Schwab description carrying no issuer
@@ -216,23 +229,23 @@ pub fn resolve_listing(
                         .to_string(),
                 },
                 // The ticker is the description's only identity token. Some
-                // issuers are named by their ticker (ASML), so test it against
-                // the profile name directly: a hit verifies, a miss reads
-                // unverifiable — never a conflict, since a "PSX COM" shape
-                // names no issuer to conflict with (attempt-1 review sweep).
-                DescriptionIdentity::TickerOnly => {
-                    let ticker = significant_tokens(symbol);
-                    let profile_tokens = significant_tokens(fmp_name);
-                    if ticker.iter().any(|t| profile_tokens.contains(t)) {
-                        ListingResolution::SupportedUs
-                    } else {
+                // issuers are named by their ticker (ASML), so test the ticker
+                // itself against the profile name through the one shared
+                // comparison: a match verifies, and everything else reads
+                // unverifiable — deliberately never a conflict, since a
+                // "PSX COM" shape names no issuer to conflict with (attempt-1
+                // review sweep). TickerOnly guarantees non-empty ticker
+                // tokens, so the Unverifiable arm folds in harmlessly.
+                DescriptionIdentity::TickerOnly => match compare_names(symbol, fmp_name) {
+                    NameComparison::Match => ListingResolution::SupportedUs,
+                    NameComparison::Conflict | NameComparison::Unverifiable => {
                         ListingResolution::Unverified {
                             detail: "account description carries only the ticker, which \
                                      the resolved issuer name does not contain"
                                 .to_string(),
                         }
                     }
-                }
+                },
                 DescriptionIdentity::Issuer => match compare_names(schwab_description, fmp_name) {
                     NameComparison::Match => ListingResolution::SupportedUs,
                     NameComparison::Conflict => ListingResolution::Conflict {

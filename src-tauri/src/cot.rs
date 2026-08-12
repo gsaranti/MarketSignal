@@ -422,6 +422,7 @@ impl CotDataSource {
                 &gaps,
                 gaps_before,
                 cot_positioning.len() > out_before,
+                None,
             );
         }
         Ok(BaselineMarketData {

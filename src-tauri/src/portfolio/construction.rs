@@ -1764,8 +1764,10 @@ pub fn render_prior_plan(
 /// exists on the full call). Corrected keys insert under the scope's (spine)
 /// casing: two in-scope case variants would otherwise land as distinct map keys
 /// and re-fail whole-book validation as `DuplicateHolding`, burning the single
-/// repair pass on a shape the app collapses deterministically (the response's
-/// later key wins). The merged draft is then re-validated **whole** — the
+/// repair pass on a shape the app collapses deterministically — BTreeMap
+/// iteration means the lexicographically greater variant's object wins;
+/// response emission order is not preserved by decoding, and determinism, not
+/// recency, is the contract. The merged draft is then re-validated **whole** — the
 /// implied post-action weights are book-coupled through the implied total, so a
 /// per-symbol re-check would miss a repair that breaks a previously-clean
 /// holding's containment.
@@ -3809,8 +3811,10 @@ mod tests {
             vec!["AAA"],
             "case variants collapse onto the spine casing"
         );
-        // Deterministic winner: the response's later key ("aaa" after "AAA" in
-        // BTreeMap order) overwrites, so the merge never depends on chance.
+        // Deterministic winner: BTreeMap iteration visits "AAA" then "aaa", so
+        // the lexicographically greater variant overwrites — decoding does not
+        // preserve emission order, and determinism (not recency) is the
+        // contract the merge makes.
         assert_eq!(merged.holdings["AAA"].action, "trim");
     }
 

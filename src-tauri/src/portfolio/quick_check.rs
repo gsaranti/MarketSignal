@@ -433,10 +433,15 @@ pub fn run_quick_check(
 ) -> Result<QuickCheckState> {
     let run = match store::latest_run(conn)? {
         Some(run) => run,
-        // Two distinct refusals: a never-ran store, and one whose retained
-        // rows are all degraded (per-holding work persisted, no constructed
-        // book) — `latest_run` returns `None` for both, and claiming "no run
-        // exists" over persisted work would misdescribe the store.
+        // Three distinct refusals — `latest_run` returns `None` for all of
+        // them, and each must be named truthfully: constructed rows that
+        // exist but decoded on none of the loud-skip passes are *unreadable*,
+        // not degraded; a store of only degraded rows holds persisted
+        // per-holding work, not nothing; and only the empty store never ran.
+        None if store::constructed_rows_exist(conn)? => anyhow::bail!(
+            "the retained constructed runs could not be read (see the app log) — \
+             nothing to quick-check"
+        ),
         None if store::any_runs(conn)? => anyhow::bail!(
             "the retained Portfolio Analysis runs are all degraded (no constructed \
              book) — nothing to quick-check"
@@ -2133,6 +2138,25 @@ mod tests {
             .expect("a per-holding step follows");
         assert!(started < finished, "{steps:?}");
         assert!(finished < first_holding, "{steps:?}");
+    }
+
+    #[test]
+    fn an_unreadable_only_store_refuses_as_unreadable_not_degraded() {
+        // Constructed-marked rows that decode on none of the loud-skip passes
+        // are unreadable, not degraded — the refusal must not affirm the
+        // defined degraded product state over corrupt rows (combined-range
+        // review).
+        let conn = mem();
+        conn.execute(
+            "INSERT INTO portfolio_runs (run_id, created_at, run_json, constructed) \
+             VALUES ('run-corrupt', '2026-08-11T00:00:00Z', 'not json', 1)",
+            [],
+        )
+        .unwrap();
+        let err = run_quick_check(&StubData::quiet(195.0, "2026-08-01"), &conn, &noop_ctx())
+            .unwrap_err();
+        assert!(err.to_string().contains("could not be read"), "{err}");
+        assert!(!err.to_string().contains("degraded"), "{err}");
     }
 
     #[test]

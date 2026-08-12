@@ -158,11 +158,11 @@ const ERROR_BODY_CAP_CHARS: usize = 300;
 /// Truncate an error body to [`ERROR_BODY_CAP_CHARS`] on a char boundary, marking the
 /// cut. Mirrors the snippet idiom `analyst_agent` uses for oversized model output.
 fn cap_error_body(body: &str) -> String {
-    let snippet: String = body.chars().take(ERROR_BODY_CAP_CHARS).collect();
-    if snippet.len() < body.len() {
-        format!("{snippet} …(truncated)")
+    let (head, cut) = crate::data_sources::cap_chars(body, ERROR_BODY_CAP_CHARS);
+    if cut {
+        format!("{head} …(truncated)")
     } else {
-        snippet
+        head
     }
 }
 

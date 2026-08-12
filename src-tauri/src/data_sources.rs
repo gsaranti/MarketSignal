@@ -514,6 +514,17 @@ pub struct BaselineMarketData {
 /// is whether it yielded a value. Produced wins (`ok`); otherwise a gap pushed this
 /// request carries its reason; otherwise `empty` (a 2xx that yielded nothing and
 /// recorded no gap — e.g. an additive enrichment skipped silently).
+/// Take at most `max` characters (never bytes — provider text carries
+/// multi-byte punctuation), reporting whether anything was cut. The one
+/// char-boundary-safe core under every capped surface string (tracker
+/// details, error-chain snippets, log lines); each caller keeps its own cut
+/// marker, several of which are message-pinned by tests.
+pub(crate) fn cap_chars(s: &str, max: usize) -> (String, bool) {
+    let head: String = s.chars().take(max).collect();
+    let cut = head.len() < s.len();
+    (head, cut)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_series_row(
     ctx: &RunContext,
@@ -524,6 +535,7 @@ pub(crate) fn emit_series_row(
     gaps: &[DataGap],
     gaps_before: usize,
     produced: bool,
+    detail: Option<String>,
 ) {
     let status = if produced {
         "ok"
@@ -532,7 +544,12 @@ pub(crate) fn emit_series_row(
     } else {
         "empty"
     };
-    ctx.request_finished(provider, group.as_str(), series_id, name, status, None);
+    // The cause rides only a non-produced row: a request that yielded a value
+    // has nothing to explain, and the detail names the fetch-level failure
+    // (transport chain, HTTP status + provider sentence) the status word
+    // compresses away.
+    let detail = if produced { None } else { detail };
+    ctx.request_finished(provider, group.as_str(), series_id, name, status, detail);
 }
 
 /// The data-source stage. One method: gather the required baseline scan. Sync,

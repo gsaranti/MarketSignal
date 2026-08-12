@@ -1439,18 +1439,22 @@ pub(crate) fn role_risk_prompt_renders_house_view(d: &HoldingDossier) -> bool {
 fn holding_header(d: &HoldingDossier) -> String {
     let described = d.position.description.trim();
     let name = if !crate::portfolio::listing::describes_issuer(described, &d.position.symbol) {
-        // The fallback is held to the same standard as the description it replaces:
-        // FMP's parser accepts any non-blank `companyName`, and the listing guard
-        // returns before comparing names whenever the description carries no
-        // identity — so a profile name that is itself noise, or the ticker, reaches
-        // here unchecked and would rebuild the very header this fixes. Funds have
-        // no profile call, so their identity rides the fund data's own name —
-        // the role-risk branch's only naming source (attempt-1 review sweep).
+        // The fallback is held to a *canonical-source* standard, deliberately
+        // looser than the description's: FMP's parser accepts any non-blank
+        // `companyName`, so bare-ticker and tokenless noise are rejected — but a
+        // ticker-token-only LEGAL name ("ASML Holding N.V.", "eBay Inc.") is
+        // real identity from a canonical source, and holding it to the
+        // description's stricter rule starved ticker-named issuers of any name
+        // at all (combined-range review). Funds have no profile call, so their
+        // identity rides the fund data's own name — the role-risk branch's only
+        // naming source.
         d.company_name
             .as_deref()
             .or_else(|| d.fund.as_ref().and_then(|f| f.fund.name.as_deref()))
             .map(str::trim)
-            .filter(|n| crate::portfolio::listing::describes_issuer(n, &d.position.symbol))
+            .filter(|n| {
+                crate::portfolio::listing::displayable_source_name(n, &d.position.symbol)
+            })
             .unwrap_or("name unavailable")
     } else {
         described
@@ -2716,11 +2720,11 @@ const PARSE_CONTEXT_BODY_CAP: usize = 500;
 /// Truncate a model body to [`PARSE_CONTEXT_BODY_CAP`] chars on a char
 /// boundary, marking the cut with the full length.
 fn body_snippet(content: &str) -> String {
-    let snippet: String = content.chars().take(PARSE_CONTEXT_BODY_CAP).collect();
-    if snippet.len() < content.len() {
-        format!("{snippet} …(truncated, {} chars total)", content.chars().count())
+    let (head, cut) = crate::data_sources::cap_chars(content, PARSE_CONTEXT_BODY_CAP);
+    if cut {
+        format!("{head} …(truncated, {} chars total)", content.chars().count())
     } else {
-        snippet
+        head
     }
 }
 
@@ -5543,6 +5547,21 @@ mod tests {
         let h = holding_header(&d);
         assert!(h.contains("name unavailable"), "{h}");
         assert!(!h.contains("()"), "an empty name pair is the defect itself: {h}");
+
+        // A ticker-named issuer: description AND profile name both tokenize to
+        // just the ticker, but the profile name is a canonical legal name and
+        // must render — holding the fallback to the description's stricter
+        // rule starved these headers entirely (combined-range review).
+        d.position.symbol = "ASML".to_string();
+        d.position.description = "ASML HOLDING NV".to_string();
+        d.company_name = Some("ASML Holding N.V.".to_string());
+        let h = holding_header(&d);
+        assert!(h.contains("ASML Holding N.V."), "{h}");
+        assert!(!h.contains("name unavailable"), "{h}");
+        // The bare ticker as a profile name is still rejected.
+        d.company_name = Some("ASML".to_string());
+        let h = holding_header(&d);
+        assert!(h.contains("name unavailable"), "{h}");
     }
 
     /// The fund half of Finding 4's fallback: funds get no /profile call, so

@@ -455,12 +455,8 @@ impl AnalystAgent for ModelAnalystAgent {
                     // shape of a malformed response without spilling the whole review
                     // (or a large body) to stderr.
                     let rendered = value.to_string();
-                    let snippet: String = rendered.chars().take(500).collect();
-                    let suffix = if snippet.len() < rendered.len() {
-                        " …(truncated)"
-                    } else {
-                        ""
-                    };
+                    let (snippet, cut) = crate::data_sources::cap_chars(&rendered, 500);
+                    let suffix = if cut { " …(truncated)" } else { "" };
                     eprintln!(
                         "analyst review parse failed [{:?} {}]: {e}; raw_value(<=500 chars)={snippet}{suffix}",
                         self.posture,

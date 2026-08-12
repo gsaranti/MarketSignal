@@ -591,9 +591,6 @@ async function refreshPortfolio() {
   } catch (e) {
     if (epoch !== portfolioEpoch) return;
     portfolioLoadError.value = String(e);
-  } finally {
-    // A superseded read leaves the flags to whichever refresh is current.
-    if (epoch === portfolioEpoch) portfolioLoading.value = false;
   }
   // The runs-history list rides its own channel (a listing hiccup must never
   // blank the page's run/pull state above). Same epoch guard.
@@ -614,6 +611,13 @@ async function refreshPortfolio() {
     if (epoch !== portfolioEpoch) return;
     portfolioRunsError.value = String(e);
   }
+  // Loading clears only once BOTH the page state and the history listing have
+  // landed: the degraded-only empty state derives from the listing, so
+  // clearing after the first round-trip painted "No holdings yet." over a
+  // degraded-only store until the second one resolved (combined-range
+  // review). A superseded read leaves the flag to whichever refresh is
+  // current.
+  if (epoch === portfolioEpoch) portfolioLoading.value = false;
 }
 
 // Invalidates in-flight historical-run fetches: bumped at the start of every
@@ -1719,6 +1723,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
             :quick="quickCheck"
             :quick-checking="quickChecking"
             :degraded-only-history="degradedOnlyHistory"
+            :history-unknown="portfolioRunsError !== null"
             @run="generatePortfolio"
             @quick-check="runQuickCheck"
             @pull="pullHoldings"

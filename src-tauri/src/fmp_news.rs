@@ -145,12 +145,12 @@ fn strip_html(html: &str) -> String {
 /// Truncate to `max` characters (not bytes — the editorial text can carry
 /// multi-byte punctuation), appending an ellipsis when anything was cut.
 fn truncate_chars(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
+    let (head, cut) = crate::data_sources::cap_chars(s, max);
+    if cut {
+        format!("{head}…")
+    } else {
+        head
     }
-    let mut out: String = s.chars().take(max).collect();
-    out.push('…');
-    out
 }
 
 /// Run the single-page gather **fail-soft**: a failing fetch logs and degrades to

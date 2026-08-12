@@ -516,8 +516,9 @@ Each finding's own section carries any correction to its scope, found while buil
   narrowed holdings-only schema that reuses the first draft's envelope.
   The corrections are overlaid onto the first draft and the merged plan is re-validated whole,
   because implied weights are book-coupled.
-  Non-spine keys drop deterministically, scope is enforced both ways, and an unknown-key-only
-  failure repairs with no model call.
+  Non-spine keys drop deterministically.
+  Scope is enforced both ways.
+  An unknown-key-only failure repairs with no model call.
   Every portfolio stage now sets `num_predict`.
   A `done_reason: "length"` stop fails typed, the token counts disambiguating a reservation hit from
   context exhaustion, and the observation rides data-health.
@@ -533,9 +534,10 @@ Each finding's own section carries any correction to its scope, found while buil
 ### Still open
 
 Candidate 3 alone.
-Digest compression stays un-targeted until a run persists, and it is now doubly instrumented:
-`record_usage` captures prompt tokens, `num_ctx` and sent size for the construction stage
-specifically, and since the pre-run slice its completion fields persist even when Step 7b fails.
+Digest compression stays un-targeted until a run persists.
+It is nonetheless doubly instrumented: `record_usage` captures prompt tokens, `num_ctx` and sent
+size for the construction stage specifically, and since the pre-run slice its completion fields
+persist even when Step 7b fails.
 Attempt 2 therefore supplies the targeting evidence whether or not it constructs a book.
 The deferred "declined an engine exit" vocabulary waits on the same run, as its ruling above already
 records.
