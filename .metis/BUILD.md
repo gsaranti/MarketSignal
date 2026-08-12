@@ -265,8 +265,12 @@ polled at step/request boundaries and mid-stream, never interrupting an in-fligh
 request. Two load-bearing UI invariants: a **run is never a report** (a row
 appears only on persisted success, so a cancel/fail removes nothing), and the
 terminal `run-finished` event is emitted **before** any job-history write error
-can propagate, so a DB failure can't strand the UI mid-run. The full runtime
-contract is in `docs/run-tracking.md`.
+can propagate, so a DB failure can't strand the UI mid-run. *Planned:* the Step
+7b repair gives the first invariant one deliberate exception on the
+Portfolio-runs history — a run whose construction fails persists its per-holding
+work as a degraded row, still terminally failed and excluded from `latest_run`,
+so a plan must read that list as "persisted work" rather than "succeeded runs".
+The full runtime contract is in `docs/run-tracking.md`.
 
 ## Testing approach
 
@@ -566,6 +570,10 @@ is now fully built.**
    nothing, so the run is itself gated on that stage carrying a whole-book plan
    at book scale — evidence in
    `docs/verification/2026-08-10-big-run-attempt-1.md`.
+   Both of the repair's blocking rulings are made and its prompt and
+   tracker-routing half is built.
+   What stands between here and a second attempt is the persistence and
+   attribution half; that record's §Disposition owns the queue, not this brief.
 2. **Trade Opportunities** — designed, not built, and waiting behind the whole
    block. The design is settled and the paid FMP shapes are live-verified, so
    implementation planning codes against verified shapes. Five hard-trigger
@@ -591,7 +599,9 @@ These ride the queue rather than any one slice. They are collected here because
 each is unbuilt work that no scheduled slice will pick up on its own.
 
 - **Checkpoint/resume** — docs-promised but unbuilt; the ledger persists only at
-  run end.
+  run end. The narrower case of a run whose *construction* fails is now ruled and
+  owned by the Step 7b repair, so what stays unowned here is mid-run
+  checkpointing proper.
 - **The metric-level 6g validator** — only the ledger legs exist. The
   input-delta and what-changed attribution validator remains designed, and now
   also gates the outcome slice's dormant legs (the standing-thesis creation leg
