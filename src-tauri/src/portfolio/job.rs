@@ -947,7 +947,7 @@ fn run_analysis(
                 }
             }
         };
-        let mut prior = dossier::prior_verdict_for(conn, &position.symbol);
+        let mut prior = dossier::prior_verdict_for(prior_run.as_ref(), &position.symbol);
         // The prior verdict's effective analysis vintage — preserved on an
         // insufficient-evidence exit below, since an abstention is not a full pass
         // and the evidence-event boundary must not silently advance past events no
@@ -1409,6 +1409,9 @@ fn run_analysis(
             fetched_at: created_at.clone(),
         }),
         outcome: Some(outcome_records),
+        // Authored here, at the persist seam — the one place that knows the
+        // book was constructed (merge_validated_actions ran above).
+        constructed: Some(true),
     };
 
     ctx.step_started("persist", "Persist run");
@@ -1675,6 +1678,9 @@ fn persist_degraded_run(
             fetched_at: created_at.to_string(),
         }),
         outcome: None,
+        // Authored here, at the persist seam: this row carries per-holding
+        // work but no constructed book.
+        constructed: Some(false),
     };
     let persisted = conn
         .unchecked_transaction()
@@ -3171,7 +3177,8 @@ mod tests {
             other => panic!("expected success, got {other:?}"),
         };
         let conn = storage::open(&paths.db_path).unwrap();
-        assert!(dossier::prior_verdict_for(&conn, "AAPL").is_some());
+        let latest = store::latest_run(&conn).unwrap();
+        assert!(dossier::prior_verdict_for(latest.as_ref(), "AAPL").is_some());
         let second = match run_once() {
             PortfolioJobOutcome::Successful(r) => *r,
             other => panic!("expected success, got {other:?}"),

@@ -470,6 +470,13 @@ const quickChecking = ref(false);
 // `historicalRun === null` means the page shows the live latest view.
 const portfolioRuns = ref<PortfolioRunSummary[]>([]);
 const portfolioRunsError = ref<string | null>(null);
+// The history holds rows but none constructed — the latest view is empty even
+// though per-holding work is persisted, and its empty state must say so.
+const degradedOnlyHistory = computed(
+  () =>
+    portfolioRuns.value.length > 0 &&
+    portfolioRuns.value.every((r) => !r.constructed)
+);
 const historicalRun = ref<PortfolioRun | null>(null);
 // A past-run OPEN failure — its own channel (never `portfolioError`, whose
 // pane block reads "Couldn't run"), cleared by the next selection or by
@@ -1711,6 +1718,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
             :history-error="historicalError"
             :quick="quickCheck"
             :quick-checking="quickChecking"
+            :degraded-only-history="degradedOnlyHistory"
             @run="generatePortfolio"
             @quick-check="runQuickCheck"
             @pull="pullHoldings"

@@ -413,6 +413,7 @@ The degraded persist covers persisting incoherence and a failed construction cal
 A cancel is not a failure and leaves no row.
 The run's terminal state stays **failed**, with the failed-job warning unchanged.
 A degraded run lists in the Portfolio-runs history marked as having no book and opens read-only, but is **excluded from `latest_run`**: an unmerged verdict's action is a pre-construction value — a fresh row's standalone lean, a carried row's carried action (possibly rule-demoted), a role/risk row's placeholder — rather than a construction-blessed final, so the next run's diff baseline, carry vintages, and quick-check chaining reach past it to the last run that constructed a book.
+The exclusion reads a persisted **`constructed` marker** authored at the persist seam and mirrored into a store column, never a re-derivation from the run's field shapes ([storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage)).
 The response schema offers the **full ladder to every holding** (the target-weight fields keep their structural `minimum: 0`); where a final action departs the standalone lean, the required `divergence_cause` is validated against the same aggregates, with the `engine-bar` and `carried-stale-lean` cases app-stamped instead ([portfolio-analysis.md §Portfolio roll-up and construction](portfolio-analysis.md#portfolio-roll-up-and-construction)).
 
 ## Step 8: Persist Run and Audit, with Memory Embeddings

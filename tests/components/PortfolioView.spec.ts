@@ -173,6 +173,8 @@ const run: PortfolioRun = {
     overview: "Two graded holdings; one exit acknowledged.",
   },
   audit: [],
+  // The persist-seam marker the backend ships (always concrete on the wire).
+  constructed: true,
 };
 
 // A pull FRESHER than the run: NVDA appears (new), MSFT is gone (no longer held).
@@ -245,6 +247,28 @@ describe("PortfolioView states", () => {
     expect(wrapper.text()).toContain("Pull holdings");
   });
 
+  test("a degraded-only history reads as no-constructed-run, never never-ran", () => {
+    // The store holds persisted per-holding work (visible in the runs
+    // history), so "No holdings yet." would misdescribe it.
+    const wrapper = mountView({ degradedOnlyHistory: true });
+    expect(wrapper.text()).toContain("No constructed run yet.");
+    expect(wrapper.text()).toContain("runs history");
+    expect(wrapper.text()).not.toContain("No holdings yet.");
+    expect(wrapper.text()).toContain("Run analysis");
+  });
+
+  test("the degraded tag is driven by the shipped marker alone", () => {
+    // The backend authors `constructed` at its persist seam; the view must
+    // not re-derive degradedness from roll_up field shapes.
+    const markerDegraded: PortfolioRun = {
+      ...run,
+      run_id: "prun-marker",
+      constructed: false,
+    };
+    const wrapper = mountView({ run: markerDegraded, historical: true });
+    expect(wrapper.find(".hist-banner .ana-tag").text()).toBe("no book");
+  });
+
   test("loading state shows while nothing is cached", () => {
     const wrapper = mountView({ loading: true });
     expect(wrapper.text()).toContain("Loading portfolio…");
@@ -305,6 +329,7 @@ describe("PortfolioView historical mode", () => {
     const degraded: PortfolioRun = {
       ...run,
       run_id: "prun-degraded",
+      constructed: false,
       roll_up: {
         ...run.roll_up,
         aggregates: {
@@ -341,6 +366,7 @@ describe("PortfolioView historical mode", () => {
     const degradedRole: PortfolioRun = {
       ...run,
       run_id: "prun-degraded-role",
+      constructed: false,
       holdings: {
         positions: [
           position("BND", {

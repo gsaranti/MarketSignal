@@ -59,6 +59,10 @@ const props = defineProps<{
   // pass; applied only while it swept the rendered (latest) run.
   quick?: QuickCheckState | null;
   quickChecking?: boolean;
+  // The runs history holds rows but none constructed: `run` is null even
+  // though per-holding work is persisted, so the empty latest view must say
+  // so rather than claim nothing ever ran.
+  degradedOnlyHistory?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -75,15 +79,14 @@ const emit = defineEmits<{
 const isHistorical = computed(() => props.historical ?? false);
 
 // A degraded run — Step 7b's construction failed after the per-holding pass:
-// the 7a aggregates persisted, no book was constructed, and each holding's
+// the per-holding work persisted, no book was constructed, and each holding's
 // action is its pre-construction value (a fresh row's standalone lean, a
 // carried row's carried action, a role/risk placeholder). Only ever rendered
 // here read-only — the backend excludes degraded runs from the latest view.
+// Reads the persist-seam marker the backend ships; never re-derived from
+// roll_up field shapes (the Rust predicate is the single home).
 const isDegradedRun = computed(
-  () =>
-    props.run !== null &&
-    props.run.roll_up.aggregates != null &&
-    props.run.roll_up.construction == null
+  () => props.run !== null && props.run.constructed === false
 );
 
 const runDisabled = computed(
@@ -1051,6 +1054,19 @@ const keyFigures = computed(() => {
       <div v-else-if="loadError && !run && !pull" class="pane-quiet" role="alert">
         <span class="pane-error-label">Couldn't load the portfolio</span>
         <span class="pane-error-detail">{{ loadError }}</span>
+      </div>
+
+      <!-- Empty latest view over a degraded-only history: per-holding work is
+           persisted (visible read-only in the runs history), but no run
+           constructed a book — "No holdings yet." would misdescribe the store. -->
+      <div v-else-if="!run && !pull && degradedOnlyHistory" class="empty-state">
+        <h2 class="empty-title">No constructed run yet.</h2>
+        <p class="empty-body">
+          The last analysis persisted its per-holding work but failed before
+          constructing a portfolio — it is in the runs history, tagged
+          <em>no book</em>, and opens read-only.
+          <strong>Run analysis</strong> starts a fresh pass.
+        </p>
       </div>
 
       <!-- Empty: no pull, no run -->

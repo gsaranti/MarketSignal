@@ -588,14 +588,20 @@ pub fn extract_house_view_sections(markdown: &str) -> String {
 /// verdict plus the audit-row legs — the grade-band parameter version its letter
 /// was computed under (`None` = a pre-stamp run, i.e. the v1 bands) and the
 /// pre-profit overlay record whose observation history accumulates. Reads the
-/// latest persisted run and finds the matching symbol; `None` on a first run or a
-/// newly-added holding. Fail-soft — a read error reads as "no prior verdict".
-pub fn prior_verdict_for(conn: &Connection, symbol: &str) -> Option<PriorHolding> {
-    let run = crate::portfolio::store::latest_run(conn).ok().flatten()?;
+/// job's **already-loaded** prior run — the job loads `store::latest_run` once
+/// per run and threads it here, rather than this lookup re-reading (and
+/// re-parsing) the store once per holding — and finds the matching symbol;
+/// `None` on a first run or a newly-added holding.
+pub fn prior_verdict_for(
+    prior_run: Option<&crate::portfolio::PortfolioRun>,
+    symbol: &str,
+) -> Option<PriorHolding> {
+    let run = prior_run?;
     let verdict = run
         .verdicts
-        .into_iter()
-        .find(|v| v.symbol.eq_ignore_ascii_case(symbol))?;
+        .iter()
+        .find(|v| v.symbol.eq_ignore_ascii_case(symbol))?
+        .clone();
     // The verdict's effective vintage, not the container run's `created_at`: a
     // selective carry re-persists an old verdict (and its audit's authoring-spot
     // basis) into a newer run, so dating the retrospective off the container
@@ -603,12 +609,12 @@ pub fn prior_verdict_for(conn: &Connection, symbol: &str) -> Option<PriorHolding
     let vintage = crate::portfolio::effective_vintage(&verdict, &run.created_at).to_string();
     let audit_row = run
         .audit
-        .into_iter()
+        .iter()
         .find(|a| a.symbol.eq_ignore_ascii_case(symbol));
     let (grade_parameter_version, pre_profit, spot) = match audit_row {
         Some(a) => {
             let spot = a.quick_basis.as_ref().map(|b| b.spot);
-            (a.grade_parameter_version, a.pre_profit, spot)
+            (a.grade_parameter_version.clone(), a.pre_profit.clone(), spot)
         }
         None => (None, None, None),
     };
@@ -1268,8 +1274,8 @@ Sources and footnotes.
     fn prior_verdict_lookup_reads_the_latest_run() {
         let conn = Connection::open_in_memory().unwrap();
         storage::init_schema(&conn).unwrap();
-        // No runs yet -> no prior verdict.
-        assert!(prior_verdict_for(&conn, "AAPL").is_none());
+        // No prior run -> no prior verdict.
+        assert!(prior_verdict_for(None, "AAPL").is_none());
 
         // Persist a run carrying an AAPL verdict; the lookup finds it.
         let run = crate::portfolio::PortfolioRun {
@@ -1308,9 +1314,11 @@ Sources and footnotes.
             audit: vec![],
             rate_prints: None,
             outcome: None,
+            constructed: Some(true),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
-        let prior = prior_verdict_for(&conn, "aapl").expect("case-insensitive match");
+        let latest = crate::portfolio::store::latest_run(&conn).unwrap();
+        let prior = prior_verdict_for(latest.as_ref(), "aapl").expect("case-insensitive match");
         assert_eq!(prior.verdict.symbol, "AAPL");
         // No audit row for the symbol -> a pre-stamp read (the v1 bands).
         assert_eq!(prior.grade_parameter_version, None);
@@ -1371,9 +1379,11 @@ Sources and footnotes.
             }],
             rate_prints: None,
             outcome: None,
+            constructed: Some(true),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
-        let prior = prior_verdict_for(&conn, "AAPL").expect("verdict present");
+        let latest = crate::portfolio::store::latest_run(&conn).unwrap();
+        let prior = prior_verdict_for(latest.as_ref(), "AAPL").expect("verdict present");
         assert_eq!(prior.grade_parameter_version.as_deref(), Some("grade-v2"));
         // No `analyzed_at` on the verdict -> the vintage falls back to the
         // container run's `created_at`.
@@ -1425,9 +1435,11 @@ Sources and footnotes.
             audit: vec![],
             rate_prints: None,
             outcome: None,
+            constructed: Some(true),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
-        let prior = prior_verdict_for(&conn, "AAPL").expect("verdict present");
+        let latest = crate::portfolio::store::latest_run(&conn).unwrap();
+        let prior = prior_verdict_for(latest.as_ref(), "AAPL").expect("verdict present");
         assert_eq!(prior.vintage, "2026-07-29T12:00:00Z");
     }
 }

@@ -862,6 +862,11 @@ export interface PortfolioRun {
   // This run's outcome-learning records (scoreboard subset) — absent on runs
   // persisted before the outcome slice.
   outcome?: OutcomeRecordsView | null;
+  // Whether the run carries a constructed book — authored at the backend's
+  // persist seam and resolved at its store decode, so it is always concrete
+  // on the wire. `false` marks a degraded (construction-failed) run; the UI
+  // reads this, never the roll_up field shapes.
+  constructed: boolean;
 }
 
 // --- Portfolio quick check ---------------------------------------------------

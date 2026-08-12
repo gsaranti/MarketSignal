@@ -1515,23 +1515,48 @@ pub struct PortfolioRun {
     /// before the field existed (`#[serde(default)]`).
     #[serde(default)]
     pub outcome: Option<outcome::OutcomeRecords>,
+    /// Whether this run carries a constructed book — **authored at the persist
+    /// seam** (`Some(true)` on the normal path, `Some(false)` on a degraded
+    /// persist), mirrored into the store's `constructed` column, and shipped to
+    /// the frontend, so no consumer re-derives run health from field shapes.
+    /// `None` only on a blob persisted before the marker existed; the store's
+    /// decode seams resolve it via [`Self::resolve_constructed`], so anything
+    /// past the store always sees a concrete value.
+    #[serde(default)]
+    pub constructed: Option<bool>,
 }
 
 impl PortfolioRun {
     /// Whether this run carries a constructed book — the one predicate every
     /// consumer reads, never the raw fields. A **degraded** run (Step 7b's
     /// construction failed after the per-holding pass; ruled 2026-08-11,
-    /// `docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition) persists
-    /// with `aggregates: Some` (7a ran) and `construction: None` (no book): its
-    /// verdict actions are **pre-merge values** — a fresh row's standalone lean,
-    /// a carried row's carried action, a role-risk row's placeholder — never
-    /// 7b-blessed finals, so it must never serve as a carry / diff / quick-check
-    /// baseline —
-    /// [`store::latest_run`] excludes it on this predicate. A pre-construction-era
-    /// blob (both fields `None`) keeps its constructed status: its actions were
-    /// final under the pre-7b contract.
+    /// `docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition) carries
+    /// no book: its verdict actions are **pre-merge values** — a fresh row's
+    /// standalone lean, a carried row's carried action, a role-risk row's
+    /// placeholder — never 7b-blessed finals, so it must never serve as a
+    /// carry / diff / quick-check baseline — [`store::latest_run`] excludes it
+    /// on this predicate (via the mirrored column). Reads the persisted marker;
+    /// a pre-marker blob falls back to the shape derivation.
     pub fn has_constructed_book(&self) -> bool {
+        self.constructed.unwrap_or_else(|| self.derived_constructed())
+    }
+
+    /// The pre-marker shape derivation: degraded persisted `aggregates: Some`
+    /// (7a ran) with `construction: None` (no book). A pre-construction-era
+    /// blob (both fields `None`) keeps its constructed status — its actions
+    /// were final under the pre-7b contract. Kept only as the decode-time
+    /// fallback for blobs older than the marker; everything downstream reads
+    /// the marker.
+    fn derived_constructed(&self) -> bool {
         !(self.roll_up.aggregates.is_some() && self.roll_up.construction.is_none())
+    }
+
+    /// Resolve a decoded pre-marker blob to a concrete marker — called at the
+    /// store's decode seams, so consumers and the IPC payload never see `None`.
+    pub fn resolve_constructed(&mut self) {
+        if self.constructed.is_none() {
+            self.constructed = Some(self.derived_constructed());
+        }
     }
 }
 

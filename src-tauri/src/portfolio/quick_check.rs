@@ -15,7 +15,7 @@
 //! quick-check write there would surface in the sidebar history and, worse, become
 //! the next full run's diff baseline and ledger-carry source.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
@@ -431,8 +431,18 @@ pub fn run_quick_check(
     conn: &Connection,
     ctx: &RunContext,
 ) -> Result<QuickCheckState> {
-    let run = store::latest_run(conn)?
-        .context("no Portfolio Analysis run exists yet — nothing to quick-check")?;
+    let run = match store::latest_run(conn)? {
+        Some(run) => run,
+        // Two distinct refusals: a never-ran store, and one whose retained
+        // rows are all degraded (per-holding work persisted, no constructed
+        // book) — `latest_run` returns `None` for both, and claiming "no run
+        // exists" over persisted work would misdescribe the store.
+        None if store::any_runs(conn)? => anyhow::bail!(
+            "the retained Portfolio Analysis runs are all degraded (no constructed \
+             book) — nothing to quick-check"
+        ),
+        None => anyhow::bail!("no Portfolio Analysis run exists yet — nothing to quick-check"),
+    };
     let now = now_rfc3339();
     let today = sweep_session_date(&now);
 
@@ -1867,6 +1877,7 @@ mod tests {
                 fetched_at: "2026-07-20T00:00:00Z".into(),
             }),
             outcome: None,
+            constructed: Some(true),
         }
     }
 
@@ -1981,6 +1992,7 @@ mod tests {
             ],
             rate_prints: None,
             outcome: None,
+            constructed: Some(true),
         };
         store::insert_run(&conn, &run).unwrap();
         let mut data = StubData::quiet(195.0, "2026-08-02");
@@ -2062,6 +2074,22 @@ mod tests {
         let err = run_quick_check(&StubData::quiet(195.0, "2026-08-01"), &conn, &noop_ctx())
             .unwrap_err();
         assert!(err.to_string().contains("no Portfolio Analysis run"), "{err}");
+    }
+
+    #[test]
+    fn a_degraded_only_store_refuses_as_degraded_not_never_ran() {
+        // `latest_run` is None for both an empty store and a degraded-only one;
+        // the refusal must not claim "no run exists" over persisted work
+        // (attempt-1 review sweep).
+        let conn = mem();
+        let mut run = sample_run(priced_verdict("AAPL", vec![]), audit_for("AAPL", None));
+        run.constructed = Some(false);
+        store::record_run(&conn, &run).unwrap();
+        let err = run_quick_check(&StubData::quiet(195.0, "2026-08-01"), &conn, &noop_ctx())
+            .unwrap_err();
+        assert!(err.to_string().contains("degraded"), "{err}");
+        assert!(err.to_string().contains("no constructed book"), "{err}");
+        assert!(!err.to_string().contains("no Portfolio Analysis run exists"), "{err}");
     }
 
     #[test]
