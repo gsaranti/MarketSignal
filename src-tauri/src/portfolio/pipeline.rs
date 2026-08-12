@@ -5365,9 +5365,12 @@ mod tests {
                 "{}: schema drifted from the key constant",
                 c.what
             );
-            for key in &c.keys {
-                assert!(c.contract.contains(key), "{}: contract omits `{key}`", c.what);
-            }
+            let declared = c.keys.join(", ");
+            assert!(
+                c.contract.contains(&declared),
+                "{}: contract does not declare the exact key list `{declared}`",
+                c.what
+            );
             assert!(
                 c.prompt.contains(&c.contract),
                 "{}: prompt does not carry the contract",
@@ -5378,9 +5381,11 @@ mod tests {
         // Construction's per-holding object is the one set with no schema-level
         // `required` of its own to read at an empty spine.
         let contract = build_stage::construction_response_contract();
-        for key in build_stage::PER_HOLDING_PLAN_KEYS {
-            assert!(contract.contains(key), "contract omits per-holding `{key}`");
-        }
+        let per_holding = build_stage::PER_HOLDING_PLAN_KEYS.join(", ");
+        assert!(
+            contract.contains(&per_holding),
+            "contract does not declare the exact per-holding list `{per_holding}`"
+        );
 
         // The branch carries no action of its own — declaring one would invite it.
         assert!(!pf::role_risk_response_contract().contains("model_price_targets"));

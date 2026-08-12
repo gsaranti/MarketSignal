@@ -1727,14 +1727,6 @@ pub fn ledger_schema(role_risk: bool) -> Value {
     })
 }
 
-/// The JSON Schema handed to Ollama's `format` so the interpretation is structurally
-/// valid by construction. Mirrors [`Interpretation`]'s shape; enums are string enums
-/// with the same kebab labels serde uses, so the decoded object round-trips. Since
-/// `portfolio-v7` the schema is **structurally unrestricted** (the two-arm
-/// contract — `docs/portfolio-analysis.md` §The holding verdict): the lean enum
-/// always lists the full ladder and the conviction enum all three values; the
-/// engine's own feasible set and any pre-profit conviction ceiling render into the
-/// prompt as evidence and into the audit as annotations, never as schema bars.
 /// The fields the priced interpretation must return. The schema's `required` set and
 /// the prompt's declaration are both built from this list, so the enforced grammar and
 /// the stated contract cannot diverge. Four of these names — `action`, `conviction`,
@@ -1782,6 +1774,14 @@ pub fn role_risk_response_contract() -> String {
     )
 }
 
+/// The JSON Schema handed to Ollama's `format` so the interpretation is structurally
+/// valid by construction. Mirrors [`Interpretation`]'s shape; enums are string enums
+/// with the same kebab labels serde uses, so the decoded object round-trips. Since
+/// `portfolio-v7` the schema is **structurally unrestricted** (the two-arm
+/// contract — `docs/portfolio-analysis.md` §The holding verdict): the lean enum
+/// always lists the full ladder and the conviction enum all three values; the
+/// engine's own feasible set and any pre-profit conviction ceiling render into the
+/// prompt as evidence and into the audit as annotations, never as schema bars.
 pub fn interpretation_schema() -> Value {
     let read = json!({ "type": "string", "enum": ["bullish", "neutral", "bearish"] });
     let all = [

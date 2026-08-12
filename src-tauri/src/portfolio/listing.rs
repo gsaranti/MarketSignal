@@ -135,7 +135,7 @@ fn compare_names(schwab: &str, fmp: &str) -> NameComparison {
 
 /// Whether an account description carries an issuer identity at all — the one
 /// definition, shared by the guard below and the interpretation prompt's issuer
-/// fallback so the two cannot drift apart. Identity is what [`significant_tokens`]
+/// fallback so the two cannot drift apart. Identity is what `significant_tokens`
 /// finds, not merely non-emptiness: blank, whitespace, and corporate-form noise
 /// like `"COMMON STOCK"` all tokenize to nothing and are the same shape. The ticker
 /// repeated needs its own clause — it tokenizes to itself, yet names no issuer.
@@ -149,7 +149,7 @@ pub fn describes_issuer(schwab_description: &str, symbol: &str) -> bool {
 /// is what lets a US-listed ADR pass — and a Schwab description carrying no issuer
 /// identity ([`describes_issuer`]) has nothing to compare, so it reads unverifiable.
 /// Blank and noise-only descriptions reached the same `Unverified` outcome through
-/// [`compare_names`]'s empty-token arm before that check was hoisted; only the
+/// `compare_names`'s empty-token arm before that check was hoisted; only the
 /// recorded detail changed. That arm stays live for the mirror case — a *profile*
 /// name that tokenizes to nothing.
 pub fn resolve_listing(
