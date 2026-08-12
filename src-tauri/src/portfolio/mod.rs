@@ -1735,6 +1735,53 @@ pub fn ledger_schema(role_risk: bool) -> Value {
 /// always lists the full ladder and the conviction enum all three values; the
 /// engine's own feasible set and any pre-profit conviction ceiling render into the
 /// prompt as evidence and into the audit as annotations, never as schema bars.
+/// The fields the priced interpretation must return. The schema's `required` set and
+/// the prompt's declaration are both built from this list, so the enforced grammar and
+/// the stated contract cannot diverge. Four of these names — `action`, `conviction`,
+/// `ledger`, `self_assessment` — also appear in the instructional prose above the
+/// declaration, where a containment test cannot tell a real declaration from an
+/// incidental mention (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 2).
+pub const INTERPRETATION_KEYS: [&str; 10] = [
+    "action",
+    "conviction",
+    "horizon_outlook",
+    "financial_summary",
+    "price_target_rationale",
+    "what_changed",
+    "ledger",
+    "model_sub_scores",
+    "model_price_targets",
+    "self_assessment",
+];
+
+/// The `role_risk_only` branch's fields, on the same shared-constant footing —
+/// `ledger` is shadowed by that prompt's prose too.
+pub const ROLE_RISK_KEYS: [&str; 3] = ["role_summary", "what_changed", "ledger"];
+
+/// The priced branch's response-contract sentence, generated from
+/// [`INTERPRETATION_KEYS`]. The nested shapes are stated after the key list because
+/// they are structure the model benefits from, not part of the top-level set.
+pub fn interpretation_response_contract() -> String {
+    format!(
+        "Respond with a single JSON object carrying exactly these keys: {}. \
+         Within them: horizon_outlook is short / mid / long; model_sub_scores is \
+         quality / valuation / momentum / risk; model_price_targets is one_month and \
+         twelve_month, each base / bear / bull. The response format is enforced by \
+         the decoder, so spend no reasoning on shape — put it into the read.",
+        INTERPRETATION_KEYS.join(", ")
+    )
+}
+
+/// The `role_risk_only` branch's contract, generated from [`ROLE_RISK_KEYS`].
+pub fn role_risk_response_contract() -> String {
+    format!(
+        "Respond with a single JSON object carrying exactly these keys: {}. The \
+         response format is enforced by the decoder, so spend no reasoning on shape \
+         — put it into the read.",
+        ROLE_RISK_KEYS.join(", ")
+    )
+}
+
 pub fn interpretation_schema() -> Value {
     let read = json!({ "type": "string", "enum": ["bullish", "neutral", "bearish"] });
     let all = [
@@ -1790,11 +1837,7 @@ pub fn interpretation_schema() -> Value {
             },
             "self_assessment": { "type": "string" }
         },
-        "required": [
-            "action", "conviction", "horizon_outlook",
-            "financial_summary", "price_target_rationale", "what_changed", "ledger",
-            "model_sub_scores", "model_price_targets", "self_assessment"
-        ]
+        "required": INTERPRETATION_KEYS
     })
 }
 
@@ -1833,7 +1876,7 @@ pub fn role_risk_interpretation_schema() -> Value {
             "what_changed": { "type": "string" },
             "ledger": ledger_schema(true)
         },
-        "required": ["role_summary", "what_changed", "ledger"]
+        "required": ROLE_RISK_KEYS
     })
 }
 

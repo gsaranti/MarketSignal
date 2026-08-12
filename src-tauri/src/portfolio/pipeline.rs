@@ -1355,7 +1355,8 @@ pub fn validate_ledger_rewrite(
 /// model's own, and the model arm's values never alter or bind the engine
 /// baseline.
 pub fn interpretation_system_prompt() -> String {
-    "You are a disciplined equity analyst grading one holding for a prescriptive \
+    format!(
+        "You are a disciplined equity analyst grading one holding for a prescriptive \
      portfolio review. The verdict has TWO ARMS. The ENGINE ARM — sub-scores, the \
      composite grade, valuation multiples, the risk tier, the capital-efficiency \
      read, and the scenario price targets — has already been computed \
@@ -1384,19 +1385,16 @@ pub fn interpretation_system_prompt() -> String {
      with monitorable falsifiers and pre-committed action triggers: test the prior \
      ledger against this run's evidence and the engine's deterministic condition \
      crossings, then rewrite it per the instructions in the prompt. \
-     Respond with a single JSON object carrying exactly these keys: action, \
-     conviction, horizon_outlook (short/mid/long), financial_summary, \
-     price_target_rationale, what_changed, ledger, model_sub_scores \
-     (quality/valuation/momentum/risk), model_price_targets (one_month and \
-     twelve_month, each base/bear/bull), self_assessment. The response format is \
-     enforced by the decoder, so spend no reasoning on shape — put it into the read."
-        .to_string()
+     {}",
+        crate::portfolio::interpretation_response_contract()
+    )
 }
 
 /// The system prompt for the `role_risk_only` interpretation — the union's other
 /// branch: role and risk only, no letter, no targets, no conviction.
 pub fn role_risk_system_prompt() -> String {
-    "You are a disciplined portfolio analyst assessing one holding whose vehicle \
+    format!(
+        "You are a disciplined portfolio analyst assessing one holding whose vehicle \
      class this pipeline is structurally unable to price (a bond or commodity fund, \
      an ex-US fund, a leveraged/inverse vehicle, or a fund without usable weightings). \
      Do NOT produce a grade, price target, conviction, or action — none exists for \
@@ -1410,10 +1408,9 @@ pub fn role_risk_system_prompt() -> String {
      You also maintain the holding's THESIS LEDGER (fund-flavored drivers; \
      condition-only monitor; trim/sell triggers only) — test the prior ledger against \
      this run's evidence and rewrite it per the instructions in the prompt. \
-     Respond with a single JSON object carrying exactly these keys: role_summary, \
-     what_changed, ledger. The response format is enforced by the decoder, so \
-     spend no reasoning on shape — put it into the read."
-        .to_string()
+     {}",
+        crate::portfolio::role_risk_response_contract()
+    )
 }
 
 /// The user prompt for the `role_risk_only` interpretation: the engine's typed
@@ -5320,45 +5317,80 @@ mod tests {
 
     #[test]
     fn every_constrained_prompt_declares_its_own_response_keys() {
-        let priced = interpretation_system_prompt();
-        for key in non_empty(required_keys(&crate::portfolio::interpretation_schema()), "priced") {
-            assert!(priced.contains(&key), "priced prompt omits `{key}`");
-        }
-
-        let role = role_risk_system_prompt();
-        for key in non_empty(
-            required_keys(&crate::portfolio::role_risk_interpretation_schema()),
-            "role-risk",
-        ) {
-            assert!(role.contains(&key), "role-risk prompt omits `{key}`");
-        }
-        // The branch carries no action of its own — declaring one would invite it.
-        assert!(!role.contains("model_price_targets"), "{role}");
-
-        // Construction cannot be checked by containment: `action`, `rationale` and
-        // `divergence_cause` all appear in the prose above the declaration, so dropping
-        // them from it would still "contain" them. The contract is generated from the
-        // key constants instead, and the two things worth pinning are that the schema
-        // is built from those same constants and that the prompt carries the result.
+        // Containment over a whole prompt proves nothing here: every one of these
+        // prompts mentions some of its own key names in the instructional prose above
+        // the declaration (`action`, `conviction`, `ledger`, `self_assessment` in the
+        // priced branch; `ledger` in role-risk; `action`, `rationale`,
+        // `divergence_cause` in construction). So each contract is generated from the
+        // constant its schema's `required` set is built from, and the two seams that
+        // leaves are what this pins: schema-from-constant, and prompt-carries-contract.
+        use crate::portfolio as pf;
         use crate::portfolio::construction as build_stage;
-        let spine_schema = build_stage::construction_schema(&[]);
-        assert_eq!(
-            non_empty(required_keys(&spine_schema), "construction envelope"),
-            build_stage::PLAN_ENVELOPE_KEYS.to_vec(),
-            "envelope schema drifted from the key constant"
-        );
-        let contract = build_stage::construction_response_contract();
-        for key in build_stage::PLAN_ENVELOPE_KEYS
-            .iter()
-            .chain(build_stage::PER_HOLDING_PLAN_KEYS.iter())
-        {
-            assert!(contract.contains(key), "contract omits `{key}`");
+
+        struct ContractCase {
+            what: &'static str,
+            required: Vec<String>,
+            keys: Vec<&'static str>,
+            contract: String,
+            prompt: String,
         }
-        let build = build_stage::construction_system_prompt();
-        assert!(build.contains(&contract), "the prompt does not carry the contract");
+        let cases = [
+            ContractCase {
+                what: "priced",
+                required: required_keys(&pf::interpretation_schema()),
+                keys: pf::INTERPRETATION_KEYS.to_vec(),
+                contract: pf::interpretation_response_contract(),
+                prompt: interpretation_system_prompt(),
+            },
+            ContractCase {
+                what: "role-risk",
+                required: required_keys(&pf::role_risk_interpretation_schema()),
+                keys: pf::ROLE_RISK_KEYS.to_vec(),
+                contract: pf::role_risk_response_contract(),
+                prompt: role_risk_system_prompt(),
+            },
+            ContractCase {
+                what: "construction envelope",
+                required: required_keys(&build_stage::construction_schema(&[])),
+                keys: build_stage::PLAN_ENVELOPE_KEYS.to_vec(),
+                contract: build_stage::construction_response_contract(),
+                prompt: build_stage::construction_system_prompt(),
+            },
+        ];
+
+        for c in cases {
+            assert_eq!(
+                non_empty(c.required, c.what),
+                c.keys.iter().map(|k| k.to_string()).collect::<Vec<_>>(),
+                "{}: schema drifted from the key constant",
+                c.what
+            );
+            for key in &c.keys {
+                assert!(c.contract.contains(key), "{}: contract omits `{key}`", c.what);
+            }
+            assert!(
+                c.prompt.contains(&c.contract),
+                "{}: prompt does not carry the contract",
+                c.what
+            );
+        }
+
+        // Construction's per-holding object is the one set with no schema-level
+        // `required` of its own to read at an empty spine.
+        let contract = build_stage::construction_response_contract();
+        for key in build_stage::PER_HOLDING_PLAN_KEYS {
+            assert!(contract.contains(key), "contract omits per-holding `{key}`");
+        }
+
+        // The branch carries no action of its own — declaring one would invite it.
+        assert!(!pf::role_risk_response_contract().contains("model_price_targets"));
 
         // The internal build vocabulary of Finding 3 stays out of every prompt.
-        for p in [&priced, &role, &build] {
+        for p in [
+            interpretation_system_prompt(),
+            role_risk_system_prompt(),
+            build_stage::construction_system_prompt(),
+        ] {
             assert!(!p.contains("pre-v7"), "internal version vocabulary leaked: {p}");
         }
     }
