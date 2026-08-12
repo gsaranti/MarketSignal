@@ -267,12 +267,19 @@ removes nothing that was shown), and the terminal `run-finished` event is
 emitted **before** any job-history write error can propagate, so a DB failure
 can't strand the UI mid-run. The first invariant carries one deliberate,
 **built** exception on the Portfolio-runs history: a run whose Step 7b
-construction fails persists its per-holding work as a **degraded run** — still
-terminally failed, excluded from `latest_run`, and marked
-(`PortfolioRun::has_constructed_book` in code, a `constructed` flag on the
-listing row, a "no book" tag in the UI) — so the history reads as persisted
-work rather than succeeded runs, and a degraded row's pre-construction actions
-can never become the next run's diff/carry/quick-check baseline.
+construction fails — an infeasible plan and a failed construction call alike —
+persists its per-holding work as a **degraded run**: still terminally failed,
+excluded from `latest_run`, and marked by a **persisted `constructed` marker
+authored at the persist seam** — mirrored into a store column so the exclusion
+filters in SQL without parsing a blob, and shipped on the listing row and the
+full-run payload so the UI's "no book" tag reads the marker rather than
+re-deriving run health from field shapes. The history therefore reads as
+persisted work rather than succeeded runs, and a degraded row's
+pre-construction actions can never become the next run's diff/carry/quick-check
+baseline. Corrupt run rows hold the same posture at read: an unparseable blob
+costs its own surface (skipped with a logged warning), never the history
+listing or the next run's baseline, and the refusal surfaces distinguish a
+degraded-only store from an unreadable one.
 The full runtime contract is in `docs/run-tracking.md`.
 
 ## Testing approach
@@ -566,19 +573,28 @@ is now fully built.**
 
 ### Remaining, in order
 
-1. **The single big confirmation run** — the gate everything else waits behind.
+1. **The progress step-ownership slice** — the one item standing before the
+   run (user decision). Request-row ownership becomes something the run
+   *states* rather than the tracker *infers*: progress events are stamped
+   with their owning step at the progress seam's single choke point, retiring
+   both the per-stage bracket convention (every request-emitting stage must
+   remember to open a step around itself) and the tracker's synthesized-step
+   fallback — so a future request-emitting stage can never paint a phantom
+   failed step into a successful run's record. One design question to settle
+   at plan time: what "the owning step" means where stages run concurrently.
+2. **The single big confirmation run** — the gate everything else waits behind.
    Its checklist is `docs/verification/big-run-watch-set.md`; read `data-health`
    early, since several items resolve off that surface alone. The first attempt
    failed at Step 7b after completing the per-holding pass, and persisted
    nothing — evidence in `docs/verification/2026-08-10-big-run-attempt-1.md`.
-   The repair and the pre-run slice behind it are both fully built: a repeat
+   The repair and the pre-run work behind it are fully built: a repeat
    failure at 7b preserves its evidence as a degraded run instead of
    discarding the pass, the named-violation re-run repairs only the violating
-   names, and the output budget and adapter seams are instrumented. Nothing
-   stands between here and a second attempt; what stays open behind the run
-   (digest compression) is owned by that record's §Disposition, not this
-   brief.
-2. **Trade Opportunities** — designed, not built, and waiting behind the whole
+   names, and the output budget and adapter seams are instrumented. Only the
+   step-ownership slice above stands between here and a second attempt; what
+   stays open behind the run (digest compression) is owned by that record's
+   §Disposition, not this brief.
+3. **Trade Opportunities** — designed, not built, and waiting behind the whole
    block. The design is settled and the paid FMP shapes are live-verified, so
    implementation planning codes against verified shapes. Five hard-trigger
    acceptance cases are parked for this slice and have no other home: a carried
@@ -587,12 +603,12 @@ is now fully built.**
    raises a warning only; a debut hard trigger becomes a shadow rejection; and a
    soft trigger caps the stand-in while preserving conviction, with no forced
    archival.
-3. **The two remaining Portfolio depth slices** — the **live research loop** and
+4. **The two remaining Portfolio depth slices** — the **live research loop** and
    the **held-name research refresh lane**, which rides with it. The shipped
    schemas don't preclude either, but the research loop carries the pre-profit
    producer's activation obligation (§Standing constraints) and must discharge
    it before connecting the producer.
-4. **The rung-order slice**, contingent on the run's evidence. Stooq now serves a
+5. **The rung-order slice**, contingent on the run's evidence. Stooq now serves a
    JS-PoW interstitial to non-JS clients, so the FMP dated-EOD rung may be de
    facto primary. Stooq stays the primary rung by user decision, revisited only
    on the run's data-health read; FMP re-homing is the contingent follow-up.
