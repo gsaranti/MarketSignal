@@ -262,14 +262,17 @@ frontend renders this as the run tracker — one shared component placed on the
 run the Portfolio page; latest-run-only), the report's fixed /8 progress
 fraction applying to report runs only. Cancellation is cooperative — a shared flag
 polled at step/request boundaries and mid-stream, never interrupting an in-flight
-request. Two load-bearing UI invariants: a **run is never a report** (a row
-appears only on persisted success, so a cancel/fail removes nothing), and the
-terminal `run-finished` event is emitted **before** any job-history write error
-can propagate, so a DB failure can't strand the UI mid-run. *Planned:* the Step
-7b repair gives the first invariant one deliberate exception on the
-Portfolio-runs history — a run whose construction fails persists its per-holding
-work as a degraded row, still terminally failed and excluded from `latest_run`,
-so a plan must read that list as "persisted work" rather than "succeeded runs".
+request. Two load-bearing UI invariants: a **run is never a report** (a cancel/fail
+removes nothing that was shown), and the terminal `run-finished` event is
+emitted **before** any job-history write error can propagate, so a DB failure
+can't strand the UI mid-run. The first invariant carries one deliberate,
+**built** exception on the Portfolio-runs history: a run whose Step 7b
+construction fails persists its per-holding work as a **degraded run** — still
+terminally failed, excluded from `latest_run`, and marked
+(`PortfolioRun::has_constructed_book` in code, a `constructed` flag on the
+listing row, a "no book" tag in the UI) — so the history reads as persisted
+work rather than succeeded runs, and a degraded row's pre-construction actions
+can never become the next run's diff/carry/quick-check baseline.
 The full runtime contract is in `docs/run-tracking.md`.
 
 ## Testing approach
@@ -567,13 +570,13 @@ is now fully built.**
    Its checklist is `docs/verification/big-run-watch-set.md`; read `data-health`
    early, since several items resolve off that surface alone. The first attempt
    failed at Step 7b after completing the per-holding pass, and persisted
-   nothing, so the run is itself gated on that stage carrying a whole-book plan
-   at book scale — evidence in
-   `docs/verification/2026-08-10-big-run-attempt-1.md`.
-   Both of the repair's blocking rulings are made and its prompt and
-   tracker-routing half is built.
-   What stands between here and a second attempt is the persistence and
-   attribution half; that record's §Disposition owns the queue, not this brief.
+   nothing — evidence in `docs/verification/2026-08-10-big-run-attempt-1.md`.
+   The repair is now fully built: both rulings applied, the prompt and
+   tracker-routing half and the persistence and attribution half alike, so a
+   repeat failure at 7b preserves its evidence as a degraded run instead of
+   discarding the pass. What stands between here and a second attempt is the
+   re-run-only-violating-names fix; that record's §Disposition owns the queue,
+   not this brief.
 2. **Trade Opportunities** — designed, not built, and waiting behind the whole
    block. The design is settled and the paid FMP shapes are live-verified, so
    implementation planning codes against verified shapes. Five hard-trigger
