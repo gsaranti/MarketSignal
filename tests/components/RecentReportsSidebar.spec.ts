@@ -36,18 +36,22 @@ const reports: ReportSummary[] = deepFreeze([
 ]);
 
 // Two portfolio runs, newest first — the swap-in history for the Portfolio view.
+// The older row is a degraded run (construction failed, no book) so the
+// no-book marking is exercised beside a constructed row.
 const portfolioRuns: PortfolioRunSummary[] = deepFreeze([
   {
     run_id: "prun-2",
     created_at: "2026-07-12T09:00:00Z",
     holdings_count: 23,
     graded_count: 19,
+    constructed: true,
   },
   {
     run_id: "prun-1",
     created_at: "2026-07-05T09:00:00Z",
     holdings_count: 1,
     graded_count: 0,
+    constructed: false,
   },
 ]);
 
@@ -155,7 +159,7 @@ test("a listing failure (no list to fall back on) reads as an error, not an empt
 
 test("the Portfolio view swaps the history list to portfolio runs", () => {
   const wrapper = makeWrapper({ view: "portfolio" });
-  expect(wrapper.find(".sidebar-header").text()).toBe("Portfolio runs · last 10");
+  expect(wrapper.find(".sidebar-header").text()).toBe("Portfolio runs · last 30");
   const rows = wrapper.findAll(".sidebar-list .report-row");
   expect(rows).toHaveLength(2);
   expect(rows[0].find(".row-title").text()).toBe("Full book · 23 holdings");
@@ -171,6 +175,15 @@ test("every other view keeps the report history visible", () => {
     const wrapper = makeWrapper({ view });
     expect(wrapper.find(".sidebar-header").text()).toBe("Recent reports · last 30");
   }
+});
+
+test("a degraded run row carries the no-book tag; constructed rows don't", () => {
+  // A construction-failed run persists into the history marked, never hidden
+  // (docs/interface.md §Main Layout) — the quiet tag is the marking.
+  const wrapper = makeWrapper({ view: "portfolio" });
+  const rows = wrapper.findAll(".sidebar-list .report-row");
+  expect(rows[0].find(".ana-tag").exists()).toBe(false);
+  expect(rows[1].find(".ana-tag").text()).toBe("no book");
 });
 
 test("selecting a run row emits select-run and the selected run is marked current", async () => {

@@ -74,6 +74,18 @@ const emit = defineEmits<{
 
 const isHistorical = computed(() => props.historical ?? false);
 
+// A degraded run — Step 7b's construction failed after the per-holding pass:
+// the 7a aggregates persisted, no book was constructed, and each holding's
+// action is its pre-construction value (a fresh row's standalone lean, a
+// carried row's carried action, a role/risk placeholder). Only ever rendered
+// here read-only — the backend excludes degraded runs from the latest view.
+const isDegradedRun = computed(
+  () =>
+    props.run !== null &&
+    props.run.roll_up.aggregates != null &&
+    props.run.roll_up.construction == null
+);
+
 const runDisabled = computed(
   () => isHistorical.value || props.runBlocked || props.busy
 );
@@ -996,8 +1008,16 @@ const keyFigures = computed(() => {
          run is a chosen state, not a problem. -->
     <div v-if="isHistorical && run" class="hist-banner" role="status">
       <span class="hist-banner-label">Past analysis</span>
+      <!-- The degraded marker (quiet tag — the words are the alert): this run
+           persisted its per-holding work but constructed no book. -->
+      <span v-if="isDegradedRun" class="ana-tag">no book</span>
       <span class="hist-banner-text">
         Viewing the run from {{ fmtStamp(run.created_at) }} — read-only.
+        <template v-if="isDegradedRun">
+          Construction failed on this run: no plan was validated. Each action
+          shown is that holding's pre-construction read, not a decided
+          whole-book action; role/risk holdings show none.
+        </template>
       </span>
       <button
         type="button"
@@ -1537,25 +1557,34 @@ const keyFigures = computed(() => {
 
                   <div class="hc-col">
                     <span class="hc-kicker">Portfolio action</span>
-                    <div class="hc-action">
-                      <span class="hc-action-word">{{
-                        ACTION_LABELS[v.disposition.action]
-                      }}</span>
-                      <span class="hc-action-band"
-                        >{{ bandVerb(v.disposition.action) }}
-                        {{
-                          weightBand(
-                            v.disposition.action_sizing.target_weight_low,
-                            v.disposition.action_sizing.target_weight_high
-                          )
-                        }}</span
+                    <!-- This branch's action is authored wholly at 7b
+                         construction — on a degraded run that call never
+                         blessed one, so the persisted placeholder must not
+                         render as a decision. -->
+                    <template v-if="!isDegradedRun">
+                      <div class="hc-action">
+                        <span class="hc-action-word">{{
+                          ACTION_LABELS[v.disposition.action]
+                        }}</span>
+                        <span class="hc-action-band"
+                          >{{ bandVerb(v.disposition.action) }}
+                          {{
+                            weightBand(
+                              v.disposition.action_sizing.target_weight_low,
+                              v.disposition.action_sizing.target_weight_high
+                            )
+                          }}</span
+                        >
+                      </div>
+                      <p
+                        v-if="v.disposition.action_sizing.sizing_rationale"
+                        class="hc-prose hc-rationale"
                       >
-                    </div>
-                    <p
-                      v-if="v.disposition.action_sizing.sizing_rationale"
-                      class="hc-prose hc-rationale"
-                    >
-                      {{ v.disposition.action_sizing.sizing_rationale }}
+                        {{ v.disposition.action_sizing.sizing_rationale }}
+                      </p>
+                    </template>
+                    <p v-else class="hc-prose">
+                      No action — construction failed to validate a plan.
                     </p>
                     <dl class="hc-kv">
                       <dt>Weight</dt>
@@ -2073,9 +2102,15 @@ const keyFigures = computed(() => {
 
                 <!-- Portfolio action: the final whole-book decision — full-width
                      beneath the arms (the action is the model's under the v7
-                     contract; the engine's own rung reads as the baseline row). -->
+                     contract; the engine's own rung reads as the baseline row).
+                     On a degraded run no plan was validated, so the kicker
+                     drops the whole-book claim: the value is that holding's
+                     pre-construction read (a fresh lean, a carried action,
+                     possibly rule-demoted). -->
                 <div class="hc-col hc-actionrow">
-                    <span class="hc-kicker">Portfolio action</span>
+                    <span class="hc-kicker">{{
+                      isDegradedRun ? "Per-holding read" : "Portfolio action"
+                    }}</span>
                     <div class="hc-action">
                       <span class="hc-action-word">{{
                         ACTION_LABELS[v.disposition.action]
@@ -2465,6 +2500,11 @@ const keyFigures = computed(() => {
   text-transform: uppercase;
   font-weight: 600;
   color: var(--ink-3);
+}
+
+/* The banner's degraded-run tag holds its size beside the flexing text. */
+.hist-banner .ana-tag {
+  flex-shrink: 0;
 }
 
 .hist-banner-text {

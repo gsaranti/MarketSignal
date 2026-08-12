@@ -617,8 +617,9 @@ async function refreshPortfolio() {
 // discards an unrelated in-flight page refresh.
 let historicalSeq = 0;
 
-// Open one run from the sidebar's history. The newest row is the live latest
-// view (never the read-only historical state); an older row fetches the full
+// Open one run from the sidebar's history. The row matching the live latest
+// run (the newest CONSTRUCTED — a degraded newest fails the id match and takes
+// the historical path) shows the live view; any other row fetches the full
 // persisted run and renders it read-only. An id the backend no longer has
 // (pruned between listing and click) re-lists and stays on the latest.
 async function selectPortfolioRun(runId: string) {

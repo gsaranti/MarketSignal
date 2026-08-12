@@ -58,7 +58,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         [],
     )?;
     // The outcome-learning decision-episode store (`docs/portfolio-analysis.md
-    // §Outcome learning`) — persisted **independent of the 10-run retention** (a
+    // §Outcome learning`) — persisted **independent of the run retention** (a
     // 12-month outcome window can outlive it): active episodes are never evicted;
     // matured ones freeze under their own cap. Exported by data portability
     // (format v3); the UNIQUE episode_id is mirrored by an import pre-check.
@@ -360,32 +360,47 @@ pub fn insert_run(conn: &Connection, run: &PortfolioRun) -> Result<()> {
     Ok(())
 }
 
-/// The most recent run, or `None` before any run exists. The prior run's verdicts
-/// feed the next run's continuity check (`docs/portfolio-analysis.md` §Continuity and
-/// isolation). Newest-first by **insertion order** (`id` — monotonic within a store,
-/// and preserved across machines by the portability export's id-order): the
-/// production identity of "latest" is the run most recently PERSISTED, never the
-/// wall clock's claim — under a backwards clock step a `created_at` ordering would
-/// hand the diff/carry baseline (and the page's refresh) back to the prior run
-/// while the just-persisted one sat invisible. `created_at` stays display data.
+/// The most recent run **with a constructed book**, or `None` before any exists.
+/// The prior run's verdicts feed the next run's continuity check
+/// (`docs/portfolio-analysis.md` §Continuity and isolation). Newest-first by
+/// **insertion order** (`id` — monotonic within a store, and preserved across
+/// machines by the portability export's id-order): the production identity of
+/// "latest" is the run most recently PERSISTED, never the wall clock's claim —
+/// under a backwards clock step a `created_at` ordering would hand the diff/carry
+/// baseline (and the page's refresh) back to the prior run while the
+/// just-persisted one sat invisible. `created_at` stays display data.
+///
+/// Degraded runs ([`PortfolioRun::has_constructed_book`]) are **excluded**, so
+/// the next run's diff baseline, carry vintages, quick-check chaining and the
+/// page's latest view all reach past a construction-failed row to the last run
+/// that actually constructed a book — its pre-merge verdict actions are
+/// pre-construction values (leans, carried actions, role-risk
+/// placeholders), which must never feed the next run's carry as if they were
+/// 7b-blessed finals (ruled 2026-08-11,
+/// `docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition). The walk
+/// parses newest-first and stops at the first constructed run; the query itself
+/// is unbounded, but [`prune_runs`] holds the table to
+/// [`PORTFOLIO_RUN_RETENTION`] rows, which bounds the scan.
 pub fn latest_run(conn: &Connection) -> Result<Option<PortfolioRun>> {
-    let json = conn
-        .query_row(
-            "SELECT run_json FROM portfolio_runs
-             ORDER BY id DESC
-             LIMIT 1",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    match json {
-        Some(j) => Ok(Some(serde_json::from_str(&j)?)),
-        None => Ok(None),
+    let mut stmt = conn.prepare(
+        "SELECT run_json FROM portfolio_runs
+         ORDER BY id DESC",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let run: PortfolioRun = serde_json::from_str(&row?)?;
+        if run.has_constructed_book() {
+            return Ok(Some(run));
+        }
     }
+    Ok(None)
 }
 
 /// List the most recent runs, newest first, capped at `limit` — the Portfolio page's
-/// run history. Same insertion-order identity as [`latest_run`].
+/// run history. Same insertion-order identity as [`latest_run`], but **without its
+/// degraded-run exclusion**: the history deliberately shows persisted *work*, so a
+/// construction-failed row lists (marked via [`PortfolioRunSummary::constructed`])
+/// even though [`latest_run`] reaches past it.
 pub fn list_recent_runs(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRun>> {
     let mut stmt = conn.prepare(
         "SELECT run_json FROM portfolio_runs
@@ -413,6 +428,10 @@ pub struct PortfolioRunSummary {
     pub holdings_count: usize,
     /// Graded verdicts in the run (the roll-up's `graded_count`).
     pub graded_count: usize,
+    /// Whether the run carries a constructed book
+    /// ([`PortfolioRun::has_constructed_book`]) — `false` marks a degraded
+    /// construction-failed row so the sidebar can badge it.
+    pub constructed: bool,
 }
 
 /// List the most recent runs' summaries, newest first, capped at `limit` — the
@@ -423,11 +442,15 @@ pub struct PortfolioRunSummary {
 pub fn list_run_summaries(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRunSummary>> {
     Ok(list_recent_runs(conn, limit)?
         .into_iter()
-        .map(|run| PortfolioRunSummary {
-            run_id: run.run_id,
-            created_at: run.created_at,
-            holdings_count: run.holdings.positions.len(),
-            graded_count: run.roll_up.graded_count,
+        .map(|run| {
+            let constructed = run.has_constructed_book();
+            PortfolioRunSummary {
+                run_id: run.run_id,
+                created_at: run.created_at,
+                holdings_count: run.holdings.positions.len(),
+                graded_count: run.roll_up.graded_count,
+                constructed,
+            }
         })
         .collect())
 }
@@ -451,8 +474,9 @@ pub fn run_by_id(conn: &Connection, run_id: &str) -> Result<Option<PortfolioRun>
 
 /// Prune runs beyond the newest `keep`, oldest first — the per-feature retention
 /// cascade (`docs/storage.md §Local Analysis Suite Storage`). Same newest-first
-/// ordering as [`latest_run`], so it evicts exactly the runs the history no longer
-/// shows. Idempotent; a no-op at or under the cap.
+/// ordering as [`list_recent_runs`], so it evicts exactly the runs the history no
+/// longer shows; degraded runs count against the one cap (no second retention
+/// path — ruled 2026-08-11). Idempotent; a no-op at or under the cap.
 pub fn prune_runs(conn: &Connection, keep: u32) -> Result<()> {
     // Insertion-order retention, matching [`latest_run`] / [`list_recent_runs`]
     // exactly — so eviction removes precisely the runs the history no longer
@@ -647,7 +671,10 @@ mod tests {
             .map(|r| r.run_id)
             .collect();
         assert!(!surviving.contains(&"run-00".to_string()));
-        assert_eq!(latest_run(&conn).unwrap().unwrap().run_id, "run-10");
+        assert_eq!(
+            latest_run(&conn).unwrap().unwrap().run_id,
+            format!("run-{PORTFOLIO_RUN_RETENTION:02}")
+        );
     }
 
     #[test]
@@ -692,12 +719,14 @@ mod tests {
                     created_at: "2026-07-02T00:00:00Z".into(),
                     holdings_count: 1,
                     graded_count: 0,
+                    constructed: true,
                 },
                 PortfolioRunSummary {
                     run_id: "run-a".into(),
                     created_at: "2026-07-01T00:00:00Z".into(),
                     holdings_count: 1,
                     graded_count: 0,
+                    constructed: true,
                 },
             ],
             "newest first, light rows only"
@@ -708,6 +737,102 @@ mod tests {
         let back = run_by_id(&conn, "run-a").unwrap().unwrap();
         assert_eq!(back.run_id, "run-a");
         assert!(run_by_id(&conn, "run-gone").unwrap().is_none());
+    }
+
+    /// The Step 7b failure shape (`docs/verification/2026-08-10-big-run-attempt-1.md`
+    /// §Disposition): 7a ran (aggregates present), no book was constructed.
+    fn degraded_run(run_id: &str, created_at: &str) -> PortfolioRun {
+        let mut run = sample_run(run_id, created_at);
+        run.roll_up.aggregates = Some(crate::portfolio::construction::BookAggregates {
+            spine: vec![],
+            sector_exposure: vec![],
+            unknown_sector_weight: 0.0,
+            overlap_clusters: vec![],
+            not_rated: vec![],
+            cash_weight: 0.34,
+            top_position_weight: 0.66,
+            correlation_note: String::new(),
+        });
+        run.roll_up.construction = None;
+        run
+    }
+
+    /// A run whose construction completed — both roll-up halves present.
+    fn constructed_run(run_id: &str, created_at: &str) -> PortfolioRun {
+        let mut run = degraded_run(run_id, created_at);
+        run.roll_up.construction = Some(crate::portfolio::construction::ConstructionView {
+            risk_posture: "balanced".into(),
+            deployment_stance: "hold".into(),
+            concentration_read: "concentrated in one name".into(),
+            closed_positions_note: None,
+            external_funding: Some(0.0),
+            implied_total: Some(29_500.0),
+            retried: false,
+            engine_bound_annotations: vec![],
+        });
+        run
+    }
+
+    #[test]
+    fn has_constructed_book_reads_the_step7b_shape() {
+        // Both halves present — constructed.
+        assert!(constructed_run("a", "2026-08-11T00:00:00Z").has_constructed_book());
+        // 7a ran, no book — the degraded Step 7b failure shape.
+        assert!(!degraded_run("b", "2026-08-11T00:00:00Z").has_constructed_book());
+        // A pre-construction-era blob (both halves absent) keeps constructed
+        // status: its actions were final under the pre-7b contract.
+        assert!(sample_run("c", "2026-08-11T00:00:00Z").has_constructed_book());
+    }
+
+    #[test]
+    fn a_degraded_run_is_listed_but_never_latest() {
+        // The load-bearing pair (`docs/verification/2026-08-10-big-run-attempt-1.md`
+        // §Disposition): a construction-failed run persists into the history but
+        // `latest_run` reaches past it, so the next run's diff/carry/quick-check
+        // baseline never reads its pre-construction actions (leans, carried
+        // actions, role/risk placeholders) as 7b-blessed finals.
+        let conn = mem();
+        record_run(&conn, &constructed_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
+        record_run(&conn, &degraded_run("run-degraded", "2026-08-11T00:00:00Z")).unwrap();
+        // Latest skips the degraded head…
+        assert_eq!(latest_run(&conn).unwrap().unwrap().run_id, "run-good");
+        // …while the history lists both, newest first, the degraded row marked.
+        let ids: Vec<String> = list_recent_runs(&conn, 10)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.run_id)
+            .collect();
+        assert_eq!(ids, vec!["run-degraded".to_string(), "run-good".to_string()]);
+        let summaries = list_run_summaries(&conn, 10).unwrap();
+        assert!(!summaries[0].constructed, "the degraded head is marked");
+        assert!(summaries[1].constructed);
+        // The degraded row still opens read-only by id.
+        assert!(run_by_id(&conn, "run-degraded").unwrap().is_some());
+    }
+
+    #[test]
+    fn latest_run_is_none_when_only_degraded_runs_exist() {
+        // No constructed baseline exists: the next run must see "no prior run"
+        // (first-run semantics), not a degraded head.
+        let conn = mem();
+        record_run(&conn, &degraded_run("run-degraded", "2026-08-11T00:00:00Z")).unwrap();
+        assert!(latest_run(&conn).unwrap().is_none());
+    }
+
+    #[test]
+    fn degraded_runs_count_against_the_one_retention_cap() {
+        // Ruled 2026-08-11: no second retention path — a degraded row evicts
+        // retained history exactly as a constructed one does.
+        let conn = mem();
+        for i in 0..(PORTFOLIO_RUN_RETENTION + 1) {
+            let created_at = format!("2026-08-11T{:02}:00:00Z", i % 24);
+            record_run(&conn, &degraded_run(&format!("deg-{i:02}"), &created_at)).unwrap();
+        }
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM portfolio_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, PORTFOLIO_RUN_RETENTION as i64);
+        assert!(run_by_id(&conn, "deg-00").unwrap().is_none(), "oldest evicted");
     }
 
     #[test]

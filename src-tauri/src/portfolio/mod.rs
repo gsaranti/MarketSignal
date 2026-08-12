@@ -55,8 +55,12 @@ pub fn holding_step_key(symbol: &str) -> String {
 
 /// How many Portfolio Analysis runs are retained (newest-N), pruned independently of
 /// the 30-report report-retention window and of Trade Opportunities
-/// (`docs/storage.md §Local Analysis Suite Storage`). Pinned at N=10 this slice.
-pub const PORTFOLIO_RUN_RETENTION: u32 = 10;
+/// (`docs/storage.md §Local Analysis Suite Storage`). N=30, matching report
+/// retention (ruled 2026-08-11 — `docs/verification/2026-08-10-big-run-attempt-1.md`
+/// §Disposition): degraded construction-failed runs count against this one cap
+/// rather than a second retention path, and the number bounds the sidebar's
+/// `list_run_summaries` blob parse as well as disk.
+pub const PORTFOLIO_RUN_RETENTION: u32 = 30;
 
 /// How many recent Market Signal reports load as the house-view context for a
 /// holding's dossier (`docs/portfolio-analysis.md` — the report is a read-only shared
@@ -1511,6 +1515,45 @@ pub struct PortfolioRun {
     /// before the field existed (`#[serde(default)]`).
     #[serde(default)]
     pub outcome: Option<outcome::OutcomeRecords>,
+}
+
+impl PortfolioRun {
+    /// Whether this run carries a constructed book — the one predicate every
+    /// consumer reads, never the raw fields. A **degraded** run (Step 7b's
+    /// construction failed after the per-holding pass; ruled 2026-08-11,
+    /// `docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition) persists
+    /// with `aggregates: Some` (7a ran) and `construction: None` (no book): its
+    /// verdict actions are **pre-merge values** — a fresh row's standalone lean,
+    /// a carried row's carried action, a role-risk row's placeholder — never
+    /// 7b-blessed finals, so it must never serve as a carry / diff / quick-check
+    /// baseline —
+    /// [`store::latest_run`] excludes it on this predicate. A pre-construction-era
+    /// blob (both fields `None`) keeps its constructed status: its actions were
+    /// final under the pre-7b contract.
+    pub fn has_constructed_book(&self) -> bool {
+        !(self.roll_up.aggregates.is_some() && self.roll_up.construction.is_none())
+    }
+}
+
+/// The action a carried verdict would stand on — `None` where the disposition
+/// carries no action (not-rated / insufficient-evidence). One home for both
+/// consumers: [`job`]'s carry gate and [`construction`]'s prior-action baseline.
+///
+/// The action field this reads is **dual-meaning**: until
+/// [`construction::merge_validated_actions`] overwrites it with Step 7b's final
+/// it holds a pre-construction value (a fresh row's standalone lean, a carried
+/// row's carried action — possibly rule-demoted — or a role-risk placeholder,
+/// that branch's action being authored wholly at 7b), and it means
+/// "7b-blessed final" everywhere
+/// downstream. Reading it as a carry baseline is therefore sound only on runs
+/// with a constructed book — the reason [`store::latest_run`] excludes degraded
+/// runs ([`PortfolioRun::has_constructed_book`]).
+pub(crate) fn carried_action(verdict: &HoldingVerdict) -> Option<Action> {
+    match &verdict.disposition {
+        VerdictDisposition::Priced(g) => Some(g.action),
+        VerdictDisposition::RoleRiskOnly(r) => Some(r.action),
+        _ => None,
+    }
 }
 
 /// The persisted run-level rate prints (see [`PortfolioRun::rate_prints`]). The

@@ -38,8 +38,8 @@ use serde_json::{json, Value};
 use crate::portfolio::engine;
 use crate::portfolio::outcome::DecisionEpisode;
 use crate::portfolio::{
-    Action, ActionAttribution, ActionSource, ActionWhatChanged, AssetClass, ContextCause,
-    Conviction, ExitedPosition, ExposureWeight, Grade, HoldingAudit, HoldingVerdict,
+    carried_action, Action, ActionAttribution, ActionSource, ActionWhatChanged, AssetClass,
+    ContextCause, Conviction, ExitedPosition, ExposureWeight, Grade, HoldingAudit, HoldingVerdict,
     HurdleState, InvestorProfile, PositionChange, RiskTier, VerdictDisposition,
 };
 use crate::schwab::Holdings;
@@ -834,14 +834,6 @@ pub fn build_aggregates(inp: &AggregateInputs<'_>) -> BookAggregates {
     }
 }
 
-fn carried_action(verdict: &HoldingVerdict) -> Option<Action> {
-    match &verdict.disposition {
-        VerdictDisposition::Priced(g) => Some(g.action),
-        VerdictDisposition::RoleRiskOnly(r) => Some(r.action),
-        _ => None,
-    }
-}
-
 fn tax_note(profile: &InvestorProfile, unrealized_pl: f64) -> Option<String> {
     if !profile.tax_sensitive {
         return None;
@@ -1360,6 +1352,38 @@ pub fn validate_construction(
                         cause: None,
                         note: "final action re-converged to the standalone lean — the \
                                prior divergence's portfolio context no longer binds"
+                            .to_string(),
+                    });
+                    actions.insert(
+                        symbol.to_ascii_uppercase(),
+                        ValidatedHolding {
+                            action: x.action,
+                            target_weight_low: x.proposal.target_weight_low,
+                            target_weight_high: x.proposal.target_weight_high,
+                            rationale: x.proposal.rationale.clone(),
+                            what_changed,
+                            lean_divergence,
+                        },
+                    );
+                    continue;
+                }
+                // Construction **accepted** this run's standalone lean (the
+                // unchanged-lean case is the reversion stamp above, so here the
+                // lean itself moved): the change off the prior action is the
+                // intrinsic read's own move, and the app stamps `moved-intrinsic`
+                // deterministically, superseding any model claim — the same
+                // precedent as the reversion stamp. Step 7b owes a model
+                // attribution only where it **overruled** the lean, the only
+                // thing that stage actually reconciled (ruled 2026-08-11,
+                // `docs/verification/2026-08-10-big-run-attempt-1.md`
+                // §Disposition).
+                let accepted_lean = !x.row.carried && x.row.lean == Some(x.action);
+                if accepted_lean {
+                    what_changed = Some(ActionWhatChanged {
+                        attribution: ActionAttribution::MovedIntrinsic,
+                        cause: None,
+                        note: "construction accepted this run's standalone lean — the \
+                               intrinsic read itself moved off the prior action"
                             .to_string(),
                     });
                     actions.insert(
@@ -2543,6 +2567,106 @@ mod tests {
         assert_eq!(wc.attribution, ActionAttribution::MovedContext);
         assert_eq!(wc.cause, None);
         assert!(wc.note.contains("re-converged"), "{}", wc.note);
+    }
+
+    #[test]
+    fn an_accepted_lean_move_is_app_stamped_moved_intrinsic() {
+        // The class-A shape from the 2026-08-10 attempt: the action moved off the
+        // prior run's action, construction accepted this run's lean, the model
+        // omitted `changed_attribution`. Ruled 2026-08-11: the app stamps
+        // `moved-intrinsic` deterministically — Step 7b owes a model attribution
+        // only where it overruled the lean.
+        let mut row = spine_row("AAA", 0.05, vec![Action::SellAll, Action::Trim, Action::Hold]);
+        row.lean = Some(Action::Hold);
+        row.prior_lean = Some(Action::SellAll);
+        row.prior_action = Some(Action::SellAll);
+        let spine = vec![row];
+        let holdings = Holdings {
+            cash: 95_000.0,
+            account_total: 100_000.0,
+            ..holdings_for(&spine, 0.0)
+        };
+        let agg = agg_for(spine);
+        let draft = draft_for(vec![("AAA", hold_proposal(0.05))]);
+        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            .expect("an accepted-lean move validates without a model attribution");
+        let wc = out.actions["AAA"].what_changed.as_ref().unwrap();
+        assert_eq!(wc.attribution, ActionAttribution::MovedIntrinsic);
+        assert_eq!(wc.cause, None);
+        assert!(wc.note.contains("accepted"), "{}", wc.note);
+        assert!(out.actions["AAA"].lean_divergence.is_none());
+    }
+
+    #[test]
+    fn a_bogus_claim_on_an_accepted_lean_move_is_superseded_not_a_violation() {
+        // The class-B shape: same accepted-lean move, but the model asserts a
+        // context cause that maps to no real aggregate (`cash-freed` with no
+        // proceeds). The app stamp supersedes the claim — exactly as the
+        // neighbouring reversion stamp supersedes one — instead of failing the
+        // book over a field the stage never needed.
+        let mut row = spine_row("AAA", 0.05, vec![Action::SellAll, Action::Trim, Action::Hold]);
+        row.lean = Some(Action::Hold);
+        row.prior_lean = Some(Action::SellAll);
+        row.prior_action = Some(Action::SellAll);
+        let spine = vec![row];
+        let holdings = Holdings {
+            cash: 95_000.0,
+            account_total: 100_000.0,
+            ..holdings_for(&spine, 0.0)
+        };
+        let agg = agg_for(spine);
+        let mut proposal = hold_proposal(0.05);
+        proposal.changed_attribution = Some("moved-context".into());
+        proposal.changed_cause = Some("cash-freed".into());
+        proposal.changed_note = Some("redeploying freed cash".into());
+        let draft = draft_for(vec![("AAA", proposal)]);
+        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            .expect("the app stamp supersedes the bogus claim");
+        let wc = out.actions["AAA"].what_changed.as_ref().unwrap();
+        assert_eq!(wc.attribution, ActionAttribution::MovedIntrinsic);
+        assert_eq!(wc.cause, None);
+    }
+
+    #[test]
+    fn an_overruled_lean_still_demands_a_model_attribution() {
+        // The stamp's boundary: the final action departs BOTH the prior action
+        // and this run's lean — the only case Step 7b actually reconciled, so the
+        // attribution demand stands exactly as before the ruling.
+        let mut row = spine_row("AAA", 0.05, vec![Action::SellAll, Action::Trim, Action::Hold]);
+        row.lean = Some(Action::Hold);
+        row.prior_lean = Some(Action::SellAll);
+        row.prior_action = Some(Action::SellAll);
+        let spine = vec![row];
+        let holdings = Holdings {
+            cash: 95_000.0,
+            account_total: 100_000.0,
+            ..holdings_for(&spine, 0.0)
+        };
+        let agg = agg_for(spine);
+        let (low, high) = engine::rung_band(Action::Trim, 0.05);
+        let draft = draft_for(vec![(
+            "AAA",
+            HoldingProposalDraft {
+                action: "trim".into(),
+                target_weight_low: low,
+                target_weight_high: high,
+                rationale: "x".into(),
+                divergence_cause: None,
+                divergence_note: None,
+                changed_attribution: None,
+                changed_cause: None,
+                changed_note: None,
+            },
+        )]);
+        let violations =
+            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+                .unwrap_err();
+        assert!(
+            violations
+                .iter()
+                .any(|v| matches!(v, Violation::WhatChangedMissing { symbol, .. } if symbol == "AAA")),
+            "{violations:?}"
+        );
     }
 
     #[test]

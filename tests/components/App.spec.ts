@@ -889,12 +889,14 @@ describe("App.vue portfolio wiring", () => {
             created_at: samplePortfolioRun.created_at,
             holdings_count: 1,
             graded_count: 1,
+            constructed: true,
           },
           {
             run_id: "prun-old",
             created_at: "2026-06-01T12:00:00Z",
             holdings_count: 1,
             graded_count: 0,
+            constructed: true,
           },
         ],
         get_portfolio_run: (args) =>
@@ -938,6 +940,7 @@ describe("App.vue portfolio wiring", () => {
             created_at: "2026-06-01T12:00:00Z",
             holdings_count: 1,
             graded_count: 0,
+            constructed: true,
           },
         ],
         get_portfolio_run: () => {
@@ -977,12 +980,14 @@ describe("App.vue portfolio wiring", () => {
             created_at: samplePortfolioRun.created_at,
             holdings_count: 1,
             graded_count: 1,
+            constructed: true,
           },
           {
             run_id: "prun-old",
             created_at: "2026-06-01T12:00:00Z",
             holdings_count: 1,
             graded_count: 0,
+            constructed: true,
           },
         ],
         get_portfolio_run: () => slow.promise,

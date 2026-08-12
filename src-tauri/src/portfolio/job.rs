@@ -3,7 +3,8 @@
 //! for the local job: it claims the **same** single global run slot ([`RunGuard`]) so
 //! the report and both local jobs are mutually exclusive, runs each holding through
 //! the per-holding [`crate::portfolio::pipeline`], builds the roll-up, persists the
-//! run (with N=10 retention), and records the lifecycle outcome to `job_runs`.
+//! run (newest-N retention, [`crate::portfolio::PORTFOLIO_RUN_RETENTION`]), and
+//! records the lifecycle outcome to `job_runs`.
 //!
 //! Offline-testable like the report job: the three external dependencies — holdings
 //! ([`HoldingsSource`]), company financials ([`CompanyDataSource`]), and the model
@@ -19,8 +20,8 @@ use crate::portfolio::dossier::{self, HoldingDossier};
 use crate::portfolio::engine::CompanyFinancials;
 use crate::portfolio::pipeline::{analyze_holding, HoldingAnalyst};
 use crate::portfolio::{
-    diff, store, ExitedPosition, HoldingAudit, HoldingVerdict, InvestorProfile, PortfolioRollUp,
-    PortfolioRun,
+    carried_action, diff, store, ExitedPosition, HoldingAudit, HoldingVerdict, InvestorProfile,
+    PortfolioRollUp, PortfolioRun,
 };
 use crate::progress::RunContext;
 use crate::schwab::{Holdings, HoldingsSource};
@@ -407,16 +408,6 @@ fn over_age(vintage: &str, today: chrono::NaiveDate) -> bool {
     match crate::market_clock::et_date_of(vintage) {
         Some(d) => (today - d).num_days() > OVER_AGE_DAYS,
         None => true,
-    }
-}
-
-/// The action a carried verdict would stand on — `None` where the disposition
-/// carries no action (not-rated / insufficient-evidence).
-fn carried_action(verdict: &HoldingVerdict) -> Option<crate::portfolio::Action> {
-    match &verdict.disposition {
-        crate::portfolio::VerdictDisposition::Priced(g) => Some(g.action),
-        crate::portfolio::VerdictDisposition::RoleRiskOnly(r) => Some(r.action),
-        _ => None,
     }
 }
 
@@ -1153,8 +1144,9 @@ fn run_analysis(
     // (`docs/portfolio-workflow.md` §Step 7a). 7b: the construction model call
     // reconciles each holding's standalone lean against them into its final
     // action + target-weight range, app-validated by the joint-feasibility check
-    // with one named-violation re-run; a persisting infeasibility fails the run
-    // like any hard model failure (`docs/portfolio-workflow.md` §Step 7b).
+    // with one named-violation re-run; a persisting infeasibility fails the run,
+    // persisting the per-holding work as a degraded row on the way out
+    // (`docs/portfolio-workflow.md` §Step 7b).
     if ctx.is_cancelled() {
         anyhow::bail!("run cancelled");
     }
@@ -1213,6 +1205,61 @@ fn run_analysis(
                     let msg: Vec<String> = persisting.iter().map(|v| v.to_string()).collect();
                     let msg = msg.join("; ");
                     ctx.step_finished(construction_step, "failed", Some(msg.clone()));
+                    // Persist the completed per-holding work as a **degraded** run
+                    // before failing (ruled 2026-08-11,
+                    // `docs/verification/2026-08-10-big-run-attempt-1.md`
+                    // §Disposition): the run's terminal state stays failed — the
+                    // bail below still records the failed-job row — but the
+                    // verdicts, audits and 7a aggregates survive as a
+                    // `portfolio_runs` row with no constructed book, listed in
+                    // the history and excluded from `latest_run`
+                    // (`PortfolioRun::has_constructed_book`). No merge ran, so
+                    // each verdict's action is its pre-construction value — a
+                    // fresh row's standalone lean, a carried row's carried
+                    // action, a role-risk placeholder; the outcome pass is skipped
+                    // — episodes anchor decisions, and no final decisions exist.
+                    let mut roll_up = build_roll_up(
+                        &holdings,
+                        &verdicts,
+                        &holdings_diff.exited,
+                        &audits,
+                        deep_history_failures,
+                        deep_history_fallbacks,
+                        rates.history_gap.is_some(),
+                        house_view_omitted,
+                        analyst.take_prompt_usage(),
+                    );
+                    roll_up.aggregates = Some(aggregates);
+                    let degraded = PortfolioRun {
+                        run_id: uuid::Uuid::new_v4().to_string(),
+                        created_at: created_at.clone(),
+                        holdings,
+                        verdicts,
+                        roll_up,
+                        audit: audits,
+                        rate_prints: Some(crate::portfolio::RatePrints {
+                            dgs2: rates.dgs2,
+                            dgs10: rates.dgs10,
+                            dgs2_as_of: rates.dgs2_date.clone(),
+                            dgs10_as_of: rates.dgs10_date.clone(),
+                            fetched_at: created_at.clone(),
+                        }),
+                        outcome: None,
+                    };
+                    // Insert + prune land atomically, matching the success
+                    // path's transactional persist. Best-effort either way: a
+                    // persist failure must not mask the construction error the
+                    // run is failing on.
+                    let persisted = conn
+                        .unchecked_transaction()
+                        .map_err(anyhow::Error::new)
+                        .and_then(|tx| {
+                            store::record_run(&tx, &degraded)?;
+                            tx.commit().map_err(anyhow::Error::new)
+                        });
+                    if let Err(pe) = persisted {
+                        eprintln!("portfolio construction: degraded-run persist failed: {pe}");
+                    }
                     anyhow::bail!(
                         "portfolio construction jointly infeasible after the named-violation \
                          re-run: {msg}"
@@ -2896,7 +2943,7 @@ mod tests {
             PortfolioJobOutcome::Successful(r) => *r,
             other => panic!("expected success, got {other:?}"),
         };
-        // Two runs persisted; retention (N=10) is well clear.
+        // Two runs persisted; the retention cap is well clear.
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM portfolio_runs", [], |r| r.get(0))
             .unwrap();
@@ -4170,6 +4217,196 @@ mod tests {
             other => panic!("expected a failed run, got {other:?}"),
         }
         assert_eq!(analyst.calls.borrow().len(), 2, "never a third attempt");
+    }
+
+    #[test]
+    fn a_construction_failed_run_persists_degraded_and_never_becomes_latest() {
+        // Ruled 2026-08-11 (`docs/verification/2026-08-10-big-run-attempt-1.md`
+        // §Disposition): the run stays terminally failed, but the per-holding
+        // work survives as a degraded `portfolio_runs` row — listed in the
+        // history, openable by id, excluded from `latest_run` so the next run's
+        // baseline reaches past it to the last constructed book.
+        let (_dir, paths) = paths();
+        // Seed a prior CONSTRUCTED run so the exclusion is observable.
+        let first = full_run(&paths, two_stocks());
+        let conn = storage::open(&paths.db_path).unwrap();
+        let episodes_before = store::load_episodes(&conn).unwrap().episodes.len();
+
+        let analyst = RogueConstruction {
+            fail_both: true,
+            calls: Default::default(),
+        };
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &analyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        // The job's terminal state is unchanged by the persist.
+        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
+
+        // The degraded row persisted into the history, marked…
+        let summaries = store::list_run_summaries(&conn, 10).unwrap();
+        assert_eq!(summaries.len(), 2, "the failed attempt persisted a row");
+        assert!(!summaries[0].constructed, "the degraded head is marked");
+        assert!(summaries[1].constructed);
+        // …but `latest_run` reaches past it to the constructed run.
+        assert_eq!(
+            store::latest_run(&conn).unwrap().unwrap().run_id,
+            first.run_id,
+            "the degraded run never becomes the diff/carry baseline"
+        );
+        // The degraded row carries the per-holding work: 7a aggregates, no book,
+        // pre-merge actions still equal to the standalone leans (this fixture is
+        // all fresh priced rows — the carried and role-risk shapes are pinned by
+        // the two tests below), no outcome pass.
+        let degraded = store::run_by_id(&conn, &summaries[0].run_id)
+            .unwrap()
+            .unwrap();
+        assert!(!degraded.has_constructed_book());
+        assert!(degraded.roll_up.aggregates.is_some(), "7a work survives");
+        assert!(degraded.roll_up.construction.is_none());
+        assert!(degraded.outcome.is_none(), "no outcome pass on a failed book");
+        assert_eq!(degraded.verdicts.len(), 2);
+        for v in &degraded.verdicts {
+            let crate::portfolio::VerdictDisposition::Priced(g) = &v.disposition else {
+                panic!("fixture stocks grade");
+            };
+            assert_eq!(
+                Some(g.action),
+                g.lean,
+                "pre-merge, the action field holds the standalone lean"
+            );
+            assert!(
+                g.action_sizing.sizing_rationale.is_none(),
+                "no construction rationale was merged"
+            );
+        }
+        // The failed attempt wrote no decision episodes.
+        assert_eq!(
+            store::load_episodes(&conn).unwrap().episodes.len(),
+            episodes_before,
+            "episodes anchor decisions; a failed book made none"
+        );
+    }
+
+    #[test]
+    fn a_degraded_run_persists_role_risk_rows_whose_action_is_a_placeholder() {
+        // A fresh `role_risk_only` row's pre-merge action is a provisional Hold
+        // that 7b — that branch's sole action author — never blessed. The
+        // degraded persist carries the row (the role read IS the analytical
+        // work); the run's no-book mark is what keeps the placeholder from
+        // reading as a decision, and the read-only view suppresses it.
+        struct BondFundCompanyData;
+        impl CompanyDataSource for BondFundCompanyData {
+            fn financials(&self, symbol: &str) -> CompanyFinancials {
+                StubCompanyData.financials(symbol)
+            }
+            fn facts(&self, symbol: &str) -> SecData {
+                StubCompanyData.facts(symbol)
+            }
+            fn fund_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
+                crate::portfolio::fund::FundData {
+                    symbol: symbol.to_string(),
+                    name: Some("Total Bond Market ETF".into()),
+                    asset_class: Some("Fixed Income".into()),
+                    expense_ratio: Some(0.0003),
+                    aum: Some(1.0e11),
+                    nav: Some(72.0),
+                    sector_weights: vec![],
+                    country_weights: vec![("United States".into(), 0.95)],
+                    gaps: vec![],
+                }
+            }
+        }
+        let (_dir, paths) = paths();
+        let mut fund = stock("BND", 50.0, 3_600.0);
+        fund.asset_class = AssetClass::Etf;
+        let mut positions = two_stocks().positions;
+        positions.push(fund);
+        let analyst = RogueConstruction {
+            fail_both: true,
+            calls: Default::default(),
+        };
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings_of(positions)),
+            &BondFundCompanyData,
+            &StubMarket,
+            &analyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
+        let conn = storage::open(&paths.db_path).unwrap();
+        let degraded = store::list_recent_runs(&conn, 1).unwrap().remove(0);
+        assert!(!degraded.has_constructed_book());
+        let bnd = verdict(&degraded, "BND");
+        let crate::portfolio::VerdictDisposition::RoleRiskOnly(r) = &bnd.disposition else {
+            panic!("expected a role-risk verdict, got {:?}", bnd.disposition);
+        };
+        assert_eq!(
+            r.action,
+            crate::portfolio::Action::Hold,
+            "the pre-merge placeholder persists as data, marked by the no-book run"
+        );
+    }
+
+    #[test]
+    fn a_selective_degraded_run_carries_prior_finals_not_fresh_leans() {
+        // A selective run's carried tail rides the PRIOR run's final action, not
+        // a current standalone lean — the degraded persist keeps that meaning,
+        // and the `latest_run` exclusion is what stops it feeding the next
+        // run's carry as if 7b had blessed it.
+        let (_dir, paths) = paths();
+        let first = full_run(&paths, two_stocks());
+        let first_msft_action = carried_action(verdict(&first, "MSFT")).unwrap();
+        let analyst = RogueConstruction {
+            fail_both: true,
+            calls: Default::default(),
+        };
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &analyst,
+            &InvestorProfile::default_fixture(),
+            Some(SelectiveRun {
+                selected: vec!["AAPL".into()],
+                quick_data: &SelectiveQuickData::default(),
+            }),
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
+        let conn = storage::open(&paths.db_path).unwrap();
+        assert_eq!(
+            store::latest_run(&conn).unwrap().unwrap().run_id,
+            first.run_id,
+            "the degraded selective run never becomes the carry baseline"
+        );
+        let degraded = store::list_recent_runs(&conn, 1).unwrap().remove(0);
+        assert!(!degraded.has_constructed_book());
+        let msft = verdict(&degraded, "MSFT");
+        assert_eq!(
+            carried_action(msft),
+            Some(first_msft_action),
+            "a carried row's pre-merge action is the prior final, not a lean"
+        );
     }
 
     /// An analyst whose lean is add-family on a name whose feasible set bars it

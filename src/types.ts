@@ -781,7 +781,10 @@ export interface PortfolioRollUp {
   // (engine sets + annotation bounds) — persisted for auditability; the page
   // renders only the view today.
   aggregates?: BookAggregates | null;
-  // The construction call's portfolio-level view — absent on pre-construction runs.
+  // The construction call's portfolio-level view — absent on pre-construction
+  // runs, and null WITH aggregates present on a degraded run (construction
+  // failed; the persisted actions are pre-construction reads — leans, carried
+  // actions, role/risk placeholders — not a plan).
   construction?: ConstructionView | null;
   overview: string;
 }
@@ -938,6 +941,10 @@ export interface PortfolioRunSummary {
   created_at: string;
   holdings_count: number;
   graded_count: number;
+  // False marks a degraded run — Step 7b's construction failed after the
+  // per-holding pass, so the row carries verdicts but no constructed book and
+  // is excluded from the latest view (it opens read-only from the history).
+  constructed: boolean;
 }
 
 // --- Live job tracker -------------------------------------------------------

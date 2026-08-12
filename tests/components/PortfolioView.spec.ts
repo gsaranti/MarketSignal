@@ -297,6 +297,116 @@ describe("PortfolioView historical mode", () => {
     expect(wrapper.emitted("back-to-latest")).toHaveLength(1);
   });
 
+  test("a degraded run banners its missing book and tags the vintage line", () => {
+    // Step 7b's construction failed after the per-holding pass: the run opens
+    // read-only with the 7a aggregates persisted and no constructed book, and
+    // the banner names what the actions are — pre-construction per-holding
+    // reads, not a validated plan.
+    const degraded: PortfolioRun = {
+      ...run,
+      run_id: "prun-degraded",
+      roll_up: {
+        ...run.roll_up,
+        aggregates: {
+          spine: [],
+          sector_exposure: [],
+          unknown_sector_weight: 0,
+          overlap_clusters: [],
+          not_rated: [],
+          cash_weight: 0.078,
+          top_position_weight: 0.5,
+          correlation_note: "deferred",
+        },
+        construction: null,
+      },
+    };
+    const wrapper = mountView({ run: degraded, historical: true });
+    const banner = wrapper.find(".hist-banner");
+    expect(banner.text()).toContain("read-only");
+    expect(banner.find(".ana-tag").text()).toBe("no book");
+    expect(banner.text()).toContain("no plan was validated");
+    expect(banner.text()).toContain("pre-construction read");
+    // Priced cards keep their action word, but the kicker drops the
+    // whole-book claim — the value is a per-holding read, not a decision.
+    expect(wrapper.find(".hc-action-word").exists()).toBe(true);
+    expect(wrapper.find(".hc-actionrow .hc-kicker").text()).toBe(
+      "Per-holding read"
+    );
+  });
+
+  test("a degraded run suppresses the role-risk placeholder action", () => {
+    // The role-risk branch's action is authored wholly at 7b construction; on
+    // a degraded run that call never blessed one, so the persisted placeholder
+    // must not render as a decision.
+    const degradedRole: PortfolioRun = {
+      ...run,
+      run_id: "prun-degraded-role",
+      holdings: {
+        positions: [
+          position("BND", {
+            asset_class: "etf",
+            cost_basis: 9_000,
+            market_value: 10_000,
+          }),
+        ],
+        cash: 0,
+        account_total: 10_000,
+      },
+      verdicts: [
+        verdict(
+          "BND",
+          {
+            status: "role-risk-only",
+            class_label: "bond fund",
+            role_summary: "Core fixed-income sleeve.",
+            exposure_tilt: [],
+            expense_drag: null,
+            observable_risk: null,
+            structural_flag: false,
+            evidence_gaps: [],
+            action: "hold",
+            action_sizing: {
+              target_weight_low: 0.9,
+              target_weight_high: 1.1,
+              est_share_delta: null,
+              est_dollar_delta: null,
+            },
+            what_changed: "new holding",
+          },
+          { asset_class: "etf" }
+        ),
+      ],
+      roll_up: {
+        ...run.roll_up,
+        graded_count: 0,
+        role_risk_only_count: 1,
+        aggregates: {
+          spine: [],
+          sector_exposure: [],
+          unknown_sector_weight: 0,
+          overlap_clusters: [],
+          not_rated: [],
+          cash_weight: 0,
+          top_position_weight: 1,
+          correlation_note: "deferred",
+        },
+        construction: null,
+      },
+    };
+    const wrapper = mountView({ run: degradedRole, historical: true });
+    expect(wrapper.find(".hc-action-word").exists()).toBe(false);
+    expect(wrapper.text()).toContain(
+      "No action — construction failed to validate a plan."
+    );
+    // The role read itself still renders — it IS the persisted analytical work.
+    expect(wrapper.text()).toContain("Core fixed-income sleeve");
+  });
+
+  test("a constructed historical run carries no degraded tag", () => {
+    const wrapper = mountView({ run, pull: fresherPull, historical: true });
+    expect(wrapper.find(".hist-banner .ana-tag").exists()).toBe(false);
+  });
+
   test("the latest view renders no banner and keeps the triggers live", () => {
     const wrapper = mountView({ run, pull: fresherPull });
     expect(wrapper.find(".hist-banner").exists()).toBe(false);

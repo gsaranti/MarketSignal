@@ -252,7 +252,7 @@ pub struct FalsifierEvent {
 
 /// The decision-time engine snapshot a priced episode carries — what a future
 /// parameter proposal needs for counterfactual re-testing, frozen on the episode
-/// because the run's own audit record can age out of the 10-run retention before a
+/// because the run's own audit record can age out of the run retention before a
 /// 12-month label matures.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationSnapshot {
@@ -426,7 +426,7 @@ pub struct ScoredLabel {
 
 /// One decision episode — the bounded twelve-month measurement instrument
 /// (`docs/portfolio-analysis.md §Outcome learning`), persisted independently of the
-/// 10-run retention and frozen into the matured archive once its 12-month labels
+/// run retention and frozen into the matured archive once its 12-month labels
 /// record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DecisionEpisode {
