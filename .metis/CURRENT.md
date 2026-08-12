@@ -2,71 +2,64 @@
 
 ## What happened
 
-**The big confirmation run was attempted and failed at Step 7b**, after 2 h 46 m and a completed
-per-holding pass, with 44 self-coherence violations across 38 symbols. **Nothing persisted** —
-checkpoint/resume is unbuilt, so every verdict, ledger, overlay and episode was discarded. Full
-analysis: `docs/verification/2026-08-10-big-run-attempt-1.md`.
+**Both blocking rulings were made, and the unblocked half of the attempt-1 fix queue shipped**
+(`main`, five commits, `1e75ec8`..`808b9ae`).
 
-**Root cause is output-budget exhaustion, not a validator defect.** `num_ctx` 131,072 covers input
-*and* output, and `num_predict` is set nowhere in the crate. The model said so in its own reasoning
-("Token limit is tight if I output 60+ objects with full detail") and emitted a "representative
-corrected set", dropping the attribution fields the validator enforces. **The named-violation re-run
-makes this worse, not better** — it resends the full plan plus the violation list, so the recovery
-path has a bigger prompt and less output room than the attempt it rescues.
+The rulings, written up in full at `docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition:
+a construction-failed run **persists its verdicts** while staying terminally `failed` — a
+`portfolio_runs` row visible in history, openable read-only, **excluded from `latest_run`** —
+with `PORTFOLIO_RUN_RETENTION` 10 → 30 and degraded runs counting against the one cap; and the app
+**stamps `moved-intrinsic`** where construction accepted this run's lean, extending the
+`reverted_to_lean` precedent. The missing "declined an engine exit" context cause was ruled
+**deferred until after the run**, so it is shaped by evidence rather than speculation.
 
-**The attribution baseline is the *prior run's* action** (`construction.rs:1345`), not this run's
-engine read. 21 of the 26 unattributed moves are off `sell-all`, and 2026-07-31 recorded 36 sell-alls
-of 44 priced. A degenerate run therefore taxes the next run that disagrees with it — a coupling worth
-keeping in view when scoping the fix.
+Built: findings 2, 3, 4 and 6 — schema contracts, the version-vocabulary line, the holding header,
+and tracker request routing. Three of the record's own claims were wrong and are corrected in place:
+finding 2's defect sits at **three** prompts including the whole-book construction call, finding 4's
+name fallback needed the profile name threaded rather than a prompt edit, and finding 6's proposed
+default is unsafe as literally stated.
 
-**Five further findings** came from the reasoning panes, each verified against code: the response
-schema is enforced but never declared (the model re-derives keys and fence-or-not every call, on the
-same shared budget); `"pre-v7 run"` leaks build vocabulary into the prompt; the holding header omits
-units and often the company name (`HOLDING: PSX ()`); the engine arm shows a lean *set* but no pick;
-and Portfolio request rows fall through `App.vue`'s report-pipeline routing into a frontend-synthesized
-"Baseline market data" step that no backend ever finishes.
-
-**User ruling: `BUILD.md` stays forward-looking** — what we are building toward, not what needs fixing.
-Fix queues live in the verification record. BUILD gained only the gating fact on §Remaining item 1.
+**The lesson that should govern the next slice:** every defect this work produced — six across eight
+Codex rounds — was a rule enforced in one place and restated in another. The last three commits stop
+aligning those pairs and remove them, generating each prompt's response contract from the same
+constant its schema is built from.
 
 ## Current state
 
-Nothing in flight. **The run is blocked on the 7b repair** — a repeat attempt would hit the same wall
-on a more constrained path.
+Nothing in flight. Working tree clean, `main` synchronized.
 
-Fix candidates are scoped with code references in the record, in recovery-value order: persist a run
-whose construction fails (`roll_up.construction`/`.aggregates` are already `Option`, so the record
-shape already admits it — but this contradicts §Step 7b and needs a ruling first); send the re-run only
-the violating names; compress the construction digest; reserve output explicitly. The prompt fixes are
-all in `pipeline.rs` and cheap; the routing fix is one default in `App.vue:196`.
+**Slice B is next and fully scoped.** Three code seams: the `latest_run` filter;
+`merge_validated_actions` / `carried_action`, where the action field means "7b-blessed final"
+downstream but holds the **standalone lean** before the merge — the reason the `latest_run` exclusion
+is load-bearing rather than tidy; and the app-stamp beside `reverted_to_lean`. Two spec edits —
+`portfolio-workflow.md` §Step 7b's "persisting incoherence fails the run", and `interface.md`'s "a run
+row appears only on persisted success" — plus five doc sites citing "the 10-run retention".
 
-**Confirmed despite the failure:** 128 K runner stability across 2 h 46 m — one runner, 131072, 100 %
-GPU, `Forever`, no reload or spill. 98 % of wall-clock was model time (95 chat calls).
+Still queued behind it: re-run only the violating names; **digest compression, which waits on a run
+persisting** so `record_usage`'s per-stage prompt fill can target it; `num_predict` as a truncation
+diagnostic, not headroom; the §Residue adapter-diagnostics gap; and a test pinning the key constants
+against their Rust structs (flagged, not built — it fails loudly at parse time).
 
-**Dev DB is deliberately unchanged** — still only the 07-31 run, whose pre-`grade-v2.1` stamp is the
-only input exercising the band-recalibration continuity path.
-
-**Session-scoped evidence will be lost:** 120 tracker captures, the Ollama server log (the most durable
-artifact a failed run leaves), and `analyze-run.sh` — the 13-section watch-set analyzer, already
-smoke-proven against the v2 run. Copy out of the scratchpad if any should survive.
+**Dev DB is still deliberately unchanged** — only the 07-31 run, the sole pre-`grade-v2.1` stamp.
+Its 36 sell-alls of 44 remain attempt 2's attribution baseline. Attempt 1's scratch evidence (120
+tracker captures, the Ollama server log, `analyze-run.sh`) was **not copied out and is gone**; the
+written analysis is all that survives.
 
 ## Open questions
 
-- **Should persisting 7b incoherence stop being run-terminal?** §Step 7b currently ties it to a hard
-  model failure, so persisting a degraded run is a spec change, not just a code change.
-- **Should the current engine arm's chosen stand-in be shown at Step 6f?** The prior run's pick is
-  rendered but this run's is not; showing it may anchor the model arm against `portfolio-v7`'s intent.
-- **Were this run's engine targets degenerate?** The one sample (SBUX) was steeply *bearish*, not flat
-  — 12m base 34 % below spot — which is a different shape from the 07-31 flat-target syndrome. Nothing
-  persisted to settle it.
-- **Is the FMP dated-EOD rung de facto primary?** Still unresolved: `data-health` never persisted.
+- **Finding 5 — should the current engine arm's chosen stand-in show at Step 6f?** Unruled. The prior
+  run's pick renders and this run's does not; showing it may anchor the model arm against
+  `portfolio-v7`'s intent. Gates nothing, so it can ride with the pre-run slice.
+- **Were this run's engine targets degenerate?** The one sample (SBUX) was steeply bearish, not flat —
+  a different shape from 07-31. Nothing persisted to settle it; the repeat attempt should read it first.
+- **Is the FMP dated-EOD rung de facto primary?** Still unresolved — `data-health` has never persisted.
 - **Live-evidence caveat** — the sector-P/E walk-back's "holidays serve carried values" warrant rests
   on the adapter's recorded 2026-07-16 verification, not re-probed.
 
 ## Where to start
 
-Rule the **persist-on-failure question** first — it is the one change that converts a failed attempt
-from a total loss, and everything else is cheaper than re-running blind. Then take the output-budget
-fix (re-run only violating names, compress the digest), the `pipeline.rs` prompt fixes, and the
-`App.vue` routing fix. Only re-attempt the run once 7b can carry a whole-book plan at book scale; read
-`data-health` early when it happens.
+Plan slice B before writing code, and **write its tests first**. Unlike slice A's defects, these fail
+silently — a degraded run leaking into `latest_run` surfaces as a wrong baseline several runs later,
+not as a bad line in a diff. Pin the pairs up front: `latest_run` against `list_recent_runs`, and the
+action field against both its meanings. Then take the re-run-only-violating-names fix, and only
+re-attempt the run once Step 7b can carry a whole-book plan at book scale.
