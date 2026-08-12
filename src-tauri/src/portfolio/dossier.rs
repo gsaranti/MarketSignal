@@ -48,6 +48,12 @@ pub struct HouseView {
 #[derive(Debug, Clone)]
 pub struct HoldingDossier {
     pub position: Position,
+    /// The issuer name off the same one-per-stock FMP `/profile` lookup the listing
+    /// guard reads — kept because Schwab's `description` is often blank, which renders
+    /// the prompt header as `HOLDING: PSX ()` and leaves the model guessing at the
+    /// issuer (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 4).
+    /// `None` for a fund (no profile call) or an unresolved / unverified lookup.
+    pub company_name: Option<String>,
     /// How this position changed since the prior run (the Step-4 holdings diff), so the
     /// verdict reasons over what the user did with it (`docs/portfolio-analysis.md`
     /// §Holdings change tracking).
@@ -335,6 +341,7 @@ pub fn assemble(
     fund: Option<crate::portfolio::fund::FundContext>,
     prior: Option<PriorHolding>,
     listing: Option<crate::portfolio::listing::ListingResolution>,
+    company_name: Option<String>,
 ) -> HoldingDossier {
     let (
         prior_verdict,
@@ -417,6 +424,7 @@ pub fn assemble(
 
     HoldingDossier {
         position,
+        company_name,
         position_delta,
         financials,
         options_signal,
@@ -1112,6 +1120,7 @@ Sources and footnotes.
             None,
             None,
             None,
+            None,
         );
         assert!(dossier.sources.iter().any(|s| s.contains("FMP")));
         assert!(dossier.sources.iter().any(|s| s.contains("SEC")));
@@ -1149,6 +1158,7 @@ Sources and footnotes.
                 None,
                 InvestorProfile::default_fixture(),
                 house_view.clone(),
+                None,
                 None,
                 None,
                 None,

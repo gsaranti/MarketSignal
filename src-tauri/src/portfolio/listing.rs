@@ -133,10 +133,25 @@ fn compare_names(schwab: &str, fmp: &str) -> NameComparison {
     }
 }
 
+/// Whether an account description carries an issuer identity at all — the one
+/// definition, shared by the guard below and the interpretation prompt's issuer
+/// fallback so the two cannot drift apart. Identity is what [`significant_tokens`]
+/// finds, not merely non-emptiness: blank, whitespace, and corporate-form noise
+/// like `"COMMON STOCK"` all tokenize to nothing and are the same shape. The ticker
+/// repeated needs its own clause — it tokenizes to itself, yet names no issuer.
+pub fn describes_issuer(schwab_description: &str, symbol: &str) -> bool {
+    let d = schwab_description.trim();
+    !d.eq_ignore_ascii_case(symbol.trim()) && !significant_tokens(d).is_empty()
+}
+
 /// Route one stock's profile lookup to its listing resolution. The exchange test
 /// runs before the name comparison — the exchange, not the profile's HQ country,
-/// is what lets a US-listed ADR pass — and a Schwab description that is just the
-/// ticker itself has no issuer identity to compare, so it reads unverifiable.
+/// is what lets a US-listed ADR pass — and a Schwab description carrying no issuer
+/// identity ([`describes_issuer`]) has nothing to compare, so it reads unverifiable.
+/// Blank and noise-only descriptions reached the same `Unverified` outcome through
+/// [`compare_names`]'s empty-token arm before that check was hoisted; only the
+/// recorded detail changed. That arm stays live for the mirror case — a *profile*
+/// name that tokenizes to nothing.
 pub fn resolve_listing(
     symbol: &str,
     schwab_description: &str,
@@ -163,9 +178,9 @@ pub fn resolve_listing(
                     detail: "resolved profile carried no issuer name".to_string(),
                 };
             };
-            if schwab_description.trim().eq_ignore_ascii_case(symbol.trim()) {
+            if !describes_issuer(schwab_description, symbol) {
                 return ListingResolution::Unverified {
-                    detail: "account description is the ticker itself — no issuer name to cross-check"
+                    detail: "account description carries no issuer name to cross-check"
                         .to_string(),
                 };
             }

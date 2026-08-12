@@ -750,6 +750,10 @@ fn run_analysis(
         String,
         crate::portfolio::outcome::SectorIdentity,
     > = std::collections::HashMap::new();
+    // The same profile lookup's issuer name, keyed alongside the sector so the
+    // prompt header can name the company when Schwab's description is blank.
+    let mut profile_name_by_symbol: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
 
     // Fresh-passed funds' full sector weightings, captured for the Step-7a
     // sector-exposure fold (`docs/portfolio-analysis.md` §Portfolio roll-up —
@@ -788,10 +792,13 @@ fn run_analysis(
         // construction, typed `sector-unscorable` without a profile call.
         let listing = if is_stock {
             let lookup = company_data.profile_identity(&position.symbol);
-            let sector = match &lookup {
-                crate::portfolio::listing::ProfileLookup::Resolved(p) => p.sector.clone(),
-                _ => None,
+            let (sector, name) = match &lookup {
+                crate::portfolio::listing::ProfileLookup::Resolved(p) => {
+                    (p.sector.clone(), p.company_name.clone())
+                }
+                _ => (None, None),
             };
+            profile_name_by_symbol.insert(position.symbol.to_ascii_uppercase(), name);
             sector_by_symbol.insert(
                 position.symbol.to_ascii_uppercase(),
                 crate::portfolio::outcome::SectorIdentity::resolve(sector.as_deref()),
@@ -979,6 +986,10 @@ fn run_analysis(
             fund_ctx,
             prior,
             listing,
+            profile_name_by_symbol
+                .get(&position.symbol.to_ascii_uppercase())
+                .cloned()
+                .flatten(),
         );
 
         // Cancellation checkpoint between the (now-complete) data gather and the model

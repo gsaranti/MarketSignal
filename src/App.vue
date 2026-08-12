@@ -171,6 +171,7 @@ function ensureStep(trace: RunTrace, key: string, label: string): TrackerStep {
       key,
       label,
       status: "running",
+      backendStarted: false,
       detail: null,
       requests: [],
       agentText: "",
@@ -192,17 +193,48 @@ function ensureStep(trace: RunTrace, key: string, label: string): TrackerStep {
 // this routing, every request row would pile under "baseline" and the research step
 // would render empty. The label is a fallback only — the owning step normally already
 // exists with its backend label.
+// These names, plus "analyst" below, are EXCLUSIVE to the report pipeline: a
+// local-suite emitter reusing one would silently render its rows under a report step
+// instead of the holding step that owns them. "memory" is deliberately NOT in that
+// set — both the cloud Embedder and the LocalEmbedder emit it, which is exactly why
+// it has its own branch: follow-the-running-step puts each job's embedding rows on
+// whichever job is running, and both jobs key their persist step "persist", so even
+// the fallback lands correctly. The suite's own groups all read as data shapes
+// ("company-profile", "company-facts", "daily-bars", "suite-rate", "fund-sectors", …),
+// which keeps them clear of the exclusive names by convention rather than by
+// construction — the two sets live in different languages, so nothing enforces it.
+// A collision would misplace rows, never lose them, which is why this is a comment
+// and not a pinned cross-language mirror.
 const RESEARCH_REQUEST_GROUPS = new Set(["news", "filter", "routing", "research"]);
+// The most recently opened step the backend actually started and has not finished.
+// Synthesized steps are excluded: `ensureStep` marks a step "running" on creation, so
+// a step conjured by an earlier request row would otherwise capture every row after it.
+function runningBackendStep(trace: RunTrace): TrackerStep | undefined {
+  return [...trace.steps].reverse().find((s) => s.backendStarted && s.status === "running");
+}
+
 function requestStep(trace: RunTrace, group: string): TrackerStep {
   if (RESEARCH_REQUEST_GROUPS.has(group)) return ensureStep(trace, "research", "Research");
   // The three analysts' per-call rows belong with their reasoning panes under the
   // "analysts" step, not the baseline fallback below.
   if (group === "analyst") return ensureStep(trace, "analysts", "Running the analyst agents");
   if (group === "memory") {
-    const running = [...trace.steps].reverse().find((s) => s.status === "running");
+    const running = runningBackendStep(trace);
     return running ?? ensureStep(trace, "persist", "Saving the report");
   }
-  return ensureStep(trace, "baseline", "Baseline market data");
+  // Follow-the-running-step is the default, not just the "memory" special case.
+  // The local jobs' groups are data shapes ("company-facts", "daily-bars",
+  // "suite-rate", "local", …) and match none of the report pipeline's. Note the
+  // field: FMP / SEC / Stooq / FRED are providers, never groups.
+  // Under the old baseline fallback every one of those rows piled into a step the
+  // Portfolio backend never starts and never finishes, so a phantom "Baseline market
+  // data" stayed open for the whole run and named itself in the tracker header
+  // (docs/verification/2026-08-10-big-run-attempt-1.md, Finding 6). Each holding's
+  // fetches arrive inside its own "Analyze <SYMBOL>" step, so the running step
+  // already owns them. The synthesized baseline step stays the last resort for a row
+  // that arrives with nothing running.
+  const running = runningBackendStep(trace);
+  return running ?? ensureStep(trace, "baseline", "Baseline market data");
 }
 
 // Fold one streamed progress message into the trace. Events are filtered to the
@@ -217,6 +249,8 @@ function handleProgress(msg: ProgressMessage) {
           key: "gate",
           label: GATE_STEP_LABEL,
           status: "ok",
+          // Synthesized pre-completed, and already finished, so it never adopts rows.
+          backendStarted: false,
           detail: null,
           requests: [],
           agentText: "",
@@ -236,9 +270,12 @@ function handleProgress(msg: ProgressMessage) {
   if (!trace || msg.run_id !== trace.runId) return;
 
   switch (msg.kind) {
-    case "step-started":
-      ensureStep(trace, msg.step ?? "", msg.label ?? msg.step ?? "").status = "running";
+    case "step-started": {
+      const step = ensureStep(trace, msg.step ?? "", msg.label ?? msg.step ?? "");
+      step.status = "running";
+      step.backendStarted = true;
       break;
+    }
     case "step-finished": {
       const step = ensureStep(trace, msg.step ?? "", msg.step ?? "");
       step.status = (msg.status as StepStatus) ?? "ok";

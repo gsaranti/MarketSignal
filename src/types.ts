@@ -1030,6 +1030,10 @@ export interface TrackerStep {
   agentText: string;
   agentThinking: string;
   analystThinking: Record<string, string>;
+  /// True once the backend emitted `step-started` for this key. A step synthesized
+  /// by `ensureStep` from a request row is "running" too, so request routing needs
+  /// to tell the two apart before adopting rows into the step that is running.
+  backendStarted: boolean;
 }
 
 // The assembled trace for one run, built in App.vue from the event stream and

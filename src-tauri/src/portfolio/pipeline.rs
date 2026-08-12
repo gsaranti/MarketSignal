@@ -1384,7 +1384,12 @@ pub fn interpretation_system_prompt() -> String {
      with monitorable falsifiers and pre-committed action triggers: test the prior \
      ledger against this run's evidence and the engine's deterministic condition \
      crossings, then rewrite it per the instructions in the prompt. \
-     Respond only with the required JSON object."
+     Respond with a single JSON object carrying exactly these keys: action, \
+     conviction, horizon_outlook (short/mid/long), financial_summary, \
+     price_target_rationale, what_changed, ledger, model_sub_scores \
+     (quality/valuation/momentum/risk), model_price_targets (one_month and \
+     twelve_month, each base/bear/bull), self_assessment. The response format is \
+     enforced by the decoder, so spend no reasoning on shape — put it into the read."
         .to_string()
 }
 
@@ -1405,7 +1410,9 @@ pub fn role_risk_system_prompt() -> String {
      You also maintain the holding's THESIS LEDGER (fund-flavored drivers; \
      condition-only monitor; trim/sell triggers only) — test the prior ledger against \
      this run's evidence and rewrite it per the instructions in the prompt. \
-     Respond only with the required JSON object."
+     Respond with a single JSON object carrying exactly these keys: role_summary, \
+     what_changed, ledger. The response format is enforced by the decoder, so \
+     spend no reasoning on shape — put it into the read."
         .to_string()
 }
 
@@ -1421,18 +1428,45 @@ pub(crate) fn role_risk_prompt_renders_house_view(d: &HoldingDossier) -> bool {
     d.house_view.latest_sections.is_some()
 }
 
+/// The prompt's holding header — the identity and position line both interpretation
+/// branches open with. Two renderings are deliberate
+/// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 4). The name falls
+/// back to the resolved listing's company name when Schwab supplies no description,
+/// which otherwise renders as `HOLDING: PSX ()` and leaves the model speculating
+/// about the ticker. The money figures are marked as position totals in dollars:
+/// rendered bare they read ambiguously as per-share, and the model spent reasoning
+/// re-deriving them by division before starting its analysis.
+fn holding_header(d: &HoldingDossier) -> String {
+    let described = d.position.description.trim();
+    let name = if !crate::portfolio::listing::describes_issuer(described, &d.position.symbol) {
+        // The fallback is held to the same standard as the description it replaces:
+        // FMP's parser accepts any non-blank `companyName`, and the listing guard
+        // returns before comparing names whenever the description carries no
+        // identity — so a profile name that is itself noise, or the ticker, reaches
+        // here unchecked and would rebuild the very header this fixes.
+        d.company_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| crate::portfolio::listing::describes_issuer(n, &d.position.symbol))
+            .unwrap_or("name unavailable")
+    } else {
+        described
+    };
+    format!(
+        "HOLDING: {} ({})\nQuantity: {}  Cost basis: ${:.0} total  Market value: ${:.0} total\n",
+        d.position.symbol,
+        name,
+        d.position.quantity,
+        d.position.cost_basis,
+        d.position.market_value,
+    )
+}
+
 pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     let d = input.dossier;
     let r = input.readout;
     let mut p = String::new();
-    p.push_str(&format!(
-        "HOLDING: {} ({})\nQuantity: {}  Cost basis: {:.0}  Market value: {:.0}\n",
-        d.position.symbol,
-        d.position.description,
-        d.position.quantity,
-        d.position.cost_basis,
-        d.position.market_value,
-    ));
+    p.push_str(&holding_header(d));
     p.push_str(&format!(
         "Position change since last run: {}\n",
         describe_position_change(&d.position_delta, d.position.quantity, d.position.cost_basis)
@@ -1528,7 +1562,7 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
             ev.action.as_kebab()
         )
         .to_lowercase(),
-        None => "conviction/outlook/action not recorded (pre-v7 run)".to_string(),
+        None => "conviction/outlook/action not recorded".to_string(),
     };
     p.push_str(&format!(
         "- prior ENGINE arm: grade {} (q {:.0} / v {:.0} / r {:.0}; momentum {:.0}); {}; {}\n",
@@ -1683,14 +1717,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     let e = input.engine;
     let mut p = String::new();
 
-    p.push_str(&format!(
-        "HOLDING: {} ({})\nQuantity: {}  Cost basis: {:.0}  Market value: {:.0}\n",
-        d.position.symbol,
-        d.position.description,
-        d.position.quantity,
-        d.position.cost_basis,
-        d.position.market_value,
-    ));
+    p.push_str(&holding_header(d));
     p.push_str(&format!(
         "Position change since last run: {}\n",
         describe_position_change(&d.position_delta, d.position.quantity, d.position.cost_basis)
@@ -2222,8 +2249,14 @@ fn describe_position_change(
                 Some(prev) => format!(" quantity {prev} → now {current_qty}"),
                 None => String::new(),
             };
+            // Dollar-marked like the header two lines above it. Rendered bare, these
+            // read as per-share against a header that says total, which is the
+            // ambiguity Finding 4 documented the model paying to resolve
+            // (`docs/verification/2026-08-10-big-run-attempt-1.md`).
             let basis = match delta.prior_cost_basis {
-                Some(prev) => format!(", cost basis {prev:.0} → now {current_cost_basis:.0}"),
+                Some(prev) => {
+                    format!(", cost basis ${prev:.0} → now ${current_cost_basis:.0} total")
+                }
                 None => String::new(),
             };
             if qty.is_empty() && basis.is_empty() {
@@ -3004,6 +3037,7 @@ mod tests {
 
     fn dossier(asset_class: AssetClass, financials: CompanyFinancials) -> HoldingDossier {
         HoldingDossier {
+            company_name: None,
             position: position(asset_class),
             position_delta: PositionDelta::new_position(),
             financials,
@@ -5209,6 +5243,90 @@ mod tests {
         assert!(user.contains("REWRITE THE THESIS LEDGER"), "{user}");
         assert!(interpretation_system_prompt().contains("THESIS LEDGER"));
         assert!(role_risk_system_prompt().contains("THESIS LEDGER"));
+    }
+
+    /// Finding 4 (`docs/verification/2026-08-10-big-run-attempt-1.md`): the header
+    /// names the issuer and marks the money figures as dollar totals, so the model
+    /// does not spend its reasoning deciding whether a bare integer is per-share.
+    #[test]
+    fn the_holding_header_marks_dollar_totals_and_names_the_issuer() {
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+
+        // A usable account description is used as-is.
+        d.position.description = "Phillips 66".to_string();
+        d.company_name = Some("Phillips 66 Company".to_string());
+        let h = holding_header(&d);
+        assert!(h.contains("Phillips 66)"), "{h}");
+        assert!(h.contains("Cost basis: $"), "{h}");
+        assert!(h.contains(" total"), "{h}");
+        assert!(h.contains("Market value: $"), "{h}");
+
+        // Every no-identity shape falls back to the profile name — blank, whitespace,
+        // the ticker repeated, and corporate-form noise that tokenizes to nothing.
+        // `listing::describes_issuer` owns that rule; the guard pins the same set.
+        let ticker = d.position.symbol.clone();
+        for described in ["", "  ", &ticker, "COMMON STOCK", "CL A ORD SHS"] {
+            d.position.description = described.to_string();
+            let h = holding_header(&d);
+            assert!(
+                h.contains("Phillips 66 Company"),
+                "no-identity description {described:?} should fall back: {h}"
+            );
+        }
+
+        // The fallback is held to the same standard, so profile-side noise cannot
+        // rebuild the header: FMP accepts any non-blank `companyName`, and the guard
+        // never compares it once the description has no identity of its own.
+        d.position.description = String::new();
+        for profile_name in ["COMMON STOCK", &ticker, "  ", "ORD SHS"] {
+            d.company_name = Some(profile_name.to_string());
+            let h = holding_header(&d);
+            assert!(
+                h.contains("name unavailable"),
+                "profile name {profile_name:?} carries no identity and must not render: {h}"
+            );
+        }
+
+        // Nothing to fall back to is stated, never rendered as an empty pair.
+        d.company_name = None;
+        let h = holding_header(&d);
+        assert!(h.contains("name unavailable"), "{h}");
+        assert!(!h.contains("()"), "an empty name pair is the defect itself: {h}");
+    }
+
+    /// Finding 2: each grammar-constrained call declares the object it is enforced
+    /// to produce, so the model does not re-derive the key set on the shared budget.
+    #[test]
+    fn every_constrained_prompt_declares_its_own_response_keys() {
+        let priced = interpretation_system_prompt();
+        for key in [
+            "action", "conviction", "horizon_outlook", "financial_summary",
+            "price_target_rationale", "what_changed", "ledger", "model_sub_scores",
+            "model_price_targets", "self_assessment",
+        ] {
+            assert!(priced.contains(key), "priced prompt omits `{key}`");
+        }
+
+        let role = role_risk_system_prompt();
+        for key in ["role_summary", "what_changed", "ledger"] {
+            assert!(role.contains(key), "role-risk prompt omits `{key}`");
+        }
+        // The branch carries no action of its own — declaring one would invite it.
+        assert!(!role.contains("model_price_targets"), "{role}");
+
+        let build = crate::portfolio::construction::construction_system_prompt();
+        for key in [
+            "holdings", "risk_posture", "deployment_stance", "concentration_read",
+            "closed_positions_note", "target_weight_low", "target_weight_high",
+            "changed_attribution", "changed_cause", "divergence_cause",
+        ] {
+            assert!(build.contains(key), "construction prompt omits `{key}`");
+        }
+
+        // The internal build vocabulary of Finding 3 stays out of every prompt.
+        for p in [&priced, &role, &build] {
+            assert!(!p.contains("pre-v7"), "internal version vocabulary leaked: {p}");
+        }
     }
 
     #[test]

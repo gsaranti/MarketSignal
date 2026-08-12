@@ -416,6 +416,54 @@ describe("App.vue run tracker", () => {
     wrapper.unmount();
   });
 
+  test("a local job's request rows land in the running backend step, not a phantom baseline", async () => {
+    const { wrapper, emit } = await mountWithTracker();
+
+    // The Portfolio job's groups are data shapes ("company-facts", "daily-bars", …) and
+    // match none of the report pipeline's; FMP / SEC / Stooq / FRED are the provider
+    // field, asserted separately below. Its per-holding fetches arrive inside the step the
+    // backend opened for that holding. Before the backend-started marker these fell
+    // through to a synthesized "Baseline market data" step no backend ever finishes,
+    // which then stayed open for the whole run and named itself in the tracker
+    // header (docs/verification/2026-08-10-big-run-attempt-1.md, Finding 6).
+    // Step key and groups are the production strings: `holding_step_key` formats
+    // `holding-<SYMBOL>`, and these are real emitters (sec.rs, stooq.rs, fred.rs).
+    emit({ run_id: "R1", seq: 2, kind: "step-started", step: "holding-PSX", label: "Analyze PSX" });
+    emit({ run_id: "R1", seq: 3, kind: "request-started", group: "company-facts", provider: "SEC", series_id: "0000078214", name: "SEC company facts" });
+    emit({ run_id: "R1", seq: 4, kind: "request-started", group: "daily-bars", provider: "Stooq", series_id: "PSX", name: "Daily price history" });
+    emit({ run_id: "R1", seq: 5, kind: "request-finished", group: "company-facts", series_id: "0000078214", status: "ok" });
+    await flushPromises();
+
+    const steps = wrapper.findComponent(JobTrackerView).props("trace").steps;
+    const holding = steps.find((s) => s.key === "holding-PSX");
+    expect(holding?.label).toBe("Analyze PSX");
+    expect(holding?.requests.map((r) => r.group)).toEqual(["company-facts", "daily-bars"]);
+    // Provider and group are distinct fields; routing reads the group alone.
+    expect(holding?.requests.map((r) => r.provider)).toEqual(["SEC", "Stooq"]);
+    expect(holding?.requests[0]).toMatchObject({ seriesId: "0000078214", status: "ok" });
+    // The phantom step is never conjured at all.
+    expect(steps.find((s) => s.key === "baseline")).toBeUndefined();
+
+    wrapper.unmount();
+  });
+
+  test("a row arriving with no backend step running still falls back to baseline", async () => {
+    const { wrapper, emit } = await mountWithTracker();
+
+    // The synthesized step remains the last resort, so a row can never be dropped.
+    // It must not be adopted by a step an earlier request row conjured, which is
+    // "running" on creation and otherwise indistinguishable from a backend one.
+    emit({ run_id: "R1", seq: 2, kind: "request-started", group: "news", provider: "tavily", series_id: "n1", name: "news gather" });
+    emit({ run_id: "R1", seq: 3, kind: "request-started", group: "suite-rate", provider: "FRED", series_id: "DGS10", name: "Rate anchor" });
+    await flushPromises();
+
+    const steps = wrapper.findComponent(JobTrackerView).props("trace").steps;
+    expect(steps.find((s) => s.key === "research")?.requests.map((r) => r.group)).toEqual(["news"]);
+    expect(steps.find((s) => s.key === "baseline")?.requests.map((r) => r.group)).toEqual(["suite-rate"]);
+
+    wrapper.unmount();
+  });
+
   test("accumulates streamed agent tokens onto the agent step", async () => {
     const { wrapper, emit } = await mountWithTracker();
 

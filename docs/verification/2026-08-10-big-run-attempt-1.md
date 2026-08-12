@@ -10,7 +10,15 @@ sequencing stays with the build queue.
 Findings 2–6 come from reviewing the live reasoning and tracker panes during the run, and each was
 verified against the code before being recorded here.
 Because no run row persisted, the per-holding evidence is gone: every claim here rests on the
-`job_runs` failure detail, the run tracker captures, and the code.*
+`job_runs` failure detail, the run tracker captures, and the code.
+§Disposition carries the running status — which candidates were ruled, what was built, and where this
+record's own scoping proved wrong.
+**Every source anchor below is as-of `65d13de`**, this record's own commit, which is docs-only and so
+carries the exact tree the run executed against — `git show 65d13de:<path>` resolves any of them.
+They are deliberately not re-pointed at the current tree: the findings quote code the fixes have since
+changed, so an anchor tracking today's lines would land on the repair while the sentence beside it
+describes the defect.
+Read the symbol names, which survive; the numbers are provenance, not navigation.*
 
 ## Environment
 
@@ -186,6 +194,9 @@ Listed as candidates for a ruling round, in the order that recovers the most val
 4. **Reserve an output budget explicitly.**
    With no `num_predict`, nothing distinguishes "the prompt is large" from "there is no room to answer".
    An explicit reservation would turn a silent compaction into a legible limit.
+   It would not, however, have caught *this* failure: the model stopped voluntarily, well inside the
+   limit, rather than being truncated, so this is a diagnostic that makes a future truncation legible
+   rather than a change that creates room.
 5. **Rule the attribution questions in §Why `cash-freed` could not validate.**
    Smaller than the above and dependent on them.
 
@@ -248,8 +259,16 @@ construction was partly spent deliberating a structure that was never in questio
 
 The fix candidate is to state the contract in the prompt — the key list at minimum, ideally the schema —
 and to replace *"the required JSON object"* with a sentence that names it.
-The instruction to avoid markdown fences can be dropped entirely rather than clarified, since the grammar
-already forbids them; saying nothing is better than saying something the model will litigate.
+
+Two scoping corrections, found while building the fix.
+The defect is not confined to the priced interpretation call: the identical closing sentence sits on the
+`role_risk_only` interpretation prompt and on the **whole-book construction prompt**
+(`construction.rs`), whose `construction_schema()` builds a run-specific grammar keyed by ticker that the
+model has still less chance of guessing.
+That third site is the call that ran out of room, so this finding compounds Finding 1 directly rather
+than only through the shared budget.
+And there is **no markdown-fence instruction anywhere in the crate** to drop — the model litigated fences
+because the prompt was silent about the format, not because it was told something contradictory.
 
 ## Finding 3 — internal version vocabulary leaks into the prompt
 
@@ -289,6 +308,15 @@ deciding to trust the provided data.
 The company name is already fetched — the FMP company-profile call is issued per holding — so the fix
 candidate is to fall back to the profile name when the Schwab description is empty.
 
+That candidate was scoped as a prompt edit and is not one.
+The profile call's name is read into `listing::ProfileIdentity` and then **discarded**: `resolve_listing`
+returns a `ListingResolution` enum that retains the name only on its `Conflict` variant, so nothing
+reachable from the dossier carries it.
+The fallback requires threading the name from the lookup onto `HoldingDossier`, which is a small change
+but not a prompt-only one.
+The header also renders at **two** sites — the priced and `role_risk_only` user prompts — carrying the
+same format string verbatim.
+
 **Cost basis and market value carry no units and no per-share/total marker.**
 They render as bare integers.
 On PSX the model worked through whether `Cost basis: 524` was a per-share or a whole-position figure,
@@ -323,11 +351,16 @@ Every per-holding data request renders under a step labelled **Baseline market d
 header names that step even while a per-holding step is the one running.
 Both symptoms have a single cause in the frontend.
 
-`requestStep()` (`src/App.vue:196`) routes request rows by the event's `group`, and its groups are the
-**report** pipeline's: `news`, `filter`, `routing`, `research`, `analyst`, `memory`.
+`requestStep()` (`src/App.vue:196`) routes request rows by the event's `group`, and the groups it knows
+are `news`, `filter`, `routing`, `research`, `analyst` and `memory`.
 Everything else falls through to `ensureStep(trace, "baseline", "Baseline market data")`.
-The Portfolio job's groups — FMP, SEC, Stooq, FRED, local — match none of them, so every portfolio
-request row lands in that fallback.
+The first five are report-exclusive, but **`memory` is not**: the `LocalEmbedder` emits it too, so a
+Portfolio run's embedding rows already take that branch and route correctly.
+The Portfolio job's other groups — `company-profile`, `company-facts`, `daily-bars`, `suite-rate`,
+`fund-sectors`, `local` and the rest of that family — match none of them, so every **per-holding fetch**
+lands in the fallback.
+The embedding rows are the one portfolio row type that does not, which is why the claim is scoped to the
+per-holding pass rather than to the run.
 The step is **synthesized by the frontend**; the Portfolio backend never starts it and never finishes it,
 so it stays open for the whole run and the header keeps naming it.
 
@@ -337,6 +370,13 @@ The routing is fixable without new backend events.
 The `memory` branch of the same function already implements exactly the needed rule — follow the step that
 is running — and the fix candidate is to make that the default, leaving the synthesized baseline step as a
 last resort when nothing is running.
+
+Adopted verbatim, that candidate is unsafe, and an existing App spec catches it.
+`ensureStep` creates a step with status `"running"`, so a step **synthesized by an earlier request row**
+is indistinguishable from one the backend started, and it then captures every row that follows it.
+Follow-the-running-step needs a backend-started marker set only on a real `step-started` event before it
+can be the default.
+The `memory` branch carries the same latent hazard today and needs the same guard.
 That places each holding's fetches under its own `Analyze <SYMBOL>` step and stops the phantom step from
 being created at all.
 
@@ -388,3 +428,84 @@ data-source probe are all still first-read items.
   It survived independently of the app, dates every call, and is what made the construction-cost and
   throughput numbers above recoverable.
   Future runs should keep it deliberately rather than incidentally.
+
+## Disposition
+
+*The running status of this record's findings — what has been ruled, what has been built, and what is
+still open.
+§Fix candidates deliberately holds candidates rather than decisions, so the decisions live here and cite
+those candidates by number rather than restating them.
+Each finding's own section carries any correction to its scope, found while building it.*
+
+### Ruled — 2026-08-11
+
+- **Candidate 1, persist a run whose construction fails — adopted.**
+  A construction-failed run keeps its `job_runs` failure row exactly as today and additionally writes a
+  `portfolio_runs` row carrying the per-holding work, marked as having no constructed book.
+  The run's terminal state stays **failed**; what changes is that its analytical work survives.
+  The row is visible in the Portfolio-runs history and opens read-only, but is **excluded from
+  `latest_run`**, so the next run's baseline, holdings diff, carry vintages and quick-check chaining all
+  reach past it to the last run that actually constructed a book.
+  That exclusion is load-bearing rather than tidy: `merge_validated_actions` overwrites each verdict's
+  action with 7b's final, so before that merge the field holds the **standalone lean**, and
+  `carried_action` would otherwise feed the next run an un-reconciled value through a field that means
+  "7b-blessed final action" everywhere downstream.
+  Two spec statements change with it — the Step 7b sentence tying persisting incoherence to a hard model
+  failure, and `interface.md`'s "a run row appears only on persisted success", which must now distinguish
+  the Portfolio history list from the run-is-never-a-report invariant it leans on.
+- **`PORTFOLIO_RUN_RETENTION` 10 → 30, degraded runs counting against the one cap.**
+  One real run measures 166 KB of `run_json`, so 30 costs roughly 5 MB against 1.7 MB — negligible
+  locally, and it matches the report retention already in `storage.md`.
+  At 30 the eviction pressure from failed attempts no longer justifies a second retention path, so the
+  exemption considered for degraded runs was dropped in favour of the simpler rule.
+  The cap bounds a UI-path parse as well as disk: `list_run_summaries` parses every retained blob to
+  build the sidebar, which is why the number is load-bearing beyond storage.
+  The value is defined only in code; five doc sites reference it as "the 10-run retention" and all five
+  move with it.
+- **Candidate 5, the attribution question — adopted in part.**
+  The app stamps `moved-intrinsic` where construction **accepted** the standalone lean, superseding any
+  model claim, exactly as the neighbouring `reverted_to_lean` stamp already supersedes one.
+  The predicate is not new machinery: `construction.rs` already derives `intrinsic_moved`
+  deterministically and today uses it only to police a model claim, never to make one.
+  The line this draws is that Step 7b owes an attribution only when it **overruled** the lean, which is
+  the only thing that stage actually reconciled.
+  Three things support it over leaving the demand in place: the existing app-stamp precedent sits in the
+  same function; the stage already disagrees with itself about the baseline, since the context-cause
+  check reads the lean first while the what-changed check reads the prior run's action alone; and the
+  intrinsic half of the move is already audited as required prose at Step 6f.
+  How much of this attempt it would have cleared is **unrecoverable**, and the ceiling is worth stating
+  rather than the effect.
+  The stamp fires only where construction accepted this run's lean, and whether each holding's final
+  action equalled its lean is exactly what did not persist.
+  So it could have cleared up to class A's 26 violations and, because the stamp supersedes, up to part
+  of class B's 11 `cash-freed` claims — class C's three departed the lean explicitly and would correctly
+  still fail.
+- **The missing "declined an engine exit" cause — deferred to after the run.**
+  With the stamp above in place the gap only bites when the final action departs both the prior action
+  and this run's lean, which is a genuine case but a narrow one.
+  Adding vocabulary now would be speculation: this attempt produced 11 bogus `cash-freed` claims and no
+  evidence at all about what the model reaches for when a fitting term exists.
+  Any new cause must be checkable against a real Step-7a aggregate, and `BookAggregates.cash_weight`
+  with the solve's implied weights makes a cash-overshoot cause checkable when it is built.
+
+### Built — 2026-08-11
+
+- **Findings 2, 3, 4 and 6**, verified against the full gate (1018 lib + 32 integration tests, clippy
+  clean at `--all-targets --all-features`, `npm run build` clean, 46 node + 225 vitest).
+  All three undeclared-schema closers now name their exact keys and state that the format is enforced.
+  The two holding-header sites share one helper that marks the money figures as dollar totals and falls
+  back to the threaded profile name.
+  Request rows follow the running step only when a real `step-started` opened it, which also closes the
+  latent hazard in the pre-existing `memory` branch.
+- **Finding 5 is unruled**, and gates nothing, so it rides with the pre-run slice.
+
+### Still open
+
+Candidates 2 and 3, and candidate 4 as the diagnostic its own entry now describes.
+Candidate 3 stays un-targeted until a run persists: `record_usage` already captures prompt tokens,
+`num_ctx` and sent size for the construction stage specifically, and it ran during this attempt into an
+in-memory buffer that reached disk only through the run record, so it was computed and discarded with
+everything else.
+That makes candidate 1 the instrument for candidate 3 as well as insurance against a repeat.
+The adapter-diagnostics gap under §Residue is unaddressed and belongs with the pre-run work: it is the
+reason this analysis rests on screenshots, and candidate 1 covers only a failure that reaches Step 7b.

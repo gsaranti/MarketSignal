@@ -1713,8 +1713,15 @@ pub fn construction_system_prompt() -> String {
      raising cash from one may cite the possible tax benefit of realizing the loss \
      and the redeployment optionality of the proceeds as supporting rationale, framed \
      high-level (the user acts on the specifics). Do NOT invent numbers: every figure \
-     you cite must come from the aggregates given. Respond only with the required \
-     JSON object."
+     you cite must come from the aggregates given. Respond with a single JSON object carrying exactly these \
+     keys: holdings, risk_posture, deployment_stance, concentration_read, \
+     closed_positions_note. `holdings` is keyed by ticker with one entry per \
+     holding listed above, each carrying exactly: action, target_weight_low, \
+     target_weight_high, rationale, divergence_cause, divergence_note, \
+     changed_attribution, changed_cause, changed_note — the nullable ones \
+     present, holding null where they do not apply. The response format is \
+     enforced by the decoder, so spend no reasoning on shape — put it into the \
+     plan."
         .to_string()
 }
 
