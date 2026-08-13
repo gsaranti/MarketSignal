@@ -24,7 +24,9 @@ splits readability from its domain date filter. `run-tracking.md` carries the
 contract.
 
 **Stooq removal ruled** (user decision 2026-08-12, superseding the rung-order
-slice — BUILD §What remains item 5): Stooq is untestable behind its JS-PoW
+slice; BUILD/INDEX aligned in-session — item 5 replaced by the removal slice
+as item 1, step-ownership moved to §Built, the two offered INDEX rows added):
+Stooq is untestable behind its JS-PoW
 wall and must not resurrect untested in production; FMP dated-EOD becomes the
 only price rung (200/min + the 63 s ladder cover the load; light-EOD probed to
 ≥1985 depth with a 5,000-row/request cap against a ~1,100-row ask). Evidence,
@@ -53,10 +55,6 @@ run evidence. `NUM_PREDICT_*` values remain drafted, uncalibrated.
   steeply bearish, not flat; attempt 2 reads whatever persists first.
 - **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant rests
   on the 2026-07-16 verification, not re-probed.
-- **INDEX.md rows** offered, not ruled: the degraded-run/constructed-marker
-  concept, and a §Verification records row for the new Stooq-removal record.
-- **BUILD.md** still lists the superseded item 5 and names Stooq in the
-  suite's engine source list — update wants a user-run edit.
 
 ## Where to start
 

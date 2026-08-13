@@ -392,7 +392,8 @@ this section carries only the decisions a plan must not work against.
   work against these; each states its own reach):
   - **Deterministic finance, primary-source evidence** — a shared Rust engine
     over FMP + keyless SEC EDGAR / Stooq / FINRA / CBOE (the last two designed,
-    unbuilt) computes the engine arm for both jobs. Both are **two-arm**: the
+    unbuilt; Stooq ruled for removal 2026-08-12 — the Stooq-removal slice in
+    §What remains owns retiring it) computes the engine arm for both jobs. Both are **two-arm**: the
     engine's values are the incorruptible baseline beside an **unrestricted
     model arm**, structurally validated only, the two scored head-to-head by a
     deterministic scoreboard. The per-job field schemas differ — BUILD does not
@@ -570,18 +571,27 @@ is now fully built.**
   first live run's persisted dataset.
 - **The pre-run correctness program** — the conformance walks and their ruling
   rounds, the per-doc sweeps, and the long-doc-line cleanup.
+- **The progress step-ownership contract** — request events are stamped with
+  their owning step at the progress seam's single choke point, and the tracker
+  attaches rows by the stamp (the bracket-inference and synthesized-step
+  fallbacks are retired; an unowned row renders unattributed, never as a
+  failed step). Every FMP suite row carries the shaped ok / empty / malformed
+  outcome with its cause on the row.
 
 ### Remaining, in order
 
-1. **The progress step-ownership slice** — the one item standing before the
-   run (user decision). Request-row ownership becomes something the run
-   *states* rather than the tracker *infers*: progress events are stamped
-   with their owning step at the progress seam's single choke point, retiring
-   both the per-stage bracket convention (every request-emitting stage must
-   remember to open a step around itself) and the tracker's synthesized-step
-   fallback — so a future request-emitting stage can never paint a phantom
-   failed step into a successful run's record. One design question to settle
-   at plan time: what "the owning step" means where stages run concurrently.
+1. **The Stooq-removal slice** — the one item standing before the run (user
+   decision 2026-08-12, superseding the rung-order slice that previously held
+   this queue's tail). Stooq is untestable behind its JS proof-of-work wall
+   and must not resurrect untested in a production app, so it is removed
+   everywhere and FMP dated-EOD becomes the only deep-price rung — the paid
+   plan's per-minute limit and the existing 429 ladder cover the load, the
+   adjustment basis is verified identical, and the anchor window's ask sits
+   far under the endpoint's per-request row cap. The decision record —
+   evidence, the full code/docs inventory with per-site replacements, and the
+   plan-time opens (the `^spx` vs `^GSPC` benchmark identity against
+   persisted episodes chief among them) — is
+   `docs/verification/2026-08-12-stooq-removal-decision.md`.
 2. **The single big confirmation run** — the gate everything else waits behind.
    Its checklist is `docs/verification/big-run-watch-set.md`; read `data-health`
    early, since several items resolve off that surface alone. The first attempt
@@ -591,7 +601,7 @@ is now fully built.**
    failure at 7b preserves its evidence as a degraded run instead of
    discarding the pass, the named-violation re-run repairs only the violating
    names, and the output budget and adapter seams are instrumented. Only the
-   step-ownership slice above stands between here and a second attempt; what
+   Stooq-removal slice above stands between here and a second attempt; what
    stays open behind the run (digest compression) is owned by that record's
    §Disposition, not this brief.
 3. **Trade Opportunities** — designed, not built, and waiting behind the whole
@@ -608,10 +618,6 @@ is now fully built.**
    schemas don't preclude either, but the research loop carries the pre-profit
    producer's activation obligation (§Standing constraints) and must discharge
    it before connecting the producer.
-5. **The rung-order slice**, contingent on the run's evidence. Stooq now serves a
-   JS-PoW interstitial to non-JS clients, so the FMP dated-EOD rung may be de
-   facto primary. Stooq stays the primary rung by user decision, revisited only
-   on the run's data-health read; FMP re-homing is the contingent follow-up.
 
 ### Owned by no slice
 

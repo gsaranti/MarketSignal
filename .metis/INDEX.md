@@ -191,6 +191,7 @@ build status lives in `BUILD.md`.*
 - Portfolio outcome learning — portfolio-analysis.md §Outcome learning, §Starting parameters; portfolio-workflow.md §Step 7a, §Step 8; storage.md §Local Analysis Suite Storage
 - Portfolio hard-forensic outcome — portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6g, §Step 7a; trade-opportunities.md §Starting parameters; storage.md §Local Analysis Suite Storage
 - What-changed audit (intrinsic half at Step 6g, action half at Step 7b) — portfolio-analysis.md §What changed, §The holding verdict; portfolio-workflow.md §Step 6g, §Step 7b
+- Degraded-run persistence + constructed marker — portfolio-workflow.md §Step 7b; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
 - Holdings normalization / book-level netting — schwab-integration.md §What is pulled, §Manual import (supplement); portfolio-workflow.md §Step 2; portfolio-analysis.md §Holdings change tracking
 - Holdings change tracking — portfolio-analysis.md §Holdings change tracking
 - Net-short equity handling — portfolio-analysis.md §Asset eligibility, §Triggering, §Holdings change tracking, §Outcome learning
@@ -299,3 +300,4 @@ the run's own dated record follows it.*
 - Residual conformance + off-spine doc coverage — verification/2026-08-07-scoped-conformance-check.md
 - Big confirmation run — watch set (forward-looking; the run's dated record follows) — verification/big-run-watch-set.md; BUILD.md §What remains
 - Big confirmation run — attempt 1 — verification/2026-08-10-big-run-attempt-1.md; portfolio-workflow.md §Step 7b
+- Stooq removal — decision, evidence, and removal-slice inventory — verification/2026-08-12-stooq-removal-decision.md; BUILD.md §What remains
