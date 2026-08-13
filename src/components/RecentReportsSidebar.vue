@@ -321,9 +321,14 @@ function runTitle(r: PortfolioRunSummary): string {
 
 /* An unreadable run row: present but unavailable — no hover invitation, the
    default cursor, and the muted ink the row's placeholder identity deserves.
-   The `unreadable` tag carries the words; disabled carries the behavior. */
+   The `unreadable` tag carries the words; disabled carries the behavior. The
+   title needs its own override: `.row-title` sets `--ink` explicitly, which
+   would otherwise beat the inherited disabled color. */
 .report-row:disabled {
   cursor: default;
+  color: var(--ink-3);
+}
+.report-row:disabled .row-title {
   color: var(--ink-3);
 }
 .report-row:disabled:hover {

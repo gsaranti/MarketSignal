@@ -584,10 +584,11 @@ pub fn run_by_id(conn: &Connection, run_id: &str) -> Result<Option<PortfolioRun>
             |row| row.get::<_, String>(0),
         )
         .optional()?;
-    // A corrupt row reads as not-found ([`decode_run`] loud-skips): the
-    // listing no longer shows it, so a click can only reach it stale, and the
-    // frontend's pruned-between-listing-and-click path (re-list) is exactly
-    // the right recovery.
+    // A corrupt row reads as not-found ([`decode_run`] loud-skips). The
+    // summaries still LIST it — column-backed identity, rendered disabled, so
+    // the UI never issues this call for it — which leaves only a stale or
+    // out-of-band caller reaching here, and the frontend's
+    // pruned-between-listing-and-click recovery (re-list) is exactly right.
     Ok(json.and_then(|j| decode_run(run_id, &j)))
 }
 
