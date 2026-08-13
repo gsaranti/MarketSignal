@@ -76,6 +76,7 @@ The sidebar is **one shared-history component whose list content swaps per featu
 A **degraded run** — construction failed, verdicts persisted with no book ([portfolio-workflow.md §Step 7b](portfolio-workflow.md#step-7b-portfolio-construction)) — lists like any other row with a quiet **no book** tag.
 A degraded run's read-only view banners that the actions shown are per-holding reads rather than a constructed plan.
 A role/risk holding's action is suppressed entirely on that view, since construction alone authors it.
+A row whose persisted blob no longer decodes lists from its column identity with a quiet **unreadable** tag, carries zero counts, and cannot open — it ages out of retention like any other row.
 The bottom nav leads with a **"Latest Market Report"** entry: because the history list swaps per feature, the Portfolio view has no report rows, and this entry is the durable path back to the report view from any surface.
 
 The **footer's job readout is section-scoped**: it reports the active section's own job (the report job everywhere except the Portfolio view, which reports Portfolio Analysis — the same per-feature mapping as the history swap), and the **"Generate now" trigger renders only on the report view** — each section keeps its own trigger (*Run analysis* on the Portfolio page; the Trade Opportunities controls with that feature).

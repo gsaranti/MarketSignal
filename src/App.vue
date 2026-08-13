@@ -477,6 +477,13 @@ const degradedOnlyHistory = computed(
     portfolioRuns.value.length > 0 &&
     portfolioRuns.value.every((r) => !r.constructed)
 );
+// A constructed row exists in the history while the latest view is empty:
+// that row must be unreadable (a readable constructed run would BE the
+// latest view), so the page says unreadable — never never-ran or
+// degraded-only (Codex round).
+const unreadableHistory = computed(() =>
+  portfolioRuns.value.some((r) => r.constructed && !r.readable)
+);
 const historicalRun = ref<PortfolioRun | null>(null);
 // A past-run OPEN failure — its own channel (never `portfolioError`, whose
 // pane block reads "Couldn't run"), cleared by the next selection or by
@@ -1723,6 +1730,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
             :quick="quickCheck"
             :quick-checking="quickChecking"
             :degraded-only-history="degradedOnlyHistory"
+            :unreadable-history="unreadableHistory"
             :history-unknown="portfolioRunsError !== null"
             @run="generatePortfolio"
             @quick-check="runQuickCheck"

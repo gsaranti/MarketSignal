@@ -45,6 +45,7 @@ const portfolioRuns: PortfolioRunSummary[] = deepFreeze([
     holdings_count: 23,
     graded_count: 19,
     constructed: true,
+    readable: true,
   },
   {
     run_id: "prun-1",
@@ -52,6 +53,7 @@ const portfolioRuns: PortfolioRunSummary[] = deepFreeze([
     holdings_count: 1,
     graded_count: 0,
     constructed: false,
+    readable: true,
   },
 ]);
 
@@ -184,6 +186,22 @@ test("a degraded run row carries the no-book tag; constructed rows don't", () =>
   const rows = wrapper.findAll(".sidebar-list .report-row");
   expect(rows[0].find(".ana-tag").exists()).toBe(false);
   expect(rows[1].find(".ana-tag").text()).toBe("no book");
+});
+
+test("an unreadable row tags 'unreadable', winning over the no-book tag", () => {
+  // A corrupt blob still lists from its column identity (docs/interface.md
+  // §Main Layout) — readability is the sharper fact, so its tag wins.
+  const wrapper = makeWrapper({
+    view: "portfolio",
+    portfolioRuns: [
+      { ...portfolioRuns[0], readable: false },
+      { ...portfolioRuns[1], readable: false },
+    ],
+  });
+  const rows = wrapper.findAll(".sidebar-list .report-row");
+  expect(rows[0].find(".ana-tag").text()).toBe("unreadable");
+  // The degraded row is ALSO unreadable — one tag renders, the sharper one.
+  expect(rows[1].find(".ana-tag").text()).toBe("unreadable");
 });
 
 test("selecting a run row emits select-run and the selected run is marked current", async () => {

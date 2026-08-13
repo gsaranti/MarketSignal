@@ -257,6 +257,34 @@ describe("PortfolioView states", () => {
     expect(wrapper.text()).not.toContain("No constructed run yet.");
   });
 
+  test("an unreadable constructed history reads as unreadable, claiming neither", () => {
+    // A constructed row that couldn't be decoded would otherwise BE the
+    // latest view — the empty state must say unreadable, not never-ran or
+    // degraded-only (Codex round).
+    const wrapper = mountView({ unreadableHistory: true });
+    expect(wrapper.text()).toContain("A prior run couldn't be read.");
+    expect(wrapper.text()).not.toContain("No holdings yet.");
+    expect(wrapper.text()).not.toContain("No constructed run yet.");
+  });
+
+  test("a pull over a degraded-only or unreadable history never claims never-analyzed", () => {
+    // Pull holdings, then a first analysis that fails at construction: the
+    // pull and the persisted per-holding work coexist, so "Not yet analyzed."
+    // would be false (Codex round).
+    const degraded = mountView({ pull: fresherPull, degradedOnlyHistory: true });
+    expect(degraded.text()).toContain("No constructed analysis yet.");
+    expect(degraded.text()).toContain("no book");
+    expect(degraded.text()).not.toContain("Not yet analyzed.");
+    expect(degraded.text()).not.toContain("Nothing is graded");
+    const unreadable = mountView({ pull: fresherPull, unreadableHistory: true });
+    expect(unreadable.text()).toContain("A prior run couldn't be read.");
+    expect(unreadable.text()).not.toContain("Not yet analyzed.");
+    // The default pull-only copy is unchanged when the history is empty.
+    const plain = mountView({ pull: fresherPull });
+    expect(plain.text()).toContain("Not yet analyzed.");
+    expect(plain.text()).toContain("Nothing is graded");
+  });
+
   test("a degraded-only history reads as no-constructed-run, never never-ran", () => {
     // The store holds persisted per-holding work (visible in the runs
     // history), so "No holdings yet." would misdescribe it.

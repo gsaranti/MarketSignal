@@ -63,6 +63,10 @@ const props = defineProps<{
   // though per-holding work is persisted, so the empty latest view must say
   // so rather than claim nothing ever ran.
   degradedOnlyHistory?: boolean;
+  // The history holds a constructed row that couldn't be decoded (it would
+  // otherwise BE the latest view) — the page must say unreadable, never
+  // never-ran or degraded-only.
+  unreadableHistory?: boolean;
   // The runs-history listing itself failed to load: with `run` null the page
   // cannot tell a never-ran store from one whose listing errored, so the
   // empty state must not claim either.
@@ -1071,6 +1075,18 @@ const keyFigures = computed(() => {
         </p>
       </div>
 
+      <!-- A constructed run exists in the history but couldn't be decoded:
+           unreadable, not never-ran, and not degraded-only. -->
+      <div v-else-if="!run && !pull && unreadableHistory" class="empty-state">
+        <h2 class="empty-title">A prior run couldn't be read.</h2>
+        <p class="empty-body">
+          The runs history holds an analysis this build could not decode, so it
+          can't be shown here — it lists in the sidebar tagged
+          <em>unreadable</em> and will age out of retention.
+          <strong>Run analysis</strong> starts a fresh pass.
+        </p>
+      </div>
+
       <!-- Empty latest view over a degraded-only history: per-holding work is
            persisted (visible read-only in the runs history), but no run
            constructed a book — "No holdings yet." would misdescribe the store. -->
@@ -1096,17 +1112,43 @@ const keyFigures = computed(() => {
       </div>
 
       <template v-else>
-        <!-- Pulled, not yet analyzed: the compact current-holdings view IS the
-             page body (docs/portfolio-analysis.md §Storage and display). -->
+        <!-- Pulled with no latest run: the compact current-holdings view IS the
+             page body (docs/portfolio-analysis.md §Storage and display). The
+             subline is history-aware — a pull over a degraded-only or
+             unreadable history must not claim nothing was ever analyzed
+             (Codex round). -->
         <div v-if="!run && pull" class="pulled-only">
           <h2 class="empty-title">
             {{ pull.holdings.positions.length }}
             {{ pull.holdings.positions.length === 1 ? "holding" : "holdings" }}
-            pulled. Not yet analyzed.
+            pulled.
+            <template v-if="unreadableHistory">A prior run couldn't be read.</template>
+            <template v-else-if="degradedOnlyHistory"
+              >No constructed analysis yet.</template
+            >
+            <template v-else-if="historyUnknown">Analysis state unknown.</template>
+            <template v-else>Not yet analyzed.</template>
           </h2>
           <p class="empty-body">
             Pulled {{ fmtStamp(pull.pulled_at) }} from your connected Schwab
-            account. Nothing is graded until you run the analysis.
+            account.
+            <template v-if="unreadableHistory">
+              The runs history holds an analysis this build could not decode —
+              it lists in the sidebar tagged <em>unreadable</em>.
+              <strong>Run analysis</strong> starts a fresh pass.
+            </template>
+            <template v-else-if="degradedOnlyHistory">
+              The last analysis persisted its per-holding work but constructed
+              no book — it is in the runs history, tagged <em>no book</em>.
+              <strong>Run analysis</strong> starts a fresh pass.
+            </template>
+            <template v-else-if="historyUnknown">
+              The runs history couldn't be read, so whether a prior analysis
+              exists can't be told from here — the sidebar carries the error.
+            </template>
+            <template v-else>
+              Nothing is graded until you run the analysis.
+            </template>
           </p>
         </div>
 

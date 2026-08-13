@@ -890,6 +890,7 @@ describe("App.vue portfolio wiring", () => {
             holdings_count: 1,
             graded_count: 1,
             constructed: true,
+            readable: true,
           },
           {
             run_id: "prun-old",
@@ -897,6 +898,7 @@ describe("App.vue portfolio wiring", () => {
             holdings_count: 1,
             graded_count: 0,
             constructed: true,
+            readable: true,
           },
         ],
         get_portfolio_run: (args) =>
@@ -941,6 +943,7 @@ describe("App.vue portfolio wiring", () => {
             holdings_count: 1,
             graded_count: 0,
             constructed: true,
+            readable: true,
           },
         ],
         get_portfolio_run: () => {
@@ -981,6 +984,7 @@ describe("App.vue portfolio wiring", () => {
             holdings_count: 1,
             graded_count: 1,
             constructed: true,
+            readable: true,
           },
           {
             run_id: "prun-old",
@@ -988,6 +992,7 @@ describe("App.vue portfolio wiring", () => {
             holdings_count: 1,
             graded_count: 0,
             constructed: true,
+            readable: true,
           },
         ],
         get_portfolio_run: () => slow.promise,

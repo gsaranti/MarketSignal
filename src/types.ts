@@ -953,7 +953,12 @@ export interface PortfolioRunSummary {
   // False marks a degraded run — Step 7b's construction failed after the
   // per-holding pass, so the row carries verdicts but no constructed book and
   // is excluded from the latest view (it opens read-only from the history).
+  // Column-backed on an unreadable row.
   constructed: boolean;
+  // False marks a row whose persisted blob no longer decodes: it still lists
+  // (identity and the constructed marker come from store columns, counts are
+  // zero) but cannot open, and ages out of retention like any other row.
+  readable: boolean;
 }
 
 // --- Live job tracker -------------------------------------------------------

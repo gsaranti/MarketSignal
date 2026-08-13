@@ -89,10 +89,14 @@ function runTitle(r: PortfolioRunSummary): string {
               <div class="row-title">{{ runTitle(r) }}</div>
               <div class="row-meta">
                 {{ shortStamp(r.created_at) }} · rated {{ r.graded_count }}
+                <!-- An unreadable row — the persisted blob no longer decodes;
+                     it lists from its column identity and cannot open. Wins
+                     over the degraded tag: readability is the sharper fact. -->
+                <span v-if="!r.readable" class="ana-tag row-tag">unreadable</span>
                 <!-- A degraded run — construction failed, verdicts persisted
                      with no book (the words are the alert: the quiet ana-tag,
                      never the accent). It opens read-only like any past run. -->
-                <span v-if="!r.constructed" class="ana-tag row-tag">no book</span>
+                <span v-else-if="!r.constructed" class="ana-tag row-tag">no book</span>
               </div>
             </div>
           </button>

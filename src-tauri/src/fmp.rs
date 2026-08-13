@@ -1675,19 +1675,17 @@ impl FmpDataSource {
             return fin;
         }
 
-        // 1) Quote: current price, market cap, shares outstanding. Through
-        // `suite_get` like every sibling suite call, so the row carries the
-        // gap reason as its status and the cause as its detail — these two
-        // rows previously hard-coded "empty"/None and painted a quota
-        // rejection as a benign non-result (combined-range review; the
-        // 2026-08-10 failure class).
-        match self.suite_get(
-            "company-quote",
-            symbol,
-            "Company quote",
-            FMP_QUOTE_PATH,
-            &[("symbol", symbol)],
-        ) {
+        // 1) Quote: current price, market cap, shares outstanding. The row's
+        // status reflects the SHAPED outcome (the `emit_series_row` semantics:
+        // ok only when a price landed), not merely a parseable body — and a
+        // gap carries its cause as the detail, so a quota rejection paints
+        // "rejected" plus FMP's sentence rather than a benign non-result
+        // (the 2026-08-10 failure class; Codex round).
+        self.progress
+            .request_started("FMP", "company-quote", symbol, "Company quote");
+        let (disposition, gap_detail) =
+            self.get_interpreted(FMP_QUOTE_PATH, &[("symbol", symbol)]);
+        let status = match disposition {
             Disposition::Value(value) => match company_quote_from_value(&value) {
                 Some(q) => {
                     fin.current_price = q.price;
@@ -1695,14 +1693,30 @@ impl FmpDataSource {
                     fin.shares_outstanding = q.shares_outstanding;
                     if q.price.is_none() {
                         fin.gaps.push("FMP quote carried no price".to_string());
+                        "empty"
+                    } else {
+                        "ok"
                     }
                 }
-                None => fin.gaps.push("FMP quote was malformed".to_string()),
+                None => {
+                    fin.gaps.push("FMP quote was malformed".to_string());
+                    "malformed"
+                }
             },
-            Disposition::Gap(reason) => fin
-                .gaps
-                .push(format!("FMP quote unavailable ({})", reason.as_str())),
-        }
+            Disposition::Gap(reason) => {
+                fin.gaps
+                    .push(format!("FMP quote unavailable ({})", reason.as_str()));
+                reason.as_str()
+            }
+        };
+        self.progress.request_finished(
+            "FMP",
+            "company-quote",
+            symbol,
+            "Company quote",
+            status,
+            gap_detail,
+        );
 
         // 2) EOD price history for momentum + volatility.
         // Cancel checkpoint between the two requests: a cancel after the quote skips the
@@ -1718,26 +1732,45 @@ impl FmpDataSource {
         // boundaries) need converting.
         let to = Utc::now().date_naive();
         let from = to - Duration::days(COMPANY_EOD_LOOKBACK_DAYS);
-        match self.suite_get(
-            "company-eod",
-            symbol,
-            "Company price history",
+        self.progress
+            .request_started("FMP", "company-eod", symbol, "Company price history");
+        let (disposition, gap_detail) = self.get_interpreted(
             FMP_EOD_PATH,
             &[
                 ("symbol", symbol),
                 ("from", from.format("%Y-%m-%d").to_string().as_str()),
                 ("to", to.format("%Y-%m-%d").to_string().as_str()),
             ],
-        ) {
+        );
+        let status = match disposition {
             Disposition::Value(value) => match eod_prices_from_value(&value) {
-                Ok(history) if !history.is_empty() => fin.price_history = history,
-                Ok(_) => fin.gaps.push("FMP price history was empty".to_string()),
-                Err(_) => fin.gaps.push("FMP price history was malformed".to_string()),
+                Ok(history) if !history.is_empty() => {
+                    fin.price_history = history;
+                    "ok"
+                }
+                Ok(_) => {
+                    fin.gaps.push("FMP price history was empty".to_string());
+                    "empty"
+                }
+                Err(_) => {
+                    fin.gaps.push("FMP price history was malformed".to_string());
+                    "malformed"
+                }
             },
-            Disposition::Gap(reason) => fin
-                .gaps
-                .push(format!("FMP price history unavailable ({})", reason.as_str())),
-        }
+            Disposition::Gap(reason) => {
+                fin.gaps
+                    .push(format!("FMP price history unavailable ({})", reason.as_str()));
+                reason.as_str()
+            }
+        };
+        self.progress.request_finished(
+            "FMP",
+            "company-eod",
+            symbol,
+            "Company price history",
+            status,
+            gap_detail,
+        );
 
         fin
     }
@@ -2153,6 +2186,58 @@ mod tests {
         let detail = finished[1].1.as_deref().expect("the 403 reaches the row");
         assert!(detail.contains("HTTP 403"), "{detail}");
         assert!(detail.contains("Forbidden"), "{detail}");
+    }
+
+    #[test]
+    fn quote_and_eod_rows_reflect_the_shaped_outcome() {
+        // A parseable body is not success: these two rows carry the shaped
+        // outcome (the emit_series_row semantics — ok only when data landed),
+        // and an HTTP-level rejection carries its cause, so a quota
+        // exhaustion can never paint a benign word on the suite's two most
+        // load-bearing calls (Codex round; the 2026-08-10 failure class).
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"Error Message": "Limit Reach. Please upgrade your plan."}"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: "[]",
+            },
+        ]);
+        let source = test_source(&server.base_url).with_context(ctx);
+        let fin = source.fetch_quote_and_eod("AAPL");
+        assert!(fin.current_price.is_none());
+        assert!(fin.price_history.is_empty());
+        let rows: Vec<(String, String, Option<String>)> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished {
+                    group,
+                    status,
+                    detail,
+                    ..
+                } => Some((group, status, detail)),
+                _ => None,
+            })
+            .collect();
+        let quote = rows.iter().find(|r| r.0 == "company-quote").expect("quote row");
+        assert_eq!(quote.1, "rejected", "{quote:?}");
+        assert!(
+            quote.2.as_deref().is_some_and(|d| d.contains("Limit Reach")),
+            "{quote:?}"
+        );
+        let eod = rows.iter().find(|r| r.0 == "company-eod").expect("eod row");
+        assert_eq!(eod.1, "empty", "a parsed-but-empty history is not ok: {eod:?}");
     }
 
     #[test]

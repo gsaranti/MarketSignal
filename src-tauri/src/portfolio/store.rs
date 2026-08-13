@@ -515,8 +515,15 @@ pub struct PortfolioRunSummary {
     pub graded_count: usize,
     /// Whether the run carries a constructed book
     /// ([`PortfolioRun::has_constructed_book`]) — `false` marks a degraded
-    /// construction-failed row so the sidebar can badge it.
+    /// construction-failed row so the sidebar can badge it. Column-backed on
+    /// an unreadable row.
     pub constructed: bool,
+    /// Whether the run's blob decoded. An unreadable row still lists — its
+    /// identity and `constructed` marker are column-backed — so the history
+    /// shows the row exists instead of silently shrinking, and the page's
+    /// empty states can tell an unreadable store from a never-ran one
+    /// (Codex round). The counts above are zero on an unreadable row.
+    pub readable: bool,
 }
 
 /// List the most recent runs' summaries, newest first, capped at `limit` — the
@@ -524,20 +531,46 @@ pub struct PortfolioRunSummary {
 /// [`prune_runs`], so the list shows exactly the retained window. The counts
 /// come from each stored blob (bounded by the retention cap, so this stays a
 /// handful of local parses); the webview never receives the blobs themselves.
+/// An **unreadable** blob still yields a row — identity and the `constructed`
+/// marker read from the SQL columns, counts zero, `readable: false` — so the
+/// history never silently shrinks over a corrupt row.
 pub fn list_run_summaries(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRunSummary>> {
-    Ok(list_recent_runs(conn, limit)?
-        .into_iter()
-        .map(|run| {
-            let constructed = run.has_constructed_book();
-            PortfolioRunSummary {
-                run_id: run.run_id,
-                created_at: run.created_at,
+    let mut stmt = conn.prepare(
+        "SELECT run_id, created_at, constructed, run_json FROM portfolio_runs
+         ORDER BY id DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, bool>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (run_id, created_at, col_constructed, json) = row?;
+        out.push(match decode_run(&run_id, &json) {
+            Some(run) => PortfolioRunSummary {
+                constructed: run.has_constructed_book(),
                 holdings_count: run.holdings.positions.len(),
                 graded_count: run.roll_up.graded_count,
-                constructed,
-            }
-        })
-        .collect())
+                run_id: run.run_id,
+                created_at: run.created_at,
+                readable: true,
+            },
+            None => PortfolioRunSummary {
+                run_id,
+                created_at,
+                holdings_count: 0,
+                graded_count: 0,
+                constructed: col_constructed,
+                readable: false,
+            },
+        });
+    }
+    Ok(out)
 }
 
 /// Load one persisted run by id for the historical Portfolio view, or `None`
@@ -843,6 +876,7 @@ mod tests {
                     holdings_count: 1,
                     graded_count: 0,
                     constructed: true,
+                    readable: true,
                 },
                 PortfolioRunSummary {
                     run_id: "run-a".into(),
@@ -850,6 +884,7 @@ mod tests {
                     holdings_count: 1,
                     graded_count: 0,
                     constructed: true,
+                    readable: true,
                 },
             ],
             "newest first, light rows only"
@@ -1045,7 +1080,16 @@ mod tests {
             .map(|r| r.run_id)
             .collect();
         assert_eq!(ids, vec!["run-good".to_string()], "the corrupt row skips loudly");
-        assert_eq!(list_run_summaries(&conn, 10).unwrap().len(), 1);
+        // The summaries still LIST the unreadable row — identity and the
+        // constructed marker are column-backed — so the history never
+        // silently shrinks and the page can tell unreadable from never-ran.
+        let summaries = list_run_summaries(&conn, 10).unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].run_id, "run-corrupt");
+        assert!(!summaries[0].readable);
+        assert!(summaries[0].constructed, "column-backed marker");
+        assert_eq!(summaries[0].holdings_count, 0);
+        assert!(summaries[1].readable);
         // A direct open of the corrupt row reads as not-found: the listing no
         // longer shows it, so only a stale click reaches it, and the
         // frontend's re-list recovery is exactly right.
