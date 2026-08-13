@@ -2,54 +2,61 @@
 
 ## What happened
 
-Big-run **attempt 2 never actually ran**, and the reason is the load-bearing
-takeaway. Setup was clean (pinned Ollama v0.32.5 up with flash-attention and a
-teed server log, both models present; dev app launched under `caffeinate` on the
-`dev/` store), but the Portfolio run got initiated in the **PROD app by
-mistake**: computer-use `open_application` by bundle id launched the installed
-prod `.app`, not the bundle-less `cargo run` dev binary (`bundleID=NULL`). The
-prod run failed instantly at pull-holdings with Schwab `invalid_client` (prod
-has no `schwab_client_id`). **Nothing persisted to dev.** Also surfaced a UI
-overflow bug — a long single-line failed-job error breaks the report-view layout
-(auto-memory `long-error-breaks-layout`).
+Big-run **attempt 2 ran on the dev app and failed — productively.** Driven
+entirely from the terminal (no computer-use: `request_access` resolves "Market
+Signal" to the prod bundle and the bundle-less dev window is filtered from
+screenshots, so the user clicked "Run analysis"). The full **47-holding pass ran
+clean** — zero 429s/retries/fetch errors, every deep-EOD ok, `num_ctx` 131072
+honored, construction prompts ~9.5–12K/131K `truncated=0`: attempt-1's
+output-budget exhaustion did **not** recur. It then **fail-harded at Step 7b
+construction on divergence-cause validation** (AMZN/DIS/GM changed action off the
+standalone lean with no `divergence_cause`; RKT/TDOC gave `cash-freed` that maps
+to no whole-book aggregate), unrepaired by the named-violation re-run. **The 7b
+repair worked**: persisted as a degraded run (`portfolio_runs` id 2, `run_id`
+6a52f1dd, `constructed=0`, 47 verdicts) — attempt 1 lost everything here.
 
 ## Current state
 
-Everything spun down — Ollama, dev app, `caffeinate` all killed; clean slate.
+Everything spun down (Ollama, dev app, `caffeinate` killed; port 11434 free).
+The degraded run and the thought-logs
+(`dev/thought-logs/20260813-191600-3f42e8e5/` — `construction.txt` + 38 holding
+streams) are durable on disk.
 
-Reading the DB copies settled the state: the **dev store is already fully
-configured** — `local_daemon_endpoint=http://localhost:11434`, reasoner
-`qwen3.5:122b-a10b`, embedder `qwen3-embedding:4b`, `schwab_client_id` present.
-So the next run needs **no dev reconfiguration** — just a Schwab-freshness check
-(weekly re-login, was good through 2026-08-17) and Run analysis.
+Queued work is the **analysis plan** at
+`docs/verification/2026-08-13-big-run-attempt-2-analysis-plan.md` — three
+workstreams: (1, primary) root-cause the divergence-cause fail-hard and produce a
+fix that yields a book; (2) prompt-effectiveness from 5–10 thought-logs; (3)
+accuracy spot-check over 30–50% of holdings (model-view vs engine-`metrics`
+cross-check). Read-only, dev store; no app run needed.
 
-**Prod residue** to clean later in a separate, prod-only session (to avoid
-re-colliding): three local-model settings were written to prod `app_settings`,
-and one failed `job_runs` row (id 11) exists — dismiss its warning. No portfolio
-or report data was touched (prod `portfolio_runs` = 0). Prod is the older v1.3.0
-schema (no `portfolio_quick_checks` / `portfolio_outcome_episodes` /
-`schwab_client_id`) — never run Portfolio there.
+Banked distributions: grades B9/C13/D16/F8 (**no A**), risk-tier High 28/Med
+12/Low 6, dead-money fails 14/clears 9/indeterminate 23. Book NOT produced →
+outcome learning / the two-arm retrospective / the paired-card render stay
+unexercised (watch-set items deferred to a future produced-book run).
 
-Behind the run, unchanged: digest compression (candidate 3), the "declined an
-engine exit" vocabulary, and drafted-uncalibrated `NUM_PREDICT_*` — all waiting
-on run evidence (owned by the attempt-1 record's §Disposition).
+Still pending: **prod residue** from the prior mis-run (3 local-model settings +
+failed `job_runs` id 11) — separate prod-only cleanup session. Behind
+everything: digest compression (candidate 3), `NUM_PREDICT_*` calibration — still
+awaiting a produced-book run.
 
 ## Open questions
 
-- **Were attempt 1's engine targets degenerate?** The one sample (SBUX) was
-  steeply bearish, not flat; attempt 2 reads whatever persists first.
-- **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant rests on
-  the 2026-07-16 verification, not re-probed.
+- **Divergence-cause root cause** — is `cash-freed` structurally unsatisfiable
+  under the fixed preset (cash unconstrained), and is the three-cause vocabulary
+  too narrow? (owned by the plan, WS1)
+- **Grade distribution has no A** (B9/C13/D16/F8) — needs the reserved
+  sector-aware normalization slice, or honest? Decide off this run's letters.
+- **Two-id split** — thought-log dir keyed by progress id `3f42e8e5`, persisted
+  row by `run_id` 6a52f1dd; confirm it is by design.
+- **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant still
+  rests on the 2026-07-16 verification, not re-probed.
 
 ## Where to start
 
-**Restart big-run attempt 2** in the fresh session — same agreed protocol (agent:
-start pinned Ollama with teed log → dev app under `caffeinate`, confirm `dev/`
-store → hand off; user: Schwab freshness + reach Portfolio → say go; agent:
-initiate + monitor to terminal; do **not** open thought-logs, that's a separate
-user step). **Critical fix from this session: drive the dev app by bringing its
-OWN window frontmost (Cmd-Tab / relaunch), NEVER `open_application` by bundle id
-— that launched prod** (auto-memory `dev-prod-app-identity-collision`). Dev is
-already configured, so expect just a Schwab check + Run analysis. Read
-`data-health` and the SBUX-shape targets early; checklist
-`docs/verification/big-run-watch-set.md`; thought logs auto-capture in the dev app.
+**Execute the analysis plan**
+(`docs/verification/2026-08-13-big-run-attempt-2-analysis-plan.md`). Primary
+goal: diagnose the 7b divergence-cause fail-hard and propose the fix that
+produces a book — read `construction.txt`, `roll_up.aggregates`,
+`construction.rs`, the output schema, and the named-violation re-run path. All
+read-only on the dev store (copy-out the DB) — no app run, no computer-use, no
+prod. Surface fix rulings to the user before implementing.
