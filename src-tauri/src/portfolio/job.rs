@@ -55,7 +55,7 @@ pub struct SecData {
 
 /// The per-holding company-financials source the job reads, behind a trait so the job
 /// is offline-testable. The live impl ([`LiveCompanyData`]) composes the FMP
-/// per-company pull with keyless SEC EDGAR facts, deep Stooq history, and the
+/// per-company pull with keyless SEC EDGAR facts, deep FMP dated-EOD history, and the
 /// per-fund FMP surface; a stub returns fixtures. The fund-surface methods carry
 /// fail-soft defaults so a stock-only stub stays small.
 pub trait CompanyDataSource {
@@ -69,9 +69,9 @@ pub trait CompanyDataSource {
     }
     /// SEC EDGAR company facts plus any degraded-input notes ([`SecData`]).
     fn facts(&self, symbol: &str) -> SecData;
-    /// Deep dated daily closes (Stooq — the v2 anchor join's price side), plus any
-    /// gap notes. Fail-soft: an empty history under-populates the anchor window,
-    /// which takes its documented fallback.
+    /// Deep dated daily closes (FMP dated EOD — the v2 anchor join's price side),
+    /// plus any gap notes. Fail-soft: an empty history under-populates the anchor
+    /// window, which takes its documented fallback.
     fn deep_price_history(&self, _symbol: &str) -> (Vec<crate::portfolio::engine::DatedValue>, Vec<String>) {
         (vec![], vec![])
     }
@@ -184,13 +184,6 @@ pub struct LiveCompanyData {
     /// ([`crate::sec::load_cik_resolver`]) — an unresolved ticker degrades to a typed
     /// gap, never a fabricated mapping.
     pub cik: crate::sec::CikResolver,
-    /// Keyless Stooq daily bars — the deep dated history the v2 anchor join reads.
-    /// **Shared** with the outcome pass's retrieval surface (`lib.rs`): the
-    /// daily-hits breaker and the politeness pacer are per-instance state, so a
-    /// second adapter would give the outcome pass a fresh breaker and let it hammer
-    /// a source the loop had already found throttled — the one thing a run-wide
-    /// breaker exists to prevent.
-    pub stooq: std::sync::Arc<crate::stooq::StooqSource>,
 }
 
 /// How many days of deep price history the anchor join needs: the ~12-quarter window
@@ -210,48 +203,26 @@ impl CompanyDataSource for LiveCompanyData {
         &self,
         symbol: &str,
     ) -> (Vec<crate::portfolio::engine::DatedValue>, Vec<String>) {
-        // Deliberately the UTC date, not the ET session: this is a fetch range's
-        // inclusive upper bound, so a one-day forward roll asks for an untraded
-        // day that serves no row and shifts a rolling multi-day lookback by one.
-        // Only session-KEYED reads (snapshot dates, staleness bounds, evidence
-        // boundaries) need converting.
-        let to = chrono::Utc::now().date_naive();
-        let from = to - chrono::Duration::days(DEEP_HISTORY_LOOKBACK_DAYS);
-        match self.stooq.daily_closes(symbol, from, to) {
-            Ok(closes) => (closes, vec![]),
-            Err(e) => {
-                // Second rung: FMP's dated EOD serves the anchor window's price leg
-                // so one throttled keyless source can't flatten the whole target
-                // surface (`docs/data-sources.md §Stooq` — the 2026-07-31 F2
-                // finding). Both notes ride the gap manifest so the audit shows the
-                // substitution, and a cancel mid-run spends nothing (the FMP suite
-                // seam returns a gap without a request when cancelled).
-                let stooq_gap = format!("Stooq deep price history unavailable for {symbol}: {e}");
-                match self.fmp.fetch_dated_eod(symbol, DEEP_HISTORY_LOOKBACK_DAYS) {
-                    Ok(closes) if !closes.is_empty() => (
-                        closes,
-                        vec![format!(
-                            "{stooq_gap} — FMP dated EOD served the anchor window's \
-                             price leg in its place"
-                        )],
-                    ),
-                    Ok(_) => (
-                        vec![],
-                        vec![format!(
-                            "{stooq_gap} — the FMP dated-EOD fallback was empty; the \
-                             anchor window falls to its documented fallback"
-                        )],
-                    ),
-                    Err(fmp_e) => (
-                        vec![],
-                        vec![format!(
-                            "{stooq_gap} — the FMP dated-EOD fallback also failed \
-                             ({fmp_e}); the anchor window falls to its documented \
-                             fallback"
-                        )],
-                    ),
-                }
-            }
+        // The single deep-price rung (FMP dated EOD — `docs/verification/
+        // 2026-08-12-stooq-removal-decision.md`): a failed or empty history is one
+        // gap note and an empty window, and a cancel mid-run spends nothing (the
+        // FMP suite seam returns a gap without a request when cancelled).
+        match self.fmp.fetch_dated_eod(symbol, DEEP_HISTORY_LOOKBACK_DAYS) {
+            Ok(closes) if !closes.is_empty() => (closes, vec![]),
+            Ok(_) => (
+                vec![],
+                vec![format!(
+                    "FMP deep price history empty for {symbol}; the anchor window \
+                     falls to its documented fallback"
+                )],
+            ),
+            Err(e) => (
+                vec![],
+                vec![format!(
+                    "FMP deep price history unavailable for {symbol}: {e}; the \
+                     anchor window falls to its documented fallback"
+                )],
+            ),
         }
     }
 
@@ -715,11 +686,10 @@ fn run_analysis(
     let mut verdicts: Vec<HoldingVerdict> = Vec::with_capacity(holdings.positions.len());
     let mut audits: Vec<HoldingAudit> = Vec::with_capacity(holdings.positions.len());
 
-    // Deep-history health counters for the run-level data-health roll-up: a
-    // non-empty gap list from `deep_price_history` means the primary (Stooq) source
-    // degraded; closes arriving anyway mean the FMP fallback served.
+    // Deep-history health counter for the run-level data-health roll-up: a
+    // non-empty gap list from `deep_price_history` means the FMP fetch degraded
+    // and the holding's anchor window starved to its documented fallback.
     let mut deep_history_failures = 0usize;
-    let mut deep_history_fallbacks = 0usize;
 
     // The run-level sector-P/E surface, fetched on first need and memoized across
     // funds (`docs/portfolio-workflow.md` §Step 6a): the snapshot once per exchange
@@ -834,7 +804,7 @@ fn run_analysis(
         // deep history or chain fetched for it — so the gate cannot change any
         // output, only the budget. Ungated, a book's option and cash-equivalent rows
         // each spent the full per-symbol FMP surface plus an EDGAR facts call and a
-        // Stooq deep-history leg to reach a verdict fixed before the first request.
+        // deep-history leg to reach a verdict fixed before the first request.
         // This is what `data-sources.md`'s "per-holding (optionable equity)"
         // cardinality has always described.
         let skip_retrieval = guard_terminal || !position.asset_class.is_gradeable();
@@ -858,8 +828,7 @@ fn run_analysis(
             company_data.facts(&position.symbol)
         };
         fmp_financials.gaps.extend(sec_data.gaps);
-        // Deep dated history (Stooq, FMP dated-EOD fallback) for the anchor join and
-        // drawdown reads.
+        // Deep dated history (FMP dated EOD) for the anchor join and drawdown reads.
         let (deep_closes, deep_gaps) = if skip_retrieval {
             (vec![], vec![])
         } else {
@@ -867,9 +836,6 @@ fn run_analysis(
         };
         if !deep_gaps.is_empty() {
             deep_history_failures += 1;
-            if !deep_closes.is_empty() {
-                deep_history_fallbacks += 1;
-            }
         }
         if !deep_closes.is_empty() {
             fmp_financials.daily_closes = deep_closes;
@@ -1210,7 +1176,6 @@ fn run_analysis(
                         aggregates,
                         &holdings_diff.exited,
                         deep_history_failures,
-                        deep_history_fallbacks,
                         rates.history_gap.is_some(),
                         house_view_omitted,
                         analyst.take_prompt_usage(),
@@ -1297,7 +1262,6 @@ fn run_analysis(
                         aggregates,
                         &holdings_diff.exited,
                         deep_history_failures,
-                        deep_history_fallbacks,
                         rates.history_gap.is_some(),
                         house_view_omitted,
                         analyst.take_prompt_usage(),
@@ -1331,7 +1295,6 @@ fn run_analysis(
         &holdings_diff.exited,
         &audits,
         deep_history_failures,
-        deep_history_fallbacks,
         rates.history_gap.is_some(),
         house_view_omitted,
         analyst.take_prompt_usage(),
@@ -1550,7 +1513,6 @@ fn build_roll_up(
     exited: &[ExitedPosition],
     audits: &[HoldingAudit],
     deep_history_failures: usize,
-    deep_history_fallbacks: usize,
     dgs10_history_gap: bool,
     house_view_omitted: bool,
     prompt_usage: Vec<crate::local_model::PromptUsage>,
@@ -1606,7 +1568,6 @@ fn build_roll_up(
         data_health: Some(build_data_health(
             audits,
             deep_history_failures,
-            deep_history_fallbacks,
             dgs10_history_gap,
             house_view_omitted,
             prompt_usage,
@@ -1645,7 +1606,6 @@ fn persist_degraded_run(
     aggregates: crate::portfolio::construction::BookAggregates,
     exited: &[ExitedPosition],
     deep_history_failures: usize,
-    deep_history_fallbacks: usize,
     dgs10_history_gap: bool,
     house_view_omitted: bool,
     prompt_usage: Vec<crate::local_model::PromptUsage>,
@@ -1657,7 +1617,6 @@ fn persist_degraded_run(
         exited,
         &audits,
         deep_history_failures,
-        deep_history_fallbacks,
         dgs10_history_gap,
         house_view_omitted,
         prompt_usage,
@@ -1703,7 +1662,6 @@ fn persist_degraded_run(
 fn build_data_health(
     audits: &[HoldingAudit],
     deep_history_failures: usize,
-    deep_history_fallbacks: usize,
     dgs10_history_gap: bool,
     house_view_omitted: bool,
     prompt_usage: Vec<crate::local_model::PromptUsage>,
@@ -1728,8 +1686,7 @@ fn build_data_health(
     }
     if deep_history_failures > 0 {
         parts.push(format!(
-            "deep price history failed on {deep_history_failures} holdings \
-             ({deep_history_fallbacks} recovered via the FMP fallback)"
+            "deep price history failed on {deep_history_failures} holdings"
         ));
     }
     if floored > 0 {
@@ -1860,7 +1817,7 @@ fn build_data_health(
 
     // The house-view omission is informational, not an attention trigger: it is
     // the freshness gate working as designed, not infrastructure degradation.
-    let attention = deep_history_failures > deep_history_fallbacks
+    let attention = deep_history_failures > 0
         || carry > 0
         || dgs10_history_gap
         || !context_pressure.is_empty()
@@ -1879,7 +1836,6 @@ fn build_data_health(
         current_multiple_carry_count: carry,
         dispersion_floor_count: floored,
         deep_history_failures,
-        deep_history_fallbacks,
         dgs10_history_gap,
         house_view_omitted,
         context_pressure,
@@ -1985,7 +1941,7 @@ mod tests {
                 output_limited: false,
             },
         ];
-        let dh = build_data_health(&[], 0, 0, false, false, usage);
+        let dh = build_data_health(&[], 0, false, false, usage);
         assert_eq!(dh.context_pressure.len(), 1);
         assert_eq!(dh.context_pressure[0].stage, "construction");
         assert_eq!(dh.peak_prompt.as_ref().unwrap().stage, "construction");
@@ -2006,7 +1962,7 @@ mod tests {
             num_predict: None,
             output_limited: false,
         }];
-        let dh = build_data_health(&[], 0, 0, false, false, usage);
+        let dh = build_data_health(&[], 0, false, false, usage);
         assert!(dh.context_pressure.is_empty());
         let peak = dh.peak_prompt.expect("peak recorded regardless of pressure");
         assert_eq!(peak.prompt_tokens, Some(90_000));
@@ -2028,7 +1984,7 @@ mod tests {
             num_predict: Some(65_536),
             output_limited: true,
         }];
-        let dh = build_data_health(&[], 0, 0, false, false, usage);
+        let dh = build_data_health(&[], 0, false, false, usage);
         assert!(dh.attention, "{}", dh.summary);
         let expected =
             "generation length-stopped on 1 local call (worst: construction generated 65536 of \
@@ -2051,7 +2007,7 @@ mod tests {
             num_predict: Some(65_536),
             output_limited: true,
         }];
-        let dh = build_data_health(&[], 0, 0, false, false, usage);
+        let dh = build_data_health(&[], 0, false, false, usage);
         assert!(dh.attention, "{}", dh.summary);
         let expected = "generation length-stopped on 1 local call (worst: construction \
                         generated unreported of 65536 reserved — counts incomplete; stop \
@@ -2079,7 +2035,7 @@ mod tests {
             num_predict: None,
             output_limited: false,
         }];
-        let dh = build_data_health(&[], 0, 0, false, false, usage);
+        let dh = build_data_health(&[], 0, false, false, usage);
         assert_eq!(dh.context_pressure.len(), 1);
         assert!(dh.attention, "{}", dh.summary);
         let expected = "likely front-truncation on 1 local call (worst: interpret NVDA reported \
@@ -2296,12 +2252,9 @@ mod tests {
         }
     }
 
-    /// A company-data source whose deep-history fetch degrades: `recovered` mimics
-    /// the FMP dated-EOD fallback serving closes beside the Stooq gap note;
-    /// `!recovered` mimics both rungs failing (empty closes, gap note only).
-    struct DegradedDeepHistoryData {
-        recovered: bool,
-    }
+    /// A company-data source whose deep-history fetch degrades — the single FMP
+    /// dated-EOD rung failing: empty closes, one gap note.
+    struct DegradedDeepHistoryData;
     impl CompanyDataSource for DegradedDeepHistoryData {
         fn financials(&self, symbol: &str) -> CompanyFinancials {
             let mut fin = StubCompanyData.financials(symbol);
@@ -2317,15 +2270,13 @@ mod tests {
             &self,
             symbol: &str,
         ) -> (Vec<crate::portfolio::engine::DatedValue>, Vec<String>) {
-            let gap = format!(
-                "Stooq deep price history unavailable for {symbol}: throttled — \
-                 FMP dated EOD served the anchor window's price leg in its place"
-            );
-            if self.recovered {
-                (StubCompanyData.financials(symbol).daily_closes, vec![gap])
-            } else {
-                (vec![], vec![gap])
-            }
+            (
+                vec![],
+                vec![format!(
+                    "FMP deep price history unavailable for {symbol}: throttled; the \
+                     anchor window falls to its documented fallback"
+                )],
+            )
         }
     }
 
@@ -2664,47 +2615,20 @@ mod tests {
     }
 
     #[test]
-    fn deep_history_health_distinguishes_recovered_from_unrecovered_failures() {
-        // Recovered: the fallback served dated closes, so the target still anchors —
-        // counted as a degradation but not an attention state.
-        let (_dir, recovered_paths) = paths();
-        let guard = RunGuard::default();
+    fn deep_history_failure_starves_the_anchor_window_and_demands_attention() {
+        // The single FMP rung failed: no deep history at all — the anchor window
+        // starves to the current-multiple carry, the failure is counted, and the
+        // run demands attention.
+        let (_dir, paths) = paths();
         let outcome = run_portfolio_job(
             &FixtureHoldingsSource::new(),
-            &DegradedDeepHistoryData { recovered: true },
+            &DegradedDeepHistoryData,
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
             None,
             None,
-            &recovered_paths,
-            &guard,
-            &ctx(),
-        )
-        .unwrap();
-        let run = match outcome {
-            PortfolioJobOutcome::Successful(run) => *run,
-            other => panic!("expected success, got {other:?}"),
-        };
-        let dh = run.roll_up.data_health.as_ref().unwrap();
-        assert_eq!(dh.deep_history_failures, 1);
-        assert_eq!(dh.deep_history_fallbacks, 1);
-        assert_eq!(dh.rate_anchored_count, 1, "{}", dh.summary);
-        assert!(!dh.attention, "a recovered failure is not an attention state: {}", dh.summary);
-        assert!(dh.summary.contains("1 recovered via the FMP fallback"), "{}", dh.summary);
-
-        // Unrecovered: no deep history at all — the anchor window starves to the
-        // current-multiple carry and the run demands attention.
-        let (_dir2, unrecovered_paths) = paths();
-        let outcome = run_portfolio_job(
-            &FixtureHoldingsSource::new(),
-            &DegradedDeepHistoryData { recovered: false },
-            &StubMarket,
-            &StubAnalyst,
-            &InvestorProfile::default_fixture(),
-            None,
-            None,
-            &unrecovered_paths,
+            &paths,
             &RunGuard::default(),
             &ctx(),
         )
@@ -2715,9 +2639,9 @@ mod tests {
         };
         let dh = run.roll_up.data_health.as_ref().unwrap();
         assert_eq!(dh.deep_history_failures, 1);
-        assert_eq!(dh.deep_history_fallbacks, 0);
         assert_eq!(dh.current_multiple_carry_count, 1, "{}", dh.summary);
         assert!(dh.attention, "{}", dh.summary);
+        assert!(dh.summary.contains("deep price history failed on 1 holdings"), "{}", dh.summary);
     }
 
     #[test]
@@ -3077,10 +3001,7 @@ mod tests {
             (dir, path)
         };
         let cik = crate::sec::load_cik_resolver(&cik_cache, &sec);
-        let stooq = std::sync::Arc::new(
-            crate::stooq::StooqSource::new().expect("build Stooq source"),
-        );
-        let company = LiveCompanyData { fmp, sec, cik, stooq };
+        let company = LiveCompanyData { fmp, sec, cik };
 
         let (_dir, paths) = paths();
         let guard = RunGuard::default();
@@ -3838,7 +3759,9 @@ mod tests {
         assert_eq!(gone.state, crate::portfolio::outcome::EpisodeState::Matured);
         // The fetched series landed in the shared bar cache.
         assert!(!store::load_price_bars(&conn, "GONE").unwrap().is_empty());
-        assert!(!store::load_price_bars(&conn, "^SPX").unwrap().is_empty());
+        assert!(!store::load_price_bars(&conn, crate::portfolio::outcome::MARKET_BENCHMARK)
+            .unwrap()
+            .is_empty());
         // The matured reads embedded as one durable learning in the Portfolio
         // namespace.
         let learnings: i64 = conn
@@ -4254,7 +4177,7 @@ mod tests {
             );
         }
         // ...and the loop spends nothing on them. Ungated, each cost the full FMP
-        // statement surface, an EDGAR facts call and a Stooq deep-history leg to
+        // statement surface, an EDGAR facts call and a deep-history leg to
         // reach a verdict fixed before the first request.
         assert_eq!(
             *company.financials.borrow(),

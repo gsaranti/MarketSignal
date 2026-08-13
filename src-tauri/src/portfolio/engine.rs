@@ -351,7 +351,7 @@ pub struct CompanyFinancials {
     /// Chronological closing prices (oldest first), for momentum and volatility.
     pub price_history: Vec<f64>,
     /// Deep **dated** daily closes (oldest first) — the v2 anchor join's price side
-    /// and the drawdown read (`Stooq`, `docs/data-sources.md §Stooq`).
+    /// and the drawdown read (FMP dated EOD).
     #[serde(default)]
     pub daily_closes: Vec<DatedValue>,
     /// Trailing quarterly income prints, newest first — the v2 anchor window's
@@ -1031,11 +1031,11 @@ pub fn evaluate_ledger_conditions_gated(
             crate::portfolio::LedgerComparator::Above => resolved.value > quant.threshold + margin,
         };
         // Observation ordering is MONOTONIC for date-keyed ids (closes, period
-        // ends, marks days): the sweep and the full run key different EOD feeds
-        // (FMP vs the Stooq deep-history swap), so an out-of-order *older*
-        // print is reachable and must neither advance a streak, reset one, nor
-        // regress the recorded state. The value-keyed expense-ratio id has no
-        // order and keeps the distinct test.
+        // ends, marks days): the sweep and the full run read EOD through
+        // different FMP endpoints at different moments, so an out-of-order
+        // *older* print is reachable and must neither advance a streak, reset
+        // one, nor regress the recorded state. The value-keyed expense-ratio id
+        // has no order and keeps the distinct test.
         let iso_date = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
         let resolved_date = iso_date(&resolved.observation_id);
         let last_date = st.last_observation_id.as_deref().and_then(iso_date);
@@ -4613,8 +4613,8 @@ mod tests {
 
     #[test]
     fn an_out_of_order_older_print_neither_advances_nor_resets_nor_regresses() {
-        // The sweep (FMP) and the full run (Stooq deep-history swap) key
-        // different EOD feeds — a one-day-lagged feed can serve an OLDER print
+        // The sweep and the full run read EOD through different FMP endpoints
+        // at different moments — a lagged read can serve an OLDER print
         // than the recorded observation. Date-keyed identity is monotonic: the
         // stale print is a non-event, whatever its value.
         let fin = strong(); // newest close 2026-07-15

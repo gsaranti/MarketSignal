@@ -112,6 +112,7 @@
   - Financial statements.
   - Estimates and revisions.
   - Earnings history.
+  - Historical stock, sector, market, and commodity prices.
   - Insider and congressional activity.
   - News, events, peers, and live quotes.
 
@@ -119,9 +120,6 @@
   - Treasury rates.
   - Economic data.
   - Economic-release calendar.
-
-- **Stooq**
-  - Historical stock, sector, market, and commodity prices.
 
 - **SEC EDGAR**
   - Official company filings.
@@ -188,7 +186,7 @@
   - Discovery coverage ledger.
   - `DGS2` and `DGS10` Treasury rates from FRED.
   - Historical `DGS10` data for valuation calculations.
-  - Commodity prices from FRED and Stooq.
+  - Commodity prices from FRED and FMP.
   - Commodity positioning from CFTC.
   - Broad put/call data from CBOE.
   - Economic-release dates from FRED.
@@ -455,7 +453,7 @@ Each candidate is checkpointed separately.
     - Peers, float, news, and corporate events.
   - SEC EDGAR filings.
   - FINRA short interest.
-  - Stooq price history.
+  - Deep FMP price history.
   - Live FMP quote.
   - Schwab option chain.
   - Relevant prior analysis from local memory.
@@ -777,7 +775,7 @@ Each candidate is checkpointed separately.
   - FMP prices and estimates.
   - New filing-derived metrics when available.
   - FINRA short interest when needed.
-  - Stooq price history.
+  - Deep FMP price history.
   - Stored opportunity and shadow episodes.
 
 - **Deep-researched existing names**
@@ -892,7 +890,7 @@ Each candidate is checkpointed separately.
 
 - **Data retrieved**
   - Persisted results.
-  - Cached Stooq prices for current display values.
+  - Cached daily bars for current display values.
 
 - **UI output**
   - 3×3 risk-by-horizon matrix.
@@ -917,7 +915,7 @@ Each candidate is checkpointed separately.
 
 - **Data retrieved**
   - FMP price and estimates.
-  - Stooq history.
+  - Deep FMP price history.
   - FRED rates.
   - FINRA data when required.
 

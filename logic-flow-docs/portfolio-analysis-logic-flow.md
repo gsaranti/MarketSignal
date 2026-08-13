@@ -187,6 +187,9 @@
   - Company profiles.
   - Financial statements and ratios.
   - Estimates, revisions, earnings, dividends, and live quotes.
+  - Deep historical stock prices.
+  - Sector and market benchmark prices.
+  - Outcome-label price history.
   - Insider and congressional activity.
   - Peers, segments, ratings, and company news.
   - Fund information and sector/country weights.
@@ -196,11 +199,6 @@
   - Official filings and XBRL company facts.
   - Restatements and auditor changes.
   - Optional fund holdings through N-PORT.
-
-- **Stooq**
-  - Historical stock prices.
-  - Sector and market benchmark prices.
-  - Outcome-label price history.
 
 - **FRED**
   - Two-year and ten-year Treasury yields.
@@ -379,11 +377,10 @@
   - Energy and other commodity prices.
 
 - **Other run-level data**
-  - Commodity and market prices from Stooq.
   - Gold quote from FMP.
   - Futures positioning from CFTC.
   - Broad put/call statistics from CBOE.
-  - Sector and market benchmark histories from Stooq.
+  - Sector and market benchmark histories from FMP.
 
 - **Logic**
   - Omit the house view when older than one week.
@@ -514,10 +511,10 @@ Each completed holding is checkpointed separately.
   - Insider and congressional activity.
   - Peers, float, and revenue segments.
   - Live quote and company-news seeds.
+  - Deep dated price history.
 
 - **Stock data retrieved elsewhere**
   - SEC filings and XBRL facts.
-  - Stooq price history.
   - FINRA short interest.
   - Schwab option activity and any same-stock option overlay.
 
@@ -1197,7 +1194,7 @@ Each completed holding is checkpointed separately.
 - **Data retrieved**
   - Completed and carried-forward intrinsic verdicts.
   - Current normalized portfolio.
-  - Stooq bars for maturing outcome episodes.
+  - FMP dated-EOD bars for maturing outcome episodes.
   - FMP dividends for maturing outcome episodes.
 
 - **Whole-book calculations**
@@ -1275,7 +1272,7 @@ Each completed holding is checkpointed separately.
   - 12 months.
 
 - **Price calculations**
-  - Refresh Stooq through the window end.
+  - Refresh dated-EOD bars through the window end.
   - Add cash dividends without reinvestment for total return.
   - Total return is the main absolute result.
   - Sector and market comparisons use price-only returns.
@@ -1495,7 +1492,7 @@ Each completed holding is checkpointed separately.
   - No fresh Schwab holdings pull.
 
 - **Shared data refreshed**
-  - Current holding prices from FMP and Stooq.
+  - Current holding prices from FMP (quote plus dated EOD).
   - `DGS2` and `DGS10` from FRED.
   - Failed rate pull may use a cached print under one week old.
   - No eligible rate cache → rate-dependent families become `unknown`.

@@ -430,18 +430,18 @@ describe("App.vue run tracker", () => {
     // stayed open for the whole run and named itself in the tracker header
     // (docs/verification/2026-08-10-big-run-attempt-1.md, Finding 6).
     // Step key and groups are the production strings: `holding_step_key` formats
-    // `holding-<SYMBOL>`, and these are real emitters (sec.rs, stooq.rs, fred.rs).
+    // `holding-<SYMBOL>`, and these are real emitters (sec.rs, fmp.rs, fred.rs).
     emit({ run_id: "R1", seq: 2, kind: "step-started", step: "holding-PSX", label: "Analyze PSX" });
     emit({ run_id: "R1", seq: 3, kind: "request-started", step: "holding-PSX", group: "company-facts", provider: "SEC", series_id: "0000078214", name: "SEC company facts" });
-    emit({ run_id: "R1", seq: 4, kind: "request-started", step: "holding-PSX", group: "daily-bars", provider: "Stooq", series_id: "PSX", name: "Daily price history" });
+    emit({ run_id: "R1", seq: 4, kind: "request-started", step: "holding-PSX", group: "company-eod-deep", provider: "FMP", series_id: "PSX", name: "Deep price history" });
     emit({ run_id: "R1", seq: 5, kind: "request-finished", step: "holding-PSX", group: "company-facts", series_id: "0000078214", status: "ok" });
     await flushPromises();
 
     const steps = wrapper.findComponent(JobTrackerView).props("trace").steps;
     const holding = steps.find((s) => s.key === "holding-PSX");
     expect(holding?.label).toBe("Analyze PSX");
-    expect(holding?.requests.map((r) => r.group)).toEqual(["company-facts", "daily-bars"]);
-    expect(holding?.requests.map((r) => r.provider)).toEqual(["SEC", "Stooq"]);
+    expect(holding?.requests.map((r) => r.group)).toEqual(["company-facts", "company-eod-deep"]);
+    expect(holding?.requests.map((r) => r.provider)).toEqual(["SEC", "FMP"]);
     expect(holding?.requests[0]).toMatchObject({ seriesId: "0000078214", status: "ok" });
     // The phantom step is never conjured at all.
     expect(steps.find((s) => s.key === "baseline")).toBeUndefined();

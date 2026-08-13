@@ -109,9 +109,9 @@ FMP in-progress-bar behavior, and boundary-day rates.
 
 Sector-label taxonomy joins, and SHV-style short-screen labels.
 
-Whether Stooq's JS-PoW interstitial to non-JS clients is permanent.
-Stooq stays the primary rung by user decision, revisited only on this run's data-health evidence.
-If the FMP dated-EOD rung has become de facto primary, the follow-up is a rung-order slice plus FMP re-homing.
+FMP quota consumption under the full run's price load.
+Dated-EOD is the only price rung (the 2026-08-12 Stooq removal), so the per-holding bulk load rides the paid key for the first time.
+429-ladder behavior under that load: whether the minute-crossing ladder engages at all, and whether it recovers without failing a holding.
 
 ## Model serving and runtime
 
@@ -124,4 +124,4 @@ The data-health render and the reasoning panes.
 ## How to read the run
 
 Read `data-health` early.
-It carries the rung-order evidence, the context-pressure and truncation flags, and the run-level roll-up with its attention state — several items above resolve off that one surface before the per-holding cards are worth reading.
+It carries the deep-price fetch health, the context-pressure and truncation flags, and the run-level roll-up with its attention state — several items above resolve off that one surface before the per-holding cards are worth reading.

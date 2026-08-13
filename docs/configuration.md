@@ -124,8 +124,8 @@ Settings list each connected source with its **health state** (`connected` / `co
 
 ### Price Data
 
-The suite's price and fundamentals load is spread across keyless providers (see [data-sources.md](data-sources.md)).
-**SEC EDGAR** and **Stooq** are keyless and need no configuration; live **quotes** come from the shared FMP key.
+The suite's live **quotes** and deep price history come from the shared FMP key (see [data-sources.md](data-sources.md)).
+The fundamentals cross-check, **SEC EDGAR**, is keyless and needs no configuration.
 Per-stock **option chains** come from the Schwab connection (below), and **CBOE**'s venue-level put/call backdrop is keyless — neither needs separate configuration.
 
 ### Charles Schwab Connection

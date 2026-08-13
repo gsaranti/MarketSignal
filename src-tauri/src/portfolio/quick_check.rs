@@ -216,7 +216,7 @@ pub enum FilingSweep {
 /// The quick check's retrieval surface, behind a trait so the whole pass runs
 /// offline against stubs. The live impl composes FMP (price/EOD, statements,
 /// estimates, earnings, news, fund metadata), SEC EDGAR submissions (CIK-gated),
-/// and the FRED prints. **No Schwab, no Stooq, no model.**
+/// and the FRED prints. **No Schwab, no model.**
 pub trait QuickCheckDataSource {
     /// The fresh price plus dated closes (the market-data observation identity and
     /// the volatility/trailing basis). `Err` types the market family `unknown`.

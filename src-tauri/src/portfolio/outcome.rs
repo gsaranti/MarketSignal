@@ -9,8 +9,8 @@
 //!   ([`derive_reads`]) are pure functions over in-memory episodes.
 //! - **Labels** ([`mature_labels`]) read price series through [`SeriesCtx`] — the
 //!   shared price-bar cache plus an [`OutcomePriceSource`] for label-time
-//!   refreshes (Stooq rung, FMP dated-EOD rung) — and the dividend history for
-//!   the total-return leg.
+//!   refreshes (FMP dated EOD) — and the dividend history for the total-return
+//!   leg.
 //!
 //! Two doc-recorded reductions ship dormant: the standing-thesis episode-creation
 //! leg and the self-correction read both depend on the 6g what-changed attribution
@@ -60,8 +60,11 @@ pub const NOMINAL_BAND_COVERAGE: f64 = 0.80;
 /// The four forward label windows, in months.
 pub const LABEL_WINDOWS_MONTHS: [u32; 4] = [1, 3, 6, 12];
 
-/// The market benchmark's Stooq identity (`docs/data-sources.md §Stooq`).
-pub const MARKET_BENCHMARK: &str = "^spx";
+/// The market benchmark's FMP identity (`docs/data-sources.md §Financial
+/// Modeling Prep` — the benchmark identity table). Episodes never persist this
+/// symbol — it is applied at label time — so the 2026-08-12 rename from Stooq's
+/// `^spx` touched only the price-bar cache (cleaned at store init).
+pub const MARKET_BENCHMARK: &str = "^GSPC";
 
 /// Coverage tolerance: a series whose latest bar sits within this many calendar
 /// days before a window end still covers it (weekends and short market closures —
@@ -85,7 +88,8 @@ const FETCH_PAD_DAYS: i64 = 7;
 // ---- Sector identity -------------------------------------------------------------
 
 /// The SPDR sector-ETF benchmark for an FMP profile sector label
-/// (`docs/data-sources.md §Stooq` — the sector-ETF mapping). Accepts both FMP's
+/// (`docs/data-sources.md §Financial Modeling Prep` — the sector-ETF mapping).
+/// Accepts both FMP's
 /// label vocabulary and the near-identical GICS names; `None` for anything else
 /// (the typed `sector-unscorable` path, never a guessed benchmark).
 pub fn spdr_for_sector(label: &str) -> Option<&'static str> {
@@ -720,8 +724,8 @@ pub struct OutcomeRecords {
 
 // ---- The label-time price source ---------------------------------------------------
 
-/// The outcome pass's retrieval seam: daily closes (Stooq rung, FMP dated-EOD rung)
-/// and the dividend history for the total-return leg. Behind a trait so the job is
+/// The outcome pass's retrieval seam: daily closes (FMP dated EOD) and the
+/// dividend history for the total-return leg. Behind a trait so the job is
 /// offline-testable; failures are fail-soft at the caller (a label stays pending,
 /// never a run failure).
 pub trait OutcomePriceSource {
@@ -735,13 +739,10 @@ pub trait OutcomePriceSource {
     ) -> Result<Vec<DatedValue>>;
 }
 
-/// The live source: Stooq primary, FMP dated-EOD second rung, FMP `dividends` for
-/// the total-return leg — the same rung order as the per-holding deep history
-/// (`docs/data-sources.md §Stooq`).
+/// The live source: FMP dated EOD for the daily closes, FMP `dividends` for the
+/// total-return leg — the same single rung as the per-holding deep history
+/// (`docs/verification/2026-08-12-stooq-removal-decision.md`).
 pub struct LiveOutcomePrices {
-    /// The same adapter instance the per-holding loop used (`LiveCompanyData::stooq`)
-    /// — one breaker and one pacer per run, across both retrieval phases.
-    pub stooq: std::sync::Arc<crate::stooq::StooqSource>,
     pub fmp: crate::fmp::FmpDataSource,
 }
 
@@ -750,35 +751,21 @@ impl OutcomePriceSource for LiveOutcomePrices {
         &self,
         symbol: &str,
         from: NaiveDate,
-        to: NaiveDate,
+        _to: NaiveDate,
     ) -> Result<Vec<DatedValue>> {
-        match self.stooq.daily_closes(symbol, from, to) {
-            Ok(closes) => Ok(closes),
-            Err(stooq_err) => {
-                // The FMP dated-EOD fetch is now-anchored; a lookback from today
-                // covering `from` spans the requested range (labels always read
-                // through the present). The symbol must cross to FMP's OWN
-                // identity: `^spx` is Stooq's S&P 500 name — FMP serves `^GSPC`
-                // — so passing it verbatim would leave the market-benchmark leg
-                // with no working fallback rung.
-                let fmp_symbol = if symbol.eq_ignore_ascii_case(MARKET_BENCHMARK) {
-                    "^GSPC"
-                } else {
-                    symbol
-                };
-                // A lookback COUNT, not a session key: the UTC date is fine here —
-                // one extra day of history is harmless, and the bars are then
-                // selected by their own dates.
-                let today = chrono::Utc::now().date_naive();
-                let lookback = (today - from).num_days().max(1);
-                match self.fmp.fetch_dated_eod(fmp_symbol, lookback) {
-                    Ok(closes) if !closes.is_empty() => Ok(closes),
-                    Ok(_) => Err(stooq_err.context("FMP dated-EOD fallback was empty")),
-                    Err(fmp_err) => {
-                        Err(stooq_err.context(format!("FMP dated-EOD fallback failed: {fmp_err}")))
-                    }
-                }
-            }
+        // The FMP dated-EOD fetch is now-anchored; a lookback from today
+        // covering `from` spans the requested range (labels always read
+        // through the present), which is why the range's own upper bound goes
+        // unread here.
+        // A lookback COUNT, not a session key: the UTC date is fine here —
+        // one extra day of history is harmless, and the bars are then
+        // selected by their own dates.
+        let today = chrono::Utc::now().date_naive();
+        let lookback = (today - from).num_days().max(1);
+        match self.fmp.fetch_dated_eod(symbol, lookback) {
+            Ok(closes) if !closes.is_empty() => Ok(closes),
+            Ok(_) => anyhow::bail!("FMP dated EOD served no rows for {symbol}"),
+            Err(fmp_err) => Err(fmp_err.context(format!("FMP dated EOD failed for {symbol}"))),
         }
     }
 
@@ -3769,7 +3756,8 @@ mod tests {
         let scored = scored_for(&episodes[0], 12).expect("12-month scored");
         // Empty dividend history: the total-return leg equals the price leg.
         assert_eq!(scored.total_return, Some(scored.price_return));
-        // Relative legs computed against ^spx and the stamped XLK benchmark.
+        // Relative legs computed against the market benchmark and the stamped
+        // XLK benchmark.
         assert!(scored.vs_market.is_some());
         assert!(scored.vs_sector.is_some());
         // The fetched series landed in the shared bar cache — holding + both

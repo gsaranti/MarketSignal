@@ -1269,8 +1269,10 @@ pub fn effective_vintage<'a>(verdict: &'a HoldingVerdict, run_created_at: &'a st
 /// degraded run that looks clean produces confidently wrong prescriptions (the
 /// 2026-07-31 first live run: 43 of 44 anchor windows empty, invisible outside the
 /// audits). Computed deterministically from the audits' typed `target_meta` plus the
-/// run-scoped deep-history counters, persisted with the roll-up, and rendered as one
-/// line on the Portfolio page's roll-up card.
+/// run-scoped deep-history counter, persisted with the roll-up, and rendered as one
+/// line on the Portfolio page's roll-up card. (Runs persisted before 2026-08-12
+/// also carry a `deep_history_fallbacks` key from the retired Stooq-primary era;
+/// serde ignores it on decode.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DataHealth {
     /// Priced holdings carrying a `target_meta` (the denominator).
@@ -1283,10 +1285,9 @@ pub struct DataHealth {
     pub current_multiple_carry_count: usize,
     /// Targets whose scenario band was widened to the dispersion floor.
     pub dispersion_floor_count: usize,
-    /// Holdings whose deep-history (Stooq) fetch degraded.
+    /// Holdings whose deep-history (FMP dated-EOD) fetch degraded — each one's
+    /// anchor window starved to its documented fallback.
     pub deep_history_failures: usize,
-    /// Of those, holdings the FMP dated-EOD fallback still served.
-    pub deep_history_fallbacks: usize,
     /// The run-level DGS10 anchor-history request failed (every spread observation
     /// inadmissible run-wide).
     pub dgs10_history_gap: bool,

@@ -89,6 +89,11 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+    // Cleanup migration: `^SPX` was the market benchmark's Stooq-era cache key
+    // (uppercased at the merge seam); the 2026-08-12 removal renamed the
+    // benchmark to FMP's `^GSPC`, so rows under the dead key can never be read
+    // again. Idempotent — zero rows on every store that never cached it.
+    conn.execute("DELETE FROM price_bars WHERE symbol = '^SPX'", [])?;
     Ok(())
 }
 
@@ -1362,6 +1367,22 @@ mod tests {
             vec![bar("2026-08-01", 193.0), bar("2026-08-03", 19.5), bar("2026-08-04", 19.6)]
         );
         assert!(load_price_bars(&conn, "MSFT").unwrap().is_empty());
+    }
+
+    #[test]
+    fn init_schema_drops_the_dead_stooq_benchmark_cache_key() {
+        let conn = mem();
+        let bar = |date: &str, close: f64| crate::portfolio::engine::DatedValue {
+            date: date.into(),
+            value: close,
+        };
+        // Seed the Stooq-era key (lowercase in, uppercased at the merge seam)
+        // beside a living symbol, then re-run the idempotent init.
+        merge_price_bars(&conn, "^spx", &[bar("2026-08-01", 5_500.0)]).unwrap();
+        merge_price_bars(&conn, "AAPL", &[bar("2026-08-01", 195.0)]).unwrap();
+        crate::storage::init_schema(&conn).unwrap();
+        assert!(load_price_bars(&conn, "^SPX").unwrap().is_empty());
+        assert_eq!(load_price_bars(&conn, "AAPL").unwrap(), vec![bar("2026-08-01", 195.0)]);
     }
 
     #[test]

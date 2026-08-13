@@ -11,7 +11,7 @@
 - [configuration.md](configuration.md) — Settings the user must complete: agent model selection, API tokens, external data provider credentials, and the validation rules that gate job execution.
 - [scheduling.md](scheduling.md) — Job execution semantics for the on-demand jobs (the Market Signal Report plus the two local-suite jobs): job states, the single global run slot, offline behavior, status visibility, and error handling.
 - [run-tracking.md](run-tracking.md) — The live run tracker shown while a job runs: per-step and per-request progress, streamed agent output, the run-not-a-report rule, and job cancellation.
-- [data-sources.md](data-sources.md) — External data and model providers, in two parts (a provider catalog + per-job endpoint surfaces): Financial Modeling Prep (+ FMP Articles), FRED, BLS, CFTC, Tavily, GDELT, and the cloud LLM providers for the report; plus the local-suite sources — Charles Schwab, SEC EDGAR, Stooq, FINRA, CBOE, SearXNG, and on-device local models.
+- [data-sources.md](data-sources.md) — External data and model providers, in two parts (a provider catalog + per-job endpoint surfaces): Financial Modeling Prep (+ FMP Articles), FRED, BLS, CFTC, Tavily, GDELT, and the cloud LLM providers for the report; plus the local-suite sources — Charles Schwab, SEC EDGAR, FINRA, CBOE, SearXNG, and on-device local models.
 - [research-documents.md](research-documents.md) — The `/research-inbox` and `/research-archive` workflow for user-supplied documents.
 - [agents.md](agents.md) — Agent pipeline architecture: the main agent, the three analyst agents, and the non-configurable fixed internal models.
 - [report-workflow.md](report-workflow.md) — The 18-step Market Signal Report job flow from validation through HTML generation.

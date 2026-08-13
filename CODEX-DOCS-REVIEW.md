@@ -121,9 +121,10 @@ deliberately unresolved. Use it as the triage step for every candidate finding:
   pointers since, or a new contradiction the fix itself introduced all clear
   the bar — report those against the doc, citing the mismatch with the notes.
 - **Drafted constants and deliberate designs are not omissions**, so don't
-  flag their existence or their pending live verification (e.g. the Stooq
-  symbol map is M5-gated by design) — but a *factual error inside one* (a
-  wrong mapping, an internally inconsistent constant) still clears the bar.
+  flag their existence or their pending live verification (e.g. a drafted
+  constant waiting on the big run's live evidence is gated by design) — but a
+  *factual error inside one* (a wrong mapping, an internally inconsistent
+  constant) still clears the bar.
 - **Genuinely new ground stays fully in scope.** The file constrains only
   re-flagging; it never lowers the bar for something the prior rounds missed.
 

@@ -622,8 +622,8 @@ export interface ExitedPosition {
 // sourced (rate-anchored vs the fallbacks) plus the deep-history and DGS10
 // degradations — computed deterministically from the persisted audits, so a
 // degraded-but-successful run is visible at a glance. `attention` marks
-// infrastructure degradation (unrecovered deep-history failures, any
-// current-multiple carry, a run-wide DGS10 history gap).
+// infrastructure degradation (any deep-history failure, any current-multiple
+// carry, a run-wide DGS10 history gap).
 export interface DataHealth {
   targets_total: number;
   rate_anchored_count: number;
@@ -631,7 +631,6 @@ export interface DataHealth {
   current_multiple_carry_count: number;
   dispersion_floor_count: number;
   deep_history_failures: number;
-  deep_history_fallbacks: number;
   dgs10_history_gap: boolean;
   // The house view was omitted for staleness (latest report older than the pinned
   // window — docs/portfolio-workflow.md §Step 5); informational, rides `summary`.

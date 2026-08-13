@@ -1888,8 +1888,8 @@ fn eod_prices_from_value(value: &Value) -> Result<Vec<f64>> {
 }
 
 /// Shape an FMP `/historical-price-eod/light` array body into **dated** chronological
-/// closes — the deep-history form the v2 anchor join reads when this endpoint serves
-/// as the Stooq fallback ([`FmpDataSource::fetch_dated_eod`]). Pure.
+/// closes — the deep-history form the v2 anchor join reads
+/// ([`FmpDataSource::fetch_dated_eod`]). Pure.
 fn dated_eod_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
     let rows = value
         .as_array()
@@ -5216,11 +5216,10 @@ impl FmpDataSource {
         }
     }
 
-    /// Deep **dated** daily closes over `lookback_days` — the anchor join's fallback
-    /// price source when Stooq, the primary deep-history source, is throttled or
-    /// unavailable (`docs/data-sources.md §Stooq`). Spent only on the fallback path,
-    /// so the dispersal principle — the bulk per-holding price load stays off the
-    /// shared FMP key — holds.
+    /// Deep **dated** daily closes over `lookback_days` — the suite's only deep
+    /// price source (`docs/verification/2026-08-12-stooq-removal-decision.md`:
+    /// the bulk per-holding price load deliberately rides the paid FMP key; the
+    /// per-minute limit and the 429 ladder cover it).
     pub fn fetch_dated_eod(
         &self,
         symbol: &str,
@@ -5239,7 +5238,7 @@ impl FmpDataSource {
         match self.suite_get_shaped(
             "company-eod-deep",
             symbol,
-            "Deep price history (Stooq fallback)",
+            "Deep price history",
             FMP_EOD_PATH,
             &[("symbol", symbol), ("from", &from), ("to", &to)],
             |value| match dated_eod_from_value(value) {
@@ -6363,7 +6362,7 @@ mod suite_tests {
 
     #[test]
     fn dated_eod_round_trips_sorted_dated_closes() {
-        // The Stooq-fallback form keeps the dates the undated per-company EOD read
+        // The dated form keeps the dates the undated per-company EOD read
         // discards — the v2 anchor join needs them for the latest-on-or-before join.
         let body = r#"[
           {"date":"2026-07-14","price":195.0},

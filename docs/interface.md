@@ -169,7 +169,7 @@ The wording branches by job and by whether the Tavily credential is configured:
 
 | Job | SearXNG down · Tavily configured | SearXNG down · no Tavily |
 |---|---|---|
-| **Portfolio Analysis** | Research falls back to **Tavily (metered)** instead of local search. | Web research is limited; the analysis leans on FMP / SEC / Stooq + the deterministic engine. |
+| **Portfolio Analysis** | Research falls back to **Tavily (metered)** instead of local search. | Web research is limited; the analysis leans on FMP / SEC + the deterministic engine. |
 | **Trade Opportunities — Discover (DTO)** | **Model-led discovery can't run** — TO's discovery lane is SearXNG-only and does *not* fall back to Tavily ([web-research.md §Tavily fallback](web-research.md#tavily-fallback)), so candidates come only from the structured feeders + carried-forward watchlist; per-candidate **validation** does fall back to Tavily (metered). | **Model-led discovery can't run** *and* validation has no fallback → expect a **sparse matrix with insufficient-evidence abstentions**. Flagged **not recommended** — a stronger confirm (the run is proceed-able but the modal advises against it). |
 | **Trade Opportunities — Audit (Deep Audit)** | No discovery lane — only the per-candidate **validation** research on the user-selected names, which falls back to **Tavily (metered)**. | Validation has no fallback → the selected names get **thinner evidence** (lower-conviction or `insufficient-evidence` re-reads), but no discovery / matrix-breadth effect. Flagged **not recommended**. *(ATO Quick Audit does no web research, so it never reaches this modal.)* |
 
