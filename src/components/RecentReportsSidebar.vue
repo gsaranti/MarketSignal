@@ -58,7 +58,10 @@ function rowTitle(r: ReportSummary): string {
 }
 
 // A run row's label (kit RunRow): every run is a full-book pass in this slice.
+// An unreadable row's counts are unknown (its blob no longer decodes; the
+// zeros in the summary are placeholders, not facts), so no count renders.
 function runTitle(r: PortfolioRunSummary): string {
+  if (!r.readable) return "Full book";
   const n = r.holdings_count;
   return `Full book · ${n} ${n === 1 ? "holding" : "holdings"}`;
 }
@@ -83,15 +86,26 @@ function runTitle(r: PortfolioRunSummary): string {
             class="row report-row"
             :class="{ 'is-current': r.run_id === selectedRunId }"
             :aria-current="r.run_id === selectedRunId ? 'true' : undefined"
+            :disabled="!r.readable"
+            :title="
+              r.readable
+                ? undefined
+                : 'This run\'s stored record no longer decodes and cannot open'
+            "
             @click="$emit('select-run', r.run_id)"
           >
             <div class="row-main">
               <div class="row-title">{{ runTitle(r) }}</div>
               <div class="row-meta">
-                {{ shortStamp(r.created_at) }} · rated {{ r.graded_count }}
+                {{ shortStamp(r.created_at)
+                }}<template v-if="r.readable">
+                  · rated {{ r.graded_count }}</template
+                >
                 <!-- An unreadable row — the persisted blob no longer decodes;
-                     it lists from its column identity and cannot open. Wins
-                     over the degraded tag: readability is the sharper fact. -->
+                     it lists from its column identity (no counts — the
+                     summary's zeros are placeholders, not facts), cannot
+                     open (the button disables), and wins over the degraded
+                     tag: readability is the sharper fact. -->
                 <span v-if="!r.readable" class="ana-tag row-tag">unreadable</span>
                 <!-- A degraded run — construction failed, verdicts persisted
                      with no book (the words are the alert: the quiet ana-tag,
@@ -303,6 +317,17 @@ function runTitle(r: PortfolioRunSummary): string {
 .report-row:hover,
 .report-row.is-current {
   background: var(--paper-edge);
+}
+
+/* An unreadable run row: present but unavailable — no hover invitation, the
+   default cursor, and the muted ink the row's placeholder identity deserves.
+   The `unreadable` tag carries the words; disabled carries the behavior. */
+.report-row:disabled {
+  cursor: default;
+  color: var(--ink-3);
+}
+.report-row:disabled:hover {
+  background: transparent;
 }
 
 .row-main {

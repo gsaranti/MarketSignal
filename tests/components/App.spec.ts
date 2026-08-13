@@ -932,6 +932,39 @@ describe("App.vue portfolio wiring", () => {
     wrapper.unmount();
   });
 
+  test("an unreadable degraded row classifies as unreadable, not degraded-only", async () => {
+    // A previously degraded row whose blob becomes corrupt has
+    // constructed: false AND readable: false — it must trip the unreadable
+    // read, never the degraded-only copy whose opens-read-only claim is
+    // false for a row that cannot open (Codex round).
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        latest_portfolio_run: () => null,
+        list_portfolio_runs: () => [
+          {
+            run_id: "prun-corrupt-degraded",
+            created_at: "2026-08-11T12:00:00Z",
+            holdings_count: 0,
+            graded_count: 0,
+            constructed: false,
+            readable: false,
+          },
+        ],
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+    const portfolio = wrapper.findComponent(PortfolioView);
+    expect(portfolio.props("unreadableHistory")).toBe(true);
+    // degradedOnlyHistory may also compute true; the view gives the
+    // unreadable state precedence, which the PortfolioView specs pin.
+    expect(portfolio.text()).toContain("A prior run couldn't be read.");
+    expect(portfolio.text()).not.toContain("No constructed run yet.");
+    wrapper.unmount();
+  });
+
   test("a past-run open failure lands on its own channel and clears on back-to-latest", async () => {
     tauri.invoke.mockImplementation(
       makeInvokeRouter({

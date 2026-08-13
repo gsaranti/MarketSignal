@@ -477,12 +477,13 @@ const degradedOnlyHistory = computed(
     portfolioRuns.value.length > 0 &&
     portfolioRuns.value.every((r) => !r.constructed)
 );
-// A constructed row exists in the history while the latest view is empty:
-// that row must be unreadable (a readable constructed run would BE the
-// latest view), so the page says unreadable — never never-ran or
-// degraded-only (Codex round).
+// Any unreadable row makes the history's empty-state read "unreadable":
+// a corrupt CONSTRUCTED row would otherwise be the latest view, and a
+// corrupt DEGRADED row must not activate the degraded-only copy, whose
+// opens-read-only claim is false for a row that cannot open (Codex round).
+// The view gives this precedence over degradedOnlyHistory.
 const unreadableHistory = computed(() =>
-  portfolioRuns.value.some((r) => r.constructed && !r.readable)
+  portfolioRuns.value.some((r) => !r.readable)
 );
 const historicalRun = ref<PortfolioRun | null>(null);
 // A past-run OPEN failure — its own channel (never `portfolioError`, whose

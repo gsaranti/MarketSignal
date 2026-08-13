@@ -204,6 +204,23 @@ test("an unreadable row tags 'unreadable', winning over the no-book tag", () => 
   expect(rows[1].find(".ana-tag").text()).toBe("unreadable");
 });
 
+test("an unreadable row is unavailable and fabricates no counts", async () => {
+  // The summary's zeros are placeholders (the blob no longer decodes), so
+  // neither the holdings count nor "rated 0" may render as fact — and the
+  // row cannot open, so it must not present as a live button.
+  const wrapper = makeWrapper({
+    view: "portfolio",
+    portfolioRuns: [{ ...portfolioRuns[0], readable: false }],
+  });
+  const row = wrapper.find(".sidebar-list .report-row");
+  expect(row.attributes("disabled")).toBeDefined();
+  expect(row.text()).not.toContain("rated");
+  expect(row.text()).not.toContain("holdings");
+  expect(row.find(".row-title").text()).toBe("Full book");
+  await row.trigger("click");
+  expect(wrapper.emitted("select-run")).toBeUndefined();
+});
+
 test("selecting a run row emits select-run and the selected run is marked current", async () => {
   const wrapper = makeWrapper({ view: "portfolio", selectedRunId: "prun-2" });
   const rows = wrapper.findAll(".sidebar-list .report-row");
