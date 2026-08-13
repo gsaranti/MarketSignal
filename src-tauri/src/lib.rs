@@ -40,6 +40,7 @@ pub mod storage;
 pub mod tavily;
 #[cfg(test)]
 mod test_http;
+pub mod thought_log;
 pub mod vector_memory;
 
 // Dev-only demo mode. Compiled out entirely unless the `demo-run` feature is on
@@ -112,9 +113,52 @@ impl ProgressReporter for TauriReporter {
 /// and the shared cancel flag. The flag is *not* reset here — `run_job` clears it
 /// once it owns the concurrency slot (`RunContext::reset_cancel`), so a competing
 /// attempt that is then skipped can't wipe an active run's cancellation.
+///
+/// When the thought-log gate is on, the reporter is decorated with the
+/// diagnostic capture sink (`docs/run-tracking.md §Thought-log capture`) —
+/// permanent code, build-gated behavior: debug builds capture by default
+/// (opt-out), release builds stay off unless [`THOUGHT_LOG_ENV`] opts in.
+/// Base-dir resolution is best-effort — a failed app-data lookup skips
+/// capture, never the run.
 fn live_run_context(app: &tauri::AppHandle, cancel: Arc<AtomicBool>) -> Arc<RunContext> {
-    let reporter: Arc<dyn ProgressReporter> = Arc::new(TauriReporter { app: app.clone() });
-    RunContext::new(uuid::Uuid::new_v4().to_string(), reporter, cancel)
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let mut reporter: Arc<dyn ProgressReporter> = Arc::new(TauriReporter { app: app.clone() });
+    let enabled = thought_log_enabled(
+        std::env::var(THOUGHT_LOG_ENV).ok().as_deref(),
+        cfg!(debug_assertions),
+    );
+    if enabled {
+        match app.path().app_data_dir() {
+            Ok(app_data_dir) => {
+                let base = resolve_data_dir(
+                    app_data_dir,
+                    std::env::var(DATA_DIR_ENV).ok(),
+                    cfg!(debug_assertions),
+                )
+                .join("thought-logs");
+                reporter =
+                    Arc::new(thought_log::ThoughtLogSink::attach(reporter, &base, &run_id));
+            }
+            Err(e) => eprintln!("[thought-log] capture skipped: app data dir unresolved: {e}"),
+        }
+    }
+    RunContext::new(run_id, reporter, cancel)
+}
+
+/// Forces the thought-log capture on (`1` / `true`) or off (`0` / `false`)
+/// regardless of build profile; unset falls to the build default.
+const THOUGHT_LOG_ENV: &str = "MARKET_SIGNAL_THOUGHT_LOG";
+
+/// The thought-log gate, pure for tests (the env read happens at the call
+/// site): an explicit override wins, otherwise debug builds capture and
+/// release builds do not. An unrecognized value falls to the build default
+/// rather than guessing a direction.
+fn thought_log_enabled(env_val: Option<&str>, debug: bool) -> bool {
+    match env_val.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("0") | Some("false") => false,
+        Some("1") | Some("true") => true,
+        _ => debug,
+    }
 }
 
 /// Request cancellation of the in-flight run (the tracker's Cancel button). Sets the
@@ -1588,6 +1632,21 @@ mod tests {
     fn release_build_uses_app_data_dir_as_is() {
         let base = PathBuf::from("/data/app");
         assert_eq!(resolve_data_dir(base.clone(), None, false), base);
+    }
+
+    #[test]
+    fn thought_log_gate_is_debug_default_with_an_explicit_override() {
+        // Unset: the build profile decides.
+        assert!(thought_log_enabled(None, true));
+        assert!(!thought_log_enabled(None, false));
+        // Explicit off wins in a debug build; explicit on wins in a release.
+        assert!(!thought_log_enabled(Some("0"), true));
+        assert!(!thought_log_enabled(Some("false"), true));
+        assert!(thought_log_enabled(Some("1"), false));
+        assert!(thought_log_enabled(Some(" TRUE "), false));
+        // An unrecognized value falls to the build default.
+        assert!(thought_log_enabled(Some("yes please"), true));
+        assert!(!thought_log_enabled(Some("yes please"), false));
     }
 
     #[test]

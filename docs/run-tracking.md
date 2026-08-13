@@ -33,6 +33,23 @@ When a run begins, the owning page (the report pane for a report run) is replace
 The tracker is a live view of one run.
 Its contents are kept for the current application session and reflect the **latest run only**; they are not persisted across restarts.
 
+## Thought-log capture (diagnostic)
+
+Because the tracker's reasoning panes are transient, a diagnostic sink can capture them to disk.
+It decorates the live progress reporter and appends every streamed **thinking** delta to one plain-text file per stream: `main-agent.txt`, `analyst-<posture>.txt`, and `<step-key>.txt` for step-scoped reasoning (each per-holding step and the construction step alike).
+The files land under a per-run folder at `<data-dir>/thought-logs/<UTC-timestamp>-<run-id-prefix>/`.
+It exists because a failed live run otherwise leaves no reasoning evidence; the 2026-08-10 attempt-1 analysis rested on screenshots of the panes.
+The capture is thoughts-only by construction: the main agent's report body persists as the report itself, and a review body or structured verdict never streams, so neither can ever land in a log.
+
+The sink is permanent code with build-gated behavior: debug builds capture by default (opt out with the variable below), and release builds stay silent unless explicitly opted in.
+`MARKET_SIGNAL_THOUGHT_LOG` (`1`/`true` or `0`/`false`) forces capture on or off in either build.
+The folder rides the same data-directory resolution as every store (`MARKET_SIGNAL_DATA_DIR` override; `dev/` nesting in debug builds).
+The newest ten run folders are kept: pruning happens only after a run's first delta has landed on disk, so a run that captures nothing (a quick check, a blocked attempt) — or whose capture fails outright — never spends an old log without a replacement existing.
+Pruning is shape-guarded: only folders matching the sink's own exact timestamp-and-id naming are counted or deleted, so anything else in the directory is not its to remove.
+The logs are loose diagnostic files — outside SQLite, outside the portability archive, and outside every store retention rule.
+Capture is best-effort: a run that streams no thinking creates no folder, and an I/O failure disables capture for that run with one log line, never the run itself.
+Appends are synchronous and unbuffered — the crash-honesty the sink exists for, since everything streamed before a failure is already on disk; the accepted cost is that a stalled disk would stall the run, tolerable for a debug-gated diagnostic.
+
 ## Cancellation
 
 The user may cancel a running job at any point from the tracker.
