@@ -41,13 +41,30 @@ run evidence. `NUM_PREDICT_*` values remain drafted, uncalibrated.
 
 ## Where to start
 
-**Big-run attempt 2** — nothing stands in front of it. Optional first: the
-zero-cost smoke (`npm run tauri:demo` → Generate) to watch
-`dev/thought-logs/` fill. For the run itself: checklist
-`docs/verification/big-run-watch-set.md` (FMP quota-consumption and
-429-ladder watches replaced the retired Stooq lines); read the SBUX-shape
-engine targets and `data-health` early; keep the Ollama server log. Thought
-logs now capture automatically in the dev app — after the run, analyze at
+**Big-run attempt 2** — nothing stands in front of it. The setup protocol is
+agreed (user-ratified this session), split by who can do each step:
+
+1. **Agent:** verify/start the pinned Ollama daemon with its server log teed
+   to a file (the log must exist before the first model call), spin up the
+   dev app under `caffeinate`, confirm the app is on the `dev/` store, then
+   hand off and wait.
+2. **User:** import the latest prod export into the dev app (freshest
+   reports → house view quality; the archive never carries settings or
+   Keychain, by design).
+3. **User:** verify Schwab and clear the Keychain ACL prompts (they stack
+   before first paint on a fresh debug binary; the 7-day refresh may want a
+   re-login), reach the Portfolio page, then say go.
+4. **Agent:** initiate the Portfolio run from the GUI (drive by process name
+   `market-signal`, never `tell application`) and monitor tracker + stderr
+   tee to a terminal state.
+5. **At the end the agent does NOT open or analyze any thought-log file** —
+   notify completion (or failure with tracker/tee evidence) and stop;
+   output analysis is a separate, user-initiated step.
+
+Run references: checklist `docs/verification/big-run-watch-set.md` (FMP
+quota-consumption and 429-ladder watches replaced the retired Stooq lines);
+read the SBUX-shape engine targets and `data-health` early. Thought logs
+capture automatically in the dev app — the analysis step afterward covers at
 least five per-holding files plus `construction.txt` for model-quality and
 prompt-structure reads. Expect attempt-1 `ok` suite rows to honestly read
 `empty`/`malformed`, and any deep-history failure to trip attention.
