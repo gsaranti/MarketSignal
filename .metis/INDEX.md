@@ -62,6 +62,7 @@ of the path being cited.*
 - Per-request pass/fail rows — run-tracking.md §What the Tracker Shows
 - Streamed main-agent output — run-tracking.md §What the Tracker Shows
 - Step-scoped reasoning stream — run-tracking.md §What the Tracker Shows
+- Thought-log capture (diagnostic sink) — run-tracking.md §Thought-log capture
 - Job cancellation — run-tracking.md §Cancellation; scheduling.md §Job States
 - Run-is-not-a-report invariant — run-tracking.md §A Run Is Not a Report
 - Reaching the tracker — run-tracking.md §Reaching the Tracker

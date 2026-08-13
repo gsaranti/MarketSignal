@@ -256,7 +256,14 @@ a local job's per-holding interpretation **step-scoped** onto that holding's
 own step (thoughts-only in each case; a review body or structured verdict
 never streams). The streamed
 report tokens are a side-channel that can't corrupt the report — the full
-envelope is accumulated and parsed exactly as the non-streaming path. The
+envelope is accumulated and parsed exactly as the non-streaming path. A
+**debug-gated thought-log sink** decorates the live reporter and captures
+every thinking stream to per-run text files under the data dir
+(`thought-logs/`, newest ten kept, pruned only after a run's first delta
+lands) — the deliberate, bounded exception to reasoning staying ephemeral:
+release builds stay silent unless `MARKET_SIGNAL_THOUGHT_LOG` opts in, and
+the files are best-effort diagnostics outside SQLite, portability, and every
+store retention rule (`docs/run-tracking.md §Thought-log capture`). The
 frontend renders this as the run tracker — one shared component placed on the
 **running job's own page** (a report run replaces the report pane, a portfolio
 run the Portfolio page; latest-run-only), the report's fixed /8 progress
