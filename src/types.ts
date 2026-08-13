@@ -942,8 +942,8 @@ export interface QuickCheckState {
 // One sidebar row of the Portfolio-runs history, returned by
 // `list_portfolio_runs` (docs/interface.md §Main Layout — the shared-history
 // sidebar's run list). Light by design: identity, timestamp, and the two counts
-// the row renders; opening a run fetches the full record via
-// `get_portfolio_run`.
+// a readable row renders (an unreadable row hides them — its zeros are
+// placeholders); opening a run fetches the full record via `get_portfolio_run`.
 export interface PortfolioRunSummary {
   run_id: string;
   // Canonical UTC RFC3339; rendered in local time.

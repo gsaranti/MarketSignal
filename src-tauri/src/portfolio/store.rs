@@ -502,7 +502,8 @@ pub fn list_recent_runs(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRu
 
 /// One sidebar row of the Portfolio-runs history (`docs/interface.md §Main
 /// Layout`; the design package's shared-history `RunRow`): identity, timestamp,
-/// and the two counts the row renders — never the run's verdict payload, so the
+/// and the two counts a readable row renders (an unreadable row hides them —
+/// its zeros are placeholders) — never the run's verdict payload, so the
 /// listing IPC response stays rows, not ten full runs.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PortfolioRunSummary {
@@ -1091,9 +1092,10 @@ mod tests {
         assert!(summaries[0].constructed, "column-backed marker");
         assert_eq!(summaries[0].holdings_count, 0);
         assert!(summaries[1].readable);
-        // A direct open of the corrupt row reads as not-found: the listing no
-        // longer shows it, so only a stale click reaches it, and the
-        // frontend's re-list recovery is exactly right.
+        // A direct open of the corrupt row reads as not-found: the listing
+        // shows it disabled (never a live control), so only a stale or
+        // out-of-band call reaches it, and the frontend's re-list recovery
+        // is exactly right.
         assert!(run_by_id(&conn, "run-corrupt").unwrap().is_none());
         // The store decode seams ship a concrete marker — never null on the
         // wire (the TS type is non-nullable).
