@@ -2,61 +2,58 @@
 
 ## What happened
 
-**The pre-run slice shipped** (`b634c23`, direct to `main`, pushed) — everything queued
-between the Step 7b repair and attempt 2. The **named-violation re-run is repair-scoped**:
-corrected objects only for the violating names (narrowed holdings-only schema, the
-first draft's envelope reused), overlaid onto the first draft and re-validated
-**whole** (implied weights are book-coupled); non-spine keys drop deterministically,
-scope is enforced both ways, and an unknown-key-only failure repairs with **no model
-call**. **Degraded persistence now covers any 7b construction-call failure** (ruled
-2026-08-11) — a parse failure is exactly what a truncation becomes — with a cancel
-still leaving no row. Every portfolio stage sets **`num_predict`**; a
-`done_reason: "length"` stop fails typed, the counts disambiguating
-reservation-hit from context exhaustion, and the observation rides data-health.
-**Adapter diagnostics** landed at the seams that already know: a stderr tee at
-`RunContext::emit`, http_retry backoff lines with `without_url()` stripping (a
-query-string API key can no longer reach a log, tracker row, or persisted job
-detail — this also closed a pre-existing leak via returned error chains), suite
-rows carrying gap reason + detail, a Stooq breaker-trip line. **Finding 5 ruled**:
-the engine pick stays withheld at 6f and the prompt says so.
-
-Review: internal approve-with-nits (all closed, incl. strict scope enforcement on
-the overlay) plus one Codex round (key redaction, length-stop disambiguation,
-strict full-call envelope decode via a dedicated `RepairResponse`) to approval.
+**The pre-run review batch shipped and pushed** (`c8d5308..2790338`, 12 commits,
+Codex approved after four rounds). A pre-attempt-2 review sweep (15 confirmed
+findings over the repair + pre-run slices) became four fix slices: **A** —
+failure evidence is true, complete, and bounded (`job_runs.detail` carries the
+error chain, `record_usage` never drops a length-stop row, the length-stop
+classification is single-homed with an honest unattributed reading, parse
+contexts embed capped snippets, suite rows carry the HTTP-level cause, the
+connection-test key leak closed); **B** — the repair pass can't burn itself
+(shared `overlay_keeps` kept-set predicate, scoped violations, case-variant
+collapse); **C** — the **persisted `constructed` marker** (authored at the
+persist seam, SQL-filterable column with a transactional migration, loud-skip
+`decode_run` at every read seam, three-way never-ran/degraded-only/unreadable
+refusals, marker on the wire); **D** — identity + tracker (three-way
+`description_identity` with the TickerOnly-vs-profile cross-check, canonical-
+source name standard for header fallbacks, the sweep price pass bracketed,
+failed tracker rows render their cause). A combined-range review fixed 14 more,
+including **unreadable rows listing column-backed** (disabled, count-less,
+tagged) with history-aware empty states and pull copy. BUILD.md was updated:
+marker as-built; **the step-ownership slice queued as item 1 before attempt 2
+(user decision)**.
 
 ## Current state
 
-Nothing in flight. Working tree clean, `main` pushed at `b634c23`.
+Nothing in flight. `main` pushed at `2790338`. Gate at close: 1062 lib + 32
+integration cargo tests, clippy clean at `--all-targets --all-features`,
+`npm run build` clean, 46 node + 239 vitest.
 
-Two docs are now stale on this slice (user-run edits pending):
-`docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition still lists
-candidates 2 and 4 and the §Residue diagnostics gap as open, and Finding 5 as
-unruled; BUILD.md §What remains item 1 still says the
-re-run-only-violating-names fix stands between here and a second attempt.
-
-Behind attempt 2, unchanged: digest compression (candidate 3 — now doubly
-instrumented: `record_usage` completion fields persist even on a 7b failure) and
-the "declined an engine exit" vocabulary, both deliberately waiting on run
-evidence. `NUM_PREDICT_*` values are drafted-calibratable, uncalibrated.
-
-Verification gate at ship: 1074 cargo tests, clippy clean at
-`--all-targets --all-features`, `npm run build` clean, 46 node + 231 vitest.
+Behind attempt 2, unchanged: digest compression (candidate 3, doubly
+instrumented) and the "declined an engine exit" vocabulary, both waiting on run
+evidence. `NUM_PREDICT_*` values remain drafted, uncalibrated.
 
 ## Open questions
 
-- **Were attempt 1's engine targets degenerate?** The one sample (SBUX) was steeply
-  bearish, not flat. Attempt 2 should read its persisted targets first — any 7b-stage
-  failure now preserves the evidence as a degraded run.
-- **Is the FMP dated-EOD rung de facto primary?** Unresolved — read `data-health`
-  early on the run; the Stooq breaker trip now also leaves a stderr line.
-- **Live-evidence caveat** — the sector-P/E walk-back's "holidays serve carried
-  values" warrant rests on the adapter's 2026-07-16 verification, not re-probed.
+- **Step-ownership concurrency semantics** — what "the owning step" means when
+  stages run concurrently (the report's analyst trio, the research executor);
+  to settle at plan time for the slice below.
+- **Were attempt 1's engine targets degenerate?** The one sample (SBUX) was
+  steeply bearish, not flat; attempt 2 reads whatever persists first.
+- **Is the FMP dated-EOD rung de facto primary?** Read `data-health` early.
+- **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant rests
+  on the 2026-07-16 verification, not re-probed.
+- **INDEX.md row** for the degraded-run / constructed-marker concept (docs span
+  portfolio-workflow §7b, storage, interface) — offered, not yet ruled.
 
 ## Where to start
 
-Update the two stale docs spots (user-run): the attempt-1 record's §Disposition
-(candidates 2 + 4 built, diagnostics gap closed, Finding 5 ruled — all
-2026-08-11, `b634c23`) and BUILD.md §What remains item 1. Then **run big-run
-attempt 2**: read the SBUX-shape engine-target question from whatever persists
-before anything else, read `data-health` early, and keep the Ollama server log
-deliberately. Watch checklist: `docs/verification/big-run-watch-set.md`.
+Plan and build **the progress step-ownership slice** (BUILD §What remains
+item 1): stamp request events with their owning step at `RunContext::emit`,
+retire the 17-site bracket convention and the tracker's phantom-step synthesis
+(which paints FAILED on successful runs when tripped), and **fold in shaped
+row statuses for the remaining ~17 `suite_get` sites** (quote/EOD already
+carry them). Settle the concurrency semantics at plan time; update
+`run-tracking.md`. Then **big-run attempt 2**: checklist
+`docs/verification/big-run-watch-set.md`, read the SBUX-shape engine targets
+and `data-health` first, keep the Ollama server log deliberately.
