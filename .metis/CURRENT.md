@@ -2,55 +2,40 @@
 
 ## What happened
 
-**The step-ownership slice shipped and pushed** (`067de1a` direct to main;
-internal reviewer approve-with-nits, then five Codex rounds to approval).
-Request-row ownership is now stated, not inferred: `RunContext::emit` stamps
-every request event with the run's active step (a single cell — set by
-`step_started`, cleared only by its matching `step_finished`; the analyst
-trio's concurrency lives inside one step, so the cell is exact, and emitter
-call sites are untouched). The tracker attaches rows by the stamp — group
-routing, follow-the-running-step, and phantom-step synthesis are retired;
-unowned rows render in a neutral "requests outside any step" list; the
-run-finished reconcile mirrors the terminal status, so a successful run closes
-a still-running step `ok`, never FAILED. All 19 FMP suite rows ride
-`suite_get_shaped`: status decided after the caller's parse (ok only when
-usable data landed / empty / malformed with cause-on-row). The Codex rounds
-hardened the boundary: non-array bodies, wholly-unreadable arrays, and
-undatable date strings read malformed; served-empty `[]` reads empty
-(quote, etf/info); drifted earnings/news/deep-EOD bodies return `Err` so the
-quick check types the family unknown; accepted non-zero-padded dates
-normalize to canonical ISO before any lexicographic consumer. The news guard
-splits readability from its domain date filter. `run-tracking.md` carries the
-contract.
-
-**Stooq removal ruled** (user decision 2026-08-12, superseding the rung-order
-slice; BUILD/INDEX aligned in-session — item 5 replaced by the removal slice
-as item 1, step-ownership moved to §Built, the two offered INDEX rows added):
-Stooq is untestable behind its JS-PoW
-wall and must not resurrect untested in production; FMP dated-EOD becomes the
-only price rung (200/min + the 63 s ladder cover the load; light-EOD probed to
-≥1985 depth with a 5,000-row/request cap against a ~1,100-row ask). Evidence,
-full code/docs inventory, and plan-time opens:
-`docs/verification/2026-08-12-stooq-removal-decision.md`.
+**The Stooq-removal slice shipped and pushed** (`cbc6dca` direct to main;
+internal reviewer approve, one Codex round to approval). The stooq module and
+wiring are deleted; FMP dated-EOD is the only deep-price rung for the
+per-holding history and the outcome pass alike. The `^spx` vs `^GSPC` open
+resolved to **rename** — episodes never persist the market-benchmark symbol
+(verified), so the only churn was the price-bar cache, cleaned by an
+idempotent `DELETE ... WHERE symbol = '^SPX'` at store init. The
+`OutcomePriceSource` trait stays as the test seam with an FMP-only live impl.
+Data-health dropped `deep_history_fallbacks` (old rows decode; serde ignores
+the stray key) — **any deep-history failure now trips attention**, stricter
+than attempt 1's recovered-fallback leniency. The Codex round caught what the
+decision record's inventory missed: `logic-flow-docs/` (13 live references,
+now fixed), the source matrix's FMP cells, and two stale keyless-price claims.
+The benchmark / sector / commodity identity table now lives at
+`docs/data-sources.md §Financial Modeling Prep` as FMP symbols (`^GSPC`,
+plain SPDRs, `GCUSD`/`SIUSD`/`HGUSD`). BUILD/INDEX aligned in-session
+(user-run): the slice sits in §Built, the big run is queue item 1.
 
 ## Current state
 
-Nothing in flight. `main` pushed at the session-end commit (the slice at
-`067de1a`, then the removal record + this handoff). Gate at close: 1072 lib +
-32 integration cargo tests, clippy clean at `--all-targets --all-features`,
-`npm run build` clean, 46 node + 241 vitest.
+Nothing in flight. `main` pushed at the slice commit plus this session-end
+metis commit. Gate at close: **1067** lib + 32 integration cargo tests
+(down from 1072 — the stooq module's tests went with it; one store-cleanup
+test added), clippy clean at `--all-targets --all-features`, `npm run build`
+clean, 46 node + 241 vitest.
 
 Behind attempt 2, unchanged: digest compression (candidate 3, doubly
 instrumented) and the "declined an engine exit" vocabulary, both waiting on
-run evidence. `NUM_PREDICT_*` values remain drafted, uncalibrated.
+run evidence. `NUM_PREDICT_*` values remain drafted, uncalibrated. The
+`SIUSD`/`HGUSD` commodity endpoint shapes verify at TO build time (recorded
+in data-sources.md; gold live-verified).
 
 ## Open questions
 
-- **Stooq-removal plan-time opens** (owned by the record's §Open at plan
-  time): keep `^spx` as the abstract market-benchmark identity vs rename to
-  `^GSPC` (persisted-episode references decide); the FMP-only watch items
-  replacing the watch set's two retired Stooq lines; whether the outcome
-  `daily_closes` trait seam stays as the test seam.
 - **Were attempt 1's engine targets degenerate?** The one sample (SBUX) was
   steeply bearish, not flat; attempt 2 reads whatever persists first.
 - **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant rests
@@ -58,13 +43,10 @@ run evidence. `NUM_PREDICT_*` values remain drafted, uncalibrated.
 
 ## Where to start
 
-Plan the **Stooq-removal slice** via `/metis-plan-task` against
-`docs/verification/2026-08-12-stooq-removal-decision.md` — the record carries
-the decision, the nine built-code sites with replacements, the docs surface
-(including the single-homed benchmark/futures identity table that must move
-out of `data-sources.md §Stooq`), and the plan-time opens. Build it, then
-**big-run attempt 2**: checklist `docs/verification/big-run-watch-set.md`
-(its two Stooq lines retire with the slice), read the SBUX-shape engine
-targets and `data-health` first, keep the Ollama server log — and expect
-suite rows that read `ok` on attempt 1 to now honestly read `empty` or
-`malformed`.
+**Big-run attempt 2** — nothing stands in front of it. Checklist
+`docs/verification/big-run-watch-set.md`, whose retired Stooq lines are now
+the two FMP-only watches: quota consumption under the full price load, and
+429-ladder engage/recover. Read the SBUX-shape engine targets and
+`data-health` early, keep the Ollama server log. Expect two shifts from the
+slice: suite rows that read `ok` on attempt 1 may now honestly read `empty`
+or `malformed`, and any deep-history failure trips the attention flag.

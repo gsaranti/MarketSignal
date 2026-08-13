@@ -391,9 +391,9 @@ this section carries only the decisions a plan must not work against.
 - **Invariants governing the suite** (full specs in the docs; a plan must not
   work against these; each states its own reach):
   - **Deterministic finance, primary-source evidence** — a shared Rust engine
-    over FMP + keyless SEC EDGAR / Stooq / FINRA / CBOE (the last two designed,
-    unbuilt; Stooq ruled for removal 2026-08-12 — the Stooq-removal slice in
-    §What remains owns retiring it) computes the engine arm for both jobs. Both are **two-arm**: the
+    over FMP + keyless SEC EDGAR / FINRA / CBOE (the last two designed,
+    unbuilt; Stooq removed 2026-08-12 — FMP dated-EOD is the only price rung)
+    computes the engine arm for both jobs. Both are **two-arm**: the
     engine's values are the incorruptible baseline beside an **unrestricted
     model arm**, structurally validated only, the two scored head-to-head by a
     deterministic scoreboard. The per-job field schemas differ — BUILD does not
@@ -503,10 +503,10 @@ slice will consume, and reserved the episode `lean` / `lean_divergence` pair
 that the construction stage now populates without a schema migration.
 
 Deliberate reductions in the quick check, surfaced rather than latent so they
-are not mistaken for defects: FMP quote plus dated-EOD only (no Stooq cache
-exists), no cash-flow re-pull, no breadth-flip sub-leg, material filings are the
-10-K/10-Q/8-K prefix, and the FINRA leg is structurally unreachable from the
-closed ledger series surface.
+are not mistaken for defects: FMP quote plus dated-EOD only (never the shared
+price-bar cache), no cash-flow re-pull, no breadth-flip sub-leg, material
+filings are the 10-K/10-Q/8-K prefix, and the FINRA leg is structurally
+unreachable from the closed ledger series surface.
 
 **Portfolio Analysis — built**, less two depth slices. Built: the per-holding
 spine and fund path, the persisted **thesis ledger** with machine-evaluable
@@ -577,34 +577,32 @@ is now fully built.**
   fallbacks are retired; an unowned row renders unattributed, never as a
   failed step). Every FMP suite row carries the shaped ok / empty / malformed
   outcome with its cause on the row.
+- **The Stooq-removal slice** — Stooq deleted everywhere (user decision
+  2026-08-12; the record, with evidence and inventory, is
+  `docs/verification/2026-08-12-stooq-removal-decision.md`): FMP dated-EOD is
+  the only deep-price rung for the per-holding history and the outcome pass
+  alike, the market benchmark is `^GSPC` (episodes never persisted the old
+  `^spx`; the dead `^SPX` cache key is cleaned idempotently at store init),
+  data-health's fallback counter is retired — any deep-history failure now
+  trips attention — and the benchmark / sector / commodity identity table is
+  re-homed to `docs/data-sources.md §Financial Modeling Prep` as FMP symbols.
 
 ### Remaining, in order
 
-1. **The Stooq-removal slice** — the one item standing before the run (user
-   decision 2026-08-12, superseding the rung-order slice that previously held
-   this queue's tail). Stooq is untestable behind its JS proof-of-work wall
-   and must not resurrect untested in a production app, so it is removed
-   everywhere and FMP dated-EOD becomes the only deep-price rung — the paid
-   plan's per-minute limit and the existing 429 ladder cover the load, the
-   adjustment basis is verified identical, and the anchor window's ask sits
-   far under the endpoint's per-request row cap. The decision record —
-   evidence, the full code/docs inventory with per-site replacements, and the
-   plan-time opens (the `^spx` vs `^GSPC` benchmark identity against
-   persisted episodes chief among them) — is
-   `docs/verification/2026-08-12-stooq-removal-decision.md`.
-2. **The single big confirmation run** — the gate everything else waits behind.
-   Its checklist is `docs/verification/big-run-watch-set.md`; read `data-health`
+1. **The single big confirmation run** — the gate everything else waits
+   behind, with nothing left standing in front of it. Its checklist is
+   `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
+   now the FMP quota-consumption and 429-ladder watches); read `data-health`
    early, since several items resolve off that surface alone. The first attempt
    failed at Step 7b after completing the per-holding pass, and persisted
    nothing — evidence in `docs/verification/2026-08-10-big-run-attempt-1.md`.
    The repair and the pre-run work behind it are fully built: a repeat
    failure at 7b preserves its evidence as a degraded run instead of
    discarding the pass, the named-violation re-run repairs only the violating
-   names, and the output budget and adapter seams are instrumented. Only the
-   Stooq-removal slice above stands between here and a second attempt; what
+   names, and the output budget and adapter seams are instrumented. What
    stays open behind the run (digest compression) is owned by that record's
    §Disposition, not this brief.
-3. **Trade Opportunities** — designed, not built, and waiting behind the whole
+2. **Trade Opportunities** — designed, not built, and waiting behind the whole
    block. The design is settled and the paid FMP shapes are live-verified, so
    implementation planning codes against verified shapes. Five hard-trigger
    acceptance cases are parked for this slice and have no other home: a carried
@@ -613,7 +611,7 @@ is now fully built.**
    raises a warning only; a debut hard trigger becomes a shadow rejection; and a
    soft trigger caps the stand-in while preserving conviction, with no forced
    archival.
-4. **The two remaining Portfolio depth slices** — the **live research loop** and
+3. **The two remaining Portfolio depth slices** — the **live research loop** and
    the **held-name research refresh lane**, which rides with it. The shipped
    schemas don't preclude either, but the research loop carries the pre-profit
    producer's activation obligation (§Standing constraints) and must discharge

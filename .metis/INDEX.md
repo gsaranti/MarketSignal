@@ -247,7 +247,7 @@ build status lives in `BUILD.md`.*
 - Shadow outcome ledger / picked-vs-rejected calibration — trade-opportunities.md §Outcome learning, §Starting parameters; trade-opportunities-workflow.md §Step 3c, §Step 5h, §Step 6, §Step 7, §Step 9; storage.md §Local Analysis Suite Storage; configuration.md §Local Analysis Suite Configuration
 - Outcome measurement contract — trade-opportunities.md §Outcome learning; storage.md §Local Analysis Suite Storage
 - Picked decision episodes / lifecycle id — trade-opportunities.md §Outcome learning, §Starting parameters; storage.md §Local Analysis Suite Storage; trade-opportunities-workflow.md §Step 5b, §Step 7; configuration.md §Local Analysis Suite Configuration; data-portability.md §Build-order placement
-- Trade Opportunities endpoint surface — data-sources.md §Trade Opportunities — endpoint surface, §FMP — current paid-plan tier audit; storage.md §Local Analysis Suite Storage (Stooq cache)
+- Trade Opportunities endpoint surface — data-sources.md §Trade Opportunities — endpoint surface, §FMP — current paid-plan tier audit; storage.md §Local Analysis Suite Storage (price-bar cache)
 - Trade Opportunities signal inputs — trade-opportunities.md §Signal inputs; data-sources.md §Local analysis suite — shared sourcing, §Trade Opportunities — endpoint surface
 - TO research-target scenario bridge — trade-opportunities.md §The opportunity, §Starting parameters; trade-opportunities-workflow.md §Step 5e, §Step 5f, §Step 5g, §Step 5h, §Step 7, §ATO: the audit flow; storage.md §Local Analysis Suite Storage
 - Entry asymmetry threshold — trade-opportunities.md §Starting parameters, §The opportunity; trade-opportunities-workflow.md §Step 5h, §Step 2
@@ -276,7 +276,7 @@ build status lives in `BUILD.md`.*
 - FMP paid-tier suite signals — data-sources.md §Local analysis suite — shared sourcing, §FMP — current paid-plan tier audit
 - FMP paid-plan tier audit — data-sources.md §FMP — current paid-plan tier audit
 - FINRA short interest — data-sources.md §FINRA
-- Stooq benchmark / futures identities + adjustment convention — data-sources.md §Stooq
+- Benchmark / sector / commodity identities + adjustment convention — data-sources.md §Financial Modeling Prep
 - Suite data dispersal — data-sources.md §Local analysis suite — shared sourcing
 - Local analysis suite configuration — configuration.md §Local Analysis Suite Configuration, §Research Context Management
 - Local analysis suite storage + per-feature retention — storage.md §Local Analysis Suite Storage
@@ -293,11 +293,11 @@ the run's own dated record follows it.*
 
 - Local-model serving pre-flight — verification/2026-07-28-m5-preflight.md; local-model-operations.md §M5 pre-flight checklist
 - First live Portfolio run — verification/2026-07-31-first-live-portfolio-run.md
-- FMP light-EOD adjustment-basis probe — verification/2026-08-02-fmp-light-eod-adjustment-basis.md; data-sources.md §Stooq
+- FMP light-EOD adjustment-basis probe — verification/2026-08-02-fmp-light-eod-adjustment-basis.md; data-sources.md §Financial Modeling Prep
 - Grade-band calibration — verification/2026-08-03-grade-band-shadow-tune.md; portfolio-analysis.md §Starting parameters
 - Portfolio code-vs-docs conformance — verification/2026-08-04-piece2-conformance-walk.md; verification/2026-08-05-piece2-conformance-rerun.md
 - Deterministic value-chain correctness — verification/2026-08-05-piece3-value-chain-walk.md
 - Residual conformance + off-spine doc coverage — verification/2026-08-07-scoped-conformance-check.md
 - Big confirmation run — watch set (forward-looking; the run's dated record follows) — verification/big-run-watch-set.md; BUILD.md §What remains
 - Big confirmation run — attempt 1 — verification/2026-08-10-big-run-attempt-1.md; portfolio-workflow.md §Step 7b
-- Stooq removal — decision, evidence, and removal-slice inventory — verification/2026-08-12-stooq-removal-decision.md; BUILD.md §What remains
+- Stooq removal — decision, evidence, and removal-slice inventory — verification/2026-08-12-stooq-removal-decision.md; BUILD.md §What remains (Built)
