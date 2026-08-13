@@ -164,7 +164,7 @@ function onScroll() {
 // A cheap signal that grows as content arrives (request rows + streamed chars +
 // step count), so the watcher fires on any new content without deep-watching.
 const contentSignature = computed(() => {
-  let n = props.trace.steps.length;
+  let n = props.trace.steps.length + props.trace.unattributed.length;
   for (const s of props.trace.steps) {
     n += s.requests.length + s.agentText.length + s.agentThinking.length;
     for (const k in s.analystThinking) n += s.analystThinking[k].length;
@@ -335,6 +335,51 @@ watch(contentSignature, async () => {
           <pre v-if="step.agentText" class="agent-stream">{{ step.agentText }}</pre>
         </li>
       </ol>
+
+      <!-- Requests whose events carried no owning-step stamp (a request fired
+           with no step open). Rendered as their own neutral trailing list —
+           never synthesized into a step, so an unowned row can never read as a
+           failed stage. Absent in every well-bracketed run. -->
+      <section
+        v-if="trace.unattributed.length"
+        class="unattributed"
+        aria-label="Requests outside any step"
+      >
+        <span class="unattributed-label">Requests outside any step</span>
+        <ul class="req-list">
+          <li
+            v-for="(r, i) in trace.unattributed"
+            :key="`${r.group}-${r.seriesId}-${i}`"
+            class="req"
+            :data-tone="reqTone(r.status)"
+          >
+            <span class="req-provider">{{ r.provider }}</span>
+            <span class="req-name" :title="r.name">{{ r.name }}</span>
+            <span class="req-status" :data-tone="reqTone(r.status)">
+              <Icon
+                v-if="reqTone(r.status) === 'ok'"
+                name="check"
+                :size="12"
+                aria-label="ok"
+              />
+              <span
+                v-else-if="reqTone(r.status) === 'running'"
+                class="req-dot"
+                role="img"
+                aria-label="in progress"
+              ></span>
+              <template v-else>{{ r.status }}</template>
+            </span>
+            <span
+              v-if="reqTone(r.status) === 'fail' && r.detail"
+              class="req-detail"
+              :title="r.detail"
+            >
+              {{ r.detail }}
+            </span>
+          </li>
+        </ul>
+      </section>
 
       <!-- Edge state: the run has started but no step events have landed yet. -->
       <p v-if="!trace.steps.length" class="tracker-starting">Starting…</p>
@@ -709,6 +754,25 @@ watch(contentSignature, async () => {
   /* No inner scroll: the block grows with the streamed text and the outer
      tracker scroll auto-follows to the newest tokens, so the latest writing is
      always in view (the user can scroll up to re-read). */
+}
+
+/* The unattributed-requests list: the same hairline request rows, held outside
+   the step spine under a caption label (the eyebrow idiom), aligned to the
+   step list's measure. Neutral by construction — no step marker, no status
+   word of its own. */
+.unattributed {
+  margin: var(--s-6) auto 0;
+  max-width: var(--measure-wide);
+  display: block;
+}
+.unattributed-label {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: var(--t-caption);
+  letter-spacing: var(--track-caption);
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: var(--s-2);
 }
 
 .tracker-starting {

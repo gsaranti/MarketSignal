@@ -22,6 +22,7 @@ const activeTrace: RunTrace = deepFreeze({
   runId: "run-1",
   label: "Weekly Market Report",
   terminal: null,
+  unattributed: [],
   steps: [
     {
       key: "baseline",
@@ -49,6 +50,7 @@ function terminalTrace(status: string): RunTrace {
     runId: "run-1",
     label: "Weekly Market Report",
     terminal: { status, detail: null },
+    unattributed: [],
     steps: [{ key: "report", label: "Drafting report", status: "ok", detail: null, agentText: "", agentThinking: "", requests: [] }],
   });
 }
@@ -69,6 +71,7 @@ test("an active run with no running step yet falls back to 'Generating report'",
     runId: "run-1",
     label: "Weekly Market Report",
     terminal: null,
+    unattributed: [],
     steps: [{ key: "baseline", label: "Baseline scan", status: "pending", detail: null, agentText: "", agentThinking: "", requests: [] }],
   });
   const wrapper = mount(JobTrackerView, {
@@ -87,6 +90,7 @@ test("a portfolio-owned tracker never announces itself as report generation", ()
     runId: "run-1",
     label: "Portfolio Analysis",
     terminal: null,
+    unattributed: [],
     steps: [{ key: "holdings", label: "Pull holdings", status: "pending", detail: null, agentText: "", agentThinking: "", requests: [] }],
   });
   const active = mount(JobTrackerView, {
@@ -108,6 +112,7 @@ test("a quick-check tracker carries its own labels and returns to the portfolio"
     runId: "run-1",
     label: "Quick check",
     terminal: null,
+    unattributed: [],
     steps: [{ key: "sweep", label: "Sweep ledgers", status: "pending", detail: null, agentText: "", agentThinking: "", requests: [] }],
   });
   const active = mount(JobTrackerView, {
@@ -181,6 +186,7 @@ test("the quick check's sweep outcomes render as completed-with-outcome, never f
     runId: "qc-1",
     label: "Portfolio quick check",
     terminal: null,
+    unattributed: [],
     steps: [
       { key: "check-aapl", label: "Check AAPL", status: "flagged", detail: null, agentText: "", agentThinking: "", requests: [] },
       { key: "check-msft", label: "Check MSFT", status: "unknown", detail: null, agentText: "", agentThinking: "", requests: [] },
@@ -264,6 +270,7 @@ test("each analyst's reasoning renders as its own labeled pane, in canonical ord
     runId: "run-1",
     label: "Weekly Market Report",
     terminal: null,
+    unattributed: [],
     steps: [
       {
         key: "analysts",
@@ -291,8 +298,40 @@ test("each analyst's reasoning renders as its own labeled pane, in canonical ord
   expect(bodies[2]).toContain("Adjudicating the two strongest");
 });
 
+test("unattributed rows render as a neutral trailing list, absent when empty", () => {
+  // Rows whose events carried no owning-step stamp render under their own
+  // caption — never inside a step, never with a step marker or failure word of
+  // their own — and the section does not exist for a well-bracketed run.
+  const withUnattributed: RunTrace = deepFreeze({
+    runId: "run-1",
+    label: "Portfolio Analysis",
+    terminal: { status: "successful", detail: null },
+    unattributed: [
+      { provider: "FRED", group: "suite-rate", seriesId: "DGS10", name: "Rate anchor", status: "ok", detail: null },
+    ],
+    steps: [{ key: "rates", label: "Load rate anchors", status: "ok", detail: null, agentText: "", agentThinking: "", requests: [] }],
+  });
+  const wrapper = mount(JobTrackerView, {
+    props: { trace: withUnattributed, active: false, cancelRequested: false, kind: "portfolio" },
+  });
+  const section = wrapper.find(".unattributed");
+  expect(section.exists()).toBe(true);
+  expect(section.find(".unattributed-label").text()).toBe("Requests outside any step");
+  const row = section.find(".req");
+  expect(row.attributes("data-tone")).toBe("ok");
+  expect(row.find(".req-name").text()).toBe("Rate anchor");
+  // The section lives outside the step list: no step marker, no step status word.
+  expect(section.find(".step-marker").exists()).toBe(false);
+  expect(section.find(".step-status").exists()).toBe(false);
+
+  const without = mount(JobTrackerView, {
+    props: { trace: activeTrace, active: true, cancelRequested: false },
+  });
+  expect(without.find(".unattributed").exists()).toBe(false);
+});
+
 test("a run with no steps yet shows the Starting edge state", () => {
-  const empty = deepFreeze({ runId: "run-1", label: "Weekly Market Report", terminal: null, steps: [] });
+  const empty = deepFreeze({ runId: "run-1", label: "Weekly Market Report", terminal: null, unattributed: [], steps: [] });
   const wrapper = mount(JobTrackerView, {
     props: { trace: empty, active: true, cancelRequested: false },
   });

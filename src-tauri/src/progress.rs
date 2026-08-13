@@ -18,7 +18,7 @@
 //!   interrupted; the cancel lands at the next checkpoint.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
@@ -51,17 +51,26 @@ pub enum ProgressEvent {
     /// *only* when a request is actually made (a short-circuited series sends none),
     /// so tracker rows stay one-to-one with network calls, and the row shows in-flight
     /// before its outcome lands. `series_id` keys the matching [`Self::RequestFinished`].
+    ///
+    /// `step` is the row's owning step — stamped by [`RunContext::emit`] from the
+    /// run's active step (the step most recently started and not yet finished),
+    /// never supplied by the caller. `None` means the request fired with no step
+    /// open; the tracker renders such rows unattributed rather than inventing a
+    /// step to hold them.
     RequestStarted {
         provider: String,
         group: String,
         series_id: String,
         name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step: Option<String>,
     },
     /// A single baseline data request resolved — paired with a prior `RequestStarted`
     /// by `provider`/`group`/`series_id`. `status` is `ok` for a resolved value, the
     /// `GapReason` kebab label (`unavailable` / `rejected` / `malformed` /
     /// `out-of-scope`) when it degraded to a gap, or `empty` for a 2xx that carried no
     /// usable data and recorded no gap (e.g. an additive enrichment skipped silently).
+    /// `step` carries the same emit-stamped ownership as [`Self::RequestStarted`].
     RequestFinished {
         provider: String,
         group: String,
@@ -69,6 +78,8 @@ pub enum ProgressEvent {
         name: String,
         status: String,
         detail: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step: Option<String>,
     },
     /// A coalesced chunk of the main agent's streamed output (decoded report
     /// text), appended to the tracker's live console as the model writes.
@@ -139,13 +150,15 @@ fn tee_to_stderr(run_id: &str, event: &ProgressEvent) {
             Some(d) => eprintln!("[run {run_id}] step {step}: {status} — {d}"),
             None => eprintln!("[run {run_id}] step {step}: {status}"),
         },
-        ProgressEvent::RequestStarted { provider, group, series_id, .. } => {
-            eprintln!("[run {run_id}] {provider} {group}/{series_id}: sent");
+        ProgressEvent::RequestStarted { provider, group, series_id, step, .. } => {
+            let step = step.as_deref().unwrap_or("unattributed");
+            eprintln!("[run {run_id}] [{step}] {provider} {group}/{series_id}: sent");
         }
-        ProgressEvent::RequestFinished { provider, group, series_id, status, detail, .. } => {
+        ProgressEvent::RequestFinished { provider, group, series_id, status, detail, step, .. } => {
+            let step = step.as_deref().unwrap_or("unattributed");
             match detail {
-                Some(d) => eprintln!("[run {run_id}] {provider} {group}/{series_id}: {status} — {d}"),
-                None => eprintln!("[run {run_id}] {provider} {group}/{series_id}: {status}"),
+                Some(d) => eprintln!("[run {run_id}] [{step}] {provider} {group}/{series_id}: {status} — {d}"),
+                None => eprintln!("[run {run_id}] [{step}] {provider} {group}/{series_id}: {status}"),
             }
         }
         ProgressEvent::RunFinished { status, detail, .. } => match detail {
@@ -178,6 +191,16 @@ pub struct RunContext {
     /// is a cooperative checkpoint, not a synchronization point.
     cancel: Arc<AtomicBool>,
     seq: AtomicU64,
+    /// The run's active step — the step most recently started and not yet
+    /// finished. [`Self::emit`] stamps every request event with it, so row
+    /// ownership is something the run *states* rather than the tracker infers
+    /// from event ordering. A single cell, not a stack: a step bracket delimits
+    /// the run's exclusive request-emitting phase, and the pipeline's only
+    /// concurrency (the analyst trio) lives *inside* one step. A stage wanting
+    /// two concurrently-open request-owning steps must extend this seam
+    /// explicitly; until then an unowned request degrades to a visible
+    /// unattributed row, never a misattributed one.
+    active_step: Mutex<Option<String>>,
 }
 
 impl RunContext {
@@ -193,6 +216,7 @@ impl RunContext {
             reporter,
             cancel,
             seq: AtomicU64::new(0),
+            active_step: Mutex::new(None),
         })
     }
 
@@ -227,8 +251,15 @@ impl RunContext {
     /// Stamp an event with the run id and the next sequence, then hand it to the
     /// reporter. The single choke point every helper below routes through — and
     /// the stderr tee's one home, so every job's run structure leaves a durable
-    /// trace regardless of which reporter is attached.
-    fn emit(&self, event: ProgressEvent) {
+    /// trace regardless of which reporter is attached. Request events are
+    /// stamped here with the run's active step (see [`Self::active_step`]), so
+    /// the adapters emitting them never need to know which step is running.
+    fn emit(&self, mut event: ProgressEvent) {
+        if let ProgressEvent::RequestStarted { step, .. }
+        | ProgressEvent::RequestFinished { step, .. } = &mut event
+        {
+            *step = self.active_step.lock().unwrap().clone();
+        }
         tee_to_stderr(&self.run_id, &event);
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         self.reporter.report(&ProgressMessage {
@@ -244,21 +275,36 @@ impl RunContext {
         });
     }
 
+    /// Declare a step started. Also makes it the run's active step, so every
+    /// request emitted until the matching [`Self::step_finished`] is stamped as
+    /// owned by it.
     pub fn step_started(&self, step: impl Into<String>, label: impl Into<String>) {
+        let step = step.into();
+        *self.active_step.lock().unwrap() = Some(step.clone());
         self.emit(ProgressEvent::StepStarted {
-            step: step.into(),
+            step,
             label: label.into(),
         });
     }
 
+    /// Declare a step finished. Clears the active step only when the key
+    /// matches the step currently owning it, so a stray or out-of-order close
+    /// can't steal ownership from a step that already superseded it.
     pub fn step_finished(
         &self,
         step: impl Into<String>,
         status: impl Into<String>,
         detail: Option<String>,
     ) {
+        let step = step.into();
+        {
+            let mut active = self.active_step.lock().unwrap();
+            if active.as_deref() == Some(step.as_str()) {
+                *active = None;
+            }
+        }
         self.emit(ProgressEvent::StepFinished {
-            step: step.into(),
+            step,
             status: status.into(),
             detail,
         });
@@ -276,6 +322,8 @@ impl RunContext {
             group: group.into(),
             series_id: series_id.into(),
             name: name.into(),
+            // Placeholder — `emit` overwrites it with the run's active step.
+            step: None,
         });
     }
 
@@ -296,6 +344,8 @@ impl RunContext {
             name: name.into(),
             status: status.into(),
             detail,
+            // Placeholder — `emit` overwrites it with the run's active step.
+            step: None,
         });
     }
 
@@ -394,6 +444,7 @@ mod tests {
                 name: "10-Year Treasury".into(),
                 status: "ok".into(),
                 detail: None,
+                step: Some("baseline".into()),
             },
         };
         let v = serde_json::to_value(&msg).unwrap();
@@ -405,6 +456,114 @@ mod tests {
         assert_eq!(v["series_id"], "DGS10");
         assert_eq!(v["name"], "10-Year Treasury");
         assert_eq!(v["status"], "ok");
+        assert_eq!(v["step"], "baseline");
+    }
+
+    #[test]
+    fn an_unowned_request_serializes_with_no_step_field_at_all() {
+        // `step: None` is skipped, not serialized as null, so the frontend's
+        // "no step" check is a plain absent-field test.
+        let msg = ProgressMessage {
+            run_id: "r".into(),
+            seq: 0,
+            event: ProgressEvent::RequestStarted {
+                provider: "FMP".into(),
+                group: "indices".into(),
+                series_id: "SPX".into(),
+                name: "S&P 500".into(),
+                step: None,
+            },
+        };
+        let v = serde_json::to_value(&msg).unwrap();
+        assert!(v.get("step").is_none());
+    }
+
+    #[test]
+    fn requests_are_stamped_with_the_active_step() {
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("run-5", rec.clone(), Arc::new(AtomicBool::new(false)));
+
+        // Before any step: unowned.
+        ctx.request_started("FMP", "indices", "SPX", "S&P 500");
+        ctx.step_started("baseline", "Baseline scan");
+        ctx.request_started("FRED", "macro-levels", "DGS10", "10-Year Treasury");
+        ctx.request_finished("FRED", "macro-levels", "DGS10", "10-Year Treasury", "ok", None);
+        ctx.step_finished("baseline", "ok", None);
+        // After the close: unowned again.
+        ctx.request_finished("FMP", "indices", "SPX", "S&P 500", "ok", None);
+
+        let steps: Vec<Option<String>> = rec
+            .messages()
+            .iter()
+            .filter_map(|m| match &m.event {
+                ProgressEvent::RequestStarted { step, .. }
+                | ProgressEvent::RequestFinished { step, .. } => Some(step.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            steps,
+            vec![
+                None,
+                Some("baseline".to_string()),
+                Some("baseline".to_string()),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stray_close_cannot_steal_ownership_from_a_superseding_step() {
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("run-6", rec.clone(), Arc::new(AtomicBool::new(false)));
+
+        ctx.step_started("rates", "Load rate anchors");
+        ctx.step_started("holding-AAPL", "Analyze AAPL");
+        // A stray close of the superseded step must not clear the active one.
+        ctx.step_finished("rates", "ok", None);
+        ctx.request_started("FMP", "company-quote", "AAPL", "AAPL quote");
+
+        let last = rec.messages().pop().unwrap();
+        match last.event {
+            ProgressEvent::RequestStarted { step, .. } => {
+                assert_eq!(step.as_deref(), Some("holding-AAPL"));
+            }
+            other => panic!("expected RequestStarted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn concurrent_requests_inside_one_step_all_carry_its_stamp() {
+        // The analyst-trio shape: scoped threads sharing one context, all
+        // emitting inside a single open step.
+        let rec = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("run-7", rec.clone(), Arc::new(AtomicBool::new(false)));
+
+        ctx.step_started("analysts", "Running the analyst agents");
+        std::thread::scope(|scope| {
+            for posture in ["bull", "bear", "balanced"] {
+                let ctx = &ctx;
+                scope.spawn(move || {
+                    ctx.request_started("OpenAI", "analyst", posture, posture);
+                    ctx.request_finished("OpenAI", "analyst", posture, posture, "ok", None);
+                });
+            }
+        });
+        ctx.step_finished("analysts", "ok", None);
+
+        let request_steps: Vec<Option<String>> = rec
+            .messages()
+            .iter()
+            .filter_map(|m| match &m.event {
+                ProgressEvent::RequestStarted { step, .. }
+                | ProgressEvent::RequestFinished { step, .. } => Some(step.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(request_steps.len(), 6);
+        assert!(request_steps
+            .iter()
+            .all(|s| s.as_deref() == Some("analysts")));
     }
 
     #[test]

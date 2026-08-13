@@ -16,6 +16,9 @@ When a run begins, the owning page (the report pane for a report run) is replace
   A *request* here is one logical fetch — a single data series, or a single research query — not a single network packet: when a request meets a transient failure (a rate limit or a brief server error) the application retries it a bounded number of times automatically, and those retries belong to that one request's row rather than spawning new ones.
   A request that is never made — because an earlier request to the same provider was rejected, short-circuiting the rest — produces no row.
   So each row corresponds to one request the workflow chose to make, resolved to its final outcome.
+  A row belongs to the step that issued it, and that ownership is stated by the run itself — every request event is stamped with its owning step as it is emitted — never inferred from arrival order or request naming.
+  A row that arrives owning no step is shown in its own small "requests outside any step" list rather than being forced into a step, so a stray request can never make a step look failed.
+  A row reads *ok* only when the request landed usable data: a response that parsed but carried nothing usable shows *empty*, and an unreadable response shows *malformed* with its cause on the row.
 - **The main agent's report, streamed live.**
   As the main agent writes the report, its text streams into the tracker as it is produced, rather than appearing only once the report is finished.
 - **The main agent's reasoning, streamed live.**

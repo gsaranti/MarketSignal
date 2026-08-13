@@ -987,6 +987,10 @@ export interface ProgressMessage {
   // step-started / step-finished: the stable step key + its human label.
   // step-thinking: the key of the step the reasoning chunk belongs to (the
   // portfolio per-holding steps), folded into that step's reasoning pane.
+  // request-started / request-finished: the row's owning step, stamped by the
+  // backend at the progress seam (the run's active step) — never inferred
+  // here. Absent when the request fired with no step open; such rows render
+  // in the trace's unattributed list.
   step?: string;
   // step-finished ("ok" | "failed" | "cancelled"), request-finished ("ok" or a
   // gap reason), run-finished ("successful" | "failed" | "cancelled").
@@ -1051,18 +1055,19 @@ export interface TrackerStep {
   agentText: string;
   agentThinking: string;
   analystThinking: Record<string, string>;
-  /// True once the backend emitted `step-started` for this key. A step synthesized
-  /// by `ensureStep` from a request row is "running" too, so request routing needs
-  /// to tell the two apart before adopting rows into the step that is running.
-  backendStarted: boolean;
 }
 
 // The assembled trace for one run, built in App.vue from the event stream and
 // rendered by JobTrackerView. `terminal` is null until the run finishes; it then
 // carries the outcome so the trace can linger (reopenable) after the run ends.
+// `unattributed` holds request rows whose events carried no owning-step stamp
+// (a request fired with no step open): they render as their own neutral
+// trailing list, never synthesized into a step — so an unowned row can never
+// paint a failed stage into a run's record.
 export interface RunTrace {
   runId: string;
   label: string;
   steps: TrackerStep[];
+  unattributed: TrackerRequest[];
   terminal: { status: string; detail: string | null } | null;
 }

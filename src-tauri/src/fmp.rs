@@ -444,7 +444,7 @@ const GAP_DETAIL_BODY_CAP: usize = 300;
 /// plus FMP's own error sentence when the body carries one
 /// ([`fmp_error_message`] — the signal `interpret_response` classifies as
 /// `Rejected`), else a capped head of the body. The transport arm formats the
-/// reqwest chain instead ([`FmpDataSource::suite_get`]).
+/// reqwest chain instead ([`FmpDataSource::suite_get_shaped`]).
 fn http_gap_detail(status: u16, body: &str) -> String {
     let text = serde_json::from_str::<Value>(body)
         .ok()
@@ -1680,43 +1680,43 @@ impl FmpDataSource {
         // ok only when a price landed), not merely a parseable body — and a
         // gap carries its cause as the detail, so a quota rejection paints
         // "rejected" plus FMP's sentence rather than a benign non-result
-        // (the 2026-08-10 failure class; Codex round).
-        self.progress
-            .request_started("FMP", "company-quote", symbol, "Company quote");
-        let (disposition, gap_detail) =
-            self.get_interpreted(FMP_QUOTE_PATH, &[("symbol", symbol)]);
-        let status = match disposition {
-            Disposition::Value(value) => match company_quote_from_value(&value) {
+        // (the 2026-08-10 failure class; Codex round). These two rows were the
+        // first shaped sites; they now ride the shared `suite_get_shaped`.
+        if let Err(reason) = self.suite_get_shaped(
+            "company-quote",
+            symbol,
+            "Company quote",
+            FMP_QUOTE_PATH,
+            &[("symbol", symbol)],
+            |value| match company_quote_from_value(value) {
                 Some(q) => {
                     fin.current_price = q.price;
                     fin.market_cap = q.market_cap;
                     fin.shares_outstanding = q.shares_outstanding;
                     if q.price.is_none() {
                         fin.gaps.push("FMP quote carried no price".to_string());
-                        "empty"
+                        Shaped::empty(())
                     } else {
-                        "ok"
+                        Shaped::ok(())
                     }
+                }
+                // A served-empty array (an unknown symbol) is an honest empty
+                // answer, not drift — the parser folds both into `None`, so
+                // the split runs here (Codex round 2).
+                None if value.as_array().is_some_and(|a| a.is_empty()) => {
+                    fin.gaps.push("FMP quote was empty".to_string());
+                    Shaped::empty(())
                 }
                 None => {
                     fin.gaps.push("FMP quote was malformed".to_string());
-                    "malformed"
+                    Shaped::malformed(())
+                        .with_detail("body was not the expected array shape — malformed or drifted response")
                 }
             },
-            Disposition::Gap(reason) => {
-                fin.gaps
-                    .push(format!("FMP quote unavailable ({})", reason.as_str()));
-                reason.as_str()
-            }
-        };
-        self.progress.request_finished(
-            "FMP",
-            "company-quote",
-            symbol,
-            "Company quote",
-            status,
-            gap_detail,
-        );
+        ) {
+            fin.gaps
+                .push(format!("FMP quote unavailable ({})", reason.as_str()));
+        }
 
         // 2) EOD price history for momentum + volatility.
         // Cancel checkpoint between the two requests: a cancel after the quote skips the
@@ -1732,45 +1732,41 @@ impl FmpDataSource {
         // boundaries) need converting.
         let to = Utc::now().date_naive();
         let from = to - Duration::days(COMPANY_EOD_LOOKBACK_DAYS);
-        self.progress
-            .request_started("FMP", "company-eod", symbol, "Company price history");
-        let (disposition, gap_detail) = self.get_interpreted(
+        if let Err(reason) = self.suite_get_shaped(
+            "company-eod",
+            symbol,
+            "Company price history",
             FMP_EOD_PATH,
             &[
                 ("symbol", symbol),
                 ("from", from.format("%Y-%m-%d").to_string().as_str()),
                 ("to", to.format("%Y-%m-%d").to_string().as_str()),
             ],
-        );
-        let status = match disposition {
-            Disposition::Value(value) => match eod_prices_from_value(&value) {
+            |value| match eod_prices_from_value(value) {
                 Ok(history) if !history.is_empty() => {
                     fin.price_history = history;
-                    "ok"
+                    Shaped::ok(())
+                }
+                // A served, non-empty array with no readable row is drift, not
+                // emptiness (the parser drops date/price-less rows silently).
+                Ok(_) if value.as_array().is_some_and(|a| !a.is_empty()) => {
+                    fin.gaps.push("FMP price history was malformed".to_string());
+                    Shaped::malformed(())
+                        .with_detail("no served row was readable — malformed or drifted response")
                 }
                 Ok(_) => {
                     fin.gaps.push("FMP price history was empty".to_string());
-                    "empty"
+                    Shaped::empty(())
                 }
-                Err(_) => {
+                Err(e) => {
                     fin.gaps.push("FMP price history was malformed".to_string());
-                    "malformed"
+                    Shaped::malformed(()).with_detail(format!("{e:#}"))
                 }
             },
-            Disposition::Gap(reason) => {
-                fin.gaps
-                    .push(format!("FMP price history unavailable ({})", reason.as_str()));
-                reason.as_str()
-            }
-        };
-        self.progress.request_finished(
-            "FMP",
-            "company-eod",
-            symbol,
-            "Company price history",
-            status,
-            gap_detail,
-        );
+        ) {
+            fin.gaps
+                .push(format!("FMP price history unavailable ({})", reason.as_str()));
+        }
 
         fin
     }
@@ -1838,6 +1834,36 @@ fn company_quote_from_value(value: &Value) -> Option<CompanyQuote> {
     })
 }
 
+/// Parse a served date string (`%Y-%m-%d`; non-zero-padded accepted — the
+/// strict-estimates leniency) and return its CANONICAL fixed-width ISO
+/// render. The suite's dated shapers key row READABILITY on this — a
+/// string-valued non-date is an unreadable row (Codex round 4) — and always
+/// store the canonical form, never the source text: a datable-but-noncanonical
+/// string like `"2026-9-30"` sorts after `"2026-12-31"` and compares fresh
+/// against an October last-pass date, so in source form it corrupts exactly
+/// the lexicographic consumers readability exists to protect (`DatedValue`'s
+/// ISO contract, the EOD chronology sort, the quick check's since-`last_pass`
+/// compare — Codex round 5). Same hazard `dividend_history_from_value` guards
+/// by windowing on the parsed date and rendering its output canonically.
+fn canonical_date(date: &str) -> Option<String> {
+    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .ok()
+        .map(|d| d.format("%Y-%m-%d").to_string())
+}
+
+/// A news row's `publishedDate` with its date prefix CANONICALIZED, or `None`
+/// when the row is unreadable: the leading date token (before any time part,
+/// space- or `T`-separated) must parse as a calendar date — the same prefix
+/// the since-`from` comparison keys on, so it must be fixed-width before that
+/// lexicographic compare. Shared by [`symbol_news_from_value`] and the fetch
+/// site's drift guard so "readable" cannot drift between the two.
+fn canonical_news_date(row: &Value) -> Option<String> {
+    let published = row.get("publishedDate").and_then(Value::as_str)?;
+    let token = published.split([' ', 'T']).next().unwrap_or("");
+    let canonical = canonical_date(token)?;
+    Some(format!("{canonical}{}", &published[token.len()..]))
+}
+
 /// Shape an FMP `/historical-price-eod/light` array body into chronological (oldest
 /// first) closing prices. A non-array body is a contract error; rows are sorted by
 /// date ascending so the engine's first/last read is a real start/end. Pure.
@@ -1845,16 +1871,19 @@ fn eod_prices_from_value(value: &Value) -> Result<Vec<f64>> {
     let rows = value
         .as_array()
         .context("FMP EOD response did not match the expected array shape")?;
-    let mut dated: Vec<(&str, f64)> = Vec::with_capacity(rows.len());
+    let mut dated: Vec<(String, f64)> = Vec::with_capacity(rows.len());
     for row in rows {
         if let (Some(date), Some(price)) = (
-            row.get("date").and_then(Value::as_str),
+            // A non-date string is an unreadable row, and the kept date is
+            // the CANONICAL render ([`canonical_date`]): the sort below
+            // relies on fixed-width ISO ordering.
+            row.get("date").and_then(Value::as_str).and_then(canonical_date),
             row.get("price").and_then(Value::as_f64),
         ) {
             dated.push((date, price));
         }
     }
-    dated.sort_by(|a, b| a.0.cmp(b.0));
+    dated.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(dated.into_iter().map(|(_, p)| p).collect())
 }
 
@@ -1869,11 +1898,14 @@ fn dated_eod_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::D
         .iter()
         .filter_map(|row| {
             match (
-                row.get("date").and_then(Value::as_str),
+                // A non-date string is an unreadable row, and the kept date
+                // is the CANONICAL render ([`canonical_date`]): `DatedValue`
+                // carries the fixed-width ISO contract downstream.
+                row.get("date").and_then(Value::as_str).and_then(canonical_date),
                 row.get("price").and_then(Value::as_f64),
             ) {
                 (Some(date), Some(price)) => Some(crate::portfolio::engine::DatedValue {
-                    date: date.to_string(),
+                    date,
                     value: price,
                 }),
                 _ => None,
@@ -2090,8 +2122,8 @@ mod tests {
 
     #[test]
     fn a_suite_row_carries_the_gap_reason_and_transport_detail() {
-        // `suite_get` previously emitted status "empty" with `detail: None` for
-        // every gap; the row now carries the gap's kebab reason and, on a
+        // The suite GET previously emitted status "empty" with `detail: None`
+        // for every gap; the row now carries the gap's kebab reason and, on a
         // transport error, the error text — the per-fetch trace the 2026-08-10
         // failure analysis had to reconstruct from screenshots.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
@@ -2238,6 +2270,555 @@ mod tests {
         );
         let eod = rows.iter().find(|r| r.0 == "company-eod").expect("eod row");
         assert_eq!(eod.1, "empty", "a parsed-but-empty history is not ok: {eod:?}");
+    }
+
+    #[test]
+    fn every_suite_row_carries_the_shaped_outcome_not_ok_on_parse() {
+        // The 17 formerly "ok"-on-parse sites now ride `suite_get_shaped`: a
+        // row reads "ok" only when the caller's parse landed usable data. A
+        // parsed-but-empty statements body is "empty"; a parsed-but-priceless
+        // quote is "empty" while the caller still errors; an unshapeable body
+        // is "malformed" with its cause on the row.
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![
+            // 1) fetch_quarterly_income: a served-but-empty array.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: "[]",
+            },
+            // 2) fetch_live_price: a parsed quote carrying no price.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","marketCap":1.0}]"#,
+            },
+            // 3) fetch_live_price: an unshapeable (non-array) body.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"unexpected":"shape"}"#,
+            },
+            // 4) fetch_sector_pe_snapshot: the empty answer is a 200.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: "[]",
+            },
+        ]);
+        let source = test_source(&server.base_url).with_context(ctx);
+
+        let mut gaps = Vec::new();
+        assert!(source.fetch_quarterly_income("AAPL", &mut gaps).is_empty());
+        assert_eq!(gaps.len(), 1, "the empty read still records its gap");
+        assert!(source.fetch_live_price("AAPL").is_err(), "priceless stays Err");
+        assert!(source.fetch_live_price("AAPL").is_err(), "malformed stays Err");
+        assert_eq!(
+            source
+                .fetch_sector_pe_snapshot("NASDAQ", "2026-08-10")
+                .expect("an empty snapshot is Ok(vec![])")
+                .len(),
+            0
+        );
+
+        let rows: Vec<(String, String, Option<String>)> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished {
+                    group,
+                    status,
+                    detail,
+                    ..
+                } => Some((group, status, detail)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        assert_eq!(rows[0].0, "company-income-q");
+        assert_eq!(rows[0].1, "empty", "{:?}", rows[0]);
+        assert_eq!(rows[1].0, "quick-quote");
+        assert_eq!(rows[1].1, "empty", "a priceless quote is not ok: {:?}", rows[1]);
+        assert_eq!(rows[2].0, "quick-quote");
+        assert_eq!(rows[2].1, "malformed", "{:?}", rows[2]);
+        assert!(
+            rows[2].2.as_deref().is_some_and(|d| d.contains("malformed")),
+            "the cause reaches the row: {:?}",
+            rows[2]
+        );
+        assert_eq!(rows[3].0, "sector-pe");
+        assert_eq!(
+            rows[3].1, "empty",
+            "the walk-back's empty 200 answer is visible on the row: {:?}",
+            rows[3]
+        );
+    }
+
+    #[test]
+    fn schema_drift_reads_malformed_with_its_cause_never_benign_empty() {
+        // The shared shapers fold a non-array body into an empty result, and a
+        // parsed-but-fieldless body into a default, so without the per-site
+        // drift checks a drifted 200 read as a benign `empty` — or worse, `ok`
+        // (`[{}]` balance sheet, `{}` etf/info). Every malformed row must also
+        // carry its cause, per the run-tracking contract (Codex round).
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![
+            // 1) fetch_quarterly_income: valid JSON, wrong shape.
+            Canned::Reply { status: 200, headers: vec![], body: r#"{"unexpected":"shape"}"# },
+            // 2) fetch_balance_sheet: a parsed row with no usable lines.
+            Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
+            // 3-5) fetch_fund_data: fieldless info, drifted sectors, empty countries.
+            Canned::Reply { status: 200, headers: vec![], body: "{}" },
+            Canned::Reply { status: 200, headers: vec![], body: r#"{"x":1}"# },
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+            // 6-7) fetch_quote_and_eod: both drifted.
+            Canned::Reply { status: 200, headers: vec![], body: "{}" },
+            Canned::Reply { status: 200, headers: vec![], body: r#"{"y":2}"# },
+            // 8) fetch_sector_pe_snapshot: drifted, return contract unchanged.
+            Canned::Reply { status: 200, headers: vec![], body: r#"{"z":3}"# },
+        ]);
+        let source = test_source(&server.base_url).with_context(ctx);
+
+        let mut gaps = Vec::new();
+        assert!(source.fetch_quarterly_income("AAPL", &mut gaps).is_empty());
+        assert!(
+            gaps.iter().any(|g| g.contains("were malformed")),
+            "the gap names the drift, not emptiness: {gaps:?}"
+        );
+        let lines = source.fetch_balance_sheet("AAPL", &mut gaps);
+        assert_eq!(lines, BalanceSheetLines::default());
+        let fund = source.fetch_fund_data("SPY");
+        assert!(
+            fund.gaps.iter().any(|g| g.contains("were malformed")),
+            "{:?}",
+            fund.gaps
+        );
+        let fin = source.fetch_quote_and_eod("AAPL");
+        assert!(fin.current_price.is_none());
+        assert!(
+            source
+                .fetch_sector_pe_snapshot("NASDAQ", "2026-08-10")
+                .expect("a drifted body keeps the Ok(vec![]) walk-back contract")
+                .is_empty()
+        );
+
+        let rows: Vec<(String, String, Option<String>)> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished { group, status, detail, .. } => {
+                    Some((group, status, detail))
+                }
+                _ => None,
+            })
+            .collect();
+        let expect_status = |group: &str, status: &str| {
+            let row = rows.iter().find(|r| r.0 == group).unwrap_or_else(|| panic!("{group} row"));
+            assert_eq!(row.1, status, "{row:?}");
+            row
+        };
+        let income = expect_status("company-income-q", "malformed");
+        assert!(
+            income.2.as_deref().is_some_and(|d| d.contains("non-array")),
+            "the cause reaches the row: {income:?}"
+        );
+        expect_status("company-balance", "empty");
+        expect_status("fund-info", "empty");
+        let sectors = expect_status("fund-sectors", "malformed");
+        assert!(sectors.2.is_some(), "{sectors:?}");
+        expect_status("fund-countries", "empty");
+        let quote = expect_status("company-quote", "malformed");
+        assert!(quote.2.is_some(), "{quote:?}");
+        let eod = expect_status("company-eod", "malformed");
+        assert!(
+            eod.2.as_deref().is_some_and(|d| d.contains("array shape")),
+            "the parser's cause reaches the row: {eod:?}"
+        );
+        let pe = expect_status("sector-pe", "malformed");
+        assert!(pe.2.is_some(), "{pe:?}");
+    }
+
+    #[test]
+    fn unreadable_rows_read_malformed_and_served_empty_reads_empty() {
+        // Codex round 2's two boundary classes. First: a served, NON-empty
+        // array in which not a single row is readable is drift (`malformed`),
+        // never a benign `empty` — the shapers drop unreadable rows silently,
+        // so the sites re-split on the body. Second, the inverse: a served
+        // EMPTY array (`[]` — an unknown symbol, a non-fund) is the honest
+        // `empty`, never `malformed`, matching the documented rule that a
+        // parsed response with no usable data reads empty.
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![
+            // 1) income: rows served, none readable (dateless).
+            Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
+            // 2) estimates: rows served, none datable → malformed.
+            Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
+            // 3) estimates: datable but past-only → the honest empty.
+            Canned::Reply { status: 200, headers: vec![], body: r#"[{"date":"2020-01-01"}]"# },
+            // 4-5) quote + EOD: both served empty.
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+            // 6) quick-quote: served empty.
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+            // 7-9) fund: info served empty; sectors unreadable; countries readable.
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+            Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"country":"US","weightPercentage":"97%"}]"#,
+            },
+        ]);
+        let source = test_source(&server.base_url).with_context(ctx);
+
+        let mut gaps = Vec::new();
+        assert!(source.fetch_quarterly_income("AAPL", &mut gaps).is_empty());
+        assert!(gaps.iter().any(|g| g.contains("were malformed")), "{gaps:?}");
+        gaps.clear();
+        assert!(source.fetch_analyst_estimates("AAPL", &mut gaps).is_none());
+        assert!(gaps.iter().any(|g| g.contains("no datable rows")), "{gaps:?}");
+        gaps.clear();
+        assert!(source.fetch_analyst_estimates("AAPL", &mut gaps).is_none());
+        assert!(
+            gaps.iter().any(|g| g.contains("no forward-dated consensus")),
+            "past-only stays the honest empty: {gaps:?}"
+        );
+        let fin = source.fetch_quote_and_eod("AAPL");
+        assert!(
+            fin.gaps.iter().any(|g| g == "FMP quote was empty"),
+            "{:?}",
+            fin.gaps
+        );
+        let err = source.fetch_live_price("AAPL").expect_err("no rows is still Err");
+        assert!(err.to_string().contains("was empty"), "{err}");
+        let fund = source.fetch_fund_data("SPY");
+        assert!(
+            fund.gaps
+                .iter()
+                .any(|g| g.contains("sector") && g.contains("were malformed")),
+            "{:?}",
+            fund.gaps
+        );
+        assert_eq!(fund.country_weights, vec![("US".to_string(), 0.97)]);
+
+        let rows: Vec<(String, String, Option<String>)> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished { group, status, detail, .. } => {
+                    Some((group, status, detail))
+                }
+                _ => None,
+            })
+            .collect();
+        let statuses: Vec<(&str, &str)> =
+            rows.iter().map(|r| (r.0.as_str(), r.1.as_str())).collect();
+        assert_eq!(
+            statuses,
+            vec![
+                ("company-income-q", "malformed"),
+                ("company-estimates", "malformed"),
+                ("company-estimates", "empty"),
+                ("company-quote", "empty"),
+                ("company-eod", "empty"),
+                ("quick-quote", "empty"),
+                ("fund-info", "empty"),
+                ("fund-sectors", "malformed"),
+                ("fund-countries", "ok"),
+            ],
+            "{rows:?}"
+        );
+        assert!(
+            rows[0].2.as_deref().is_some_and(|d| d.contains("no served row was readable")),
+            "{:?}",
+            rows[0]
+        );
+        assert!(
+            rows[1].2.as_deref().is_some_and(|d| d.contains("datable")),
+            "{:?}",
+            rows[1]
+        );
+    }
+
+    #[test]
+    fn strict_list_fetches_error_on_wholly_unreadable_bodies_but_not_filtered_ones() {
+        // Codex round 3: the EOD / deep-EOD / earnings / news shapers drop
+        // unreadable rows silently, so a served `[{}]` read as an honest
+        // empty — and for earnings/news the quick check then typed the family
+        // FreshClear instead of Unknown, potentially suppressing a selective
+        // rerun. Drift now surfaces as `Err` + a malformed row. The news leg
+        // splits on READABILITY, not row count: its shaper also date-filters,
+        // and readable-but-older-than-`from` rows must stay the honest empty.
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![
+            // 1) earnings: rows served, none readable.
+            Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
+            // 2) news: rows served, none readable.
+            Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
+            // 3) news: readable but pre-`from` — domain-filtered, honest empty.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"publishedDate":"2020-01-01 10:00:00","title":"old"}]"#,
+            },
+            // 4) deep EOD: rows served, none readable.
+            Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
+            // 5-6) quote ok, EOD rows served but unreadable.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","price":5.0}]"#,
+            },
+            Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
+        ]);
+        let source = test_source(&server.base_url).with_context(ctx);
+
+        let err = source.fetch_symbol_earnings("AAPL").expect_err("drift is Err");
+        assert!(err.to_string().contains("no served row was readable"), "{err}");
+        let err = source
+            .fetch_symbol_news_since("AAPL", "2026-08-01")
+            .expect_err("drift is Err");
+        assert!(err.to_string().contains("no served row was readable"), "{err}");
+        assert!(
+            source
+                .fetch_symbol_news_since("AAPL", "2026-08-01")
+                .expect("filtered-out old news stays the honest Ok(empty)")
+                .is_empty()
+        );
+        assert!(source.fetch_dated_eod("AAPL", 30).is_err(), "drift is Err");
+        let fin = source.fetch_quote_and_eod("AAPL");
+        assert!(
+            fin.gaps.iter().any(|g| g == "FMP price history was malformed"),
+            "{:?}",
+            fin.gaps
+        );
+
+        let statuses: Vec<(String, String)> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished { group, status, .. } => {
+                    Some((group, status))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![
+                ("quick-earnings".to_string(), "malformed".to_string()),
+                ("quick-news".to_string(), "malformed".to_string()),
+                ("quick-news".to_string(), "empty".to_string()),
+                ("company-eod-deep".to_string(), "malformed".to_string()),
+                ("company-quote".to_string(), "ok".to_string()),
+                ("company-eod".to_string(), "malformed".to_string()),
+            ],
+            "{statuses:?}"
+        );
+    }
+
+    #[test]
+    fn noncanonical_dates_normalize_before_lexicographic_consumers() {
+        // Codex round 5: `datable` accepted non-zero-padded dates but the
+        // SOURCE text kept flowing into lexicographic consumers, where
+        // "2026-9-30" sorts after "2026-12-31" and compares fresh against an
+        // October last-pass date. Accepted dates now normalize to canonical
+        // fixed-width ISO at the readability seam, the same pattern the
+        // dividends shaper already uses.
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![
+            // 1-2) quote ok; EOD with mixed-padding dates whose raw-string
+            // sort would order them 2.0, 0.5, 1.0.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","price":5.0}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2026-9-30","price":1.0},{"date":"2026-12-31","price":2.0},{"date":"2026-8-01","price":0.5}]"#,
+            },
+            // 3) deep EOD: a non-zero-padded date must emit canonical ISO.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2026-9-30","price":1.0}]"#,
+            },
+            // 4) earnings: canonical output, so the quick check's last-pass
+            // compare sees fixed-width ISO.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2026-9-30","epsActual":1.0}]"#,
+            },
+            // 5) news: a September row must NOT read fresh against an
+            // October `from` (raw-string compare says it does).
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"publishedDate":"2026-9-30 10:00:00","title":"x"}]"#,
+            },
+        ]);
+        let source = test_source(&server.base_url).with_context(ctx);
+
+        let fin = source.fetch_quote_and_eod("AAPL");
+        assert_eq!(
+            fin.price_history,
+            vec![0.5, 1.0, 2.0],
+            "chronological, not raw-string, order"
+        );
+        let rows = source.fetch_dated_eod("AAPL", 30).expect("datable rows ride");
+        assert_eq!(rows[0].date, "2026-09-30", "canonical fixed-width ISO out");
+        let rows = source.fetch_symbol_earnings("AAPL").expect("datable rows ride");
+        assert_eq!(rows[0].date, "2026-09-30");
+        assert!(
+            source
+                .fetch_symbol_news_since("AAPL", "2026-10-01")
+                .expect("readable September news against an October `from`")
+                .is_empty(),
+            "a September row must not read fresh against an October boundary"
+        );
+    }
+
+    #[test]
+    fn invalid_date_strings_are_unreadable_rows_not_ok_data() {
+        // Codex round 4: readability requires a DATABLE date, not merely a
+        // string. A garbage date like "not-a-date" compares lexicographically
+        // above any ISO last-pass date ('n' > '2'), so it could fabricate a
+        // fresh earnings/news event through the quick check's gate, and a
+        // "bad"-dated EOD row violated DatedValue's ISO contract. Blank and
+        // non-date strings are now unreadable; a datable row among garbage
+        // still rides (partial-skip semantics), and a `T`-separated datetime
+        // prefix stays readable.
+        let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
+        let ctx = crate::progress::RunContext::new(
+            "run",
+            rec.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let server = MockHttp::serve(vec![
+            // 1) earnings: a string-dated row that is not a date.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"not-a-date","epsActual":1.0}]"#,
+            },
+            // 2) news: a blank publishedDate.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"publishedDate":"","title":"x"}]"#,
+            },
+            // 3) news: a non-date publishedDate (the lexicographic bypass).
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"publishedDate":"not-a-date","title":"x"}]"#,
+            },
+            // 4) deep EOD: a "bad"-dated priced row.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"bad","price":100.0}]"#,
+            },
+            // 5-6) quote ok; EOD leg with the same bad-dated row.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"symbol":"AAPL","price":5.0}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"bad","price":100.0}]"#,
+            },
+            // 7) earnings: one datable row among garbage still rides.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2026-08-05","epsActual":1.0},{"date":"junk","epsActual":2.0}]"#,
+            },
+            // 8) news: a `T`-separated datetime prefix is readable and fresh.
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"publishedDate":"2026-08-05T09:30:00","title":"t"}]"#,
+            },
+        ]);
+        let source = test_source(&server.base_url).with_context(ctx);
+
+        let err = source.fetch_symbol_earnings("AAPL").expect_err("garbage date is drift");
+        assert!(err.to_string().contains("no served row was readable"), "{err}");
+        assert!(source.fetch_symbol_news_since("AAPL", "2026-08-01").is_err());
+        assert!(source.fetch_symbol_news_since("AAPL", "2026-08-01").is_err());
+        assert!(source.fetch_dated_eod("AAPL", 30).is_err());
+        let fin = source.fetch_quote_and_eod("AAPL");
+        assert!(fin.price_history.is_empty());
+        assert!(
+            fin.gaps.iter().any(|g| g == "FMP price history was malformed"),
+            "{:?}",
+            fin.gaps
+        );
+        let rows = source
+            .fetch_symbol_earnings("AAPL")
+            .expect("a datable row among garbage still rides");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].date, "2026-08-05");
+        let items = source
+            .fetch_symbol_news_since("AAPL", "2026-08-01")
+            .expect("a T-separated datetime is readable");
+        assert_eq!(items.len(), 1);
+
+        let statuses: Vec<(String, String)> = rec
+            .messages()
+            .into_iter()
+            .filter_map(|m| match m.event {
+                crate::progress::ProgressEvent::RequestFinished { group, status, .. } => {
+                    Some((group, status))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![
+                ("quick-earnings".to_string(), "malformed".to_string()),
+                ("quick-news".to_string(), "malformed".to_string()),
+                ("quick-news".to_string(), "malformed".to_string()),
+                ("company-eod-deep".to_string(), "malformed".to_string()),
+                ("company-quote".to_string(), "ok".to_string()),
+                ("company-eod".to_string(), "malformed".to_string()),
+                ("quick-earnings".to_string(), "ok".to_string()),
+                ("quick-news".to_string(), "ok".to_string()),
+            ],
+            "{statuses:?}"
+        );
     }
 
     #[test]
@@ -4096,11 +4677,75 @@ const INCOME_QUARTERS_LIMIT: &str = "16";
 /// year of slack so a missing newest print doesn't strand the sum.
 const CASH_FLOW_QUARTERS_LIMIT: &str = "8";
 
+/// The tracker-row status a suite fetch's *parse* earned. HTTP-level gaps
+/// never reach this enum — they keep the `GapReason` kebab vocabulary on the
+/// row ([`FmpDataSource::suite_get_shaped`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RowShape {
+    /// Usable data landed.
+    Ok,
+    /// The body parsed but carried nothing usable — an honest empty answer.
+    Empty,
+    /// The body was served but our schema couldn't read it.
+    Malformed,
+}
+
+impl RowShape {
+    fn as_str(self) -> &'static str {
+        match self {
+            RowShape::Ok => "ok",
+            RowShape::Empty => "empty",
+            RowShape::Malformed => "malformed",
+        }
+    }
+}
+
+/// A suite fetch's shaped product: the value the caller keeps, the row status
+/// the parse earned, and — where the site has one — a cause for the row.
+struct Shaped<T> {
+    value: T,
+    shape: RowShape,
+    detail: Option<String>,
+}
+
+impl<T> Shaped<T> {
+    fn ok(value: T) -> Self {
+        Self {
+            value,
+            shape: RowShape::Ok,
+            detail: None,
+        }
+    }
+
+    fn empty(value: T) -> Self {
+        Self {
+            value,
+            shape: RowShape::Empty,
+            detail: None,
+        }
+    }
+
+    fn malformed(value: T) -> Self {
+        Self {
+            value,
+            shape: RowShape::Malformed,
+            detail: None,
+        }
+    }
+
+    /// Attach the parse's cause as the row detail (the cause-on-the-row
+    /// contract's shaped arm).
+    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+}
+
 impl FmpDataSource {
     /// One GET interpreted with its cause retained: the disposition, plus — on
     /// a gap — the sentence that names why ([`http_gap_detail`] for HTTP-level
     /// gaps, the reqwest chain for transport errors). The one home for the
-    /// cause-on-the-row contract, shared by [`Self::suite_get`] and the
+    /// cause-on-the-row contract, shared by [`Self::suite_get_shaped`] and the
     /// baseline call sites' [`crate::data_sources::emit_series_row`] rows.
     fn get_interpreted(
         &self,
@@ -4123,35 +4768,56 @@ impl FmpDataSource {
         }
     }
 
-    /// One suite GET with a tracker row and the shared fail-soft disposition.
-    fn suite_get(
+    /// One suite GET whose tracker row reflects the **shaped** outcome: the
+    /// caller's parse (`shape`) runs over a served body and decides the row's
+    /// status — `ok` only when usable data landed, `empty` / `malformed`
+    /// otherwise (the `emit_series_row` semantics the quote/EOD rows adopted
+    /// first) — closing the gap where a row read "ok" while the caller
+    /// recorded an empty or unreadable payload.
+    ///
+    /// The HTTP-level failure contract is unchanged: the gap's kebab label as
+    /// the status (the documented tracker vocabulary, like the baseline rows)
+    /// and the cause as the detail — the transport error on the Err arm, and
+    /// the HTTP status plus FMP's own error sentence on an HTTP-level gap (a
+    /// 200 `{"Error Message"}` plan/quota signal, a 401/403, a malformed
+    /// body). A degraded suite fetch was previously an undifferentiated
+    /// `empty` with no reason anywhere
+    /// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Residue). A gap
+    /// returns `Err(reason)` so the caller writes its own gap message, exactly
+    /// as the old disposition arm did.
+    fn suite_get_shaped<T>(
         &self,
         kind: &str,
         symbol: &str,
         label: &str,
         path: &str,
         extra: &[(&str, &str)],
-    ) -> Disposition {
+        shape: impl FnOnce(&Value) -> Shaped<T>,
+    ) -> Result<T, GapReason> {
         if self.progress.is_cancelled() {
-            return Disposition::Gap(GapReason::Unavailable);
+            return Err(GapReason::Unavailable);
         }
         self.progress.request_started("FMP", kind, symbol, label);
-        // The failure reason reaches the row: the gap's kebab label as the
-        // status (the documented tracker vocabulary, like the baseline rows)
-        // and the cause as the detail — the transport error on the Err arm,
-        // and the HTTP status plus FMP's own error sentence on an HTTP-level
-        // gap (a 200 `{"Error Message"}` plan/quota signal, a 401/403, a
-        // malformed body). A degraded suite fetch was previously an
-        // undifferentiated `empty` with no reason anywhere
-        // (`docs/verification/2026-08-10-big-run-attempt-1.md` §Residue).
-        let (disposition, detail) = self.get_interpreted(path, extra);
-        let status = match &disposition {
-            Disposition::Value(_) => "ok",
-            Disposition::Gap(r) => r.as_str(),
-        };
-        self.progress
-            .request_finished("FMP", kind, symbol, label, status, detail);
-        disposition
+        let (disposition, gap_detail) = self.get_interpreted(path, extra);
+        match disposition {
+            Disposition::Value(value) => {
+                let shaped = shape(&value);
+                self.progress.request_finished(
+                    "FMP",
+                    kind,
+                    symbol,
+                    label,
+                    shaped.shape.as_str(),
+                    shaped.detail,
+                );
+                Ok(shaped.value)
+            }
+            Disposition::Gap(reason) => {
+                self.progress
+                    .request_finished("FMP", kind, symbol, label, reason.as_str(), gap_detail);
+                Err(reason)
+            }
+        }
     }
 
     /// Quarterly income prints (newest first) — the v2 anchor window's trailing
@@ -4161,7 +4827,7 @@ impl FmpDataSource {
         symbol: &str,
         gaps: &mut Vec<String>,
     ) -> Vec<crate::portfolio::engine::QuarterlyIncomeRow> {
-        match self.suite_get(
+        match self.suite_get_shaped(
             "company-income-q",
             symbol,
             "Quarterly income statements",
@@ -4171,15 +4837,33 @@ impl FmpDataSource {
                 ("period", "quarter"),
                 ("limit", INCOME_QUARTERS_LIMIT),
             ],
-        ) {
-            Disposition::Value(value) => match quarterly_income_from_value(&value) {
-                rows if !rows.is_empty() => rows,
-                _ => {
-                    gaps.push("FMP quarterly income statements were empty".to_string());
-                    vec![]
+            // The shared shaper folds a non-array body into an empty list AND
+            // silently drops unreadable (dateless) rows, so both drift checks
+            // run here: valid-JSON schema drift and a served array with no
+            // readable row must read `malformed`, never a benign `empty`
+            // (Codex rounds 1–2).
+            |value| {
+                let Some(body) = value.as_array() else {
+                    gaps.push("FMP quarterly income statements were malformed".to_string());
+                    return Shaped::malformed(vec![])
+                        .with_detail("non-array body — malformed or drifted response");
+                };
+                match quarterly_income_from_value(value) {
+                    rows if !rows.is_empty() => Shaped::ok(rows),
+                    rows if body.is_empty() => {
+                        gaps.push("FMP quarterly income statements were empty".to_string());
+                        Shaped::empty(rows)
+                    }
+                    rows => {
+                        gaps.push("FMP quarterly income statements were malformed".to_string());
+                        Shaped::malformed(rows)
+                            .with_detail("no served row was readable — malformed or drifted response")
+                    }
                 }
             },
-            Disposition::Gap(reason) => {
+        ) {
+            Ok(rows) => rows,
+            Err(reason) => {
                 gaps.push(format!(
                     "FMP quarterly income statements unavailable ({})",
                     reason.as_str()
@@ -4196,21 +4880,36 @@ impl FmpDataSource {
     /// the risk read rested on volatility alone). Fail-soft: a gap leaves both `None`
     /// with a tagged reason.
     pub fn fetch_balance_sheet(&self, symbol: &str, gaps: &mut Vec<String>) -> BalanceSheetLines {
-        match self.suite_get(
+        match self.suite_get_shaped(
             "company-balance",
             symbol,
             "Balance sheet",
             FMP_BALANCE_SHEET_PATH,
             &[("symbol", symbol), ("period", "quarter"), ("limit", "1")],
-        ) {
-            Disposition::Value(value) => match balance_sheet_from_value(&value) {
-                Some(lines) => lines,
+            |value| match balance_sheet_from_value(value) {
+                // A parsed row whose four lines are all absent (`[{}]`) is no
+                // usable data — the row must not read ok on parse alone.
+                Some(lines) if lines != BalanceSheetLines::default() => Shaped::ok(lines),
+                Some(lines) => {
+                    gaps.push("FMP balance sheet was empty or malformed".to_string());
+                    Shaped::empty(lines)
+                }
                 None => {
                     gaps.push("FMP balance sheet was empty or malformed".to_string());
-                    BalanceSheetLines::default()
+                    // The parser folds both causes into `None`; the row splits
+                    // them honestly — a served-but-empty array is `empty`, an
+                    // unreadable body `malformed` with its cause.
+                    if value.as_array().is_some_and(|a| a.is_empty()) {
+                        Shaped::empty(BalanceSheetLines::default())
+                    } else {
+                        Shaped::malformed(BalanceSheetLines::default())
+                            .with_detail("body was not the expected array shape — malformed or drifted response")
+                    }
                 }
             },
-            Disposition::Gap(reason) => {
+        ) {
+            Ok(lines) => lines,
+            Err(reason) => {
                 gaps.push(format!("FMP balance sheet unavailable ({})", reason.as_str()));
                 BalanceSheetLines::default()
             }
@@ -4225,7 +4924,7 @@ impl FmpDataSource {
         symbol: &str,
         gaps: &mut Vec<String>,
     ) -> Vec<crate::portfolio::engine::QuarterlyCashFlowRow> {
-        match self.suite_get(
+        match self.suite_get_shaped(
             "company-cashflow-q",
             symbol,
             "Quarterly cash-flow statements",
@@ -4235,15 +4934,30 @@ impl FmpDataSource {
                 ("period", "quarter"),
                 ("limit", CASH_FLOW_QUARTERS_LIMIT),
             ],
-        ) {
-            Disposition::Value(value) => match quarterly_cash_flow_from_value(&value) {
-                rows if !rows.is_empty() => rows,
-                _ => {
-                    gaps.push("FMP quarterly cash-flow statements were empty".to_string());
-                    vec![]
+            // Both drift checks (non-array body; served array with no readable
+            // row) — see fetch_quarterly_income.
+            |value| {
+                let Some(body) = value.as_array() else {
+                    gaps.push("FMP quarterly cash-flow statements were malformed".to_string());
+                    return Shaped::malformed(vec![])
+                        .with_detail("non-array body — malformed or drifted response");
+                };
+                match quarterly_cash_flow_from_value(value) {
+                    rows if !rows.is_empty() => Shaped::ok(rows),
+                    rows if body.is_empty() => {
+                        gaps.push("FMP quarterly cash-flow statements were empty".to_string());
+                        Shaped::empty(rows)
+                    }
+                    rows => {
+                        gaps.push("FMP quarterly cash-flow statements were malformed".to_string());
+                        Shaped::malformed(rows)
+                            .with_detail("no served row was readable — malformed or drifted response")
+                    }
                 }
             },
-            Disposition::Gap(reason) => {
+        ) {
+            Ok(rows) => rows,
+            Err(reason) => {
                 gaps.push(format!(
                     "FMP quarterly cash-flow statements unavailable ({})",
                     reason.as_str()
@@ -4273,25 +4987,54 @@ impl FmpDataSource {
         let today = crate::market_clock::et_session_date(Utc::now())
             .format("%Y-%m-%d")
             .to_string();
-        match self.suite_get(
+        match self.suite_get_shaped(
             "company-estimates",
             symbol,
             "Analyst estimates",
             FMP_ANALYST_ESTIMATES_PATH,
             &[("symbol", symbol), ("period", "annual"), ("limit", ESTIMATES_PAGE_LIMIT)],
-        ) {
-            Disposition::Value(value) => match consensus_from_value(&value, &today) {
-                Some(c) => Some(c),
-                None => {
-                    gaps.push(
-                        "FMP analyst estimates carried no forward-dated consensus \
-                         (a past fiscal-year row is never used as forward)"
-                            .to_string(),
-                    );
-                    None
+            // Drift checks before the shaper: `consensus_from_value` folds a
+            // non-array body into `None` and drops undatable rows silently, so
+            // the no-forward-consensus gap message would lie about a drifted
+            // response. The `None` arm splits on the strict sibling's rule: a
+            // non-empty body where no row carries a datable date is drift; a
+            // datable-but-past-only (or empty) body is the honest empty.
+            |value| {
+                let Some(body) = value.as_array() else {
+                    gaps.push("FMP analyst estimates were malformed (non-array body)".to_string());
+                    return Shaped::malformed(None)
+                        .with_detail("non-array body — malformed or drifted response");
+                };
+                match consensus_from_value(value, &today) {
+                    Some(c) => Shaped::ok(Some(c)),
+                    None => {
+                        let any_datable = body.iter().any(|row| {
+                            row.get("date").and_then(Value::as_str).is_some_and(|d| {
+                                chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok()
+                            })
+                        });
+                        if body.is_empty() || any_datable {
+                            gaps.push(
+                                "FMP analyst estimates carried no forward-dated consensus \
+                                 (a past fiscal-year row is never used as forward)"
+                                    .to_string(),
+                            );
+                            Shaped::empty(None)
+                        } else {
+                            gaps.push(
+                                "FMP analyst estimates were malformed (no datable rows)"
+                                    .to_string(),
+                            );
+                            Shaped::malformed(None).with_detail(
+                                "no served row carried a datable date — malformed or drifted response",
+                            )
+                        }
+                    }
                 }
             },
-            Disposition::Gap(reason) => {
+        ) {
+            Ok(consensus) => consensus,
+            Err(reason) => {
                 gaps.push(format!("FMP analyst estimates unavailable ({})", reason.as_str()));
                 None
             }
@@ -4314,20 +5057,19 @@ impl FmpDataSource {
         let today = crate::market_clock::et_session_date(Utc::now())
             .format("%Y-%m-%d")
             .to_string();
-        match self.suite_get(
+        match self.suite_get_shaped(
             "company-estimates",
             symbol,
             "Analyst estimates",
             FMP_ANALYST_ESTIMATES_PATH,
             &[("symbol", symbol), ("period", "annual"), ("limit", ESTIMATES_PAGE_LIMIT)],
-        ) {
-            Disposition::Value(value) => {
+            |value| {
                 // Strict shape check: a malformed 200 must surface as a failed
                 // retrieval (family `unknown`), never read as "no consensus".
                 if !value.is_array() {
-                    anyhow::bail!(
-                        "FMP analyst estimates returned a non-array body — malformed or drifted response"
-                    );
+                    let msg = "FMP analyst estimates returned a non-array body — malformed or \
+                               drifted response";
+                    return Shaped::malformed(Err(anyhow::anyhow!(msg))).with_detail(msg);
                 }
                 // Every row must carry a datable `date`: the shared shaper drops
                 // undatable rows silently (tolerable on the fail-soft path, which
@@ -4338,20 +5080,27 @@ impl FmpDataSource {
                 // Non-zero-padded dates ("2026-9-30") parse fine and stay valid.
                 for row in value.as_array().into_iter().flatten() {
                     let Some(d) = row.get("date").and_then(Value::as_str) else {
-                        anyhow::bail!(
-                            "an estimates row carried no date — malformed or drifted response"
-                        );
+                        let msg = "an estimates row carried no date — malformed or drifted \
+                                   response";
+                        return Shaped::malformed(Err(anyhow::anyhow!(msg))).with_detail(msg);
                     };
                     if chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err() {
-                        anyhow::bail!(
+                        let msg = format!(
                             "an estimates row carried an undatable date {d:?} — malformed or \
                              drifted response"
                         );
+                        return Shaped::malformed(Err(anyhow::anyhow!(msg.clone())))
+                            .with_detail(msg);
                     }
                 }
-                Ok(consensus_from_value(&value, &today))
-            }
-            Disposition::Gap(reason) => {
+                match consensus_from_value(value, &today) {
+                    Some(c) => Shaped::ok(Ok(Some(c))),
+                    None => Shaped::empty(Ok(None)),
+                }
+            },
+        ) {
+            Ok(result) => result,
+            Err(reason) => {
                 anyhow::bail!("FMP analyst estimates unavailable ({})", reason.as_str())
             }
         }
@@ -4367,25 +5116,30 @@ impl FmpDataSource {
         // the 365-day cutoff off the oldest in-window payment — re-opening the
         // fifth-payment inflation the exclusive lower bound closed.
         let today = crate::market_clock::et_session_date(Utc::now());
-        match self.suite_get(
+        match self.suite_get_shaped(
             "company-dividends",
             symbol,
             "Dividend history",
             FMP_DIVIDENDS_PATH,
             &[("symbol", symbol), ("limit", DIVIDEND_HISTORY_LIMIT)],
-        ) {
             // Any unreadable body — non-array, a dateless row, an in-window row
             // with a non-numeric amount — must record the gap: `None` with no
             // gap is the confirmed-non-payer contract, and a drifted body must
             // never read as a dividend elimination downstream.
-            Disposition::Value(value) => match ttm_dividends_from_value(&value, today) {
-                Ok(v) => v,
+            |value| match ttm_dividends_from_value(value, today) {
+                Ok(Some(v)) => Shaped::ok(Some(v)),
+                // The confirmed non-payer: parsed fine, no in-window payments,
+                // deliberately no gap.
+                Ok(None) => Shaped::empty(None),
                 Err(e) => {
+                    let detail = format!("{e:#}");
                     gaps.push(format!("{DIVIDENDS_GAP_PREFIX} ({e})"));
-                    None
+                    Shaped::malformed(None).with_detail(detail)
                 }
             },
-            Disposition::Gap(reason) => {
+        ) {
+            Ok(v) => v,
+            Err(reason) => {
                 gaps.push(format!("{DIVIDENDS_GAP_PREFIX} ({})", reason.as_str()));
                 None
             }
@@ -4401,15 +5155,27 @@ impl FmpDataSource {
     /// (`Unverified` — never mistaken for a missing listing).
     pub fn fetch_profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
         use crate::portfolio::listing::ProfileLookup;
-        match self.suite_get(
+        match self.suite_get_shaped(
             "company-profile",
             symbol,
             "Company profile (identity)",
             FMP_PROFILE_PATH,
             &[("symbol", symbol)],
+            |value| {
+                let lookup = profile_identity_from_value(value);
+                match &lookup {
+                    ProfileLookup::Resolved(_) => Shaped::ok(lookup),
+                    // FMP answered and knows no profile — an honest empty.
+                    ProfileLookup::Unresolved => Shaped::empty(lookup),
+                    ProfileLookup::Unverified(msg) => {
+                        let detail = msg.clone();
+                        Shaped::malformed(lookup).with_detail(detail)
+                    }
+                }
+            },
         ) {
-            Disposition::Value(value) => profile_identity_from_value(&value),
-            Disposition::Gap(reason) => {
+            Ok(lookup) => lookup,
+            Err(reason) => {
                 ProfileLookup::Unverified(format!("FMP profile unavailable ({})", reason.as_str()))
             }
         }
@@ -4427,15 +5193,24 @@ impl FmpDataSource {
         from: chrono::NaiveDate,
         to: chrono::NaiveDate,
     ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
-        match self.suite_get(
+        match self.suite_get_shaped(
             "company-dividends-history",
             symbol,
             "Dividend history (outcome labels)",
             FMP_DIVIDENDS_PATH,
             &[("symbol", symbol), ("limit", DIVIDEND_HISTORY_LIMIT)],
+            |value| match dividend_history_from_value(value, from, to) {
+                Ok(rows) if !rows.is_empty() => Shaped::ok(Ok(rows)),
+                // No in-window dividends — an honest empty, not a failure.
+                Ok(rows) => Shaped::empty(Ok(rows)),
+                Err(e) => {
+                    let detail = format!("{e:#}");
+                    Shaped::malformed(Err(e)).with_detail(detail)
+                }
+            },
         ) {
-            Disposition::Value(value) => dividend_history_from_value(&value, from, to),
-            Disposition::Gap(reason) => {
+            Ok(result) => result,
+            Err(reason) => {
                 anyhow::bail!("FMP dividend history unavailable ({})", reason.as_str())
             }
         }
@@ -4461,15 +5236,31 @@ impl FmpDataSource {
             .format("%Y-%m-%d")
             .to_string();
         let to = to.format("%Y-%m-%d").to_string();
-        match self.suite_get(
+        match self.suite_get_shaped(
             "company-eod-deep",
             symbol,
             "Deep price history (Stooq fallback)",
             FMP_EOD_PATH,
             &[("symbol", symbol), ("from", &from), ("to", &to)],
+            |value| match dated_eod_from_value(value) {
+                Ok(rows) if !rows.is_empty() => Shaped::ok(Ok(rows)),
+                // Drift, not emptiness: rows were served but none carried a
+                // readable date + price. `Err` so the caller records the
+                // labeled fallback rather than reading an honest no-history.
+                Ok(_) if value.as_array().is_some_and(|a| !a.is_empty()) => {
+                    let msg = "no served row was readable — malformed or drifted response";
+                    Shaped::malformed(Err(anyhow::anyhow!("FMP dated EOD: {msg}")))
+                        .with_detail(msg)
+                }
+                Ok(rows) => Shaped::empty(Ok(rows)),
+                Err(e) => {
+                    let detail = format!("{e:#}");
+                    Shaped::malformed(Err(e)).with_detail(detail)
+                }
+            },
         ) {
-            Disposition::Value(value) => dated_eod_from_value(&value),
-            Disposition::Gap(reason) => {
+            Ok(result) => result,
+            Err(reason) => {
                 anyhow::bail!("FMP dated EOD unavailable ({})", reason.as_str())
             }
         }
@@ -4480,17 +5271,34 @@ impl FmpDataSource {
     /// failure, or a body carrying no price, so the caller types the family
     /// `unknown` rather than clearing it silently.
     pub fn fetch_live_price(&self, symbol: &str) -> Result<f64> {
-        match self.suite_get(
+        match self.suite_get_shaped(
             "quick-quote",
             symbol,
             "Live quote",
             FMP_QUOTE_PATH,
             &[("symbol", symbol)],
+            |value| match company_quote_from_value(value) {
+                Some(q) => match q.price {
+                    Some(p) => Shaped::ok(Ok(p)),
+                    // Parsed but priceless — the row no longer reads "ok"
+                    // while the caller errors.
+                    None => Shaped::empty(Err(anyhow::anyhow!(
+                        "FMP quote carried no price for {symbol}"
+                    ))),
+                },
+                // A served-empty array is an honest empty answer, not drift;
+                // the caller still gets `Err` (family `unknown`) either way.
+                None if value.as_array().is_some_and(|a| a.is_empty()) => Shaped::empty(Err(
+                    anyhow::anyhow!("FMP quote was empty for {symbol}"),
+                )),
+                None => {
+                    let msg = format!("FMP quote was malformed for {symbol}");
+                    Shaped::malformed(Err(anyhow::anyhow!(msg.clone()))).with_detail(msg)
+                }
+            },
         ) {
-            Disposition::Value(value) => company_quote_from_value(&value)
-                .and_then(|q| q.price)
-                .with_context(|| format!("FMP quote carried no price for {symbol}")),
-            Disposition::Gap(reason) => {
+            Ok(result) => result,
+            Err(reason) => {
                 anyhow::bail!("FMP quote unavailable ({})", reason.as_str())
             }
         }
@@ -4500,15 +5308,32 @@ impl FmpDataSource {
     /// new-earnings-actual evidence leg. `Err` on a failed retrieval (the caller
     /// types the family `unknown`); an empty list is an honest no-rows read.
     pub fn fetch_symbol_earnings(&self, symbol: &str) -> Result<Vec<SymbolEarningsRow>> {
-        match self.suite_get(
+        match self.suite_get_shaped(
             "quick-earnings",
             symbol,
             "Earnings rows",
             FMP_SYMBOL_EARNINGS_PATH,
             &[("symbol", symbol), ("limit", SYMBOL_EARNINGS_LIMIT)],
+            |value| match symbol_earnings_from_value(value) {
+                Ok(rows) if !rows.is_empty() => Shaped::ok(Ok(rows)),
+                // Drift, not emptiness: rows were served but none carried a
+                // readable date. `Err` so the quick check types the family
+                // `unknown` instead of clearing it on a drifted body.
+                Ok(_) if value.as_array().is_some_and(|a| !a.is_empty()) => {
+                    let msg = "no served row was readable — malformed or drifted response";
+                    Shaped::malformed(Err(anyhow::anyhow!("FMP earnings: {msg}")))
+                        .with_detail(msg)
+                }
+                // An empty list is an honest no-rows read.
+                Ok(rows) => Shaped::empty(Ok(rows)),
+                Err(e) => {
+                    let detail = format!("{e:#}");
+                    Shaped::malformed(Err(e)).with_detail(detail)
+                }
+            },
         ) {
-            Disposition::Value(value) => symbol_earnings_from_value(&value),
-            Disposition::Gap(reason) => {
+            Ok(result) => result,
+            Err(reason) => {
                 anyhow::bail!("FMP earnings unavailable ({})", reason.as_str())
             }
         }
@@ -4522,7 +5347,7 @@ impl FmpDataSource {
         symbol: &str,
         from: &str,
     ) -> Result<Vec<SymbolNewsItem>> {
-        match self.suite_get(
+        match self.suite_get_shaped(
             "quick-news",
             symbol,
             "Symbol news",
@@ -4532,9 +5357,34 @@ impl FmpDataSource {
                 ("from", from),
                 ("limit", SYMBOL_NEWS_LIMIT),
             ],
+            |value| match symbol_news_from_value(value, from) {
+                Ok(items) if !items.is_empty() => Shaped::ok(Ok(items)),
+                Ok(items) => {
+                    // Zero items splits on READABILITY, not row count: the
+                    // shaper's date filter is domain logic, so a body of
+                    // readable-but-older-than-`from` rows is the honest empty.
+                    // Only a non-empty body with no readable row — no
+                    // publishedDate, or none with a datable prefix — is drift.
+                    // The predicate is shared with the shaper.
+                    let any_readable = value.as_array().is_some_and(|a| {
+                        a.iter().any(|row| canonical_news_date(row).is_some())
+                    });
+                    if value.as_array().is_some_and(|a| !a.is_empty()) && !any_readable {
+                        let msg = "no served row was readable — malformed or drifted response";
+                        Shaped::malformed(Err(anyhow::anyhow!("FMP news/stock: {msg}")))
+                            .with_detail(msg)
+                    } else {
+                        Shaped::empty(Ok(items))
+                    }
+                }
+                Err(e) => {
+                    let detail = format!("{e:#}");
+                    Shaped::malformed(Err(e)).with_detail(detail)
+                }
+            },
         ) {
-            Disposition::Value(value) => symbol_news_from_value(&value, from),
-            Disposition::Gap(reason) => {
+            Ok(result) => result,
+            Err(reason) => {
                 anyhow::bail!("FMP news/stock unavailable ({})", reason.as_str())
             }
         }
@@ -4548,52 +5398,106 @@ impl FmpDataSource {
             symbol: symbol.to_string(),
             ..Default::default()
         };
-        match self.suite_get(
+        if let Err(reason) = self.suite_get_shaped(
             "fund-info",
             symbol,
             "Fund metadata",
             FMP_ETF_INFO_PATH,
             &[("symbol", symbol)],
+            |value| {
+                // A served-empty array is an honest empty answer (the symbol
+                // has no fund info), not drift — same split as the quote row.
+                if value.as_array().is_some_and(|a| a.is_empty()) {
+                    return Shaped::empty(());
+                }
+                if !fund_info_into(value, &mut fund) {
+                    return Shaped::malformed(()).with_detail("FMP etf/info was malformed");
+                }
+                // A readable body that filled nothing (`{}`) is no usable
+                // data — an honest empty, not ok-on-parse.
+                if fund.name.is_none()
+                    && fund.asset_class.is_none()
+                    && fund.expense_ratio.is_none()
+                    && fund.aum.is_none()
+                    && fund.nav.is_none()
+                {
+                    Shaped::empty(())
+                } else {
+                    Shaped::ok(())
+                }
+            },
         ) {
-            Disposition::Value(value) => fund_info_into(&value, &mut fund),
-            Disposition::Gap(reason) => fund
-                .gaps
-                .push(format!("{FUND_INFO_GAP_PREFIX} unavailable ({})", reason.as_str())),
+            fund.gaps
+                .push(format!("{FUND_INFO_GAP_PREFIX} unavailable ({})", reason.as_str()));
         }
-        match self.suite_get(
+        match self.suite_get_shaped(
             "fund-sectors",
             symbol,
             "Fund sector weightings",
             FMP_ETF_SECTOR_WEIGHTS_PATH,
             &[("symbol", symbol)],
-        ) {
-            Disposition::Value(value) => {
-                fund.sector_weights = weights_from_value(&value, "sector");
-                if fund.sector_weights.is_empty() {
+            // Drift checks before the shaper (it folds non-array into an empty
+            // list and drops unreadable rows); the gap message follows the
+            // split so a drifted body never reads "were empty".
+            |value| {
+                let Some(body) = value.as_array() else {
+                    fund.gaps
+                        .push(format!("{FUND_SECTOR_WEIGHTS_GAP_PREFIX} were malformed"));
+                    return Shaped::malformed(vec![])
+                        .with_detail("non-array body — malformed or drifted response");
+                };
+                let weights = weights_from_value(value, "sector");
+                if !weights.is_empty() {
+                    Shaped::ok(weights)
+                } else if body.is_empty() {
                     fund.gaps
                         .push(format!("{FUND_SECTOR_WEIGHTS_GAP_PREFIX} were empty"));
+                    Shaped::empty(weights)
+                } else {
+                    fund.gaps
+                        .push(format!("{FUND_SECTOR_WEIGHTS_GAP_PREFIX} were malformed"));
+                    Shaped::malformed(weights)
+                        .with_detail("no served row was readable — malformed or drifted response")
                 }
-            }
-            Disposition::Gap(reason) => fund.gaps.push(format!(
+            },
+        ) {
+            Ok(weights) => fund.sector_weights = weights,
+            Err(reason) => fund.gaps.push(format!(
                 "{FUND_SECTOR_WEIGHTS_GAP_PREFIX} unavailable ({})",
                 reason.as_str()
             )),
         }
-        match self.suite_get(
+        match self.suite_get_shaped(
             "fund-countries",
             symbol,
             "Fund country weightings",
             FMP_ETF_COUNTRY_WEIGHTS_PATH,
             &[("symbol", symbol)],
-        ) {
-            Disposition::Value(value) => {
-                fund.country_weights = weights_from_value(&value, "country");
-                if fund.country_weights.is_empty() {
+            // Same drift-before-shaper splits as the sector weightings above.
+            |value| {
+                let Some(body) = value.as_array() else {
+                    fund.gaps
+                        .push(format!("{FUND_COUNTRY_WEIGHTS_GAP_PREFIX} were malformed"));
+                    return Shaped::malformed(vec![])
+                        .with_detail("non-array body — malformed or drifted response");
+                };
+                let weights = weights_from_value(value, "country");
+                if !weights.is_empty() {
+                    Shaped::ok(weights)
+                } else if body.is_empty() {
                     fund.gaps
                         .push(format!("{FUND_COUNTRY_WEIGHTS_GAP_PREFIX} were empty"));
+                    Shaped::empty(weights)
+                } else {
+                    fund.gaps
+                        .push(format!("{FUND_COUNTRY_WEIGHTS_GAP_PREFIX} were malformed"));
+                    Shaped::malformed(weights)
+                        .with_detail("no served row was readable — malformed or drifted response")
                 }
-            }
-            Disposition::Gap(reason) => fund.gaps.push(format!(
+            },
+        ) {
+            Ok(weights) => fund.country_weights = weights,
+            Err(reason) => fund.gaps.push(format!(
                 "{FUND_COUNTRY_WEIGHTS_GAP_PREFIX} unavailable ({})",
                 reason.as_str()
             )),
@@ -4618,15 +5522,36 @@ impl FmpDataSource {
         exchange: &str,
         date: &str,
     ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
-        match self.suite_get(
+        match self.suite_get_shaped(
             "sector-pe",
             exchange,
             "Sector P/E snapshot",
             FMP_SECTOR_PE_SNAPSHOT_PATH,
             &[("exchange", exchange), ("date", date)],
+            // The empty answer is a 200 (see above) — the row now says so,
+            // which is exactly the walk-back's diagnostic. A non-array body,
+            // or a served array with no readable row, is drift, not emptiness
+            // — `malformed` on the row, though the return contract
+            // deliberately stays `Ok(vec![])` so the (bounded, harmless) date
+            // walk-back is unchanged.
+            |value| {
+                let Some(body) = value.as_array() else {
+                    return Shaped::malformed(vec![])
+                        .with_detail("non-array body — malformed or drifted response");
+                };
+                let rows = sector_pe_rows_from_value(value, exchange);
+                if !rows.is_empty() {
+                    Shaped::ok(rows)
+                } else if body.is_empty() {
+                    Shaped::empty(rows)
+                } else {
+                    Shaped::malformed(rows)
+                        .with_detail("no served row was readable — malformed or drifted response")
+                }
+            },
         ) {
-            Disposition::Value(value) => Ok(sector_pe_rows_from_value(&value, exchange)),
-            Disposition::Gap(reason) => anyhow::bail!(
+            Ok(rows) => Ok(rows),
+            Err(reason) => anyhow::bail!(
                 "FMP sector-pe-snapshot unavailable for {exchange} ({})",
                 reason.as_str()
             ),
@@ -4643,7 +5568,7 @@ impl FmpDataSource {
         from: &str,
         to: &str,
     ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
-        match self.suite_get(
+        match self.suite_get_shaped(
             "sector-pe-history",
             sector,
             "Sector P/E history",
@@ -4654,9 +5579,25 @@ impl FmpDataSource {
                 ("from", from),
                 ("to", to),
             ],
+            // Same drift splits as the snapshot; the return contract stays.
+            |value| {
+                let Some(body) = value.as_array() else {
+                    return Shaped::malformed(vec![])
+                        .with_detail("non-array body — malformed or drifted response");
+                };
+                let rows = sector_pe_rows_from_value(value, exchange);
+                if !rows.is_empty() {
+                    Shaped::ok(rows)
+                } else if body.is_empty() {
+                    Shaped::empty(rows)
+                } else {
+                    Shaped::malformed(rows)
+                        .with_detail("no served row was readable — malformed or drifted response")
+                }
+            },
         ) {
-            Disposition::Value(value) => Ok(sector_pe_rows_from_value(&value, exchange)),
-            Disposition::Gap(reason) => anyhow::bail!(
+            Ok(rows) => Ok(rows),
+            Err(reason) => anyhow::bail!(
                 "FMP historical-sector-pe unavailable for {sector}/{exchange} ({})",
                 reason.as_str()
             ),
@@ -4698,7 +5639,12 @@ fn symbol_earnings_from_value(value: &Value) -> Result<Vec<SymbolEarningsRow>> {
     let mut out: Vec<SymbolEarningsRow> = rows
         .iter()
         .filter_map(|row| {
-            let date = row.get("date").and_then(Value::as_str)?.to_string();
+            // A non-date string is an unreadable row, and the kept date is
+            // the CANONICAL render ([`canonical_date`]): the quick check
+            // compares this field lexicographically against its last-pass
+            // date, a gate neither a garbage string nor a non-zero-padded
+            // one must ever pass in source form.
+            let date = row.get("date").and_then(Value::as_str).and_then(canonical_date)?;
             Some(SymbolEarningsRow {
                 date,
                 eps_actual: row.get("epsActual").and_then(Value::as_f64),
@@ -4732,10 +5678,11 @@ fn symbol_news_from_value(value: &Value, from: &str) -> Result<Vec<SymbolNewsIte
     Ok(rows
         .iter()
         .filter_map(|row| {
-            let published_date = row
-                .get("publishedDate")
-                .and_then(Value::as_str)?
-                .to_string();
+            // Readability is the shared predicate ([`canonical_news_date`]):
+            // a row whose publishedDate has no datable prefix is dropped as
+            // unreadable, and an admitted one carries the canonical prefix so
+            // the lexicographic filter below compares fixed-width dates.
+            let published_date = canonical_news_date(row)?;
             // Date-prefix compare: "2026-08-01 09:30:00" >= "2026-07-20".
             if published_date.as_str() < from {
                 return None;
@@ -5085,11 +6032,13 @@ fn dividend_history_from_value(
 /// and normalizes to a decimal ratio at this seam — live-verified 2026-07-16
 /// (SPY 0.09 / ARKK 0.75 / VFIAX 0.04, mutual funds served too). The live body
 /// carries `assetsUnderManagement` and no `aum` key — the fallback chain covers it.
-fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) {
+/// Returns whether the body was readable, so the caller's tracker row can
+/// distinguish a shaped fill from a malformed body.
+fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) -> bool {
     let obj = value.as_array().and_then(|a| a.first()).or(Some(value));
     let Some(obj) = obj.filter(|o| o.is_object()) else {
         fund.gaps.push("FMP etf/info was malformed".to_string());
-        return;
+        return false;
     };
     // Blank / whitespace-only strings normalize to `None` at this seam: the
     // sweep's comparability gates key on presence, and a blank name or asset
@@ -5115,6 +6064,7 @@ fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) {
         .and_then(Value::as_f64)
         .or_else(|| obj.get("assetsUnderManagement").and_then(Value::as_f64));
     fund.nav = obj.get("nav").and_then(Value::as_f64);
+    true
 }
 
 /// Shape a weightings array (`[{sector|country, weightPercentage}]`) into

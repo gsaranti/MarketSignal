@@ -395,15 +395,20 @@ describe("App.vue run tracker", () => {
     wrapper.unmount();
   });
 
-  test("routes request rows to their owning step by group", async () => {
+  test("request rows land in the step their event's stamp names", async () => {
     const { wrapper, emit } = await mountWithTracker();
 
-    // A research-half group (news) lands under the research step; a baseline
-    // series group (indices) under the baseline step — requestStep's routing.
-    emit({ run_id: "R1", seq: 2, kind: "request-started", group: "news", provider: "tavily", series_id: "n1", name: "news gather" });
-    emit({ run_id: "R1", seq: 3, kind: "request-started", group: "indices", provider: "fmp", series_id: "spx", name: "S&P 500" });
+    // Ownership is stated by the run, not inferred by the fold: the backend
+    // stamps every request event with its owning step at the progress seam
+    // (progress.rs), so a research-group row and a baseline-series row each
+    // land exactly where their stamps say — group names play no routing role.
+    emit({ run_id: "R1", seq: 2, kind: "step-started", step: "baseline", label: "Baseline market data" });
+    emit({ run_id: "R1", seq: 3, kind: "request-started", step: "baseline", group: "indices", provider: "fmp", series_id: "spx", name: "S&P 500" });
     // request-finished updates the matching in-flight row rather than appending.
-    emit({ run_id: "R1", seq: 4, kind: "request-finished", group: "indices", series_id: "spx", status: "ok" });
+    emit({ run_id: "R1", seq: 4, kind: "request-finished", step: "baseline", group: "indices", series_id: "spx", status: "ok" });
+    emit({ run_id: "R1", seq: 5, kind: "step-finished", step: "baseline", status: "ok" });
+    emit({ run_id: "R1", seq: 6, kind: "step-started", step: "research", label: "Gathering and condensing research" });
+    emit({ run_id: "R1", seq: 7, kind: "request-started", step: "research", group: "news", provider: "tavily", series_id: "n1", name: "news gather" });
     await flushPromises();
 
     const steps = wrapper.findComponent(JobTrackerView).props("trace").steps;
@@ -416,29 +421,26 @@ describe("App.vue run tracker", () => {
     wrapper.unmount();
   });
 
-  test("a local job's request rows land in the running backend step, not a phantom baseline", async () => {
+  test("a local job's stamped rows land in their holding step, and no phantom is conjured", async () => {
     const { wrapper, emit } = await mountWithTracker();
 
-    // The Portfolio job's groups are data shapes ("company-facts", "daily-bars", …) and
-    // match none of the report pipeline's; FMP / SEC / Stooq / FRED are the provider
-    // field, asserted separately below. Its per-holding fetches arrive inside the step the
-    // backend opened for that holding. Before the backend-started marker these fell
-    // through to a synthesized "Baseline market data" step no backend ever finishes,
-    // which then stayed open for the whole run and named itself in the tracker
-    // header (docs/verification/2026-08-10-big-run-attempt-1.md, Finding 6).
+    // The Portfolio job's per-holding fetches arrive stamped with the holding's
+    // own step. Before ownership was stamped, unowned rows fell through to a
+    // synthesized "Baseline market data" step no backend ever finishes, which
+    // stayed open for the whole run and named itself in the tracker header
+    // (docs/verification/2026-08-10-big-run-attempt-1.md, Finding 6).
     // Step key and groups are the production strings: `holding_step_key` formats
     // `holding-<SYMBOL>`, and these are real emitters (sec.rs, stooq.rs, fred.rs).
     emit({ run_id: "R1", seq: 2, kind: "step-started", step: "holding-PSX", label: "Analyze PSX" });
-    emit({ run_id: "R1", seq: 3, kind: "request-started", group: "company-facts", provider: "SEC", series_id: "0000078214", name: "SEC company facts" });
-    emit({ run_id: "R1", seq: 4, kind: "request-started", group: "daily-bars", provider: "Stooq", series_id: "PSX", name: "Daily price history" });
-    emit({ run_id: "R1", seq: 5, kind: "request-finished", group: "company-facts", series_id: "0000078214", status: "ok" });
+    emit({ run_id: "R1", seq: 3, kind: "request-started", step: "holding-PSX", group: "company-facts", provider: "SEC", series_id: "0000078214", name: "SEC company facts" });
+    emit({ run_id: "R1", seq: 4, kind: "request-started", step: "holding-PSX", group: "daily-bars", provider: "Stooq", series_id: "PSX", name: "Daily price history" });
+    emit({ run_id: "R1", seq: 5, kind: "request-finished", step: "holding-PSX", group: "company-facts", series_id: "0000078214", status: "ok" });
     await flushPromises();
 
     const steps = wrapper.findComponent(JobTrackerView).props("trace").steps;
     const holding = steps.find((s) => s.key === "holding-PSX");
     expect(holding?.label).toBe("Analyze PSX");
     expect(holding?.requests.map((r) => r.group)).toEqual(["company-facts", "daily-bars"]);
-    // Provider and group are distinct fields; routing reads the group alone.
     expect(holding?.requests.map((r) => r.provider)).toEqual(["SEC", "Stooq"]);
     expect(holding?.requests[0]).toMatchObject({ seriesId: "0000078214", status: "ok" });
     // The phantom step is never conjured at all.
@@ -447,19 +449,25 @@ describe("App.vue run tracker", () => {
     wrapper.unmount();
   });
 
-  test("a row arriving with no backend step running still falls back to baseline", async () => {
+  test("an unstamped row lands in the unattributed list and can never fail the run's record", async () => {
     const { wrapper, emit } = await mountWithTracker();
 
-    // The synthesized step remains the last resort, so a row can never be dropped.
-    // It must not be adopted by a step an earlier request row conjured, which is
-    // "running" on creation and otherwise indistinguishable from a backend one.
-    emit({ run_id: "R1", seq: 2, kind: "request-started", group: "news", provider: "tavily", series_id: "n1", name: "news gather" });
-    emit({ run_id: "R1", seq: 3, kind: "request-started", group: "suite-rate", provider: "FRED", series_id: "DGS10", name: "Rate anchor" });
+    // A request emitted with no step open arrives without a stamp. It lands in
+    // the trace's unattributed list — visible, resolvable, conjuring no step —
+    // and the terminal reconcile leaves it alone, so it can never paint a
+    // failed stage into a successful run (the retired synthesized-step
+    // fallback's failure mode).
+    emit({ run_id: "R1", seq: 2, kind: "request-started", group: "suite-rate", provider: "FRED", series_id: "DGS10", name: "Rate anchor" });
+    emit({ run_id: "R1", seq: 3, kind: "request-finished", group: "suite-rate", series_id: "DGS10", status: "ok" });
+    emit({ run_id: "R1", seq: 4, kind: "run-finished", status: "successful" });
     await flushPromises();
 
-    const steps = wrapper.findComponent(JobTrackerView).props("trace").steps;
-    expect(steps.find((s) => s.key === "research")?.requests.map((r) => r.group)).toEqual(["news"]);
-    expect(steps.find((s) => s.key === "baseline")?.requests.map((r) => r.group)).toEqual(["suite-rate"]);
+    const trace = wrapper.findComponent(JobTrackerView).props("trace");
+    expect(trace.unattributed.map((r) => r.group)).toEqual(["suite-rate"]);
+    expect(trace.unattributed[0]).toMatchObject({ seriesId: "DGS10", status: "ok" });
+    // No step was conjured for it — the trace still holds only the gate step.
+    expect(trace.steps.map((s) => s.key)).toEqual(["gate"]);
+    expect(trace.steps.every((s) => s.status !== "failed")).toBe(true);
 
     wrapper.unmount();
   });
@@ -536,6 +544,24 @@ describe("App.vue run tracker", () => {
     expect(trace.terminal).toMatchObject({ status: "cancelled" });
     // A step left "running" at the end is reconciled to the run's terminal flavor.
     expect(trace.steps.find((s) => s.key === "baseline")?.status).toBe("cancelled");
+
+    wrapper.unmount();
+  });
+
+  test("a successful run closes a still-running step ok, never failed", async () => {
+    const { wrapper, emit } = await mountWithTracker();
+
+    // The reconcile mirrors the terminal status. Under the old fixed "failed"
+    // fallback, a stage that never emitted step-finished painted FAILED onto a
+    // successful run's record — the failure mode the step-ownership slice
+    // retires.
+    emit({ run_id: "R1", seq: 2, kind: "step-started", step: "persist", label: "Saving the report" });
+    emit({ run_id: "R1", seq: 3, kind: "run-finished", status: "successful", report_id: "rep-1" });
+    await flushPromises();
+
+    const trace = wrapper.findComponent(JobTrackerView).props("trace");
+    expect(trace.terminal).toMatchObject({ status: "successful" });
+    expect(trace.steps.find((s) => s.key === "persist")?.status).toBe("ok");
 
     wrapper.unmount();
   });
