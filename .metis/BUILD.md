@@ -699,8 +699,11 @@ Recorded rather than absorbed, each needing a decision before it becomes work:
 ### Deferred by decision
 
 Manual CSV/paste import supplements holdings but is not built. The
-**sector-aware grade normalization slice** is reserved against the run's letter
-distribution. An **allocation optimizer** is deferred, not adopted. The FINRA
+**sector-aware grade normalization slice** was retired by ruling (2026-08-13,
+off attempt 2's letters): the no-A distribution is honest — quality and
+valuation sub-scores anticorrelate structurally — so normalization returns
+only on realized-outcome evidence, never on a letter distribution. An
+**allocation optimizer** is deferred, not adopted. The FINRA
 and CBOE evidence legs are designed, unbuilt. Trade Opportunities' blind-first
 diagnostic is reserved diagnostic-only, its execution deliberately unspecified
 until built. The fund slice's remaining drafted constants — the coverage and US

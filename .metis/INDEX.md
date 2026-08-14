@@ -301,4 +301,5 @@ the run's own dated record follows it.*
 - Residual conformance + off-spine doc coverage — verification/2026-08-07-scoped-conformance-check.md
 - Big confirmation run — watch set (forward-looking; the run's dated record follows) — verification/big-run-watch-set.md; BUILD.md §What remains
 - Big confirmation run — attempt 1 — verification/2026-08-10-big-run-attempt-1.md; portfolio-workflow.md §Step 7b
+- Big confirmation run — attempt 2 (analysis, rulings, and the fix slices) — verification/2026-08-13-big-run-attempt-2.md; portfolio-analysis.md §Portfolio roll-up and construction, §Starting parameters
 - Stooq removal — decision, evidence, and removal-slice inventory — verification/2026-08-12-stooq-removal-decision.md; BUILD.md §What remains (Built)
