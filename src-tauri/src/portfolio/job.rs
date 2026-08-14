@@ -479,7 +479,7 @@ pub fn run_portfolio_job(
         Err(e) => {
             let finished_at = now_rfc3339();
             // Alternate (chain) format, not `to_string()`: a context-wrapped
-            // failure (e.g. the construction macro's) would otherwise persist
+            // failure (e.g. the action call's) would otherwise persist
             // only its outermost message, hiding the typed root cause — the
             // length stop, the parse failure, the HTTP error — from
             // `job_runs.detail`, the forensic surface a failed run leaves.
@@ -1307,8 +1307,8 @@ fn run_analysis(
 /// stance, the positions closed since the last run (the Step-4 diff's exited
 /// names), and the run-level **data-health** aggregate over the per-holding audits —
 /// so a degraded-but-successful run (the 2026-07-31 "43 of 44 anchor windows empty"
-/// pattern) is visible at a glance rather than only inside 47 audit records. The 122B
-/// synthesis pass is a later slice; this is the deterministic summary.
+/// pattern) is visible at a glance rather than only inside 47 audit records.
+/// Descriptive only; whole-book reasoning is the future portfolio planner's.
 #[allow(clippy::too_many_arguments)]
 fn build_roll_up(
     holdings: &Holdings,

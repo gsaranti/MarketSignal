@@ -1235,10 +1235,11 @@ pub const CONTEXT_PRESSURE_FRACTION: f64 = 0.9;
 /// truncation, not estimate noise.
 pub const TRUNCATION_CHARS_PER_TOKEN: u64 = 8;
 
-/// The portfolio-level view produced after the per-holding pass
-/// (`docs/portfolio-analysis.md` §Portfolio roll-up): concentration and a cash
-/// stance, read against the house view and the profile. For this single-equity
-/// slice it is a deterministic summary; the 122B synthesis pass is a later slice.
+/// The deterministic run-level roll-up built after the per-holding pass
+/// (`docs/portfolio-analysis.md` §Portfolio roll-up): verdict counts, the
+/// concentration and cash reads — descriptive, consumed by no action logic —
+/// plus the run-level data-health read. Whole-book reasoning is the future
+/// portfolio planner's (`portfolio-v9` tunnel vision).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PortfolioRollUp {
     pub graded_count: usize,

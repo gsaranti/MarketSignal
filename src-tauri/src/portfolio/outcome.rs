@@ -193,11 +193,12 @@ pub enum OpenReason {
     Debut,
     BranchFlip,
     ActionChange,
-    /// The standalone lean moved with the final action unchanged — an
-    /// intrinsic-state change the construction stage didn't act on still opens
-    /// (`docs/portfolio-analysis.md §Outcome learning`: the intrinsic forecast
-    /// changed, so the old episode stops accruing).
+    /// Construction-era: the standalone lean moved with the final action
+    /// unchanged. Never produced since `portfolio-v9` (the action IS the lean);
+    /// retained so legacy episode rows decode.
     LeanChange,
+    /// Construction-era: the ledger's target-weight range moved. Never produced
+    /// since `portfolio-v9` (sizing retired); retained so legacy rows decode.
     WeightRangeChange,
     /// The action change was the over-age rule-demotion, not a model decision.
     RuleDemotion,
@@ -318,24 +319,25 @@ pub struct CalibrationSnapshot {
 pub struct PricedEpisode {
     /// The final portfolio action.
     pub action: Action,
-    /// The standalone lean — the 6f-authored intrinsic rung the construction
-    /// stage reconciled (`docs/portfolio-analysis.md §Outcome learning`: the
-    /// intrinsic calibration reads key on this, never the construction-shaped
-    /// final action). Equal to the action on a pre-construction verdict, whose
-    /// action *was* the lean.
+    /// The standalone intrinsic rung the calibration's intrinsic reads key on
+    /// (`docs/portfolio-analysis.md §Outcome learning`). Construction-era
+    /// episodes recorded the 6f-authored lean the construction stage
+    /// reconciled; since `portfolio-v9` the action IS the lean, so the field
+    /// equals `action`.
     pub lean: Action,
-    /// The divergence-from-lean rationale where the final action departed the
-    /// lean — the validated context cause (`portfolio-context (…)`), the
-    /// app-stamped engine bar (`engine-bar: …`), or the app-stamped stale-lean
-    /// record on a carried row (`carried-stale-lean: …`, whose lean predates
-    /// this run's aggregates); `None` = matched.
+    /// Construction-era: the divergence-from-lean rationale where the final
+    /// action departed the lean — the validated context cause
+    /// (`portfolio-context (…)`), the app-stamped engine bar (`engine-bar: …`),
+    /// or the stale-lean record on a carried row (`carried-stale-lean: …`);
+    /// `None` = matched. Always `None` since `portfolio-v9`; retained so legacy
+    /// episodes decode.
     #[serde(default)]
     pub lean_divergence: Option<String>,
-    /// The **final decided target-weight range as issued** — the 7b-validated
-    /// range the card shows (`action_sizing` after the construction merge).
-    /// Episode *identity* deliberately compares the ledger's pre-committed range
-    /// instead ([`RecState`]): the decided range is rung-band-anchored to the
-    /// current weight, so comparing it would mint episodes from weight drift.
+    /// The construction era's **final decided target-weight range as issued** —
+    /// the 7b-validated range legacy episodes recorded (`action_sizing` after
+    /// the construction merge). `None` since `portfolio-v9` — sizing retired
+    /// with the construction stage; the fields survive so legacy episodes
+    /// decode.
     pub target_weight_low: Option<f64>,
     pub target_weight_high: Option<f64>,
     pub snapshot: CalibrationSnapshot,
@@ -1450,18 +1452,10 @@ pub fn tag_alignment(
 // ---- Episode lifecycle ----------------------------------------------------------------
 
 /// The comparable recommendation state of one verdict — the episode-creation key.
-/// The standing-thesis leg is deliberately absent (dormant until the 6g
-/// attribution validator lands), and the target-weight half reads the **ledger's**
-/// pre-committed range, never the decided sizing range: even 7b's validated range
-/// is rung-band-anchored to the current weight, so it tracks weight drift —
-/// input movement, not a decision (the drift-free decided range is recorded on
-/// the episode payload instead). A 7b decided-range-only change therefore
-/// *extends* — the as-built narrowing `docs/portfolio-analysis.md §Outcome
-/// learning` documents (miss-not-mint): any absolute comparison of band-anchored
-/// ranges mints episodes from pure weight drift (a re-affirmed mid-band hold on
-/// a +30% runner stops overlapping its anchor range), and a band-relative
-/// comparison needs a material-move threshold no live data yet calibrates —
-/// a named big-run watch, not an oversight.
+/// Since `portfolio-v9` identity compares the branch and the action alone
+/// (`docs/portfolio-analysis.md §Outcome learning`): the retired ledger
+/// target-weight range no longer exists to compare. The standing-thesis leg is
+/// deliberately absent (dormant until the 6g attribution validator lands).
 #[derive(Debug, Clone, PartialEq)]
 enum RecState {
     Priced { action: Action },
@@ -1516,9 +1510,9 @@ pub enum EpisodeDecision {
 /// Decide open / extend / nothing from the prior run's verdict and this run's
 /// (`docs/portfolio-analysis.md §Outcome learning` — the creation rule, narrowed
 /// to observable state changes). An abstention always extends (the standing
-/// recommendation stands); a prior abstention compares its retained ledger's branch
-/// and weight range **plus the action and lean its standing episode carries**, since
-/// the abstained verdict itself re-authored none of them (`standing`).
+/// recommendation stands); a prior abstention compares its retained ledger's
+/// branch **plus the action its standing episode carries**, since the abstained
+/// verdict itself re-authored neither (`standing`).
 pub fn episode_decision(
     prior: Option<&HoldingVerdict>,
     current: &HoldingVerdict,

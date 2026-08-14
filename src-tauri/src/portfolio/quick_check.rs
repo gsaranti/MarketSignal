@@ -585,9 +585,9 @@ fn vintage_date(verdict: &HoldingVerdict, run_created_at: &str) -> String {
     }
 }
 
-/// One holding's sweep assignment: the position whose quantity and fresh mark the
-/// weight read uses, its verdict + audit from the run being swept, and the
-/// holding's own last-full-pass boundary date.
+/// One holding's sweep assignment: the position row the price pass refreshes,
+/// its verdict + audit from the run being swept, and the holding's own
+/// last-full-pass boundary date.
 pub struct SweepTarget<'a> {
     pub position: &'a crate::schwab::Position,
     pub verdict: &'a HoldingVerdict,
@@ -600,8 +600,8 @@ pub struct SweepTarget<'a> {
 struct SweepPass<'a> {
     data: &'a dyn QuickCheckDataSource,
     targets: Vec<SweepTarget<'a>>,
-    /// The whole book the fresh total is computed over: swept positions at fresh
-    /// marks, everything else (and any failed refresh) at its last value.
+    /// The prior sweep's per-holding states: the carried flag / streak chain,
+    /// and each holding's last values where a refresh fails.
     prior_state: Option<&'a QuickCheckState>,
     rates: Option<&'a RatePrints>,
     rate_note: Option<&'a str>,
@@ -609,8 +609,8 @@ struct SweepPass<'a> {
     today: &'a str,
 }
 
-/// Sweep every target: the price pass first (so portfolio weights recompute over
-/// the whole fresh book), then the per-holding evidence legs and condition
+/// Sweep every target: the price pass first (so every holding's legs read this
+/// sweep's fresh marks), then the per-holding evidence legs and condition
 /// evaluation, merged with each holding's carried quick-check state.
 fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQuickState>> {
     let mut prices: std::collections::HashMap<String, (f64, Vec<DatedValue>)> =

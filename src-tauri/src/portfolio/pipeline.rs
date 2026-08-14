@@ -317,7 +317,8 @@ pub fn analyze_holding(
     if dossier.position.quantity <= 0.0 {
         let reason = if dossier.position.quantity < 0.0 {
             "held net short — the ladder's long-side semantics don't apply; \
-             the signed exposure still feeds the whole-book aggregates"
+             weighing the signed exposure against the book is the future \
+             portfolio planner's work"
         } else {
             "fully offset — the netted position is zero shares, so there is no \
              economic exposure for the long-side ladder to act on"

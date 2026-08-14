@@ -570,9 +570,9 @@ They are recorded here so the spec matches the engine, not to pin them.
   The designed research raise — at most one band, citing a validated *engine-unscored* leading indicator (the typed **`validated_leading_indicator`** — [portfolio-workflow.md §Step 6d](portfolio-workflow.md#step-6d-distillation)), 6g-validated — is retired with the two-arm unrestriction: conviction is the model's own ([§The holding verdict](#the-holding-verdict)), and the anti-reflexivity guard survives only where it feeds deterministic consumers, the ledger's tripped/fired validation ([portfolio-workflow.md §Step 6g](portfolio-workflow.md#step-6g-continuity-check-and-checkpoint)).
   The typed indicator still reaches the model as ledger-driver evidence when the research loop lands.
   Trade Opportunities retired the same machinery on the same reasoning when it adopted its own two-arm contract, so the retirement is now suite-wide; its **cap** contract — the shared soft ceiling, and its own hard-trigger exclusion — stands, binding that job's engine arm ([trade-opportunities.md §The opportunity](trade-opportunities.md#the-opportunity)).
-- **Whole-book reads.**
-  Correlation / overlap starts from a **90-day daily-return correlation** (the shared dated-EOD bars), co-sizing names with **|ρ| > 0.7**; a dedicated **factor-exposure model is deferred** to the future portfolio planner beside the rest of the whole-book machinery.
-  That deferred factor model is also the **named home for portfolio stress reads** — rate / credit / commodity / dollar shock scenarios and marginal risk contribution, the tail co-movement a 90-day correlation can't see — deferred with it, not separately scheduled.
+- **Whole-book reads — deferred to the planner.**
+  Correlation / overlap co-sizing and the dedicated **factor-exposure model** are the future portfolio planner's, deferred beside the rest of the whole-book machinery ([§Portfolio roll-up](#portfolio-roll-up)); the construction stage's drafted thresholds retired with it (above), for the planner to re-draft.
+  That deferred factor model is also the **named home for portfolio stress reads** — rate / credit / commodity / dollar shock scenarios and marginal risk contribution, the tail co-movement a short-window return correlation can't see — deferred with it, not separately scheduled.
 
 ## Continuity and isolation
 

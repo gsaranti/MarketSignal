@@ -2083,13 +2083,13 @@ const keyFigures = computed(() => {
                   </div>
                 </div>
 
-                <!-- Portfolio action: the final whole-book decision — full-width
-                     beneath the arms (the action is the model's under the v7
-                     contract; the engine's own rung reads as the baseline row).
-                     On a degraded run no plan was validated, so the kicker
-                     drops the whole-book claim: the value is that holding's
-                     pre-construction read (a fresh lean, a carried action,
-                     possibly rule-demoted). -->
+                <!-- Portfolio action: the per-holding action call's decision —
+                     full-width beneath the arms (the action is the model's
+                     since the v7 contract; the engine's own rung reads as the
+                     baseline row). On a legacy construction-era degraded run no
+                     final action was validated, so the kicker reads that
+                     holding's pre-construction value (a fresh lean, a carried
+                     action, possibly rule-demoted). -->
                 <div class="hc-col hc-actionrow">
                     <span class="hc-kicker">{{
                       isDegradedRun ? "Per-holding read" : "Portfolio action"
