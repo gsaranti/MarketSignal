@@ -36,7 +36,7 @@ Its contents are kept for the current application session and reflect the **late
 ## Thought-log capture (diagnostic)
 
 Because the tracker's reasoning panes are transient, a diagnostic sink can capture them to disk.
-It decorates the live progress reporter and appends every streamed **thinking** delta to one plain-text file per stream: `main-agent.txt`, `analyst-<posture>.txt`, and `<step-key>.txt` for step-scoped reasoning (each per-holding step and the construction step alike).
+It decorates the live progress reporter and appends every streamed **thinking** delta to one plain-text file per stream: `main-agent.txt`, `analyst-<posture>.txt`, and `<step-key>.txt` for step-scoped reasoning (each per-holding step, its interpretation and action calls alike).
 The files land under a per-run folder at `<data-dir>/thought-logs/<UTC-timestamp>-<run-id-prefix>/`.
 It exists because a failed live run otherwise leaves no reasoning evidence; the 2026-08-10 attempt-1 analysis rested on screenshots of the panes.
 The capture is thoughts-only by construction: the main agent's report body persists as the report itself, and a review body or structured verdict never streams, so neither can ever land in a log.

@@ -724,6 +724,7 @@ mod tests {
                 model_ids: vec!["qwen3.5:122b".into()],
                 prompt_version: "portfolio-v1".into(),
                 degraded_inputs: vec![],
+                action_annotations: vec![],
                 grade_parameter_version: None,
                 ledger_audit: None,
                 quick_basis: None,
@@ -904,37 +905,21 @@ mod tests {
         assert!(run_by_id(&conn, "run-gone").unwrap().is_none());
     }
 
-    /// The Step 7b failure shape (`docs/verification/2026-08-10-big-run-attempt-1.md`
-    /// §Disposition): 7a ran (aggregates present), no book was constructed.
+    /// The legacy Step 7b failure shape (`docs/verification/2026-08-10-big-run-attempt-1.md`
+    /// §Disposition): 7a ran (an aggregates blob is present), no book was
+    /// constructed. The construction era is retired, so the halves are opaque
+    /// legacy blobs — the shape derivation reads only their presence.
     fn degraded_run(run_id: &str, created_at: &str) -> PortfolioRun {
         let mut run = sample_run(run_id, created_at);
-        run.roll_up.aggregates = Some(crate::portfolio::construction::BookAggregates {
-            spine: vec![],
-            sector_exposure: vec![],
-            unknown_sector_weight: 0.0,
-            overlap_clusters: vec![],
-            not_rated: vec![],
-            cash_weight: 0.34,
-            top_position_weight: 0.66,
-            correlation_note: String::new(),
-        });
+        run.roll_up.aggregates = Some(serde_json::json!({ "spine": [] }));
         run.roll_up.construction = None;
         run
     }
 
-    /// A run whose construction completed — both roll-up halves present.
+    /// A legacy run whose construction completed — both roll-up halves present.
     fn constructed_run(run_id: &str, created_at: &str) -> PortfolioRun {
         let mut run = degraded_run(run_id, created_at);
-        run.roll_up.construction = Some(crate::portfolio::construction::ConstructionView {
-            risk_posture: "balanced".into(),
-            deployment_stance: "hold".into(),
-            concentration_read: "concentrated in one name".into(),
-            closed_positions_note: None,
-            external_funding: Some(0.0),
-            implied_total: Some(29_500.0),
-            retried: false,
-            engine_bound_annotations: vec![],
-        });
+        run.roll_up.construction = Some(serde_json::json!({ "risk_posture": "balanced" }));
         run
     }
 

@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { etDayDiff } from "../etDate";
 import { localDate, localDateTime } from "../format";
 import type {
-  ActionWhatChanged,
   FlagTrigger,
   GradedVerdict,
   HoldingQuickState,
@@ -86,13 +85,14 @@ const emit = defineEmits<{
 
 const isHistorical = computed(() => props.historical ?? false);
 
-// A degraded run — Step 7b's construction failed after the per-holding pass:
-// the per-holding work persisted, no book was constructed, and each holding's
-// action is its pre-construction value (a fresh row's standalone lean, a
-// carried row's carried action, a role/risk placeholder). Only ever rendered
-// here read-only — the backend excludes degraded runs from the latest view.
-// Reads the persist-seam marker the backend ships; never re-derived from
-// roll_up field shapes (the Rust predicate is the single home).
+// A legacy degraded run from the retired 7b construction era — that stage
+// failed after the per-holding pass, so the per-holding work persisted with
+// pre-construction action values (a lean, a carried action, a role/risk
+// placeholder). New tunnel-vision runs always persist complete; this state is
+// only ever rendered read-only from history — the backend excludes degraded
+// rows from the latest view. Reads the persist-seam marker the backend ships;
+// never re-derived from roll_up field shapes (the Rust predicate is the
+// single home).
 const isDegradedRun = computed(
   () => props.run !== null && props.run.constructed === false
 );
@@ -671,43 +671,6 @@ const ACTION_LABELS: Record<string, string> = {
   "add-aggressively": "Add aggressively",
 };
 
-const LEAN_TITLE =
-  "The standalone action lean — what the action would be if the holding stood " +
-  "alone; the final action reflects the whole book (concentration, overlap, cash)";
-
-// Whether a priced verdict's final action diverged from its standalone lean —
-// the visible intrinsic-vs-portfolio split. Absent lean (pre-construction runs)
-// reads as equal to the action.
-function leanDiverged(g: { action: string; lean?: string | null }): boolean {
-  return g.lean != null && g.lean !== g.action;
-}
-
-// The action half of the what-changed audit, rendered as one line.
-const CAUSE_LABELS: Record<string, string> = {
-  "became-oversized": "became oversized",
-  "overlap-emerged": "an overlap emerged",
-  "cash-freed": "cash was freed",
-  "cash-raised": "cash was raised",
-};
-function actionChangeLine(wc: ActionWhatChanged): string {
-  const base =
-    wc.attribution === "moved-intrinsic"
-      ? "moved with the intrinsic verdict"
-      : wc.cause
-        ? `moved on portfolio context (${CAUSE_LABELS[wc.cause] ?? wc.cause})`
-        : "moved on portfolio context";
-  return wc.note ? `${base} — ${wc.note}` : base;
-}
-
-// The construction view's external-funding line: net new dollars = buys −
-// disposition proceeds; a negative value is net cash raised, not funding.
-function fundingLine(funding: number | null): string | null {
-  if (funding === null) return null;
-  if (Math.abs(funding) < 1) return "no net new dollars";
-  return funding > 0
-    ? `${fmtMoney(funding)} of external funding implied`
-    : `${fmtMoney(-funding)} net cash raised`;
-}
 
 const CONVICTION_LEVEL: Record<PortfolioConviction, number> = {
   low: 1,
@@ -830,36 +793,6 @@ const scoreboardLines = computed<string[]>(() => {
 
 function gradeClass(grade: string): string {
   return grade.toLowerCase();
-}
-
-// The target-weight band as a compact percent range. Precision escalates until
-// the render is faithful: integer rounding turned a 0.27–0.48% trim band into
-// "0–0%" (reads as a sell-all), and a high-endpoint-only precision switch
-// rendered a real 1.8–2.2% hold band as the degenerate "2–2%" and a 0.4–3%
-// range with a false-zero low as "0–3%". A genuine 0–0 sell-all band still
-// renders "0–0%".
-function weightBand(low: number, high: number): string {
-  const lo = low * 100;
-  const hi = high * 100;
-  for (const digits of [0, 1, 2, 3]) {
-    const loStr = lo.toFixed(digits);
-    const hiStr = hi.toFixed(digits);
-    const collapsed = loStr === hiStr && lo !== hi;
-    const falseZeroLow = lo > 0 && Number(loStr) === 0;
-    if (!collapsed && !falseZeroLow) return `${loStr}–${hiStr}%`;
-  }
-  // Sub-0.0005-point bands (a dust position) sit below any sane display
-  // precision — a positive endpoint that still rounds to zero floors at
-  // "<0.001", so a nonzero band can never wear the sell-all "0" read.
-  const floor = (v: number) =>
-    v > 0 && Number(v.toFixed(3)) === 0 ? "<0.001" : v.toFixed(3);
-  return `${floor(lo)}–${floor(hi)}%`;
-}
-
-// Hold's band is a stay-put range (0.9×–1.1× current weight), so it reads
-// "maintain"; the adjusting actions keep the movement-implying "to".
-function bandVerb(action: string): string {
-  return action === "hold" ? "maintain" : "to";
 }
 
 // Whether a graded verdict's options signal carries anything to show.
@@ -1631,34 +1564,25 @@ const keyFigures = computed(() => {
 
                   <div class="hc-col">
                     <span class="hc-kicker">Portfolio action</span>
-                    <!-- This branch's action is authored wholly at 7b
-                         construction — on a degraded run that call never
-                         blessed one, so the persisted placeholder must not
-                         render as a decision. -->
+                    <!-- On a legacy degraded run (the retired construction era)
+                         no action was ever blessed, so the persisted
+                         placeholder must not render as a decision. -->
                     <template v-if="!isDegradedRun">
                       <div class="hc-action">
                         <span class="hc-action-word">{{
                           ACTION_LABELS[v.disposition.action]
                         }}</span>
-                        <span class="hc-action-band"
-                          >{{ bandVerb(v.disposition.action) }}
-                          {{
-                            weightBand(
-                              v.disposition.action_sizing.target_weight_low,
-                              v.disposition.action_sizing.target_weight_high
-                            )
-                          }}</span
-                        >
                       </div>
                       <p
-                        v-if="v.disposition.action_sizing.sizing_rationale"
+                        v-if="v.disposition.action_rationale"
                         class="hc-prose hc-rationale"
                       >
-                        {{ v.disposition.action_sizing.sizing_rationale }}
+                        {{ v.disposition.action_rationale }}
                       </p>
                     </template>
                     <p v-else class="hc-prose">
-                      No action — construction failed to validate a plan.
+                      No action — this legacy run's construction failed to
+                      validate a plan.
                     </p>
                     <dl class="hc-kv">
                       <dt>Weight</dt>
@@ -1727,13 +1651,6 @@ const keyFigures = computed(() => {
                   <div class="hc-foot-main">
                     <span class="hc-kicker">What changed · since last run</span>
                     <p class="hc-changed">{{ v.disposition.what_changed }}</p>
-                    <p
-                      v-if="v.disposition.action_what_changed"
-                      class="hc-changed hc-changed-action"
-                    >
-                      Action
-                      {{ actionChangeLine(v.disposition.action_what_changed) }}
-                    </p>
                   </div>
                   <span class="ana-tag" :title="'Position vs. prior run'"
                     >Position: {{ CHANGE_LABELS[v.position_change] }}</span
@@ -2013,14 +1930,6 @@ const keyFigures = computed(() => {
                         <dt>Action</dt>
                         <dd>
                           {{ ACTION_LABELS[v.disposition.engine_view!.action] }}
-                          <span class="hc-band">{{
-                            weightBand(
-                              v.disposition.engine_view!.action_sizing
-                                .target_weight_low,
-                              v.disposition.engine_view!.action_sizing
-                                .target_weight_high
-                            )
-                          }}</span>
                         </dd>
                       </template>
                     </dl>
@@ -2158,12 +2067,12 @@ const keyFigures = computed(() => {
                           >≠ engine</span
                         >
                       </dd>
-                      <dt>Lean</dt>
+                      <dt>Action</dt>
                       <dd>
-                        {{ ACTION_LABELS[v.disposition.lean ?? v.disposition.action] }}
+                        {{ ACTION_LABELS[v.disposition.action] }}
                         <span
                           v-if="
-                            (v.disposition.lean ?? v.disposition.action) !==
+                            v.disposition.action !==
                             v.disposition.engine_view!.action
                           "
                           class="ana-tag"
@@ -2189,30 +2098,12 @@ const keyFigures = computed(() => {
                       <span class="hc-action-word">{{
                         ACTION_LABELS[v.disposition.action]
                       }}</span>
-                      <span class="hc-action-band"
-                        >{{ bandVerb(v.disposition.action) }}
-                        {{
-                          weightBand(
-                            v.disposition.action_sizing.target_weight_low,
-                            v.disposition.action_sizing.target_weight_high
-                          )
-                        }}</span
-                      >
-                      <!-- The intrinsic-vs-portfolio split made visible: the
-                           standalone lean beside the final action, only when
-                           they diverge (a quiet tag in the badge family). -->
-                      <span
-                        v-if="leanDiverged(v.disposition)"
-                        class="ana-tag hc-lean-tag"
-                        :title="LEAN_TITLE"
-                        >Lean: {{ ACTION_LABELS[v.disposition.lean!] }}</span
-                      >
                     </div>
                     <p
-                      v-if="v.disposition.action_sizing.sizing_rationale"
+                      v-if="v.disposition.action_rationale"
                       class="hc-prose hc-rationale"
                     >
-                      {{ v.disposition.action_sizing.sizing_rationale }}
+                      {{ v.disposition.action_rationale }}
                     </p>
                     <dl class="hc-kv">
                       <dt>Weight</dt>
@@ -2223,31 +2114,6 @@ const keyFigures = computed(() => {
                             : "—"
                         }}</span>
                       </dd>
-                      <template
-                        v-if="v.disposition.action_sizing.est_share_delta !== null"
-                      >
-                        <dt>Est. shares</dt>
-                        <dd>
-                          <span class="ana-num">{{
-                            (v.disposition.action_sizing.est_share_delta > 0
-                              ? "+"
-                              : "") +
-                            qtyFmt.format(
-                              v.disposition.action_sizing.est_share_delta
-                            )
-                          }}</span>
-                        </dd>
-                      </template>
-                      <template
-                        v-if="v.disposition.action_sizing.est_dollar_delta !== null"
-                      >
-                        <dt>Est. adj.</dt>
-                        <dd>
-                          <span class="ana-num">{{
-                            fmtSigned(v.disposition.action_sizing.est_dollar_delta)
-                          }}</span>
-                        </dd>
-                      </template>
                       <template v-if="hasOptionsSignal(v.disposition.options_signal)">
                         <template
                           v-if="v.disposition.options_signal.put_call_volume !== null"
@@ -2379,13 +2245,6 @@ const keyFigures = computed(() => {
                     <span class="hc-kicker">What changed · since last run</span>
                     <p class="hc-changed">{{ v.disposition.what_changed }}</p>
                     <p
-                      v-if="v.disposition.action_what_changed"
-                      class="hc-changed hc-changed-action"
-                    >
-                      Action
-                      {{ actionChangeLine(v.disposition.action_what_changed) }}
-                    </p>
-                    <p
                       v-if="maturedLinesFor(v.symbol).length"
                       class="hc-changed hc-scoreboard-line"
                     >
@@ -2421,61 +2280,6 @@ const keyFigures = computed(() => {
                 >
                 {{ run.roll_up.data_health.summary }}
               </p>
-            </div>
-            <!-- The construction call's validated portfolio-level view — absent
-                 on runs persisted before the construction stage existed. -->
-            <div v-if="run.roll_up.construction" class="rollup-construction">
-              <span class="hc-kicker">Construction · portfolio view</span>
-              <dl class="hc-kv rollup-construction-kv">
-                <dt>Risk posture</dt>
-                <dd>{{ run.roll_up.construction.risk_posture }}</dd>
-                <dt>Deployment</dt>
-                <dd>{{ run.roll_up.construction.deployment_stance }}</dd>
-                <dt>Concentration</dt>
-                <dd>{{ run.roll_up.construction.concentration_read }}</dd>
-                <template
-                  v-if="
-                    fundingLine(run.roll_up.construction.external_funding) !==
-                    null
-                  "
-                >
-                  <dt>Funding</dt>
-                  <dd>
-                    {{ fundingLine(run.roll_up.construction.external_funding) }}
-                  </dd>
-                </template>
-              </dl>
-              <p
-                v-if="run.roll_up.construction.closed_positions_note"
-                class="hc-prose rollup-construction-note"
-              >
-                {{ run.roll_up.construction.closed_positions_note }}
-              </p>
-              <span
-                v-if="run.roll_up.construction.retried"
-                class="ana-tag rollup-retried-tag"
-                title="The construction synthesis validated on its single named-violation re-run"
-                >Validated on re-run</span
-              >
-              <!-- Construction annotations (v7 engine-bound + v8 attribution):
-                   where the model's plan departed the engine's own read, and the
-                   unattributed-divergence / stripped-cause records — recorded
-                   and rendered, never enforced. -->
-              <div
-                v-if="run.roll_up.construction.engine_bound_annotations?.length"
-                class="rollup-annotations"
-              >
-                <span class="hc-kicker">Construction notes · plan as authored</span>
-                <ul class="rollup-annotation-list">
-                  <li
-                    v-for="(note, i) in run.roll_up.construction
-                      .engine_bound_annotations"
-                    :key="i"
-                  >
-                    {{ note }}
-                  </li>
-                </ul>
-              </div>
             </div>
             <!-- The model-vs-engine scoreboard (v7): deterministic, engine-scored
                  reads over matured windows — empty until v7 episodes mature. -->
@@ -3238,16 +3042,6 @@ const keyFigures = computed(() => {
   color: var(--ink);
 }
 
-.hc-action-band {
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  white-space: nowrap;
-}
-
 .hc-summary {
   padding: var(--s-4) var(--s-5);
   border-top: 1px solid var(--hairline-soft);
@@ -3429,18 +3223,7 @@ const keyFigures = computed(() => {
   overflow-wrap: anywhere;
 }
 
-/* The action half of the what-changed audit, under the intrinsic line. */
-.hc-changed-action {
-  margin-top: var(--s-2);
-}
-
-/* The standalone-lean divergence tag, in the quiet badge family beside the
-   action word. */
-.hc-lean-tag {
-  align-self: center;
-}
-
-/* The construction call's sizing rationale under the action line. */
+/* The action call's rationale under the action line. */
 .hc-rationale {
   margin: var(--s-2) 0 0;
 }
@@ -3478,44 +3261,13 @@ const keyFigures = computed(() => {
   margin-bottom: var(--s-2);
 }
 
-/* The construction call's portfolio-level view — same seam treatment as the
-   data-health row above it. */
-.rollup-construction {
-  padding: var(--s-4) var(--s-5);
-  border-top: 1px solid var(--hairline-soft);
-}
-
-.rollup-construction .hc-kicker {
-  margin-bottom: var(--s-2);
-}
-
-.rollup-construction-kv dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.rollup-construction-note {
-  margin-top: var(--s-3);
-}
-
-.rollup-retried-tag {
-  margin-top: var(--s-3);
-  display: inline-block;
-}
-
-/* Engine-bound annotations + the model-vs-engine scoreboard (v7): quiet list
-   registers in the roll-up's section rhythm — recorded findings, never alarm
-   states (an annotation is a departure on display, not an error). */
-.rollup-annotations {
-  margin-top: var(--s-3);
-}
-
+/* The model-vs-engine scoreboard (v7): a quiet list register in the roll-up's
+   section rhythm — recorded findings, never alarm states. */
 .rollup-scoreboard {
   padding: var(--s-4) var(--s-5);
   border-top: 1px solid var(--hairline-soft);
 }
 
-.rollup-annotations .hc-kicker,
 .rollup-scoreboard .hc-kicker {
   margin-bottom: var(--s-2);
 }

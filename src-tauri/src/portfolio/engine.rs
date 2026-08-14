@@ -19,10 +19,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::portfolio::{
-    Action, ActionSizing, Conviction, EngineView, Grade, HorizonOutlook, HorizonRead,
-    InvestorProfile, OptionsSignal, PriceTarget, PriceTargets, SubScores,
+    Action, Conviction, EngineView, Grade, HorizonOutlook, HorizonRead, OptionsSignal,
+    PriceTarget, PriceTargets, SubScores,
 };
-use crate::schwab::{OptionChain, OptionKind, Position};
+use crate::schwab::{OptionChain, OptionKind};
 
 // ---- Calibration surface (NOT pinned — shadow-tune against live runs) ---------
 
@@ -205,22 +205,6 @@ const TIER_HIGH_MIN_DRAWDOWN: f64 = 0.50;
 /// Loose annualization for the per-period (daily) realized volatility the engine
 /// computes, used by the tier legs (√252 for daily bars).
 const ANNUALIZATION_FACTOR: f64 = 15.87;
-
-// -- Action-sizing floors (`docs/portfolio-analysis.md` §Starting parameters — the
-//    settled add-family absolute target floors).
-
-/// The minimum book weight an *add* action targets (pure current-weight multipliers
-/// perpetuate historical accidents), and the *add aggressively* floor. The 25%
-/// concentration cap always binds above.
-const ADD_FLOOR_WEIGHT: f64 = 0.015;
-const ADD_AGGRESSIVE_FLOOR_WEIGHT: f64 = 0.03;
-
-/// Concentration cap: the engine never steers a single position above this share
-/// of the account, and at-or-above it the add family leaves the feasible set.
-/// Crate-public: the construction stage's joint-feasibility solve tests the same
-/// cap on the implied post-action book — an engine-bound annotation since
-/// `portfolio-v7` ([`crate::portfolio::construction`]).
-pub(crate) const MAX_SINGLE_WEIGHT: f64 = 0.25;
 
 // -- Thesis-ledger persistence semantics (`docs/portfolio-analysis.md` §The position
 //    thesis ledger; the suite's shared condition-identity contract's drafted
@@ -677,8 +661,11 @@ pub enum LedgerSeries {
 
 impl LedgerSeries {
     /// Every resolvable series — the vocabulary the ledger schema advertises and the
-    /// interpretation prompt lists.
-    pub const ALL: [LedgerSeries; 12] = [
+    /// interpretation prompt lists. `portfolio-weight` is **retired** from the
+    /// surface (the tunnel-vision ruling, user decision 2026-08-14: a weight is a
+    /// book fact, and any numeric tied to an action must be holding-based), so it
+    /// no longer appears here, in the schema enum, or in a parseable claim.
+    pub const ALL: [LedgerSeries; 11] = [
         LedgerSeries::NetMargin,
         LedgerSeries::GrossMargin,
         LedgerSeries::RevenueGrowth,
@@ -690,7 +677,6 @@ impl LedgerSeries {
         LedgerSeries::PbRatio,
         LedgerSeries::ExpenseRatio,
         LedgerSeries::Price,
-        LedgerSeries::PortfolioWeight,
     ];
 
     /// The kebab label serde uses — for schema enums and claim parsing.
@@ -719,6 +705,18 @@ impl LedgerSeries {
             .iter()
             .copied()
             .find(|s| s.as_kebab() == claim.trim())
+    }
+
+    /// A series retired from the closed surface but kept on the enum so
+    /// persisted conditions still decode (the tunnel-vision ruling, 2026-08-14).
+    /// Evaluation skips a retired series **whole** — no crossing, no unevaluable
+    /// note, no state update — the same shape as the cadence gate's skip: the
+    /// unevaluable path would type the family `unknown` and force-include the
+    /// holding on every selective run forever. A legacy condition dies at its
+    /// next 6f rewrite, where the draft's claim no longer parses and downgrades
+    /// to qualitative.
+    pub fn retired(self) -> bool {
+        matches!(self, LedgerSeries::PortfolioWeight)
     }
 
     /// Whether the engine ever computes this series for the holding's vehicle
@@ -836,7 +834,6 @@ pub fn resolve_series(
     series: LedgerSeries,
     metrics: &ComputedMetrics,
     fin: &CompanyFinancials,
-    portfolio_weight: Option<f64>,
 ) -> Result<ResolvedObservation, String> {
     // Observation identities — always a real print, never the calendar. Market-data:
     // the newest daily close's date (the actual trading-day print); with no dated
@@ -963,14 +960,12 @@ pub fn resolve_series(
             value: metric(fin.current_price, "current price")?,
             observation_id: market_obs()?,
         }),
-        // Weight moves with the marks, so its observation identity is the marks'
-        // trading day (the newest close date), not the calendar date of the run:
-        // an unchanged carried snapshot on a later day is the same observation,
-        // and two same-day evaluations can never double-advance a streak.
-        LedgerSeries::PortfolioWeight => Ok(ResolvedObservation {
-            value: metric(portfolio_weight, "portfolio weight")?,
-            observation_id: market_obs()?,
-        }),
+        // Retired from the closed surface (the tunnel-vision ruling,
+        // 2026-08-14) — evaluation skips it before resolution ever runs, so
+        // this arm answers only a direct caller.
+        LedgerSeries::PortfolioWeight => Err("portfolio-weight is retired from the \
+             closed series surface"
+            .to_string()),
     }
 }
 
@@ -1005,10 +1000,9 @@ pub fn evaluate_ledger_conditions(
     ledger: &crate::portfolio::ThesisLedger,
     metrics: &ComputedMetrics,
     fin: &CompanyFinancials,
-    portfolio_weight: Option<f64>,
     run_date: &str,
 ) -> LedgerEvaluation {
-    evaluate_ledger_conditions_gated(ledger, metrics, fin, portfolio_weight, run_date, |_| true)
+    evaluate_ledger_conditions_gated(ledger, metrics, fin, run_date, |_| true)
 }
 
 /// The cadence-gated form of [`evaluate_ledger_conditions`] — the engine-only quick
@@ -1023,7 +1017,6 @@ pub fn evaluate_ledger_conditions_gated(
     ledger: &crate::portfolio::ThesisLedger,
     metrics: &ComputedMetrics,
     fin: &CompanyFinancials,
-    portfolio_weight: Option<f64>,
     run_date: &str,
     allow: impl Fn(LedgerSeries) -> bool,
 ) -> LedgerEvaluation {
@@ -1032,10 +1025,10 @@ pub fn evaluate_ledger_conditions_gated(
     let mut out = LedgerEvaluation::default();
     for cond in &ledger.conditions {
         let Some(quant) = &cond.quant else { continue };
-        if !allow(quant.series) {
+        if quant.series.retired() || !allow(quant.series) {
             continue;
         }
-        let resolved = match resolve_series(quant.series, metrics, fin, portfolio_weight) {
+        let resolved = match resolve_series(quant.series, metrics, fin) {
             Ok(r) => r,
             Err(reason) => {
                 out.unevaluable
@@ -2398,51 +2391,23 @@ pub fn hurdle_read(
     }
 }
 
-/// The engine's **intrinsic lean set** — the intrinsic bars alone
-/// (`docs/portfolio-analysis.md` §Intrinsic verdict: the lean is "a pure read …
-/// set before portfolio constraints", profile-independent): the full ladder,
-/// restricted to the exit family `{sell all, trim}` only by severe pre-profit
-/// deterioration (the one intrinsic-side bar). Since `portfolio-v7` it binds the
-/// **engine arm** alone — it renders into the 6f prompt as the engine's own read;
-/// the model's standalone lean is schema-unrestricted, an outside-the-set lean
-/// persisting with the engine-bound annotation at construction. Every other bar —
-/// the admission test, grade-F, the concentration cap, dead money, a
-/// constrained-runway overlay — is an engine-set rule, applied in
-/// [`feasible_actions`] and consumed at the 7b stage.
-pub fn lean_actions(
-    overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
-) -> Vec<Action> {
-    if overlay_rules.map(|r| r.exit_family_only).unwrap_or(false) {
-        return vec![Action::SellAll, Action::Trim];
-    }
-    vec![
-        Action::SellAll,
-        Action::Trim,
-        Action::Hold,
-        Action::Add,
-        Action::AddAggressively,
-    ]
-}
-
-/// Bound the feasible action set from engine-known inputs only
+/// Bound the feasible action set from **per-holding** engine inputs only
 /// (`docs/portfolio-analysis.md` §Starting parameters — the feasible-set rule;
 /// conviction is model-authored, so it can't pre-gate). The add family is offered
 /// only when the new-money admission point test passes, the hurdle isn't `fails`
-/// (dead money drops the family a fortiori at any grade), the grade isn't F, the
-/// position sits under the concentration cap, and no pre-profit overlay rule bars
-/// it (constrained runway / severe deterioration); *add aggressively* additionally
-/// needs an A/B grade with headroom. Severe deterioration restricts the whole set
-/// to the exit family `{trim, sell all}`. Consumed at the **7b construction
-/// stage** as a fresh holding's **engine set** (a carried holding takes the
-/// transition set instead — [`crate::portfolio::construction`]): since
-/// `portfolio-v7` it reaches the model as the rendered ENGINE SET — the engine
-/// arm's own action stand-in walks its rung into it, while an outside-the-set
-/// model choice persists with an engine-bound annotation, never a schema bar.
-/// Every grade test reads the momentum-free letter.
+/// (dead money drops the family a fortiori at any grade), the grade isn't F, and
+/// no pre-profit overlay rule bars it (constrained runway / severe deterioration);
+/// *add aggressively* additionally needs an A/B grade. Severe deterioration
+/// restricts the whole set to the exit family `{trim, sell all}`. Since
+/// `portfolio-v9` the set carries **no book-level term** — the retired
+/// concentration-headroom gate was whole-book context, which is the future
+/// portfolio planner's domain. Rendered into the action call's prompt as the
+/// ENGINE SET — the engine arm's own action stand-in walks its rung into it,
+/// while an outside-the-set model choice persists with an annotation on the
+/// audit, never a schema bar. Every grade test reads the momentum-free letter.
 pub fn feasible_actions(
     grade: Grade,
     hurdle: &HurdleRead,
-    current_weight: f64,
     overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
 ) -> Vec<Action> {
     use crate::portfolio::HurdleState;
@@ -2452,11 +2417,7 @@ pub fn feasible_actions(
     let mut set = vec![Action::SellAll, Action::Trim, Action::Hold];
     let dead_money = hurdle.state == HurdleState::Fails;
     let overlay_bar = overlay_rules.map(|r| r.bar_add_family).unwrap_or(false);
-    let add_ok = hurdle.admits_new_money
-        && !dead_money
-        && grade != Grade::F
-        && current_weight < MAX_SINGLE_WEIGHT
-        && !overlay_bar;
+    let add_ok = hurdle.admits_new_money && !dead_money && grade != Grade::F && !overlay_bar;
     if add_ok {
         set.push(Action::Add);
         if matches!(grade, Grade::A | Grade::B) {
@@ -2567,7 +2528,6 @@ pub fn engine_conviction(out: &EngineOutput, input_gaps: &[String]) -> Convictio
 pub fn engine_action(
     grade: Grade,
     hurdle: &HurdleRead,
-    current_weight: f64,
     overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
 ) -> Action {
     use crate::portfolio::HurdleState;
@@ -2584,7 +2544,7 @@ pub fn engine_action(
     } else {
         Action::Hold
     };
-    let feasible = feasible_actions(grade, hurdle, current_weight, overlay_rules);
+    let feasible = feasible_actions(grade, hurdle, overlay_rules);
     if feasible.contains(&rule) {
         return rule;
     }
@@ -2602,29 +2562,21 @@ pub fn engine_action(
 }
 
 /// Assemble the full engine stand-in arm for a priced holding — outlook off the
-/// dated closes, conviction off the degradation flags, the action rung with its
-/// rung-band sizing. Position context (weight, profile, book total) is the
-/// caller's — this runs at the pipeline merge, not inside [`analyze`].
-/// `input_gaps` is the dossier's **assembled** degraded-input list (financials
-/// gaps plus fund-metadata gaps, the DGS10-history gap, and the listing-guard
-/// unverified note), so the conviction read counts *any* dossier gap
-/// (`docs/portfolio-analysis.md` §Starting parameters) — tier gaps stay out of
-/// it, since they carry their own counter.
+/// dated closes, conviction off the degradation flags, and the action rung, all
+/// from per-holding inputs alone (`portfolio-v9`: no position/book context —
+/// sizing is retired with the construction stage). Runs at the pipeline merge,
+/// not inside [`analyze`]. `input_gaps` is the dossier's **assembled**
+/// degraded-input list (financials gaps plus fund-metadata gaps, the
+/// DGS10-history gap, and the listing-guard unverified note), so the conviction
+/// read counts *any* dossier gap (`docs/portfolio-analysis.md` §Starting
+/// parameters) — tier gaps stay out of it, since they carry their own counter.
 pub fn engine_view(
     out: &EngineOutput,
     fin: &CompanyFinancials,
     input_gaps: &[String],
     overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
-    position: &Position,
-    profile: &InvestorProfile,
-    account_total: f64,
 ) -> EngineView {
-    let current_weight = if account_total > 0.0 {
-        position.market_value / account_total
-    } else {
-        0.0
-    };
-    let action = engine_action(out.grade, &out.hurdle, current_weight, overlay_rules);
+    let action = engine_action(out.grade, &out.hurdle, overlay_rules);
     // The engine arm observes its own cap rules: a matched pre-profit conviction
     // ceiling binds the stand-in conviction exactly as the feasible-set bars bind
     // the stand-in action (`docs/portfolio-analysis.md` §The holding verdict —
@@ -2637,7 +2589,6 @@ pub fn engine_view(
         outlook: engine_outlook(&fin.daily_closes),
         conviction,
         action,
-        action_sizing: size_action(action, position, profile, account_total),
     }
 }
 
@@ -2693,98 +2644,10 @@ pub fn options_signal(chain: &OptionChain) -> OptionsSignal {
     }
 }
 
-// ---- Action sizing -----------------------------------------------------------
-
-/// Derive the deterministic action sizing once the model has chosen the action rung
-/// (`docs/portfolio-analysis.md` §The holding verdict). Each rung maps to a target
-/// portfolio-weight band relative to the position's current weight; the share/dollar
-/// delta reaches the band's midpoint. An `add`/`add aggressively` is bounded by the
-/// profile's available cash when it sets a finite cap; `None` cash is unconstrained
-/// (the fixed preset's stance). Calibratable: the per-rung band steps are an open
-/// parameter, not pinned. No orders are placed.
-pub fn size_action(
-    action: Action,
-    position: &Position,
-    profile: &InvestorProfile,
-    account_total: f64,
-) -> ActionSizing {
-    let current_weight = if account_total > 0.0 {
-        position.market_value / account_total
-    } else {
-        0.0
-    };
-    let (target_low, target_high) = rung_band(action, current_weight);
-    sizing_from_range(target_low, target_high, position, profile, account_total)
-}
-
-/// The engine's target-weight band for one action rung at a current weight — the
-/// single home for the per-rung multiplier ladder, shared by [`size_action`] and
-/// the construction stage's range read (a model range outside its rung's band
-/// records an engine-bound annotation — `docs/portfolio-workflow.md` §Step 7b).
-///
-/// Per-rung multiplicative target around the current weight (a simple, legible
-/// ladder; concentration is bounded by the cap). The add-family rungs carry
-/// **absolute target floors** — the multiplier band or the floor, whichever is
-/// higher (`docs/portfolio-analysis.md` §Starting parameters: pure current-weight
-/// multipliers perpetuate historical accidents) — while trim / hold stay relative.
-pub fn rung_band(action: Action, current_weight: f64) -> (f64, f64) {
-    let (low_mult, high_mult, floor) = match action {
-        Action::SellAll => (0.0, 0.0, 0.0),
-        Action::Trim => (0.4, 0.7, 0.0),
-        Action::Hold => (0.9, 1.1, 0.0),
-        Action::Add => (1.2, 1.6, ADD_FLOOR_WEIGHT),
-        Action::AddAggressively => (1.6, 2.2, ADD_AGGRESSIVE_FLOOR_WEIGHT),
-    };
-    let low = (current_weight * low_mult).max(floor).min(MAX_SINGLE_WEIGHT);
-    let high = (current_weight * high_mult).max(floor).min(MAX_SINGLE_WEIGHT);
-    (low, high)
-}
-
-/// Derive the deterministic share/dollar deltas for a target-weight range — the
-/// delta reaches the range's midpoint against the current account total. Shared by
-/// [`size_action`] (the engine band) and the construction merge (the model's
-/// validated range): however the range was chosen, the delta math has one home.
-pub fn sizing_from_range(
-    target_low: f64,
-    target_high: f64,
-    position: &Position,
-    profile: &InvestorProfile,
-    account_total: f64,
-) -> ActionSizing {
-    let target_mid = (target_low + target_high) / 2.0;
-    let (est_dollar_delta, est_share_delta) = match position.current_price {
-        Some(price) if account_total > 0.0 && price > 0.0 => {
-            let target_value = target_mid * account_total;
-            let mut dollar_delta = target_value - position.market_value;
-            // A buy is bounded by the profile's cash cap when set; `None` means cash is
-            // unconstrained (the fixed preset's stance — the user may hold cash the app
-            // can't see), so adds are not gated on observed Schwab cash
-            // (`docs/configuration.md` §Investor Profile). INFINITY ⇒ no cap.
-            // The cap is PER ROW, not joint across adds (ruled 2026-08-05,
-            // piece-3 walk): two validated adds can each individually clear a
-            // set cap while jointly overspending it — inert under the fixed
-            // preset; a joint gate rides any future configurable-cash slice.
-            if dollar_delta > 0.0 {
-                dollar_delta = dollar_delta.min(profile.available_cash.unwrap_or(f64::INFINITY));
-            }
-            (Some(dollar_delta), Some(dollar_delta / price))
-        }
-        _ => (None, None),
-    };
-
-    ActionSizing {
-        target_weight_low: target_low,
-        target_weight_high: target_high,
-        est_share_delta,
-        est_dollar_delta,
-        sizing_rationale: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portfolio::{AssetClass, HurdleState, RiskTier};
+    use crate::portfolio::{HurdleState, RiskTier};
     use crate::schwab::{OptionQuote, OptionKind};
 
     /// Quarterly dates walking back from mid-2026, newest first.
@@ -3759,21 +3622,11 @@ mod tests {
         clean.tier_gaps.clear();
         clean.hurdle.state = crate::portfolio::HurdleState::Clears;
         let fin = strong();
-        let position = Position {
-            symbol: "AAPL".into(),
-            description: "Apple".into(),
-            asset_class: AssetClass::Stock,
-            quantity: 5.0,
-            cost_basis: 450.0,
-            market_value: 500.0,
-            current_price: Some(100.0),
-        };
-        let profile = InvestorProfile::default_fixture();
-        let view = engine_view(&clean, &fin, &[], None, &position, &profile, 100_000.0);
+        let view = engine_view(&clean, &fin, &[], None);
         assert_eq!(view.conviction, Conviction::High, "no assembled gap → High");
         let degraded =
             ["listing-resolution guard unverified — FMP profile unavailable".to_string()];
-        let view = engine_view(&clean, &fin, &degraded, None, &position, &profile, 100_000.0);
+        let view = engine_view(&clean, &fin, &degraded, None);
         assert_eq!(
             view.conviction,
             Conviction::Medium,
@@ -3791,26 +3644,21 @@ mod tests {
         };
         // A/B + clears + admits → add.
         assert_eq!(
-            engine_action(Grade::B, &hurdle(HurdleState::Clears, true), 0.05, None),
+            engine_action(Grade::B, &hurdle(HurdleState::Clears, true), None),
             Action::Add
         );
         // F + dead money → sell all; dead money alone → trim.
         assert_eq!(
-            engine_action(Grade::F, &hurdle(HurdleState::Fails, false), 0.05, None),
+            engine_action(Grade::F, &hurdle(HurdleState::Fails, false), None),
             Action::SellAll
         );
         assert_eq!(
-            engine_action(Grade::C, &hurdle(HurdleState::Fails, false), 0.05, None),
+            engine_action(Grade::C, &hurdle(HurdleState::Fails, false), None),
             Action::Trim
         );
         // The default read is hold.
         assert_eq!(
-            engine_action(Grade::C, &hurdle(HurdleState::Indeterminate, false), 0.05, None),
-            Action::Hold
-        );
-        // An add barred by the concentration cap walks toward hold.
-        assert_eq!(
-            engine_action(Grade::A, &hurdle(HurdleState::Clears, true), 0.30, None),
+            engine_action(Grade::C, &hurdle(HurdleState::Indeterminate, false), None),
             Action::Hold
         );
         // Severe deterioration (exit family only): hold is off the set → trim.
@@ -3821,7 +3669,7 @@ mod tests {
             matched_rules: vec!["severe".into()],
         };
         assert_eq!(
-            engine_action(Grade::B, &hurdle(HurdleState::Clears, true), 0.05, Some(&severe)),
+            engine_action(Grade::B, &hurdle(HurdleState::Clears, true), Some(&severe)),
             Action::Trim
         );
     }
@@ -3922,22 +3770,20 @@ mod tests {
                 cond("c-price", LedgerSeries::Price),
                 cond("c-margin", LedgerSeries::NetMargin),
             ],
-            target_weight_low: 0.0,
-            target_weight_high: 0.1,
             authored_band_relation: None,
         };
         let fin = strong();
         let m = compute_metrics(&fin);
         // Market-data only: the filing condition is skipped whole — no unevaluable
         // note, no state update — its carried state simply stands.
-        let gated = evaluate_ledger_conditions_gated(&ledger, &m, &fin, Some(0.05), "2026-08-03", |s| {
+        let gated = evaluate_ledger_conditions_gated(&ledger, &m, &fin, "2026-08-03", |s| {
             s.cadence() == crate::portfolio::ConditionCadence::MarketData
         });
         assert!(gated.updated_states.iter().any(|(id, _)| id == "c-price"));
         assert!(!gated.updated_states.iter().any(|(id, _)| id == "c-margin"));
         assert!(gated.unevaluable.is_empty());
         // The ungated form still evaluates both.
-        let full = evaluate_ledger_conditions(&ledger, &m, &fin, Some(0.05), "2026-08-03");
+        let full = evaluate_ledger_conditions(&ledger, &m, &fin, "2026-08-03");
         assert!(full.updated_states.iter().any(|(id, _)| id == "c-margin"));
     }
 
@@ -3949,22 +3795,19 @@ mod tests {
             tr_bear: None, tr_base: None, tr_bull: None,
             admits_new_money: admits,
         };
-        // A clean A-grade with headroom offers the full ladder.
-        let full = feasible_actions(Grade::A, &read(HurdleState::Clears, true), 0.05, None);
+        // A clean A-grade offers the full ladder.
+        let full = feasible_actions(Grade::A, &read(HurdleState::Clears, true), None);
         assert!(full.contains(&Action::Add) && full.contains(&Action::AddAggressively));
         // Dead money drops the add family at any grade; hold stays (hysteresis).
-        let dead = feasible_actions(Grade::A, &read(HurdleState::Fails, false), 0.05, None);
+        let dead = feasible_actions(Grade::A, &read(HurdleState::Fails, false), None);
         assert!(!dead.contains(&Action::Add));
         assert!(dead.contains(&Action::Hold));
         // Grade F bars the family; a C-grade passing admission gets add but never
         // add-aggressively (A/B only).
-        assert!(!feasible_actions(Grade::F, &read(HurdleState::Clears, true), 0.05, None)
+        assert!(!feasible_actions(Grade::F, &read(HurdleState::Clears, true), None)
             .contains(&Action::Add));
-        let c = feasible_actions(Grade::C, &read(HurdleState::Indeterminate, true), 0.05, None);
+        let c = feasible_actions(Grade::C, &read(HurdleState::Indeterminate, true), None);
         assert!(c.contains(&Action::Add) && !c.contains(&Action::AddAggressively));
-        // At the concentration cap the add family leaves the set.
-        assert!(!feasible_actions(Grade::A, &read(HurdleState::Clears, true), 0.26, None)
-            .contains(&Action::Add));
     }
 
     #[test]
@@ -3982,7 +3825,7 @@ mod tests {
             bar_add_family: true,
             ..Default::default()
         };
-        let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), 0.05, Some(&barred));
+        let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), Some(&barred));
         assert!(!set.contains(&Action::Add));
         assert!(set.contains(&Action::Hold));
         // Severe deterioration restricts the whole set to the exit family.
@@ -3991,41 +3834,8 @@ mod tests {
             exit_family_only: true,
             ..Default::default()
         };
-        let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), 0.05, Some(&severe));
+        let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), Some(&severe));
         assert_eq!(set, vec![Action::SellAll, Action::Trim]);
-    }
-
-    #[test]
-    fn add_targets_get_absolute_floors() {
-        // A tiny 0.5% position: pure multipliers would cap the add around 0.8%, so
-        // the absolute floors lift the band (`docs/portfolio-analysis.md` §Starting
-        // parameters).
-        let position = Position {
-            symbol: "AAPL".into(),
-            description: "Apple".into(),
-            asset_class: AssetClass::Stock,
-            quantity: 5.0,
-            cost_basis: 450.0,
-            market_value: 500.0,
-            current_price: Some(100.0),
-        };
-        let sizing = size_action(
-            Action::Add,
-            &position,
-            &InvestorProfile::default_fixture(),
-            100_000.0,
-        );
-        assert!(sizing.target_weight_low >= ADD_FLOOR_WEIGHT - 1e-12);
-        let aggressive = size_action(
-            Action::AddAggressively,
-            &position,
-            &InvestorProfile::default_fixture(),
-            100_000.0,
-        );
-        assert!(aggressive.target_weight_low >= ADD_AGGRESSIVE_FLOOR_WEIGHT - 1e-12);
-        // Trim stays purely relative — no floor lifts a reduction.
-        let trim = size_action(Action::Trim, &position, &InvestorProfile::default_fixture(), 100_000.0);
-        assert!(trim.target_weight_high < ADD_FLOOR_WEIGHT);
     }
 
     #[test]
@@ -4075,80 +3885,6 @@ mod tests {
         assert!((sig.put_call_open_interest.unwrap() - 1.8).abs() < 1e-9);
         // Puts richer than calls → positive skew (a hedging-demand tell).
         assert!(sig.iv_skew.unwrap() > 0.0);
-    }
-
-    #[test]
-    fn size_action_caps_a_buy_by_available_cash_and_concentration() {
-        let position = Position {
-            symbol: "AAPL".into(),
-            description: "Apple".into(),
-            asset_class: AssetClass::Stock,
-            quantity: 100.0,
-            cost_basis: 14_000.0,
-            market_value: 19_500.0,
-            current_price: Some(195.0),
-        };
-        let mut profile = InvestorProfile::default_fixture();
-        profile.available_cash = Some(1_000.0); // tight cash
-        let sizing = size_action(Action::AddAggressively, &position, &profile, 29_500.0);
-        // The dollar delta to add is capped by the $1,000 cash on hand.
-        assert!(sizing.est_dollar_delta.unwrap() <= 1_000.0 + 1e-6);
-        // The target band never steers a single name above the 25% concentration cap.
-        assert!(sizing.target_weight_high <= 0.25 + 1e-9);
-    }
-
-    #[test]
-    fn size_action_unconstrained_cash_does_not_cap_a_buy() {
-        // A small position with lots of headroom, so add-aggressively wants to buy.
-        let position = Position {
-            symbol: "AAPL".into(),
-            description: "Apple".into(),
-            asset_class: AssetClass::Stock,
-            quantity: 10.0,
-            cost_basis: 900.0,
-            market_value: 1_000.0,
-            current_price: Some(100.0),
-        };
-        let account_total = 100_000.0;
-        // The fixed preset (available_cash: None) treats cash as unconstrained — the buy
-        // is sized to the concentration-bounded band, not clamped by observed cash.
-        let unconstrained = size_action(
-            Action::AddAggressively,
-            &position,
-            &InvestorProfile::default_fixture(),
-            account_total,
-        );
-        // A tight finite cap clamps the very same buy far smaller.
-        let mut tight = InvestorProfile::default_fixture();
-        tight.available_cash = Some(500.0);
-        let capped = size_action(Action::AddAggressively, &position, &tight, account_total);
-        assert!(
-            unconstrained.est_dollar_delta.unwrap() > capped.est_dollar_delta.unwrap(),
-            "unconstrained cash must not clamp the buy the way a finite cap does"
-        );
-        assert!(capped.est_dollar_delta.unwrap() <= 500.0 + 1e-6);
-    }
-
-    #[test]
-    fn size_action_sell_all_targets_zero_weight() {
-        let position = Position {
-            symbol: "AAPL".into(),
-            description: "Apple".into(),
-            asset_class: AssetClass::Stock,
-            quantity: 100.0,
-            cost_basis: 14_000.0,
-            market_value: 19_500.0,
-            current_price: Some(195.0),
-        };
-        let sizing = size_action(
-            Action::SellAll,
-            &position,
-            &InvestorProfile::default_fixture(),
-            29_500.0,
-        );
-        assert_eq!(sizing.target_weight_high, 0.0);
-        // Selling the whole position is a negative dollar delta of its full value.
-        assert!(sizing.est_dollar_delta.unwrap() < 0.0);
     }
 
     /// Certification replay over a persisted live run — the grade-band shadow-tune
@@ -4524,8 +4260,6 @@ mod tests {
             what_must_improve: String::new(),
             what_must_not_break: String::new(),
             conditions,
-            target_weight_low: 0.0,
-            target_weight_high: 0.1,
             authored_band_relation: None,
         }
     }
@@ -4565,19 +4299,41 @@ mod tests {
     fn series_resolution_maps_values_and_observation_identities() {
         let fin = strong();
         let metrics = compute_metrics(&fin);
-        let m = resolve_series(LedgerSeries::NetMargin, &metrics, &fin, None).unwrap();
+        let m = resolve_series(LedgerSeries::NetMargin, &metrics, &fin).unwrap();
         assert_eq!(m.observation_id, "2026-06-30", "filing series keys to the newest period end");
-        let p = resolve_series(LedgerSeries::Price, &metrics, &fin, None).unwrap();
+        let p = resolve_series(LedgerSeries::Price, &metrics, &fin).unwrap();
         assert_eq!(p.value, 195.0);
         assert_eq!(p.observation_id, "2026-07-15", "market series keys to the newest close date");
-        let w = resolve_series(LedgerSeries::PortfolioWeight, &metrics, &fin, Some(0.3)).unwrap();
-        assert_eq!(w.value, 0.3);
-        assert_eq!(
-            w.observation_id, "2026-07-15",
-            "weight keys to the marks' trading day, never the calendar run date"
-        );
         // A gap is a typed error, never a silent clear.
-        assert!(resolve_series(LedgerSeries::ExpenseRatio, &metrics, &fin, None).is_err());
+        assert!(resolve_series(LedgerSeries::ExpenseRatio, &metrics, &fin).is_err());
+    }
+
+    #[test]
+    fn portfolio_weight_is_retired_from_the_closed_surface() {
+        // The tunnel-vision ruling (2026-08-14): the series is off the schema
+        // vocabulary and unparseable as a fresh claim, a direct resolution is a
+        // typed error, and a persisted legacy condition is skipped WHOLE — no
+        // crossing, no unevaluable note (which would type its family `unknown`
+        // and force-include the holding on every selective run), no state
+        // update. It dies at the next 6f rewrite instead.
+        assert!(!LedgerSeries::ALL.contains(&LedgerSeries::PortfolioWeight));
+        assert!(LedgerSeries::parse("portfolio-weight").is_none());
+        assert!(LedgerSeries::PortfolioWeight.retired());
+        let fin = strong();
+        let metrics = compute_metrics(&fin);
+        assert!(resolve_series(LedgerSeries::PortfolioWeight, &metrics, &fin).is_err());
+        let ledger = ledger_of(vec![quant_cond(
+            "w",
+            LedgerSeries::PortfolioWeight,
+            LedgerComparator::Above,
+            0.25,
+            0.0,
+            None,
+        )]);
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
+        assert!(eval.crossings.is_empty());
+        assert!(eval.unevaluable.is_empty(), "skipped whole, never unevaluable");
+        assert!(eval.updated_states.is_empty(), "carried state stands frozen");
     }
 
     #[test]
@@ -4589,19 +4345,16 @@ mod tests {
         let mut fin = strong();
         fin.daily_closes.clear();
         let metrics = compute_metrics(&fin);
-        assert!(resolve_series(LedgerSeries::Price, &metrics, &fin, None).is_err());
-        assert!(
-            resolve_series(LedgerSeries::PortfolioWeight, &metrics, &fin, Some(0.5)).is_err()
-        );
+        assert!(resolve_series(LedgerSeries::Price, &metrics, &fin).is_err());
         let ledger = ledger_of(vec![quant_cond(
-            "w",
-            LedgerSeries::PortfolioWeight,
+            "p",
+            LedgerSeries::Price,
             LedgerComparator::Above,
-            0.25,
+            100.0,
             0.0,
             None,
         )]);
-        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, Some(0.5), "2026-08-03");
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
         assert!(eval.crossings.is_empty());
         assert_eq!(eval.unevaluable.len(), 1);
         assert!(eval.updated_states.is_empty(), "state untouched — a typed non-detection");
@@ -4635,7 +4388,7 @@ mod tests {
             0.0,
             Some(standing),
         )]);
-        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
         // P/S is market-cadence, so it confirms in two distinct observations: one
         // more breaching close after this and the falsifier would have tripped and
         // forced archival — off the basis step alone.
@@ -4668,7 +4421,6 @@ mod tests {
             &ledger_of(vec![cond]),
             &metrics,
             &fin,
-            None,
             "2026-08-04",
         );
         assert!(after.unevaluable.is_empty(), "the flip is not permanent");
@@ -4694,7 +4446,7 @@ mod tests {
             0.0,
             Some(standing),
         )]);
-        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
         assert!(eval.unevaluable.is_empty(), "{:?}", eval.unevaluable);
         assert_eq!(eval.crossings.len(), 1, "the price condition still evaluates");
     }
@@ -4717,7 +4469,7 @@ mod tests {
             0.0,
             Some(ConditionEvalState::default()),
         )]);
-        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
         assert!(eval.unevaluable.is_empty(), "{:?}", eval.unevaluable);
         let (_, st) = &eval.updated_states[0];
         assert_eq!(st.authored_statement_basis, Some(StatementBasis::Annual));
@@ -4753,7 +4505,7 @@ mod tests {
             0.0,
             Some(standing),
         )]);
-        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
         assert!(eval.crossings.is_empty(), "off-scale must not fabricate a crossing either");
         assert_eq!(eval.unevaluable.len(), 1, "it resolves unevaluable, not clean");
         assert_eq!(eval.unevaluable_series, vec![LedgerSeries::DebtToEquity]);
@@ -4784,7 +4536,7 @@ mod tests {
             0.0,
             None,
         )]);
-        let eval = evaluate_ledger_conditions(&ledger, &metrics, &merged, None, "2026-08-03");
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &merged, "2026-08-03");
         assert!(eval.crossings.is_empty(), "a negative P/E is not a cheap P/E");
         assert_eq!(eval.unevaluable.len(), 1);
     }
@@ -4801,7 +4553,7 @@ mod tests {
         fin.total_equity = Some(1000.0);
         let metrics = compute_metrics(&fin);
         assert_eq!(metrics.debt_to_equity, Some(0.0));
-        let resolved = resolve_series(LedgerSeries::DebtToEquity, &metrics, &fin, None)
+        let resolved = resolve_series(LedgerSeries::DebtToEquity, &metrics, &fin)
             .expect("zero leverage is on-scale");
         assert_eq!(resolved.value, 0.0);
     }
@@ -4856,7 +4608,7 @@ mod tests {
             0.06,
             None,
         )]);
-        let eval = evaluate_ledger_conditions(&inside, &metrics, &fin, None, "2026-08-03");
+        let eval = evaluate_ledger_conditions(&inside, &metrics, &fin, "2026-08-03");
         assert!(eval.crossings.is_empty(), "{:?}", eval.crossings);
 
         // Beyond the margin, a filing print is the period's settled observation —
@@ -4869,7 +4621,7 @@ mod tests {
             0.01,
             None,
         )]);
-        let eval = evaluate_ledger_conditions(&beyond, &metrics, &fin, None, "2026-08-03");
+        let eval = evaluate_ledger_conditions(&beyond, &metrics, &fin, "2026-08-03");
         assert_eq!(eval.crossings.len(), 1);
         assert_eq!(eval.crossings[0].outcome, CrossingOutcome::Confirmed);
         let (_, st) = &eval.updated_states[0];
@@ -4890,7 +4642,7 @@ mod tests {
             0.0,
             None,
         )]);
-        let eval1 = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        let eval1 = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
         assert_eq!(
             eval1.crossings[0].outcome,
             CrossingOutcome::FirstBreach,
@@ -4908,7 +4660,7 @@ mod tests {
             0.0,
             Some(st1),
         )]);
-        let eval2 = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        let eval2 = evaluate_ledger_conditions(&carried, &metrics, &fin, "2026-08-04");
         assert!(eval2.crossings.is_empty(), "{:?}", eval2.crossings);
         assert_eq!(eval2.updated_states[0].1.breach_streak, 1);
 
@@ -4917,7 +4669,7 @@ mod tests {
             date: "2026-07-16".into(),
             value: 195.0,
         });
-        let eval3 = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-05");
+        let eval3 = evaluate_ledger_conditions(&carried, &metrics, &fin, "2026-08-05");
         assert_eq!(eval3.crossings[0].outcome, CrossingOutcome::Confirmed);
         assert_eq!(eval3.updated_states[0].1.breach_streak, 2);
     }
@@ -4945,14 +4697,14 @@ mod tests {
             Some(acknowledged),
         )]);
         // The same observation the full pass already examined: no re-raise.
-        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-03");
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, "2026-08-03");
         assert!(eval.crossings.is_empty(), "{:?}", eval.crossings);
         // A later distinct breaching observation re-raises the confirmed breach.
         fin.daily_closes.push(DatedValue {
             date: "2026-07-20".into(),
             value: 190.0,
         });
-        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, "2026-08-04");
         assert_eq!(eval.crossings.len(), 1);
         assert_eq!(eval.crossings[0].outcome, CrossingOutcome::Confirmed);
     }
@@ -4980,7 +4732,7 @@ mod tests {
             date: "2026-07-16".into(),
             value: 195.0,
         });
-        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, "2026-08-04");
         assert!(eval.crossings.is_empty());
         let s = &eval.updated_states[0].1;
         assert_eq!(s.breach_streak, 0);
@@ -5011,7 +4763,7 @@ mod tests {
             0.0,
             Some(st.clone()),
         )]);
-        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, "2026-08-04");
         let s = &eval.updated_states[0].1;
         assert_eq!(s.breach_streak, 1, "a stale print must not advance the streak");
         assert_eq!(s.last_observation_id.as_deref(), Some("2026-07-20"));
@@ -5028,7 +4780,7 @@ mod tests {
             0.0,
             Some(st),
         )]);
-        let eval = evaluate_ledger_conditions(&clean_carried, &metrics, &fin, None, "2026-08-04");
+        let eval = evaluate_ledger_conditions(&clean_carried, &metrics, &fin, "2026-08-04");
         assert_eq!(eval.updated_states[0].1.breach_streak, 1, "no reset on a stale print");
     }
 
@@ -5057,7 +4809,7 @@ mod tests {
             0.0,
             Some(confirmed),
         )]);
-        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, "2026-08-04");
         assert_eq!(eval.crossings.len(), 1);
         assert_eq!(eval.crossings[0].observation_id, "2026-07-20");
         assert_eq!(eval.crossings[0].observed_value, 190.0);
@@ -5088,7 +4840,7 @@ mod tests {
             0.0,
             Some(confirmed),
         )]);
-        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-04");
+        let eval = evaluate_ledger_conditions(&carried, &metrics, &fin, "2026-08-04");
         assert!(
             eval.crossings.is_empty(),
             "no crossing may carry a clean value: {:?}",
@@ -5139,7 +4891,6 @@ mod tests {
             &cond(Some(acked)),
             &metrics_clean,
             &fin,
-            None,
             "2026-08-05",
         );
         let reset = eval.updated_states[0].1.clone();
@@ -5151,7 +4902,6 @@ mod tests {
             &cond(Some(reset)),
             &metrics_high,
             &fin,
-            None,
             "2026-08-06",
         );
         assert_eq!(eval.crossings.len(), 1, "{:?}", eval.crossings);
@@ -5178,7 +4928,7 @@ mod tests {
             0.0005,
             None,
         )]);
-        let eval1 = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        let eval1 = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
         assert_eq!(eval1.crossings[0].outcome, CrossingOutcome::Confirmed);
         let mut st = eval1.updated_states[0].1.clone();
         assert_eq!(st.last_observation_id.as_deref(), Some("expense-ratio:0.009"));
@@ -5194,14 +4944,14 @@ mod tests {
             0.0005,
             Some(st.clone()),
         )]);
-        let eval2 = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-10");
+        let eval2 = evaluate_ledger_conditions(&carried, &metrics, &fin, "2026-08-10");
         assert!(eval2.crossings.is_empty(), "{:?}", eval2.crossings);
         assert_eq!(eval2.updated_states[0].1.breach_streak, st.breach_streak);
 
         // A changed print is a distinct observation: the breach re-raises past
         // the acknowledgment.
         metrics.expense_ratio = Some(0.010);
-        let eval3 = evaluate_ledger_conditions(&carried, &metrics, &fin, None, "2026-08-17");
+        let eval3 = evaluate_ledger_conditions(&carried, &metrics, &fin, "2026-08-17");
         assert_eq!(eval3.crossings.len(), 1);
         assert_eq!(eval3.crossings[0].outcome, CrossingOutcome::Confirmed);
     }
@@ -5218,7 +4968,7 @@ mod tests {
             0.0,
             None,
         )]);
-        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, None, "2026-08-03");
+        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
         assert!(eval.crossings.is_empty());
         assert_eq!(eval.unevaluable.len(), 1);
         assert!(

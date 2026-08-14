@@ -531,8 +531,6 @@ pub fn run_quick_check(
         SweepPass {
             data,
             targets,
-            all_positions: &run.holdings.positions,
-            cash: run.holdings.cash,
             prior_state: prior_state.as_ref(),
             rates: rates.as_ref(),
             rate_note: rate_note.as_deref(),
@@ -604,8 +602,6 @@ struct SweepPass<'a> {
     targets: Vec<SweepTarget<'a>>,
     /// The whole book the fresh total is computed over: swept positions at fresh
     /// marks, everything else (and any failed refresh) at its last value.
-    all_positions: &'a [crate::schwab::Position],
-    cash: f64,
     prior_state: Option<&'a QuickCheckState>,
     rates: Option<&'a RatePrints>,
     rate_note: Option<&'a str>,
@@ -652,17 +648,6 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
             )
         }),
     );
-    // Fresh book total: swept positions at fresh marks, everything else (and any
-    // failed refresh) at its last persisted value; cash unchanged.
-    let fresh_total: f64 = pass.cash
-        + pass
-            .all_positions
-            .iter()
-            .map(|p| match prices.get(&p.symbol) {
-                Some((price, _)) if p.quantity != 0.0 => p.quantity * price,
-                _ => p.market_value,
-            })
-            .sum::<f64>();
 
     let mut holdings_state: Vec<HoldingQuickState> = Vec::with_capacity(pass.targets.len());
     for target in &pass.targets {
@@ -681,10 +666,6 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
                 .iter()
                 .find(|h| h.symbol.eq_ignore_ascii_case(&position.symbol))
         });
-        let fresh_weight = prices.get(&position.symbol).and_then(|(price, _)| {
-            (fresh_total > 0.0 && position.quantity != 0.0)
-                .then(|| (position.quantity * price) / fresh_total)
-        });
         let state = sweep_holding(SweepInputs {
             data: pass.data,
             position,
@@ -693,7 +674,6 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
             prior: prior_holding,
             price: prices.get(&position.symbol),
             price_error: price_errors.get(&position.symbol).map(String::as_str),
-            fresh_weight,
             rates: pass.rates,
             rate_note: pass.rate_note,
             last_pass_date: &target.last_pass_date,
@@ -714,17 +694,16 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
 /// The in-run sweep a **selective run** executes over its unselected tail before
 /// the per-holding loop (`docs/portfolio-analysis.md` §Triggering — the first
 /// mixed-vintage safety rule). Positions come from the run's **fresh Step-2
-/// pull** (current quantities, so weight-read conditions test the real book);
-/// verdicts, audits, and ledgers come from the prior run being carried; each
+/// pull** (current quantities and marks); verdicts, audits, and ledgers come
+/// from the prior run being carried; each
 /// holding's evidence-event boundary is its own effective vintage. The caller
 /// owns persistence — the run's persist seam retains carried holdings' states
 /// re-stamped to the new run.
 pub struct TailSweep<'a> {
     pub data: &'a dyn QuickCheckDataSource,
     pub prior_run: &'a crate::portfolio::PortfolioRun,
-    /// The current book (the fresh pull) — weights and marks read from here.
+    /// The current book (the fresh pull) — the sweep's position rows and marks.
     pub current_positions: &'a [crate::schwab::Position],
-    pub cash: f64,
     /// Uppercased symbols of the unselected tail to sweep.
     pub tail: &'a std::collections::HashSet<String>,
     pub prior_state: Option<&'a QuickCheckState>,
@@ -761,8 +740,6 @@ pub fn sweep_tail(input: TailSweep<'_>, ctx: &RunContext) -> Result<Vec<HoldingQ
         SweepPass {
             data: input.data,
             targets,
-            all_positions: input.current_positions,
-            cash: input.cash,
             prior_state: input.prior_state,
             rates: Some(&input.rates),
             rate_note: None,
@@ -817,7 +794,6 @@ struct SweepInputs<'a> {
     prior: Option<&'a HoldingQuickState>,
     price: Option<&'a (f64, Vec<DatedValue>)>,
     price_error: Option<&'a str>,
-    fresh_weight: Option<f64>,
     rates: Option<&'a RatePrints>,
     rate_note: Option<&'a str>,
     last_pass_date: &'a str,
@@ -1351,7 +1327,6 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             &overlaid,
             &metrics,
             &eval_fin,
-            inp.fresh_weight,
             inp.today,
             allow,
         );
@@ -1766,8 +1741,6 @@ mod tests {
             what_must_improve: String::new(),
             what_must_not_break: String::new(),
             conditions,
-            target_weight_low: 0.02,
-            target_weight_high: 0.08,
             authored_band_relation: None,
         }
     }
@@ -1781,17 +1754,9 @@ mod tests {
                 grade: Grade::B,
                 sub_scores: SubScores { quality: 70.0, valuation: 60.0, momentum: 50.0, risk: 65.0 },
                 action: crate::portfolio::Action::Hold,
-                lean: Some(crate::portfolio::Action::Hold),
-                action_what_changed: None,
+                action_rationale: String::new(),
                 model_view: None,
                 engine_view: None,
-                action_sizing: crate::portfolio::ActionSizing {
-                    target_weight_low: 0.02,
-                    target_weight_high: 0.08,
-                    est_share_delta: None,
-                    est_dollar_delta: None,
-                    sizing_rationale: None,
-                },
                 conviction: crate::portfolio::Conviction::Medium,
                 horizon_outlook: HorizonOutlook {
                     short: HorizonRead::Neutral,
@@ -1856,6 +1821,7 @@ mod tests {
             model_ids: vec![],
             prompt_version: crate::portfolio::PROMPT_VERSION.into(),
             degraded_inputs: vec![],
+            action_annotations: vec![],
             target_meta: None,
             grade_parameter_version: Some("grade-v2".into()),
             ledger_audit: None,
@@ -2461,15 +2427,8 @@ mod tests {
                     structural_flag: false,
                     evidence_gaps: vec![],
                     action: crate::portfolio::Action::Hold,
-                    action_sizing: crate::portfolio::ActionSizing {
-                        target_weight_low: 0.0,
-                        target_weight_high: 0.1,
-                        est_share_delta: None,
-                        est_dollar_delta: None,
-                        sizing_rationale: None,
-                    },
+                    action_rationale: String::new(),
                     what_changed: "fixture".into(),
-                    action_what_changed: None,
                 },
             )),
             thesis_ledger: Some(fund_ledger),
@@ -2540,15 +2499,8 @@ mod tests {
                     structural_flag: false,
                     evidence_gaps: vec![],
                     action: crate::portfolio::Action::Hold,
-                    action_sizing: crate::portfolio::ActionSizing {
-                        target_weight_low: 0.0,
-                        target_weight_high: 0.1,
-                        est_share_delta: None,
-                        est_dollar_delta: None,
-                        sizing_rationale: None,
-                    },
+                    action_rationale: String::new(),
                     what_changed: "fixture".into(),
-                    action_what_changed: None,
                 },
             )),
             thesis_ledger: Some(fund_ledger),

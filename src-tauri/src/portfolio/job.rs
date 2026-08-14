@@ -613,9 +613,15 @@ fn run_analysis(
             // The deterministic force-include legs that need no retrieval: a
             // holding new since the last run (no verdict to carry), a position
             // whose net side reversed (thesis-changing by construction — no
-            // carried verdict survives it), and an over-age carried exit-family
+            // carried verdict survives it), an over-age carried exit-family
             // action (re-analysis is the only honest resolution; the add family
-            // is rule-demoted at carry instead, and over-age holds stand).
+            // is rule-demoted at carry instead, and over-age holds stand), and
+            // the one-time contract migration: a verdict authored under the
+            // retired whole-book contract (pre-`portfolio-v9`) is never carried
+            // into a tunnel-vision run — its action was a 7b-merged final that
+            // may encode retired portfolio context, so it re-analyzes instead
+            // (Codex 2026-08-14 round 2, finding 2). Self-neutralizing: one
+            // full pass restamps the book and the check never fires again.
             for p in &holdings.positions {
                 let key = p.symbol.to_ascii_uppercase();
                 if work.contains(&key) {
@@ -626,11 +632,17 @@ fn run_analysis(
                     .verdicts
                     .iter()
                     .find(|v| v.symbol.eq_ignore_ascii_case(&p.symbol));
+                let prior_era = prior
+                    .audit
+                    .iter()
+                    .find(|a| a.symbol.eq_ignore_ascii_case(&p.symbol))
+                    .map(|a| a.prompt_version.as_str());
                 let force = delta.change == crate::portfolio::PositionChange::New
                     || delta.side_reversed(p.quantity)
                     // A current position with no prior verdict has nothing to
                     // carry, whatever the diff says.
                     || prior_verdict.is_none()
+                    || crate::portfolio::whole_book_era_version(prior_era)
                     || prior_verdict.is_some_and(|v| {
                         over_age(crate::portfolio::effective_vintage(v, &prior.created_at), today)
                             && carried_action(v).is_some_and(|a| a.is_exit_family())
@@ -653,7 +665,6 @@ fn run_analysis(
                     data: sel.quick_data,
                     prior_run: prior,
                     current_positions: &holdings.positions,
-                    cash: holdings.cash,
                     tail: &tail,
                     prior_state: quick_state.as_ref(),
                     rates: crate::portfolio::RatePrints {
@@ -719,13 +730,6 @@ fn run_analysis(
     // The same profile lookup's issuer name, keyed alongside the sector so the
     // prompt header can name the company when Schwab's description is blank.
     let mut profile_name_by_symbol: std::collections::HashMap<String, Option<String>> =
-        std::collections::HashMap::new();
-
-    // Fresh-passed funds' full sector weightings, captured for the Step-7a
-    // sector-exposure fold (`docs/portfolio-analysis.md` §Portfolio roll-up —
-    // fund exposure folds in at the sector level; a carried fund's persisted
-    // comparator carries only its top sector).
-    let mut fund_sector_weights: std::collections::HashMap<String, Vec<(String, f64)>> =
         std::collections::HashMap::new();
 
     for position in &holdings.positions {
@@ -877,10 +881,6 @@ fn run_analysis(
                     entry.insert(rows);
                 }
             }
-            fund_sector_weights.insert(
-                position.symbol.to_ascii_uppercase(),
-                fund.sector_weights.clone(),
-            );
             Some(crate::portfolio::fund::FundContext {
                 fund,
                 sector_pe: sector_pe_cache.clone().unwrap_or_default(),
@@ -972,7 +972,7 @@ fn run_analysis(
         // stamp one book across two days.
         let run_date = run_session_date.clone();
         let (mut verdict, audit) =
-            analyze_holding(analyst, &dossier, holdings.account_total, &rates, &run_date)?;
+            analyze_holding(analyst, &dossier, &rates, &run_date)?;
         if matches!(
             verdict.disposition,
             crate::portfolio::VerdictDisposition::InsufficientEvidence { .. }
@@ -1031,46 +1031,29 @@ fn run_analysis(
             if let Some(h) = swept_tail.get(&key) {
                 crate::portfolio::quick_check::overlay_condition_states(&mut carried, h);
             }
-            // The intrinsic *action* carries; its **sizing is engine context,
-            // recomputed at current weights** like the rest of the roll-up
-            // (`docs/portfolio-analysis.md` §Triggering — the roll-up re-runs
-            // over the mixed-vintage verdicts at current weights), so a carried
-            // card never shows today's weight beside the prior book's target
-            // band or share/dollar adjustment. The over-age add-family demotion
-            // lands first, so the demoted *hold* is what gets sized.
+            // The intrinsic *action* carries as-is (rung-only since
+            // `portfolio-v9` — no sizing to recompute). The over-age
+            // add-family demotion is the one deterministic carry rule.
             let stale = over_age(&vintage, today);
             if stale {
                 over_age_carried.insert(key.clone());
             }
             match &mut carried.disposition {
-                crate::portfolio::VerdictDisposition::Priced(g) => {
-                    if stale && g.action.is_add_family() {
-                        g.action = crate::portfolio::Action::Hold;
-                        carried.action_source = crate::portfolio::ActionSource::RuleDemoted;
-                    }
-                    g.action_sizing = crate::portfolio::engine::size_action(
-                        g.action,
-                        position,
-                        profile,
-                        holdings.account_total,
-                    );
+                crate::portfolio::VerdictDisposition::Priced(g)
+                    if stale && g.action.is_add_family() =>
+                {
+                    g.action = crate::portfolio::Action::Hold;
+                    carried.action_source = crate::portfolio::ActionSource::RuleDemoted;
                 }
-                crate::portfolio::VerdictDisposition::RoleRiskOnly(r) => {
-                    // Reachable since `portfolio-v7`: the 7b choice is
-                    // structurally open (departures annotated), so a role-risk
-                    // verdict can carry an add-family action — the
-                    // stale-strong-action rule is branch-unscoped
-                    // (`docs/portfolio-analysis.md` §Triggering).
-                    if stale && r.action.is_add_family() {
-                        r.action = crate::portfolio::Action::Hold;
-                        carried.action_source = crate::portfolio::ActionSource::RuleDemoted;
-                    }
-                    r.action_sizing = crate::portfolio::engine::size_action(
-                        r.action,
-                        position,
-                        profile,
-                        holdings.account_total,
-                    );
+                // A role-risk verdict can carry an add-family action (the action
+                // call's choice is structurally open), so the stale-strong-action
+                // rule is branch-unscoped (`docs/portfolio-analysis.md`
+                // §Triggering).
+                crate::portfolio::VerdictDisposition::RoleRiskOnly(r)
+                    if stale && r.action.is_add_family() =>
+                {
+                    r.action = crate::portfolio::Action::Hold;
+                    carried.action_source = crate::portfolio::ActionSource::RuleDemoted;
                 }
                 _ => {}
             }
@@ -1086,9 +1069,7 @@ fn run_analysis(
         }
     }
 
-    // The episode store loads ahead of construction: the Step-7a aggregates read a
-    // carried stock's sector from its latest episode's entry stamp, and the
-    // outcome pass below reuses the same load.
+    // The episode store loads once; the outcome pass below consumes it.
     let (mut episodes, unreadable_active_symbols) = match store::load_episodes(conn) {
         Ok(load) => {
             // A skipped *active* row (unreadable JSON, readable SQL columns)
@@ -1110,188 +1091,12 @@ fn run_analysis(
         }
     };
 
-    // ---- Step 7: portfolio roll-up and construction ---------------------------
-    // 7a: the deterministic whole-book aggregates + per-holding sizing-spine rows
-    // (`docs/portfolio-workflow.md` §Step 7a). 7b: the construction model call
-    // reconciles each holding's standalone lean against them into its final
-    // action + target-weight range, app-validated by the joint-feasibility check
-    // with one named-violation re-run; a persisting infeasibility fails the run,
-    // persisting the per-holding work as a degraded row on the way out
-    // (`docs/portfolio-workflow.md` §Step 7b).
+    // ---- Roll-up + outcome pass (the loop's actions are final since
+    // `portfolio-v9` — no construction stage exists to reconcile them) ----------
     if ctx.is_cancelled() {
         anyhow::bail!("run cancelled");
     }
-    let construction_step = crate::portfolio::pipeline::CONSTRUCTION_STEP_KEY;
-    ctx.step_started(construction_step, "Portfolio construction");
-    let stock_sectors: std::collections::HashMap<String, Option<String>> = sector_by_symbol
-        .iter()
-        .map(|(k, v)| (k.clone(), v.sector.clone()))
-        .collect();
-    let aggregates = crate::portfolio::construction::build_aggregates(
-        &crate::portfolio::construction::AggregateInputs {
-            holdings: &holdings,
-            verdicts: &verdicts,
-            audits: &audits,
-            prior_verdicts: prior_run.as_ref().map(|r| r.verdicts.as_slice()),
-            carried: &carried_symbols,
-            over_age: &over_age_carried,
-            stock_sectors: &stock_sectors,
-            fund_sector_weights: &fund_sector_weights,
-            episodes: &episodes,
-            profile,
-        },
-    );
-    let mut construction_input = crate::portfolio::pipeline::ConstructionInput {
-        aggregates: &aggregates,
-        exited: &holdings_diff.exited,
-        house_view: &house_view,
-        profile,
-        repair: None,
-    };
-    // Any construction-stage failure after the completed per-holding pass persists
-    // the degraded row before the run fails (ruled 2026-08-11, extended the same
-    // day to construct *errors* — a schema parse failure is exactly what an
-    // output truncation becomes, and an HTTP/stream error discards the same
-    // completed pass). A cancel is not a failure and leaves no row; the outer
-    // wrapper maps it via the shared flag.
-    macro_rules! construct_or_persist_degraded {
-        ($call:expr) => {
-            match $call {
-                Ok(d) => d,
-                Err(e) => {
-                    if ctx.is_cancelled() {
-                        return Err(e);
-                    }
-                    ctx.step_finished(
-                        construction_step,
-                        "failed",
-                        Some(format!("{e:#}")),
-                    );
-                    persist_degraded_run(
-                        conn,
-                        &created_at,
-                        holdings,
-                        verdicts,
-                        audits,
-                        aggregates,
-                        &holdings_diff.exited,
-                        deep_history_failures,
-                        rates.history_gap.is_some(),
-                        house_view_omitted,
-                        analyst.take_prompt_usage(),
-                        &rates,
-                    );
-                    return Err(e.context("portfolio construction call failed"));
-                }
-            }
-        };
-    }
-    let draft = construct_or_persist_degraded!(analyst.construct(&construction_input));
-    let (mut validated, retried) = match crate::portfolio::construction::validate_construction(
-        &draft,
-        &aggregates,
-        &holdings,
-        profile,
-        crate::portfolio::construction::ValidationPass::FirstDraft,
-    ) {
-        Ok(v) => (v, false),
-        Err(violations) => {
-            // The single named-violation repair re-run — the same model-proposes /
-            // app-validates seam as the continuity check, scoped to the violating
-            // names: the model returns corrected objects for those holdings only
-            // (the narrowed schema demands nothing else), the corrections overlay
-            // the first draft, and the merged plan re-validates **whole** — the
-            // implied weights are book-coupled, so a repair can shift every
-            // holding's containment, not just the named ones.
-            if ctx.is_cancelled() {
-                anyhow::bail!("run cancelled");
-            }
-            let scope =
-                crate::portfolio::construction::repair_scope(&violations, &aggregates.spine);
-            // Only the violations the narrowed schema gives the model a slot to
-            // fix: a non-spine key's violation (`UnknownHolding`) is repaired
-            // deterministically by the overlay, and naming it to the model
-            // would demand a correction it cannot author.
-            let named: Vec<String> = violations
-                .iter()
-                .filter(|v| {
-                    v.symbol()
-                        .is_some_and(|s| scope.iter().any(|c| c.eq_ignore_ascii_case(s)))
-                })
-                .map(|v| format!("- {v}"))
-                .collect();
-            let corrected = if scope.is_empty() {
-                // Every violation names a non-spine key — droppable
-                // deterministically by the overlay, no model call needed.
-                std::collections::BTreeMap::new()
-            } else {
-                construction_input.repair =
-                    Some(crate::portfolio::construction::ConstructionRepair {
-                        symbols: scope.clone(),
-                        violations: named.join("\n"),
-                        prior_plan: crate::portfolio::construction::render_prior_plan(
-                            &draft,
-                            &aggregates.spine,
-                            &scope,
-                        ),
-                    });
-                construct_or_persist_degraded!(analyst.construct(&construction_input)).holdings
-            };
-            let merged = crate::portfolio::construction::overlay_repair(
-                &draft,
-                corrected,
-                &aggregates.spine,
-                &scope,
-            );
-            match crate::portfolio::construction::validate_construction(
-                &merged,
-                &aggregates,
-                &holdings,
-                profile,
-                crate::portfolio::construction::ValidationPass::MergedRepair,
-            ) {
-                Ok(v) => (v, true),
-                Err(persisting) => {
-                    let msg: Vec<String> = persisting.iter().map(|v| v.to_string()).collect();
-                    let msg = msg.join("; ");
-                    ctx.step_finished(construction_step, "failed", Some(msg.clone()));
-                    persist_degraded_run(
-                        conn,
-                        &created_at,
-                        holdings,
-                        verdicts,
-                        audits,
-                        aggregates,
-                        &holdings_diff.exited,
-                        deep_history_failures,
-                        rates.history_gap.is_some(),
-                        house_view_omitted,
-                        analyst.take_prompt_usage(),
-                        &rates,
-                    );
-                    anyhow::bail!(
-                        "portfolio construction jointly infeasible after the named-violation \
-                         re-run: {msg}"
-                    );
-                }
-            }
-        }
-    };
-    validated.view.retried = retried;
-    // Merge the validated result onto the verdicts — the final action, the
-    // range-derived sizing, the action-half audit, the rule-demotion restore,
-    // and the carried-stale-lean stamp (`construction::merge_validated_actions`).
-    let lean_divergence_by_symbol = crate::portfolio::construction::merge_validated_actions(
-        &mut verdicts,
-        &validated.actions,
-        &holdings,
-        profile,
-        &carried_symbols,
-    );
-    let construction_view = validated.view.clone();
-    ctx.step_finished(construction_step, "ok", None);
-
-    let mut roll_up = build_roll_up(
+    let roll_up = build_roll_up(
         &holdings,
         &verdicts,
         &holdings_diff.exited,
@@ -1301,10 +1106,6 @@ fn run_analysis(
         house_view_omitted,
         analyst.take_prompt_usage(),
     );
-    roll_up.aggregates = Some(aggregates);
-    roll_up.construction = Some(construction_view);
-    // ---- Outcome-learning pass — after the 7b merge, persists with Step 8
-    // (`docs/portfolio-workflow.md` §Step 7a outcome-pass paragraphs / §Step 8) ----
     // The deterministic outcome half: tag active episodes' net alignment from this
     // run's diff, refresh label-time price series through the shared bar cache and
     // record any newly due window labels (fail-soft — a failed retrieval leaves a
@@ -1338,7 +1139,6 @@ fn run_analysis(
             sector_by_symbol: &sector_by_symbol,
             dgs2: Some(rates.dgs2),
             unreadable_active_symbols,
-            lean_divergence_by_symbol: &lean_divergence_by_symbol,
             carried_symbols: &carried_symbols,
         },
         &mut episodes,
@@ -1374,8 +1174,9 @@ fn run_analysis(
             fetched_at: created_at.clone(),
         }),
         outcome: Some(outcome_records),
-        // Authored here, at the persist seam — the one place that knows the
-        // book was constructed (merge_validated_actions ran above).
+        // Authored at the persist seam. Every tunnel-vision run persists
+        // complete — the marker survives for legacy degraded rows' sake
+        // (`PortfolioRun::has_constructed_book`).
         constructed: Some(true),
     };
 
@@ -1580,78 +1381,6 @@ fn build_roll_up(
             top_position_weight * 100.0,
             cash_weight * 100.0
         ),
-    }
-}
-
-/// Persist a construction-failed run's completed per-holding work as a
-/// **degraded** row before the run fails (ruled 2026-08-11,
-/// `docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition — extended
-/// the same slice to any Step-7b construction-call failure, not just persisting
-/// incoherence): the run's terminal state stays failed — the caller still
-/// records the failed-job row — but the verdicts, audits and 7a aggregates
-/// survive as a `portfolio_runs` row with no constructed book, listed in the
-/// history and excluded from `latest_run`
-/// (`PortfolioRun::has_constructed_book`). No merge ran, so each verdict's
-/// action is its pre-construction value — a fresh row's standalone lean, a
-/// carried row's carried action, a role-risk placeholder; the outcome pass is
-/// skipped — episodes anchor decisions, and no final decisions exist.
-/// Insert + prune land atomically, matching the success path's transactional
-/// persist. Best-effort: a persist failure must not mask the construction error
-/// the run is failing on.
-#[allow(clippy::too_many_arguments)]
-fn persist_degraded_run(
-    conn: &Connection,
-    created_at: &str,
-    holdings: Holdings,
-    verdicts: Vec<HoldingVerdict>,
-    audits: Vec<HoldingAudit>,
-    aggregates: crate::portfolio::construction::BookAggregates,
-    exited: &[ExitedPosition],
-    deep_history_failures: usize,
-    dgs10_history_gap: bool,
-    house_view_omitted: bool,
-    prompt_usage: Vec<crate::local_model::PromptUsage>,
-    rates: &crate::portfolio::engine::RateAnchors,
-) {
-    let mut roll_up = build_roll_up(
-        &holdings,
-        &verdicts,
-        exited,
-        &audits,
-        deep_history_failures,
-        dgs10_history_gap,
-        house_view_omitted,
-        prompt_usage,
-    );
-    roll_up.aggregates = Some(aggregates);
-    let degraded = PortfolioRun {
-        run_id: uuid::Uuid::new_v4().to_string(),
-        created_at: created_at.to_string(),
-        holdings,
-        verdicts,
-        roll_up,
-        audit: audits,
-        rate_prints: Some(crate::portfolio::RatePrints {
-            dgs2: rates.dgs2,
-            dgs10: rates.dgs10,
-            dgs2_as_of: rates.dgs2_date.clone(),
-            dgs10_as_of: rates.dgs10_date.clone(),
-            fetched_at: created_at.to_string(),
-        }),
-        outcome: None,
-        // Authored here, at the persist seam: this row carries per-holding
-        // work but no constructed book.
-        constructed: Some(false),
-    };
-    let persisted = conn
-        .unchecked_transaction()
-        .map_err(anyhow::Error::new)
-        .and_then(|tx| {
-            store::record_run(&tx, &degraded)?;
-            tx.commit().map_err(anyhow::Error::new)
-        });
-    if let Err(pe) = persisted {
-        eprintln!("portfolio construction: degraded-run persist failed: {pe}");
     }
 }
 
@@ -3800,8 +3529,52 @@ mod tests {
         store::insert_run(&conn, &run).unwrap();
     }
 
+    fn doctor_latest_run_audit(
+        paths: &ReportPaths,
+        symbol: &str,
+        f: impl FnOnce(&mut crate::portfolio::HoldingAudit),
+    ) {
+        let conn = storage::open(&paths.db_path).unwrap();
+        let mut run = store::latest_run(&conn).unwrap().unwrap();
+        let a = run
+            .audit
+            .iter_mut()
+            .find(|a| a.symbol.eq_ignore_ascii_case(symbol))
+            .unwrap();
+        f(a);
+        run.run_id = format!("{}-da", run.run_id);
+        run.created_at = now_rfc3339();
+        store::insert_run(&conn, &run).unwrap();
+    }
+
     fn days_ago(n: i64) -> String {
         (chrono::Utc::now() - chrono::Duration::days(n)).to_rfc3339()
+    }
+
+    #[test]
+    fn a_pre_v9_carried_verdict_is_force_included_not_carried() {
+        // The one-time contract migration (Codex 2026-08-14 round 2, finding 2):
+        // a prior verdict stamped under the whole-book era re-analyzes on a
+        // selective run rather than carrying — its action was a 7b-merged final
+        // that may encode retired portfolio context. One full pass restamps the
+        // book, so the check self-neutralizes.
+        let (_dir, paths) = paths();
+        full_run(&paths, two_stocks());
+        doctor_latest_run_audit(&paths, "MSFT", |a| {
+            a.prompt_version = "portfolio-v8".into();
+        });
+        let second = selective_run(
+            &paths,
+            two_stocks(),
+            &["AAPL"],
+            &SelectiveQuickData::default(),
+        );
+        let msft = verdict(&second, "MSFT");
+        assert_eq!(
+            msft.analyzed_at.as_deref(),
+            Some(second.created_at.as_str()),
+            "a whole-book-era verdict re-analyzes; it is never carried into a v9 run"
+        );
     }
 
     #[test]
@@ -3951,8 +3724,6 @@ mod tests {
             v.analyzed_at = Some(old.clone());
             if let crate::portfolio::VerdictDisposition::Priced(g) = &mut v.disposition {
                 g.action = crate::portfolio::Action::Add;
-                g.action_sizing.est_share_delta = Some(10.0);
-                g.action_sizing.est_dollar_delta = Some(1_950.0);
             }
         });
         let second = selective_run(
@@ -3974,20 +3745,6 @@ mod tests {
         match &msft.disposition {
             crate::portfolio::VerdictDisposition::Priced(g) => {
                 assert_eq!(g.action, crate::portfolio::Action::Hold);
-                // The demoted hold is re-sized at current weights — the stale
-                // add band never survives the demotion.
-                let w = 3_900.0 / second.holdings.account_total;
-                assert!(
-                    (g.action_sizing.target_weight_low - 0.9 * w).abs() < 1e-12
-                        && (g.action_sizing.target_weight_high - 1.1 * w).abs() < 1e-12,
-                    "hold band re-anchored on today's weight: {:?}",
-                    g.action_sizing
-                );
-                assert!(
-                    g.action_sizing.est_dollar_delta.unwrap().abs() < 1e-6,
-                    "a hold at current weight implies no adjustment: {:?}",
-                    g.action_sizing
-                );
             }
             other => panic!("expected a priced carry, got {other:?}"),
         }
@@ -3995,10 +3752,10 @@ mod tests {
 
     #[test]
     fn an_over_age_carried_role_risk_add_action_is_rule_demoted_to_hold() {
-        // Reachable since `portfolio-v7`: the 7b choice is structurally open,
-        // so a role-risk verdict can persist an add-family action — and the
-        // stale-strong-action rule is branch-unscoped, so the carry must
-        // demote it exactly like a priced add.
+        // A role-risk verdict can persist an add-family action (the action
+        // call's choice is structurally open) — and the stale-strong-action
+        // rule is branch-unscoped, so the carry must demote it exactly like a
+        // priced add.
         let (_dir, paths) = paths();
         full_run(&paths, two_stocks());
         let old = days_ago(40);
@@ -4014,15 +3771,8 @@ mod tests {
                     structural_flag: false,
                     evidence_gaps: Vec::new(),
                     action: crate::portfolio::Action::Add,
-                    action_sizing: crate::portfolio::ActionSizing {
-                        target_weight_low: 0.02,
-                        target_weight_high: 0.03,
-                        est_share_delta: Some(10.0),
-                        est_dollar_delta: Some(1_950.0),
-                        sizing_rationale: None,
-                    },
+                    action_rationale: String::new(),
                     what_changed: "new holding".into(),
-                    action_what_changed: None,
                 },
             ));
         });
@@ -4045,26 +3795,18 @@ mod tests {
         match &msft.disposition {
             crate::portfolio::VerdictDisposition::RoleRiskOnly(r) => {
                 assert_eq!(r.action, crate::portfolio::Action::Hold);
-                let w = 3_900.0 / second.holdings.account_total;
-                assert!(
-                    (r.action_sizing.target_weight_low - 0.9 * w).abs() < 1e-12
-                        && (r.action_sizing.target_weight_high - 1.1 * w).abs() < 1e-12,
-                    "hold band re-anchored on today's weight: {:?}",
-                    r.action_sizing
-                );
             }
             other => panic!("expected a role-risk carry, got {other:?}"),
         }
     }
 
     #[test]
-    fn a_carried_verdicts_sizing_recomputes_at_current_weights() {
+    fn a_carried_verdict_keeps_its_action_and_refreshes_its_position_tag() {
         let (_dir, paths) = paths();
         full_run(&paths, two_stocks());
         // The user trimmed MSFT between runs — a same-side decrease, which
-        // force-includes nothing. The carried action stands, but its sizing is
-        // engine context and must read today's book, not the prior run's
-        // (`docs/portfolio-analysis.md` §Triggering — current weights).
+        // force-includes nothing. The carried action stands as-is (rung-only);
+        // only the position-change tag reads today's diff.
         let trimmed = holdings_of(vec![
             stock("AAPL", 20.0, 3_900.0),
             stock("MSFT", 10.0, 1_950.0),
@@ -4077,22 +3819,9 @@ mod tests {
             "MSFT was carried, not re-analyzed"
         );
         assert_eq!(msft.position_change, PositionChange::Decreased);
-        let w = 1_950.0 / second.holdings.account_total;
         match &msft.disposition {
             crate::portfolio::VerdictDisposition::Priced(g) => {
                 assert_eq!(g.action, crate::portfolio::Action::Hold);
-                assert!(
-                    (g.action_sizing.target_weight_low - 0.9 * w).abs() < 1e-12
-                        && (g.action_sizing.target_weight_high - 1.1 * w).abs() < 1e-12,
-                    "band re-anchored on today's weight: {:?}",
-                    g.action_sizing
-                );
-                assert!(
-                    g.action_sizing.est_dollar_delta.unwrap().abs() < 1e-6
-                        && g.action_sizing.est_share_delta.unwrap().abs() < 1e-6,
-                    "a carried hold at current weight implies no adjustment: {:?}",
-                    g.action_sizing
-                );
             }
             other => panic!("expected a priced carry, got {other:?}"),
         }
@@ -4254,607 +3983,4 @@ mod tests {
         }
     }
 
-    // ---- The 7b construction stage ------------------------------------------
-
-    #[test]
-    fn construction_persists_the_aggregates_view_and_sizing_rationale() {
-        let (_dir, paths) = paths();
-        let run = full_run(&paths, two_stocks());
-        let agg = run.roll_up.aggregates.as_ref().expect("aggregates persist");
-        assert_eq!(agg.spine.len(), 2, "one spine row per actionable holding");
-        assert!(agg.spine.iter().all(|r| !r.offered.is_empty()));
-        let view = run.roll_up.construction.as_ref().expect("view persists");
-        assert!(!view.risk_posture.is_empty());
-        assert!(view.external_funding.is_some());
-        assert!(!view.retried, "the stub's first draft validates");
-        for v in &run.verdicts {
-            let crate::portfolio::VerdictDisposition::Priced(g) = &v.disposition else {
-                panic!("fixture stocks grade");
-            };
-            assert!(g.lean.is_some(), "6f authors the lean");
-            assert!(
-                g.action_sizing.sizing_rationale.is_some(),
-                "construction stamps the sizing rationale"
-            );
-        }
-    }
-
-    /// A construction analyst that sabotages its drafts: always on `fail_both`,
-    /// else only the violation-free first attempt — recording each call's
-    /// repair input (violations text + scope) so the named re-run is observable.
-    struct RogueConstruction {
-        fail_both: bool,
-        calls: std::cell::RefCell<Vec<Option<String>>>,
-        repair_scopes: std::cell::RefCell<Vec<Vec<String>>>,
-    }
-
-    impl HoldingAnalyst for RogueConstruction {
-        fn distill(
-            &self,
-            d: &crate::portfolio::dossier::HoldingDossier,
-            f: &crate::portfolio::pipeline::ResearchFindings,
-        ) -> Result<String> {
-            StubAnalyst.distill(d, f)
-        }
-        fn interpret(
-            &self,
-            input: &crate::portfolio::pipeline::InterpretationInput,
-        ) -> Result<crate::portfolio::Interpretation> {
-            StubAnalyst.interpret(input)
-        }
-        fn interpret_role_risk(
-            &self,
-            input: &crate::portfolio::pipeline::RoleRiskInput,
-        ) -> Result<crate::portfolio::RoleRiskInterpretation> {
-            StubAnalyst.interpret_role_risk(input)
-        }
-        fn construct(
-            &self,
-            input: &crate::portfolio::pipeline::ConstructionInput,
-        ) -> Result<crate::portfolio::construction::ConstructionDraft> {
-            self.calls
-                .borrow_mut()
-                .push(input.repair.as_ref().map(|r| r.violations.clone()));
-            if let Some(r) = &input.repair {
-                self.repair_scopes.borrow_mut().push(r.symbols.clone());
-            }
-            let mut draft = StubAnalyst.construct(input)?;
-            if self.fail_both || input.repair.is_none() {
-                if let Some(p) = draft.holdings.get_mut("AAPL") {
-                    // A sell-all with a non-zero range: the enforced 0–0
-                    // self-coherence rail, tripped on exactly one name. (A
-                    // weight-range distortion would couple through the implied
-                    // book and legitimately trip MSFT's containment too, so it
-                    // can't pin a single-name repair scope.)
-                    p.action = "sell-all".to_string();
-                    p.target_weight_low = 0.10;
-                    p.target_weight_high = 0.12;
-                }
-            }
-            Ok(draft)
-        }
-        fn model_ids(&self) -> Vec<String> {
-            vec!["rogue-construction".into()]
-        }
-    }
-
-    #[test]
-    fn a_violating_draft_gets_one_named_rerun_then_succeeds() {
-        let (_dir, paths) = paths();
-        let analyst = RogueConstruction {
-            fail_both: false,
-            calls: Default::default(),
-            repair_scopes: Default::default(),
-        };
-        let run = match run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(two_stocks()),
-            &StubCompanyData,
-            &StubMarket,
-            &analyst,
-            &InvestorProfile::default_fixture(),
-            None,
-            None,
-            &paths,
-            &RunGuard::default(),
-            &ctx(),
-        )
-        .unwrap()
-        {
-            PortfolioJobOutcome::Successful(run) => *run,
-            other => panic!("expected success after the re-run, got {other:?}"),
-        };
-        let calls = analyst.calls.borrow();
-        assert_eq!(calls.len(), 2, "exactly one re-run");
-        assert!(calls[0].is_none());
-        let named = calls[1].as_deref().expect("the re-run names the violations");
-        assert!(named.contains("AAPL"), "{named}");
-        // The rogue proposal trips a self-coherence rail (the sell-all 0–0
-        // range) — the enforced family; engine-bound departures only annotate
-        // under v7 and never drive the re-run.
-        assert!(named.contains("sell-all target range must be 0"), "{named}");
-        // The repair is scoped to the violating name alone: the re-run demands
-        // a corrected object for AAPL only, and MSFT keeps its first-draft
-        // proposal through the overlay.
-        assert_eq!(
-            analyst.repair_scopes.borrow().as_slice(),
-            &[vec!["AAPL".to_string()]],
-            "the repair scope names only the violating symbol"
-        );
-        assert!(
-            run.roll_up.construction.as_ref().unwrap().retried,
-            "the view records the re-run"
-        );
-    }
-
-    /// A first draft whose only violation is a non-spine key: the repair is
-    /// deterministic — the overlay drops the key with **no** second model call —
-    /// and the run succeeds with the repair pass recorded.
-    struct ExtraKeyConstruction {
-        calls: std::cell::RefCell<usize>,
-    }
-
-    impl HoldingAnalyst for ExtraKeyConstruction {
-        fn distill(
-            &self,
-            d: &crate::portfolio::dossier::HoldingDossier,
-            f: &crate::portfolio::pipeline::ResearchFindings,
-        ) -> Result<String> {
-            StubAnalyst.distill(d, f)
-        }
-        fn interpret(
-            &self,
-            input: &crate::portfolio::pipeline::InterpretationInput,
-        ) -> Result<crate::portfolio::Interpretation> {
-            StubAnalyst.interpret(input)
-        }
-        fn interpret_role_risk(
-            &self,
-            input: &crate::portfolio::pipeline::RoleRiskInput,
-        ) -> Result<crate::portfolio::RoleRiskInterpretation> {
-            StubAnalyst.interpret_role_risk(input)
-        }
-        fn construct(
-            &self,
-            input: &crate::portfolio::pipeline::ConstructionInput,
-        ) -> Result<crate::portfolio::construction::ConstructionDraft> {
-            *self.calls.borrow_mut() += 1;
-            let mut draft = StubAnalyst.construct(input)?;
-            let filler = draft
-                .holdings
-                .values()
-                .next()
-                .expect("the stub proposes every spine row")
-                .clone();
-            draft.holdings.insert("ZZZT".into(), filler);
-            Ok(draft)
-        }
-        fn model_ids(&self) -> Vec<String> {
-            vec!["extra-key-construction".into()]
-        }
-    }
-
-    #[test]
-    fn an_unknown_key_violation_repairs_deterministically_without_a_model_call() {
-        let (_dir, paths) = paths();
-        let analyst = ExtraKeyConstruction {
-            calls: Default::default(),
-        };
-        let run = match run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(two_stocks()),
-            &StubCompanyData,
-            &StubMarket,
-            &analyst,
-            &InvestorProfile::default_fixture(),
-            None,
-            None,
-            &paths,
-            &RunGuard::default(),
-            &ctx(),
-        )
-        .unwrap()
-        {
-            PortfolioJobOutcome::Successful(run) => *run,
-            other => panic!("expected success after the deterministic drop, got {other:?}"),
-        };
-        assert_eq!(
-            *analyst.calls.borrow(),
-            1,
-            "a non-spine key is dropped app-side — no repair model call"
-        );
-        let view = run.roll_up.construction.as_ref().unwrap();
-        assert!(view.retried, "the repair pass is recorded");
-        assert_eq!(run.verdicts.len(), 2, "the dropped key never became a verdict");
-    }
-
-    /// A construction analyst whose call itself errors — the truncation /
-    /// parse-failure / transport shape, distinct from a parseable-but-infeasible
-    /// draft.
-    struct ErroringConstruction;
-
-    impl HoldingAnalyst for ErroringConstruction {
-        fn distill(
-            &self,
-            d: &crate::portfolio::dossier::HoldingDossier,
-            f: &crate::portfolio::pipeline::ResearchFindings,
-        ) -> Result<String> {
-            StubAnalyst.distill(d, f)
-        }
-        fn interpret(
-            &self,
-            input: &crate::portfolio::pipeline::InterpretationInput,
-        ) -> Result<crate::portfolio::Interpretation> {
-            StubAnalyst.interpret(input)
-        }
-        fn interpret_role_risk(
-            &self,
-            input: &crate::portfolio::pipeline::RoleRiskInput,
-        ) -> Result<crate::portfolio::RoleRiskInterpretation> {
-            StubAnalyst.interpret_role_risk(input)
-        }
-        fn construct(
-            &self,
-            _input: &crate::portfolio::pipeline::ConstructionInput,
-        ) -> Result<crate::portfolio::construction::ConstructionDraft> {
-            anyhow::bail!("response truncated at the output budget")
-        }
-        fn model_ids(&self) -> Vec<String> {
-            vec!["erroring-construction".into()]
-        }
-    }
-
-    #[test]
-    fn a_construction_call_error_persists_the_degraded_row_too() {
-        // The extension of the 2026-08-11 ruling: a construct *error* — a parse
-        // failure (what an output truncation becomes), an HTTP or stream error —
-        // persists the same degraded row as persisting incoherence, instead of
-        // discarding the completed per-holding pass with nothing but the
-        // failed-job row.
-        let (_dir, paths) = paths();
-        let first = full_run(&paths, two_stocks());
-        let conn = storage::open(&paths.db_path).unwrap();
-        let outcome = run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(two_stocks()),
-            &StubCompanyData,
-            &StubMarket,
-            &ErroringConstruction,
-            &InvestorProfile::default_fixture(),
-            None,
-            None,
-            &paths,
-            &RunGuard::default(),
-            &ctx(),
-        )
-        .unwrap();
-        match outcome {
-            PortfolioJobOutcome::Failed(msg) => {
-                assert!(msg.contains("portfolio construction call failed"), "{msg}");
-            }
-            other => panic!("expected a failed run, got {other:?}"),
-        }
-        let summaries = store::list_run_summaries(&conn, 10).unwrap();
-        assert_eq!(summaries.len(), 2, "the erroring attempt persisted a row");
-        assert!(!summaries[0].constructed, "the degraded head is marked");
-        assert_eq!(
-            store::latest_run(&conn).unwrap().unwrap().run_id,
-            first.run_id,
-            "the degraded run never becomes the diff/carry baseline"
-        );
-        let degraded = store::run_by_id(&conn, &summaries[0].run_id)
-            .unwrap()
-            .unwrap();
-        assert!(!degraded.has_constructed_book());
-        assert!(degraded.roll_up.aggregates.is_some(), "7a work survives");
-        assert!(degraded.roll_up.construction.is_none());
-    }
-
-    #[test]
-    fn a_persisting_violation_fails_the_run_after_the_single_rerun() {
-        let (_dir, paths) = paths();
-        let analyst = RogueConstruction {
-            fail_both: true,
-            calls: Default::default(),
-            repair_scopes: Default::default(),
-        };
-        let outcome = run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(two_stocks()),
-            &StubCompanyData,
-            &StubMarket,
-            &analyst,
-            &InvestorProfile::default_fixture(),
-            None,
-            None,
-            &paths,
-            &RunGuard::default(),
-            &ctx(),
-        )
-        .unwrap();
-        match outcome {
-            PortfolioJobOutcome::Failed(msg) => {
-                assert!(msg.contains("jointly infeasible"), "{msg}");
-                assert!(msg.contains("AAPL"), "{msg}");
-            }
-            other => panic!("expected a failed run, got {other:?}"),
-        }
-        assert_eq!(analyst.calls.borrow().len(), 2, "never a third attempt");
-    }
-
-    #[test]
-    fn a_construction_failed_run_persists_degraded_and_never_becomes_latest() {
-        // Ruled 2026-08-11 (`docs/verification/2026-08-10-big-run-attempt-1.md`
-        // §Disposition): the run stays terminally failed, but the per-holding
-        // work survives as a degraded `portfolio_runs` row — listed in the
-        // history, openable by id, excluded from `latest_run` so the next run's
-        // baseline reaches past it to the last constructed book.
-        let (_dir, paths) = paths();
-        // Seed a prior CONSTRUCTED run so the exclusion is observable.
-        let first = full_run(&paths, two_stocks());
-        let conn = storage::open(&paths.db_path).unwrap();
-        let episodes_before = store::load_episodes(&conn).unwrap().episodes.len();
-
-        let analyst = RogueConstruction {
-            fail_both: true,
-            calls: Default::default(),
-            repair_scopes: Default::default(),
-        };
-        let outcome = run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(two_stocks()),
-            &StubCompanyData,
-            &StubMarket,
-            &analyst,
-            &InvestorProfile::default_fixture(),
-            None,
-            None,
-            &paths,
-            &RunGuard::default(),
-            &ctx(),
-        )
-        .unwrap();
-        // The job's terminal state is unchanged by the persist.
-        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
-
-        // The degraded row persisted into the history, marked…
-        let summaries = store::list_run_summaries(&conn, 10).unwrap();
-        assert_eq!(summaries.len(), 2, "the failed attempt persisted a row");
-        assert!(!summaries[0].constructed, "the degraded head is marked");
-        assert!(summaries[1].constructed);
-        // …but `latest_run` reaches past it to the constructed run.
-        assert_eq!(
-            store::latest_run(&conn).unwrap().unwrap().run_id,
-            first.run_id,
-            "the degraded run never becomes the diff/carry baseline"
-        );
-        // The degraded row carries the per-holding work: 7a aggregates, no book,
-        // pre-merge actions still equal to the standalone leans (this fixture is
-        // all fresh priced rows — the carried and role-risk shapes are pinned by
-        // the two tests below), no outcome pass.
-        let degraded = store::run_by_id(&conn, &summaries[0].run_id)
-            .unwrap()
-            .unwrap();
-        assert!(!degraded.has_constructed_book());
-        assert!(degraded.roll_up.aggregates.is_some(), "7a work survives");
-        assert!(degraded.roll_up.construction.is_none());
-        assert!(degraded.outcome.is_none(), "no outcome pass on a failed book");
-        assert_eq!(degraded.verdicts.len(), 2);
-        for v in &degraded.verdicts {
-            let crate::portfolio::VerdictDisposition::Priced(g) = &v.disposition else {
-                panic!("fixture stocks grade");
-            };
-            assert_eq!(
-                Some(g.action),
-                g.lean,
-                "pre-merge, the action field holds the standalone lean"
-            );
-            assert!(
-                g.action_sizing.sizing_rationale.is_none(),
-                "no construction rationale was merged"
-            );
-        }
-        // The failed attempt wrote no decision episodes.
-        assert_eq!(
-            store::load_episodes(&conn).unwrap().episodes.len(),
-            episodes_before,
-            "episodes anchor decisions; a failed book made none"
-        );
-    }
-
-    #[test]
-    fn a_degraded_run_persists_role_risk_rows_whose_action_is_a_placeholder() {
-        // A fresh `role_risk_only` row's pre-merge action is a provisional Hold
-        // that 7b — that branch's sole action author — never blessed. The
-        // degraded persist carries the row (the role read IS the analytical
-        // work); the run's no-book mark is what keeps the placeholder from
-        // reading as a decision, and the read-only view suppresses it.
-        struct BondFundCompanyData;
-        impl CompanyDataSource for BondFundCompanyData {
-            fn financials(&self, symbol: &str) -> CompanyFinancials {
-                StubCompanyData.financials(symbol)
-            }
-            fn facts(&self, symbol: &str) -> SecData {
-                StubCompanyData.facts(symbol)
-            }
-            fn fund_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
-                crate::portfolio::fund::FundData {
-                    symbol: symbol.to_string(),
-                    name: Some("Total Bond Market ETF".into()),
-                    asset_class: Some("Fixed Income".into()),
-                    expense_ratio: Some(0.0003),
-                    aum: Some(1.0e11),
-                    nav: Some(72.0),
-                    sector_weights: vec![],
-                    country_weights: vec![("United States".into(), 0.95)],
-                    gaps: vec![],
-                }
-            }
-        }
-        let (_dir, paths) = paths();
-        let mut fund = stock("BND", 50.0, 3_600.0);
-        fund.asset_class = AssetClass::Etf;
-        let mut positions = two_stocks().positions;
-        positions.push(fund);
-        let analyst = RogueConstruction {
-            fail_both: true,
-            calls: Default::default(),
-            repair_scopes: Default::default(),
-        };
-        let outcome = run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(holdings_of(positions)),
-            &BondFundCompanyData,
-            &StubMarket,
-            &analyst,
-            &InvestorProfile::default_fixture(),
-            None,
-            None,
-            &paths,
-            &RunGuard::default(),
-            &ctx(),
-        )
-        .unwrap();
-        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
-        let conn = storage::open(&paths.db_path).unwrap();
-        let degraded = store::list_recent_runs(&conn, 1).unwrap().remove(0);
-        assert!(!degraded.has_constructed_book());
-        let bnd = verdict(&degraded, "BND");
-        let crate::portfolio::VerdictDisposition::RoleRiskOnly(r) = &bnd.disposition else {
-            panic!("expected a role-risk verdict, got {:?}", bnd.disposition);
-        };
-        assert_eq!(
-            r.action,
-            crate::portfolio::Action::Hold,
-            "the pre-merge placeholder persists as data, marked by the no-book run"
-        );
-    }
-
-    #[test]
-    fn a_selective_degraded_run_carries_prior_finals_not_fresh_leans() {
-        // A selective run's carried tail rides the PRIOR run's final action, not
-        // a current standalone lean — the degraded persist keeps that meaning,
-        // and the `latest_run` exclusion is what stops it feeding the next
-        // run's carry as if 7b had blessed it.
-        let (_dir, paths) = paths();
-        let first = full_run(&paths, two_stocks());
-        let first_msft_action = carried_action(verdict(&first, "MSFT")).unwrap();
-        let analyst = RogueConstruction {
-            fail_both: true,
-            calls: Default::default(),
-            repair_scopes: Default::default(),
-        };
-        let outcome = run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(two_stocks()),
-            &StubCompanyData,
-            &StubMarket,
-            &analyst,
-            &InvestorProfile::default_fixture(),
-            Some(SelectiveRun {
-                selected: vec!["AAPL".into()],
-                quick_data: &SelectiveQuickData::default(),
-            }),
-            None,
-            &paths,
-            &RunGuard::default(),
-            &ctx(),
-        )
-        .unwrap();
-        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
-        let conn = storage::open(&paths.db_path).unwrap();
-        assert_eq!(
-            store::latest_run(&conn).unwrap().unwrap().run_id,
-            first.run_id,
-            "the degraded selective run never becomes the carry baseline"
-        );
-        let degraded = store::list_recent_runs(&conn, 1).unwrap().remove(0);
-        assert!(!degraded.has_constructed_book());
-        let msft = verdict(&degraded, "MSFT");
-        assert_eq!(
-            carried_action(msft),
-            Some(first_msft_action),
-            "a carried row's pre-merge action is the prior final, not a lean"
-        );
-    }
-
-    /// An analyst whose lean is add-family on a name whose feasible set bars it
-    /// (the two-stock fixture sits at 50% weight — over the concentration cap) —
-    /// the engine-bar divergence path end to end.
-    struct AddLeaningAnalyst;
-
-    impl HoldingAnalyst for AddLeaningAnalyst {
-        fn distill(
-            &self,
-            d: &crate::portfolio::dossier::HoldingDossier,
-            f: &crate::portfolio::pipeline::ResearchFindings,
-        ) -> Result<String> {
-            StubAnalyst.distill(d, f)
-        }
-        fn interpret(
-            &self,
-            input: &crate::portfolio::pipeline::InterpretationInput,
-        ) -> Result<crate::portfolio::Interpretation> {
-            let mut i = StubAnalyst.interpret(input)?;
-            // Legal as a lean (the full-ladder intrinsic set) even where the
-            // feasible set bars the add family.
-            i.action = crate::portfolio::Action::Add;
-            Ok(i)
-        }
-        fn interpret_role_risk(
-            &self,
-            input: &crate::portfolio::pipeline::RoleRiskInput,
-        ) -> Result<crate::portfolio::RoleRiskInterpretation> {
-            StubAnalyst.interpret_role_risk(input)
-        }
-        fn construct(
-            &self,
-            input: &crate::portfolio::pipeline::ConstructionInput,
-        ) -> Result<crate::portfolio::construction::ConstructionDraft> {
-            StubAnalyst.construct(input)
-        }
-        fn model_ids(&self) -> Vec<String> {
-            vec!["add-leaning".into()]
-        }
-    }
-
-    #[test]
-    fn an_engine_barred_lean_is_stamped_divergent_and_rides_the_episode() {
-        let (_dir, paths) = paths();
-        let run = match run_portfolio_job(
-            &FixtureHoldingsSource::with_holdings(two_stocks()),
-            &StubCompanyData,
-            &StubMarket,
-            &AddLeaningAnalyst,
-            &InvestorProfile::default_fixture(),
-            None,
-            None,
-            &paths,
-            &RunGuard::default(),
-            &ctx(),
-        )
-        .unwrap()
-        {
-            PortfolioJobOutcome::Successful(run) => *run,
-            other => panic!("expected success, got {other:?}"),
-        };
-        // The verdict shows the divergence: lean add, final action inside the
-        // feasible set (the 50% position is over the cap, so the add family was
-        // never offered at construction).
-        let aapl = verdict(&run, "AAPL");
-        let crate::portfolio::VerdictDisposition::Priced(g) = &aapl.disposition else {
-            panic!("expected priced");
-        };
-        assert_eq!(g.lean, Some(crate::portfolio::Action::Add));
-        assert_ne!(g.action, crate::portfolio::Action::Add);
-        // The episode records the lean, the final action, and the app-stamped
-        // engine-bar divergence (`docs/portfolio-analysis.md` §Outcome learning).
-        let conn = storage::open(&paths.db_path).unwrap();
-        let load = store::load_episodes(&conn).unwrap();
-        let ep = load
-            .episodes
-            .iter()
-            .find(|e| e.symbol == "AAPL")
-            .expect("AAPL episode opened");
-        let crate::portfolio::outcome::EpisodeBody::Priced(p) = &ep.body else {
-            panic!("expected a priced episode");
-        };
-        assert_eq!(p.lean, crate::portfolio::Action::Add);
-        assert_eq!(p.action, g.action);
-        let d = p.lean_divergence.as_deref().expect("divergence recorded");
-        assert!(d.starts_with("engine-bar:"), "{d}");
-    }
 }

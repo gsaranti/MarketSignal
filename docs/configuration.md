@@ -139,7 +139,7 @@ Manual import (designed, not built — [schwab-integration.md §Manual import](s
 ### Investor Profile
 
 Both local jobs are personalized by an **investor profile**: risk tolerance, time horizon, objective, tax sensitivity, and cash posture.
-It shapes Portfolio Analysis's action ladder and cash/deployment stance — **never the intrinsic verdict**: grade, sub-scores, conviction, targets, and the standalone lean are **profile-independent**, computed identically for any investor, the profile shaping the prescription at portfolio construction only ([portfolio-analysis.md §Intrinsic verdict](portfolio-analysis.md#intrinsic-verdict)) — and Trade Opportunities' entry framing and conviction emphasis (see [trade-opportunities.md](trade-opportunities.md)).
+It shapes Portfolio Analysis's action ladder — **never the intrinsic verdict**: grade, sub-scores, conviction, and targets are **profile-independent**, computed identically for any investor, the profile entering at the per-holding action call only ([portfolio-analysis.md §Intrinsic verdict](portfolio-analysis.md#intrinsic-verdict)) — and Trade Opportunities' entry framing and conviction emphasis (see [trade-opportunities.md](trade-opportunities.md)).
 The profile never changes *which* holdings grade well or *which* opportunities qualify — those are engine and research outputs — only how the prescription is framed for this investor.
 
 **For now the profile is a fixed default preset, not user-configured** (a configurable profile is deferred).
@@ -152,7 +152,7 @@ The default posture:
   Total return is the goal; no income or capital-preservation mandate is imposed.
 - **risk tolerance — medium-to-high.**
   Higher-risk cells and archetypes (disruptors, commodity cyclicals, smaller caps) are in scope, gated by the engine's forensic/risk discipline rather than by a conservative cap.
-  The preset is represented as the **aggressive** rung of the three-step tolerance scale and renders as "aggressive (medium-to-high)" in the construction prompt and the read-only Settings block — one shared framing, per the 2026-08-05 B7 ruling.
+  The preset is represented as the **aggressive** rung of the three-step tolerance scale and renders as "aggressive (medium-to-high)" in the action call's prompt and the read-only Settings block — one shared framing, per the 2026-08-05 B7 ruling.
 - **cash — always available.**
   Buying power is treated as **unconstrained**: the user may hold cash in accounts the app can't see, so *add aggressively* and full-size entries are **never** gated on observed Schwab cash.
   (Concentration and risk limits still apply; only the cash constraint is lifted.)

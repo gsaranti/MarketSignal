@@ -31,9 +31,10 @@ and live in the analytical register:
   holdings (A–F + sub-scores, conviction, and price targets where the
   vehicle class is priceable; an unpriceable fund renders a typed
   role/risk card branch instead — no letter, targets, or conviction),
-  a standing per-holding thesis, and a whole-book roll-up. Structured
-  numeric data, not prose. Holdings shown as cards; a roll-up &
-  construction panel below.
+  a standing per-holding thesis, and a run-level roll-up. Structured
+  numeric data, not prose. Holdings shown as cards; a roll-up panel
+  below (the construction panel retired with the app's whole-book
+  stage, 2026-08-14).
 - **Trade Opportunities** — *(analytical register)* discovers ideas across
   a 3×3 risk×horizon matrix, with a leading operating metric, a
   since-flagged performance read, a calibration scorecard (its product

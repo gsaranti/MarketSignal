@@ -21,7 +21,6 @@
 //! engine's sub-scores, never a model gestalt; the model's letter derives from
 //! the model's own sub-scores through the same shared cutoffs.
 
-pub mod construction;
 pub mod diff;
 pub mod dossier;
 pub mod engine;
@@ -80,25 +79,26 @@ pub const HORIZON_LONG: &str = "long term (~3–5 years)";
 
 /// The configured investor profile that personalizes the *action* — never the
 /// intrinsic verdict (`docs/portfolio-analysis.md` §Intrinsic verdict,
-/// `docs/configuration.md` §Investor Profile). It reaches the model at Step-7b
-/// construction only: objective, risk tolerance, horizon, tax posture, and available
-/// cash frame the prescription there. Inside the per-holding loop the engine reads
-/// `available_cash` alone, bounding a sizing delta (`engine::size_action`). It
-/// ships as the documented fixed preset ([`InvestorProfile::default_fixture`]);
-/// the configurable Settings form is a later slice — Settings shows the preset
-/// read-only via [`Self::display`].
+/// `docs/configuration.md` §Investor Profile). It reaches the model at the
+/// **per-holding action call** only ([`ActionDecision`]): objective, risk
+/// tolerance, horizon, and tax posture frame the rung there, and no other model
+/// call renders it. It ships as the documented fixed preset
+/// ([`InvestorProfile::default_fixture`]); the configurable Settings form is a
+/// later slice — Settings shows the preset read-only via [`Self::display`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InvestorProfile {
     pub objective: ProfileObjective,
     pub risk_tolerance: RiskTolerance,
     pub horizon: ProfileHorizon,
-    /// Whether holdings sit in a taxable account (so realized gains carry a tax
-    /// cost the action sizing should weigh) versus tax-advantaged.
+    /// Whether holdings sit in a taxable account (so realizing a gain or loss
+    /// carries a tax consequence the action rationale flags as a user
+    /// consideration) versus tax-advantaged.
     pub tax_sensitive: bool,
     /// Cash / buying power available for new purchases, in account currency.
-    /// `Some(cap)` bounds a buy in `engine::size_action`; **`None` means cash is
-    /// unconstrained** — the fixed preset's stance (the user may hold cash the app can't
-    /// see), so adds are not gated on observed Schwab cash
+    /// **`None` means cash is unconstrained** — the fixed preset's stance (the
+    /// user may hold cash the app can't see). Consumer-less since sizing
+    /// retired with the construction stage (`portfolio-v9`): cash bounds are
+    /// whole-book work, the future portfolio planner's
     /// (`docs/configuration.md` §Investor Profile).
     pub available_cash: Option<f64>,
 }
@@ -124,7 +124,7 @@ impl InvestorProfile {
     }
 
     /// The read-only Settings rows for this profile — ready-to-render display
-    /// strings composed here so the Settings block and the construction prompt
+    /// strings composed here so the Settings block and the action call's prompt
     /// share one label source (`docs/interface.md` Settings tree;
     /// `docs/configuration.md` §Investor Profile).
     pub fn display(&self) -> InvestorProfileDisplay {
@@ -381,9 +381,8 @@ pub struct SubScores {
 /// vocabulary so verdicts stay comparable and the model can't retreat into hedged
 /// language. Since `portfolio-v7` the model selects the rung freely (the full
 /// ladder); the engine's set rides as evidence, an outside-the-set rung persisting
-/// with an engine-bound annotation. The model also authors the 7b target-weight
-/// range (coherence-validated); only the share/dollar deltas are computed
-/// deterministically from it.
+/// with an audit annotation. The rung is the whole decision (`portfolio-v9`) —
+/// no weight range or share/dollar figure rides beside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Action {
@@ -434,86 +433,6 @@ pub enum ActionSource {
     #[default]
     ModelChosen,
     RuleDemoted,
-}
-
-/// The action half of the what-changed audit's attribution vocabulary
-/// (`docs/portfolio-analysis.md` §What changed): a changed action / target weight
-/// traces to a **moved intrinsic verdict** or a **moved portfolio context** — so an
-/// action can change with the intrinsic verdict unchanged and read honestly rather
-/// than as a mystery re-grade. App-validated at construction: a context claim must
-/// map to a real Step-7a aggregate ([`construction`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ActionAttribution {
-    MovedIntrinsic,
-    MovedContext,
-}
-
-/// The closed context-cause vocabulary a **moved-context** claim must carry — each
-/// cause checkable against a real Step-7a aggregate, never a bare model assertion
-/// (`docs/portfolio-analysis.md` §Portfolio roll-up and construction: "a 'became
-/// oversized' claim must map to a real aggregate"). `cash-freed` / `cash-raised`
-/// are the funding pair — the add-side move the plan's own sells fund, and the
-/// sell-side move whose proceeds the plan redeploys (ruled 2026-08-13,
-/// `docs/verification/2026-08-13-big-run-attempt-2.md` §Disposition). The
-/// carried-name context-trim carve-out accepts only the first two
-/// (`docs/portfolio-analysis.md` §Triggering — a context-driven trim rides a
-/// recomputed concentration / overlap aggregate; freed or raised cash is never a
-/// trim license on stale research).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ContextCause {
-    BecameOversized,
-    OverlapEmerged,
-    CashFreed,
-    CashRaised,
-}
-
-impl ContextCause {
-    /// Every cause, in schema/prompt render order — the one list the response
-    /// grammar's enum, the prompt's vocabulary block and the validator share, so
-    /// the three surfaces cannot drift.
-    pub const ALL: [ContextCause; 4] = [
-        ContextCause::BecameOversized,
-        ContextCause::OverlapEmerged,
-        ContextCause::CashFreed,
-        ContextCause::CashRaised,
-    ];
-
-    pub fn as_kebab(&self) -> &'static str {
-        match self {
-            ContextCause::BecameOversized => "became-oversized",
-            ContextCause::OverlapEmerged => "overlap-emerged",
-            ContextCause::CashFreed => "cash-freed",
-            ContextCause::CashRaised => "cash-raised",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim() {
-            "became-oversized" => Some(ContextCause::BecameOversized),
-            "overlap-emerged" => Some(ContextCause::OverlapEmerged),
-            "cash-freed" => Some(ContextCause::CashFreed),
-            "cash-raised" => Some(ContextCause::CashRaised),
-            _ => None,
-        }
-    }
-}
-
-/// The **action half** of a holding's what-changed audit, authored at the 7b
-/// construction stage (where the portfolio context exists) and app-validated the
-/// same way 6g validates the intrinsic half (`docs/portfolio-workflow.md` §Step 7b).
-/// `None` on a verdict whose action / target weight did not change, and on runs
-/// persisted before the construction stage existed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ActionWhatChanged {
-    pub attribution: ActionAttribution,
-    /// The validated context cause — required (and checked against the aggregates)
-    /// on a `moved-context` attribution; `None` on `moved-intrinsic`.
-    #[serde(default)]
-    pub cause: Option<ContextCause>,
-    /// The model's one-line account of the move.
-    pub note: String,
 }
 
 /// The deterministic risk tier (`docs/portfolio-analysis.md` §Starting parameters —
@@ -681,52 +600,25 @@ pub struct OptionsSignal {
     pub iv_skew: Option<f64>,
 }
 
-/// One holding's action sizing. Since `portfolio-v7` the model authors the
-/// target-weight range at the 7b construction stage (coherence-validated; the
-/// engine's rung band annotating, never binding), and the engine derives only the
-/// share/dollar deltas deterministically from that range
-/// ([`crate::portfolio::engine::sizing_from_range`] — one home). Pre-7b
-/// provisional sizing rides the engine band. No orders are ever placed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ActionSizing {
-    /// The target portfolio-weight band (fractions, 0.0–1.0).
-    pub target_weight_low: f64,
-    pub target_weight_high: f64,
-    /// Estimated share and dollar adjustment to reach the band's midpoint
-    /// (negative = sell). `None` when it can't be sized (no price, no portfolio value).
-    pub est_share_delta: Option<f64>,
-    pub est_dollar_delta: Option<f64>,
-    /// The construction call's validated sizing rationale (the card's action
-    /// rationale line — `docs/portfolio-workflow.md` §Step 9). `None` on
-    /// engine-band sizing (a provisional lean, a carried re-size) and on runs
-    /// persisted before the construction stage existed (`#[serde(default)]`).
-    #[serde(default)]
-    pub sizing_rationale: Option<String>,
-}
-
 /// The priced body of a holding verdict — present only when the holding was eligible,
 /// priceable, *and* cleared the evidence floor. The engine arm's numbers (grade,
-/// sub-scores, targets, tier, hurdle, options signal — and the share/dollar deltas
-/// derived from the chosen range) come from the engine; the action with its
-/// 7b-authored target-weight range, conviction, horizon reads, prose, and the
-/// model arm ([`ModelView`]) come from the model.
+/// sub-scores, targets, tier, hurdle, options signal) come from the engine; the
+/// action with its rationale, conviction, horizon reads, prose, and the model arm
+/// ([`ModelView`]) come from the model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GradedVerdict {
     pub grade: Grade,
     pub sub_scores: SubScores,
-    /// The **final portfolio action**, set at the 7b construction stage with the
-    /// whole book in view (`docs/portfolio-analysis.md` §Portfolio action). Until
-    /// construction runs inside the same pass it provisionally equals the lean.
+    /// The **per-holding portfolio action**, authored by the dedicated action
+    /// call from this holding's own evidence plus the investor profile — rung
+    /// only, no sizing; the whole-book reconciliation is the future portfolio
+    /// planner's job (`docs/portfolio-analysis.md` §Portfolio action). On runs
+    /// persisted before the tunnel-vision contract this is the 7b-merged final.
     pub action: Action,
-    /// The **standalone action lean** — what the action would be if the holding
-    /// stood alone, authored at interpretation (6f) before any portfolio
-    /// constraint (`docs/portfolio-analysis.md` §Intrinsic verdict). `None` on a
-    /// verdict persisted before the construction stage existed — those runs'
-    /// action *was* the lean, so an absent lean reads as equal to the action
-    /// (`#[serde(default)]`).
+    /// The action call's one-line rationale for the chosen rung. Empty on runs
+    /// persisted before the action call existed (`#[serde(default)]`).
     #[serde(default)]
-    pub lean: Option<Action>,
-    pub action_sizing: ActionSizing,
+    pub action_rationale: String,
     pub conviction: Conviction,
     pub horizon_outlook: HorizonOutlook,
     pub price_targets: PriceTargets,
@@ -763,14 +655,9 @@ pub struct GradedVerdict {
     /// A concise read of the company's financial health (model prose).
     pub financial_summary: String,
     /// The continuity diff against the prior run (model prose, or "new holding") —
-    /// the **intrinsic half** of the what-changed audit, authored at 6f.
+    /// the intrinsic what-changed audit, authored at 6f. The retired action half
+    /// (a 7b construction artifact) is ignored on decode of older runs.
     pub what_changed: String,
-    /// The **action half** of the what-changed audit, authored and app-validated at
-    /// the 7b construction stage ([`ActionWhatChanged`]). `None` when the action /
-    /// target weight did not change, and on pre-construction runs
-    /// (`#[serde(default)]`).
-    #[serde(default)]
-    pub action_what_changed: Option<ActionWhatChanged>,
     /// The model arm of the two-arm verdict ([`ModelView`]) — the model's own
     /// sub-scores, derived letter, targets, and retrospective self-assessment.
     /// `#[serde(default)]` for runs persisted before `portfolio-v7`.
@@ -800,8 +687,6 @@ pub struct EngineView {
     /// The formalized rung rule over the existing feasible-set machinery
     /// (grade × hurdle × admission, tiebreak toward hold).
     pub action: Action,
-    /// The engine action's rung-band sizing ([`engine::size_action`]).
-    pub action_sizing: ActionSizing,
 }
 
 /// One exposure weight (a sector or country label and its fraction of the fund).
@@ -814,9 +699,10 @@ pub struct ExposureWeight {
 /// The `role_risk_only` branch of an analyzed verdict (`docs/portfolio-analysis.md`
 /// §Intrinsic verdict): a structurally unpriceable vehicle class gets a typed role /
 /// risk read — **no letter, no price targets, no conviction, no tier** — its action
-/// set at 7b construction, where the engine arm's set for this branch is the
-/// reduced {sell all, trim, hold} and the model's choice is structurally open with
-/// departures annotated (`portfolio-v7`).
+/// authored by the dedicated per-holding action call from the branch's own
+/// attributes, the full ladder structurally open while the engine arm's set stays
+/// the reduced [`ROLE_RISK_ACTIONS`], rendered as evidence with departures
+/// annotated on the audit.
 /// Engine-computed fields (exposure, expense, risk, gaps) plus the model's role read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleRiskVerdict {
@@ -838,20 +724,17 @@ pub struct RoleRiskVerdict {
     /// The typed evidence gaps — this branch's confidence surface (never a fabricated
     /// High / Medium / Low conviction).
     pub evidence_gaps: Vec<String>,
-    /// The final action — set **wholly at the 7b construction stage** with the
-    /// whole book in view (`docs/portfolio-analysis.md` §Portfolio action: this
-    /// branch carries no lean). The engine arm's set for the branch is the
-    /// reduced {sell all, trim, hold}; the construction choice is structurally
-    /// open, departures annotated. Holds a provisional `hold` between
-    /// interpretation and construction inside a pass.
+    /// The per-holding action, authored by the dedicated action call from the
+    /// branch's own attributes plus the investor profile — rung only, the full
+    /// ladder open (`docs/portfolio-analysis.md` §Portfolio action). On runs
+    /// persisted before the tunnel-vision contract this is the 7b-merged final.
     pub action: Action,
-    pub action_sizing: ActionSizing,
+    /// The action call's one-line rationale. Empty on pre-action-call runs
+    /// (`#[serde(default)]`).
+    #[serde(default)]
+    pub action_rationale: String,
     /// The continuity diff against the prior run (model prose, or "new holding").
     pub what_changed: String,
-    /// The action half of the what-changed audit ([`ActionWhatChanged`]) — same
-    /// contract as the priced branch. `#[serde(default)]` for pre-field runs.
-    #[serde(default)]
-    pub action_what_changed: Option<ActionWhatChanged>,
 }
 
 /// What a holding's analysis resolved to (`docs/portfolio-analysis.md` §Intrinsic
@@ -1146,9 +1029,6 @@ pub struct ThesisLedger {
     pub what_must_not_break: String,
     /// Key falsifiers and action triggers.
     pub conditions: Vec<LedgerCondition>,
-    /// The pre-committed target-weight range (fractions of the portfolio, 0.0–1.0).
-    pub target_weight_low: f64,
-    pub target_weight_high: f64,
     /// Spot's relationship to the monitor band at authoring — app-stamped beside
     /// the engine targets; `None` on pre-stamp ledgers (read as authored-inside)
     /// and wherever no band exists (`role_risk_only`, missing spot).
@@ -1339,7 +1219,7 @@ pub struct DataHealth {
 
 /// The prompt-fill fraction at which a local call's context is considered under
 /// pressure (`context_pressure` above): at or beyond it, the sanctioned response
-/// is compressing the construction digests, never a `num_ctx` change
+/// is compressing the prompt digests, never a `num_ctx` change
 /// (`docs/portfolio-analysis.md` §Portfolio roll-up).
 pub const CONTEXT_PRESSURE_FRACTION: f64 = 0.9;
 
@@ -1383,18 +1263,16 @@ pub struct PortfolioRollUp {
     /// persisted before the field existed still decode.
     #[serde(default)]
     pub data_health: Option<DataHealth>,
-    /// The Step-7a whole-book aggregates + per-holding sizing-spine rows the
-    /// construction call read — its engine sets and annotation bounds
-    /// ([`construction::BookAggregates`]). `None` on runs persisted before the
-    /// construction stage existed (`#[serde(default)]`).
+    /// Decode-only legacy field: the retired 7b construction era's whole-book
+    /// aggregates blob. New runs never author it; it survives as an opaque value
+    /// solely so [`PortfolioRun::derived_constructed`] can still discriminate a
+    /// pre-marker degraded blob's shape.
     #[serde(default)]
-    pub aggregates: Option<construction::BookAggregates>,
-    /// The validated portfolio-level view the 7b construction call produced —
-    /// risk posture, deployment stance, the app-computed external-funding line
-    /// ([`construction::ConstructionView`]). `None` on pre-construction runs
-    /// (`#[serde(default)]`).
+    pub aggregates: Option<serde_json::Value>,
+    /// Decode-only legacy field: the retired construction call's portfolio-level
+    /// view blob — same role as `aggregates` above.
     #[serde(default)]
-    pub construction: Option<construction::ConstructionView>,
+    pub construction: Option<serde_json::Value>,
     /// A short deterministic synthesis line.
     pub overview: String,
 }
@@ -1415,6 +1293,13 @@ pub struct HoldingAudit {
     pub prompt_version: String,
     /// Inputs a source could not resolve, carried from the financials' gap manifest.
     pub degraded_inputs: Vec<String>,
+    /// App-stamped annotations from the per-holding action call — today the one
+    /// case is a chosen rung outside the engine's per-holding action set, which
+    /// persists exactly as authored with the departure recorded here (the two-arm
+    /// contract: engine evidence annotates, never bars). Empty on runs persisted
+    /// before the action call existed (`#[serde(default)]`).
+    #[serde(default)]
+    pub action_annotations: Vec<String>,
     /// How the scenario targets were derived — rung, fallbacks, and the parameter
     /// version target calibration keys on (`docs/portfolio-analysis.md` §Outcome
     /// learning). `None` on a not-rated / abstained / role-risk-only holding, and on
@@ -1518,7 +1403,21 @@ pub struct HoldingAudit {
 /// disarms the fresh-purchase misread, volatility and expense-ratio carry unit
 /// labels, conviction declares its three-value type, and both sub-score blocks
 /// state the risk-score polarity (same record, §Workstream 2).
-pub const PROMPT_VERSION: &str = "portfolio-v8";
+///
+/// `portfolio-v9`: the tunnel-vision contract (user decision 2026-08-14) — the
+/// job stops comparing holdings. The 7b construction stage is **removed**
+/// (aggregates, joint-feasibility solve, divergence causes, repair re-run,
+/// degraded persist all retired); every action is authored by the new
+/// **per-holding action call** — a dedicated stage after interpretation that
+/// reads the finished intrinsic verdict, the holding's own sizing evidence, and
+/// the **investor profile** (which now enters here, keeping 6f profile-blind)
+/// and returns a rung-only action with a one-line rationale, the full ladder
+/// open on both branches (`role_risk_only` included — its engine set stays the
+/// reduced evidence set). Interpretation no longer authors an action; sizing
+/// (target-weight ranges, share/dollar deltas) is retired wholesale, and the
+/// thesis ledger drops its pre-committed target-weight range. The whole-book
+/// reconciliation is deferred to the future portfolio-planner job.
+pub const PROMPT_VERSION: &str = "portfolio-v9";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -1557,16 +1456,17 @@ pub struct PortfolioRun {
 }
 
 impl PortfolioRun {
-    /// Whether this run carries a constructed book — the one predicate every
-    /// consumer reads, never the raw fields. A **degraded** run (Step 7b's
-    /// construction failed after the per-holding pass; ruled 2026-08-11,
-    /// `docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition) carries
-    /// no book: its verdict actions are **pre-merge values** — a fresh row's
-    /// standalone lean, a carried row's carried action, a role-risk row's
-    /// placeholder — never 7b-blessed finals, so it must never serve as a
-    /// carry / diff / quick-check baseline — [`store::latest_run`] excludes it
-    /// on this predicate (via the mirrored column). Reads the persisted marker;
-    /// a pre-marker blob falls back to the shape derivation.
+    /// Whether this run is a complete, baseline-worthy run — the one predicate
+    /// every consumer reads, never the raw fields. Under the tunnel-vision
+    /// contract every new run persists complete (`Some(true)`); the predicate
+    /// survives for **legacy degraded rows** from the retired 7b construction
+    /// era (a construction-failed run persisted its per-holding work with
+    /// pre-merge actions; ruled 2026-08-11,
+    /// `docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition) — those
+    /// rows must never serve as a carry / diff / quick-check baseline, and
+    /// [`store::latest_run`] excludes them on this predicate (via the mirrored
+    /// column). Reads the persisted marker; a pre-marker blob falls back to the
+    /// shape derivation.
     pub fn has_constructed_book(&self) -> bool {
         self.constructed.unwrap_or_else(|| self.derived_constructed())
     }
@@ -1591,18 +1491,33 @@ impl PortfolioRun {
 }
 
 /// The action a carried verdict would stand on — `None` where the disposition
-/// carries no action (not-rated / insufficient-evidence). One home for both
-/// consumers: [`job`]'s carry gate and [`construction`]'s prior-action baseline.
+/// carries no action (not-rated / insufficient-evidence). Consumed by [`job`]'s
+/// carry gate.
 ///
-/// The action field this reads is **dual-meaning**: until
-/// [`construction::merge_validated_actions`] overwrites it with Step 7b's final
-/// it holds a pre-construction value (a fresh row's standalone lean, a carried
-/// row's carried action — possibly rule-demoted — or a role-risk placeholder,
-/// that branch's action being authored wholly at 7b), and it means
-/// "7b-blessed final" everywhere
-/// downstream. Reading it as a carry baseline is therefore sound only on runs
-/// with a constructed book — the reason [`store::latest_run`] excludes degraded
-/// runs ([`PortfolioRun::has_constructed_book`]).
+/// On every tunnel-vision run the action is the per-holding action call's rung.
+/// On a **legacy degraded row** from the retired 7b construction era it holds a
+/// pre-merge value, which is why reading it as a carry baseline is sound only on
+/// complete runs — [`store::latest_run`] excludes degraded rows
+/// ([`PortfolioRun::has_constructed_book`]).
+/// Whether a prompt/schema version predates the tunnel-vision contract
+/// (`portfolio-v9`) — the whole-book construction era, whose actions were
+/// 7b-merged finals that may encode retired portfolio context. A missing stamp
+/// is pre-stamp (older still) and an unparseable one reads old, the
+/// conservative side. Two consumers: the selective work-list's one-time
+/// migration force-include (a pre-v9 verdict is never carried into a v9 run —
+/// `docs/portfolio-analysis.md` §Triggering) and the action prompt's history
+/// label on the prior action.
+pub(crate) fn whole_book_era_version(version: Option<&str>) -> bool {
+    match version {
+        None => true,
+        Some(v) => v
+            .strip_prefix("portfolio-v")
+            .and_then(|n| n.parse::<u32>().ok())
+            .map(|n| n < 9)
+            .unwrap_or(true),
+    }
+}
+
 pub(crate) fn carried_action(verdict: &HoldingVerdict) -> Option<Action> {
     match &verdict.disposition {
         VerdictDisposition::Priced(g) => Some(g.action),
@@ -1693,9 +1608,6 @@ pub struct LedgerDraft {
     pub what_must_not_break: String,
     pub falsifiers: Vec<FalsifierDraft>,
     pub triggers: Vec<TriggerDraft>,
-    /// The pre-committed target-weight range (fractions of the portfolio, 0.0–1.0).
-    pub target_weight_low: f64,
-    pub target_weight_high: f64,
 }
 
 /// One key-driver draft (name + the engine series claim, validated app-side).
@@ -1707,16 +1619,17 @@ pub struct KeyDriverDraft {
 }
 
 /// The model's grammar-constrained output (Ollama native `format`) — the only thing
-/// the 122B authors. The engine arm's numbers come from the engine; since
-/// `portfolio-v7` this also carries the model arm's own numbers (sub-scores,
-/// target bands — [`ModelView`]'s sources) beside the judgment calls (lean,
-/// conviction, horizon reads), the prose, the retrospective self-assessment, and
-/// the rewritten thesis ledger. A schema-valid object is guaranteed by
+/// the 122B authors at interpretation. The engine arm's numbers come from the
+/// engine; since `portfolio-v7` this also carries the model arm's own numbers
+/// (sub-scores, target bands — [`ModelView`]'s sources) beside the judgment calls
+/// (conviction, horizon reads), the prose, the retrospective self-assessment, and
+/// the rewritten thesis ledger. Since `portfolio-v9` it carries **no action** —
+/// the per-holding action call authors that afterward ([`ActionDecision`]), so
+/// this stage stays profile-blind. A schema-valid object is guaranteed by
 /// grammar-constrained decoding, so there is no parse-and-pray path
 /// (`docs/local-models.md §Schema-constrained output`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Interpretation {
-    pub action: Action,
     pub conviction: Conviction,
     pub horizon_outlook: HorizonOutlook,
     pub financial_summary: String,
@@ -1813,26 +1726,23 @@ pub fn ledger_schema(role_risk: bool) -> Value {
                     },
                     "required": ["statement", "family", "quant", "fired"]
                 }
-            },
-            "target_weight_low": { "type": "number" },
-            "target_weight_high": { "type": "number" }
+            }
         },
         "required": [
             "thesis", "key_drivers", "bear", "base", "bull",
             "what_must_improve", "what_must_not_break",
-            "falsifiers", "triggers", "target_weight_low", "target_weight_high"
+            "falsifiers", "triggers"
         ]
     })
 }
 
 /// The fields the priced interpretation must return. The schema's `required` set and
 /// the prompt's declaration are both built from this list, so the enforced grammar and
-/// the stated contract cannot diverge. Four of these names — `action`, `conviction`,
+/// the stated contract cannot diverge. Three of these names — `conviction`,
 /// `ledger`, `self_assessment` — also appear in the instructional prose above the
 /// declaration, where a containment test cannot tell a real declaration from an
 /// incidental mention (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 2).
-pub const INTERPRETATION_KEYS: [&str; 10] = [
-    "action",
+pub const INTERPRETATION_KEYS: [&str; 9] = [
     "conviction",
     "horizon_outlook",
     "financial_summary",
@@ -1876,20 +1786,12 @@ pub fn role_risk_response_contract() -> String {
 /// valid by construction. Mirrors [`Interpretation`]'s shape; enums are string enums
 /// with the same kebab labels serde uses, so the decoded object round-trips. Since
 /// `portfolio-v7` the schema is **structurally unrestricted** (the two-arm
-/// contract — `docs/portfolio-analysis.md` §The holding verdict): the lean enum
-/// always lists the full ladder and the conviction enum all three values; the
-/// engine's own feasible set and any pre-profit conviction ceiling render into the
-/// prompt as evidence and into the audit as annotations, never as schema bars.
+/// contract — `docs/portfolio-analysis.md` §The holding verdict): the conviction
+/// enum lists all three values; the engine's evidence and any pre-profit
+/// conviction ceiling render into the prompt as evidence and into the audit as
+/// annotations, never as schema bars.
 pub fn interpretation_schema() -> Value {
     let read = json!({ "type": "string", "enum": ["bullish", "neutral", "bearish"] });
-    let all = [
-        Action::SellAll,
-        Action::Trim,
-        Action::Hold,
-        Action::Add,
-        Action::AddAggressively,
-    ];
-    let actions: Vec<&str> = all.iter().map(Action::as_kebab).collect();
     let convictions = vec!["high", "medium", "low"];
     // The model target band stays within the schema subset the local grammar
     // converter proves out (type / properties / required / enum) — the 0–100
@@ -1907,7 +1809,6 @@ pub fn interpretation_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "action": { "type": "string", "enum": actions },
             "conviction": { "type": "string", "enum": convictions },
             "horizon_outlook": {
                 "type": "object",
@@ -1942,11 +1843,11 @@ pub fn interpretation_schema() -> Value {
 /// The model's schema-constrained output for a **`role_risk_only`** holding — the
 /// union's other branch (`docs/portfolio-analysis.md` §Intrinsic verdict): the role
 /// read and the continuity note. None of the priced fields exist — no grade,
-/// conviction, horizon, or target rationale — **and no action**: this branch
-/// carries no standalone lean, so its action arises wholly at the 7b construction
-/// stage, where the engine arm's set for the branch is the reduced
-/// {sell all, trim, hold} and the model's choice is structurally open with
-/// departures annotated (`docs/portfolio-analysis.md` §Portfolio action).
+/// conviction, horizon, or target rationale — **and no action**: the branch's
+/// action is authored by the dedicated per-holding action call afterward
+/// ([`ActionDecision`]), the full ladder structurally open while the engine
+/// arm's set stays the reduced [`ROLE_RISK_ACTIONS`], rendered as evidence
+/// (`docs/portfolio-analysis.md` §Portfolio action).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleRiskInterpretation {
     /// The vehicle's mandate and the exposure it exists to supply (prose).
@@ -1957,15 +1858,17 @@ pub struct RoleRiskInterpretation {
     pub ledger: LedgerDraft,
 }
 
-/// The reduced action set — a `role_risk_only` holding's **engine set** at
-/// construction: the add family requires return evidence this branch has none of
-/// by construction (`docs/portfolio-analysis.md` §Portfolio action).
+/// The reduced action set — a `role_risk_only` holding's **engine set**, rendered
+/// into the action call's prompt as the engine arm's evidence: the add family
+/// requires return evidence this branch has none of by construction
+/// (`docs/portfolio-analysis.md` §Portfolio action). The model's choice stays
+/// structurally open (the full ladder), departures annotated on the audit.
 pub const ROLE_RISK_ACTIONS: [Action; 3] = [Action::SellAll, Action::Trim, Action::Hold];
 
 /// The JSON Schema for [`RoleRiskInterpretation`] — no action field (the branch's
-/// action is set at construction, where the reduced set is the engine arm's and
-/// the model's choice is structurally open), and the ledger's reduced
-/// trigger-family enum is structural.
+/// action is authored by the per-holding action call, where the reduced set is
+/// the engine arm's evidence and the model's choice is structurally open), and
+/// the ledger's reduced trigger-family enum is structural.
 pub fn role_risk_interpretation_schema() -> Value {
     json!({
         "type": "object",
@@ -1975,6 +1878,61 @@ pub fn role_risk_interpretation_schema() -> Value {
             "ledger": ledger_schema(true)
         },
         "required": ROLE_RISK_KEYS
+    })
+}
+
+// ---- The per-holding action call (the profile's one entry point) --------------
+
+/// The action call's grammar-constrained output — the **per-holding portfolio
+/// action** with its one-line rationale (`docs/portfolio-analysis.md` §Portfolio
+/// action). Authored by a dedicated stage after interpretation that reads the
+/// finished intrinsic verdict, the holding's own sizing evidence, and the
+/// **investor profile** — the profile's only entry point into the job, so the
+/// intrinsic verdict stays profile-independent by input isolation. Rung only:
+/// sizing is retired; the whole-book reconciliation is the future portfolio
+/// planner's job. The action enum is structurally the full ladder on **both**
+/// branches — the engine set renders as evidence, never a schema bar (the
+/// two-arm contract).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionDecision {
+    pub action: Action,
+    /// The one-line rationale for the chosen rung (persisted on the verdict).
+    pub rationale: String,
+}
+
+/// The fields the action call must return — the same shared-constant footing as
+/// [`INTERPRETATION_KEYS`], so the enforced grammar and the stated contract
+/// cannot diverge.
+pub const ACTION_KEYS: [&str; 2] = ["action", "rationale"];
+
+/// The action call's response-contract sentence, generated from [`ACTION_KEYS`].
+pub fn action_response_contract() -> String {
+    format!(
+        "Respond with a single JSON object carrying exactly these keys: {}. The \
+         response format is enforced by the decoder, so spend no reasoning on shape \
+         — put it into the decision.",
+        ACTION_KEYS.join(", ")
+    )
+}
+
+/// The JSON Schema for [`ActionDecision`] — the action enum lists the full
+/// ladder on every branch (engine evidence annotates, never bars).
+pub fn action_decision_schema() -> Value {
+    let all = [
+        Action::SellAll,
+        Action::Trim,
+        Action::Hold,
+        Action::Add,
+        Action::AddAggressively,
+    ];
+    let actions: Vec<&str> = all.iter().map(Action::as_kebab).collect();
+    json!({
+        "type": "object",
+        "properties": {
+            "action": { "type": "string", "enum": actions },
+            "rationale": { "type": "string" }
+        },
+        "required": ACTION_KEYS
     })
 }
 
@@ -2026,16 +1984,14 @@ mod tests {
                 "tripped": false
             }],
             "triggers": [{
-                "statement": "Trim above 25% of the book",
+                "statement": "Trim above the priced-in ceiling",
                 "family": "trim",
                 "quant": {
-                    "series": "portfolio-weight", "comparator": "above",
-                    "threshold": 0.25, "margin": 0.0
+                    "series": "price", "comparator": "above",
+                    "threshold": 150.0, "margin": 0.0
                 },
                 "fired": false
-            }],
-            "target_weight_low": 0.03,
-            "target_weight_high": 0.08
+            }]
         })
     }
 
@@ -2044,7 +2000,6 @@ mod tests {
         // The kebab labels the schema advertises are exactly what serde decodes, so a
         // grammar-valid model object deserializes into `Interpretation` cleanly.
         let raw = json!({
-            "action": "add",
             "conviction": "high",
             "horizon_outlook": { "short": "neutral", "mid": "bullish", "long": "bullish" },
             "financial_summary": "Durable margins, light leverage.",
@@ -2059,7 +2014,6 @@ mod tests {
             "self_assessment": "First read; no prior call to assess."
         });
         let parsed: Interpretation = serde_json::from_value(raw).unwrap();
-        assert_eq!(parsed.action, Action::Add);
         assert_eq!(parsed.conviction, Conviction::High);
         assert_eq!(parsed.horizon_outlook.mid, HorizonRead::Bullish);
         // The model arm decoded exactly as authored — no bound or clamp applies.
@@ -2114,7 +2068,8 @@ mod tests {
             .collect();
         assert_eq!(series.len(), engine::LedgerSeries::ALL.len());
         assert!(series.contains(&"net-margin"));
-        assert!(series.contains(&"portfolio-weight"));
+        // Retired from the closed surface (the tunnel-vision ruling, 2026-08-14).
+        assert!(!series.contains(&"portfolio-weight"));
         let families: Vec<&str> = ledger["properties"]["triggers"]["items"]["properties"]
             ["family"]["enum"]
             .as_array()
@@ -2227,8 +2182,6 @@ mod tests {
                     authored_statement_basis: None,
                 }),
             }],
-            target_weight_low: 0.03,
-            target_weight_high: 0.08,
             authored_band_relation: None,
         };
         let verdict = HoldingVerdict {
@@ -2255,7 +2208,6 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         for field in [
-            "action",
             "conviction",
             "horizon_outlook",
             "financial_summary",
@@ -2264,21 +2216,27 @@ mod tests {
         ] {
             assert!(required.contains(&field), "schema must require {field}");
         }
-        // The v7 unrestricted contract: the lean enum always advertises the full
-        // ladder and conviction all three values — engine bounds are prompt
-        // evidence and annotations, never schema bars.
-        let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
-        assert_eq!(actions.len(), 5);
-        assert!(actions.iter().any(|a| a == "add-aggressively"));
+        // The tunnel-vision contract: interpretation authors no action — the
+        // dedicated action call owns it — and the conviction enum stays the full
+        // three values (engine evidence annotates, never bars).
+        assert!(schema["properties"].get("action").is_none());
         let convictions = schema["properties"]["conviction"]["enum"].as_array().unwrap();
         assert_eq!(convictions.len(), 3);
+        // The action call's schema advertises the full ladder on every branch.
+        let action_schema = action_decision_schema();
+        let actions = action_schema["properties"]["action"]["enum"].as_array().unwrap();
+        assert_eq!(actions.len(), 5);
+        assert!(actions.iter().any(|a| a == "add-aggressively"));
+        assert_eq!(
+            action_schema["required"].as_array().unwrap().len(),
+            ACTION_KEYS.len()
+        );
     }
 
     #[test]
     fn role_risk_schema_carries_no_action_field() {
-        // The branch's action arises wholly at the 7b construction stage (the
-        // reduced set = the engine arm's read there) — the 6f role/risk
-        // interpretation authors none.
+        // The branch's action is authored by the dedicated per-holding action
+        // call — the 6f role/risk interpretation authors none.
         let schema = role_risk_interpretation_schema();
         assert!(schema["properties"].get("action").is_none());
         let required: Vec<&str> = schema["required"]
@@ -2354,10 +2312,10 @@ mod tests {
                 // A pre-v7 run carries neither arm — the legacy single-arm render path.
                 assert!(g.model_view.is_none());
                 assert!(g.engine_view.is_none());
-                // Pre-construction runs carry no lean — an absent lean reads as
-                // equal to the action — and no action-half audit.
-                assert!(g.lean.is_none());
-                assert!(g.action_what_changed.is_none());
+                // Retired-era keys (lean, sizing, the action-half audit) are
+                // simply ignored on decode; the pre-action-call rationale reads
+                // empty.
+                assert!(g.action_rationale.is_empty());
             }
             other => panic!("legacy graded row must decode as priced, got {other:?}"),
         }
@@ -2374,15 +2332,8 @@ mod tests {
             structural_flag: false,
             evidence_gaps: vec!["valuation: no on-plan duration/credit surface".into()],
             action: Action::Hold,
-            action_sizing: ActionSizing {
-                target_weight_low: 0.09,
-                target_weight_high: 0.11,
-                est_share_delta: None,
-                est_dollar_delta: None,
-                sizing_rationale: None,
-            },
+            action_rationale: String::new(),
             what_changed: "new holding".into(),
-            action_what_changed: None,
         }));
         let s = serde_json::to_value(&v).unwrap();
         assert_eq!(s["status"], "role-risk-only");

@@ -1464,19 +1464,8 @@ pub fn tag_alignment(
 /// a named big-run watch, not an oversight.
 #[derive(Debug, Clone, PartialEq)]
 enum RecState {
-    Priced {
-        action: Action,
-        /// The standalone lean — part of the intrinsic read, so a lean-only move
-        /// (final action unchanged) is a state change (`docs/portfolio-analysis.md
-        /// §Outcome learning`). Pre-construction verdicts fall back to the action,
-        /// whose action *was* the lean.
-        lean: Action,
-        weights: Option<(f64, f64)>,
-    },
-    RoleRisk {
-        action: Action,
-        weights: Option<(f64, f64)>,
-    },
+    Priced { action: Action },
+    RoleRisk { action: Action },
     /// An insufficient-evidence exit — the standing recommendation is retained,
     /// so an abstention is never a state change (and never opens).
     Abstained,
@@ -1484,55 +1473,34 @@ enum RecState {
     None,
 }
 
-fn ledger_weights(v: &HoldingVerdict) -> Option<(f64, f64)> {
-    v.thesis_ledger
-        .as_ref()
-        .map(|l| (l.target_weight_low, l.target_weight_high))
-}
-
 fn rec_state(v: &HoldingVerdict) -> RecState {
     match &v.disposition {
-        VerdictDisposition::Priced(g) => RecState::Priced {
-            action: g.action,
-            lean: g.lean.unwrap_or(g.action),
-            weights: ledger_weights(v),
-        },
-        VerdictDisposition::RoleRiskOnly(r) => RecState::RoleRisk {
-            action: r.action,
-            weights: ledger_weights(v),
-        },
+        VerdictDisposition::Priced(g) => RecState::Priced { action: g.action },
+        VerdictDisposition::RoleRiskOnly(r) => RecState::RoleRisk { action: r.action },
         VerdictDisposition::InsufficientEvidence { .. } => RecState::Abstained,
         VerdictDisposition::NotRated { .. } => RecState::None,
     }
 }
 
 /// The decision the symbol's latest **active episode** is standing on — its own
-/// recorded action and lean, not a verdict's.
+/// recorded action, not a verdict's.
 ///
 /// It exists for the abstained-prior arm. An abstained verdict carries no action at
 /// all (`InsufficientEvidence` has none to carry), so comparing "did the
 /// recommendation change across the abstention?" against the prior *verdict* can
-/// only ever compare branch and weight range. The episode the abstention extended
-/// does carry the action and lean it was opened on, and that is the forecast
-/// calibration scores — so it is the correct thing to compare against.
+/// only ever compare branch. The episode the abstention extended does carry the
+/// action it was opened on, and that is the forecast calibration scores — so it
+/// is the correct thing to compare against.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StandingDecision {
     pub action: Action,
-    /// `None` on a `role_risk_only` episode, which authors no lean.
-    pub lean: Option<Action>,
 }
 
 impl StandingDecision {
     fn of(ep: &DecisionEpisode) -> Self {
         match &ep.body {
-            EpisodeBody::Priced(p) => Self {
-                action: p.action,
-                lean: Some(p.lean),
-            },
-            EpisodeBody::RoleRiskOnly(r) => Self {
-                action: r.action,
-                lean: None,
-            },
+            EpisodeBody::Priced(p) => Self { action: p.action },
+            EpisodeBody::RoleRiskOnly(r) => Self { action: r.action },
         }
     }
 }
@@ -1580,48 +1548,33 @@ pub fn episode_decision(
                     if prior_v.thesis_ledger.is_none() {
                         return EpisodeDecision::Open(vec![OpenReason::Debut]);
                     }
-                    // The abstained prior retained the standing ledger: branch and
-                    // weight range are still comparable; the action is not.
+                    // The abstained prior retained the standing ledger: the branch
+                    // is still comparable; the action is not.
                     let prior_branch_priced = matches!(
                         prior_v.thesis_ledger.as_ref().map(|l| l.branch),
                         Some(crate::portfolio::LedgerBranch::Priced) | None
                     );
                     let cur_priced = matches!(cur, RecState::Priced { .. });
-                    let cur_weights = match &cur {
-                        RecState::Priced { weights, .. } | RecState::RoleRisk { weights, .. } => {
-                            *weights
-                        }
-                        _ => None,
-                    };
                     let mut reasons = Vec::new();
                     if prior_branch_priced != cur_priced {
                         reasons.push(OpenReason::BranchFlip);
                     }
-                    if ledger_weights(prior_v) != cur_weights {
-                        reasons.push(OpenReason::WeightRangeChange);
-                    }
-                    // The action and lean come from the STANDING EPISODE, not the
-                    // abstained verdict (which carries neither). Without this the
+                    // The action comes from the STANDING EPISODE, not the
+                    // abstained verdict (which carries none). Without this the
                     // first fresh pass after an abstention extended the episode it
                     // had just superseded: the recommendation had moved, but the
                     // comparison could not see it, so the new forecast accrued onto
                     // the old one's window and calibration scored a decision against
                     // observations made before it existed.
                     if let Some(st) = standing {
-                        let (cur_action, cur_lean) = match &cur {
-                            RecState::Priced { action, lean, .. } => (*action, Some(*lean)),
-                            RecState::RoleRisk { action, .. } => (*action, None),
+                        let cur_action = match &cur {
+                            RecState::Priced { action } | RecState::RoleRisk { action } => *action,
                             _ => unreachable!("the outer match admits only analyzed states"),
                         };
                         if st.action != cur_action {
                             reasons.push(OpenReason::ActionChange);
                             if current.action_source == ActionSource::RuleDemoted {
                                 reasons.push(OpenReason::RuleDemotion);
-                            }
-                        }
-                        if let (Some(p), Some(c)) = (st.lean, cur_lean) {
-                            if p != c {
-                                reasons.push(OpenReason::LeanChange);
                             }
                         }
                     }
@@ -1641,22 +1594,12 @@ pub fn episode_decision(
                         }
                         _ => {}
                     }
-                    let (prior_action, prior_lean, prior_weights) = match prior_state {
-                        RecState::Priced {
-                            action,
-                            lean,
-                            weights,
-                        } => (action, Some(lean), weights),
-                        RecState::RoleRisk { action, weights } => (action, None, weights),
+                    let prior_action = match prior_state {
+                        RecState::Priced { action } | RecState::RoleRisk { action } => action,
                         _ => unreachable!(),
                     };
-                    let (cur_action, cur_lean, cur_weights) = match cur {
-                        RecState::Priced {
-                            action,
-                            lean,
-                            weights,
-                        } => (action, Some(lean), weights),
-                        RecState::RoleRisk { action, weights } => (action, None, weights),
+                    let cur_action = match cur {
+                        RecState::Priced { action } | RecState::RoleRisk { action } => action,
                         _ => unreachable!(),
                     };
                     if prior_action != cur_action {
@@ -1664,17 +1607,6 @@ pub fn episode_decision(
                         if current.action_source == ActionSource::RuleDemoted {
                             reasons.push(OpenReason::RuleDemotion);
                         }
-                    }
-                    // A lean move with the final action unchanged is still an
-                    // intrinsic-state change (a branch flip already opens above,
-                    // so the lean compare needs both sides priced).
-                    if let (Some(p), Some(c)) = (prior_lean, cur_lean) {
-                        if p != c {
-                            reasons.push(OpenReason::LeanChange);
-                        }
-                    }
-                    if prior_weights != cur_weights {
-                        reasons.push(OpenReason::WeightRangeChange);
                     }
                     if reasons.is_empty() {
                         EpisodeDecision::Extend(extend_kind)
@@ -1732,11 +1664,6 @@ pub struct PlanInput<'a> {
     /// decision's carrier), so a lost row can't leave the current decision
     /// untracked until the next state change.
     pub unreadable_active_symbols: HashSet<String>,
-    /// The construction stage's divergence-from-lean records (uppercase symbol →
-    /// the validated cause line — `docs/portfolio-analysis.md §Outcome learning`:
-    /// the divergence rationale is a per-episode fact, never a join against an
-    /// audit record that ages out). Empty on runs with no divergences.
-    pub lean_divergence_by_symbol: &'a HashMap<String, String>,
     /// Symbols whose verdict (and audit) were carried, not freshly passed
     /// (uppercase). A carried audit's `ledger_audit.crossings` are its *prior*
     /// run's crossings — they attached to an episode in that run, so the
@@ -1865,12 +1792,13 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                 let body = match &verdict.disposition {
                     VerdictDisposition::Priced(g) => EpisodeBody::Priced(Box::new(PricedEpisode {
                         action: g.action,
-                        // The standalone lean — pre-construction verdicts carry
-                        // no lean field, and their action *was* the lean.
-                        lean: g.lean.unwrap_or(g.action),
-                        lean_divergence: input.lean_divergence_by_symbol.get(&key).cloned(),
-                        target_weight_low: Some(g.action_sizing.target_weight_low),
-                        target_weight_high: Some(g.action_sizing.target_weight_high),
+                        // Since `portfolio-v9` the action IS the lean (tunnel
+                        // vision — no construction stage exists to diverge from
+                        // it); the fields survive for legacy episodes' sake.
+                        lean: g.action,
+                        lean_divergence: None,
+                        target_weight_low: None,
+                        target_weight_high: None,
                         snapshot: CalibrationSnapshot {
                             sub_scores: g.sub_scores,
                             grade: g.grade,
@@ -1913,8 +1841,8 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                     VerdictDisposition::RoleRiskOnly(r) => {
                         EpisodeBody::RoleRiskOnly(RoleRiskEpisode {
                             action: r.action,
-                            target_weight_low: Some(r.action_sizing.target_weight_low),
-                            target_weight_high: Some(r.action_sizing.target_weight_high),
+                            target_weight_low: None,
+                            target_weight_high: None,
                             degraded_inputs: audit
                                 .map(|a| a.degraded_inputs.clone())
                                 .unwrap_or_default(),
@@ -2532,8 +2460,7 @@ pub fn matured_learning_text(records: &OutcomeRecords, run_date: &str) -> Option
 mod tests {
     use super::*;
     use crate::portfolio::{
-        ActionSizing, GradedVerdict, HorizonOutlook, HorizonRead, OptionsSignal, PriceTarget,
-        ThesisLedger,
+        GradedVerdict, HorizonOutlook, HorizonRead, OptionsSignal, PriceTarget, ThesisLedger,
     };
 
     fn bars(rows: &[(&str, f64)]) -> Vec<DatedValue> {
@@ -2555,17 +2482,9 @@ mod tests {
                 risk: 65.0,
             },
             action,
-            lean: Some(action),
-            action_what_changed: None,
+            action_rationale: String::new(),
             model_view: None,
             engine_view: None,
-            action_sizing: ActionSizing {
-                target_weight_low: 0.04,
-                target_weight_high: 0.06,
-                est_share_delta: None,
-                est_dollar_delta: None,
-                sizing_rationale: None,
-            },
             conviction: Conviction::Medium,
             horizon_outlook: HorizonOutlook {
                 short: HorizonRead::Neutral,
@@ -2603,7 +2522,7 @@ mod tests {
         }
     }
 
-    fn ledger(low: f64, high: f64) -> ThesisLedger {
+    fn ledger(_low: f64, _high: f64) -> ThesisLedger {
         ThesisLedger {
             branch: crate::portfolio::LedgerBranch::Priced,
             original_thesis: "t".into(),
@@ -2613,8 +2532,6 @@ mod tests {
             what_must_improve: String::new(),
             what_must_not_break: String::new(),
             conditions: vec![],
-            target_weight_low: low,
-            target_weight_high: high,
             authored_band_relation: None,
         }
     }
@@ -2636,11 +2553,6 @@ mod tests {
         v
     }
 
-    fn empty_divergence() -> &'static HashMap<String, String> {
-        static EMPTY: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
-        EMPTY.get_or_init(HashMap::new)
-    }
-
     fn empty_carried() -> &'static HashSet<String> {
         static EMPTY: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
         EMPTY.get_or_init(HashSet::new)
@@ -2660,7 +2572,6 @@ mod tests {
             audits: &[],
             prior_verdicts: prior,
             sector_by_symbol: sector,
-            lean_divergence_by_symbol: empty_divergence(),
             dgs2: Some(0.04),
             unreadable_active_symbols: HashSet::new(),
             carried_symbols: empty_carried(),
@@ -2764,7 +2675,7 @@ mod tests {
     }
 
     #[test]
-    fn an_action_change_and_a_weight_change_open_fresh_episodes() {
+    fn an_action_change_opens_a_fresh_episode_and_a_reaffirmation_extends() {
         let c1 = "2026-08-04T12:00:00+00:00";
         let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
         let sector = HashMap::new();
@@ -2778,29 +2689,25 @@ mod tests {
             &mut episodes,
         );
         assert_eq!(s.opened.len(), 1);
-        // The fixture's lean follows its action, so the move reads as both an
-        // action and a lean change.
-        assert_eq!(
-            s.opened[0].reasons,
-            vec![OpenReason::ActionChange, OpenReason::LeanChange]
-        );
+        assert_eq!(s.opened[0].reasons, vec![OpenReason::ActionChange]);
 
+        // A re-affirmed action extends; episode identity reads the action alone
+        // under the tunnel-vision contract (the ledger carries no weight range).
         let c3 = "2026-08-18T12:00:00+00:00";
-        let weight_changed = vec![fresh(verdict("AAPL", Action::Trim, (0.02, 0.04)), c3)];
+        let reaffirmed = vec![fresh(verdict("AAPL", Action::Trim, (0.02, 0.04)), c3)];
         let s = plan_episodes(
-            &plan_input("run-3", c3, &weight_changed, Some(&action_changed), &sector),
+            &plan_input("run-3", c3, &reaffirmed, Some(&action_changed), &sector),
             &mut episodes,
         );
-        assert_eq!(s.opened.len(), 1);
-        assert_eq!(s.opened[0].reasons, vec![OpenReason::WeightRangeChange]);
-        assert_eq!(episodes.len(), 3);
+        assert!(s.opened.is_empty());
+        assert_eq!(episodes.len(), 2);
     }
 
     #[test]
-    fn an_opened_episode_records_the_decided_sizing_range_not_the_ledger_range() {
-        // The fixture's ledger range (0.03–0.06) differs from its decided
-        // sizing range (0.04–0.06): the payload records the range as issued,
-        // while episode identity still compares the ledger's (RecState).
+    fn an_opened_episode_records_no_sizing_range_and_the_action_as_lean() {
+        // Rung-only actions: the episode's weight-range fields stay `None` (they
+        // survive for legacy episodes' decode), and the recorded lean IS the
+        // action — no construction stage exists to diverge from it.
         let created = "2026-08-04T12:00:00+00:00";
         let verdicts = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), created)];
         let sector = HashMap::new();
@@ -2808,42 +2715,10 @@ mod tests {
         plan_episodes(&plan_input("run-1", created, &verdicts, None, &sector), &mut episodes);
         match &episodes[0].body {
             EpisodeBody::Priced(p) => {
-                assert_eq!(p.target_weight_low, Some(0.04));
-                assert_eq!(p.target_weight_high, Some(0.06));
-            }
-            _ => panic!("expected a priced episode"),
-        }
-    }
-
-    #[test]
-    fn a_lean_only_change_opens_a_fresh_episode() {
-        // Lean hold → add while construction keeps the final action hold: the
-        // intrinsic forecast changed, so the old episode stops accruing
-        // (`docs/portfolio-analysis.md §Outcome learning`).
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
-
-        let c2 = "2026-08-11T12:00:00+00:00";
-        let mut lean_moved = fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c2);
-        if let VerdictDisposition::Priced(g) = &mut lean_moved.disposition {
-            g.lean = Some(Action::Add);
-        }
-        let s = plan_episodes(
-            &plan_input("run-2", c2, std::slice::from_ref(&lean_moved), Some(&prior), &sector),
-            &mut episodes,
-        );
-        assert_eq!(s.opened.len(), 1);
-        assert_eq!(s.opened[0].reasons, vec![OpenReason::LeanChange]);
-        assert_eq!(episodes.len(), 2);
-        // The just-opened episode is the last one inserted, as production selects it.
-        let ep = episodes.last().unwrap();
-        match &ep.body {
-            EpisodeBody::Priced(p) => {
-                assert_eq!(p.action, Action::Hold);
-                assert_eq!(p.lean, Action::Add);
+                assert_eq!(p.target_weight_low, None);
+                assert_eq!(p.target_weight_high, None);
+                assert_eq!(p.lean, p.action);
+                assert!(p.lean_divergence.is_none());
             }
             _ => panic!("expected a priced episode"),
         }
@@ -3082,6 +2957,7 @@ mod tests {
             model_ids: vec![],
             prompt_version: "portfolio-v5".into(),
             degraded_inputs: vec![],
+            action_annotations: vec![],
             target_meta: None,
             grade_parameter_version: None,
             ledger_audit: Some(crate::portfolio::LedgerAudit {
@@ -3140,6 +3016,7 @@ mod tests {
             model_ids: vec![],
             prompt_version: "portfolio-v5".into(),
             degraded_inputs: vec![],
+            action_annotations: vec![],
             target_meta: None,
             grade_parameter_version: None,
             ledger_audit: Some(crate::portfolio::LedgerAudit {
@@ -3185,6 +3062,7 @@ mod tests {
             model_ids: vec![],
             prompt_version: "portfolio-v5".into(),
             degraded_inputs: vec![],
+            action_annotations: vec![],
             target_meta: None,
             grade_parameter_version: None,
             ledger_audit: Some(crate::portfolio::LedgerAudit {
@@ -3239,6 +3117,7 @@ mod tests {
             model_ids: vec![],
             prompt_version: "portfolio-v5".into(),
             degraded_inputs: vec![],
+            action_annotations: vec![],
             target_meta: None,
             grade_parameter_version: None,
             ledger_audit: Some(crate::portfolio::LedgerAudit {
@@ -3354,6 +3233,7 @@ mod tests {
             model_ids: vec![],
             prompt_version: "portfolio-v7".into(),
             degraded_inputs: vec![],
+            action_annotations: vec![],
             target_meta: None,
             grade_parameter_version: None,
             ledger_audit: Some(crate::portfolio::LedgerAudit {

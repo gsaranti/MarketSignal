@@ -52,9 +52,9 @@
     - Add.
     - Add aggressively.
 
-- **Standalone lean**
-  - The action the holding would deserve by itself.
-  - Created before portfolio concentration and overlap are considered.
+- **Action decision**
+  - The rung the holding deserves by itself, decided with the investor profile.
+  - No portfolio concentration, overlap, or cash is considered.
 
 - **Grade**
   - A–F summary of the business’s current quality, valuation, and risk.
@@ -90,7 +90,7 @@
 
 - **Dead money**
   - Even the bull case fails the return hurdle.
-  - This pushes the standalone lean toward an exit.
+  - This tilts the action decision toward an exit.
 
 - **Thesis ledger**
   - Persistent record of why the job holds its view.
@@ -102,7 +102,7 @@
 
 - **Action trigger**
   - A prewritten condition for adding, trimming, or selling.
-  - The whole-book construction step still decides final sizing.
+  - Sizing is deferred to the future portfolio-planner job.
 
 - **Condition ID**
   - App-controlled identity for a machine-checkable condition.
@@ -158,8 +158,8 @@
   - Omitted when older than one week.
 
 - **Investor profile**
-  - Risk tolerance, horizon, objective, tax posture, and cash assumption.
-  - Used only for final portfolio construction.
+  - Risk tolerance, horizon, objective, and tax posture.
+  - Used only by the per-holding action decision.
   - Never changes the intrinsic verdict.
 
 - **Option overlay**
@@ -169,7 +169,7 @@
 
 - **Reasoning model**
   - Local 122B model.
-  - Performs research, interpretation, and portfolio construction.
+  - Performs research, interpretation, and the per-holding action decision.
 
 - **Embedding model**
   - Local 4B model.
@@ -321,9 +321,8 @@
   - Structurally unpriceable fund → role-risk-only verdict.
 
 - **Not-rated exposure rule**
-  - A material not-rated position still affects whole-book risk.
-  - Starting materiality threshold: 5% of the portfolio.
   - No fake grade is created.
+  - Weighing a not-rated position's risk against the book is the future portfolio planner's job.
 
 - **Model**
   - None.
@@ -822,7 +821,6 @@ Each completed holding is checkpointed separately.
   - Mark `insufficient-evidence` with named reasons.
   - Skip research, distillation, refinement, and interpretation.
   - Retain the prior thesis ledger and attention flag.
-  - Keep real exposure in whole-book calculations.
   - Create no new action or decision episode.
 
 - **Non-floor gaps**
@@ -1045,7 +1043,7 @@ Each completed holding is checkpointed separately.
   - Severe deterioration:
     - Conviction capped at Low.
     - Add actions removed.
-    - Standalone lean limited to Trim or Sell all.
+    - Engine action set limited to Trim or Sell all.
   - Letter grade remains unchanged.
   - One metric alone cannot force a sale.
 
@@ -1081,7 +1079,6 @@ Each completed holding is checkpointed separately.
   - Optional one-level conviction raise.
   - Short-, mid-, and long-term outlook.
   - Which engine scenario is the justified base case.
-  - Standalone action lean.
   - Financial-health explanation.
   - Updated thesis ledger.
   - Intrinsic what-changed explanation.
@@ -1092,7 +1089,7 @@ Each completed holding is checkpointed separately.
   - Expense drag and structural concerns.
   - Evidence gaps.
   - Updated reduced fund ledger.
-  - No letter, target, conviction triple, or standalone lean.
+  - No letter, target, or conviction.
 
 - **Thesis-ledger rewrite**
   - Standing thesis.
@@ -1100,7 +1097,6 @@ Each completed holding is checkpointed separately.
   - Bear, base, and bull monitor.
   - Quantitative and qualitative falsifiers.
   - Add, trim, and sell triggers.
-  - Target-weight range.
   - Role-risk-only ledger uses condition-only scenarios.
   - Role-risk-only triggers are Trim or Sell only.
 
@@ -1118,15 +1114,22 @@ Each completed holding is checkpointed separately.
   - Cannot alter engine calculations.
   - Cannot alter an overlay value or state.
   - Must obey an overlay conviction ceiling.
-  - Must choose Trim or Sell all when severe deterioration restricts the standalone lean.
   - Cannot see the investor profile.
-  - Cannot set the final portfolio action or target weight.
+  - Does not choose an action — the dedicated action decision below does.
 
 - **Output**
   - Proposed intrinsic verdict.
   - Rewritten thesis ledger.
-  - Proposed conviction decomposition.
-  - Intrinsic what-changed audit.
+  - What-changed audit.
+
+- **Action decision (second model call, same step)**
+  - Reads the finished verdict, the holding's own evidence, and the investor profile.
+  - The profile enters the job here and nowhere else.
+  - No whole-book input exists: no cash, sector weights, concentration, or other holdings.
+  - The engine's per-holding action set is shown as evidence, its own pick withheld.
+  - Returns one rung from the fixed ladder plus a one-sentence rationale.
+  - No target weight, share count, or dollar figure — sizing belongs to the future portfolio planner.
+  - A rung outside the engine set persists as authored, annotated on the audit.
 
 ---
 
@@ -1158,12 +1161,12 @@ Each completed holding is checkpointed separately.
   - Apply hard forensic cap after any raise:
     - Maximum Low.
     - Add actions barred later.
-    - Standalone lean must tilt toward exit.
+    - Engine stand-in action tilts toward exit.
   - Apply pre-profit rules after any raise:
     - Repeated miss: maximum Medium.
     - Severe deterioration: maximum Low.
     - Constrained runway or severe state: Add actions barred later.
-    - Severe state: standalone lean must be Trim or Sell all.
+    - Severe state: engine action set is Trim or Sell all.
   - Strictest matched conviction ceiling wins.
   - Model prose cannot create an overlay warning state.
   - Grade remains unchanged by these caps.
@@ -1187,179 +1190,31 @@ Each completed holding is checkpointed separately.
 
 ---
 
-# Step 7 — Build the whole-portfolio recommendation
+# Step 7 — Roll up the run and score past decisions
 
-## Step 7a — Calculate whole-book constraints
+The construction stage that used to live here — whole-book constraints, a final-action synthesis, and a joint-feasibility check — was removed by the tunnel-vision ruling (2026-08-14).
+Each holding's action is now final when its per-holding loop finishes; whole-book reasoning belongs to the future portfolio-planner job.
+
+## Roll-up
+
+- **Calculations**
+  - Verdict counts by disposition.
+  - Largest single-position weight and cash weight (descriptive reads only).
+  - Positions closed since the prior run, acknowledged rather than dropped.
+  - Run-level data-health read, including context-pressure detection.
+
+## Outcome learning
 
 - **Data retrieved**
-  - Completed and carried-forward intrinsic verdicts.
-  - Current normalized portfolio.
   - FMP dated-EOD bars for maturing outcome episodes.
   - FMP dividends for maturing outcome episodes.
 
-- **Whole-book calculations**
-  - Current weight of every position.
-  - Single-position concentration.
-  - Sector and country exposure.
-  - Fund exposure added at sector/country level.
-  - Ninety-day return correlations.
-  - Overlap clusters when absolute correlation exceeds about 0.7.
-  - Cash and buying-power position.
-  - Market value and signed notional of material not-rated positions.
-  - Fixed-income duration, credit risk, or standalone-option delta remain typed gaps when unavailable.
-
-- **Per-holding sizing inputs**
-  - Intrinsic grade and conviction when present.
-  - Standalone lean when present.
-  - Upside and downside from targets.
-  - Dead-money result.
-  - Existing weight and concentration headroom.
-  - Correlation and exposure overlap.
-  - Option overlay.
-  - Unrealized gain or loss.
-  - Risk tier.
-  - Hard forensic state.
-  - Pre-profit runway and severe-deterioration action rules.
-  - Tax as a high-level user consideration.
-
-### Feasible-action calculation
-
-- **Add family requires**
-  - Base-case total return clears the tier hurdle.
-  - Grade is not F.
-  - Position is below the 25% concentration cap.
-  - No hard forensic trigger.
-  - No constrained-runway state.
-  - No severe-deterioration state.
-
-- **Add aggressively additionally requires**
-  - A or B grade.
-  - Enough concentration headroom.
-
-- **Role-risk-only set**
-  - Sell all.
-  - Trim.
-  - Hold.
-  - Add actions are unavailable without return evidence.
-
-- **Starting target-size rules**
-  - Trim: about 40–70% of current weight.
-  - Hold: about 90–110% of current weight.
-  - Add: about 120–160% of current weight, with roughly a 1.5% portfolio floor.
-  - Add aggressively: about 160–220% of current weight, with roughly a 3% floor.
-  - Absolute concentration cap: 25%.
-
-- **Cash rule**
-  - Current default profile treats outside cash as available.
-  - Observed Schwab cash does not block an add.
-  - External funding required is shown later.
-
-### Outcome-learning calculations
-
-- **For active decision episodes**
-  - Compare the user’s net quantity move with the recommendation.
-  - Tag alignment:
-    - Aligned.
-    - Contrary.
-    - Partial.
-    - Unknown.
-    - Reversed.
-
-- **Matured windows**
-  - 1 month.
-  - 3 months.
-  - 6 months.
-  - 12 months.
-
-- **Price calculations**
-  - Refresh dated-EOD bars through the window end.
-  - Add cash dividends without reinvestment for total return.
-  - Total return is the main absolute result.
-  - Sector and market comparisons use price-only returns.
-  - Calculate maximum drawdown.
-
-- **Missing coverage**
-  - Keep the label pending when bars do not reach the window end.
-  - Starting grace period: about three months.
-  - Then close it as `price-coverage-unscorable`.
-
-- **Measurement rules**
-  - Start from the next trading session’s close after the decision.
-  - Continue measuring a stock after the user exits it.
-
-- **Derived scorecard reads**
-  - Did Add outperform Hold?
-  - Did Hold outperform Trim and Sell?
-  - Did target bands contain the later price?
-  - Did falsifiers warn before a material decline?
-  - How often did the model self-correct?
-  - Fewer than 30 unique holdings with matured windows → no calibration proposal.
-  - Results may propose calibration changes.
-  - They never change rules automatically.
-
-- **Output**
-  - Whole-book aggregate packet.
-  - Allowed actions and sizing bounds for every holding.
-  - Newly matured outcomes and scorecard updates.
-
----
-
-## Step 7b — Choose final actions and portfolio shape
-
-- **Data retrieved**
-  - No new external data.
-  - All intrinsic verdicts.
-  - Whole-book aggregates.
-  - Allowed action sets and sizing bounds.
-  - House view.
-  - Investor profile.
-  - Exited positions from Step 4.
-
-- **Model determines**
-  - Final action for every analyzed holding.
-  - Target-weight range.
-  - Estimated share and dollar adjustment.
-  - Why final action differs from standalone lean.
-  - Overall portfolio risk posture.
-  - Concentration and exposure assessment.
-  - What trims may fund which adds.
-  - Positions closed since the prior run.
-
-- **Important reasoning split**
-  - Strong company may still be Trim because it is oversized.
-  - Weaker company may be Add because it diversifies the portfolio.
-  - Tax benefit of realizing a loss is a user consideration.
-  - Tax alone cannot choose an action.
-
-- **Model restrictions**
-  - Must choose inside the engine-provided action set.
-  - Must respect target-weight bounds.
-  - Cannot place trades.
-  - Cannot rewrite intrinsic grades or targets.
-
-- **App validation**
-  - Validate each action-change explanation against real aggregates.
-  - Apply every proposed adjustment simultaneously.
-  - Calculate external funding as buys minus trim/sell proceeds.
-  - Negative external funding means the plan raises cash.
-  - Final weights plus cash must account for the whole implied book.
-  - Every weight must land inside its proposed range.
-  - No position may exceed the concentration cap.
-  - Constrained-cash profiles must fund buys from cash and sales.
-  - Selective-run carried actions must obey transition rules.
-  - Stale add actions must have been demoted to Hold.
-  - Stale exit actions must have received fresh analysis.
-
-- **Validation retry**
-  - If infeasible, return the named violation to the model once.
-  - Re-run portfolio construction.
-  - A second infeasible result fails the run.
-
-- **Output**
-  - Final per-holding actions.
-  - Target weights and adjustments.
-  - Portfolio-level recommendation.
-  - Action half of the what-changed audit.
+- **Logic**
+  - Tag each active episode's net alignment from the holdings diff.
+  - Mature any window labels whose dates have arrived, including for symbols no longer held.
+  - A failed price refresh leaves the label pending inside the coverage grace.
+  - Append or extend this run's decision episodes.
+  - Derive the scorecard reads over the updated episode set.
 
 ---
 
@@ -1368,7 +1223,7 @@ Each completed holding is checkpointed separately.
 - **Data stored**
   - Normalized holdings snapshot used by the run.
   - Every intrinsic verdict.
-  - Every final portfolio action.
+  - Every portfolio action and its rationale.
   - Thesis ledgers and condition evaluation states.
   - Attention flags and analysis vintages.
   - Portfolio roll-up.
@@ -1383,16 +1238,14 @@ Each completed holding is checkpointed separately.
   - Required backfill periods, sources, completion state, and gaps.
   - Runway, execution, economics, dilution, and severe-deterioration states.
   - Every matched pre-profit conviction or action rule.
-  - Conviction decomposition and cap rules.
-  - Intrinsic and action what-changed audits.
+  - Matched cap rules.
+  - What-changed audits.
   - Model, prompt, schema, and parameter versions.
   - Degraded-input flags.
 
 - **Decision-episode logic**
   - Open an episode when the recommendation state changes.
-  - Change may occur in:
-    - Intrinsic branch, lean, or thesis.
-    - Final action or target-weight range.
+  - Change may occur in the verdict branch, the action, or the thesis.
   - Wording-only thesis edits do not open an episode.
   - A reaffirmation extends an active episode.
   - A matured episode does not remain active forever.
@@ -1401,8 +1254,8 @@ Each completed holding is checkpointed separately.
 - **Episode contents**
   - Anchor date.
   - Intrinsic-analysis vintage.
-  - Final action and target weight.
-  - Standalone lean and divergence reason when present.
+  - The action.
+  - Legacy lean, divergence, and weight fields survive on construction-era episodes.
   - Decision-time grade, conviction, targets, hurdle, and cap inputs when present.
   - Sector identity for later benchmark comparison.
   - Parameter version.
@@ -1414,7 +1267,7 @@ Each completed holding is checkpointed separately.
   - Freeze matured episodes into their own capped archive.
 
 - **Embedding model**
-  - Embed each holding’s standing thesis, intrinsic read, and final action.
+  - Embed each holding’s standing thesis, intrinsic read, and action.
   - Store vectors only in Portfolio Analysis memory.
   - Embed matured calibration lessons.
   - Failed embedding drops only that memory row.
@@ -1438,9 +1291,8 @@ Each completed holding is checkpointed separately.
   - Forward outlook and scenario targets.
   - Conviction.
   - Standing thesis and scenario monitor.
-  - Standalone lean.
-  - Final action and target weight.
-  - Financial and sizing rationale.
+  - The action and its rationale.
+  - Financial summary.
   - What changed.
   - Attention flag.
   - Analysis vintage.
@@ -1455,9 +1307,7 @@ Each completed holding is checkpointed separately.
   - No empty grade or target fields.
 
 - **Portfolio display**
-  - Overall risk and concentration.
-  - Sector and country exposure.
-  - Cash and deployment stance.
+  - Run-level roll-up counts and data health.
   - Closed positions.
   - Not-rated and insufficient-evidence reasons.
 
@@ -1598,12 +1448,12 @@ Each completed holding is checkpointed separately.
 # The most important safety rules
 
 - The engine calculates every financial number.
-- The model interprets numbers and chooses only inside app-defined bounds.
+- The model interprets numbers; engine evidence annotates its choices, never bars them.
 - Missing floor-bearing data causes abstention, not a guessed grade.
 - The investor profile never changes the intrinsic verdict.
 - Quick check warns but never rewrites a recommendation.
 - A failed Quick-check retrieval becomes `unknown`, never clean.
 - Selective runs cannot strengthen stale actions without fresh analysis.
-- Whole-book target weights must work simultaneously.
+- Actions are rung-only; sizing belongs to the future portfolio-planner job.
 - Outcome history may propose calibration changes but never applies them automatically.
 - The job never places an order.

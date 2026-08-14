@@ -64,23 +64,21 @@ pub fn research(_dossier: &HoldingDossier) -> ResearchFindings {
 }
 
 /// What the interpretation stage reads: the dossier, the engine's computed analysis,
-/// the distilled research findings, and the engine's **intrinsic lean set** —
-/// rendered to the model as the engine arm's own read since `portfolio-v7`, never
-/// a bound: the model's standalone lean is schema-unrestricted (full ladder), an
-/// outside-the-set lean persisting with the engine-bound annotation at
-/// construction (`docs/portfolio-analysis.md` §Intrinsic verdict). The model
-/// reasons over *this* — evidence, not a gathering transcript.
+/// and the distilled research findings. The model reasons over *this* — evidence,
+/// not a gathering transcript. It carries **no investor profile and no action
+/// machinery**: the intrinsic verdict is profile-independent by input isolation,
+/// and the per-holding action call ([`ActionInput`]) is where both live
+/// (`docs/portfolio-analysis.md` §Intrinsic verdict).
 pub struct InterpretationInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub engine: &'a EngineOutput,
     pub distilled: &'a str,
-    pub lean_set: &'a [Action],
     /// The engine's evaluation of the prior thesis ledger's quantitative conditions
     /// (`None` on a debut — no prior ledger to evaluate).
     pub ledger_eval: Option<&'a LedgerEvaluation>,
     /// The finalized pre-profit execution / financing overlay — present only when
     /// the stock actually entered it (`docs/portfolio-workflow.md` §Step 6f: the
-    /// overlay renders with its rule-bounded conviction ceiling and lean set).
+    /// overlay renders with its rule-bounded conviction ceiling).
     pub pre_profit: Option<&'a PreProfitOverlay>,
 }
 
@@ -93,20 +91,58 @@ pub struct RoleRiskInput<'a> {
     pub ledger_eval: Option<&'a LedgerEvaluation>,
 }
 
-/// What the run-level **portfolio construction** call reads
-/// (`docs/portfolio-workflow.md` §Step 7b): the Step-7a aggregates + spine, the
-/// exited names, the house view, and the investor profile — plus, on the single
-/// re-run, the repair context scoping the call to the violating names.
-pub struct ConstructionInput<'a> {
-    pub aggregates: &'a crate::portfolio::construction::BookAggregates,
-    pub exited: &'a [crate::portfolio::ExitedPosition],
-    pub house_view: &'a crate::portfolio::dossier::HouseView,
+/// The branch-shaped verdict evidence the per-holding action call reads — the
+/// finished intrinsic read the decision acts on. The `action` field on the
+/// referenced verdict bodies is a placeholder at call time (the decision
+/// overwrites it) and is deliberately never rendered.
+pub enum ActionSubject<'a> {
+    Priced {
+        graded: &'a GradedVerdict,
+        engine: &'a EngineOutput,
+        pre_profit: Option<&'a PreProfitOverlay>,
+    },
+    RoleRisk { verdict: &'a RoleRiskVerdict },
+}
+
+/// What the **per-holding action call** reads (`docs/portfolio-analysis.md`
+/// §Portfolio action): the finished intrinsic verdict, the holding's own sizing
+/// evidence off the dossier, the engine's per-holding action set (evidence,
+/// never a bar), and the **investor profile** — its only entry point into the
+/// job, so interpretation stays profile-blind by input isolation. Tunnel
+/// vision by design: no whole-book context exists here.
+pub struct ActionInput<'a> {
+    pub dossier: &'a HoldingDossier,
+    pub subject: ActionSubject<'a>,
+    /// The engine's per-holding action set ([`engine::feasible_actions`] for a
+    /// priced holding; [`crate::portfolio::ROLE_RISK_ACTIONS`] for the
+    /// role/risk branch).
+    pub engine_set: &'a [Action],
     pub profile: &'a crate::portfolio::InvestorProfile,
-    /// `Some` only on the named-violation repair re-run: the violating symbols
-    /// (the narrowed schema's required set), the rendered violations, and the
-    /// first draft's plan the corrected objects merge into
-    /// ([`crate::portfolio::construction::ConstructionRepair`]).
-    pub repair: Option<crate::portfolio::construction::ConstructionRepair>,
+}
+
+/// Whether a prior verdict was authored under the retired whole-book contract —
+/// any prompt version before `portfolio-v9`, a missing stamp (pre-stamp era)
+/// included; an unparseable version reads old, the conservative side. Such an
+/// action is a 7b-merged final that may encode retired portfolio context, so
+/// the action prompt labels it as history rather than an unqualified
+/// continuity baseline.
+fn prior_action_is_whole_book_era(version: Option<&str>) -> bool {
+    crate::portfolio::whole_book_era_version(version)
+}
+
+/// The app-stamped annotation for a chosen rung outside the engine's per-holding
+/// action set — the choice persists exactly as authored; the departure records on
+/// the holding's audit (`docs/portfolio-analysis.md` §Portfolio action, the
+/// two-arm contract: engine evidence annotates, never bars).
+fn outside_set_annotation(action: Action, engine_set: &[Action]) -> Option<String> {
+    (!engine_set.contains(&action)).then(|| {
+        let set: Vec<&str> = engine_set.iter().map(Action::as_kebab).collect();
+        format!(
+            "action {} outside the engine set [{}] — persisted as authored",
+            action.as_kebab(),
+            set.join(", ")
+        )
+    })
 }
 
 /// The model-backed stages of the pipeline, behind a trait so the orchestration is
@@ -120,19 +156,14 @@ pub trait HoldingAnalyst {
     /// verdict judgment (the 122B reasoner in thinking mode, live).
     fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation>;
     /// Author the union's other branch for a structurally unpriceable vehicle: the
-    /// role read (no action — that arises at construction;
+    /// role read (no action — the action call authors that;
     /// `docs/portfolio-analysis.md` §Intrinsic verdict).
     fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation>;
-    /// The run-level **portfolio construction** synthesis
-    /// (`docs/portfolio-workflow.md` §Step 7b): reconcile every holding's
-    /// standalone lean against the Step-7a aggregates into its final action +
-    /// target-weight range plus the portfolio-level view (the 122B reasoner in
-    /// thinking mode, live). The caller validates the draft and re-runs once with
-    /// any violations named.
-    fn construct(
-        &self,
-        input: &ConstructionInput,
-    ) -> Result<crate::portfolio::construction::ConstructionDraft>;
+    /// The **per-holding action call** (`docs/portfolio-analysis.md` §Portfolio
+    /// action): decide this holding's rung-only portfolio action from its own
+    /// finished verdict plus the investor profile — tunnel vision, no book
+    /// context (the 122B reasoner in thinking mode, live).
+    fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision>;
     /// The model ids this analyst used, for the run's audit record.
     fn model_ids(&self) -> Vec<String>;
     /// Drain the prompt-size observations the calls above accumulated
@@ -148,12 +179,12 @@ pub trait HoldingAnalyst {
 /// record. Eligibility and the evidence floor short-circuit before any model call —
 /// an ineligible asset class is `not-rated`, a holding below the floor is
 /// `insufficient-evidence` — so the model is only ever asked to interpret a holding
-/// the engine could actually grade. `account_total` sizes the action against the
-/// portfolio.
+/// the engine could actually grade. No book input reaches it: the retired
+/// `portfolio-weight` series took the last one with it (the tunnel-vision
+/// ruling, 2026-08-14).
 pub fn analyze_holding(
     analyst: &dyn HoldingAnalyst,
     dossier: &HoldingDossier,
-    account_total: f64,
     rates: &RateAnchors,
     run_date: &str,
 ) -> Result<(HoldingVerdict, HoldingAudit)> {
@@ -173,14 +204,6 @@ pub fn analyze_holding(
     // this run tests, rewrites, and carries (`docs/portfolio-analysis.md` §The
     // position thesis ledger).
     let prior_ledger = dossier.prior_ledger();
-    // The position's book weight — the feasible-set input and the
-    // `portfolio-weight` ledger series.
-    let current_weight = if account_total > 0.0 {
-        Some(dossier.position.market_value / account_total)
-    } else {
-        None
-    };
-
     let mut degraded = dossier.financials.gaps.clone();
     if let Some(f) = &dossier.fund {
         degraded.extend(f.fund.gaps.iter().cloned());
@@ -239,6 +262,7 @@ pub fn analyze_holding(
         model_ids: analyst.model_ids(),
         prompt_version: PROMPT_VERSION.to_string(),
         degraded_inputs: degraded.clone(),
+        action_annotations: Vec::new(),
         target_meta,
         grade_parameter_version: Some(engine::GRADE_PARAMETER_VERSION.to_string()),
         ledger_audit,
@@ -284,9 +308,8 @@ pub fn analyze_holding(
     }
 
     // Eligibility: a net-short position is a direction the prescriptive layer doesn't
-    // model — the ladder's verbs, the sizing multipliers, and the outcome labels all
-    // read long — so it takes the not-rated treatment with a short-position reason;
-    // its signed (negative) market value still feeds the whole-book aggregates
+    // model — the ladder's verbs and the outcome labels all read long — so it
+    // takes the not-rated treatment with a short-position reason
     // (`docs/portfolio-analysis.md` §Asset eligibility). An exactly-zero netted
     // position (long and short legs fully offset across accounts — deliberately
     // kept by netting) is neither long nor short: it must not carry the
@@ -425,18 +448,15 @@ pub fn analyze_holding(
                         l,
                         &fund_metrics,
                         &dossier.financials,
-                        current_weight,
                         run_date,
                     )
                 });
                 // The union's other branch: the model authors the role read only —
-                // the branch carries no standalone lean, so its action arises
-                // wholly at the 7b construction stage, where the engine arm's
-                // reduced set (sell-all / trim / hold) rides as annotation-bounded
-                // evidence (`docs/portfolio-analysis.md` §Portfolio action). A provisional
-                // *hold* stands in until construction overwrites it inside this
-                // same pass (construction is fail-hard, so the placeholder never
-                // persists).
+                // the branch's action is authored by the dedicated per-holding
+                // action call below, the full ladder structurally open while the
+                // engine arm's reduced set (sell-all / trim / hold) rides as
+                // annotated evidence (`docs/portfolio-analysis.md` §Portfolio
+                // action).
                 house_view_consulted.set(role_risk_prompt_renders_house_view(dossier));
                 let interpretation = analyst
                     .interpret_role_risk(&RoleRiskInput {
@@ -457,41 +477,52 @@ pub fn analyze_holding(
                     None,
                     dossier.financials.current_price,
                 );
-                let action_sizing = engine::size_action(
-                    Action::Hold,
-                    &dossier.position,
-                    &dossier.profile,
-                    account_total,
-                );
+                // The action placeholder is overwritten by the decision below and
+                // never rendered into its prompt.
+                let mut rr = RoleRiskVerdict {
+                    class_label: readout.class_label.clone(),
+                    role_summary: interpretation.role_summary,
+                    exposure_tilt: readout
+                        .exposure_tilt
+                        .iter()
+                        .map(|(label, weight)| ExposureWeight {
+                            label: label.clone(),
+                            weight: *weight,
+                        })
+                        .collect(),
+                    expense_drag: readout.expense_ratio,
+                    observable_risk: readout.observable_risk,
+                    structural_flag: readout.structural_flag,
+                    evidence_gaps: readout.evidence_gaps.clone(),
+                    action: Action::Hold,
+                    action_rationale: String::new(),
+                    what_changed: interpretation.what_changed,
+                };
+                let decision = analyst
+                    .decide_action(&ActionInput {
+                        dossier,
+                        subject: ActionSubject::RoleRisk { verdict: &rr },
+                        engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
+                        profile: &dossier.profile,
+                    })
+                    .context("deciding the role/risk holding's action")?;
+                rr.action = decision.action;
+                rr.action_rationale = decision.rationale;
+                let mut audit_record = audit(Default::default(), None, Some(ledger_audit), None);
+                audit_record.action_annotations.extend(outside_set_annotation(
+                    decision.action,
+                    &crate::portfolio::ROLE_RISK_ACTIONS,
+                ));
                 let verdict = HoldingVerdict {
                     symbol: symbol.clone(),
                     asset_class,
                     position_change,
-                    disposition: VerdictDisposition::RoleRiskOnly(Box::new(RoleRiskVerdict {
-                        class_label: readout.class_label.clone(),
-                        role_summary: interpretation.role_summary,
-                        exposure_tilt: readout
-                            .exposure_tilt
-                            .iter()
-                            .map(|(label, weight)| ExposureWeight {
-                                label: label.clone(),
-                                weight: *weight,
-                            })
-                            .collect(),
-                        expense_drag: readout.expense_ratio,
-                        observable_risk: readout.observable_risk,
-                        structural_flag: readout.structural_flag,
-                        evidence_gaps: readout.evidence_gaps.clone(),
-                        action: Action::Hold,
-                        action_sizing,
-                        what_changed: interpretation.what_changed,
-                        action_what_changed: None,
-                    })),
+                    disposition: VerdictDisposition::RoleRiskOnly(Box::new(rr)),
                     thesis_ledger: Some(ledger),
                     analyzed_at: None,
                     action_source: ActionSource::ModelChosen,
                 };
-                return Ok((verdict, audit(Default::default(), None, Some(ledger_audit), None)));
+                return Ok((verdict, audit_record));
             }
         }
     } else {
@@ -513,18 +544,13 @@ pub fn analyze_holding(
         }
     };
 
-    // The engine's intrinsic lean set — the intrinsic bars alone: the full
-    // ladder, restricted only by severe pre-profit deterioration
-    // (`docs/portfolio-analysis.md` §Intrinsic verdict). Since `portfolio-v7` it
-    // binds the engine arm alone — rendered into the prompt as the engine's own
-    // read, the model's lean schema-unrestricted, an outside-the-set lean
-    // annotated at construction. The overlay's rules join only when the stock
-    // actually entered the overlay (a priced fund carries none).
+    // The overlay's rules join only when the stock actually entered the overlay
+    // (a priced fund carries none) — they bind the engine arm's stand-in and the
+    // engine's per-holding action set below.
     let overlay_rules = pre_profit_overlay
         .as_ref()
         .filter(|o| o.is_eligible())
         .map(|o| &o.consequences);
-    let lean_set = engine::lean_actions(overlay_rules);
 
     // Evaluate the prior ledger's quantitative falsifiers and triggers against this
     // run's computed surface — the crossings interpretation reads
@@ -534,7 +560,6 @@ pub fn analyze_holding(
             l,
             &engine_output.metrics,
             &dossier.financials,
-            current_weight,
             run_date,
         )
     });
@@ -550,16 +575,15 @@ pub fn analyze_holding(
             dossier,
             engine: &engine_output,
             distilled: &distilled,
-            lean_set: &lean_set,
             ledger_eval: ledger_eval.as_ref(),
             pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
         })
         .context("interpreting the holding")?;
-    // The v7 unrestricted contract: the model's lean and conviction persist exactly
-    // as authored — no bail, no clamp (`docs/portfolio-analysis.md` §The holding
-    // verdict). The engine's own lean bars and any matched pre-profit ceiling stay
-    // recorded on the overlay / engine view, so a lean outside the engine set or a
-    // conviction above the ceiling reads as an annotated divergence, never an error.
+    // The v7 unrestricted contract: the model's conviction persists exactly as
+    // authored — no bail, no clamp (`docs/portfolio-analysis.md` §The holding
+    // verdict). Any matched pre-profit ceiling stays recorded on the overlay /
+    // engine view, so a conviction above the ceiling reads as an annotated
+    // divergence, never an error.
     let conviction = interpretation.conviction;
 
     // The 6g ledger seam: validate the rewrite and stamp the engine's scenario
@@ -575,36 +599,17 @@ pub fn analyze_holding(
         dossier.financials.current_price,
     );
 
-    // Merge engine numbers + model judgment into the verdict; size the action.
-    let action_sizing = engine::size_action(
-        interpretation.action,
-        &dossier.position,
-        &dossier.profile,
-        account_total,
-    );
     // The engine stand-in arm — mechanical outlook / conviction / action baselines
     // beside the model's (`docs/portfolio-analysis.md` §The holding verdict).
-    let engine_view = engine::engine_view(
-        &engine_output,
-        &dossier.financials,
-        &degraded,
-        pre_profit_overlay
-            .as_ref()
-            .filter(|o| o.is_eligible())
-            .map(|o| &o.consequences),
-        &dossier.position,
-        &dossier.profile,
-        account_total,
-    );
-    let graded = GradedVerdict {
+    let engine_view = engine::engine_view(&engine_output, &dossier.financials, &degraded, overlay_rules);
+    let mut graded = GradedVerdict {
         grade: engine_output.grade,
         sub_scores: engine_output.sub_scores,
-        // The 6f rung is the standalone lean; the final action provisionally
-        // equals it until the 7b construction stage overwrites it inside this
-        // same pass (`docs/portfolio-analysis.md` §The holding verdict).
-        action: interpretation.action,
-        lean: Some(interpretation.action),
-        action_sizing,
+        // A placeholder — the per-holding action call below authors the action
+        // and overwrites both fields; the placeholder is never rendered into
+        // that call's prompt.
+        action: Action::Hold,
+        action_rationale: String::new(),
         conviction,
         horizon_outlook: interpretation.horizon_outlook,
         price_targets: engine_output.price_targets.clone(),
@@ -617,7 +622,6 @@ pub fn analyze_holding(
         structural_flag: engine_output.structural_flag,
         financial_summary: interpretation.financial_summary,
         what_changed: interpretation.what_changed,
-        action_what_changed: None,
         // The model arm: persisted exactly as authored, letter derived from the
         // model's own scores through the shared cutoffs (the two-arm contract —
         // `docs/portfolio-analysis.md` §The holding verdict).
@@ -629,6 +633,26 @@ pub fn analyze_holding(
         }),
         engine_view: Some(engine_view),
     };
+    // The per-holding action call — the profile's one entry point: the finished
+    // verdict plus the holding's own evidence decide the rung, tunnel vision by
+    // design (`docs/portfolio-analysis.md` §Portfolio action). The engine's
+    // per-holding set rides as evidence; an outside-the-set choice persists as
+    // authored with the departure annotated on the audit.
+    let engine_set = engine::feasible_actions(engine_output.grade, &engine_output.hurdle, overlay_rules);
+    let decision = analyst
+        .decide_action(&ActionInput {
+            dossier,
+            subject: ActionSubject::Priced {
+                graded: &graded,
+                engine: &engine_output,
+                pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
+            },
+            engine_set: &engine_set,
+            profile: &dossier.profile,
+        })
+        .context("deciding the holding's action")?;
+    graded.action = decision.action;
+    graded.action_rationale = decision.rationale;
     let verdict = HoldingVerdict {
         symbol: symbol.clone(),
         asset_class,
@@ -650,6 +674,9 @@ pub fn analyze_holding(
         model_ids: analyst.model_ids(),
         prompt_version: PROMPT_VERSION.to_string(),
         degraded_inputs,
+        action_annotations: outside_set_annotation(decision.action, &engine_set)
+            .into_iter()
+            .collect(),
         target_meta: Some(engine_output.target_meta.clone()),
         grade_parameter_version: Some(engine::GRADE_PARAMETER_VERSION.to_string()),
         ledger_audit: Some(ledger_audit),
@@ -1314,13 +1341,6 @@ pub fn validate_ledger_rewrite(
         },
     ];
 
-    // The target-weight range: clamped to fractions, ordered.
-    let clamp_w = |w: f64| if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 };
-    let (mut low, mut high) = (clamp_w(draft.target_weight_low), clamp_w(draft.target_weight_high));
-    if low > high {
-        std::mem::swap(&mut low, &mut high);
-    }
-
     // Spot's authoring-time relation to the stamped band — `None` wherever no band
     // exists (the role_risk branch forced `engine_targets` to `None` above, and a
     // missing spot stamps nothing rather than guessing).
@@ -1344,8 +1364,6 @@ pub fn validate_ledger_rewrite(
         what_must_improve: draft.what_must_improve.trim().to_string(),
         what_must_not_break: draft.what_must_not_break.trim().to_string(),
         conditions,
-        target_weight_low: low,
-        target_weight_high: high,
         authored_band_relation,
     };
     (ledger, audit)
@@ -1369,23 +1387,21 @@ pub fn interpretation_system_prompt() -> String {
      scale (momentum stays outside the letter; your letter is derived from your \
      quality/valuation/risk through the same cutoffs), your OWN one-month and \
      twelve-month price target bands (base, bear, bull — your numbers, free to \
-     depart the engine's as far as the evidence takes you), your conviction, the \
-     three horizon reads, and the STANDALONE ACTION LEAN — the action this holding \
-     would earn if it stood alone, with NO portfolio context (the final portfolio \
-     action is set later, at construction, with the whole book in view) — from the \
-     FULL ladder: the engine's own lean set is shown as its arm's read, not a bound \
-     on yours. Both arms are scored against realized outcomes by a deterministic \
+     depart the engine's as far as the evidence takes you), your conviction, and the \
+     three horizon reads. Do NOT choose a portfolio action here — a dedicated \
+     decision stage sets it afterward from this verdict; your job is the read \
+     itself. Both arms are scored against realized outcomes by a deterministic \
      scoreboard; where a RETROSPECTIVE block appears, assess your prior read against \
      the engine baseline and what actually happened — honestly, in self_assessment — \
      and let it discipline this run's numbers. Conviction means your confidence in \
-     the overall read — your scores, outlook, and lean together — is exactly one of \
-     'low' / 'medium' / 'high' (no numbers or percentages), and should match the \
-     lean's decisiveness. On every sub-score axis a HIGHER number is BETTER — a \
+     the overall read — your scores and outlook together — is exactly one of \
+     'low' / 'medium' / 'high' (no numbers or percentages). On every sub-score axis \
+     a HIGHER number is BETTER — a \
      high risk score means resilience (low risk), not exposure. \
      Use the Market Signal house view for the horizon reads and market-setup context \
      only — it is a market-level thesis, never by itself a reason to exit a specific \
      holding. The read is profile-independent — no investor profile is given at this \
-     stage; it enters at portfolio construction only. \
+     stage; it enters at the action decision only. \
      You also maintain the position's THESIS LEDGER — the persisted standing thesis \
      with monitorable falsifiers and pre-committed action triggers: test the prior \
      ledger against this run's evidence and the engine's deterministic condition \
@@ -1403,10 +1419,10 @@ pub fn role_risk_system_prompt() -> String {
      class this pipeline is structurally unable to price (a bond or commodity fund, \
      an ex-US fund, a leveraged/inverse vehicle, or a fund without usable weightings). \
      Do NOT produce a grade, price target, conviction, or action — none exists for \
-     this branch here (its action is set later, at portfolio construction, with the \
-     whole book in view; the engine arm's set for this branch is sell-all / trim / \
-     hold, rendered there as its own read — the construction choice is structurally \
-     open, an outside-the-set rung recorded as an engine-bound annotation). Your job: \
+     this branch here (its action is set afterward by a dedicated decision stage; \
+     the engine arm's set for this branch is sell-all / trim / hold, rendered there \
+     as its own read — the decision is structurally open, an outside-the-set rung \
+     recorded as an annotation). Your job: \
      describe the vehicle's role — the mandate and the exposure it exists to supply, \
      read in isolation — and write the continuity note. Read the engine's exposure, \
      expense, and risk figures; never invent one. \
@@ -1506,10 +1522,10 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         ));
     }
     p.push_str(
-        "\nACTION: none here — this branch's action is set at portfolio construction. \
-         The engine arm's set for this branch: sell-all / trim / hold (no add \
-         family); the construction choice is structurally open, a departure \
-         recorded as an engine-bound annotation.\n",
+        "\nACTION: none here — this branch's action is decided afterward by the \
+         dedicated per-holding action call. The engine arm's set for this branch: \
+         sell-all / trim / hold (no add family); the decision is structurally \
+         open, a departure recorded as an audit annotation.\n",
     );
     match &d.prior_verdict {
         Some(_) => p.push_str(
@@ -1595,7 +1611,7 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
             p.push_str(&format!(
                 "- prior MODEL arm (yours): letter {} (q {:.0} / v {:.0} / m {:.0} / r {:.0}); \
                  1-mo base {:.2} [{:.2}\u{2013}{:.2}], 12-mo base {:.2} [{:.2}\u{2013}{:.2}]; \
-                 conviction {:?}, {}, lean {}\n",
+                 conviction {:?}, {}, action {}\n",
                 mv.letter.as_str(),
                 mv.sub_scores.quality,
                 mv.sub_scores.valuation,
@@ -1609,7 +1625,7 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
                 mt.twelve_month.bull,
                 g.conviction,
                 outlook(&g.horizon_outlook),
-                g.lean.unwrap_or(g.action).as_kebab(),
+                g.action.as_kebab(),
             ));
         }
         None => p.push_str(
@@ -1867,23 +1883,6 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     }
 
     p.push_str(
-        "\nENGINE LEAN SET (the engine's own arm restricts itself to this — evidence, \
-         not a bound; YOUR standalone lean is unrestricted on the full ladder, and \
-         the final portfolio action is set at construction): ",
-    );
-    let engine_set: Vec<&str> = input.lean_set.iter().map(Action::as_kebab).collect();
-    p.push_str(&engine_set.join(", "));
-    // Ruled 2026-08-11 (attempt 1's Finding 5): the pick is withheld on purpose,
-    // and the prompt says so — the model litigated the omission when the prompt
-    // was silent, and naming the pick would anchor the arm the scoreboard needs
-    // independent.
-    p.push_str(
-        "\nWhich rung the engine arm itself picked is deliberately not shown: the set \
-         above is the engine's restriction, not a hint to reproduce — form your own \
-         lean and let the scoreboard compare the two arms.\n",
-    );
-
-    p.push_str(
         "\nYOUR MODEL ARM (authored by you, unrestricted, scored against realized \
          outcomes beside the engine baseline): model_sub_scores — your own \
          quality/valuation/momentum/risk on the 0-100 higher-is-better scale (higher \
@@ -1931,10 +1930,9 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     }
 
     // The investor profile is deliberately NOT rendered here: the intrinsic
-    // verdict is profile-independent and the profile enters at Step 7b
-    // construction only (`docs/portfolio-workflow.md` §Step 6f "deliberately
-    // absent"; `docs/portfolio-analysis.md` §Intrinsic verdict). The dossier
-    // still carries it for the engine's action-sizing cash bound.
+    // verdict is profile-independent and the profile enters at the per-holding
+    // action call only (`docs/portfolio-workflow.md` §Step 6f "deliberately
+    // absent"; `docs/portfolio-analysis.md` §Intrinsic verdict).
 
     p.push_str("\nHORIZONS for the outlook: ");
     p.push_str(&format!("{HORIZON_SHORT}, {HORIZON_MID}, {HORIZON_LONG}.\n"));
@@ -1943,7 +1941,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         Some(_) => {
             p.push_str(
                 "\nCONTINUITY: a prior verdict for this holding exists. Keep the verdict firm; \
-                 only move grade/action/target if the evidence has materially changed, and say what.\n",
+                 only move grade/target if the evidence has materially changed, and say what.\n",
             );
             // A band recalibration moves letters with no input change; without this
             // line the model's what-changed would attribute an engine-driven letter
@@ -1979,6 +1977,223 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
 
 fn opt(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.3}")).unwrap_or_else(|| "(gap)".to_string())
+}
+
+/// The system prompt for the **per-holding action call** — the profile's one
+/// entry point into the job (`docs/portfolio-analysis.md` §Portfolio action).
+/// Tunnel vision is stated as the contract: the decision weighs this holding
+/// and the profile alone; the whole-book reconciliation belongs to the future
+/// portfolio-planner job and none of its inputs are given.
+pub fn action_system_prompt() -> String {
+    format!(
+        "You are deciding the portfolio action for ONE holding, in isolation. The \
+     holding's verdict has already been authored; your job is the rung alone. \
+     TUNNEL VISION IS THE CONTRACT: judge this holding on its own merits and the \
+     investor profile alone — the rest of the portfolio (available cash, sector \
+     weights, concentration, correlation, every other holding) is deliberately \
+     out of scope and none of it is given to you; a separate planning stage \
+     reconciles actions across the whole book later, so do not hedge this call \
+     against unseen portfolio context. Choose exactly ONE rung from the fixed \
+     ladder — sell-all, trim, hold, add, add-aggressively — the rung only: no \
+     share counts, dollar amounts, or portfolio weights. Weigh the verdict's own \
+     evidence: both arms' grades and scores, the conviction, the horizon \
+     outlook, the targets' implied upside/downside against the current price \
+     (discounted by their stated provenance), and the capital-efficiency read — \
+     only a `fails` hurdle is dead money, and a fails read leans toward \
+     realizing some or all of the position once the forward prospects are \
+     independently judged poor; the possible tax benefit of booking a loss (or \
+     the tax cost of realizing a gain) is a user consideration to FLAG in the \
+     rationale, never the mover of the rung. For a role/risk-only vehicle (a \
+     class this pipeline cannot price) decide from its role read, expense drag, \
+     observable risk, structural flags, and evidence gaps — an add-side rung \
+     there must be earned by the vehicle's own merits, stated in the rationale. \
+     The ENGINE SET shown is the engine arm's own restriction — evidence, never \
+     a bound on you: the full ladder is open, and an outside-the-set choice \
+     persists exactly as authored with the departure annotated beside it. The \
+     INVESTOR PROFILE frames the decision — an aggressive risk tolerance can \
+     justify the aggressive rung where the evidence supports it; the profile \
+     never changes the verdict's facts. The rationale is exactly ONE sentence, \
+     never empty — the single reason the rung was chosen. Keep the action firm \
+     run to run: move it only when the verdict's evidence has materially moved. {}",
+        crate::portfolio::action_response_contract()
+    )
+}
+
+/// The user prompt for the action call: the finished verdict digest, the
+/// position's own economics, the engine's per-holding action set (the engine
+/// arm's own pick deliberately withheld — the scoreboard needs the arms
+/// independent, the same ruling as the 6f render), and the investor profile.
+pub fn action_user_prompt(input: &ActionInput) -> String {
+    let d = input.dossier;
+    let mut p = String::new();
+    p.push_str(&holding_header(d));
+
+    let pl = d.position.market_value - d.position.cost_basis;
+    p.push_str(&format!(
+        "Unrealized P/L: ${pl:.0} total ({})\n",
+        if pl < 0.0 {
+            "an unrealized loss — booking it may carry a tax benefit; flag as a user \
+             consideration, never the mover"
+        } else {
+            "an unrealized gain — a sale realizes it as taxable; flag as a user \
+             consideration, never the mover"
+        }
+    ));
+    if let Some(prior) = d.prior_verdict.as_ref().and_then(crate::portfolio::carried_action) {
+        if prior_action_is_whole_book_era(d.prior_prompt_version.as_deref()) {
+            // A pre-`portfolio-v9` action is a 7b-merged whole-book final — it
+            // may encode retired portfolio context, so it anchors this call as
+            // labeled history, never an unqualified baseline (Codex 2026-08-14,
+            // finding 1).
+            p.push_str(&format!(
+                "Prior run's action for this holding: {} — authored under the \
+                 RETIRED whole-book contract, where book-level context could set \
+                 the rung. Treat it as history, not a baseline: re-derive this \
+                 decision from the verdict and profile alone.\n",
+                prior.as_kebab()
+            ));
+        } else {
+            p.push_str(&format!(
+                "Prior run's action for this holding: {} (continuity baseline — move \
+                 only on materially moved evidence).\n",
+                prior.as_kebab()
+            ));
+        }
+    }
+
+    match &input.subject {
+        ActionSubject::Priced {
+            graded,
+            engine,
+            pre_profit,
+        } => {
+            p.push_str(&format!(
+                "\nTHE VERDICT (already authored — the evidence you act on):\n\
+                 ENGINE ARM: grade {}{}; sub-scores quality {:.0} / valuation {:.0} / \
+                 risk {:.0} (momentum {:.0} outside the letter); risk tier {}; \
+                 capital-efficiency read {} (only `fails` is dead money).\n",
+                graded.grade.as_str(),
+                if graded.low_confidence_grade {
+                    " (low-confidence — an imputed sub-score underlies it)"
+                } else {
+                    ""
+                },
+                graded.sub_scores.quality,
+                graded.sub_scores.valuation,
+                graded.sub_scores.risk,
+                graded.sub_scores.momentum,
+                graded
+                    .risk_tier
+                    .map(|t| t.as_str())
+                    .unwrap_or("(gap)"),
+                graded
+                    .dead_money
+                    .map(|s| format!("{s:?}").to_lowercase())
+                    .unwrap_or_else(|| "(gap)".to_string()),
+            ));
+            if let Some(mv) = &graded.model_view {
+                p.push_str(&format!(
+                    "MODEL ARM: letter {}; sub-scores quality {:.0} / valuation {:.0} / \
+                     momentum {:.0} / risk {:.0}.\n",
+                    mv.letter.as_str(),
+                    mv.sub_scores.quality,
+                    mv.sub_scores.valuation,
+                    mv.sub_scores.momentum,
+                    mv.sub_scores.risk,
+                ));
+            }
+            p.push_str(&format!(
+                "CONVICTION: {:?}. HORIZON OUTLOOK: short {:?} / mid {:?} / long {:?}.\n",
+                graded.conviction,
+                graded.horizon_outlook.short,
+                graded.horizon_outlook.mid,
+                graded.horizon_outlook.long,
+            ));
+            if let (Some(spot), Some(tm)) = (
+                d.financials.current_price,
+                graded.price_targets.twelve_month.as_ref(),
+            ) {
+                if spot > 0.0 {
+                    p.push_str(&format!(
+                        "IMPLIED 12-MONTH MOVES vs spot {spot:.2} (engine targets): bear \
+                         {:+.1}% / base {:+.1}% / bull {:+.1}%.\n",
+                        (tm.bear / spot - 1.0) * 100.0,
+                        (tm.base / spot - 1.0) * 100.0,
+                        (tm.bull / spot - 1.0) * 100.0,
+                    ));
+                }
+            }
+            let t = &engine.target_meta;
+            p.push_str(&format!(
+                "TARGET PROVENANCE: {} — weigh the implied moves by it.\n",
+                if t.rate_anchored {
+                    "rate-anchored (real forward signal)"
+                } else if t.current_multiple_carry {
+                    "current-multiple carry (targets hug the current price — low signal)"
+                } else {
+                    "raw-percentile fallback (thin issuer history)"
+                }
+            ));
+            p.push_str(&format!("FINANCIAL SUMMARY: {}\n", graded.financial_summary));
+            if let Some(overlay) = pre_profit {
+                p.push_str(&pre_profit_prompt_section(overlay));
+            }
+        }
+        ActionSubject::RoleRisk { verdict } => {
+            p.push_str(&format!(
+                "\nTHE VERDICT (already authored — a role/risk-only vehicle; no grade, \
+                 targets, or conviction exist for this class):\nCLASS: {}\nROLE: {}\n",
+                verdict.class_label, verdict.role_summary
+            ));
+            if !verdict.exposure_tilt.is_empty() {
+                let tilt: Vec<String> = verdict
+                    .exposure_tilt
+                    .iter()
+                    .take(5)
+                    .map(|w| format!("{} {:.0}%", w.label, w.weight * 100.0))
+                    .collect();
+                p.push_str(&format!("EXPOSURE TILT: {}\n", tilt.join(", ")));
+            }
+            p.push_str(&format!(
+                "EXPENSE DRAG (decimal fraction of assets per year): {}. OBSERVABLE \
+                 RISK (annualized realized volatility): {}. STRUCTURAL FLAG \
+                 (leveraged/inverse or option-overlay path dependency): {}.\n",
+                opt(verdict.expense_drag),
+                opt(verdict.observable_risk),
+                if verdict.structural_flag { "yes" } else { "no" },
+            ));
+            if !verdict.evidence_gaps.is_empty() {
+                p.push_str(&format!(
+                    "EVIDENCE GAPS: {}\n",
+                    verdict.evidence_gaps.join("; ")
+                ));
+            }
+        }
+    }
+
+    p.push_str(
+        "\nENGINE SET (the engine arm's own restriction — evidence, not a bound; \
+         your choice is open on the full ladder, an outside-the-set rung persists \
+         as authored with the departure annotated): ",
+    );
+    let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
+    p.push_str(&set.join(", "));
+    p.push_str(
+        "\nWhich rung the engine arm itself picked is deliberately not shown: form \
+         your own decision and let the scoreboard compare the two arms.\n",
+    );
+
+    p.push_str("\nINVESTOR PROFILE (frames the decision; the verdict's facts are fixed):\n");
+    let profile = input.profile.display();
+    // The cash row is deliberately not rendered: available capital is
+    // whole-book context — the planner's domain — and the system prompt
+    // promises none of it is given (Codex 2026-08-14, finding 3).
+    p.push_str(&format!(
+        "- objective: {}\n- risk tolerance: {}\n- horizon: {}\n- tax: {}\n",
+        profile.objective, profile.risk_tolerance, profile.horizon, profile.tax,
+    ));
+
+    p
 }
 
 /// Render the finalized pre-profit execution / financing overlay for an eligible
@@ -2171,11 +2386,6 @@ pub fn ledger_prompt_section(
                     p.push_str(&format!("- {family}[{kind}] {}\n", c.statement));
                 }
             }
-            p.push_str(&format!(
-                "Target weight range: {:.1}%–{:.1}%\n",
-                l.target_weight_low * 100.0,
-                l.target_weight_high * 100.0
-            ));
 
             p.push_str("\nENGINE CONDITION CROSSINGS THIS RUN (deterministic):\n");
             let mut any = false;
@@ -2221,8 +2431,7 @@ pub fn ledger_prompt_section(
          on, each tied to an engine series where one fits; the bear/base/bull monitor \
          conditions with rough probability leans (percent, roughly summing to 100); \
          what must improve to migrate toward the bull case and what must not break to \
-         stay in the base case; the key falsifiers; and the action triggers with a \
-         target-weight range (fractions of the portfolio, e.g. 0.05). \
+         stay in the base case; the key falsifiers; and the action triggers. \
          State every quantitative falsifier or trigger machine-evaluably: the engine \
          series (exactly one label from the list above), below/above, a numeric \
          threshold in the series' units, and a materiality margin in the same units \
@@ -2369,8 +2578,6 @@ fn stub_ledger_draft(prior: Option<&ThesisLedger>, symbol: &str, role_risk: bool
                     fired: false,
                 })
                 .collect(),
-            target_weight_low: l.target_weight_low,
-            target_weight_high: l.target_weight_high,
         };
     }
     // The debut draft — one quantitative falsifier and trigger on always-computable
@@ -2431,18 +2638,16 @@ fn stub_ledger_draft(prior: Option<&ThesisLedger>, symbol: &str, role_risk: bool
             tripped: false,
         }],
         triggers: vec![TriggerDraft {
-            statement: "Trim above 25% of the portfolio".into(),
+            statement: "Trim above the priced-in ceiling".into(),
             family: "trim".into(),
             quant: Some(QuantCoreDraft {
-                series: "portfolio-weight".into(),
+                series: "price".into(),
                 comparator: "above".into(),
-                threshold: 0.25,
+                threshold: 150.0,
                 margin: 0.0,
             }),
             fired: false,
         }],
-        target_weight_low: 0.02,
-        target_weight_high: 0.10,
     }
 }
 
@@ -2457,24 +2662,6 @@ impl HoldingAnalyst for StubAnalyst {
 
     fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
         let e = input.engine;
-        let preferred = match e.grade {
-            crate::portfolio::Grade::A => Action::Add,
-            crate::portfolio::Grade::B | crate::portfolio::Grade::C => Action::Hold,
-            crate::portfolio::Grade::D => Action::Trim,
-            crate::portfolio::Grade::F => Action::SellAll,
-        };
-        // The live path renders the engine's intrinsic set as evidence (the v7
-        // schema is full-ladder); the stub deliberately stays inside the engine
-        // set so no engine-bound annotation fires, falling back to the
-        // least-drastic engine rung (hold is not always in the engine set — a
-        // severe pre-profit overlay restricts it to the exit family).
-        let action = if input.lean_set.contains(&preferred) {
-            preferred
-        } else if input.lean_set.contains(&Action::Hold) {
-            Action::Hold
-        } else {
-            *input.lean_set.last().unwrap_or(&Action::Hold)
-        };
         let conviction = match e.grade {
             crate::portfolio::Grade::A | crate::portfolio::Grade::B => Conviction::High,
             crate::portfolio::Grade::C => Conviction::Medium,
@@ -2495,7 +2682,6 @@ impl HoldingAnalyst for StubAnalyst {
             "new holding".to_string()
         };
         Ok(Interpretation {
-            action,
             conviction,
             horizon_outlook: HorizonOutlook {
                 short: read(e.sub_scores.momentum),
@@ -2571,78 +2757,32 @@ impl HoldingAnalyst for StubAnalyst {
         })
     }
 
-    fn construct(
-        &self,
-        input: &ConstructionInput,
-    ) -> Result<crate::portfolio::construction::ConstructionDraft> {
-        use crate::portfolio::construction::{ConstructionDraft, HoldingProposalDraft};
-        // The stub's construction is the deterministic echo: re-affirm each
-        // holding's standalone read inside its engine set — the carried action
-        // for a carried row, the lean where the engine set still offers it,
-        // continuity (the prior action) or *hold* otherwise — at the engine's
-        // rung band. It exercises the validate-and-merge seam without ever
-        // proposing a violation; the violation paths are rogue-stub territory.
-        let mut holdings = std::collections::BTreeMap::new();
-        for row in &input.aggregates.spine {
-            let action = if row.carried {
-                row.prior_action.unwrap_or(Action::Hold)
-            } else if let Some(lean) = row.lean.filter(|l| row.offered.contains(l)) {
-                lean
-            } else if let Some(prior) = row.prior_action.filter(|p| row.offered.contains(p)) {
-                prior
-            } else if row.offered.contains(&Action::Hold) {
-                Action::Hold
-            } else {
-                *row.offered.last().unwrap_or(&Action::Hold)
-            };
-            let (low, high) = engine::rung_band(action, row.current_weight);
-            // The only stub path that changes an action against its baseline is a
-            // moved intrinsic read (a moved lean, or a feasible set that dropped
-            // the prior rung) — the context causes need aggregates the stub
-            // doesn't reason over.
-            let changed = row.prior_action.is_some_and(|p| p != action);
-            holdings.insert(
-                row.symbol.clone(),
-                HoldingProposalDraft {
-                    action: action.as_kebab().to_string(),
-                    target_weight_low: low,
-                    target_weight_high: high,
-                    rationale: "Stub construction: the standalone read at the engine band."
-                        .to_string(),
-                    divergence_cause: None,
-                    divergence_note: None,
-                    changed_attribution: changed.then(|| "moved-intrinsic".to_string()),
-                    changed_cause: None,
-                    changed_note: changed
-                        .then(|| "the intrinsic read moved since the prior run".to_string()),
-                },
-            );
-        }
-        // The repair re-run's response is holdings-only, scoped to the violating
-        // names — the stub mirrors the live repair schema's shape so job-level
-        // tests exercise the real overlay semantics.
-        if let Some(repair) = &input.repair {
-            holdings.retain(|key, _| {
-                repair.symbols.iter().any(|s| s.eq_ignore_ascii_case(key))
-            });
-            return Ok(ConstructionDraft {
-                holdings,
-                risk_posture: String::new(),
-                deployment_stance: String::new(),
-                concentration_read: String::new(),
-                closed_positions_note: None,
-            });
-        }
-        Ok(ConstructionDraft {
-            holdings,
-            risk_posture: "Balanced (stub read).".to_string(),
-            deployment_stance: "No reallocation proposed (stub).".to_string(),
-            concentration_read: "No concentration breaches (stub).".to_string(),
-            closed_positions_note: (!input.exited.is_empty()).then(|| {
-                let names: Vec<&str> =
-                    input.exited.iter().map(|e| e.symbol.as_str()).collect();
-                format!("Positions closed since last run: {}.", names.join(", "))
-            }),
+    fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
+        // The stub's decision is the deterministic grade-mapped rung (hold for a
+        // role/risk vehicle), deliberately kept inside the engine set so no
+        // outside-set annotation fires — the annotation path is rogue-stub
+        // territory. Falls back to the least-drastic offered rung (hold is not
+        // always offered — a severe pre-profit overlay restricts the set to the
+        // exit family).
+        let preferred = match &input.subject {
+            ActionSubject::Priced { graded, .. } => match graded.grade {
+                crate::portfolio::Grade::A => Action::Add,
+                crate::portfolio::Grade::B | crate::portfolio::Grade::C => Action::Hold,
+                crate::portfolio::Grade::D => Action::Trim,
+                crate::portfolio::Grade::F => Action::SellAll,
+            },
+            ActionSubject::RoleRisk { .. } => Action::Hold,
+        };
+        let action = if input.engine_set.contains(&preferred) {
+            preferred
+        } else if input.engine_set.contains(&Action::Hold) {
+            Action::Hold
+        } else {
+            *input.engine_set.last().unwrap_or(&Action::Hold)
+        };
+        Ok(crate::portfolio::ActionDecision {
+            action,
+            rationale: "Stub action: the grade-mapped rung inside the engine set.".to_string(),
         })
     }
 
@@ -2901,50 +3041,25 @@ fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest
     req
 }
 
-/// Build the portfolio-construction request: thinking on, the per-holding
-/// construction schema (full-ladder enums since `portfolio-v7`), and the
-/// **shared** interpret context size — the
-/// one-`num_ctx`-per-model rule (an Ollama `num_ctx` change reloads the resident
-/// runner, `docs/local-model-operations.md §The num_ctx trap`), so the run-level
-/// call must not bounce the runner between sizes. On prompt overrun the sanctioned
-/// response is compressing the per-holding digests, never a `num_ctx` change.
-fn construction_request(reasoner_model: &str, input: &ConstructionInput) -> ChatRequest {
-    let repair = input.repair.as_ref();
+/// Build the per-holding action request: thinking on (the rung is a judgment
+/// call weighing the whole verdict against the profile), the action schema, and
+/// the **shared** interpret context size — the one-`num_ctx`-per-model rule (an
+/// Ollama `num_ctx` change reloads the resident runner,
+/// `docs/local-model-operations.md §The num_ctx trap`).
+fn action_request(reasoner_model: &str, input: &ActionInput) -> ChatRequest {
     let mut req = ChatRequest::new(
         reasoner_model,
         vec![
-            ChatMessage::system(crate::portfolio::construction::construction_system_prompt(
-                repair.is_some(),
-            )),
-            ChatMessage::user(crate::portfolio::construction::construction_user_prompt(
-                input.aggregates,
-                input.exited,
-                input.house_view.latest_sections.as_deref(),
-                input.profile,
-                repair,
-            )),
+            ChatMessage::system(action_system_prompt()),
+            ChatMessage::user(action_user_prompt(input)),
         ],
     );
-    // The repair re-run narrows the schema to the violating names — the demanded
-    // output shrinks exactly when the violation list is longest
-    // (`docs/portfolio-analysis.md` §Portfolio roll-up and construction).
-    req.format_schema = Some(match repair {
-        Some(r) => crate::portfolio::construction::construction_repair_schema(
-            &input.aggregates.spine,
-            &r.symbols,
-        ),
-        None => crate::portfolio::construction::construction_schema(&input.aggregates.spine),
-    });
+    req.format_schema = Some(crate::portfolio::action_decision_schema());
     req.think = Some(true);
     req.options = Some(options::thinking_general(NUM_CTX_INTERPRET, NUM_PREDICT_THINKING));
     req.keep_alive = Some(KEEP_ALIVE_RESIDENT);
     req
 }
-
-/// The construction call's tracker step key — the run-level counterpart of
-/// [`crate::portfolio::holding_step_key`], shared by the job's step row and the
-/// streamed reasoning.
-pub const CONSTRUCTION_STEP_KEY: &str = "construction";
 
 impl HoldingAnalyst for LocalAnalyst {
     fn distill(&self, dossier: &HoldingDossier, findings: &ResearchFindings) -> Result<String> {
@@ -3014,45 +3129,28 @@ impl HoldingAnalyst for LocalAnalyst {
         })
     }
 
-    fn construct(
-        &self,
-        input: &ConstructionInput,
-    ) -> Result<crate::portfolio::construction::ConstructionDraft> {
-        let req = construction_request(&self.reasoner_model, input);
-        // Stream step-scoped like interpretation: the whole-book reconciliation is
-        // the run's longest single call, and its reasoning lands on the
-        // "Portfolio construction" step rather than a minutes-long quiet stretch.
-        let resp = self
-            .client
-            .chat_streaming(&req, StreamRole::Step(CONSTRUCTION_STEP_KEY))?;
-        self.record_usage(CONSTRUCTION_STEP_KEY.to_string(), &req, &resp);
-        // A construction-stage truncation fails the call typed — and the caller
-        // persists the degraded row on any construct error, so the completed
-        // per-holding pass survives it.
-        ensure_not_output_limited(CONSTRUCTION_STEP_KEY, &req, &resp)?;
-        // Two decode contracts, deliberately not shared: the repair response is
-        // holdings-only (its envelope is discarded by the caller's overlay,
-        // which keeps the first draft's), while the full call decodes the
-        // envelope strictly — a missing portfolio-level field fails here rather
-        // than persisting a blank construction view.
-        if input.repair.is_some() {
-            let wire: crate::portfolio::construction::RepairResponse =
-                serde_json::from_str(&resp.content).with_context(|| {
-                    format!(
-                        "parsing construction repair JSON: {}",
-                        body_snippet(&resp.content)
-                    )
-                })?;
-            return Ok(crate::portfolio::construction::ConstructionDraft {
-                holdings: wire.holdings,
-                risk_posture: String::new(),
-                deployment_stance: String::new(),
-                concentration_read: String::new(),
-                closed_positions_note: None,
-            });
-        }
-        serde_json::from_str(&resp.content)
-            .with_context(|| format!("parsing construction JSON: {}", body_snippet(&resp.content)))
+    fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
+        let req = action_request(&self.reasoner_model, input);
+        // Stream step-scoped like interpretation: the decision's reasoning lands
+        // on this holding's own "Analyze {SYM}" step.
+        let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
+        let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
+        self.record_usage(
+            format!("action {}", input.dossier.position.symbol),
+            &req,
+            &resp,
+        );
+        ensure_not_output_limited(
+            &format!("action {}", input.dossier.position.symbol),
+            &req,
+            &resp,
+        )?;
+        serde_json::from_str(&resp.content).with_context(|| {
+            format!(
+                "parsing action-decision JSON: {}",
+                body_snippet(&resp.content)
+            )
+        })
     }
 
     fn model_ids(&self) -> Vec<String> {
@@ -3253,6 +3351,7 @@ mod tests {
             prior_spot: None,
             prior_matured_notes: Vec::new(),
             prior_grade_parameter_version: None,
+            prior_prompt_version: None,
             sources: vec!["FMP".into()],
             prior_pre_profit: None,
             listing: None,
@@ -3367,7 +3466,7 @@ mod tests {
                 recent_summaries: Vec::new(),
                 latest_sections: Some("## Market Signal Thesis\nrisk-on.".into()),
             };
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03")
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03")
                 .unwrap()
                 .1
                 .sources
@@ -3397,7 +3496,7 @@ mod tests {
         guarded.house_view = house_view_of(Some("## Thesis\nrisk-on."), 0);
         guarded.listing = Some(crate::portfolio::listing::ListingResolution::Unresolved);
         assert!(!claims(
-            analyze_holding(&StubAnalyst, &guarded, 29_500.0, &rates(), "2026-08-03")
+            analyze_holding(&StubAnalyst, &guarded, &rates(), "2026-08-03")
                 .unwrap()
                 .1
                 .sources
@@ -3409,7 +3508,7 @@ mod tests {
         floored.house_view = house_view_of(Some("## Thesis\nrisk-on."), 0);
         floored.financials.current_price = None;
         let (verdict, audit) =
-            analyze_holding(&StubAnalyst, &floored, 29_500.0, &rates(), "2026-08-03").unwrap();
+            analyze_holding(&StubAnalyst, &floored, &rates(), "2026-08-03").unwrap();
         assert!(matches!(
             verdict.disposition,
             VerdictDisposition::InsufficientEvidence { .. }
@@ -3479,7 +3578,7 @@ mod tests {
             let mut d = fund_dossier(bond.clone());
             d.house_view = house_view;
             let (verdict, audit) =
-                analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+                analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
             assert!(
                 matches!(verdict.disposition, VerdictDisposition::RoleRiskOnly(_)),
                 "the fixture must actually take the role/risk branch"
@@ -3502,7 +3601,6 @@ mod tests {
         let (verdict, audit) = analyze_holding(
             &StubAnalyst,
             &dossier(AssetClass::Stock, strong_financials()),
-            29_500.0,
             &rates(),
             "2026-08-03",
         )
@@ -3544,7 +3642,6 @@ mod tests {
         let (verdict, audit) = analyze_holding(
             &StubAnalyst,
             &fund_dossier(us_equity_fund()),
-            29_500.0,
             &rates(),
             "2026-08-03",
         )
@@ -3581,7 +3678,6 @@ mod tests {
         let (verdict, audit) = analyze_holding(
             &StubAnalyst,
             &fund_dossier(partial),
-            29_500.0,
             &rates(),
             "2026-08-03",
         )
@@ -3606,7 +3702,6 @@ mod tests {
         let (verdict, _audit) = analyze_holding(
             &StubAnalyst,
             &fund_dossier(bond),
-            29_500.0,
             &rates(),
             "2026-08-03",
         )
@@ -3638,7 +3733,6 @@ mod tests {
         let (mut prior, _) = analyze_holding(
             &StubAnalyst,
             &fund_dossier(bond.clone()),
-            29_500.0,
             &rates(),
             "2026-08-03",
         )
@@ -3659,7 +3753,7 @@ mod tests {
         let mut d = fund_dossier(bond);
         d.prior_verdict = Some(prior);
         let (verdict, audit) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-04").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
         let la = audit.ledger_audit.expect("ledger audit");
         assert!(
             !la.unevaluable.iter().any(|u| u.contains("trailing")),
@@ -3689,7 +3783,6 @@ mod tests {
         let (verdict, _audit) = analyze_holding(
             &StubAnalyst,
             &dossier(AssetClass::OptionContract, strong_financials()),
-            29_500.0,
             &rates(),
             "2026-08-03",
         )
@@ -3709,7 +3802,7 @@ mod tests {
         d.position.quantity = -100.0;
         d.position.market_value = -19_500.0;
         let (verdict, _audit) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         match verdict.disposition {
             VerdictDisposition::NotRated { reason } => {
                 assert!(reason.contains("short"), "{reason}");
@@ -3728,7 +3821,7 @@ mod tests {
         d.position.quantity = 0.0;
         d.position.market_value = 0.0;
         let (verdict, _audit) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-05").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-05").unwrap();
         match verdict.disposition {
             VerdictDisposition::NotRated { reason } => {
                 assert!(reason.contains("offset"), "{reason}");
@@ -3815,7 +3908,7 @@ mod tests {
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.listing = Some(ListingResolution::Unresolved);
         let (verdict, _audit) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-04").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
         match verdict.disposition {
             VerdictDisposition::NotRated { reason } => {
                 assert!(reason.contains("unsupported listing"), "{reason}");
@@ -3826,7 +3919,7 @@ mod tests {
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.listing = Some(ListingResolution::NonUs { exchange: "LSE".into() });
         let (verdict, _audit) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-04").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
         match verdict.disposition {
             VerdictDisposition::NotRated { reason } => {
                 assert!(
@@ -3858,7 +3951,7 @@ mod tests {
             action_source: Default::default(),
         });
         let (verdict, _audit) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-04").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
         match &verdict.disposition {
             VerdictDisposition::InsufficientEvidence { reason } => {
                 assert!(
@@ -3881,7 +3974,7 @@ mod tests {
             detail: "FMP profile unavailable (unavailable)".into(),
         });
         let (verdict, audit) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-04").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
         assert!(matches!(verdict.disposition, VerdictDisposition::Priced(_)));
         assert!(
             audit
@@ -3904,7 +3997,6 @@ mod tests {
         let (verdict, _audit) = analyze_holding(
             &StubAnalyst,
             &dossier(AssetClass::Stock, thin),
-            29_500.0,
             &rates(),
             "2026-08-03",
         )
@@ -3943,12 +4035,10 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let feasible = vec![Action::SellAll, Action::Trim, Action::Hold];
         let input = InterpretationInput {
             dossier: &d,
             engine: &engine_output,
             distilled: "distilled findings",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         };
@@ -3957,18 +4047,6 @@ mod tests {
         assert!(user.contains("ENGINE SUB-SCORES"), "{user}");
         assert!(user.contains("NOT a grade input"), "options proxy is flagged: {user}");
         assert!(user.contains("RISK TIER"), "{user}");
-        // The engine's own lean set renders as evidence; the model arm is told it
-        // is unrestricted (v7 — the two-arm contract).
-        assert!(user.contains("ENGINE LEAN SET"), "{user}");
-        let engine_set_line = user
-            .lines()
-            .find(|l| l.contains("sell-all, trim, hold"))
-            .expect("the engine set line lists the restricted rungs");
-        assert!(!engine_set_line.contains("add,"), "{engine_set_line}");
-        // Finding 5 (ruled 2026-08-11): the engine arm's own pick is withheld,
-        // and the prompt says so explicitly instead of leaving the model to
-        // litigate the omission.
-        assert!(user.contains("deliberately not shown"), "{user}");
         assert!(user.contains("YOUR MODEL ARM"), "{user}");
         assert!(user.contains("unrestricted"), "{user}");
         let system = interpretation_system_prompt();
@@ -3988,10 +4066,161 @@ mod tests {
         // Profile independence is input isolation, not instruction
         // (`docs/portfolio-workflow.md` §Step 6f "deliberately absent"): the
         // intrinsic prompt renders no investor profile; the profile enters at
-        // Step 7b construction only.
+        // the per-holding action call only.
         assert!(!user.contains("INVESTOR PROFILE"), "{user}");
         assert!(system.contains("profile-independent"), "{system}");
         assert!(system.contains("never by itself a reason to exit"), "{system}");
+        // Interpretation authors no action under the tunnel-vision contract —
+        // the dedicated action call owns it.
+        assert!(system.contains("Do NOT choose a portfolio action here"), "{system}");
+    }
+
+    #[test]
+    fn action_prompt_carries_the_profile_the_engine_set_and_the_verdict_digest() {
+        // The action call is the profile's ONE entry point (tunnel vision): the
+        // prompt renders the finished verdict digest, the engine's per-holding
+        // set (its own pick withheld — the ruled 6f precedent), and the profile.
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
+            panic!("expected a priced verdict");
+        };
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let engine_set =
+            engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None);
+        let input = ActionInput {
+            dossier: &d,
+            subject: ActionSubject::Priced {
+                graded,
+                engine: &engine_output,
+                pre_profit: None,
+            },
+            engine_set: &engine_set,
+            profile: &d.profile,
+        };
+        let user = action_user_prompt(&input);
+        assert!(user.contains("INVESTOR PROFILE"), "{user}");
+        assert!(user.contains("ENGINE SET"), "{user}");
+        assert!(user.contains("deliberately not shown"), "{user}");
+        assert!(user.contains("THE VERDICT"), "{user}");
+        assert!(user.contains("Unrealized P/L"), "{user}");
+        let system = action_system_prompt();
+        assert!(system.contains("TUNNEL VISION IS THE CONTRACT"), "{system}");
+        assert!(system.contains("ONE rung"), "{system}");
+        assert!(system.contains("never a bound"), "{system}");
+        assert!(system.contains("exactly ONE sentence"), "{system}");
+        // No whole-book vocabulary leaks into the user prompt — the cash row
+        // included: the system prompt promises no book-level capital input is
+        // given, so the profile renders without it (Codex 2026-08-14, finding 3).
+        assert!(!user.contains("concentration"), "{user}");
+        assert!(!user.contains("OVERLAP"), "{user}");
+        assert!(!user.contains("- cash:"), "{user}");
+        assert!(!user.contains("unconstrained"), "{user}");
+    }
+
+    #[test]
+    fn action_prompt_labels_a_whole_book_era_prior_action_as_history() {
+        // A prior action authored before portfolio-v9 is a 7b-merged whole-book
+        // final — it must anchor the fresh call as labeled history, never an
+        // unqualified continuity baseline (Codex 2026-08-14, finding 1). A
+        // same-contract prior keeps the plain baseline line.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let (prior, _) =
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        d.prior_verdict = Some(prior);
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let engine_set =
+            engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None);
+        let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
+            panic!("expected a priced verdict");
+        };
+        let graded = graded.clone();
+        let render = |d: &HoldingDossier| {
+            action_user_prompt(&ActionInput {
+                dossier: d,
+                subject: ActionSubject::Priced {
+                    graded: &graded,
+                    engine: &engine_output,
+                    pre_profit: None,
+                },
+                engine_set: &engine_set,
+                profile: &d.profile,
+            })
+        };
+        // Pre-v9 stamps (and a missing stamp) take the history label.
+        for version in [Some("portfolio-v8"), Some("portfolio-v2"), None] {
+            d.prior_prompt_version = version.map(str::to_string);
+            let user = render(&d);
+            assert!(user.contains("RETIRED whole-book contract"), "{version:?}: {user}");
+            assert!(!user.contains("continuity baseline"), "{version:?}: {user}");
+        }
+        // A same-contract prior keeps the plain baseline.
+        d.prior_prompt_version = Some(crate::portfolio::PROMPT_VERSION.to_string());
+        let user = render(&d);
+        assert!(user.contains("continuity baseline"), "{user}");
+        assert!(!user.contains("RETIRED whole-book contract"), "{user}");
+    }
+
+    #[test]
+    fn action_call_outside_engine_set_records_an_audit_annotation() {
+        // A rogue stub choosing outside the engine set: the choice persists as
+        // authored; the departure is app-stamped on the audit (annotate, never
+        // bar — the two-arm contract).
+        struct RogueActionStub;
+        impl HoldingAnalyst for RogueActionStub {
+            fn distill(&self, d: &HoldingDossier, f: &ResearchFindings) -> Result<String> {
+                StubAnalyst.distill(d, f)
+            }
+            fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+                StubAnalyst.interpret(input)
+            }
+            fn interpret_role_risk(
+                &self,
+                input: &RoleRiskInput,
+            ) -> Result<RoleRiskInterpretation> {
+                StubAnalyst.interpret_role_risk(input)
+            }
+            fn decide_action(
+                &self,
+                _input: &ActionInput,
+            ) -> Result<crate::portfolio::ActionDecision> {
+                Ok(crate::portfolio::ActionDecision {
+                    action: Action::AddAggressively,
+                    rationale: "rogue: aggressive regardless of the engine set".to_string(),
+                })
+            }
+            fn model_ids(&self) -> Vec<String> {
+                vec!["rogue-stub".to_string()]
+            }
+        }
+        // A weak book: the C-ish fixture's engine set won't offer add-aggressively
+        // (A/B only), so the rogue choice lands outside it.
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let (v, audit) =
+            analyze_holding(&RogueActionStub, &d, &rates(), "2026-08-03").unwrap();
+        let crate::portfolio::VerdictDisposition::Priced(g) = &v.disposition else {
+            panic!("expected a priced verdict");
+        };
+        assert_eq!(g.action, Action::AddAggressively, "persists as authored");
+        assert_eq!(g.action_rationale, "rogue: aggressive regardless of the engine set");
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let set = engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None);
+        if set.contains(&Action::AddAggressively) {
+            assert!(audit.action_annotations.is_empty(), "{:?}", audit.action_annotations);
+        } else {
+            assert_eq!(audit.action_annotations.len(), 1, "{:?}", audit.action_annotations);
+            assert!(audit.action_annotations[0].contains("outside the engine set"));
+        }
     }
 
     #[test]
@@ -4001,7 +4230,7 @@ mod tests {
         // price-since read and the matured scoreboard lines.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (prior, _) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-07-29").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-07-29").unwrap();
         d.prior_verdict = Some(prior);
         d.prior_vintage = Some("2026-07-29T12:00:00Z".into());
         d.prior_spot = Some(180.0);
@@ -4018,12 +4247,10 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let feasible = vec![Action::SellAll, Action::Trim, Action::Hold];
         let user = interpretation_user_prompt(&InterpretationInput {
             dossier: &d,
             engine: &engine_output,
             distilled: "distilled findings",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -4060,7 +4287,6 @@ mod tests {
             dossier: &debut,
             engine: &engine_output,
             distilled: "distilled findings",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -4076,7 +4302,7 @@ mod tests {
         // session traded entirely after the prior read).
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (prior, _) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-07-29").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-07-29").unwrap();
         d.prior_verdict = Some(prior);
         d.prior_vintage = Some("2026-07-30T01:30:00Z".into());
         d.prior_spot = Some(180.0);
@@ -4093,12 +4319,10 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let feasible = vec![Action::SellAll, Action::Trim, Action::Hold];
         let user = interpretation_user_prompt(&InterpretationInput {
             dossier: &d,
             engine: &engine_output,
             distilled: "distilled findings",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -4114,7 +4338,7 @@ mod tests {
         // the prior targets cross through `target × anchor ⁄ authoring spot`.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (prior, _) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-07-29").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-07-29").unwrap();
         d.prior_verdict = Some(prior);
         d.prior_vintage = Some("2026-07-29T12:00:00Z".into());
         d.prior_spot = Some(180.0); // pre-split basis
@@ -4128,12 +4352,10 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let feasible = vec![Action::SellAll, Action::Trim, Action::Hold];
         let user = interpretation_user_prompt(&InterpretationInput {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -4158,7 +4380,7 @@ mod tests {
         // still renders.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (prior, _) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-07-29").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-07-29").unwrap();
         d.prior_verdict = Some(prior);
         d.prior_vintage = Some("2026-07-29T12:00:00Z".into());
         d.prior_spot = Some(180.0);
@@ -4167,12 +4389,10 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let feasible = vec![Action::SellAll, Action::Trim, Action::Hold];
         let user = interpretation_user_prompt(&InterpretationInput {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -4192,7 +4412,6 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let feasible = vec![Action::Hold];
 
         engine_output.target_meta.rate_anchored = true;
         engine_output.target_meta.anchor_observations = 40;
@@ -4201,7 +4420,6 @@ mod tests {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -4232,7 +4450,6 @@ mod tests {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -4246,7 +4463,6 @@ mod tests {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -4271,13 +4487,11 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let feasible = vec![Action::Hold];
         let prompt = |d: &HoldingDossier| {
             interpretation_user_prompt(&InterpretationInput {
                 dossier: d,
                 engine: &engine_output,
                 distilled: "",
-                lean_set: &feasible,
                 ledger_eval: None,
                 pre_profit: None,
             })
@@ -4307,12 +4521,10 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let feasible = vec![Action::Hold];
         let user = interpretation_user_prompt(&InterpretationInput {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -4366,14 +4578,12 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let feasible = vec![Action::SellAll, Action::Trim, Action::Hold];
         let interpret = interpret_request(
             "reasoner-model",
             &InterpretationInput {
                 dossier: &d,
                 engine: &engine_output,
                 distilled: "distilled findings",
-                lean_set: &feasible,
                 ledger_eval: None,
                 pre_profit: None,
             },
@@ -4501,87 +4711,6 @@ mod tests {
     }
 
     #[test]
-    fn the_lean_set_admits_the_full_ladder_and_construction_owns_the_bars() {
-        // Under the 7b split the 6f rung is the standalone lean, authored over the
-        // intrinsic bars alone — a dead-money read no longer bars an add-family
-        // *lean* (the feasible-set bar binds at construction instead), so an
-        // analyst choosing add-aggressively on a dead-money name persists it as
-        // the lean. The engine-bar divergence is then construction's to stamp
-        // (`crate::portfolio::construction`).
-        struct RogueAnalyst;
-        impl HoldingAnalyst for RogueAnalyst {
-            fn distill(&self, _d: &HoldingDossier, _f: &ResearchFindings) -> Result<String> {
-                Ok("".into())
-            }
-            fn interpret(&self, _input: &InterpretationInput) -> Result<Interpretation> {
-                Ok(Interpretation {
-                    action: Action::AddAggressively,
-                    conviction: Conviction::High,
-                    horizon_outlook: HorizonOutlook {
-                        short: HorizonRead::Bullish,
-                        mid: HorizonRead::Bullish,
-                        long: HorizonRead::Bullish,
-                    },
-                    financial_summary: "".into(),
-                    price_target_rationale: "".into(),
-                    what_changed: "".into(),
-                    ledger: stub_ledger_draft(None, "AAPL", false),
-                    model_sub_scores: SubScores {
-                        quality: 90.0,
-                        valuation: 90.0,
-                        momentum: 90.0,
-                        risk: 90.0,
-                    },
-                    model_price_targets: ModelPriceTargets {
-                        one_month: ModelPriceTarget { base: 250.0, bear: 220.0, bull: 280.0 },
-                        twelve_month: ModelPriceTarget { base: 300.0, bear: 200.0, bull: 400.0 },
-                    },
-                    self_assessment: "".into(),
-                })
-            }
-            fn interpret_role_risk(&self, _input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
-                unreachable!()
-            }
-            fn construct(
-                &self,
-                _input: &ConstructionInput,
-            ) -> Result<crate::portfolio::construction::ConstructionDraft> {
-                unreachable!("per-holding test — construction never runs")
-            }
-            fn model_ids(&self) -> Vec<String> {
-                vec!["rogue".into()]
-            }
-        }
-        // The strong fixture reads dead-money under the conservative flat anchor
-        // (base target below spot), so add-aggressively is outside the *feasible*
-        // set — but inside the lean set, so 6f accepts it.
-        let d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
-            EngineVerdict::Analyzed(o) => o,
-            other => panic!("{other:?}"),
-        };
-        let feasible = engine::feasible_actions(
-            engine_output.grade,
-            &engine_output.hurdle,
-            19_500.0 / 29_500.0,
-            None,
-        );
-        assert!(
-            !feasible.contains(&Action::AddAggressively),
-            "fixture drift: the rung must be feasibility-barred for this test"
-        );
-        let (verdict, _) =
-            analyze_holding(&RogueAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
-        match &verdict.disposition {
-            VerdictDisposition::Priced(g) => {
-                assert_eq!(g.lean, Some(Action::AddAggressively));
-                assert_eq!(g.action, Action::AddAggressively, "provisional until 7b");
-            }
-            other => panic!("expected priced, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn blank_fast_tier_falls_back_to_the_reasoner() {
         // The fast tier is optional and never gates (`docs/configuration.md`), so a
         // blank slot must not reach the daemon as an empty model id — distillation
@@ -4690,8 +4819,6 @@ mod tests {
                     eval_state: None,
                 },
             ],
-            target_weight_low: 0.02,
-            target_weight_high: 0.10,
             authored_band_relation: None,
         }
     }
@@ -5050,10 +5177,10 @@ mod tests {
         // Codex round 4: trim and sell triggers on ONE machine core are distinct
         // pre-commitments (the dedup contract) — reordering them must never swap
         // their stable ids, streaks, or acknowledgments.
-        let weight_core = QuantCore {
-            series: engine::LedgerSeries::PortfolioWeight,
+        let price_core = QuantCore {
+            series: engine::LedgerSeries::Price,
             comparator: LedgerComparator::Above,
-            threshold: 0.25,
+            threshold: 150.0,
             margin: 0.0,
         };
         let mut prior = prior_with_conditions();
@@ -5062,8 +5189,8 @@ mod tests {
                 condition_id: "trim-1".into(),
                 role: ConditionRole::Trigger,
                 trigger_family: Some(TriggerFamily::Trim),
-                statement: "Trim above a quarter of the book".into(),
-                quant: Some(weight_core.clone()),
+                statement: "Trim above the priced-in ceiling".into(),
+                quant: Some(price_core.clone()),
                 downgraded_reason: None,
                 technology_class: false,
                 tripped: false,
@@ -5080,8 +5207,8 @@ mod tests {
                 condition_id: "sell-1".into(),
                 role: ConditionRole::Trigger,
                 trigger_family: Some(TriggerFamily::Sell),
-                statement: "Exit fully above a quarter of the book".into(),
-                quant: Some(weight_core.clone()),
+                statement: "Exit fully above the priced-in ceiling".into(),
+                quant: Some(price_core.clone()),
                 downgraded_reason: None,
                 technology_class: false,
                 tripped: false,
@@ -5095,12 +5222,12 @@ mod tests {
             },
         ];
         let trigger = |family: &str| TriggerDraft {
-            statement: format!("{family} above a quarter of the book"),
+            statement: format!("{family} above the priced-in ceiling"),
             family: family.into(),
             quant: Some(QuantCoreDraft {
-                series: "portfolio-weight".into(),
+                series: "price".into(),
                 comparator: "above".into(),
-                threshold: 0.25,
+                threshold: 150.0,
                 margin: 0.0,
             }),
             fired: false,
@@ -5149,11 +5276,11 @@ mod tests {
             condition_id: "sell-1".into(),
             role: ConditionRole::Trigger,
             trigger_family: Some(TriggerFamily::Sell),
-            statement: "Exit fully above a quarter of the book".into(),
+            statement: "Exit fully above the priced-in ceiling".into(),
             quant: Some(QuantCore {
-                series: engine::LedgerSeries::PortfolioWeight,
+                series: engine::LedgerSeries::Price,
                 comparator: LedgerComparator::Above,
-                threshold: 0.25,
+                threshold: 150.0,
                 margin: 0.0,
             }),
             downgraded_reason: None,
@@ -5164,12 +5291,12 @@ mod tests {
         }];
         let mut draft = stub_ledger_draft(Some(&prior), "AAPL", false);
         draft.triggers = vec![TriggerDraft {
-            statement: "Trim above thirty percent".into(),
+            statement: "Trim above a higher ceiling".into(),
             family: "trim".into(),
             quant: Some(QuantCoreDraft {
-                series: "portfolio-weight".into(),
+                series: "price".into(),
                 comparator: "above".into(),
-                threshold: 0.30,
+                threshold: 180.0,
                 margin: 0.0,
             }),
             fired: false,
@@ -5436,23 +5563,6 @@ mod tests {
     }
 
     #[test]
-    fn weight_range_clamps_to_fractions_and_orders() {
-        let mut draft = stub_ledger_draft(None, "AAPL", false);
-        draft.target_weight_low = 0.5;
-        draft.target_weight_high = 0.1;
-        let (ledger, _) = validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, None, None);
-        assert_eq!(
-            (ledger.target_weight_low, ledger.target_weight_high),
-            (0.1, 0.5),
-            "swapped into order"
-        );
-        draft.target_weight_low = -0.2;
-        draft.target_weight_high = 3.0;
-        let (ledger, _) = validate_ledger_rewrite(&draft, None, None, LedgerBranch::Priced, false, None, None);
-        assert_eq!((ledger.target_weight_low, ledger.target_weight_high), (0.0, 1.0));
-    }
-
-    #[test]
     fn ledger_section_renders_debut_prior_and_crossings() {
         // Debut: the vocabulary and the authoring instruction.
         let s = ledger_prompt_section(None, None, false);
@@ -5491,7 +5601,9 @@ mod tests {
         // would force the model to guess one, and a guessed mismatch reads as a
         // core edit that supersedes the condition (Codex round 1, finding 1).
         assert!(s.contains("(margin 0.02)"), "{s}");
-        assert!(s.contains("2.0%–10.0%"), "the weight range renders: {s}");
+        // The ledger carries no target-weight range under the tunnel-vision
+        // contract — a weight is a book fact, retired from the per-holding loop.
+        assert!(!s.contains("Target weight range"), "{s}");
 
         // The role_risk variant names the branch reductions.
         let rr = ledger_prompt_section(Some(&prior), None, true);
@@ -5503,12 +5615,10 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let feasible = vec![Action::Hold];
         let user = interpretation_user_prompt(&InterpretationInput {
             dossier: &d,
             engine: &engine_output,
             distilled: "",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: None,
         });
@@ -5633,13 +5743,12 @@ mod tests {
     fn every_constrained_prompt_declares_its_own_response_keys() {
         // Containment over a whole prompt proves nothing here: every one of these
         // prompts mentions some of its own key names in the instructional prose above
-        // the declaration (`action`, `conviction`, `ledger`, `self_assessment` in the
-        // priced branch; `ledger` in role-risk; `action`, `rationale`,
-        // `divergence_cause` in construction). So each contract is generated from the
-        // constant its schema's `required` set is built from, and the two seams that
-        // leaves are what this pins: schema-from-constant, and prompt-carries-contract.
+        // the declaration (`conviction`, `ledger`, `self_assessment` in the priced
+        // branch; `ledger` in role-risk; `action`, `rationale` in the action call).
+        // So each contract is generated from the constant its schema's `required`
+        // set is built from, and the two seams that leaves are what this pins:
+        // schema-from-constant, and prompt-carries-contract.
         use crate::portfolio as pf;
-        use crate::portfolio::construction as build_stage;
 
         struct ContractCase {
             what: &'static str,
@@ -5664,18 +5773,11 @@ mod tests {
                 prompt: role_risk_system_prompt(),
             },
             ContractCase {
-                what: "construction envelope",
-                required: required_keys(&build_stage::construction_schema(&[])),
-                keys: build_stage::PLAN_ENVELOPE_KEYS.to_vec(),
-                contract: build_stage::construction_response_contract(),
-                prompt: build_stage::construction_system_prompt(false),
-            },
-            ContractCase {
-                what: "construction repair envelope",
-                required: required_keys(&build_stage::construction_repair_schema(&[], &[])),
-                keys: build_stage::REPAIR_ENVELOPE_KEYS.to_vec(),
-                contract: build_stage::construction_repair_response_contract(),
-                prompt: build_stage::construction_system_prompt(true),
+                what: "action call",
+                required: required_keys(&pf::action_decision_schema()),
+                keys: pf::ACTION_KEYS.to_vec(),
+                contract: pf::action_response_contract(),
+                prompt: action_system_prompt(),
             },
         ];
 
@@ -5699,15 +5801,6 @@ mod tests {
             );
         }
 
-        // Construction's per-holding object is the one set with no schema-level
-        // `required` of its own to read at an empty spine.
-        let contract = build_stage::construction_response_contract();
-        let per_holding = build_stage::PER_HOLDING_PLAN_KEYS.join(", ");
-        assert!(
-            contract.contains(&per_holding),
-            "contract does not declare the exact per-holding list `{per_holding}`"
-        );
-
         // The branch carries no action of its own — declaring one would invite it.
         assert!(!pf::role_risk_response_contract().contains("model_price_targets"));
 
@@ -5715,8 +5808,7 @@ mod tests {
         for p in [
             interpretation_system_prompt(),
             role_risk_system_prompt(),
-            build_stage::construction_system_prompt(false),
-            build_stage::construction_system_prompt(true),
+            action_system_prompt(),
         ] {
             assert!(!p.contains("pre-v7"), "internal version vocabulary leaked: {p}");
         }
@@ -5729,7 +5821,6 @@ mod tests {
         let (verdict, audit) = analyze_holding(
             &StubAnalyst,
             &dossier(AssetClass::Stock, strong_financials()),
-            29_500.0,
             &rates(),
             "2026-08-03",
         )
@@ -5767,7 +5858,7 @@ mod tests {
             action_source: Default::default(),
         });
         let (v2, _) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         assert!(matches!(
             v2.disposition,
             VerdictDisposition::InsufficientEvidence { .. }
@@ -5776,19 +5867,19 @@ mod tests {
     }
 
     #[test]
-    fn oversized_weight_walks_the_trigger_through_first_breach_to_confirmed_and_ack() {
-        // The stub's debut trigger (portfolio-weight above 0.25) is breached at
-        // weight 0.66 — a market-data condition (count 2) whose observation
-        // identity is the marks' trading day: run 2 logs a quiet first-breach
-        // note, run 3 — carrying a genuinely NEW trading print — confirms and
-        // fires, and the consuming pass stamps the acknowledging observation.
+    fn a_market_data_trigger_walks_through_first_breach_to_confirmed_and_ack() {
+        // The stub's debut trigger (price above 150) is breached at spot 195 —
+        // a market-data condition (count 2) whose observation identity is the
+        // marks' trading day: run 2 logs a quiet first-breach note, run 3 —
+        // carrying a genuinely NEW trading print — confirms and fires, and the
+        // consuming pass stamps the acknowledging observation.
         let d1 = dossier(AssetClass::Stock, strong_financials());
-        let (v1, _) = analyze_holding(&StubAnalyst, &d1, 29_500.0, &rates(), "2026-08-03").unwrap();
+        let (v1, _) = analyze_holding(&StubAnalyst, &d1, &rates(), "2026-08-03").unwrap();
 
         let mut d2 = dossier(AssetClass::Stock, strong_financials());
         d2.prior_verdict = Some(v1);
         let (v2, audit2) =
-            analyze_holding(&StubAnalyst, &d2, 29_500.0, &rates(), "2026-08-04").unwrap();
+            analyze_holding(&StubAnalyst, &d2, &rates(), "2026-08-04").unwrap();
         let a2 = audit2.ledger_audit.unwrap();
         assert!(
             a2.crossings.iter().any(|c| c.role == ConditionRole::Trigger
@@ -5797,12 +5888,12 @@ mod tests {
             a2.crossings
         );
 
-        // A rerun with NO new trading print must not advance the streak — weight
-        // identity is the marks' day, never the calendar date of the run.
+        // A rerun with NO new trading print must not advance the streak — the
+        // observation identity is the marks' day, never the run's calendar date.
         let mut d2b = dossier(AssetClass::Stock, strong_financials());
         d2b.prior_verdict = Some(v2.clone());
         let (_, audit2b) =
-            analyze_holding(&StubAnalyst, &d2b, 29_500.0, &rates(), "2026-08-05").unwrap();
+            analyze_holding(&StubAnalyst, &d2b, &rates(), "2026-08-05").unwrap();
         let a2b = audit2b.ledger_audit.unwrap();
         assert!(
             !a2b
@@ -5823,7 +5914,7 @@ mod tests {
         let mut d3 = dossier(AssetClass::Stock, fin3);
         d3.prior_verdict = Some(v2);
         let (v3, audit3) =
-            analyze_holding(&StubAnalyst, &d3, 29_500.0, &rates(), "2026-08-05").unwrap();
+            analyze_holding(&StubAnalyst, &d3, &rates(), "2026-08-05").unwrap();
         let a3 = audit3.ledger_audit.unwrap();
         assert!(
             a3.crossings.iter().any(|c| c.role == ConditionRole::Trigger
@@ -5919,7 +6010,6 @@ mod tests {
         let (_, audit) = analyze_holding(
             &StubAnalyst,
             &dossier(AssetClass::Stock, strong_financials()),
-            29_500.0,
             &rates(),
             "2026-08-03",
         )
@@ -5935,7 +6025,6 @@ mod tests {
         let (_, audit) = analyze_holding(
             &StubAnalyst,
             &fund_dossier(us_equity_fund()),
-            29_500.0,
             &rates(),
             "2026-08-03",
         )
@@ -5948,7 +6037,7 @@ mod tests {
         let mut d = dossier(AssetClass::Stock, pre_profit_financials());
         d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
         let (verdict, audit) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
 
         let overlay = audit.pre_profit.expect("overlay rides the audit");
         assert!(overlay.is_eligible());
@@ -5979,17 +6068,10 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let feasible = engine::feasible_actions(
-            engine_output.grade,
-            &engine_output.hurdle,
-            0.05,
-            Some(&overlay.consequences),
-        );
         let user = interpretation_user_prompt(&InterpretationInput {
             dossier: &d,
             engine: &engine_output,
             distilled: "none",
-            lean_set: &feasible,
             ledger_eval: None,
             pre_profit: Some(&overlay),
         });
@@ -6021,18 +6103,20 @@ mod tests {
             }
             fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
                 let mut i = StubAnalyst.interpret(input)?;
-                i.action = Action::Add;
                 i.conviction = Conviction::High;
                 Ok(i)
             }
             fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
                 StubAnalyst.interpret_role_risk(input)
             }
-            fn construct(
+            fn decide_action(
                 &self,
-                _input: &ConstructionInput,
-            ) -> Result<crate::portfolio::construction::ConstructionDraft> {
-                unreachable!("per-holding test — construction never runs")
+                _input: &ActionInput,
+            ) -> Result<crate::portfolio::ActionDecision> {
+                Ok(crate::portfolio::ActionDecision {
+                    action: Action::Add,
+                    rationale: "defiant: add against the severe overlay".to_string(),
+                })
             }
             fn model_ids(&self) -> Vec<String> {
                 vec!["defiant".into()]
@@ -6044,7 +6128,7 @@ mod tests {
         let mut d = dossier(AssetClass::Stock, fin);
         d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
         let (verdict, audit) =
-            analyze_holding(&DefiantAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+            analyze_holding(&DefiantAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let overlay = audit.pre_profit.expect("overlay rides the audit");
         assert!(overlay.severe_deterioration);
         assert_eq!(
@@ -6082,7 +6166,7 @@ mod tests {
         let mut d = dossier(AssetClass::Stock, fin);
         d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
         let (verdict, audit) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-03").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         assert!(matches!(
             verdict.disposition,
             VerdictDisposition::InsufficientEvidence { .. }
@@ -6110,7 +6194,7 @@ mod tests {
         });
         d.prior_pre_profit = Some(prior_overlay_with_repeated_miss());
         let (verdict, audit) =
-            analyze_holding(&StubAnalyst, &d, 29_500.0, &rates(), "2026-08-05").unwrap();
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-05").unwrap();
         assert!(matches!(
             verdict.disposition,
             VerdictDisposition::InsufficientEvidence { .. }
@@ -6131,7 +6215,6 @@ mod tests {
         let (_, audit) = analyze_holding(
             &StubAnalyst,
             &dossier(AssetClass::Stock, strong_financials()),
-            29_500.0,
             &rates(),
             "2026-08-03",
         )
