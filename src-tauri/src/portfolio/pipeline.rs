@@ -1378,8 +1378,10 @@ pub fn interpretation_system_prompt() -> String {
      scoreboard; where a RETROSPECTIVE block appears, assess your prior read against \
      the engine baseline and what actually happened — honestly, in self_assessment — \
      and let it discipline this run's numbers. Conviction means your confidence in \
-     the overall read — your scores, outlook, and lean together — and should match \
-     the lean's decisiveness. \
+     the overall read — your scores, outlook, and lean together — is exactly one of \
+     'low' / 'medium' / 'high' (no numbers or percentages), and should match the \
+     lean's decisiveness. On every sub-score axis a HIGHER number is BETTER — a \
+     high risk score means resilience (low risk), not exposure. \
      Use the Market Signal house view for the horizon reads and market-setup context \
      only — it is a market-level thesis, never by itself a reason to exit a specific \
      holding. The read is profile-independent — no investor profile is given at this \
@@ -1489,7 +1491,8 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         }
     }
     p.push_str(&format!(
-        "EXPENSE RATIO: {}\nOBSERVABLE RISK (annualized volatility): {}\n",
+        "EXPENSE RATIO (decimal fraction of assets per year; 0.0075 = 0.75%/yr): {}\n\
+         OBSERVABLE RISK (annualized volatility): {}\n",
         opt(r.expense_ratio),
         opt(r.observable_risk),
     ));
@@ -1731,7 +1734,8 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     ));
 
     p.push_str(&format!(
-        "\nENGINE GRADE (the baseline arm{}): {}\nENGINE SUB-SCORES (0-100, higher better): quality {:.0}, valuation {:.0}, risk {:.0}; \
+        "\nENGINE GRADE (the baseline arm{}): {}\nENGINE SUB-SCORES (0-100, higher better on every axis — a high risk score = \
+         resilient/low-risk): quality {:.0}, valuation {:.0}, risk {:.0}; \
          momentum {:.0} rides as market-setup context OUTSIDE the letter\n",
         if e.low_confidence_grade {
             "; low-confidence — an imputed sub-score underlies it"
@@ -1761,7 +1765,8 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
             "\nFUND CONTEXT: this holding is a fund graded on the reduced path — real \
              valuation (exposure-priced composite) and risk; the quality axis is \
              structurally absent and neutral-imputed (the letter carries a visible \
-             low-confidence marker). Expense ratio: {}. US share: {}.\n",
+             low-confidence marker). Expense ratio (decimal fraction of assets per \
+             year; 0.0075 = 0.75%/yr): {}. US share: {}.\n",
             opt(f.fund.expense_ratio),
             f.fund
                 .country_weights
@@ -1791,7 +1796,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     p.push_str(&line("gross margin", m.gross_margin));
     p.push_str(&line("revenue growth", m.revenue_growth));
     p.push_str(&line("debt/equity", m.debt_to_equity));
-    p.push_str(&line("return volatility", m.return_volatility));
+    p.push_str(&line("return volatility (DAILY std dev of returns)", m.return_volatility));
     p.push_str(&line("trailing return", m.trailing_return));
     p.push_str(&line("P/E", m.pe_ratio));
     p.push_str(&line("P/S", m.ps_ratio));
@@ -1881,8 +1886,9 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     p.push_str(
         "\nYOUR MODEL ARM (authored by you, unrestricted, scored against realized \
          outcomes beside the engine baseline): model_sub_scores — your own \
-         quality/valuation/momentum/risk on the 0-100 higher-is-better scale (your \
-         letter derives from your quality/valuation/risk through the same cutoffs); \
+         quality/valuation/momentum/risk on the 0-100 higher-is-better scale (higher \
+         risk score = lower risk; your letter derives from your \
+         quality/valuation/risk through the same cutoffs); \
          model_price_targets — your own one-month and twelve-month base/bear/bull \
          prices (positive numbers, bear ≤ base ≤ bull as you mean them); \
          self_assessment — your honest retrospective (on a debut: say it is a first \
@@ -2252,7 +2258,14 @@ fn describe_position_change(
     current_cost_basis: f64,
 ) -> String {
     match delta.change {
-        PositionChange::New => "NEW (not held last run)".to_string(),
+        // "NEW" means new to this run history, nothing more — attempt 2's streams
+        // burned large reasoning shares re-litigating "NEW" against a legacy cost
+        // basis as if it meant a fresh purchase
+        // (`docs/verification/2026-08-13-big-run-attempt-2.md` §Workstream 2).
+        PositionChange::New => "NEW (no prior verdict in this run history — the position \
+             itself may long predate this analysis, so the cost basis is the account's \
+             history, not a recent entry)"
+            .to_string(),
         PositionChange::Unchanged => "unchanged".to_string(),
         PositionChange::Increased | PositionChange::Decreased => {
             let dir = if matches!(delta.change, PositionChange::Increased) {
@@ -3520,7 +3533,10 @@ mod tests {
         assert_eq!(audit.prompt_version, PROMPT_VERSION);
         // The audit records how the targets were derived, versioned for calibration.
         let meta = audit.target_meta.expect("target meta rides the audit");
-        assert_eq!(meta.parameter_version, "targets-v3");
+        assert_eq!(
+            meta.parameter_version,
+            crate::portfolio::engine::SCENARIO_TARGET_PARAMETER_VERSION
+        );
     }
 
     #[test]
@@ -3913,10 +3929,11 @@ mod tests {
         // Dollar-marked like the header this line sits under: bare integers here read
         // as per-share against a header that says total (Finding 4).
         assert!(line.contains("$14000") && line.contains("$19500 total"), "units: {line}");
-        assert_eq!(
-            describe_position_change(&PositionDelta::new_position(), 10.0, 1_000.0),
-            "NEW (not held last run)"
-        );
+        // The debut line must disarm the fresh-purchase misread: NEW means no
+        // prior verdict, and the cost basis is account history (v8 tightening).
+        let debut = describe_position_change(&PositionDelta::new_position(), 10.0, 1_000.0);
+        assert!(debut.starts_with("NEW (no prior verdict"), "{debut}");
+        assert!(debut.contains("not a recent entry"), "{debut}");
     }
 
     #[test]
@@ -4311,7 +4328,7 @@ mod tests {
         assert!(user.contains("never by itself a reason to exit"), "{user}");
 
         let readout = RoleRiskReadout {
-            class_label: "ex-US equity fund".into(),
+            class_label: "equity fund below the US-exposure guard".into(),
             structural_flag: false,
             exposure_tilt: vec![],
             expense_ratio: None,

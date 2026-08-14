@@ -452,24 +452,40 @@ pub enum ActionAttribution {
 /// The closed context-cause vocabulary a **moved-context** claim must carry — each
 /// cause checkable against a real Step-7a aggregate, never a bare model assertion
 /// (`docs/portfolio-analysis.md` §Portfolio roll-up and construction: "a 'became
-/// oversized' claim must map to a real aggregate"). The carried-name context-trim
-/// carve-out accepts only the first two (`docs/portfolio-analysis.md` §Triggering —
-/// a context-driven trim rides a recomputed concentration / overlap aggregate;
-/// freed cash is an add-side rationale, not a trim license on stale research).
+/// oversized' claim must map to a real aggregate"). `cash-freed` / `cash-raised`
+/// are the funding pair — the add-side move the plan's own sells fund, and the
+/// sell-side move whose proceeds the plan redeploys (ruled 2026-08-13,
+/// `docs/verification/2026-08-13-big-run-attempt-2.md` §Disposition). The
+/// carried-name context-trim carve-out accepts only the first two
+/// (`docs/portfolio-analysis.md` §Triggering — a context-driven trim rides a
+/// recomputed concentration / overlap aggregate; freed or raised cash is never a
+/// trim license on stale research).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContextCause {
     BecameOversized,
     OverlapEmerged,
     CashFreed,
+    CashRaised,
 }
 
 impl ContextCause {
+    /// Every cause, in schema/prompt render order — the one list the response
+    /// grammar's enum, the prompt's vocabulary block and the validator share, so
+    /// the three surfaces cannot drift.
+    pub const ALL: [ContextCause; 4] = [
+        ContextCause::BecameOversized,
+        ContextCause::OverlapEmerged,
+        ContextCause::CashFreed,
+        ContextCause::CashRaised,
+    ];
+
     pub fn as_kebab(&self) -> &'static str {
         match self {
             ContextCause::BecameOversized => "became-oversized",
             ContextCause::OverlapEmerged => "overlap-emerged",
             ContextCause::CashFreed => "cash-freed",
+            ContextCause::CashRaised => "cash-raised",
         }
     }
 
@@ -478,6 +494,7 @@ impl ContextCause {
             "became-oversized" => Some(ContextCause::BecameOversized),
             "overlap-emerged" => Some(ContextCause::OverlapEmerged),
             "cash-freed" => Some(ContextCause::CashFreed),
+            "cash-raised" => Some(ContextCause::CashRaised),
             _ => None,
         }
     }
@@ -804,7 +821,7 @@ pub struct ExposureWeight {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleRiskVerdict {
     /// The deterministic classification label (e.g. "bond fund", "leveraged / inverse
-    /// vehicle", "ex-US equity fund below the US-exposure guard").
+    /// vehicle", "equity fund below the US-exposure guard").
     pub class_label: String,
     /// The model's role read: the mandate and the exposure the vehicle exists to
     /// supply, read in isolation (prose).
@@ -1489,7 +1506,19 @@ pub struct HoldingAudit {
 /// ([`EngineView`]) so every model field has a scored baseline counterpart.
 /// Model-arm values never alter or bind the engine baseline
 /// (`docs/portfolio-analysis.md` §The holding verdict).
-pub const PROMPT_VERSION: &str = "portfolio-v7";
+///
+/// `portfolio-v8`: at construction, the divergence-cause vocabulary gains the
+/// sell-side `cash-raised` twin and is stated in the construction prompt with
+/// per-cause checkability semantics and the null-cause escape hatch; an uncaused
+/// lean departure annotates as an unattributed divergence instead of failing
+/// validation, and a checkability-failed divergence cause surviving the single
+/// repair is stripped and annotated rather than failing the run (ruled
+/// 2026-08-13, `docs/verification/2026-08-13-big-run-attempt-2.md` §Disposition).
+/// At interpretation, the attempt-2 clarity tightenings: the NEW-position line
+/// disarms the fresh-purchase misread, volatility and expense-ratio carry unit
+/// labels, conviction declares its three-value type, and both sub-score blocks
+/// state the risk-score polarity (same record, §Workstream 2).
+pub const PROMPT_VERSION: &str = "portfolio-v8";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

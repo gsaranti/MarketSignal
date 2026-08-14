@@ -950,12 +950,13 @@ pub struct ConstructionView {
     /// deterministic drop that needs no model call.
     #[serde(default)]
     pub retried: bool,
-    /// Engine-bound findings recorded against the model's plan — a rung outside
-    /// the engine's offered set, a range outside its rung band, a concentration-cap
-    /// breach, unfunded buys. Since `portfolio-v7` these **annotate, never
-    /// enforce**: the plan persists as authored and the divergence renders beside
-    /// it (`docs/portfolio-analysis.md` §Portfolio roll-up and construction).
-    /// `#[serde(default)]` for pre-v7 runs.
+    /// Engine-bound and attribution findings recorded against the model's plan —
+    /// a rung outside the engine's offered set, a range outside its rung band, a
+    /// concentration-cap breach, unfunded buys, and (since `portfolio-v8`) the
+    /// unattributed-divergence and stripped-cause records. These **annotate,
+    /// never enforce**: the plan persists as authored and the finding renders
+    /// beside it (`docs/portfolio-analysis.md` §Portfolio roll-up and
+    /// construction). `#[serde(default)]` for pre-v7 runs.
     #[serde(default)]
     pub engine_bound_annotations: Vec<String>,
 }
@@ -999,7 +1000,6 @@ pub enum Violation {
     CapBreach { symbol: String, implied: f64 },
     UnfundedBuys { buys: f64, available: f64 },
     ContextTrimUnattributed { symbol: String },
-    DivergenceMissing { symbol: String, lean: Action, action: Action },
     UnknownContextCause { symbol: String, cause: String },
     ContextCauseUnsupported { symbol: String, cause: ContextCause },
     WhatChangedMissing { symbol: String, prior: Action, action: Action },
@@ -1026,7 +1026,6 @@ impl Violation {
             | Violation::ImpliedWeightOutsideRange { symbol, .. }
             | Violation::CapBreach { symbol, .. }
             | Violation::ContextTrimUnattributed { symbol }
-            | Violation::DivergenceMissing { symbol, .. }
             | Violation::UnknownContextCause { symbol, .. }
             | Violation::ContextCauseUnsupported { symbol, .. }
             | Violation::WhatChangedMissing { symbol, .. }
@@ -1106,13 +1105,6 @@ impl std::fmt::Display for Violation {
                 "{symbol}: a carried-name context trim needs a validated became-oversized \
                  or overlap-emerged attribution"
             ),
-            Violation::DivergenceMissing { symbol, lean, action } => write!(
-                f,
-                "{symbol}: final action '{}' departs the standalone lean '{}' with no \
-                 divergence_cause (became-oversized / overlap-emerged / cash-freed)",
-                action.as_kebab(),
-                lean.as_kebab()
-            ),
             Violation::UnknownContextCause { symbol, cause } => {
                 write!(f, "{symbol}: context cause '{cause}' is not in the vocabulary")
             }
@@ -1147,6 +1139,20 @@ impl std::fmt::Display for Violation {
     }
 }
 
+/// Which validation round is running — the divergence-cause honesty gate binds
+/// differently on the two (ruled 2026-08-13,
+/// `docs/verification/2026-08-13-big-run-attempt-2.md` §Disposition): a
+/// checkability-failed divergence cause is a named violation on the first draft
+/// (the single repair's one chance to correct it) and is **stripped and
+/// annotated** on the merged repair, so an unrepairable attribution can no
+/// longer fail the book. Coherence and what-changed violations bind identically
+/// on both passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationPass {
+    FirstDraft,
+    MergedRepair,
+}
+
 /// The joint-feasibility solve + attribution validation
 /// (`docs/portfolio-analysis.md` §Portfolio roll-up and construction). Returns the
 /// validated result or the typed violation list the single re-run names.
@@ -1156,18 +1162,25 @@ impl std::fmt::Display for Violation {
 /// account for the implied book, with the profile's stated external-funding
 /// assumption an explicit line), and validates each final weight against its
 /// stated range (the coherence rail); the concentration-cap read records as an
-/// engine-bound annotation.
+/// engine-bound annotation. A lean departure with no divergence_cause annotates
+/// as an **unattributed divergence** on either pass — never a violation.
 pub fn validate_construction(
     draft: &ConstructionDraft,
     agg: &BookAggregates,
     holdings: &Holdings,
     profile: &InvestorProfile,
+    pass: ValidationPass,
 ) -> Result<ValidatedConstruction, Vec<Violation>> {
     let mut violations: Vec<Violation> = Vec::new();
     // Engine-bound findings — recorded on the view, never enforced (the v7
     // no-restrictions contract): the model's plan stands as authored and these
     // render beside it. Coherence and attribution checks stay in `violations`.
     let mut annotations: Vec<Violation> = Vec::new();
+    // Attribution findings demoted to the view under the v8 annotate-don't-bar
+    // ruling: uncaused lean departures, and repair-surviving stripped causes.
+    // Authored inline — unlike `annotations` they carry prose (the model's
+    // divergence_note) no Violation variant holds.
+    let mut attribution_annotations: Vec<String> = Vec::new();
     let total = holdings.account_total;
 
     let spine_by_symbol: HashMap<String, &SizingSpineRow> = agg
@@ -1336,7 +1349,14 @@ pub fn validate_construction(
         }
 
         // A context cause's checkable-aggregate validation, shared by divergence
-        // and what-changed claims.
+        // and what-changed claims. The funding pair additionally checks the
+        // attributed row's OWN dollar delta: the rung direction and the book
+        // totals alone would let an off-band range fund its own claim (a "trim"
+        // sized above current weight is a dollar buy that satisfies the buys
+        // total its cash-raised claim needs — Codex round 1, finding 3). With
+        // the sign required, the row's dollars land on the opposite total, so
+        // the checked aggregate is genuinely other rows' money.
+        let own_delta = x.mid_value - x.row.market_value;
         let cause_supported = |cause: ContextCause| -> bool {
             match cause {
                 ContextCause::BecameOversized => x.row.current_weight >= OVERSIZED_MIN_WEIGHT,
@@ -1344,16 +1364,28 @@ pub fn validate_construction(
                     .overlap_clusters
                     .iter()
                     .any(|c| c.symbols.iter().any(|s| s.eq_ignore_ascii_case(&symbol))),
-                // Freed cash supports an add-side move only, and only when the
-                // plan actually raises proceeds. The move's baseline is the lean
-                // where one exists (fresh priced rows), else the prior action —
-                // role-risk and carried rows carry no lean, and an
-                // `unwrap_or(false)` here made a truthful cash-freed attribution
-                // structurally rejectable on exactly those rows — else hold (a
-                // debut's neutral baseline).
+                // Freed cash supports an add-side move only — one that actually
+                // deploys dollars — and only when the plan raises proceeds. The
+                // move's baseline is the lean where one exists (fresh priced
+                // rows), else the prior action — role-risk and carried rows
+                // carry no lean, and an `unwrap_or(false)` here made a truthful
+                // cash-freed attribution structurally rejectable on exactly
+                // those rows — else hold (a debut's neutral baseline).
                 ContextCause::CashFreed => {
                     let baseline = x.row.lean.or(x.row.prior_action).unwrap_or(Action::Hold);
-                    sells > DOLLAR_EPS && rung_index(x.action) > rung_index(baseline)
+                    own_delta > DOLLAR_EPS
+                        && sells > DOLLAR_EPS
+                        && rung_index(x.action) > rung_index(baseline)
+                }
+                // The sell-side twin (v8): a below-baseline move that actually
+                // raises dollars, whose proceeds the plan redeploys — checkable
+                // against the plan's buys total, the aggregate the claim
+                // asserts exists.
+                ContextCause::CashRaised => {
+                    let baseline = x.row.lean.or(x.row.prior_action).unwrap_or(Action::Hold);
+                    own_delta < -DOLLAR_EPS
+                        && buys > DOLLAR_EPS
+                        && rung_index(x.action) < rung_index(baseline)
                 }
             }
         };
@@ -1371,28 +1403,82 @@ pub fn validate_construction(
                         lean.as_kebab()
                     ));
                 } else {
+                    // The divergence_note rides the annotation as the model's own
+                    // prose for an unattributed departure — the one place it is
+                    // consumed.
+                    let note_suffix = x
+                        .proposal
+                        .divergence_note
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|n| !n.is_empty())
+                        .map(|n| format!("; note: {n}"))
+                        .unwrap_or_default();
                     match x.proposal.divergence_cause.as_deref().map(str::trim) {
-                        None | Some("") => violations.push(Violation::DivergenceMissing {
-                            symbol: symbol.clone(),
-                            lean,
-                            action: x.action,
-                        }),
-                        Some(raw) => match ContextCause::parse(raw) {
-                            None => violations.push(Violation::UnknownContextCause {
-                                symbol: symbol.clone(),
-                                cause: raw.to_string(),
-                            }),
-                            Some(cause) if !cause_supported(cause) => {
-                                violations.push(Violation::ContextCauseUnsupported {
-                                    symbol: symbol.clone(),
-                                    cause,
-                                })
+                        // An uncaused departure annotates, never bars (v8 ruling
+                        // R1): the closed vocabulary cannot express every
+                        // legitimate whole-book judgment, so honest omission
+                        // persists as authored, stamped unattributed.
+                        None | Some("") => {
+                            lean_divergence = Some("unattributed divergence".to_string());
+                            attribution_annotations.push(format!(
+                                "{symbol}: final action '{}' departs the standalone lean '{}' \
+                                 with no divergence_cause — recorded as an unattributed \
+                                 divergence{note_suffix}",
+                                x.action.as_kebab(),
+                                lean.as_kebab()
+                            ));
+                        }
+                        Some(raw) => {
+                            let parsed = ContextCause::parse(raw);
+                            let failed: Option<String> = match parsed {
+                                None => Some(raw.to_string()),
+                                Some(cause) if !cause_supported(cause) => {
+                                    Some(cause.as_kebab().to_string())
+                                }
+                                Some(cause) => {
+                                    lean_divergence =
+                                        Some(format!("portfolio-context ({})", cause.as_kebab()));
+                                    None
+                                }
+                            };
+                            if let Some(cause) = failed {
+                                match pass {
+                                    // The single repair's one chance to correct a
+                                    // fabricated checkable claim — named, so the
+                                    // re-run knows exactly what failed.
+                                    ValidationPass::FirstDraft => {
+                                        violations.push(match parsed {
+                                            Some(parsed) => Violation::ContextCauseUnsupported {
+                                                symbol: symbol.clone(),
+                                                cause: parsed,
+                                            },
+                                            None => Violation::UnknownContextCause {
+                                                symbol: symbol.clone(),
+                                                cause,
+                                            },
+                                        })
+                                    }
+                                    // Post-repair residue strips rather than
+                                    // failing the book (v8 ruling R2): the false
+                                    // claim never persists as validated, the
+                                    // divergence persists as authored.
+                                    ValidationPass::MergedRepair => {
+                                        lean_divergence = Some(
+                                            "unattributed divergence (cause stripped)".to_string(),
+                                        );
+                                        attribution_annotations.push(format!(
+                                            "{symbol}: claimed divergence cause '{cause}' failed \
+                                             checkability against the whole-book aggregates — \
+                                             stripped; the departure from lean '{}' to '{}' is \
+                                             recorded as an unattributed divergence{note_suffix}",
+                                            lean.as_kebab(),
+                                            x.action.as_kebab()
+                                        ));
+                                    }
+                                }
                             }
-                            Some(cause) => {
-                                lean_divergence =
-                                    Some(format!("portfolio-context ({})", cause.as_kebab()));
-                            }
-                        },
+                        }
                     }
                 }
             }
@@ -1589,7 +1675,11 @@ pub fn validate_construction(
             external_funding: (total > 0.0).then_some(external_funding),
             implied_total: (total > 0.0).then_some(implied_total),
             retried: false,
-            engine_bound_annotations: annotations.iter().map(|v| v.to_string()).collect(),
+            engine_bound_annotations: annotations
+                .iter()
+                .map(|v| v.to_string())
+                .chain(attribution_annotations)
+                .collect(),
         },
     })
 }
@@ -1838,8 +1928,8 @@ pub const REPAIR_ENVELOPE_KEYS: [&str; 1] = ["holdings"];
 /// recorded as an engine-bound annotation, never a schema bar
 /// (`docs/portfolio-analysis.md` §Portfolio roll-up and construction).
 fn holding_plan_schema() -> Value {
-    let causes = ["became-oversized", "overlap-emerged", "cash-freed"];
-    let mut cause_or_null: Vec<Value> = causes.iter().map(|c| json!(c)).collect();
+    let mut cause_or_null: Vec<Value> =
+        ContextCause::ALL.iter().map(|c| json!(c.as_kebab())).collect();
     cause_or_null.push(Value::Null);
     let attribution_or_null = vec![json!("moved-intrinsic"), json!("moved-context"), Value::Null];
     let offered: Vec<&str> = [
@@ -1918,6 +2008,45 @@ pub fn construction_repair_schema(spine: &[SizingSpineRow], repair_symbols: &[St
 
 // ---- Prompt construction (pure, testable) --------------------------------------
 
+/// One cause's meaning-plus-checkability line for the prompt's vocabulary block,
+/// worded from the same conditions `validate_construction`'s `cause_supported`
+/// enforces, so what the prompt promises and what the validator checks cannot
+/// drift (attempt-2 root cause: the vocabulary was never stated —
+/// `docs/verification/2026-08-13-big-run-attempt-2.md` §Workstream 1).
+fn cause_semantics(cause: ContextCause) -> String {
+    match cause {
+        ContextCause::BecameOversized => format!(
+            "'became-oversized' = the position's current weight is at or above {:.0}% of the book",
+            OVERSIZED_MIN_WEIGHT * 100.0
+        ),
+        ContextCause::OverlapEmerged => {
+            "'overlap-emerged' = the holding appears in a listed OVERLAP CLUSTERS entry"
+                .to_string()
+        }
+        ContextCause::CashFreed => "'cash-freed' = an ADD-SIDE move (final action above the \
+             lean) funded by the plan's own sell proceeds; never a reason to trim or sell"
+            .to_string(),
+        ContextCause::CashRaised => "'cash-raised' = a SELL-SIDE move (final action below the \
+             lean) whose proceeds the plan redeploys into its buys; never a reason to add"
+            .to_string(),
+    }
+}
+
+/// The divergence-cause vocabulary block, generated from [`ContextCause::ALL`] —
+/// the same list the response grammar's enum is built from.
+pub fn divergence_vocabulary_clause() -> String {
+    let lines: Vec<String> = ContextCause::ALL.iter().copied().map(cause_semantics).collect();
+    format!(
+        "Where your final action departs a holding's lean, say why with a divergence_cause \
+         from this closed vocabulary — every cause is CHECKED against the whole-book \
+         aggregates, and a claim that fails its check comes back once, named: {}. Where none \
+         truthfully applies, set divergence_cause to null and give the reason in \
+         divergence_note — an uncaused departure persists exactly as you authored it, \
+         recorded beside the plan as an unattributed divergence, never rejected.",
+        lines.join("; ")
+    )
+}
+
 /// The construction call's system prompt. `repair` selects the closing response
 /// contract: the full-plan declaration, or the repair re-run's
 /// corrected-objects-only declaration ([`construction_repair_response_contract`]).
@@ -1946,15 +2075,15 @@ pub fn construction_system_prompt(repair: bool) -> String {
      COHERE: a sell-all range is 0–0, and your proposed weights must be arithmetically \
      consistent when they hold SIMULTANEOUSLY (the app solves the implied post-action \
      book; a stated range the implied weight falls outside is incoherent and comes \
-     back once, named). Where your final action \
-     departs a holding's lean, say why with a divergence_cause from the vocabulary; \
-     where an action changed against its baseline, attribute it (moved-intrinsic or \
+     back once, named). {} \
+     Where an action changed against its baseline, attribute it (moved-intrinsic or \
      moved-context with a cause) — every context claim is checked against the real \
      aggregates. A dead-money loser is a legitimate source of redeployable cash: \
      raising cash from one may cite the possible tax benefit of realizing the loss \
      and the redeployment optionality of the proceeds as supporting rationale, framed \
      high-level (the user acts on the specifics). Do NOT invent numbers: every figure \
      you cite must come from the aggregates given. {}",
+        divergence_vocabulary_clause(),
         contract
     )
 }
@@ -2128,7 +2257,11 @@ pub fn construction_user_prompt(
              proposal exactly as stated, so your corrected weights must cohere with \
              those kept proposals SIMULTANEOUSLY on the implied post-action book. Any \
              key from your previous response naming no actual holding has been \
-             removed and is not part of the book — do not re-emit it.\nViolations to \
+             removed and is not part of the book — do not re-emit it. For a \
+             divergence-cause violation the legal corrections are: a vocabulary cause \
+             whose check passes, returning the action to the lean, or a null cause \
+             with the reason in divergence_note (the departure then persists as an \
+             unattributed divergence).\nViolations to \
              fix:\n{}\n\nTHE KEPT PLAN (kept verbatim; your corrected objects replace \
              only the holdings named above):\n{}\n",
             r.symbols.join(", "),
@@ -2238,6 +2371,17 @@ mod tests {
     use super::*;
     use crate::portfolio::{ActionSource, InvestorProfile};
     use crate::schwab::Position;
+
+    /// The first-draft pass — what nearly every scenario here exercises; the
+    /// merged-repair demotions get their own pass-explicit tests.
+    fn validate_first(
+        draft: &ConstructionDraft,
+        agg: &BookAggregates,
+        holdings: &Holdings,
+        profile: &InvestorProfile,
+    ) -> Result<ValidatedConstruction, Vec<Violation>> {
+        validate_construction(draft, agg, holdings, profile, ValidationPass::FirstDraft)
+    }
 
     fn position(symbol: &str, asset_class: AssetClass, mv: f64) -> Position {
         Position {
@@ -2411,7 +2555,7 @@ mod tests {
             ("AAA", hold_proposal(0.10)),
             ("BBB", hold_proposal(0.20)),
         ]);
-        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+        let out = validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
             .expect("plan validates");
         assert_eq!(out.view.external_funding, Some(0.0));
         assert_eq!(out.actions.len(), 2);
@@ -2448,7 +2592,7 @@ mod tests {
                 changed_note: None,
             },
         )]);
-        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+        let out = validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
             .expect("plan validates");
         let funding = out.view.external_funding.unwrap();
         assert!(funding < 0.0, "a net trim raises cash: {funding}");
@@ -2485,7 +2629,7 @@ mod tests {
             },
         )]);
         let out =
-            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
                 .expect("an engine-band departure is an annotation, not a violation");
         assert_eq!(out.actions["AAA"].target_weight_low, 0.16);
         assert!(
@@ -2526,7 +2670,7 @@ mod tests {
             },
         )]);
         let violations =
-            validate_construction(&sell_all_residue, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&sell_all_residue, &agg, &holdings, &InvestorProfile::default_fixture())
                 .unwrap_err();
         assert!(violations
             .iter()
@@ -2548,7 +2692,7 @@ mod tests {
             },
         )]);
         let violations =
-            validate_construction(&inverted, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&inverted, &agg, &holdings, &InvestorProfile::default_fixture())
                 .unwrap_err();
         assert!(violations
             .iter()
@@ -2566,7 +2710,7 @@ mod tests {
         let agg = agg_for(spine);
         let draft = draft_for(vec![("ZZZ", hold_proposal(0.10))]);
         let violations =
-            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
                 .unwrap_err();
         assert!(violations
             .iter()
@@ -2611,7 +2755,7 @@ mod tests {
             },
         )]);
         let out =
-            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
                 .expect("an engine-set departure is an annotation, not a violation");
         assert_eq!(out.actions["AAA"].action, Action::Add);
         assert!(
@@ -2654,7 +2798,7 @@ mod tests {
         // No attribution at all → missing what-changed.
         let draft = draft_for(vec![("AAA", base.clone())]);
         let violations =
-            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
                 .unwrap_err();
         assert!(violations
             .iter()
@@ -2667,7 +2811,7 @@ mod tests {
         wrong.changed_note = Some("freed cash".into());
         let draft = draft_for(vec![("AAA", wrong)]);
         let violations =
-            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
                 .unwrap_err();
         assert!(violations
             .iter()
@@ -2679,7 +2823,7 @@ mod tests {
         ok.changed_cause = Some("became-oversized".into());
         ok.changed_note = Some("18% of the book".into());
         let draft = draft_for(vec![("AAA", ok)]);
-        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+        let out = validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
             .expect("validated carve-out trim");
         let wc = out.actions["AAA"].what_changed.as_ref().unwrap();
         assert_eq!(wc.attribution, ActionAttribution::MovedContext);
@@ -2724,7 +2868,7 @@ mod tests {
         trim.target_weight_low = t_low;
         trim.target_weight_high = t_high;
         let draft = draft_for(vec![("AAA", add), ("BBB", trim)]);
-        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture());
+        let out = validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture());
         match out {
             Ok(v) => {
                 let wc = v.actions["AAA"].what_changed.as_ref().unwrap();
@@ -2744,6 +2888,153 @@ mod tests {
     }
 
     #[test]
+    fn cash_raised_validates_a_divergent_sell_side_move_the_plan_redeploys() {
+        // AAA trims off a hold lean citing cash-raised; BBB's add is where the
+        // proceeds go, so the plan's buys total makes the claim checkable-true
+        // (v8 ruling R3 — the sell-side twin of cash-freed).
+        let mut sell_row = spine_row("AAA", 0.10, vec![Action::SellAll, Action::Trim, Action::Hold]);
+        sell_row.lean = Some(Action::Hold);
+        sell_row.prior_action = None;
+        let mut buy_row = spine_row("BBB", 0.05, vec![Action::Trim, Action::Hold, Action::Add]);
+        buy_row.lean = Some(Action::Add);
+        buy_row.prior_action = None;
+        let spine = vec![sell_row, buy_row];
+        let holdings = Holdings {
+            cash: 85_000.0,
+            account_total: 100_000.0,
+            ..holdings_for(&spine, 0.0)
+        };
+        let agg = agg_for(spine);
+        let (t_low, t_high) = engine::rung_band(Action::Trim, 0.10);
+        let trim = HoldingProposalDraft {
+            action: "trim".into(),
+            target_weight_low: t_low,
+            target_weight_high: t_high,
+            rationale: "raise cash for the rotation".into(),
+            divergence_cause: Some("cash-raised".into()),
+            divergence_note: None,
+            changed_attribution: None,
+            changed_cause: None,
+            changed_note: None,
+        };
+        let (a_low, a_high) = engine::rung_band(Action::Add, 0.05);
+        let mut add = hold_proposal(0.05);
+        add.action = "add".into();
+        add.target_weight_low = a_low;
+        add.target_weight_high = a_high;
+        let draft = draft_for(vec![("AAA", trim), ("BBB", add)]);
+        let out = validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            .expect("a redeployed sell-side cash-raised divergence validates");
+        assert_eq!(
+            out.actions["AAA"].lean_divergence.as_deref(),
+            Some("portfolio-context (cash-raised)")
+        );
+    }
+
+    #[test]
+    fn an_uncheckable_divergence_cause_names_once_then_strips_on_the_merged_repair() {
+        // A single-holding plan with no buys: cash-raised has no aggregate to
+        // check against. First draft → named violation (the repair's one chance);
+        // merged repair → stripped and annotated, never a failed book (v8 ruling
+        // R2).
+        let mut row = spine_row("AAA", 0.10, vec![Action::SellAll, Action::Trim, Action::Hold]);
+        row.lean = Some(Action::Hold);
+        row.prior_action = None;
+        let spine = vec![row];
+        let holdings = Holdings {
+            cash: 90_000.0,
+            account_total: 100_000.0,
+            ..holdings_for(&spine, 0.0)
+        };
+        let agg = agg_for(spine);
+        let (low, high) = engine::rung_band(Action::Trim, 0.10);
+        let trim = HoldingProposalDraft {
+            action: "trim".into(),
+            target_weight_low: low,
+            target_weight_high: high,
+            rationale: "book cleaning".into(),
+            divergence_cause: Some("cash-raised".into()),
+            divergence_note: Some("exit the noise position".into()),
+            changed_attribution: None,
+            changed_cause: None,
+            changed_note: None,
+        };
+        let draft = draft_for(vec![("AAA", trim)]);
+        let violations =
+            validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+                .unwrap_err();
+        assert!(violations.iter().any(|v| matches!(
+            v,
+            Violation::ContextCauseUnsupported { symbol, cause: ContextCause::CashRaised }
+                if symbol == "AAA"
+        )));
+
+        let out = validate_construction(
+            &draft,
+            &agg,
+            &holdings,
+            &InvestorProfile::default_fixture(),
+            ValidationPass::MergedRepair,
+        )
+        .expect("post-repair residue strips instead of failing the book");
+        assert_eq!(
+            out.actions["AAA"].lean_divergence.as_deref(),
+            Some("unattributed divergence (cause stripped)")
+        );
+        let notes = &out.view.engine_bound_annotations;
+        assert!(
+            notes.iter().any(|n| n.contains("AAA")
+                && n.contains("'cash-raised'")
+                && n.contains("stripped")
+                && n.contains("note: exit the noise position")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_funding_cause_cannot_be_fed_by_the_rows_own_opposite_dollar_move() {
+        // The self-funding inversion (Codex round 1, finding 3): a "trim" (a
+        // down-rung move off the hold lean, so cash-raised is rung-eligible)
+        // sized ABOVE current weight is a dollar BUY — off-band ranges only
+        // annotate, and that buy alone would satisfy the buys total the
+        // cash-raised claim is checked against. The own-delta sign requirement
+        // must reject it.
+        let mut row = spine_row("AAA", 0.10, vec![Action::SellAll, Action::Trim, Action::Hold]);
+        row.lean = Some(Action::Hold);
+        row.prior_action = None;
+        let spine = vec![row];
+        let holdings = Holdings {
+            cash: 90_000.0,
+            account_total: 100_000.0,
+            ..holdings_for(&spine, 0.0)
+        };
+        let agg = agg_for(spine);
+        let trim = HoldingProposalDraft {
+            action: "trim".into(),
+            target_weight_low: 0.12,
+            target_weight_high: 0.14,
+            rationale: "a trim that buys".into(),
+            divergence_cause: Some("cash-raised".into()),
+            divergence_note: None,
+            changed_attribution: None,
+            changed_cause: None,
+            changed_note: None,
+        };
+        let draft = draft_for(vec![("AAA", trim)]);
+        let violations =
+            validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+                .unwrap_err();
+        assert!(
+            violations.iter().any(|v| matches!(
+                v,
+                Violation::ContextCauseUnsupported { symbol, cause: ContextCause::CashRaised }
+                    if symbol == "AAA"
+            )),
+            "an above-current 'trim' raises nothing — the claim must fail: {violations:?}"
+        );
+    }
+
+    #[test]
     fn case_variant_duplicate_proposals_are_a_typed_violation() {
         // The schema can't bar extra keys; "AAA" and "aaa" both resolve to one
         // spine row — un-deduped they double-count the implied book and
@@ -2757,7 +3048,7 @@ mod tests {
         let agg = agg_for(spine);
         let draft = draft_for(vec![("AAA", hold_proposal(0.05)), ("aaa", hold_proposal(0.05))]);
         let violations =
-            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
                 .unwrap_err();
         assert!(
             violations
@@ -2787,7 +3078,7 @@ mod tests {
         // A model mis-claim on the reversion path is ignored, not a violation.
         proposal.changed_attribution = Some("moved-intrinsic".into());
         let draft = draft_for(vec![("AAA", proposal)]);
-        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+        let out = validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
             .expect("the reversion validates without a model attribution");
         let wc = out.actions["AAA"].what_changed.as_ref().unwrap();
         assert_eq!(wc.attribution, ActionAttribution::MovedContext);
@@ -2814,7 +3105,7 @@ mod tests {
         };
         let agg = agg_for(spine);
         let draft = draft_for(vec![("AAA", hold_proposal(0.05))]);
-        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+        let out = validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
             .expect("an accepted-lean move validates without a model attribution");
         let wc = out.actions["AAA"].what_changed.as_ref().unwrap();
         assert_eq!(wc.attribution, ActionAttribution::MovedIntrinsic);
@@ -2846,7 +3137,7 @@ mod tests {
         proposal.changed_cause = Some("cash-freed".into());
         proposal.changed_note = Some("redeploying freed cash".into());
         let draft = draft_for(vec![("AAA", proposal)]);
-        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+        let out = validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
             .expect("the app stamp supersedes the bogus claim");
         let wc = out.actions["AAA"].what_changed.as_ref().unwrap();
         assert_eq!(wc.attribution, ActionAttribution::MovedIntrinsic);
@@ -2885,7 +3176,7 @@ mod tests {
             },
         )]);
         let violations =
-            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
                 .unwrap_err();
         assert!(
             violations
@@ -2923,7 +3214,7 @@ mod tests {
             },
         )]);
         let violations =
-            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
                 .unwrap_err();
         assert!(violations.iter().any(|v| matches!(
             v,
@@ -2934,7 +3225,9 @@ mod tests {
 
     #[test]
     fn a_divergence_from_an_offered_lean_needs_a_cause_and_an_engine_bar_is_stamped() {
-        // Lean hold, offered includes hold, model picks trim → needs a cause.
+        // Lean hold, offered includes hold, model picks trim with no cause →
+        // the v8 R1 ruling: annotate as an unattributed divergence, never a
+        // violation, carrying the model's divergence_note prose.
         let mut row = spine_row("AAA", 0.16, vec![Action::SellAll, Action::Trim, Action::Hold]);
         row.lean = Some(Action::Hold);
         row.prior_lean = Some(Action::Hold);
@@ -2953,22 +3246,30 @@ mod tests {
             target_weight_high: high,
             rationale: "x".into(),
             divergence_cause: None,
-            divergence_note: None,
+            divergence_note: Some("book-level funding judgment".into()),
             changed_attribution: None,
             changed_cause: None,
             changed_note: None,
         };
         let draft = draft_for(vec![("AAA", proposal.clone())]);
-        let violations =
-            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
-                .unwrap_err();
-        assert!(violations
-            .iter()
-            .any(|v| matches!(v, Violation::DivergenceMissing { symbol, .. } if symbol == "AAA")));
+        let out = validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            .expect("an uncaused divergence annotates, never bars");
+        assert_eq!(
+            out.actions["AAA"].lean_divergence.as_deref(),
+            Some("unattributed divergence")
+        );
+        let notes = &out.view.engine_bound_annotations;
+        assert!(
+            notes.iter().any(|n| n.contains("AAA")
+                && n.contains("unattributed divergence")
+                && n.contains("note: book-level funding judgment")),
+            "{notes:?}"
+        );
 
+        proposal.divergence_note = None;
         proposal.divergence_cause = Some("became-oversized".into());
         let draft = draft_for(vec![("AAA", proposal)]);
-        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+        let out = validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
             .expect("attributed divergence validates");
         assert_eq!(
             out.actions["AAA"].lean_divergence.as_deref(),
@@ -2989,7 +3290,7 @@ mod tests {
         let agg2 = agg_for(spine2);
         let draft2 = draft_for(vec![("BBB", hold_proposal(0.10))]);
         let out2 =
-            validate_construction(&draft2, &agg2, &holdings2, &InvestorProfile::default_fixture())
+            validate_first(&draft2, &agg2, &holdings2, &InvestorProfile::default_fixture())
                 .expect("engine-bar divergence validates without model attribution");
         let d = out2.actions["BBB"].lean_divergence.as_deref().unwrap();
         assert!(d.starts_with("engine-bar:"), "{d}");
@@ -3025,7 +3326,7 @@ mod tests {
             },
         )]);
         let out =
-            validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
                 .expect("band + cap departures annotate, never enforce");
         let notes = &out.view.engine_bound_annotations;
         assert!(notes.iter().any(|a| a.contains("engine band")), "{notes:?}");
@@ -3061,7 +3362,7 @@ mod tests {
             },
         )]);
         // Unconstrained preset: the buy is external funding, no annotation.
-        let out = validate_construction(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
+        let out = validate_first(&draft, &agg, &holdings, &InvestorProfile::default_fixture())
             .expect("unconstrained cash admits the buy");
         assert!(out.view.external_funding.unwrap() > 0.0);
         assert!(out.view.engine_bound_annotations.is_empty());
@@ -3071,7 +3372,7 @@ mod tests {
             available_cash: Some(0.0),
             ..InvestorProfile::default_fixture()
         };
-        let out = validate_construction(&draft, &agg, &holdings, &constrained)
+        let out = validate_first(&draft, &agg, &holdings, &constrained)
             .expect("an unfunded buy annotates, never enforces");
         assert!(
             out.view
@@ -3601,7 +3902,7 @@ mod tests {
             },
         )]);
         let violations =
-            validate_construction(&negative, &agg, &holdings, &InvestorProfile::default_fixture())
+            validate_first(&negative, &agg, &holdings, &InvestorProfile::default_fixture())
                 .unwrap_err();
         assert!(violations
             .iter()
@@ -3626,6 +3927,14 @@ mod tests {
         assert!(sys.contains("toward hold only"));
         assert!(sys.contains("SIMULTANEOUSLY"));
         assert!(sys.contains("DECIMAL FRACTION"));
+        // The v8 vocabulary block: every cause present with its checkability
+        // condition, plus the null-cause escape hatch — generated from
+        // ContextCause::ALL so this containment cannot drift from the grammar.
+        for cause in ContextCause::ALL {
+            assert!(sys.contains(cause.as_kebab()), "missing {}: {sys}", cause.as_kebab());
+        }
+        assert!(sys.contains("at or above 15% of the book"), "{sys}");
+        assert!(sys.contains("unattributed divergence"), "{sys}");
 
         let mut row = spine_row("AAA", 0.18, vec![Action::SellAll, Action::Trim, Action::Hold]);
         row.tax_note = Some("taxable gain if realized".into());
@@ -3683,6 +3992,7 @@ mod tests {
         assert!(retry.contains("ONLY these holdings: AAA"), "{retry}");
         assert!(retry.contains("THE KEPT PLAN"), "{retry}");
         assert!(retry.contains("do not re-emit it"), "{retry}");
+        assert!(retry.contains("the legal corrections are"), "{retry}");
         assert!(retry.contains("- AAA: hold [0.1620\u{2013}0.1980]"), "{retry}");
 
         // The repair system prompt swaps in the corrected-objects contract.
@@ -3866,7 +4176,7 @@ mod tests {
         bad.target_weight_low = 0.10;
         bad.target_weight_high = 0.12;
         let first = draft_for(vec![("AAA", bad), ("BBB", hold_proposal(0.20))]);
-        let violations = validate_construction(&first, &agg, &holdings, &profile).unwrap_err();
+        let violations = validate_first(&first, &agg, &holdings, &profile).unwrap_err();
         assert!(
             violations.iter().all(|v| v.symbol() == Some("AAA")),
             "{violations:?}"
@@ -3882,7 +4192,7 @@ mod tests {
         let mut corrected = BTreeMap::new();
         corrected.insert("AAA".to_string(), fix);
         let merged = overlay_repair(&first, corrected, &agg.spine, &scope);
-        let fresh = validate_construction(&merged, &agg, &holdings, &profile).unwrap_err();
+        let fresh = validate_first(&merged, &agg, &holdings, &profile).unwrap_err();
         assert!(
             fresh.iter().any(|v| matches!(
                 v,

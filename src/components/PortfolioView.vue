@@ -687,6 +687,7 @@ const CAUSE_LABELS: Record<string, string> = {
   "became-oversized": "became oversized",
   "overlap-emerged": "an overlap emerged",
   "cash-freed": "cash was freed",
+  "cash-raised": "cash was raised",
 };
 function actionChangeLine(wc: ActionWhatChanged): string {
   const base =
@@ -2456,13 +2457,15 @@ const keyFigures = computed(() => {
                 title="The construction synthesis validated on its single named-violation re-run"
                 >Validated on re-run</span
               >
-              <!-- Engine-bound annotations (v7): where the model's plan departed
-                   the engine's own read — recorded and rendered, never enforced. -->
+              <!-- Construction annotations (v7 engine-bound + v8 attribution):
+                   where the model's plan departed the engine's own read, and the
+                   unattributed-divergence / stripped-cause records — recorded
+                   and rendered, never enforced. -->
               <div
                 v-if="run.roll_up.construction.engine_bound_annotations?.length"
                 class="rollup-annotations"
               >
-                <span class="hc-kicker">Engine-bound notes · plan as authored</span>
+                <span class="hc-kicker">Construction notes · plan as authored</span>
                 <ul class="rollup-annotation-list">
                   <li
                     v-for="(note, i) in run.roll_up.construction

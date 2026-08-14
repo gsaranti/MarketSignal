@@ -438,7 +438,7 @@ export interface ActionSizing {
 // null when the action did not change, and on pre-construction runs.
 export interface ActionWhatChanged {
   attribution: "moved-intrinsic" | "moved-context";
-  cause?: "became-oversized" | "overlap-emerged" | "cash-freed" | null;
+  cause?: "became-oversized" | "overlap-emerged" | "cash-freed" | "cash-raised" | null;
   note: string;
 }
 
@@ -762,9 +762,10 @@ export interface ConstructionView {
   external_funding: number | null;
   implied_total: number | null;
   retried: boolean;
-  // Engine-bound findings against the model's plan (a rung outside the engine
-  // set, a range outside its band, a cap breach, unfunded buys) — annotations
-  // since portfolio-v7, never enforcement. Absent on pre-v7 runs.
+  // Engine-bound and attribution findings against the model's plan (a rung
+  // outside the engine set, a range outside its band, a cap breach, unfunded
+  // buys, and since portfolio-v8 the unattributed-divergence and stripped-cause
+  // records) — annotations, never enforcement. Absent on pre-v7 runs.
   engine_bound_annotations?: string[];
 }
 

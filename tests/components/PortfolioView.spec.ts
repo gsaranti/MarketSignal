@@ -1756,6 +1756,7 @@ describe("PortfolioView two-arm verdict", () => {
             retried: false,
             engine_bound_annotations: [
               "AAPL: action 'add-aggressively' departs the engine set [hold, trim]",
+              "MSFT: final action 'trim' departs the standalone lean 'hold' with no divergence_cause — recorded as an unattributed divergence",
             ],
           },
         },
@@ -1819,7 +1820,11 @@ describe("PortfolioView two-arm verdict", () => {
     expect(scoreboard.text()).toContain("12-mo direction: model 2/2 vs engine 0/2");
     const annotations = wrapper.find(".rollup-annotations");
     expect(annotations.exists()).toBe(true);
+    // The list carries both kinds since v8 — engine-bound departures and the
+    // attribution records — under a label that misclassifies neither.
+    expect(annotations.text()).toContain("Construction notes");
     expect(annotations.text()).toContain("departs the engine set");
+    expect(annotations.text()).toContain("unattributed divergence");
     // The card foot carries the symbol's matured scored line.
     expect(wrapper.find(".hc-scoreboard-line").text()).toContain(
       "1-mo window scored (total return 4.2%)"

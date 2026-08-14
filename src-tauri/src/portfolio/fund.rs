@@ -256,7 +256,11 @@ pub fn classify(fund: &FundData) -> FundClassification {
                     class,
                     structural_flag: overlay_flag,
                     us_share: us,
-                    class_label: "ex-US equity fund".to_string(),
+                    // The label describes the measurement, not a nationality claim:
+                    // a 67%-US fund is not "ex-US", and attempt 2's model flagged
+                    // exactly that (ruled 2026-08-13 — relabel, guard pinned;
+                    // `docs/verification/2026-08-13-big-run-attempt-2.md`).
+                    class_label: "equity fund below the US-exposure guard".to_string(),
                     role_reason: Some(format!(
                         "US exposure {:.0}% below the ≥ {:.0}% guard — an \
                          exchange-tagged US sector P/E is not an honest read on an \
@@ -700,6 +704,10 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         &metrics,
         "fund exposure composite",
         true,
+        // The v4 anchor bound and trough release are stock-form provenance —
+        // the composite path has neither.
+        0,
+        false,
     );
     let tier = engine::assign_fund_tier(
         // Leveraged / inverse never reaches the priced path (it routes to
@@ -722,6 +730,8 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         consensus_near_weight: None,
         clamp_flattened: false,
         dispersion_floor_applied: scenario.dispersion_floor_applied,
+        anchor_bounded: 0,
+        clamp_released: false,
         parameter_version: engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string(),
     };
 

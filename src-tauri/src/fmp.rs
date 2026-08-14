@@ -5876,6 +5876,27 @@ fn consensus_from_value(
             (None, f) => f,
         }
     };
+    // Per-field corroboration: how many rows actually CONTRIBUTE to the blended
+    // value — mirroring `blend`'s own arms, never mere presence. `periods_used`
+    // cannot serve here (a leg only one row carries is still used alone inside
+    // an active blend), and presence-counting cannot either: at the fiscal-year
+    // boundary (`today == near_date`) the near weight is exactly 0 and the
+    // value is entirely the far row's, so a present-but-weightless near row
+    // must not masquerade as a second estimate (Codex round 2). Inside an
+    // active blend the far row's weight is always positive; the near row
+    // contributes at weight > 0, or alone when the far row lacks the field.
+    let rows_carrying = |stable: &str, legacy: &str| -> u8 {
+        let n = field(near, stable, legacy).is_some();
+        if !blended {
+            return n as u8;
+        }
+        let f = far.and_then(|r| field(r, stable, legacy)).is_some();
+        match (n, f) {
+            (true, true) => 1 + (near_weight > 0.0) as u8,
+            (true, false) | (false, true) => 1,
+            (false, false) => 0,
+        }
+    };
     Some(crate::portfolio::engine::ConsensusEstimate {
         period_end: date_of(near),
         eps_low: blend("epsLow", "estimatedEpsLow"),
@@ -5886,6 +5907,8 @@ fn consensus_from_value(
         revenue_high: blend("revenueHigh", "estimatedRevenueHigh"),
         periods_used: if blended { 2 } else { 1 },
         near_weight,
+        eps_mid_rows: rows_carrying("epsAvg", "estimatedEpsAvg"),
+        revenue_mid_rows: rows_carrying("revenueAvg", "estimatedRevenueAvg"),
     })
 }
 
@@ -6293,6 +6316,48 @@ mod suite_tests {
         assert!((c.eps_mid.unwrap() - (w * 6.8 + (1.0 - w) * 7.4)).abs() < 1e-9);
         assert_eq!(c.eps_low, Some(6.5));
         assert_eq!(c.eps_high, Some(7.1));
+        // Both rows carried the EPS mid; neither carried revenue — the per-field
+        // corroboration counts record exactly that, not the blend count.
+        assert_eq!(c.eps_mid_rows, 2);
+        assert_eq!(c.revenue_mid_rows, 0);
+    }
+
+    #[test]
+    fn consensus_counts_field_carrying_rows_not_blended_rows() {
+        // The clamp-release corroboration trap (Codex round 1, finding 2): two
+        // forward rows blend (`periods_used = 2`) but only the near row carries
+        // an EPS mid — the release must see one EPS row, not two.
+        let body = r#"[
+          {"date":"2026-09-30","epsAvg":6.8,"revenueAvg":1.0e9},
+          {"date":"2027-09-30","revenueAvg":1.1e9}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let c = consensus_from_value(&value, "2026-07-16").unwrap();
+        assert_eq!(c.periods_used, 2);
+        assert_eq!(c.eps_mid_rows, 1, "one estimate must not masquerade as two");
+        assert_eq!(c.revenue_mid_rows, 2);
+        assert_eq!(c.eps_mid, Some(6.8), "the single leg is still used alone");
+    }
+
+    #[test]
+    fn consensus_boundary_day_near_row_carries_no_corroboration() {
+        // `today == near_date`: the near weight is exactly 0 and the blended
+        // value is entirely the far row's — a present-but-weightless near row
+        // must not count as a second estimate (Codex round 2). The far-leg
+        // fallback stays a real contributor: revenue exists only on the near
+        // row, is used alone despite the zero weight, and counts as one.
+        let body = r#"[
+          {"date":"2026-09-30","epsAvg":6.8,"revenueAvg":1.0e9},
+          {"date":"2027-09-30","epsAvg":7.4}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let c = consensus_from_value(&value, "2026-09-30").unwrap();
+        assert_eq!(c.periods_used, 2);
+        assert!((c.near_weight - 0.0).abs() < 1e-12);
+        assert_eq!(c.eps_mid, Some(7.4), "the value is entirely the far row's");
+        assert_eq!(c.eps_mid_rows, 1, "a weightless near row is not corroboration");
+        assert_eq!(c.revenue_mid_rows, 1, "the used-alone fallback still contributes");
+        assert_eq!(c.revenue_mid, Some(1.0e9));
     }
 
     #[test]

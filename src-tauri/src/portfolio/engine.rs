@@ -120,9 +120,49 @@ const DEGENERATE_DENOMINATOR_EPS: f64 = 0.01;
 const FILING_GRACE_DAYS: i64 = 45;
 
 /// Sanity clamp on the implied annual driver growth versus the trailing print
-/// (the v1 bound, retained by the v2 ladder).
+/// (the v1 bound, retained by the v2 ladder). Released under the targets-v4
+/// trough signature — see [`CLAMP_RELEASE_MIN_CONSENSUS_ROWS`].
 const DRIVER_GROWTH_MIN: f64 = -0.25;
 const DRIVER_GROWTH_MAX: f64 = 0.35;
+
+/// Anchor-multiple sanity bound (targets-v4): an anchor observation whose raw
+/// multiple exceeds the holding's **current** trailing multiple by more than this
+/// factor is dropped before the percentile surfaces. A trailing-multiple anchor
+/// exists to describe a multiple regime the market actually paid; one several
+/// times richer than today's own multiple inside a ~3-year window is a
+/// denominator artifact (a near-zero-EPS quarter — attempt 2's RKT anchored at
+/// 420×/1223×/2511× against a 90× current multiple) or a departed valuation
+/// regime (LCID's bubble-era P/S band), not reversion evidence. Relative rather
+/// than absolute so a genuinely extreme regime the market still pays (TSLA at
+/// 351× against 66–297× anchors) keeps its history. Drafted, calibratable
+/// (`docs/verification/2026-08-13-big-run-attempt-2.md` §Workstream 3).
+const ANCHOR_MULTIPLE_SANITY_FACTOR: f64 = 3.0;
+
+/// Corroboration floor for the targets-v4 **trough clamp release**: with at least
+/// this many forward consensus rows **contributing to the selected rung's
+/// blended mid** (the per-field counts on [`ConsensusEstimate`], not
+/// `periods_used`) AND the current
+/// trailing multiple sitting above the anchor window's own rich-end (P75) raw
+/// multiple AND the trailing print itself depressed against the window's
+/// demonstrated earning power ([`TROUGH_PRINT_FRACTION`]) — a recent earnings
+/// trough against a normal-multiple history, where price held while the trailing
+/// print collapsed — the growth clamp is released and the corroborated consensus
+/// prices unclamped. Without the release the clamp compresses valid recovery
+/// consensus to trough scale (attempt 2's GM: a $14.35 consensus crushed to a
+/// $2.67 driver → a −79% "base"). The gates deliberately exclude whole-window
+/// troughs (LUV), downward re-ratings (CRM), and price-driven multiple expansion
+/// with earnings intact (the rich-multiple rally — Codex round 1, finding 1),
+/// where releasing would remove the sanity bound exactly when valuation is
+/// stretched. Drafted, calibratable.
+const CLAMP_RELEASE_MIN_CONSENSUS_ROWS: u8 = 2;
+
+/// The release's direct trough test: the trailing print must sit below this
+/// fraction of the anchor window's **largest** admissible trailing print — the
+/// earning power the issuer has actually demonstrated inside the ~3-year window.
+/// A multiple can sit above its own history two ways (earnings collapsed, or
+/// price rallied); only the first is a trough, and only the print itself can
+/// tell them apart. Drafted, calibratable.
+const TROUGH_PRINT_FRACTION: f64 = 0.67;
 
 /// Minimum scenario half-spread on the price axis (decimal, around the base target):
 /// the dispersion floor `spread_anchored_scenarios` widens a too-tight bear/bull band
@@ -138,8 +178,11 @@ const DISPERSION_FLOOR_VOL_SCALE: f64 = 0.5;
 /// The scenario-target function's parameter version, stamped on each run's audit so
 /// target calibration never mixes bases (`docs/portfolio-analysis.md` §Outcome
 /// learning). v3: the NTM consensus blend, the dispersion floor, and the recorded
-/// clamp-collapse — run `3b21ae85` is the v2 baseline.
-pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v3";
+/// clamp-collapse — run `3b21ae85` is the v2 baseline. v4: the anchor-multiple
+/// sanity bound and the trough clamp release, drafted against attempt 2's
+/// persisted dataset (run `6a52f1dd` is the v3 baseline;
+/// `docs/verification/2026-08-13-big-run-attempt-2.md` §Workstream 3).
+pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v4";
 
 // -- Risk tiers and the capital-efficiency hurdle (`docs/portfolio-analysis.md`
 //    §Starting parameters).
@@ -322,6 +365,20 @@ pub struct ConsensusEstimate {
     /// The near row's blend weight (1.0 on a single-row read).
     #[serde(default)]
     pub near_weight: f64,
+    /// Forward rows that actually **contributed** to the blended EPS mid — the
+    /// corroboration count the targets-v4 clamp release reads for the EPS rung.
+    /// `periods_used` counts blended rows, not rows behind any given field:
+    /// inside an active blend a leg only one row carries is used alone, and a
+    /// boundary-day near row (weight exactly 0) is present without
+    /// contributing — either way a single estimate would masquerade as
+    /// two-row corroboration (Codex rounds 1–2). `#[serde(default)]` for
+    /// pre-field records.
+    #[serde(default)]
+    pub eps_mid_rows: u8,
+    /// The revenue rung's counterpart: forward rows contributing to the revenue
+    /// mid.
+    #[serde(default)]
+    pub revenue_mid_rows: u8,
 }
 
 /// The normalized financial inputs the engine reasons over, assembled by the dossier
@@ -535,6 +592,16 @@ pub struct TargetMeta {
     /// floor. `#[serde(default)]` for pre-field audits.
     #[serde(default)]
     pub dispersion_floor_applied: bool,
+    /// (targets-v4) anchor observations dropped by the multiple sanity bound —
+    /// raw multiples above the current multiple × the drafted factor.
+    /// `#[serde(default)]` for pre-v4 audits.
+    #[serde(default)]
+    pub anchor_bounded: usize,
+    /// (targets-v4) true when the trough release priced the unclamped consensus
+    /// (corroborated rows + current multiple above the anchor window's rich end).
+    /// `#[serde(default)]` for pre-v4 audits.
+    #[serde(default)]
+    pub clamp_released: bool,
     pub parameter_version: String,
 }
 
@@ -1708,21 +1775,42 @@ pub fn dispersion_floor(return_volatility: Option<f64>) -> f64 {
         .unwrap_or(DISPERSION_FLOOR_MIN)
 }
 
+/// What the dated anchor walk found: the admissible observations, the
+/// sanity-bound drop count, and the window's largest admissible trailing print —
+/// the demonstrated earning power the release's trough test reads.
+struct AnchorScan {
+    observations: Vec<AnchorObservation>,
+    bounded: usize,
+    /// Max over every window that passed the finite-positive print test —
+    /// tracked before the close join and the multiple bound, since a print is
+    /// earnings evidence even where its quarter cannot anchor a multiple.
+    max_window_print: Option<f64>,
+}
+
 /// The trailing-twelve-month driver print anchored at each of the newest
 /// [`ANCHOR_WINDOW_QUARTERS`] quarters, joined to the dated closes and DGS10 history
 /// (`docs/portfolio-analysis.md` §Starting parameters — the dated anchor join): each
 /// admissible quarter anchors on its filing date (period end + the filing grace when
 /// absent), reads the latest close on or before that date, and the latest published
 /// DGS10 on or before the same date. A quarter whose trailing print is not finite
-/// and positive is excluded (an economically invalid multiple observation).
+/// and positive is excluded (an economically invalid multiple observation), and —
+/// targets-v4 — one whose raw multiple exceeds `current_multiple ×`
+/// [`ANCHOR_MULTIPLE_SANITY_FACTOR`] is excluded as a sanity-bound artifact, the
+/// count returned beside the survivors for the audit record.
 fn stock_anchor_observations(
     fin: &CompanyFinancials,
     rates: &RateAnchors,
     use_eps: bool,
-) -> Vec<AnchorObservation> {
+    current_multiple: Option<f64>,
+) -> AnchorScan {
     use chrono::NaiveDate;
     let q = &fin.quarterly_income;
     let mut out = Vec::new();
+    let mut bounded = 0usize;
+    let mut max_window_print: Option<f64> = None;
+    let multiple_cap = current_multiple
+        .filter(|cm| cm.is_finite() && *cm > 0.0)
+        .map(|cm| cm * ANCHOR_MULTIPLE_SANITY_FACTOR);
     for i in 0..ANCHOR_WINDOW_QUARTERS.min(q.len()) {
         // TTM print: this quarter plus the three before it (rows are newest-first).
         if i + 4 > q.len() {
@@ -1751,6 +1839,7 @@ fn stock_anchor_observations(
         if !ttm.is_finite() || ttm <= 0.0 {
             continue;
         }
+        max_window_print = Some(max_window_print.map_or(ttm, |m: f64| m.max(ttm)));
         let anchor_date = match &window[0].filing_date {
             Some(d) => d.clone(),
             None => match NaiveDate::parse_from_str(&window[0].period_end, "%Y-%m-%d") {
@@ -1766,6 +1855,15 @@ fn stock_anchor_observations(
         if close <= 0.0 {
             continue;
         }
+        // The v4 sanity bound: a multiple far above the name's own current
+        // multiple is a near-zero-denominator artifact or a departed regime,
+        // not reversion evidence — dropped and counted.
+        if let Some(cap) = multiple_cap {
+            if close / ttm > cap {
+                bounded += 1;
+                continue;
+            }
+        }
         // The dated-rate join is per-leg: a quarter with no DGS10 on or before its
         // anchor date loses only its spread — the raw multiple stays admissible for
         // the fallback percentiles.
@@ -1776,13 +1874,24 @@ fn stock_anchor_observations(
             raw_multiple: close / ttm,
         });
     }
-    out
+    AnchorScan {
+        observations: out,
+        bounded,
+        max_window_print,
+    }
 }
 
 /// What the driver ladder picked: the scenario drivers plus the derivation record.
 struct DriverRead {
     /// `[bear, base, bull]` per-share drivers.
     drivers: [f64; 3],
+    /// The same drivers with the growth clamp not applied (positivity fallback
+    /// only) — swapped in by the targets-v4 trough clamp release, which is decided
+    /// upstream where the anchor surfaces exist.
+    unclamped_drivers: [f64; 3],
+    /// The rung-matching trailing TTM print (EPS or revenue per share) — the
+    /// current-multiple denominator for the v4 anchor bound and release signature.
+    trailing_print: Option<f64>,
     rung: &'static str,
     use_eps: bool,
     /// No published low/high spread — the driver held at mid.
@@ -1847,6 +1956,17 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
         !flat && (drivers[0] - drivers[1]).abs() < 1e-12 && (drivers[2] - drivers[1]).abs() < 1e-12
     };
 
+    // The unclamped counterpart: positivity/finiteness fallback only — what the
+    // targets-v4 trough release prices when corroborated consensus disagrees
+    // with a trough-scale trailing print.
+    let sanitize = |driver: f64, base: f64| -> f64 {
+        if driver.is_finite() && driver > 0.0 {
+            driver
+        } else {
+            base
+        }
+    };
+
     // Rung 1: forward EPS, eligible only on a finite positive consensus mid.
     if let Some(mid) = c.and_then(|c| c.eps_mid).filter(|m| m.is_finite() && *m > 0.0) {
         let base = clamp(mid, ttm_eps, mid);
@@ -1866,6 +1986,8 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
         return Some(DriverRead {
             clamp_flattened: clamp_collapse(&drivers, flat),
             drivers,
+            unclamped_drivers: [sanitize(low, mid), mid, sanitize(high, mid)],
+            trailing_print: ttm_eps,
             rung: "consensus forward EPS",
             use_eps: true,
             flat_driver: flat,
@@ -1892,6 +2014,8 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
         return Some(DriverRead {
             clamp_flattened: clamp_collapse(&drivers, flat),
             drivers,
+            unclamped_drivers: [sanitize(low, mid / sh), mid / sh, sanitize(high, mid / sh)],
+            trailing_print: ttm_rev_ps,
             rung: "consensus forward revenue per share",
             use_eps: false,
             flat_driver: flat,
@@ -1918,12 +2042,61 @@ pub fn scenario_targets_v2(
         return TargetOutcome::NoAdmissibleDriver;
     };
 
-    let observations = stock_anchor_observations(fin, rates, read.use_eps);
+    // The current trailing multiple on the rung's own basis — the v4 anchor
+    // bound's cap denominator and one half of the trough release signature.
+    let current_multiple = read
+        .trailing_print
+        .filter(|t| *t > 0.0)
+        .map(|t| spot / t)
+        .filter(|cm| cm.is_finite() && *cm > 0.0);
+    let scan = stock_anchor_observations(fin, rates, read.use_eps, current_multiple);
+    let (observations, anchor_bounded) = (scan.observations, scan.bounded);
+
+    // The targets-v4 trough clamp release — three gates, each closing a distinct
+    // false-release path (Codex round 1, findings 1–2):
+    // 1. Corroboration counts rows CONTRIBUTING to the selected rung's blended
+    //    mid — never `periods_used`, and never mere field presence (a
+    //    boundary-day near row is present at weight 0) — so a single estimate
+    //    cannot masquerade as two rows.
+    // 2. The multiple signature (current above the post-bound window's P75) is
+    //    evaluated on the bounded observation set, so a sanity-dropped artifact
+    //    can never mask or fake it.
+    // 3. The direct trough test: the trailing print must be depressed against
+    //    the window's own demonstrated earning power — a price rally satisfies
+    //    the multiple signature with earnings intact, and only the print
+    //    separates the two.
+    let raws: Vec<f64> = observations.iter().map(|o| o.raw_multiple).collect();
+    let corroborated = fin.consensus.as_ref().is_some_and(|c| {
+        let rows = if read.use_eps {
+            c.eps_mid_rows
+        } else {
+            c.revenue_mid_rows
+        };
+        rows >= CLAMP_RELEASE_MIN_CONSENSUS_ROWS
+    });
+    let trough_signature = match (current_multiple, raws.is_empty()) {
+        (Some(cm), false) => cm > percentile(&raws, 0.75),
+        _ => false,
+    };
+    let trough_print = read
+        .trailing_print
+        .zip(scan.max_window_print)
+        .is_some_and(|(t, mx)| t < TROUGH_PRINT_FRACTION * mx);
+    let clamp_released = corroborated
+        && trough_signature
+        && trough_print
+        && read.drivers != read.unclamped_drivers;
+    let drivers = if clamp_released {
+        read.unclamped_drivers
+    } else {
+        read.drivers
+    };
+
     let forward_dividends = fin.ttm_dividends_per_share.unwrap_or(0.0);
     let floor = dispersion_floor(m.return_volatility);
     let scenario = spread_anchored_scenarios(
         spot,
-        read.drivers,
+        drivers,
         &observations,
         rates.dgs10,
         forward_dividends,
@@ -1932,7 +2105,7 @@ pub fn scenario_targets_v2(
 
     let basis = QuickCheckBasis {
         spot,
-        drivers: read.drivers,
+        drivers,
         spread_percentiles: scenario.spread_percentiles,
         raw_percentiles: scenario.raw_percentiles,
         forward_dividends,
@@ -1940,7 +2113,15 @@ pub fn scenario_targets_v2(
         consensus_eps_mid: fin.consensus.as_ref().and_then(|c| c.eps_mid),
     };
 
-    let targets = build_price_targets(spot, &scenario, m, read.rung, read.flat_driver);
+    let targets = build_price_targets(
+        spot,
+        &scenario,
+        m,
+        read.rung,
+        read.flat_driver,
+        anchor_bounded,
+        clamp_released,
+    );
     let meta = TargetMeta {
         driver_rung: read.rung.to_string(),
         rate_anchored: scenario.rate_anchored,
@@ -1957,8 +2138,12 @@ pub fn scenario_targets_v2(
             .as_ref()
             .filter(|c| c.periods_used > 0)
             .map(|c| c.near_weight),
-        clamp_flattened: read.clamp_flattened,
+        // A released clamp means the flattening no longer describes the drivers
+        // actually priced — the release supersedes the collapse record.
+        clamp_flattened: read.clamp_flattened && !clamp_released,
         dispersion_floor_applied: scenario.dispersion_floor_applied,
+        anchor_bounded,
+        clamp_released,
         parameter_version: SCENARIO_TARGET_PARAMETER_VERSION.to_string(),
     };
     TargetOutcome::Computed(Box::new(TargetBundle {
@@ -1971,13 +2156,16 @@ pub fn scenario_targets_v2(
 
 /// Render a [`ScenarioSet`] into the persisted [`PriceTargets`]: the twelve-month
 /// target carries the scenario prices; the one-month leg keeps the v1 mechanics.
-/// Shared by the stock and fund forms.
+/// Shared by the stock and fund forms — the fund form passes the v4 stock-only
+/// provenance (`anchor_bounded`, `clamp_released`) as `0` / `false`.
 pub fn build_price_targets(
     spot: f64,
     scenario: &ScenarioSet,
     m: &ComputedMetrics,
     rung: &str,
     flat_driver: bool,
+    anchor_bounded: usize,
+    clamp_released: bool,
 ) -> PriceTargets {
     let pr_base = scenario.base / spot - 1.0;
     let om_base = spot * (1.0 + pr_base / 12.0);
@@ -2011,15 +2199,25 @@ pub fn build_price_targets(
             scenario.raw_observations, scenario.anchor_observations
         )
     };
-    let driver_note = if flat_driver {
-        format!("{rung}, held flat across scenarios")
+    let release_note = if clamp_released {
+        ", growth clamp released on corroborated consensus (trough signature)"
     } else {
-        format!("{rung} low/mid/high")
+        ""
+    };
+    let driver_note = if flat_driver {
+        format!("{rung}, held flat across scenarios{release_note}")
+    } else {
+        format!("{rung} low/mid/high{release_note}")
     };
     let floor_note = if scenario.dispersion_floor_applied {
         "; band widened to the volatility-scaled dispersion floor"
     } else {
         ""
+    };
+    let bound_note = if anchor_bounded > 0 {
+        format!("; {anchor_bounded} anchor(s) dropped by the multiple sanity bound")
+    } else {
+        String::new()
     };
 
     PriceTargets {
@@ -2040,7 +2238,7 @@ pub fn build_price_targets(
             bear: scenario.bear,
             bull: scenario.bull,
             methodology: format!(
-                "Twelve-month (rolling) scenarios = {driver_note} × {anchor_note}{floor_note} [{}]",
+                "Twelve-month (rolling) scenarios = {driver_note} × {anchor_note}{bound_note}{floor_note} [{}]",
                 SCENARIO_TARGET_PARAMETER_VERSION
             ),
         }),
@@ -2824,6 +3022,184 @@ mod tests {
         fin.consensus.as_mut().unwrap().eps_mid = Some(1.0);
         let drivers = driver_ladder(&fin).unwrap().drivers;
         assert!((drivers[1] - ttm * (1.0 + DRIVER_GROWTH_MIN)).abs() < 1e-9);
+    }
+
+    /// The attempt-2 RKT shape: recovered current earnings against a trail of
+    /// near-zero-EPS quarters whose trailing multiples are astronomical.
+    fn trough_artifact_fin() -> CompanyFinancials {
+        let mut fin = strong();
+        for (i, row) in fin.quarterly_income.iter_mut().enumerate() {
+            // Newest four quarters recovered; everything older is noise-scale.
+            row.eps_diluted = Some(if i < 4 { 1.0 } else { 0.01 });
+        }
+        let c = fin.consensus.as_mut().unwrap();
+        c.eps_low = Some(4.0);
+        c.eps_mid = Some(4.2);
+        c.eps_high = Some(4.4);
+        fin
+    }
+
+    #[test]
+    fn artifact_anchor_multiples_are_sanity_bounded_and_counted() {
+        // Current TTM EPS = 4.0 at spot 195 → current multiple 48.75, cap ≈ 146×.
+        // The nine windows containing near-zero quarters anchor at 170×–4,800×
+        // and are dropped; the three recovered-era anchors (≈ 49×/62×/90×) stay.
+        let fin = trough_artifact_fin();
+        let rates = rates();
+        let m = compute_metrics(&fin);
+        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m) {
+            TargetOutcome::Computed(b) => b,
+            TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
+        };
+        assert_eq!(bundle.meta.anchor_bounded, 9, "the artifact windows drop");
+        assert!(
+            !bundle.meta.rate_anchored,
+            "3 surviving anchors sit below the {MIN_ANCHOR_OBSERVATIONS}-observation floor"
+        );
+        // The base prices off surviving history (P50 ≈ 62×), not the artifact
+        // percentiles that produced attempt 2's +1503% base.
+        let tm = bundle.targets.twelve_month.as_ref().unwrap();
+        assert!(
+            tm.base < 195.0 * 3.0,
+            "bounded base must be same-order with spot, got {}",
+            tm.base
+        );
+        assert!(
+            tm.methodology.contains("dropped by the multiple sanity bound"),
+            "{}",
+            tm.methodology
+        );
+        // Unreleased without corroboration: fixture consensus has periods_used 0.
+        assert!(!bundle.meta.clamp_released);
+    }
+
+    /// The attempt-2 GM shape: a recent earnings trough (current multiple far
+    /// above the anchor window's own normal-era multiples, trailing print
+    /// depressed against the window's earning power) with a recovery consensus
+    /// the growth clamp would otherwise crush. Corroboration is the per-rung
+    /// row count — `periods_used` deliberately stays 2 in every variant, so a
+    /// passing release proves the gate reads `eps_mid_rows`, never the blend
+    /// count (Codex round 1, finding 2).
+    fn recent_trough_fin(eps_mid_rows: u8) -> CompanyFinancials {
+        let mut fin = strong();
+        for (i, row) in fin.quarterly_income.iter_mut().enumerate() {
+            // Newest four quarters troughed; the older history is normal-era.
+            row.eps_diluted = Some(if i < 4 { 0.5 } else { 2.5 });
+        }
+        let c = fin.consensus.as_mut().unwrap();
+        c.eps_low = Some(7.5);
+        c.eps_mid = Some(8.0);
+        c.eps_high = Some(8.5);
+        c.periods_used = 2;
+        c.eps_mid_rows = eps_mid_rows;
+        fin
+    }
+
+    #[test]
+    fn corroborated_recovery_consensus_releases_the_trough_clamp() {
+        // Current TTM EPS = 2.0 at spot 195 → current multiple 97.5, far above
+        // every anchor multiple (≈ 13×–47×), and the trailing print is a fifth
+        // of the window's 10.0 earning power: the full trough signature. With
+        // two EPS-carrying rows the clamp releases and the 8.0 consensus prices
+        // raw; with one it stays clamped to 2.0 × 1.35 = 2.7.
+        let rates = rates();
+        let released_fin = recent_trough_fin(2);
+        let m = compute_metrics(&released_fin);
+        let released = match scenario_targets_v2(195.0, &released_fin, &rates, &m) {
+            TargetOutcome::Computed(b) => b,
+            TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
+        };
+        assert!(released.meta.clamp_released);
+        assert!(
+            !released.meta.clamp_flattened,
+            "the release supersedes the collapse record"
+        );
+        assert_eq!(released.basis.drivers, [7.5, 8.0, 8.5], "unclamped consensus priced");
+        assert!(
+            released
+                .targets
+                .twelve_month
+                .as_ref()
+                .unwrap()
+                .methodology
+                .contains("growth clamp released"),
+            "{}",
+            released.targets.twelve_month.as_ref().unwrap().methodology
+        );
+
+        // One EPS-carrying row is not corroboration — even though periods_used
+        // still reads 2 (the blend count a single estimate can ride).
+        let clamped_fin = recent_trough_fin(1);
+        let clamped = match scenario_targets_v2(195.0, &clamped_fin, &rates, &m) {
+            TargetOutcome::Computed(b) => b,
+            TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
+        };
+        assert!(!clamped.meta.clamp_released, "one EPS-carrying row is not corroboration");
+        assert!(clamped.meta.clamp_flattened, "the clamp collapsed the published spread");
+        let released_base = released.targets.twelve_month.as_ref().unwrap().base;
+        let clamped_base = clamped.targets.twelve_month.as_ref().unwrap().base;
+        assert!(
+            released_base > clamped_base * 2.0,
+            "the release must lift the crushed base: {released_base} vs {clamped_base}"
+        );
+    }
+
+    #[test]
+    fn a_price_rally_with_earnings_intact_never_releases_the_clamp() {
+        // The rich-multiple rally: earnings flat across the whole window (the
+        // trailing print IS the window's earning power) while the rising closes
+        // put the current multiple above the anchor P75 — the multiple
+        // signature alone reads true, and releasing here would remove the
+        // sanity bound exactly when valuation is stretched. The direct trough
+        // test must veto it.
+        let mut fin = strong();
+        for row in fin.quarterly_income.iter_mut() {
+            row.eps_diluted = Some(1.0); // TTM 4.0 everywhere — no trough
+        }
+        let c = fin.consensus.as_mut().unwrap();
+        c.eps_low = Some(7.5);
+        c.eps_mid = Some(8.0); // +100% vs trailing — the clamp bites
+        c.eps_high = Some(8.5);
+        c.periods_used = 2;
+        c.eps_mid_rows = 2; // fully corroborated — the veto must come from the print
+        let rates = rates();
+        let m = compute_metrics(&fin);
+        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m) {
+            TargetOutcome::Computed(b) => b,
+            TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
+        };
+        assert!(
+            !bundle.meta.clamp_released,
+            "a rally is not a trough — earnings never fell"
+        );
+        assert!(bundle.meta.clamp_flattened, "the clamp stays in force");
+    }
+
+    #[test]
+    fn a_downward_rerating_never_releases_the_clamp() {
+        // The attempt-2 CRM shape: current multiple BELOW the anchor window's
+        // rich end (the multiple re-rated down; the trailing print did not
+        // collapse) — corroborated consensus alone must not release, or the
+        // release would compound the anchors' own regime staleness.
+        let mut fin = strong();
+        for (i, row) in fin.quarterly_income.iter_mut().enumerate() {
+            // Newest four quarters strong (current multiple ≈ 24×); the older
+            // history earned less (anchor multiples ≈ 40×).
+            row.eps_diluted = Some(if i < 4 { 2.0 } else { 1.0 });
+        }
+        let c = fin.consensus.as_mut().unwrap();
+        c.eps_low = Some(11.0);
+        c.eps_mid = Some(12.0);
+        c.eps_high = Some(13.0);
+        c.periods_used = 2;
+        let rates = rates();
+        let m = compute_metrics(&fin);
+        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m) {
+            TargetOutcome::Computed(b) => b,
+            TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
+        };
+        assert!(!bundle.meta.clamp_released);
+        assert_eq!(bundle.meta.anchor_bounded, 0, "a re-rating drops nothing");
     }
 
     #[test]

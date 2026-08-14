@@ -1192,6 +1192,7 @@ fn run_analysis(
         &aggregates,
         &holdings,
         profile,
+        crate::portfolio::construction::ValidationPass::FirstDraft,
     ) {
         Ok(v) => (v, false),
         Err(violations) => {
@@ -1247,6 +1248,7 @@ fn run_analysis(
                 &aggregates,
                 &holdings,
                 profile,
+                crate::portfolio::construction::ValidationPass::MergedRepair,
             ) {
                 Ok(v) => (v, true),
                 Err(persisting) => {
