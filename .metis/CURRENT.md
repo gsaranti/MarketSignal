@@ -2,52 +2,53 @@
 
 ## What happened
 
-The attempt-2 analysis plan executed in full, and **every finding was fixed or
-ruled the same session**, ending in commit `58ed003` (pushed, direct to main).
-Root cause of the 7b fail-hard: the construction prompt never stated the
-divergence-cause vocabulary (the model invented causes; the grammar coerced
-them), the three-cause vocabulary structurally could not express down-side
-divergences on small un-clustered positions, and the repair offered no legal
-exit. Fixes, all ruled on recommendation: **portfolio-v8** — vocabulary stated
-in-prompt with checkability semantics + null-cause escape hatch, uncaused
-divergences annotate as authored, post-repair uncheckable causes strip, new
-sell-side `cash-raised` cause; **targets-v4** — anchor-multiple sanity bound
-(kills RKT's +1503% / LCID's +560% artifacts) and a triple-gated trough clamp
-release (fixes GM's −79%); interpretation-prompt tightenings (NEW disarm, unit
-labels, conviction type, risk polarity); ARKF relabeled "equity fund below the
-US-exposure guard" (guard pinned); **no-A ruled honest** — the sector
-normalization slice retired for the letter distribution; quality-score
-harshness stays reserved. Review: internal approve-with-nits + three Codex
-rounds to convergence, then Codex approval. The full evidence and rulings live
-in `docs/verification/2026-08-13-big-run-attempt-2.md`.
+The business-logic discussion landed the **tunnel-vision ruling** (2026-08-14):
+Portfolio Analysis stops comparing holdings — the whole Step-7 construction
+stage (7a aggregates + 7b synthesis, ~6,400 net lines) was removed, every
+action is now authored by a new **per-holding action call** (finished verdict +
+holding evidence + investor profile → rung + one-line rationale; the profile's
+only entry point, 6f stays profile-blind), and whole-book reasoning is deferred
+to a future fourth job, the **portfolio planner**. `PROMPT_VERSION` is
+`portfolio-v9`. Follow-on rulings: the ledger's target-weight range and the
+`portfolio-weight` series are retired (persisted conditions decode but are
+skipped whole — never unevaluable), a one-time pre-v9 migration force-include
+is enforced in code, and any future action numeric must be holding-based (share
+counts — recorded, unbuilt). Review: internal approve-with-nits (fixed) + three
+Codex rounds to no-High-remaining; all gates green (1,034 backend tests, clippy
+clean, 46+238 frontend). The full record — nine rulings, build inventory,
+per-finding dispositions, standing pushbacks — is
+`docs/verification/2026-08-14-tunnel-vision-slice.md`.
 
 ## Current state
 
-Tree clean, everything pushed. Attribution can no longer fail a book —
-persisting arithmetic incoherence is construction's one remaining failure mode,
-so attempt 3's expected outcome is a constructed book with the new
-`anchor_bounded` / `clamp_released` stamps and divergence annotations readable
-on the run surfaces. Not yet aligned (user-run edits outside this handoff):
-BUILD §Deferred still lists the now-retired sector-normalization slice, and
-INDEX lacks the attempt-2 record's row. Still pending elsewhere: prod residue
-cleanup (3 local-model settings + failed `job_runs` id 11, prod-only session);
-digest compression and `NUM_PREDICT_*` calibration stay behind a produced-book
-run.
+The slice was committed and pushed at session close (this handoff rides with
+it). Legacy construction-era rows keep their `constructed`-marker exclusion
+machinery; old runs' retired panels are display-only losses. Three pushbacks
+stand on recorded grounds (rationale enforcement prompt-only; `Portfolio.jsx`
+not hand-edited — deviation noted in both design READMEs; `.metis` alignment
+user-run). Not yet aligned: BUILD/INDEX are still construction-era — the
+concrete edit list is in the record's §Disposition. Still pending elsewhere:
+prod residue cleanup; digest compression and `NUM_PREDICT_*` calibration behind
+a produced-book run.
 
 ## Open questions
 
-- **Portfolio-job business logic** — the user flagged possible business-logic
-  changes to discuss before anything else runs; scope unknown until that
-  conversation.
-- **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant still
-  rests on the 2026-07-16 verification, not re-probed.
+- **Share-based action sizing** ("trim from X to Y shares") — ruled as the only
+  legal action numeric, unbuilt; build when wanted, nothing blocks on it.
+- **`logic-flow-docs/portfolio-analysis-logic-flow.md`** carries pre-existing
+  v7-era drift (retired conviction-raise machinery still described) — needs its
+  own reconciliation pass someday.
+- **Live-evidence caveat** (carried) — the sector-P/E walk-back's holiday
+  warrant still rests on the 2026-07-16 verification, not re-probed.
 
 ## Where to start
 
-**Open with the user's business-logic discussion** — they want to talk through
-the portfolio job's logic and possible changes; do not schedule big-run
-attempt 3 until that lands. Alongside it, the two quick alignment edits:
-retire the sector-normalization slice from BUILD §Deferred by decision, and
-add the INDEX §Verification records row for
-`docs/verification/2026-08-13-big-run-attempt-2.md`. Attempt 3 follows once
-the discussion resolves.
+Work the tunnel-vision record's queue —
+`docs/verification/2026-08-14-tunnel-vision-slice.md` §Disposition. First the
+two user-run alignment edits: BUILD (retire construction bullets, record the
+tunnel-vision contract + planner, reword the `hard_forensic_bar` seam, retire
+the cash-residual item) and INDEX (re-point the §Step-7b / roll-up-and-
+construction rows, add the record's row). Then revise
+`docs/verification/big-run-watch-set.md` for the v9 shape. **Big-run attempt 3
+follows** — its first run is structurally full (the migration gate enforces
+it); keep the thought logs and the standing FMP quota / 429-ladder watches.
