@@ -3,7 +3,7 @@
 > This describes the designed job behavior.  
 > Some parts are not implemented yet.
 
-`Gate → Pull holdings → Classify positions → Compare with prior run → Load context → Analyze each holding → Build portfolio actions → Save → Display`
+`Gate → Pull holdings → Classify positions → Compare with prior run → Load context → Analyze each holding and decide its action → Roll up and score outcomes → Save → Display`
 
 ## Important terms
 
@@ -44,7 +44,8 @@
   - Does not consider the investor profile or other holdings.
 
 - **Portfolio action**
-  - What to do after considering the whole portfolio.
+  - What to do about the holding, decided from its own verdict plus the investor profile.
+  - Never considers other holdings — whole-book reconciliation is the future portfolio planner's.
   - Uses the ladder:
     - Sell all.
     - Trim.
@@ -70,10 +71,21 @@
   - High, Medium, or Low.
   - Separate from the letter grade and risk tier.
 
+- **Engine arm (baseline)**
+  - The deterministic side of a priced verdict.
+  - Sub-scores, letter, and scenario targets calculated by the engine.
+  - Mechanical stand-ins for outlook, conviction, and action.
+  - Always obeys its own caps and rules.
+
+- **Model arm (model view)**
+  - The model's own read of the same fields, authored freely.
+  - Structurally validated only; never checked against the engine's numbers.
+  - Scored against the engine baseline by the outcome scoreboard.
+
 - **Risk tier**
   - Deterministic estimate of investment risk.
   - High, Medium, or Low.
-  - Used in return requirements and sizing limits.
+  - Used in return requirements.
 
 - **Scenario**
   - Bear, base, or bull version of the future.
@@ -255,7 +267,7 @@
 
 - **Data retrieved from Schwab**
   - Every granted account’s positions.
-  - Symbol, CUSIP, asset type, and quantity.
+  - Symbol, description, asset type, and quantity.
   - Average cost and market value.
   - Option chains for held optionable stocks.
   - Volume, open interest, implied volatility, and greeks.
@@ -373,9 +385,9 @@
   - Current `DGS10` ten-year Treasury yield.
   - Current `DGS2` two-year Treasury yield.
   - Historical `DGS10` observations for valuation anchors.
-  - Energy and other commodity prices.
 
-- **Other run-level data**
+- **Designed run-level context (not yet loaded; each lands with its consumer)**
+  - Energy and other commodity prices from FRED.
   - Gold quote from FMP.
   - Futures positioning from CFTC.
   - Broad put/call statistics from CBOE.
@@ -426,12 +438,10 @@ Each completed holding is checkpointed separately.
   - Holding whose held-name refresh finds a material update.
 
 - **Holdings outside the final work list**
-  - Keep their previous intrinsic verdict and thesis ledger.
+  - Keep their previous intrinsic verdict, action, and thesis ledger.
   - Display the older analysis vintage.
-  - Final action may move toward Hold.
-  - A fresh aggregate may move Hold or an add action to Trim.
-  - It may not create a stronger add or escalate Trim to Sell all.
-  - A stale add action is automatically weakened to Hold.
+  - A stale add action is automatically weakened to Hold and marked rule-demoted.
+  - Nothing else may move a carried action without fresh analysis.
 
 - **Research reuse**
   - Reuse research only when under about four weeks old.
@@ -944,7 +954,8 @@ Each completed holding is checkpointed separately.
   - `validated_leading_indicator`:
     - Countable, dated, third-party indicator.
     - Must be absent from engine scoring.
-    - May support a one-level conviction raise.
+    - Reaches later passes as ledger-driver evidence.
+    - The old one-level conviction raise is retired.
   - `forensic_event`:
     - Primary-source hard forensic event.
     - Fraud can enter only through this validated path.
@@ -962,7 +973,7 @@ Each completed holding is checkpointed separately.
 
 - **Role-risk-only rule**
   - No target assumption.
-  - No conviction-raise field.
+  - No leading-indicator field.
   - Pure research consolidation only.
 
 - **Output**
@@ -1035,14 +1046,13 @@ Each completed holding is checkpointed separately.
     - At least one must be execution or economics.
     - Financing plus dilution alone is not enough.
 
-- **Pre-profit rule outputs**
+- **Pre-profit rule outputs (binding the engine arm; annotations beside the model arm)**
   - Repeated execution misses:
-    - Conviction capped at Medium.
+    - Engine conviction capped at Medium.
   - Constrained runway:
-    - Add and Add aggressively removed.
+    - Add and Add aggressively leave the engine action set.
   - Severe deterioration:
-    - Conviction capped at Low.
-    - Add actions removed.
+    - Engine conviction capped at Low.
     - Engine action set limited to Trim or Sell all.
   - Letter grade remains unchanged.
   - One metric alone cannot force a sale.
@@ -1063,27 +1073,86 @@ Each completed holding is checkpointed separately.
 
 ## Step 6f — Author the intrinsic verdict
 
-- **Data retrieved**
-  - Final engine calculations.
-  - Distilled or reused research.
-  - House view.
-  - Prior verdict and thesis ledger.
-  - Position delta and input delta.
-  - Option overlay and positioning context.
-  - Final pre-profit overlay when applicable.
-  - Investor profile is deliberately excluded.
+Two model calls run in this step.
+The interpretation call writes the intrinsic verdict; the action decision then picks the rung.
 
-- **Model determines for a priced holding**
-  - Interpretation of the engine’s letter grade.
-  - Base conviction.
-  - Optional one-level conviction raise.
+### Interpretation call — exact inputs
+
+- **Holding identity**
+  - Symbol, issuer name, quantity, total cost basis, and total market value.
+  - Position change since the prior run.
+- **Engine grade and sub-scores**
+  - The baseline letter, with a low-confidence marker when a sub-score was imputed.
+  - Quality, valuation, and risk scores.
+  - Momentum, labeled as market-setup context outside the letter.
+- **Risk tier and the capital-efficiency read**
+  - Hurdle state and hurdle rate.
+  - Framed as evidence to weigh, not an instruction.
+- **Fund context (funds only)**
+  - Expense ratio, US share, and composite P/E coverage.
+- **Computed metrics**
+  - Net margin, gross margin, revenue growth, and debt/equity.
+  - Daily return volatility and trailing return.
+  - P/E, P/S, and P/B.
+  - Missing values shown as gaps.
+- **Engine scenario targets**
+  - One-month and twelve-month bear/base/bull prices.
+  - The methodology text.
+- **Target provenance**
+  - Anchor form: rate-anchored, current-multiple carry, or raw-percentile fallback.
+  - Driver rung and consensus-row count.
+  - Flat-driver, clamp-flattened, and dispersion-floor flags.
+  - Guidance on how much signal each shape carries.
+- **Final pre-profit overlay (when applicable)**
+  - Engine states, matched rules, and the engine arm's conviction ceiling.
+- **Options activity**
+  - Put/call by volume and open interest, IV, and IV skew.
+  - Labeled proxy-only, never a grade input.
+- **Data gaps** from the dossier.
+- **Distilled research** (or the reused distillation).
+- **House view (when under one week old)**
+  - The latest report's Thesis, Investment Strategy, and Forward Outlook sections.
+  - Recent report stances: date, thesis stance, and risk posture.
+  - Scope-limited to horizon reads and market setup.
+- **Continuity block**
+  - Whether a prior verdict exists.
+  - A band-recalibration note when the grade bands changed since the prior letter.
+- **Retrospective (when a prior priced verdict exists)**
+  - The prior run's engine arm in full: grade, sub-scores, targets, conviction, outlook, action.
+  - The prior run's model arm in full, labeled as the model's own.
+  - The price move since the prior read.
+  - The holding's matured scoreboard lines.
+- **Prior thesis ledger**
+  - The whole ledger, with this run's engine condition evaluation.
+- **Deliberately excluded**
+  - The investor profile.
+  - The engine's current-run stand-in outlook, conviction, and action picks.
+  - Raw statements, filings, and price-bar series — only computed values and distilled research reach the model.
+- **Designed additions not yet in the prompt**
+  - The implied-expectations range.
+  - The narrative-versus-reality read.
+  - Absolute street opinions.
+  - The same-stock option overlay.
+
+### Interpretation call — what the model authors
+
+- **The model arm (unrestricted; scored later against the engine baseline)**
+  - Its own four sub-scores; the app derives its letter from them through the shared cutoffs.
+  - Its own one-month and twelve-month target bands.
+  - Its own conviction.
+  - A retrospective self-assessment.
+- **Shared verdict fields**
   - Short-, mid-, and long-term outlook.
-  - Which engine scenario is the justified base case.
   - Financial-health explanation.
-  - Updated thesis ledger.
-  - Intrinsic what-changed explanation.
+- **The rewritten thesis ledger**
+  - Standing thesis and key drivers.
+  - Bear, base, and bull monitor with probability weights.
+  - Quantitative and qualitative falsifiers.
+  - Add, trim, and sell triggers.
+  - Role-risk-only ledger uses condition-only scenarios and Trim/Sell triggers.
+- **The intrinsic what-changed explanation.**
 
-- **Model determines for a role-risk-only holding**
+- **For a role-risk-only holding the same call instead authors**
   - Portfolio-independent role.
   - Exposure and observable risk.
   - Expense drag and structural concerns.
@@ -1091,45 +1160,39 @@ Each completed holding is checkpointed separately.
   - Updated reduced fund ledger.
   - No letter, target, or conviction.
 
-- **Thesis-ledger rewrite**
-  - Standing thesis.
-  - Key drivers.
-  - Bear, base, and bull monitor.
-  - Quantitative and qualitative falsifiers.
-  - Add, trim, and sell triggers.
-  - Role-risk-only ledger uses condition-only scenarios.
-  - Role-risk-only triggers are Trim or Sell only.
-
-- **Conviction raise restriction**
-  - Must cite the typed research-only leading indicator.
-  - Indicator must confirm a named ledger driver.
-  - Maximum increase: one level.
-  - Price action cannot raise conviction.
-  - Narrative cannot raise conviction.
-  - A metric already scored by the engine cannot raise conviction again.
-
-- **Model restrictions**
-  - Cannot invent the grade.
-  - Cannot invent a target.
-  - Cannot alter engine calculations.
-  - Cannot alter an overlay value or state.
-  - Must obey an overlay conviction ceiling.
+- **Model boundaries**
+  - The engine arm is app-stamped; nothing the model returns can alter an engine value, overlay state, or monitor stamp.
+  - The model arm is its own: structurally validated only, never checked against the engine's numbers.
+  - Engine caps and ceilings bind the engine arm and annotate the model's departures; they never clamp the model's values.
   - Cannot see the investor profile.
   - Does not choose an action — the dedicated action decision below does.
 
-- **Output**
-  - Proposed intrinsic verdict.
-  - Rewritten thesis ledger.
-  - What-changed audit.
+### Action decision (second model call, same step)
 
-- **Action decision (second model call, same step)**
-  - Reads the finished verdict, the holding's own evidence, and the investor profile.
-  - The profile enters the job here and nowhere else.
-  - No whole-book input exists: no cash, sector weights, concentration, or other holdings.
-  - The engine's per-holding action set is shown as evidence, its own pick withheld.
-  - Returns one rung from the fixed ladder plus a one-sentence rationale.
+- The profile enters the job here and nowhere else.
+- Tunnel vision is stated in the prompt: no whole-book input exists, and a separate planning stage reconciles the book later.
+
+- **Exact inputs**
+  - Holding identity: symbol, name, quantity, total cost basis, and total market value.
+  - Unrealized P/L, with the tax framing flagged as a user consideration, never the mover.
+  - The prior run's action as continuity baseline — labeled as retired-contract history when authored before `portfolio-v9`.
+  - Priced digest: engine arm grade, sub-scores, risk tier, and dead-money state; model arm letter and sub-scores; the verdict's conviction and horizon outlook; implied twelve-month bear/base/bull moves as percentages against the current price; a one-line target provenance; the financial summary; the pre-profit overlay when present.
+  - Role-risk digest: class label, role, exposure tilt, expense drag, observable risk, structural flag, and evidence gaps.
+  - The engine's per-holding action set, shown as evidence with the engine's own pick withheld.
+  - The investor profile: objective, risk tolerance, horizon, and tax posture — without the cash row.
+- **Deliberately excluded**
+  - House view, research, computed metrics, and absolute target prices.
+  - Every book-level value: cash, weights, concentration, other holdings.
+- **Returns**
+  - One rung from the fixed ladder plus a one-sentence rationale.
   - No target weight, share count, or dollar figure — sizing belongs to the future portfolio planner.
   - A rung outside the engine set persists as authored, annotated on the audit.
+
+- **Output of Step 6f**
+  - Proposed intrinsic verdict with both arms.
+  - Rewritten thesis ledger.
+  - What-changed audit.
+  - The holding's action and rationale.
 
 ---
 
@@ -1138,11 +1201,10 @@ Each completed holding is checkpointed separately.
 - **Data retrieved**
   - No new data.
 
-- **Number validation**
-  - Returned letter must equal the engine letter.
-  - Returned targets must come from the engine scenario set.
-  - Returned overlay values and states must equal the engine result.
-  - Mismatch rejects the model response.
+- **Two-arm stamping rule**
+  - Engine values are app-stamped directly, never echoed through the model.
+  - Nothing the model returns can alter an engine grade, target, overlay value, or monitor stamp.
+  - The model arm's own numbers are structurally validated only, never compared against the engine's.
 
 - **What-changed validation**
   - Every claimed external change must map to:
@@ -1152,22 +1214,15 @@ Each completed holding is checkpointed separately.
   - Unsupported change becomes a labeled self-correction.
   - Or the response fails validation.
 
-- **Conviction validation**
-  - Recalculate final conviction in the app.
-  - Honor only a valid one-level leading-indicator raise.
-  - Drop and record unsupported raises.
-  - Apply soft cap after any raise:
-    - Maximum Medium.
-  - Apply hard forensic cap after any raise:
-    - Maximum Low.
-    - Add actions barred later.
-    - Engine stand-in action tilts toward exit.
-  - Apply pre-profit rules after any raise:
-    - Repeated miss: maximum Medium.
-    - Severe deterioration: maximum Low.
-    - Constrained runway or severe state: Add actions barred later.
-    - Severe state: engine action set is Trim or Sell all.
-  - Strictest matched conviction ceiling wins.
+- **Conviction and cap handling**
+  - The model's conviction is its own; no app recalculation, ceiling, or clamp touches it.
+  - The old one-level conviction raise and its re-derivation are retired.
+  - Matched cap rules record as audit annotations that bind the engine arm:
+    - Hard forensic trip: engine conviction capped at Low; Add rungs leave the engine set.
+    - Repeated execution miss: engine conviction capped at Medium.
+    - Severe deterioration: engine conviction capped at Low; engine set limited to Trim or Sell all.
+  - The strictest matched ceiling wins on the engine arm.
+  - A model value past a ceiling renders beside the recorded rule.
   - Model prose cannot create an overlay warning state.
   - Grade remains unchanged by these caps.
 
@@ -1245,7 +1300,8 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
 
 - **Decision-episode logic**
   - Open an episode when the recommendation state changes.
-  - Change may occur in the verdict branch, the action, or the thesis.
+  - Change may occur in the verdict branch or the action.
+  - A thesis-change leg is designed but dormant until the attribution validator lands.
   - Wording-only thesis edits do not open an episode.
   - A reaffirmation extends an active episode.
   - A matured episode does not remain active forever.
@@ -1256,7 +1312,7 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
   - Intrinsic-analysis vintage.
   - The action.
   - Legacy lean, divergence, and weight fields survive on construction-era episodes.
-  - Decision-time grade, conviction, targets, hurdle, and cap inputs when present.
+  - Decision-time grade, conviction, targets, hurdle, and cap inputs — both arms' values — when present.
   - Sector identity for later benchmark comparison.
   - Parameter version.
   - `model-chosen` or `rule-demoted` action source.
@@ -1287,9 +1343,9 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
   - Latest standalone holdings snapshot when available.
 
 - **Per-holding display**
-  - Backward-looking grade and sub-scores.
-  - Forward outlook and scenario targets.
-  - Conviction.
+  - Both arms side by side: the engine baseline and the model view.
+  - Backward-looking grade and sub-scores in each arm.
+  - Forward outlook, targets, and conviction in each arm, with divergence tags.
   - Standing thesis and scenario monitor.
   - The action and its rationale.
   - Financial summary.
@@ -1303,7 +1359,7 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
   - Observable risk.
   - Expense drag.
   - Structural flag and evidence gaps.
-  - Final action.
+  - The action and its rationale.
   - No empty grade or target fields.
 
 - **Portfolio display**
@@ -1447,8 +1503,8 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
 
 # The most important safety rules
 
-- The engine calculates every financial number.
-- The model interprets numbers; engine evidence annotates its choices, never bars them.
+- The engine calculates every financial number in the baseline arm; the model's own arm is scored against it.
+- Engine evidence annotates the model's choices, never bars them.
 - Missing floor-bearing data causes abstention, not a guessed grade.
 - The investor profile never changes the intrinsic verdict.
 - Quick check warns but never rewrites a recommendation.
