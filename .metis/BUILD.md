@@ -272,18 +272,17 @@ polled at step/request boundaries and mid-stream, never interrupting an in-fligh
 request. Two load-bearing UI invariants: a **run is never a report** (a cancel/fail
 removes nothing that was shown), and the terminal `run-finished` event is
 emitted **before** any job-history write error can propagate, so a DB failure
-can't strand the UI mid-run. The first invariant carries one deliberate,
-**built** exception on the Portfolio-runs history: a run whose Step 7b
-construction fails — an infeasible plan and a failed construction call alike —
-persists its per-holding work as a **degraded run**: still terminally failed,
-excluded from `latest_run`, and marked by a **persisted `constructed` marker
-authored at the persist seam** — mirrored into a store column so the exclusion
-filters in SQL without parsing a blob, and shipped on the listing row and the
-full-run payload so the UI's "no book" tag reads the marker rather than
-re-deriving run health from field shapes. The history therefore reads as
-persisted work rather than succeeded runs, and a degraded row's
-pre-construction actions can never become the next run's diff/carry/quick-check
-baseline. Corrupt run rows hold the same posture at read: an unparseable blob
+can't strand the UI mid-run. The first invariant carries one deliberate
+exception on the Portfolio-runs history, now **legacy-only**: the retired
+construction era persisted a construction-failed run's per-holding work as a
+**degraded run** — terminally failed, excluded from `latest_run`, marked by a
+persisted `constructed` marker mirrored into a store column (the exclusion
+filters in SQL without parsing a blob; the listing row and the full-run payload
+ship it, so the UI's "no book" tag reads the marker rather than re-deriving run
+health from field shapes). Those rows still list and open read-only, and a
+degraded row's pre-construction actions can never become the next run's
+diff/carry/quick-check baseline; since `portfolio-v9` no construction stage
+exists to fail that way. Corrupt run rows hold the same posture at read: an unparseable blob
 costs its own surface (skipped with a logged warning), never the history
 listing or the next run's baseline, and the refusal surfaces distinguish a
 degraded-only store from an unreadable one.
@@ -320,7 +319,11 @@ A second capability set: two on-demand, **local-model-only**, deliberately
 report's no-buy/sell stance). **Portfolio Analysis** grades the user's Schwab
 holdings and recommends actions + price targets, typing a role/risk read where a
 vehicle class is structurally unpriceable. **Trade Opportunities** (designed, not
-built) researches new ideas across a 3×3 risk×horizon matrix. Full design lives in
+built) researches new ideas across a 3×3 risk×horizon matrix. A future
+**portfolio planner** — the whole-book reasoning the tunnel-vision ruling moved
+out of Portfolio Analysis, reading its report beside the market report and
+Trade Opportunities — is the suite's named fourth job, not yet designed. Full
+design lives in
 `docs/local-models.md`, `web-research.md`, `schwab-integration.md`,
 `portfolio-analysis.md`, `portfolio-workflow.md` and `trade-opportunities.md`;
 this section carries only the decisions a plan must not work against.
@@ -394,12 +397,13 @@ this section carries only the decisions a plan must not work against.
   deferred) that frames the prescription, never which holdings or ideas qualify
   — nor the intrinsic verdict, whose profile-independence is declared **and
   input-isolation-enforced**: the intrinsic prompt carries no profile, which
-  reaches the model at whole-book construction only.
+  reaches the model at the per-holding action call only.
 - **Invariants governing the suite** (full specs in the docs; a plan must not
   work against these; each states its own reach):
   - **Deterministic finance, primary-source evidence** — a shared Rust engine
-    over FMP + keyless SEC EDGAR / FINRA / CBOE (the last two designed,
-    unbuilt; Stooq removed 2026-08-12 — FMP dated-EOD is the only price rung)
+    over FMP + keyless SEC EDGAR / FINRA / CBOE (the last two queued in the
+    Portfolio completion block;
+    Stooq removed 2026-08-12 — FMP dated-EOD is the only price rung)
     computes the engine arm for both jobs. Both are **two-arm**: the
     engine's values are the incorruptible baseline beside an **unrestricted
     model arm**, structurally validated only, the two scored head-to-head by a
@@ -432,7 +436,7 @@ this section carries only the decisions a plan must not work against.
 
 The suite's Rust modules sit under `src-tauri/src/portfolio/` — `pipeline` (the
 job spine), `dossier` (per-symbol evidence assembly), `engine` (all
-deterministic finance), plus `fund`, `listing`, `quick_check`, `construction`,
+deterministic finance), plus `fund`, `listing`, `quick_check`,
 `pre_profit`, `outcome`, `store` and `diff` — beside `local_model.rs`,
 `market_clock.rs` and `loopback_https.rs` at the crate root.
 
@@ -455,8 +459,6 @@ rather than re-deriving:
   tables.
 - `quick_check::sweep_tail` — the subset-capable sweep, built so later slices
   reuse the quick-check core instead of forking it.
-- `construction::merge_validated_actions` — the one place the final action,
-  sizing and attribution are set.
 - `pre_profit::clamp_conviction` — the overlay's engine-arm ceiling.
 - `store::load_episodes` / `prune_matured_episodes` — episode identity and
   lifecycle.
@@ -506,8 +508,9 @@ bands, and the acknowledgment transition. Selective re-analysis adds the seams
 later slices consume: per-holding vintages (`effective_vintage`), the persisted
 `action_source` vocabulary, and the subset sweep. Outcome learning adds the
 episode store and the `HoldingAudit.hurdle` snapshot the calibration-proposal
-slice will consume, and reserved the episode `lean` / `lean_divergence` pair
-that the construction stage now populates without a schema migration.
+slice will consume; its episode `lean` / `lean_divergence` pair is
+construction-era legacy — since `portfolio-v9` the action is the lean and the
+divergence stays `None`, the fields kept so old episodes decode.
 
 Deliberate reductions in the quick check, surfaced rather than latent so they
 are not mistaken for defects: FMP quote plus dated-EOD only (never the shared
@@ -521,17 +524,29 @@ falsifiers over a closed engine series surface, the engine-only **quick check**
 between runs, **selective re-analysis** with vintage-stamped carries, the
 deterministic **pre-profit execution/financing overlay** (producer-dormant;
 §Standing constraints carries what activating it requires), **outcome
-learning** over branch-typed decision episodes, the
-whole-book **construction stage** setting the final action and sizing, and the
-**two-arm verdict** across all of it. The intrinsic verdict is a discriminated
+learning** over branch-typed decision episodes, the per-holding **action
+call** setting each holding's final action, and the **two-arm verdict** across
+all of it. The job is **tunnel-vision by contract** (`portfolio-v9`, user
+ruling 2026-08-14; the record is
+`docs/verification/2026-08-14-tunnel-vision-slice.md`): it never compares
+holdings — the whole-book construction stage (7a aggregates + 7b synthesis)
+was removed whole, and each action is a rung + one-line rationale decided from
+the finished verdict, the holding's own evidence, and the investor profile
+(the profile's only entry point; 6f interpretation stays profile-blind).
+Whole-book questions — concentration, overlap, funding, sizing, the deployment
+stance — are the future portfolio planner's. The ledger's target-weight range
+and the `portfolio-weight` series retired with the stage (persisted conditions
+decode but are skipped whole, never unevaluable); a one-time migration gate
+**force-analyzes pre-v9 verdicts instead of carrying them**, so the first v9
+run is structurally full; any future action numeric must be holding-based
+(share counts — ruled, unbuilt). The intrinsic verdict is a discriminated
 union — a `priced` branch (grade, forward outlook, bidirectional conviction,
 portfolio action) and a `role_risk_only` branch for structurally unpriceable
 vehicle classes (no letter, targets, lean or conviction; a reduced {sell all,
-trim, hold} spine), so no fabricated number rides an unpriceable fund. The
-intrinsic verdict stays separated from the portfolio action, which is why
-"A-grade business, trim because oversized" is expressible; an allocation
-optimizer is **deferred, not adopted**. Designed and unbuilt: the **live
-research loop** and the **held-name research refresh lane**.
+trim, hold} spine), so no fabricated number rides an unpriceable fund — and it
+stays separated from the portfolio action, which the action call may move off
+the intrinsic read on holding evidence + profile. Designed and unbuilt: the
+**live research loop** and the **held-name research refresh lane**.
 
 **Trade Opportunities — designed, not built** (`docs/trade-opportunities.md`,
 `trade-opportunities-workflow.md`). Discovery runs through three feeders —
@@ -556,10 +571,12 @@ and picked-episode store.
 
 ## What remains
 
-The queue is governed by the **locked pre-test block** (standing user decision):
-no further live runs until the block is fully built, after which one **single big
-confirmation run** banks every stacked runtime confirmation at once. **The block
-is now fully built.**
+The queue is governed by the **pre-run completion bar** (standing user
+decision; widened 2026-08-14 from the original locked pre-test block, which was
+fully built): no further live runs until everything buildable for Portfolio
+Analysis is built — every designed leg except work gated on the live research
+loop or on realized-outcome evidence — after which one **single big
+confirmation run** banks every stacked runtime confirmation at once.
 
 ### Built
 
@@ -572,7 +589,8 @@ is now fully built.**
   Portfolio-runs history.
 - **Portfolio Analysis** — the per-holding spine, the fund path, the thesis
   ledger, the quick check, selective re-analysis, the pre-profit overlay,
-  outcome learning, the construction stage, and the two-arm verdict.
+  outcome learning, the per-holding action call (tunnel vision — the
+  construction stage is removed), and the two-arm verdict.
 - **The calibration tier** — adapter options wiring, the target function, the
   grade bands, and the interpretation-prompt contract, each tuned against the
   first live run's persisted dataset.
@@ -596,20 +614,52 @@ is now fully built.**
 
 ### Remaining, in order
 
-1. **The single big confirmation run** — the gate everything else waits
-   behind, with nothing left standing in front of it. Its checklist is
+1. **The Portfolio completion block** (user decision 2026-08-14; the FINRA /
+   CBOE deferral is reversed and folded in). A **tunnel-vision doc↔code
+   conformance walk precedes the block's first slice** (user decision
+   2026-08-14): every diff is ruled — docs-correct or code-correct — and the
+   wrong side fixed, on the piece-2/piece-3 walk pattern, so the block's
+   slices plan against verified contracts. Then, in build order:
+   - **Run evidence first** — the Step-5 run-level context loads with their
+     consumers (FRED energy + IMF metals + FMP gold into commodity-linked
+     holding evidence; CFTC positioning into the commodity/macro fund read;
+     the CBOE venue-level put/call backdrop; the sector/market benchmark
+     series), the **technology-event pre-flag** those benchmarks feed, and
+     the **hard-forensic producer** (filing-classified restatement / auditor
+     change) with its consumer seam — the engine's per-holding action-set
+     narrowing and the action call's evidence — wired in the same slice (the
+     research `forensic_event` channel joins when the loop lands).
+   - **Evidence legs** — the **FINRA short-interest** and **CBOE** evidence
+     legs (previously deferred by decision, un-deferred by this one), the
+     **implied-expectations range** and **narrative-vs-reality** producers,
+     and the **same-stock option overlay** dossier leg.
+   - **Infrastructure** — Step-6a semantic retrieval + per-holding summary
+     embeddings, per-holding **checkpoint/resume** (mid-run checkpointing
+     proper; only a cancel checkpoint exists today), and the **metric-level
+     6g validator** (which also wakes the outcome slice's dormant
+     standing-thesis and self-correction legs).
+   - **Fund depth last, behind its own design ruling** — the priced-fund
+     scenario-target formula (undesigned), the CEF price-vs-NAV leg, and
+     optionally N-PORT look-through.
+   Excluded by the same decision: everything gated on the live research loop
+   (which stays a later depth slice, its activation obligations riding with
+   it) and everything gated on realized-outcome evidence (grade
+   normalization, the calibration proposals, the derive-reads strata).
+2. **The single big confirmation run** — now waiting only on the Portfolio
+   completion block above. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
-   now the FMP quota-consumption and 429-ladder watches); read `data-health`
-   early, since several items resolve off that surface alone. The first attempt
-   failed at Step 7b after completing the per-holding pass, and persisted
-   nothing — evidence in `docs/verification/2026-08-10-big-run-attempt-1.md`.
-   The repair and the pre-run work behind it are fully built: a repeat
-   failure at 7b preserves its evidence as a degraded run instead of
-   discarding the pass, the named-violation re-run repairs only the violating
-   names, and the output budget and adapter seams are instrumented. What
-   stays open behind the run (digest compression) is owned by that record's
-   §Disposition, not this brief.
-2. **Trade Opportunities** — designed, not built, and waiting behind the whole
+   now the FMP quota-consumption and 429-ladder watches) — **pending a v9
+   revision before attempt 3**, since several watches target machinery the
+   tunnel-vision ruling deleted; read `data-health` early, since several items
+   resolve off that surface alone. Attempts 1 and 2 both failed in the
+   construction stage that no longer exists (evidence in
+   `docs/verification/2026-08-10-big-run-attempt-1.md` and
+   `docs/verification/2026-08-13-big-run-attempt-2.md`); attempt 3 exercises
+   the v9 shape, and its first run is structurally full — the migration gate
+   force-analyzes every pre-v9 verdict. What stays open behind the run
+   (digest compression, `NUM_PREDICT_*` calibration) is owned by the attempt
+   records' §Disposition, not this brief.
+3. **Trade Opportunities** — designed, not built, and waiting behind the whole
    block. The design is settled and the paid FMP shapes are live-verified, so
    implementation planning codes against verified shapes. Five hard-trigger
    acceptance cases are parked for this slice and have no other home: a carried
@@ -618,7 +668,7 @@ is now fully built.**
    raises a warning only; a debut hard trigger becomes a shadow rejection; and a
    soft trigger caps the stand-in while preserving conviction, with no forced
    archival.
-3. **The two remaining Portfolio depth slices** — the **live research loop** and
+4. **The two remaining Portfolio depth slices** — the **live research loop** and
    the **held-name research refresh lane**, which rides with it. The shipped
    schemas don't preclude either, but the research loop carries the pre-profit
    producer's activation obligation (§Standing constraints) and must discharge
@@ -629,25 +679,8 @@ is now fully built.**
 These ride the queue rather than any one slice. They are collected here because
 each is unbuilt work that no scheduled slice will pick up on its own.
 
-- **Checkpoint/resume** — docs-promised but unbuilt; the ledger persists only at
-  run end. The narrower case of a run whose *construction* fails is now ruled and
-  owned by the Step 7b repair, so what stays unowned here is mid-run
-  checkpointing proper.
-- **The metric-level 6g validator** — only the ledger legs exist. The
-  input-delta and what-changed attribution validator remains designed, and now
-  also gates the outcome slice's dormant legs (the standing-thesis creation leg
-  and the self-correction read).
-- **The `hard_forensic_bar` consumer seam** — the construction spine's field is
-  producer-dormant *and* consumer-unread (nothing reads it in `feasible_actions`,
-  the digest, or validation). When the forensic producer lands, its consumer
-  seam needs wiring in the same slice.
-- **Cash-residual drawdown** — the joint-feasibility solve never draws the cash
-  residual down to fund buys; funded buys enter the implied book as external
-  growth. Inert while the fixed preset leaves cash unconstrained, this becomes a
-  real asymmetry the moment configurable profiles land, and must be built with
-  them.
 - **Configurable investor profiles** — user config for the profile preset,
-  deferred. The cash-residual drawdown above is gated on it.
+  deferred.
 - **Paid-FMP baseline enrichment** — three additive report signals the paid key
   unlocks (calendar consensus + surprise, historical valuation percentile/band +
   performance trend, IPO/M&A froth), all engine-derived and outside the
@@ -703,8 +736,9 @@ Manual CSV/paste import supplements holdings but is not built. The
 off attempt 2's letters): the no-A distribution is honest — quality and
 valuation sub-scores anticorrelate structurally — so normalization returns
 only on realized-outcome evidence, never on a letter distribution. An
-**allocation optimizer** is deferred, not adopted. The FINRA
-and CBOE evidence legs are designed, unbuilt. Trade Opportunities' blind-first
+**allocation optimizer** is deferred, not adopted — sizing and the optimizer
+question are the portfolio planner's domain since the tunnel-vision ruling. The FINRA and CBOE evidence legs' deferral was reversed 2026-08-14 — they are
+queued in the Portfolio completion block. Trade Opportunities' blind-first
 diagnostic is reserved diagnostic-only, its execution deliberately unspecified
 until built. The fund slice's remaining drafted constants — the coverage and US
 guards, tier premiums, add floors, and CIK-cache staleness — stay pinned until

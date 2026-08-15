@@ -175,28 +175,29 @@ build status lives in `BUILD.md`.*
 - Portfolio Analysis job — portfolio-analysis.md
 - Portfolio Analysis workflow — portfolio-workflow.md
 - Holding verdict schema — portfolio-analysis.md §The holding verdict
-- Two-arm verdict — Portfolio form (the boundary statement is single-homed) — portfolio-analysis.md §The holding verdict, §Intrinsic verdict, §Portfolio roll-up and construction, §Outcome learning, §Storage and display, §Starting parameters; portfolio-workflow.md §Step 6d, §Step 6f, §Step 6g, §Step 7b, §Step 8; local-models.md §Context-memory discipline; storage.md §Local Analysis Suite Storage
-- Intrinsic-verdict vs portfolio-action separation — portfolio-analysis.md §Portfolio roll-up and construction; portfolio-workflow.md §Step 7
+- Two-arm verdict — Portfolio form (the boundary statement is single-homed) — portfolio-analysis.md §The holding verdict, §Intrinsic verdict, §Portfolio action, §Outcome learning, §Storage and display, §Starting parameters; portfolio-workflow.md §Step 6d, §Step 6f, §Step 6g, §Step 7; local-models.md §Context-memory discipline; storage.md §Local Analysis Suite Storage
+- Intrinsic-verdict vs portfolio-action separation — portfolio-analysis.md §Intrinsic verdict, §Portfolio action; portfolio-workflow.md §Step 6f
 - Intrinsic-verdict discriminated union — portfolio-analysis.md §Intrinsic verdict, §Asset eligibility; portfolio-workflow.md §Step 6f; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
-- Action-sizing spine — portfolio-analysis.md §The holding verdict; portfolio-workflow.md §Step 7a
-- Capital-efficiency / dead-money exit + sunk-cost guard — portfolio-analysis.md §The holding verdict, §Portfolio roll-up and construction, §Starting parameters; portfolio-workflow.md §Step 6b, §Step 6e, §Step 7; configuration.md §Investor Profile
+- Portfolio action — the per-holding action call — portfolio-analysis.md §Portfolio action; portfolio-workflow.md §Step 6f
+- Action sizing (retired) — portfolio-analysis.md §Starting parameters, §Portfolio roll-up
+- Capital-efficiency / dead-money exit + sunk-cost guard — portfolio-analysis.md §The holding verdict, §Portfolio action, §Starting parameters; portfolio-workflow.md §Step 6b, §Step 6e, §Step 6f; configuration.md §Investor Profile
 - Portfolio three-layer engine — portfolio-analysis.md §The per-holding pipeline; portfolio-workflow.md
 - Grade bands & parameter versioning — portfolio-analysis.md §Starting parameters; data-sources.md §SEC EDGAR, §Portfolio Analysis — endpoint surface
 - Interpretation-prompt contract — portfolio-analysis.md §The holding verdict; portfolio-workflow.md §Step 6f
 - Position thesis ledger — portfolio-analysis.md §The position thesis ledger, §Storage and display; portfolio-workflow.md §Step 6a, §Step 6f, §Step 6g; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
 - Ledger executability validation — portfolio-workflow.md §Step 6f, §Step 6g; portfolio-analysis.md §The position thesis ledger, §The quick check
 - Portfolio quick check — portfolio-analysis.md §The quick check; portfolio-workflow.md §The quick check; interface.md §Connection status
-- Selective re-analysis + mixed-vintage safety — portfolio-analysis.md §Triggering; portfolio-workflow.md §Step 6, §Step 7b
+- Selective re-analysis + mixed-vintage safety — portfolio-analysis.md §Triggering; portfolio-workflow.md §Step 6, §Step 7
 - Evidence events — portfolio-analysis.md §Starting parameters
-- Portfolio pre-profit execution / financing overlay — portfolio-analysis.md §The per-holding pipeline, §Starting parameters; portfolio-workflow.md §Step 6b–6g, §Step 7a; data-sources.md §Portfolio Analysis — endpoint surface; storage.md §Local Analysis Suite Storage
-- Portfolio outcome learning — portfolio-analysis.md §Outcome learning, §Starting parameters; portfolio-workflow.md §Step 7a, §Step 8; storage.md §Local Analysis Suite Storage
-- Portfolio hard-forensic outcome — portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6g, §Step 7a; trade-opportunities.md §Starting parameters; storage.md §Local Analysis Suite Storage
-- What-changed audit (intrinsic half at Step 6g, action half at Step 7b) — portfolio-analysis.md §What changed, §The holding verdict; portfolio-workflow.md §Step 6g, §Step 7b
-- Degraded-run persistence + constructed marker — portfolio-workflow.md §Step 7b; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
+- Portfolio pre-profit execution / financing overlay — portfolio-analysis.md §The per-holding pipeline, §Starting parameters; portfolio-workflow.md §Step 6b–6g; data-sources.md §Portfolio Analysis — endpoint surface; storage.md §Local Analysis Suite Storage
+- Portfolio outcome learning — portfolio-analysis.md §Outcome learning, §Starting parameters; portfolio-workflow.md §Step 7; storage.md §Local Analysis Suite Storage
+- Portfolio hard-forensic outcome — portfolio-analysis.md §Portfolio action, §Starting parameters; portfolio-workflow.md §Step 6g; trade-opportunities.md §Starting parameters; storage.md §Local Analysis Suite Storage
+- What-changed audit — portfolio-analysis.md §What changed; portfolio-workflow.md §Step 6g
+- Degraded-run persistence + constructed marker (construction-era legacy) — portfolio-analysis.md §Failure posture; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
 - Holdings normalization / book-level netting — schwab-integration.md §What is pulled, §Manual import (supplement); portfolio-workflow.md §Step 2; portfolio-analysis.md §Holdings change tracking
 - Holdings change tracking — portfolio-analysis.md §Holdings change tracking
 - Net-short equity handling — portfolio-analysis.md §Asset eligibility, §Triggering, §Holdings change tracking, §Outcome learning
-- Not-rated positions in roll-up — portfolio-analysis.md §Asset eligibility, §Portfolio roll-up and construction; schwab-integration.md §What is pulled
+- Not-rated positions in roll-up — portfolio-analysis.md §Asset eligibility, §Portfolio roll-up; schwab-integration.md §What is pulled
 - Fund path — portfolio-analysis.md §Asset eligibility
 - Fund strategy classification & routing — portfolio-analysis.md §Asset eligibility; portfolio-workflow.md §Step 3, §Step 6b
 - Listing-resolution guard — portfolio-analysis.md §Asset eligibility, §Starting parameters; portfolio-workflow.md §Step 3, §Step 6a
@@ -264,7 +265,7 @@ build status lives in `BUILD.md`.*
 - Rate-anchor failure rule — portfolio-analysis.md §Failure posture, §Starting parameters, §The quick check; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §ATO: the audit flow; data-sources.md §Portfolio Analysis — endpoint surface (FRED), §Trade Opportunities — endpoint surface (FRED)
 - Factor normalization basis — trade-opportunities-workflow.md §Step 5c; trade-opportunities.md §Starting parameters, §The lenses; storage.md §Local Analysis Suite Storage
 - ET session dating — data-sources.md (intro session-dating rule); portfolio-analysis.md §The quick check, §Triggering, §Outcome learning; portfolio-workflow.md §The quick check
-- Run data-health roll-up — portfolio-analysis.md §Portfolio roll-up and construction, §Starting parameters; interface.md §Main Layout
+- Run data-health roll-up — portfolio-analysis.md §Portfolio roll-up, §Starting parameters; interface.md §Main Layout
 - Re-check class resolution contract — trade-opportunities-workflow.md §Step 3c, §Step 5h; portfolio-workflow.md §Step 6g
 - Per-item checkpoint/resume + research caching, both jobs — portfolio-analysis.md §Failure posture; portfolio-workflow.md §Step 6; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §Step 5
 - Research loop & context management — web-research.md §The research loop and context management
@@ -282,7 +283,7 @@ build status lives in `BUILD.md`.*
 - Local analysis suite configuration — configuration.md §Local Analysis Suite Configuration, §Research Context Management
 - Local analysis suite storage + per-feature retention — storage.md §Local Analysis Suite Storage
 - Local suite pages — interface.md §Main Layout
-- Suite sorting & views — interface.md §Main Layout, §Persistent Warning Area; portfolio-analysis.md §Storage and display; portfolio-workflow.md §Step 9; trade-opportunities.md §Storage and display; trade-opportunities-workflow.md §Step 10; market-signal-design-system (SKILL.md, README.md §Analytical-register controls, colors_and_type.css, ui_kits Analytical.jsx, preview/analytical-controls.html)
+- Suite sorting & views — interface.md §Main Layout, §Persistent Warning Area; portfolio-analysis.md §Storage and display; portfolio-workflow.md §Step 8; trade-opportunities.md §Storage and display; trade-opportunities-workflow.md §Step 10; market-signal-design-system (SKILL.md, README.md §Analytical-register controls, colors_and_type.css, ui_kits Analytical.jsx, preview/analytical-controls.html)
 
 ## Verification records
 
@@ -300,6 +301,7 @@ the run's own dated record follows it.*
 - Deterministic value-chain correctness — verification/2026-08-05-piece3-value-chain-walk.md
 - Residual conformance + off-spine doc coverage — verification/2026-08-07-scoped-conformance-check.md
 - Big confirmation run — watch set (forward-looking; the run's dated record follows) — verification/big-run-watch-set.md; BUILD.md §What remains
-- Big confirmation run — attempt 1 — verification/2026-08-10-big-run-attempt-1.md; portfolio-workflow.md §Step 7b
-- Big confirmation run — attempt 2 (analysis, rulings, and the fix slices) — verification/2026-08-13-big-run-attempt-2.md; portfolio-analysis.md §Portfolio roll-up and construction, §Starting parameters
+- Big confirmation run — attempt 1 — verification/2026-08-10-big-run-attempt-1.md; portfolio-analysis.md §Failure posture
+- Big confirmation run — attempt 2 (analysis, rulings, and the fix slices) — verification/2026-08-13-big-run-attempt-2.md; portfolio-analysis.md §Portfolio roll-up, §Starting parameters
 - Stooq removal — decision, evidence, and removal-slice inventory — verification/2026-08-12-stooq-removal-decision.md; BUILD.md §What remains (Built)
+- Tunnel-vision slice — ruling, build inventory, and per-finding dispositions — verification/2026-08-14-tunnel-vision-slice.md; portfolio-analysis.md §Portfolio action, §Portfolio roll-up
