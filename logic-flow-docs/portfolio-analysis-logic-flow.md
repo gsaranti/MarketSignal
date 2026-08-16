@@ -193,43 +193,43 @@
 - **Charles Schwab**
   - Current holdings.
   - Quantities, cost basis, market value, and instrument identity.
-  - Option chains and greeks for held stocks.
+  - Option chains for held stocks — fetched per holding at Step 6a; greeks are not parsed.
 
 - **FMP**
   - Company profiles.
-  - Financial statements and ratios.
-  - Estimates, revisions, earnings, dividends, and live quotes.
+  - Financial statements; the ratio endpoints are designed, not yet pulled.
+  - Estimates, earnings, dividends, and live quotes; the revision signal is designed.
   - Deep historical stock prices.
-  - Sector and market benchmark prices.
+  - Sector and market benchmark prices — designed, not yet loaded.
   - Outcome-label price history.
-  - Insider and congressional activity.
-  - Peers, segments, ratings, and company news.
+  - Insider and congressional activity — designed, not yet pulled.
+  - Peers, segments, and ratings — designed, not yet pulled; company news is pulled by the quick check.
   - Fund information and sector/country weights.
   - Sector valuation data used for supported funds.
 
 - **SEC EDGAR**
   - Official filings and XBRL company facts.
-  - Restatements and auditor changes.
-  - Optional fund holdings through N-PORT.
+  - Restatements and auditor changes — the designed hard-forensic producer.
+  - Optional fund holdings through N-PORT — designed.
 
 - **FRED**
   - Two-year and ten-year Treasury yields.
   - Historical ten-year yields for target calculations.
-  - Energy and commodity prices.
+  - Energy and commodity prices — designed, not yet loaded.
 
-- **FINRA**
+- **FINRA (designed, not yet wired)**
   - Short-interest level, trend, and days-to-cover.
 
-- **CFTC**
+- **CFTC (designed, not yet loaded)**
   - Futures positioning for commodity, index, rate, and currency funds.
 
-- **CBOE**
+- **CBOE (designed, not yet loaded)**
   - Broad put/call market sentiment.
 
-- **SearXNG**
+- **SearXNG (designed — research slice)**
   - Primary web search for holding research.
 
-- **Tavily**
+- **Tavily (designed — research slice)**
   - Backup web search when SearXNG fails.
 
 - **Local storage**
@@ -269,10 +269,8 @@
   - Every granted account’s positions.
   - Symbol, description, asset type, and quantity.
   - Average cost and market value.
-  - Option chains for held optionable stocks.
-  - Volume, open interest, implied volatility, and greeks.
 
-- **Manual data**
+- **Manual data (designed, not built)**
   - Optional imported holdings.
   - Supplements Schwab holdings.
   - Never replaces the Schwab connection requirement.
@@ -285,20 +283,16 @@
   - Determine the final net long or short side.
   - Preserve original rows for audit and display.
 
-- **Options calculations**
-  - Put/call ratio by volume.
-  - Put/call ratio by open interest.
-  - Implied-volatility and skew read.
-  - Link held options to the same stock.
-  - Classify the overlay:
-    - Covered call.
-    - Protective put.
-    - Collar.
-    - Other.
+- **Option chains**
+  - Fetched per holding at Step 6a, never here — a selective run's carried tail spends no chain call.
+  - Volume, open interest, and implied volatility; greeks are not parsed.
+  - Put/call ratios and the IV/skew read are computed at dossier assembly.
+  - Linking held options to the same stock and classifying the overlay (covered call, protective put, collar) is designed, not built.
 
 - **Failure logic**
   - Failed holdings pull → fail the run.
-  - Missing or stale option chain → typed options gap.
+  - Chain fetch failure or malformed body → typed options gap.
+  - An empty chain on an un-optioned name is a quiet market fact, not a gap.
   - Option-chain failure does not fail the run.
 
 - **Model**
@@ -306,7 +300,6 @@
 
 - **Output**
   - One normalized portfolio snapshot.
-  - Option activity and overlay records.
   - Snapshot pinned for this run.
 
 ---
@@ -417,7 +410,7 @@
 
 The following sequence runs once for every holding in the work list.
 
-Each completed holding is checkpointed separately.
+Each completed holding is designed to checkpoint separately; as-built only the between-holdings cancellation check exists.
 
 ## Work-list logic
 
@@ -428,6 +421,7 @@ Each completed holding is checkpointed separately.
 - **Selective run — initial list**
   - User-selected holdings.
   - Every new holding.
+  - Every holding with no prior verdict to carry.
 
 - **Selective run — automatic safety additions**
   - Holding with an attention flag.
@@ -435,7 +429,8 @@ Each completed holding is checkpointed separately.
   - Holding whose long/short side reversed.
   - Holding with an unexamined evidence event.
   - Stale holding carrying a trim or sell-all action.
-  - Holding whose held-name refresh finds a material update.
+  - Holding whose carried verdict predates `portfolio-v9` — the one-time migration force-include.
+  - Holding whose held-name refresh finds a material update (designed — research slice).
 
 - **Holdings outside the final work list**
   - Keep their previous intrinsic verdict, action, and thesis ledger.
@@ -499,7 +494,7 @@ Each completed holding is checkpointed separately.
     - Keep its evidence for the full research pass.
     - Do not refill the two-holding cap after the loop starts.
 
-- **Resume behavior**
+- **Resume behavior (designed, not built)**
   - Resume uses the interrupted run’s pinned holdings and context.
   - No fresh Schwab pull occurs.
   - Starting resume window: about 48 hours.
@@ -511,21 +506,21 @@ Each completed holding is checkpointed separately.
 - **Stock data retrieved from FMP**
   - Company profile and listing identity.
   - Income statement, balance sheet, and cash-flow statement.
-  - Ratios, key metrics, owner earnings, and enterprise value.
-  - Discounted cash-flow valuation cross-check.
-  - Financial scores.
-  - Estimates and revisions.
-  - Street targets and rating history as opinion evidence.
+  - Ratios, key metrics, owner earnings, and enterprise value — designed, not yet pulled.
+  - Discounted cash-flow valuation cross-check — designed.
+  - Financial scores — designed.
+  - Estimates (the forward consensus); the revision signal is designed.
+  - Street targets and rating history as opinion evidence — designed.
   - Earnings and dividends.
-  - Insider and congressional activity.
-  - Peers, float, and revenue segments.
-  - Live quote and company-news seeds.
+  - Insider and congressional activity — designed.
+  - Peers, float, and revenue segments — designed.
+  - Live quote; company-news seeds are designed (research lane).
   - Deep dated price history.
 
 - **Stock data retrieved elsewhere**
   - SEC filings and XBRL facts.
-  - FINRA short interest.
-  - Schwab option activity and any same-stock option overlay.
+  - FINRA short interest — designed.
+  - Schwab option activity; the same-stock option-overlay link is designed.
 
 - **Fund data retrieved from FMP**
   - `etf/info`.
@@ -534,7 +529,7 @@ Each completed holding is checkpointed separately.
   - Sector P/E snapshots.
   - Historical sector P/E data.
 
-- **Optional fund data**
+- **Optional fund data (designed)**
   - SEC N-PORT fund holdings.
   - Used for concentration and single-name look-through.
   - Never required for the normal fund floor.
@@ -544,7 +539,7 @@ Each completed holding is checkpointed separately.
   - Prior thesis ledger.
   - Position delta.
   - Shared market context.
-  - Portfolio Analysis memory for this holding.
+  - Portfolio Analysis memory for this holding — semantic recall designed, not built.
 
 - **Stock identity validation**
   - Match Schwab identity to an FMP canonical symbol.
@@ -560,15 +555,15 @@ Each completed holding is checkpointed separately.
   - Leveraged or inverse fund → role-risk-only path.
   - Option-overlay fund → structural path-dependence flag; other priceability rules decide the route.
   - Mutual fund without usable weights → role-risk-only path.
-  - Closed-end fund → include price-versus-NAV analysis.
+  - Closed-end fund → the price-versus-NAV leg is designed; as-built it routes as a generic fund.
 
-- **Embedding model**
+- **Embedding model (designed — no 6a semantic recall runs as-built)**
   - Converts a holding-specific query into a vector.
   - Searches only Portfolio Analysis memory.
   - Retrieves relevant prior analysis.
   - Performs no investment reasoning.
 
-- **Embedding failure**
+- **Embedding failure (designed)**
   - Skip semantic recall.
   - Keep the directly loaded prior verdict and ledger.
   - Record a degraded-input flag.
@@ -599,7 +594,8 @@ Each completed holding is checkpointed separately.
   - Compared with sector bands and the company’s history.
 
 - **Risk score**
-  - Volatility, leverage, drawdown, liquidity, and related risks.
+  - Realized volatility and leverage (debt/equity).
+  - Drawdown enters the risk tier, not this score; no liquidity series is on this job's surface.
   - Higher score means safer.
 
 - **Designed letter weighting**
@@ -623,11 +619,12 @@ Each completed holding is checkpointed separately.
 ### Supported equity-fund calculations
 
 - **Expense drag**
-  - Treat the expense ratio as an annual return cost.
+  - The expense ratio rides as evidence for the interpretation call.
+  - No return figure is expense-adjusted deterministically.
 
 - **Exposure tilt**
   - Use sector and country weights.
-  - Compare the exposure with the house view.
+  - The house-view comparison happens at the interpretation call, not here.
 
 - **Valuation calculation**
   - Read each sector’s earnings yield from its P/E.
@@ -645,8 +642,9 @@ Each completed holding is checkpointed separately.
   - The neutral value is not presented as fund quality.
 
 - **Open design item**
-  - The priced-fund target formula is not yet defined.
-  - It must be settled before the full fund slice is implemented.
+  - The shipped flat-driver form (spot × composite yield, flat across scenarios) is the settled stopgap.
+  - A scenario-differentiated priced-fund target formula is not yet designed.
+  - It must be settled before the fund-depth slice is implemented.
 
 ### Scenario-target calculation for priced stocks
 
@@ -657,7 +655,8 @@ Each completed holding is checkpointed separately.
 
 - **Build bear, base, and bull driver cases**
   - Use low, middle, and high consensus values.
-  - Use revision dispersion when the spread is unavailable.
+  - A missing or half-published spread holds both legs at the mid and records a flat driver.
+  - Revision-dispersion widening is designed, waiting on the revision feed.
   - Clamp extreme growth assumptions.
 
 - **Calculate valuation multiples**
@@ -682,21 +681,20 @@ Each completed holding is checkpointed separately.
   - Unprofitable.
   - High volatility or drawdown.
   - High leverage.
-  - Illiquid.
 
 - **Priced stock — Low risk when all low-risk conditions hold**
   - Large company.
   - Profitable.
   - Lower volatility and leverage.
-  - Liquid.
 
 - **Otherwise**
   - Medium risk.
   - Wholly missing tier inputs also produce Medium with a gap flag.
+  - The canonical rule's liquidity legs are not on this job's data surface and never fire.
 
 - **Priced equity fund**
-  - High for leveraged/inverse structure, high volatility, deep drawdown, or thin liquidity.
-  - Low for low volatility, normal liquidity, and no structural flag.
+  - High for leveraged/inverse structure, high volatility, or deep drawdown.
+  - Low for low volatility and no structural flag.
   - Otherwise Medium.
 
 - **Role-risk-only fund**
@@ -798,15 +796,16 @@ Each completed holding is checkpointed separately.
 ### Continuity calculations
 
 - **Input delta**
-  - Compare current engine values with the prior run.
-  - Include position and house-view changes.
+  - Position change and house-view age.
+  - Prior-run values carried for the interpretation call to compare.
+  - An engine-computed metric comparison is designed, not built.
 
 - **Ledger checks**
   - Evaluate quantitative falsifiers and action triggers.
   - Advance streaks only on a new observation.
   - Preserve condition state by app-controlled condition ID.
 
-- **Technology-event pre-flag**
+- **Technology-event pre-flag (designed, not built)**
   - Compare the stock’s move with its sector.
   - Adjust the threshold for the stock’s volatility and elapsed time.
   - Large unexplained relative move adds a research topic.
@@ -846,6 +845,11 @@ Each completed holding is checkpointed separately.
 ---
 
 ## Step 6c — Research the holding
+
+- **As-built: stubbed**
+  - No web research runs today; a single research-deferred note is recorded.
+  - Every run to date has graded on the deterministic financials and the house view.
+  - The loop below is the research slice's design.
 
 - **Skipped when**
   - Research reuse qualified for this holding.
@@ -931,6 +935,11 @@ Each completed holding is checkpointed separately.
 
 ## Step 6d — Distill the research
 
+- **As-built**
+  - One unconstrained non-thinking condense of the stub note.
+  - No evidence-ledger leg, hierarchy, or output schema until research lands.
+  - A role-risk-only holding makes no research or distillation call at all.
+
 - **Data retrieved**
   - No new external data.
 
@@ -983,10 +992,14 @@ Each completed holding is checkpointed separately.
 
 ## Step 6e — Recalculate targets using validated research
 
+- **As-built**
+  - The research-assumption legs below are designed; they land with the research loop.
+  - Today the step's work is finalizing the pre-profit overlay at the engine seam.
+
 - **Data retrieved**
   - No new data.
 
-- **Validation**
+- **Validation (designed — research loop)**
   - Reject malformed, unsourced, or nonnumeric claims.
   - `supplement` may fill only a missing structured value.
   - `supersede` may replace structured data only when:
@@ -996,7 +1009,7 @@ Each completed holding is checkpointed separately.
   - Otherwise structured data wins.
   - Record every accepted or rejected rule.
 
-- **Calculations**
+- **Calculations (designed — research loop)**
   - Recalculate the affected scenario targets.
   - Recalculate the dead-money hurdle result.
   - Leave backward-looking grade sub-scores unchanged.
@@ -1144,6 +1157,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 - **Shared verdict fields**
   - Short-, mid-, and long-term outlook.
   - Financial-health explanation.
+  - Price-target rationale.
 - **The rewritten thesis ledger**
   - Standing thesis and key drivers.
   - Bear, base, and bull monitor with probability weights.
@@ -1241,7 +1255,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 
 - **Output**
   - Validated intrinsic verdict and thesis ledger.
-  - Completed per-holding checkpoint.
+  - Completed per-holding checkpoint (designed, not built).
 
 ---
 
@@ -1280,14 +1294,14 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
   - Every intrinsic verdict.
   - Every portfolio action and its rationale.
   - Thesis ledgers and condition evaluation states.
-  - Attention flags and analysis vintages.
+  - Analysis vintages (attention flags live only in the quick-check store).
   - Portfolio roll-up.
   - Sources and timestamps.
   - Distilled research and reuse decisions.
-  - Held-name refresh eligibility, priority, result, and validation.
-  - Whether the refresh forced a normal full pass.
+  - Held-name refresh eligibility, priority, result, and validation (designed — research slice).
+  - Whether the refresh forced a normal full pass (designed — research slice).
   - Engine calculations and input deltas.
-  - Accepted and rejected research assumptions.
+  - Accepted and rejected research assumptions (designed — research loop).
   - Accepted and rejected pre-profit operating observations.
   - Period-keyed pre-profit observation history.
   - Required backfill periods, sources, completion state, and gaps.
@@ -1318,14 +1332,14 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
   - `model-chosen` or `rule-demoted` action source.
 
 - **Retention**
-  - Keep newest 10 Portfolio Analysis runs.
+  - Keep newest 30 Portfolio Analysis runs.
   - Keep outcome episodes independently until their labels mature.
   - Freeze matured episodes into their own capped archive.
 
 - **Embedding model**
-  - Embed each holding’s standing thesis, intrinsic read, and action.
-  - Store vectors only in Portfolio Analysis memory.
   - Embed matured calibration lessons.
+  - Per-holding thesis, read, and action embeddings are designed, not built.
+  - Store vectors only in Portfolio Analysis memory.
   - Failed embedding drops only that memory row.
   - Persisted run still succeeds.
 
@@ -1414,7 +1428,7 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
 
 - **Fund data refreshed**
   - `etf/info`.
-  - Sector and country weights when exposure is relevant.
+  - Sector and country weights — always fetched; the gating is evaluation-side.
 
 - **Calculations**
   - Evaluate every machine-checkable falsifier and trigger.
@@ -1422,23 +1436,24 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
   - Filing condition → only after a new filing-style observation.
   - Re-anchor stored v2 multiples using current `DGS10`.
   - Recalculate the dead-money hurdle using current price and `DGS2`.
-  - Check whether price moved outside the stored bear–bull band.
+  - Check whether price's relation to the stored bear–bull band changed from its authored stamp.
   - Detect new evidence events.
 
 - **Per-family result**
   - `fresh_clear`:
     - Retrieval succeeded.
+    - Every condition the family covers actually evaluated.
     - No condition fired.
   - `flagged`:
-    - Confirmed condition, trigger, hurdle change, or band break fired.
+    - Confirmed condition, trigger, hurdle change, or band-relation change fired.
   - `unknown`:
-    - Retrieval failed.
-    - Available cache could not prove the family current.
+    - Retrieval failed and the cache could not prove the family current.
+    - Or a covered condition could not be resolved this sweep.
 
 - **Warning logic**
   - Confirmed falsifier or trigger → amber attention flag.
   - Newly failing dead-money read → amber attention flag.
-  - Price outside the stored scenario band → amber attention flag.
+  - Band relation changed since authoring (left, re-entered, or crossed the band) → amber attention flag.
   - New earnings, filing, revision, or qualifying news → quiet evidence-event badge.
   - Fund mandate, expense, or major exposure change → quiet evidence-event badge.
 

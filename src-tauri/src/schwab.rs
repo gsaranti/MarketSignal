@@ -33,7 +33,7 @@ pub struct Position {
 }
 
 /// A snapshot of the holdings pulled from the connected account: the positions, the
-/// cash / buying power, and the account's total value. The most recent pull is
+/// cash balance, and the account's total value. The most recent pull is
 /// stored so the portfolio is viewable without re-fetching (`docs/storage.md
 /// §Local Analysis Suite Storage`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

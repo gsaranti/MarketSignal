@@ -615,11 +615,11 @@ confirmation run** banks every stacked runtime confirmation at once.
 ### Remaining, in order
 
 1. **The Portfolio completion block** (user decision 2026-08-14; the FINRA /
-   CBOE deferral is reversed and folded in). A **tunnel-vision doc↔code
-   conformance walk precedes the block's first slice** (user decision
-   2026-08-14): every diff is ruled — docs-correct or code-correct — and the
-   wrong side fixed, on the piece-2/piece-3 walk pattern, so the block's
-   slices plan against verified contracts. Then, in build order:
+   CBOE deferral is reversed and folded in). The **tunnel-vision doc↔code
+   conformance walk that gated the block's first slice ran 2026-08-15** —
+   31 verified findings, zero code fixes, every diff ruled and the doc side
+   fixed (`docs/verification/2026-08-15-tunnel-vision-conformance-walk.md`) —
+   so the block's slices plan against verified contracts. In build order:
    - **Run evidence first** — the Step-5 run-level context loads with their
      consumers (FRED energy + IMF metals + FMP gold into commodity-linked
      holding evidence; CFTC positioning into the commodity/macro fund read;
@@ -638,9 +638,11 @@ confirmation run** banks every stacked runtime confirmation at once.
      proper; only a cancel checkpoint exists today), and the **metric-level
      6g validator** (which also wakes the outcome slice's dormant
      standing-thesis and self-correction legs).
-   - **Fund depth last, behind its own design ruling** — the priced-fund
-     scenario-target formula (undesigned), the CEF price-vs-NAV leg, and
-     optionally N-PORT look-through.
+   - **Fund depth last, behind its own design ruling** — the
+     scenario-differentiated priced-fund target formula (undesigned; the
+     shipped flat-driver v2-over-composite form is the settled stopgap,
+     ruled 2026-08-15), the CEF price-vs-NAV leg, and optionally N-PORT
+     look-through.
    Excluded by the same decision: everything gated on the live research loop
    (which stays a later depth slice, its activation obligations riding with
    it) and everything gated on realized-outcome evidence (grade

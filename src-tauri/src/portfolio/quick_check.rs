@@ -91,8 +91,8 @@ pub enum SweepFamily {
 /// A family's sweep state: **`fresh_clear`** — successfully checked and nothing
 /// fired (a new observation evaluated clean, or a successful retrieval confirming
 /// no unseen observation exists); **`flagged`**; or **`unknown`** — the retrieval
-/// failed (or the stored basis is missing), so the sweep could not vouch either
-/// way. `unknown` is load-bearing for selective runs: the holding force-includes
+/// failed, the stored basis is missing, or a condition the family covers could
+/// not be resolved this sweep, so the sweep could not vouch either way. `unknown` is load-bearing for selective runs: the holding force-includes
 /// exactly like a flagged one (`docs/portfolio-analysis.md §Triggering`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -642,7 +642,7 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
         "ok",
         (!price_errors.is_empty()).then(|| {
             format!(
-                "{} of {} price refreshes failed; those holdings sweep from last values",
+                "{} of {} price refreshes failed; those holdings' market family reads unknown",
                 price_errors.len(),
                 pass.targets.len()
             )

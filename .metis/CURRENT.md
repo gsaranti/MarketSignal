@@ -2,40 +2,57 @@
 
 ## What happened
 
-Post-slice cleanup and a queue revision. **Codex rounds 4–6** over the shipped
-tunnel-vision slice: round 4 mostly re-raised already-fixed findings (refuted
-against the tree; the rationale-enforcement pushback held, fourth raise);
-rounds 5–6 surfaced real whole-book residue in comments/prose — all fixed
-across six files + `portfolio-analysis.md`, Codex approved, pushed `784c1e9`.
-**BUILD/INDEX aligned to v9** (user-run authorization): construction bullets
-retired, the tunnel-vision contract + portfolio planner recorded, INDEX rows
-re-pointed, the record's verification row added.
-**`logic-flow-docs/portfolio-analysis-logic-flow.md` fully reconciled** — the
-queued v7-era drift (conviction-raise machinery, pre-v7 "letter must equal
-engine" validation) purged, the two-arm contract made explicit, and **exact
-per-model-call input lists** added (from the prompt builders); Step 5 now marks
-built vs designed context loads. Along the way it was established that **6c
-research is stubbed in code** — every live run so far graded on financials +
-house view only. **Two user decisions (2026-08-14)**: the pre-run bar is
-widened — a **Portfolio completion block** (everything buildable except
-research-loop-gated and outcome-gated work; FINRA/CBOE un-deferred) now
-precedes big-run attempt 3, with build order in BUILD §What remains; and a
-**tunnel-vision doc↔code conformance walk precedes the block's first slice**.
+The **tunnel-vision doc↔code conformance walk** ran and closed (queued
+2026-08-14, run 2026-08-15): seven parallel passes on the piece-2 pattern over
+`portfolio-analysis.md`, `portfolio-workflow.md`, `storage.md` §Local Analysis
+Suite Storage, `interface.md` §Main Layout, and the fresh logic-flow rewrite,
+every surviving finding re-verified by the orchestrating session before
+batching. **31 verified findings — zero code fixes**: 26 doc corrections
+(19 plain + 7 as-built marking gaps) ruled doc-fix wholesale and applied, and
+5 open rulings walked per-item and applied same-day. The tunnel-vision
+contract itself conformed property-by-property (profile isolation, the action
+call's full contract, book-term-free feasible set, weight retirement,
+migration gate, episodes) — nowhere had code drifted from a doc that was
+right. Highlights: run retention read 10 where the ruled value is 30; the
+feasible-set bullet still carried the 25% cap + headroom residue; the research
+stub is now plainly marked at 6c/6d/6e in both step docs; the logic-flow's
+quick-check band and `fresh_clear` semantics were corrected to the built
+contract. **R27 ruling (2026-08-15)**: the shipped flat-driver
+v2-over-composite fund target form is the settled stopgap — the fund-depth
+group's undesigned item is a **scenario-differentiated** priced-fund formula.
+Record: `docs/verification/2026-08-15-tunnel-vision-conformance-walk.md`.
+BUILD/INDEX aligned same-session (user-run authorization).
+**Two Codex rounds** then reviewed the applied batch: round 1's six findings
+adopted (a missed edit — the phantom quick-check price fail-soft — plus the
+sibling `unknown` definitions, the band-flag UI label now "band relation
+changed", five propagation misses, two stale source comments; one provenance
+claim refuted), round 2's four adopted (checkpoint/resume and the
+research / input-delta / pre-flag build status marked designed in the
+canonical `portfolio-analysis.md` spots the walk's own exclusion list had
+kept invisible; this handoff refreshed).
+Both rounds' dispositions are in the record's §Review.
 
 ## Current state
 
-All session work committed and pushed at close (code fixes `784c1e9`; the
-logic-flow rewrite and metis alignment ride the session-end commits). The
-queue on disk: conformance walk → completion block (context loads + pre-flag +
-forensic producer; evidence legs incl. FINRA/CBOE; 6a recall +
+The walk's batch is **uncommitted** in the working tree: seven doc files
+(`portfolio-analysis.md`, `portfolio-workflow.md`, `storage.md`,
+`interface.md`, `data-sources.md`, `data-portability.md`, the logic-flow
+doc), the new verification record, three Rust files with comment / message
+fixes (`quick_check.rs`, portfolio `mod.rs`, `schwab.rs`),
+`PortfolioView.vue`'s band-flag label, and the metis alignment. Gates green
+at this state: cargo 1,066 passed / 0 failed (28 ignored), clippy 0,
+`npm run build` clean, 46 + 238 frontend tests (round 2's edits were
+docs + metis only, so those results stand). The queue on disk: completion block (context loads +
+pre-flag + forensic producer; evidence legs incl. FINRA/CBOE; 6a recall +
 checkpoint/resume + 6g validator; fund depth) → big run (watch-set v9 revision
 first) → Trade Opportunities → research loop + refresh lane.
 
 ## Open questions
 
-- **Priced-fund scenario-target formula** — undesigned; needs its ruling
-  before the block's fund-depth group can be planned (the one undesigned item
-  inside the block).
+- **Scenario-differentiated priced-fund target formula** — undesigned;
+  sharpened from "priced-fund formula" by the 2026-08-15 R27 ruling (the
+  shipped flat-driver form is the settled stopgap). Needs its ruling before
+  the block's fund-depth group can be planned.
 - **Share-based action sizing** — ruled as the only legal action numeric,
   unbuilt; nothing blocks on it.
 - **Live-evidence caveat** (carried) — the sector-P/E walk-back's holiday
@@ -43,10 +60,8 @@ first) → Trade Opportunities → research loop + refresh lane.
 
 ## Where to start
 
-Run the **tunnel-vision doc↔code conformance walk** on the piece-2/3 pattern:
-sweep `portfolio-analysis.md` + `portfolio-workflow.md` (plus `storage.md`
-§Local Analysis Suite Storage, `interface.md` §Main Layout, and verify the
-fresh logic-flow rewrite against code), record findings in a dated
-`docs/verification/` record, rule each diff docs-correct or code-correct, fix
-the losing side. Then `/metis-plan-task` the block's first slice (Step-5
-context loads + technology pre-flag + hard-forensic producer).
+Commit the walk batch if it still sits uncommitted. Then `/metis-plan-task`
+the completion block's first slice — the Step-5 run-level context loads with
+their consumers, the technology-event pre-flag, and the hard-forensic producer
+with its consumer seam — planning against the contracts the walk just
+verified.

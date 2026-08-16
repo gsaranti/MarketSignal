@@ -25,7 +25,7 @@ Market Signal
 │   └── Research Archive
 │
 ├── Portfolio (local analysis suite)
-│   ├── Holdings (Pull-holdings view-only refresh; Run analysis always re-pulls / CSV import supplement)
+│   ├── Holdings (Pull-holdings view-only refresh; Run analysis always re-pulls / CSV import supplement — designed, not built)
 │   ├── Holdings sort bar (value / $ gain / % gain / cash invested — reorders the cards in place)
 │   ├── Quick check (engine-only: re-checks every thesis ledger → per-card attention flags)
 │   ├── Per-holding verdicts (standing thesis + intrinsic verdict [grade + forward outlook, or an unpriceable fund's role/risk read] + portfolio action + thesis monitor; selection control · attention flag · analysis-vintage stamp)
@@ -140,6 +140,7 @@ Operational triggers for each category live in their canonical homes:
 ## Connection status (local suite)
 
 Both local-suite backends the user self-hosts — the **Ollama daemon** and the **SearXNG instance** — expose a live connection indicator in their Settings section, built on the existing **`ConnectionTestRow`** pattern (a per-dependency "Test connection" control backed by the `test_connection` command, already used for the OpenAI/Anthropic/FMP/FRED/Tavily credentials).
+The SearXNG half of this section is **designed, not built** — it lands with the web-research slice; as-built only the Ollama indicator exists.
 Each indicator reflects the **last connectivity check** — a manual *Test Connection* or the connectivity check run when a **job is launched** — Ollama's run-gate check, SearXNG's pre-run probe ([§Pre-run web-research notice](#pre-run-web-research-notice-local-suite)), *not* at app startup (a run that uses neither the model nor web research — ATO's **Quick Audit**, Portfolio's **Quick check** — triggers neither check, so it updates neither indicator); with no startup probe, the indicator reads **untested** until the user tests or runs.
 The two are surfaced **asymmetrically**, mirroring their roles in the execution gate ([portfolio-workflow.md §Step 1](portfolio-workflow.md#step-1-job-start-and-gate)):
 
@@ -161,6 +162,7 @@ No separate "connections dashboard" exists — Settings holds the live per-backe
 
 ## Pre-run web-research notice (local suite)
 
+This whole section is **designed, not built** — it lands with the web-research slice, and as-built no probe or modal runs (the research stage is stubbed, so no run spends web research today).
 Because SearXNG is **off the execution gate** (§Connection status), a web-research run *starts* even with no web backend — but the fallback isn't free (it spends metered Tavily quota, or it degrades the analysis), and the consequences differ by job, so the app asks for **informed consent before spending the run**.
 The probe and modal apply **only to run types that can do web research** — Portfolio Analysis (full or selective — the gate is job-type-based: a selective run may end up reusing all cached research, but reuse is decided per holding *inside* the run ([portfolio-analysis.md §The per-holding pipeline](portfolio-analysis.md#the-per-holding-pipeline) Step 3), so consent is asked up front), Trade Opportunities **Discover (DTO)**, and **ATO Deep Audit**; **ATO Quick Audit and Portfolio's Quick check are engine-only (no model call, no web research), so they trigger no SearXNG probe and no modal**.
 For a web-research run, when it is launched the app runs a **live connectivity probe of the SearXNG instance** — an actual request to the endpoint, *not* merely a check that the endpoint value is set (which would be meaningless, since the endpoint has a default) — and if the instance **can't serve search** (unreachable, *or* reachable but misconfigured — e.g. an HTTP 403 with JSON output disabled, equally unusable), a **confirm modal** states what the user is about to run with and offers **Proceed / Cancel**; the probe result also updates the SearXNG Settings indicator.

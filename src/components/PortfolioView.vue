@@ -208,7 +208,7 @@ const FLAG_LABELS: Record<FlagTrigger, string> = {
   "confirmed-falsifier-breach": "falsifier breached",
   "fired-trigger": "trigger fired",
   "hurdle-newly-fails": "hurdle newly fails",
-  "price-outside-band": "price outside band",
+  "price-outside-band": "band relation changed",
 };
 function flagLabel(trigger: FlagTrigger): string {
   return FLAG_LABELS[trigger] ?? trigger;

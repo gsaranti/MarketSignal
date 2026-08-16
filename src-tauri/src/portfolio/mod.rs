@@ -1208,10 +1208,11 @@ pub struct DataHealth {
     /// pre-field runs.
     #[serde(default)]
     pub peak_prompt: Option<crate::local_model::PromptUsage>,
-    /// Infrastructure degradation worth surfacing prominently: unrecovered
-    /// deep-history failures, any current-multiple carry, a run-wide DGS10
-    /// history gap, or context pressure on any local call — a raw-percentile
-    /// fallback from genuinely thin issuer history is counted but not flagged.
+    /// Infrastructure degradation worth surfacing prominently: deep-history
+    /// failures, any current-multiple carry, a run-wide DGS10 history gap,
+    /// context pressure on any local call, or a length-stopped generation — a
+    /// raw-percentile fallback from genuinely thin issuer history is counted
+    /// but not flagged.
     pub attention: bool,
     /// The one-line deterministic summary the roll-up card renders.
     pub summary: String,

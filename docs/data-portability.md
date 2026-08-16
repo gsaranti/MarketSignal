@@ -151,7 +151,7 @@ The **Import** action in the same Settings section:
 7. Refresh in place: every store-reading surface (reports list + pane, portfolio state, research folders, warnings, job status) re-fetches after the load.
    No restart is needed — commands open the database per call, and the backend keeps no cross-command cache to go stale.
 
-Retention needs no special handling **at import**: the archive was produced by a machine that already enforced the caps (30 reports, 14 snapshots, 10 portfolio runs), so it arrives within them and the import itself prunes nothing.
+Retention needs no special handling **at import**: the archive was produced by a machine that already enforced the caps (30 reports, 14 snapshots, 30 portfolio runs), so it arrives within them and the import itself prunes nothing.
 The next run then prunes normally at the cap; the pass is a no-op only while the archive is still under it.
 One consequence worth stating, because it is a real behavior difference rather than a neutral one: the reports' **insertion order is not portable**.
 It is a local database artifact, like the re-derived `markdown_path`, so the export orders reports by date and the import reinserts them in that order — which means the report-retention keep window (insertion order — [storage.md §SQLite](storage.md#sqlite)) follows the archive's *date* order from then on.

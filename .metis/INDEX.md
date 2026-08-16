@@ -305,3 +305,4 @@ the run's own dated record follows it.*
 - Big confirmation run — attempt 2 (analysis, rulings, and the fix slices) — verification/2026-08-13-big-run-attempt-2.md; portfolio-analysis.md §Portfolio roll-up, §Starting parameters
 - Stooq removal — decision, evidence, and removal-slice inventory — verification/2026-08-12-stooq-removal-decision.md; BUILD.md §What remains (Built)
 - Tunnel-vision slice — ruling, build inventory, and per-finding dispositions — verification/2026-08-14-tunnel-vision-slice.md; portfolio-analysis.md §Portfolio action, §Portfolio roll-up
+- Tunnel-vision doc↔code conformance walk — findings, rulings, and applied corrections — verification/2026-08-15-tunnel-vision-conformance-walk.md
