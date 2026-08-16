@@ -965,11 +965,11 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - No new external data.
 
 - **Normal case**
-  - One consolidation call, its output **keyed by topic** so each topic's group persists as that topic's next-run seed.
+  - One consolidation call, its output **keyed by topic** — globally reconciled, since the one call sees every topic — so each topic's group persists as that topic's next-run seed.
 
 - **Large-input loop**
-  - Distill each topic tree separately (**tier-1**) — each tier-1 object persists as that topic's next-run seed.
-  - Run one final combining call (**tier-2**) over the tier-1 objects into the one object interpretation reads.
+  - Distill each topic tree separately (**tier-1**) — feeding the reduce, not persisted raw.
+  - Run one final combining call (**tier-2**) over the tier-1 objects: it emits the one combined object interpretation reads **and** the per-topic seed layer reconciled to the global winners — that reconciled layer, not the raw tier-1 output, persists as the next-run seeds.
   - Preserve citations through both levels.
 
 - **Merging the seeded prior (Layer 2 cache)**
