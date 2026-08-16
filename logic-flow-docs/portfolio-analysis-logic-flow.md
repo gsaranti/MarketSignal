@@ -44,8 +44,9 @@
   - Does not consider the investor profile or other holdings.
 
 - **Portfolio action**
-  - What to do about the holding, decided from its own verdict plus the investor profile.
-  - Never considers other holdings — whole-book reconciliation is the future portfolio planner's.
+  - The holding's final disposition — one ladder rung plus a one-line rationale.
+  - The profile-aware counterpart to the intrinsic verdict.
+  - Selected by the action decision; never weighs other holdings — whole-book reconciliation is the portfolio planner's.
   - Uses the ladder:
     - Sell all.
     - Trim.
@@ -54,12 +55,15 @@
     - Add aggressively.
 
 - **Action decision**
-  - The rung the holding deserves by itself, decided with the investor profile.
-  - No portfolio concentration, overlap, or cash is considered.
+  - The model call that selects the portfolio action.
+  - Weighs the holding's own verdict against the investor profile.
+  - The only place the investor profile enters the job.
+  - Considers no portfolio concentration, overlap, or cash.
 
 - **Grade**
   - A–F summary of the business’s current quality, valuation, and risk.
   - It is mainly backward-looking.
+  - This holds in both arms — the model authors its own grade, but its forward view lives in the forward outlook, not the letter.
   - Momentum does not belong in the designed letter grade.
 
 - **Forward outlook**
@@ -114,7 +118,7 @@
 
 - **Action trigger**
   - A prewritten condition for adding, trimming, or selling.
-  - Sizing is deferred to the future portfolio-planner job.
+  - Sizing is deferred to the portfolio-planner job.
 
 - **Condition ID**
   - App-controlled identity for a machine-checkable condition.
@@ -143,8 +147,8 @@
   - Unselected safe holdings may keep their earlier intrinsic verdicts.
 
 - **Research reuse**
-  - Reuse of recent distilled web research.
-  - Allowed only when it is under about four weeks old and nothing important changed.
+  - Prior distilled web research, under about four weeks old, used to seed and merge into this run's research.
+  - It never skips the research loop for an analyzed holding — the loop runs full each run that holding is analyzed.
 
 - **Held-name research refresh**
   - Tiny current-search check before the main holding loop.
@@ -285,15 +289,9 @@
 
 - **Option chains**
   - Fetched per holding at Step 6a, never here — a selective run's carried tail spends no chain call.
-  - Volume, open interest, and implied volatility; greeks are not parsed.
-  - Put/call ratios and the IV/skew read are computed at dossier assembly.
-  - Linking held options to the same stock and classifying the overlay (covered call, protective put, collar) is designed, not built.
 
 - **Failure logic**
   - Failed holdings pull → fail the run.
-  - Chain fetch failure or malformed body → typed options gap.
-  - An empty chain on an un-optioned name is a quiet market fact, not a gap.
-  - Option-chain failure does not fail the run.
 
 - **Model**
   - None.
@@ -327,7 +325,7 @@
 
 - **Not-rated exposure rule**
   - No fake grade is created.
-  - Weighing a not-rated position's risk against the book is the future portfolio planner's job.
+  - Weighing a not-rated position's risk against the book is the portfolio planner's job.
 
 - **Model**
   - None.
@@ -388,11 +386,18 @@
 
 - **Logic**
   - Omit the house view when older than one week.
-  - Use `DGS10` to adjust valuation multiples.
-  - Use `DGS2` for return hurdles.
   - Normalize rates into decimal form.
   - Share this context across all holdings.
-  - Keep the investor profile away from intrinsic analysis.
+
+- **What each context input feeds (later steps, not here)**
+  - House view and recent report summaries → the Step 6f interpretation call.
+  - Investor profile → the Step 6f action decision only — never intrinsic analysis.
+  - `DGS10` → valuation multiples at Step 6b.
+  - `DGS2` → return hurdles at Step 6b.
+  - Commodity prices and the gold quote → commodity-linked holding evidence (designed).
+  - CFTC positioning → a commodity / macro fund's underlying-positioning read (designed).
+  - CBOE put/call → a venue-level options-sentiment backdrop: broad-market context, never a per-name signal (designed).
+  - Sector and market benchmarks → the input delta's technology-event pre-flag at Step 6b (designed).
 
 - **Failure rule**
   - `DGS2` or `DGS10` still unavailable after retries → fail the run.
@@ -425,12 +430,19 @@ Each completed holding is designed to checkpoint separately; as-built only the b
 
 - **Selective run — automatic safety additions**
   - Holding with an attention flag.
+    - The quick check confirmed a problem — a fired falsifier or trigger, a newly-failing dead-money read, or a changed band relation — so the carried verdict is re-analyzed instead of trusted.
   - Holding whose Quick-check family is `unknown`.
+    - A required signal family couldn't be checked (retrieval failed and no cache proved it current), so the sweep can't vouch for the carried verdict and refuses to let it stand on silence.
   - Holding whose long/short side reversed.
+    - A long-to-short or short-to-long flip inverts the thesis by construction, so no long-side verdict can carry across it and the position re-enters as what it now is.
   - Holding with an unexamined evidence event.
+    - New material information the current verdict never saw (earnings, a material filing, or a large estimate revision) landed, and the ledger's anticipated conditions can't catch what nobody anticipated.
   - Stale holding carrying a trim or sell-all action.
+    - An over-age exit can't be safely softened (weakening risk-reducing advice on stale evidence raises risk) nor left standing as current advice for an irreversible act, so re-analysis is the only honest resolution.
   - Holding whose carried verdict predates `portfolio-v9` — the one-time migration force-include.
+    - Its action was authored under the retired whole-book contract and may still encode portfolio context the tunnel-vision ruling removed, so one forced pass restamps it and the check never fires again.
   - Holding whose held-name refresh finds a material update (designed — research slice).
+    - A source-backed material change to a named thesis driver or falsifier pulls the otherwise-carried holding in for a full pass.
 
 - **Holdings outside the final work list**
   - Keep their previous intrinsic verdict, action, and thesis ledger.
@@ -438,20 +450,18 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - A stale add action is automatically weakened to Hold and marked rule-demoted.
   - Nothing else may move a carried action without fresh analysis.
 
-- **Research reuse**
-  - Reuse research only when under about four weeks old.
-  - Position must be unchanged.
-  - No attention condition may have fired.
-  - No technology-event pre-flag may exist.
-  - No new evidence event may exist.
-  - No held-name refresh may have found a material update.
-  - Steps 6c and 6d are skipped when reuse qualifies.
-  - Financial calculations and interpretation still run fresh.
+- **Research reuse (seed and merge — never a skip)**
+  - The research loop and distillation run in full every run for every analyzed holding.
+  - There is no lighter-vs-heavier case, and Steps 6c and 6d are never skipped.
+  - If non-expired (< ~4 weeks) cached research exists for the holding, it is used two ways: to seed this run's loop and to merge into the results.
+  - The seed is assembled deterministically — no extra model call — and injected per research topic (only claims within their own ~4-week vintage, bounded by a per-topic budget), so each topic sees the slice of prior findings and ledger conditions that belong to it and the loop hunts what changed.
+  - The merge happens at distillation (single-pass or hierarchical): fresh findings supersede cached ones on conflict, sources are de-duplicated, a cached claim past ~4 weeks by its own vintage expires, and interpretation still reads one compact object.
+  - If no non-expired cache exists, the loop simply runs cold.
 
 - **Held-name refresh lane**
   - Runs before the per-holding loop.
   - Maximum: two holdings per run.
-  - Looks only at holdings that appear reusable from information available before Step 6b or would otherwise stay carried.
+  - Looks only at holdings that would otherwise stay carried, judged from information available before Step 6b.
   - Requires a named qualitative driver or falsifier in the thesis ledger.
   - Checks one ledger item per selected holding.
   - Priority:
@@ -473,8 +483,7 @@ Each completed holding is designed to checkpoint separately; as-built only the b
     - Correct ledger item.
     - Source and publication date.
   - `material_update` result:
-    - Invalidates research reuse.
-    - Adds the holding to a selective run.
+    - Force-includes the otherwise-carried holding into the selective run.
     - Sends the evidence into the normal full research pass.
   - Other results:
     - Change nothing.
@@ -520,7 +529,15 @@ Each completed holding is designed to checkpoint separately; as-built only the b
 - **Stock data retrieved elsewhere**
   - SEC filings and XBRL facts.
   - FINRA short interest — designed.
-  - Schwab option activity; the same-stock option-overlay link is designed.
+
+- **Option chains**
+  - Fetched per holding from Schwab here, never in the Step-2 pull.
+  - Volume, open interest, and implied volatility; greeks are not parsed.
+  - Put/call ratios and the IV/skew read are computed at dossier assembly.
+  - Linking held options to the same stock and classifying the overlay (covered call, protective put, collar) is designed, not built.
+  - Chain fetch failure or malformed body → typed options gap.
+  - An empty chain on an un-optioned name is a quiet market fact, not a gap.
+  - Option-chain failure does not fail the run.
 
 - **Fund data retrieved from FMP**
   - `etf/info`.
@@ -851,14 +868,17 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - Every run to date has graded on the deterministic financials and the house view.
   - The loop below is the research slice's design.
 
-- **Skipped when**
-  - Research reuse qualified for this holding.
+- **Seeded when (Layer 2 cache)**
+  - Non-expired (< ~4 weeks) cached distilled findings exist for this holding.
+  - The orchestrator injects the relevant slice of those findings and the holding's ledger conditions into each topic's opening pass — deterministically, with no extra model call, filtered to claims still within their own ~4-week vintage and bounded by a per-topic seed budget.
+  - The loop then targets what changed rather than rebuilding the baseline; a cached prior never causes it to be skipped.
 
 - **Data retrieved**
   - Current web sources.
   - SearXNG first.
   - Tavily if SearXNG fails.
   - Dossier facts and company-news seeds.
+  - Previously-fetched pages under about four weeks old come from the document cache (Layer 1) instead of the network, carrying their original retrieval timestamp; new URLs are fetched live.
 
 - **Stock research topics**
   - Competitive and business position.
@@ -950,6 +970,12 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - Distill each topic tree separately.
   - Run one final combining call.
   - Preserve citations through both levels.
+
+- **Merging the seeded prior (Layer 2 cache)**
+  - When cached distilled findings seeded this run, the prior compact object joins the consolidation as one more already-distilled input — the single consolidation call when the run is small, the final tier-2 reduce when it goes hierarchical.
+  - Fresh findings supersede cached ones on conflict; sources are de-duplicated so nothing is double-counted.
+  - A cached claim past about four weeks by its own vintage, not re-confirmed this run, expires rather than riding forward; each surviving claim keeps its vintage and whether it is fresh or carried.
+  - The output is one compact object, overlap collapsing rather than accumulating.
 
 - **Model**
   - Consolidates evidence.
@@ -1122,7 +1148,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Put/call by volume and open interest, IV, and IV skew.
   - Labeled proxy-only, never a grade input.
 - **Data gaps** from the dossier.
-- **Distilled research** (or the reused distillation).
+- **Distilled research** — the merged object (this run's fresh findings plus any seeded prior).
 - **House view (when under one week old)**
   - The latest report's Thesis, Investment Strategy, and Forward Outlook sections.
   - Recent report stances: date, thesis stance, and risk posture.
@@ -1199,7 +1225,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Every book-level value: cash, weights, concentration, other holdings.
 - **Returns**
   - One rung from the fixed ladder plus a one-sentence rationale.
-  - No target weight, share count, or dollar figure — sizing belongs to the future portfolio planner.
+  - No target weight, share count, or dollar figure — sizing belongs to the portfolio planner.
   - A rung outside the engine set persists as authored, annotated on the audit.
 
 - **Output of Step 6f**
@@ -1262,7 +1288,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 # Step 7 — Roll up the run and score past decisions
 
 The construction stage that used to live here — whole-book constraints, a final-action synthesis, and a joint-feasibility check — was removed by the tunnel-vision ruling (2026-08-14).
-Each holding's action is now final when its per-holding loop finishes; whole-book reasoning belongs to the future portfolio-planner job.
+Each holding's action is now final when its per-holding loop finishes; whole-book reasoning belongs to the portfolio-planner job.
 
 ## Roll-up
 
@@ -1297,7 +1323,7 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
   - Analysis vintages (attention flags live only in the quick-check store).
   - Portfolio roll-up.
   - Sources and timestamps.
-  - Distilled research and reuse decisions.
+  - Distilled research and seeded-vs-cold decisions.
   - Held-name refresh eligibility, priority, result, and validation (designed — research slice).
   - Whether the refresh forced a normal full pass (designed — research slice).
   - Engine calculations and input deltas.
@@ -1525,6 +1551,6 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
 - Quick check warns but never rewrites a recommendation.
 - A failed Quick-check retrieval becomes `unknown`, never clean.
 - Selective runs cannot strengthen stale actions without fresh analysis.
-- Actions are rung-only; sizing belongs to the future portfolio-planner job.
+- Actions are rung-only; sizing belongs to the portfolio-planner job.
 - Outcome history may propose calibration changes but never applies them automatically.
 - The job never places an order.

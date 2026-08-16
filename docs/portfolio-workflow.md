@@ -138,7 +138,8 @@ Before the loop, the quick-check evaluation runs over the remaining tail and **e
 Holdings left outside the resulting work-list carry their prior intrinsic verdict, action, and ledger forward, **vintage-stamped**, into the persisted run.
 Steps 1–5 run whole-book regardless (the pull, eligibility, diff, and shared context are cheap), so the diff baseline and snapshot semantics are unchanged.
 These force-includes are the first of the safety rules that make mixed vintages analytically safe, specified once in [portfolio-analysis.md §Triggering](portfolio-analysis.md#triggering); the per-family over-age resolution stays deterministic app machinery (add-family rule-demoted to *hold*, stamped `action_source: rule-demoted`; exit-family force-included above).
-Within the loop, research effort is **graduated** (designed with the research slice — nothing is cached while 6c is stubbed): a holding whose research is younger than the ~4-week freshness window with nothing moved — no position change, attention condition, event pre-flag, cache-invalidating **new evidence event**, or validated material update from the held-name refresh lane — **reuses its cached distilled findings** — 6c–6d skip, 6b and 6e–6g still run fresh (6e where the verdict branch carries a priced refinement) — with the reuse conditions and window in [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable) and every reuse decision logged to the audit record.
+Within the loop, research effort is **uniform, not graduated** (designed with the research slice — nothing is cached while 6c is stubbed): every analyzed holding runs 6c–6d in full each run.
+A holding's cached distilled findings younger than the ~4-week window **seed** the loop (deterministically, per topic) and **merge** into its results at distillation rather than skipping any step; older or absent, the loop runs cold — the seed-and-merge contract and window live in [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable), and every seeded-vs-cold decision is logged to the audit record.
 
 ### Step 6 pre-loop: Held-Name Research Refresh
 
@@ -146,14 +147,14 @@ Within the loop, research effort is **graduated** (designed with the research sl
 **This whole pre-loop lane is designed, not built** — it lands with the research-loop slice.
 
 This is a small freshness lane, not another analysis path and not part of the engine-only Quick check.
-The app selects at most **2 holdings per run** under the deterministic priority contract in [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable), only from holdings whose cached research appears reusable from **pre-loop-visible evidence** or whose prior verdict would otherwise be carried and whose standing ledger names a qualitative research-checkable key driver or falsifier.
+The app selects at most **2 holdings per run** under the deterministic priority contract in [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable), only from holdings whose prior verdict would otherwise be carried (judged from **pre-loop-visible evidence**) and whose standing ledger names a qualitative research-checkable key driver or falsifier.
 A holding already known at this point to need a fresh full agenda is excluded.
 The technology-event pre-flag does not exist until Step 6b; when that later result independently makes a selected holding's full agenda mandatory, the app logs the refresh slot `late-invalidated`, forwards its evidence into Step 6c, and does not refill the already-planned cap.
 For each selected holding the app chooses one exact ledger-node snapshot and runs one narrow current-search topic over it, using the same SSRF-guarded SearXNG-primary / Tavily-fallback tool rail as Step 6c.
 The model returns a schema-constrained `{status, ledger_node_snapshot, claims, source_urls, published_at, rationale}` result, where `status` is **`material_update` / `no_material_change` / `unscorable`**.
-The app validates issuer identity, exact node linkage, dates, and source lineage; only a validated `material_update` invalidates research reuse and force-includes an otherwise-carried holding into the ordinary 6a–6g loop.
+The app validates issuer identity, exact node linkage, dates, and source lineage; only a validated `material_update` force-includes an otherwise-carried holding into the ordinary 6a–6g loop.
 No result from this lane confirms a condition, mutates the thesis ledger, changes conviction or a target, chooses an action, or advances the holding's full-research vintage.
-A failed or unscorable attempt is logged and preserves the prior state; the normal ~4-week full-research max age remains the liveness backstop.
+A failed or unscorable attempt is logged and preserves the prior state; the holding stays carried until a force-include or the next full run re-analyzes it, the ~4-week window governing seed eligibility rather than re-analysis.
 
 #### Local-model call — Targeted held-name refresh (Qwen3.5-122B, thinking)
 
@@ -166,7 +167,7 @@ The prior verdict's conclusion is omitted except for the node and the determinis
 
 **Returns.**
 The typed status and source-backed claim set above.
-The output is an input to work-list and cache-reuse decisions only; a normal full pass must interpret any update.
+The output is an input to work-list decisions only; a normal full pass must interpret any update.
 
 ### Step 6a: Dossier Assembly
 
@@ -247,8 +248,8 @@ The resident 122B reasoner in thinking mode, requesting `web_search` / `web_fetc
 **One isolated conversation per agenda topic** (a bounded multi-turn pass loop — [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)) — topics do not share a context.
 
 **Prompt — input.**
-The holding's dossier facts and **that topic's questions only** — a clean context per topic.
-Within a pass the model reasons over the fetched, readability-extracted page text and an **append-only evidence ledger** (each extracted claim + its source URL / timestamp); there is **no in-loop re-distillation of findings** — the heavy consolidation is deferred to the Step-6d distillation, so research is never planned over already-distilled, lossy notes.
+The holding's dossier facts, **that topic's questions**, and — for a holding with non-expired cached research — the topic's slice of the prior distilled findings and its ledger conditions as a deterministic orienting **seed** (Portfolio's designed reuse, a bounded cross-run prior — [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)); a clean per-topic context otherwise.
+Within a pass the model reasons over the fetched, readability-extracted page text and an **append-only evidence ledger** (each extracted claim + its source URL / timestamp); there is **no in-loop re-distillation of *this run's* findings** — the heavy consolidation is deferred to the Step-6d distillation, so research is never planned over its own already-distilled, lossy notes (the cross-run reuse seed above is a distinct prior-run object, not an in-loop summary).
 
 **Returns.**
 The topic's **full findings response**, preserved whole (with its evidence-ledger entries), plus any **follow-up proposal** (a structured field the orchestrator decides whether to spend) and any **material forward fact** flagged for the Step-6e refinement.
@@ -271,8 +272,8 @@ It runs as **a single pass by default, or hierarchically** (tier-1 per topic-tre
 The same resident 122B in non-thinking mode by default (no model-swap cost); the fast 35B tier is a benchmark-gated option ([local-models.md §The model roster and per-task routing](local-models.md#the-model-roster-and-per-task-routing)).
 
 **Prompt — input.**
-*Single pass:* the **full findings response from every topic** plus the append-only evidence ledger (claims + sources).
-*Hierarchical:* each **tier-1** call gets one topic-tree's complete findings + that tree's ledger entries; the **reduce** gets the tier-1 structured outputs with their preserved citations (no cross-lens contradiction check here — the reduce is purely consolidation — [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).
+*Single pass:* the **full findings response from every topic**, the append-only evidence ledger (claims + sources), and — for Portfolio with a non-expired prior — the **seeded prior distilled object** joined as one more already-distilled input ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).
+*Hierarchical:* each **tier-1** call gets one topic-tree's complete findings + that tree's ledger entries; the **reduce** gets the tier-1 structured outputs with their preserved citations, and Portfolio's non-expired prior joins **at the reduce** (no cross-lens contradiction check here — the reduce is purely consolidation — [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).
 
 **Returns.**
 A single schema-validated **distilled findings object** for interpretation, surfacing the following typed fields where supported (structured and sourced, with numeric fields never carried as loose prose):

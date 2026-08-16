@@ -204,7 +204,7 @@ build status lives in `BUILD.md`.*
 - House-view freshness gate — portfolio-workflow.md §Step 5
 - Post-research target refinement — portfolio-analysis.md §The per-holding pipeline; portfolio-workflow.md §Step 6d, §Step 6e
 - Portfolio technology-event impact — portfolio-analysis.md §The position thesis ledger, §The per-holding pipeline; portfolio-workflow.md §Step 6c
-- Graduated research depth / research reuse — portfolio-analysis.md §The per-holding pipeline, §Starting parameters; portfolio-workflow.md §Step 6
+- Research reuse (Portfolio) — portfolio-analysis.md §Starting parameters, §The per-holding pipeline; portfolio-workflow.md §Step 6
 - Portfolio held-name research refresh lane — portfolio-analysis.md §Triggering, §The position thesis ledger, §Starting parameters; portfolio-workflow.md §Step 6 pre-loop; data-sources.md §Portfolio Analysis — endpoint surface; configuration.md §Local Analysis Suite Configuration; storage.md §Local Analysis Suite Storage
 - New-money admission test — portfolio-analysis.md §Starting parameters
 - Portfolio per-holding/per-fund endpoint surface — data-sources.md §Portfolio Analysis — endpoint surface

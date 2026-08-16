@@ -363,8 +363,8 @@ this section carries only the decisions a plan must not work against.
   gate**: unreachable means a degraded run behind a pre-run notice, never a
   block. The per-item research loop is bounded and SSRF-guarded, every finding
   keeping its source URL + timestamp, and consolidation is one shared
-  **distillation primitive** whose mode is chosen deterministically by
-  evidence-ledger size. Optional **Connected Sources** (in-app login → Keychain
+  **distillation primitive** whose mode is chosen deterministically by the
+  full consolidation input's size. Optional **Connected Sources** (in-app login → Keychain
   session, on the Schwab credential rails) enrich fetching and are **never part
   of the execution gate**.
 - **Holdings & options ingestion (built).** Schwab Trader API via an OAuth
@@ -674,7 +674,11 @@ confirmation run** banks every stacked runtime confirmation at once.
    the **held-name research refresh lane**, which rides with it. The shipped
    schemas don't preclude either, but the research loop carries the pre-profit
    producer's activation obligation (§Standing constraints) and must discharge
-   it before connecting the producer.
+   it before connecting the producer. The loop's cache model is settled —
+   **always-run seed-and-merge, never a skip**: recent distilled findings seed
+   each topic and merge (fresh superseding cached) at distillation
+   (`docs/portfolio-analysis.md §Starting parameters`); extending it to Trade
+   Opportunities is **wanted but deferred**.
 
 ### Owned by no slice
 
