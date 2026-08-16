@@ -2,50 +2,46 @@
 
 ## What happened
 
-The **tunnel-vision doc↔code conformance walk** ran and closed (queued
-2026-08-14, run 2026-08-15): seven parallel passes on the piece-2 pattern,
-every finding re-verified before batching. **31 verified findings — zero code
-fixes**: 26 doc corrections (19 plain + 7 as-built marking gaps) ruled
-wholesale, 5 rulings user-walked per question, all applied. The tunnel-vision
-contract itself conformed property-by-property; nowhere had code drifted from
-a doc that was right. **Four Codex rounds to approval** followed — notable
-adoptions: the missed price-fail-soft edit (three spots), sibling `unknown`
-definitions widened, the band-flag label now "band relation changed",
-checkpoint/resume and the research/refresh/pre-flag surfaces marked designed
-corpus-wide; round 1's provenance claim refuted. **R27 ruling**: the shipped
-flat-driver v2-over-composite fund target form is the settled stopgap — the
-fund-depth group's undesigned item is a **scenario-differentiated** priced-fund
-formula. Record with all dispositions:
-`docs/verification/2026-08-15-tunnel-vision-conformance-walk.md`.
-BUILD/INDEX aligned (user-run). **Everything committed and pushed** at
-`81c5bc8`; gates green at that tip (cargo 1,066/0, clippy 0, build clean,
-46 + 238 frontend).
+Continued the clarity walk through
+`logic-flow-docs/portfolio-analysis-logic-flow.md`, reaching Step 6. Mid-walk it
+turned into a **design change**: Portfolio's **research reuse** was reworked from
+a binary skip / graduated-depth model to **always-run seed-and-merge, never a
+skip** — the research loop and distillation run **full every run for every
+analyzed holding**, and cached research is purely additive (a deterministic
+per-topic **seed** plus a **merge** at distillation; claim-vintage-expired;
+hard-bounded with a fully deterministic truncation order; fresh supersedes
+cached). Layer-1 (URL-keyed document cache) is unchanged; Layer-2 (per-holding
+distilled findings) is the seed/merge layer; the audit records **seeded-vs-cold**.
+**Option A** ruled: carried-holding staleness is an accepted cost — there is no
+research-age force-include. **Extending the model to Trade Opportunities is
+deferred.** Single-homed at `portfolio-analysis.md §Starting parameters` and
+propagated across 9 files (incl. BUILD/INDEX). Seven Codex rounds to approval;
+shipped and pushed as `ab82347`.
 
 ## Current state
 
-Clean tree at `81c5bc8` plus this handoff rewrite. The queue on disk:
-completion block (context loads + pre-flag + forensic producer; evidence legs
-incl. FINRA/CBOE; 6a recall + checkpoint/resume + 6g validator; fund depth) →
-big run (watch-set v9 revision first) → Trade Opportunities → research loop +
-refresh lane. The block's slices now plan against walk-verified contracts,
-and the docs mark the 6c research stub and checkpoint/resume honestly, so a
-plan can trust present tense.
+Clean tree on `main` at `ab82347` (this handoff aside). No work in flight. The
+redesign is **doc-only** — Step 6c is still stubbed, so it lands when the
+research-loop slice is built. The build queue is unchanged by the detour:
+completion block (Step-5 context loads + pre-flag + forensic producer; evidence
+legs incl. FINRA/CBOE; 6a recall + checkpoint/resume + 6g validator; fund depth)
+→ big run (watch-set v9 revision first) → Trade Opportunities → research loop +
+refresh lane.
 
 ## Open questions
 
-- **Scenario-differentiated priced-fund target formula** — undesigned (R27
-  sharpened the wording: the shipped flat-driver form is the settled
-  stopgap); needs its ruling before the fund-depth group is planned.
-- **Share-based action sizing** — ruled as the only legal action numeric,
-  unbuilt; nothing blocks on it.
-- **Live-evidence caveat** (carried) — the sector-P/E walk-back's holiday
-  warrant still rests on the 2026-07-16 verification, not re-probed.
+- **Scenario-differentiated priced-fund target formula** — undesigned; the
+  shipped flat-driver form is the settled stopgap. Needs its ruling before the
+  fund-depth group is planned. (carried)
+- **Share-based action sizing** — ruled the only legal action numeric, unbuilt;
+  nothing blocks on it. (carried)
+- **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant still
+  rests on the 2026-07-16 verification, not re-probed. (carried)
 
 ## Where to start
 
-`/metis-plan-task` the Portfolio completion block's first slice — the Step-5
-run-level context loads with their consumers (FRED energy + IMF metals + FMP
-gold into commodity-linked evidence; CFTC into the fund read; CBOE venue
-put/call; sector/market benchmarks), the technology-event pre-flag those
-benchmarks feed, and the hard-forensic producer with its consumer seam wired
-in the same slice. Build order and exclusions are in BUILD §What remains.
+Resume the `logic-flow-docs/portfolio-analysis-logic-flow.md` clarity walk from
+**Step 6c onward** (the walk reached Step 6 / the work-list; its reuse sections
+are now current with this session's redesign). Same posture: read each section,
+surface confusions, apply clarity edits with the user, and ground any doubtful
+claim against the canonical `docs/`.
