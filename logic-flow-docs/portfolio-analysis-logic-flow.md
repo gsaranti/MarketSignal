@@ -454,8 +454,8 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - The research loop and distillation run in full every run for every analyzed holding.
   - There is no lighter-vs-heavier case, and Steps 6c and 6d are never skipped.
   - If non-expired (< ~4 weeks) cached research exists for the holding, it is used two ways: to seed this run's loop and to merge into the results.
-  - The seed is assembled deterministically — no extra model call — and injected per research topic (only claims within their own ~4-week vintage, bounded by a per-topic budget), so each topic sees the slice of prior findings and ledger conditions that belong to it and the loop hunts what changed.
-  - The merge happens at distillation (single-pass or hierarchical): fresh findings supersede cached ones on conflict, sources are de-duplicated, a cached claim past ~4 weeks by its own vintage expires, and interpretation still reads one compact object.
+  - The seed is assembled deterministically — no extra model call — and injected per research topic (only claims within their own ~4-week vintage, bounded by a per-topic budget), so each topic sees its own prior distilled object and ledger conditions and the loop hunts what changed.
+  - The merge happens per topic where that topic is first reduced (the tier-1 call, or the single small-run call): fresh findings supersede cached ones on conflict, sources are de-duplicated across topics at the reduce, a cached claim past ~4 weeks by its own vintage expires, and interpretation still reads one compact combined object.
   - If no non-expired cache exists, the loop simply runs cold.
 
 - **Held-name refresh lane**
@@ -869,8 +869,9 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - The loop below is the research slice's design.
 
 - **Seeded when (Layer 2 cache)**
-  - Non-expired (< ~4 weeks) cached distilled findings exist for this holding.
-  - The orchestrator injects the relevant slice of those findings and the holding's ledger conditions into each topic's opening pass — deterministically, with no extra model call, filtered to claims still within their own ~4-week vintage and bounded by a per-topic seed budget.
+  - Non-expired (< ~4 weeks) cached distilled findings exist for this holding — one **per-topic** object apiece, the layer the prior run persisted.
+  - The orchestrator injects **each topic's own prior object** — its tier-1 distillation, or its topic-keyed group from a single-pass run — plus that topic's ledger conditions into the topic's opening pass, deterministically and with no extra model call, filtered to claims still within their own ~4-week vintage and bounded by a per-topic seed budget.
+  - Seeding from the per-topic distillation, not a slice of the cross-topic combined object, starts each loop with richer, un-re-compressed topic detail; the topic is the storage partition, so the seed is a lookup rather than a per-claim re-assignment.
   - The loop then targets what changed rather than rebuilding the baseline; a cached prior never causes it to be skipped.
 
 - **Data retrieved**
@@ -964,18 +965,20 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - No new external data.
 
 - **Normal case**
-  - One consolidation call.
+  - One consolidation call, its output **keyed by topic** so each topic's group persists as that topic's next-run seed.
 
 - **Large-input loop**
-  - Distill each topic tree separately.
-  - Run one final combining call.
+  - Distill each topic tree separately (**tier-1**) — each tier-1 object persists as that topic's next-run seed.
+  - Run one final combining call (**tier-2**) over the tier-1 objects into the one object interpretation reads.
   - Preserve citations through both levels.
 
 - **Merging the seeded prior (Layer 2 cache)**
-  - When cached distilled findings seeded this run, the prior compact object joins the consolidation as one more already-distilled input — the single consolidation call when the run is small, the final tier-2 reduce when it goes hierarchical.
-  - Fresh findings supersede cached ones on conflict; sources are de-duplicated so nothing is double-counted.
+  - The merge is **per topic**: each topic's prior object joins that topic's fresh findings where the topic is first reduced — the tier-1 call when the run goes hierarchical, or the single consolidation call when it is small — fresh superseding cached within that topic.
+  - Cross-topic reconciliation happens at the reduce (the tier-2 reduce, or that same single call): the same newest-wins-by-claim/metric rule is applied **globally** — a metric freshened under one topic supersedes a cached copy another carried forward — on top of source de-duplication, so nothing is double-counted or left conflicting.
+  - The reduce **emits the per-topic layer already reconciled to the global winners** — the model that resolved the conflict owns the match, in the same pass, not an app-side re-derivation (Portfolio's claims carry no cross-topic identity key the app could match on) — so no persisted topic object keeps a value another topic superseded, and a later run can't surface it when the fresher topic is dormant.
+  - The within-topic fallback triggers on a topic's **complete input** — its passes' findings, their accumulated evidence-ledger entries (claims + sources, which scale with research, distinct from the bounded thesis-ledger conditions that seed at 6c), and its bounded prior — whenever the sum would overflow one call: the research sub-distills along its ≤3-pass seam, each pass carrying its findings *and* ledger entries into a compact per-pass object, then a tree-level reduce over those plus the retained bounded prior; if that still overflows, the cap fail-softs the lowest-priority whole passes to a recorded gap — each taking its findings and ledger entries together, never the prior — so an overflow costs research detail, never seeded status.
   - A cached claim past about four weeks by its own vintage, not re-confirmed this run, expires rather than riding forward; each surviving claim keeps its vintage and whether it is fresh or carried.
-  - The output is one compact object, overlap collapsing rather than accumulating.
+  - The run writes a fresh per-topic layer, one object per analyzed topic, as the next run's seed, and the combined object interpretation reads is its cross-topic reduction; the audit records seeded-vs-cold **per topic** with each seeding object's vintage — a standing topic can seed while a newly-activated conditional topic runs cold.
 
 - **Model**
   - Consolidates evidence.
@@ -1323,7 +1326,7 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
   - Analysis vintages (attention flags live only in the quick-check store).
   - Portfolio roll-up.
   - Sources and timestamps.
-  - Distilled research and seeded-vs-cold decisions.
+  - Distilled research and per-topic seeded-vs-cold decisions (each with its seeding object's vintage).
   - Held-name refresh eligibility, priority, result, and validation (designed — research slice).
   - Whether the refresh forced a normal full pass (designed — research slice).
   - Engine calculations and input deltas.
