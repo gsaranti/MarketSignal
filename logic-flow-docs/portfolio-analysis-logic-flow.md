@@ -551,7 +551,7 @@ The designed embedding-based recall of this holding’s prior analysis; as-built
   - No model or web research.
 
 - **How the step runs**
-  - The deterministic engine analyzes the holding on its resolved vehicle route — a priced stock, a priced equity fund, or a role-risk-only fund — grading the two priced routes and producing a role / risk readout (no grade) for the role-risk-only fund; nothing in the step calls a model or the web.
+  - The deterministic engine runs the holding down whichever of three routes it resolved to — a priced stock, a priced equity fund, or a role-risk-only fund. The two priced routes are graded (letter + sub-scores); the role-risk-only fund gets a role / risk readout with no grade. Nothing in the step calls a model or the web.
   - The evidence floor is not a closing stage: its gates fire inline as the values below are computed, and the first failure short-circuits the holding to `insufficient-evidence`, skipping 6c–6f; the gates are gathered under Evidence floor at the end of the step.
 
 - **Order of computation (priced stock)** — computed in sequence, several reads feeding the next:
@@ -569,14 +569,22 @@ The designed embedding-based recall of this holding’s prior analysis; as-built
   - A **fund** swaps this stock spine for the equity-fund path below; a **role-risk-only** fund computes no grade, target, tier, or hurdle.
   - 6b reaches no verdict of its own: its reads feed each other (the dependencies above) to produce the **deterministic financial analysis** — letter, targets, tier, hurdle, overlay, ledger state — which the interpretation call reasons over at 6f (and whose targets the outcome scoreboard later scores). The evidence floor, gathered at the step's end, is the one gate that acts within the step.
 
+### Engine primitives (used in the formulas below)
+
+Three primitives recur in the value formulas that follow, so they are defined once here.
+
+- **`scale(x, lo → hi)`** maps `x` linearly onto 0–100 and clamps it: `lo` scores 0, `hi` scores 100, and an **inverted** band (`lo > hi`) scores lower inputs higher.
+- **`average(…)`** is the unweighted mean of whichever legs are present — a missing leg is dropped *inside* a value; a wholly-absent value is handled per section (usually imputed to a neutral 50 at the roll-up, never dropped there).
+- A **ratio** `a ÷ b` is `None` when the denominator is missing or zero; a few ratios below add a stricter `> 0` guard, noted where they do.
+
 ### Pre-profit overlay (stocks, computed first)
 
 Computed before the grade for every stock and persisting even when the stock does not enter the overlay or later abstains. As-built the overlay — its statement states and the rule consequences that bind the engine arm — is produced here in one pass; the design's later research-observation merge (Step 6e) is dormant while research is stubbed.
 
-- **Who enters**
+- **Who enters** (either arm admits)
   - Priced stock with non-positive TTM operating income.
-  - Or no positive forward-EPS estimate plus negative TTM free cash flow.
-  - Funds do not enter.
+  - Or no positive forward-EPS consensus plus negative TTM free cash flow.
+  - Funds never enter (the overlay is called only on the stock branch). [note: an arm that can't be resolved from the data yields `unscorable`, not entry.]
 
 - **Structured data used**
   - Cash and cash equivalents.
@@ -586,28 +594,38 @@ Computed before the grade for every stock and persisting even when the stock doe
   - Quarterly revenue and gross profit.
   - Diluted share count.
 
-- **Engine calculations** (all persist on the overlay record)
-  - Liquid resources:
-    - Cash plus short-term investments.
-  - TTM cash burn:
-    - Zero when TTM free cash flow is positive.
-    - Otherwise the absolute negative TTM free cash flow.
-  - Cash runway:
-    - `12 × liquid resources ÷ TTM cash burn`.
-  - Capex intensity:
-    - TTM capital spending compared with TTM revenue.
-  - Dilution:
-    - Split-adjusted diluted shares versus one year earlier.
-  - Gross-margin direction:
-    - Average of the latest two quarters.
-    - Compared with the preceding two-quarter average.
+- **Engine calculations** (each is its own value; all persist on the overlay record)
+  - **Liquid resources** — cash on hand to fund the burn.
+    - Inputs: cash and equivalents, short-term investments (balance sheet).
+    - Equation: `cash + short-term investments`. Absent short-term investments read as 0; absent cash → `None`.
+  - **TTM cash burn** — annual cash consumption; zero when not burning.
+    - Input: TTM free cash flow (the reported FCF line, else `operating cash flow − |capex|` — sign-tolerant, since FMP reports capex as a negative outflow).
+    - Equation: `max(0, −TTM free cash flow)` — positive FCF gives 0.
+  - **Cash runway** — months of cash left at the current annual burn.
+    - Inputs: liquid resources, TTM cash burn (both above).
+    - Equation: `12 × liquid resources ÷ TTM cash burn`, only when burn > 0 (else `None`). (liquid ÷ annual burn = years; ×12 → months.)
+  - **Capex intensity** — capital intensity; **context only, no rule consumes it**.
+    - Inputs: TTM capex magnitude, TTM revenue.
+    - Equation: `Σ|quarterly capex| ÷ Σ quarterly revenue` over the trailing four quarters — a decimal ratio (the prompt renders it ×100). [note: requires revenue > 0 and that both four-quarter windows share the same newest quarter-end.]
+  - **Dilution** — split-adjusted year-over-year change in the diluted share count.
+    - Inputs: the newest diluted-share count and the same quarter one year back.
+    - Equation: `now ÷ prior − 1` (signed; +0.30 = 30% more shares). [note: needs five contiguous quarters and prior > 0.]
+  - **Gross-margin direction** — where the recent gross margin sits and which way it moved.
+    - Inputs: per-quarter gross margin (`gross profit ÷ revenue`, gross profit derived as `revenue − cost of revenue` when the line is absent).
+    - Equation: recent level = average of the latest two quarters; direction = `recent − preceding two-quarter average` (signed margin points). The preceding average is used but not persisted; the recent level and the change are.
 
-- **Financing state**
-  - `adequate`: at least 24 months of runway.
-  - `watch`: 12 to under 24 months.
-  - `constrained`: under 12 months.
-  - `not_burning`: no current TTM cash burn.
-  - `unscorable`: required data missing.
+- **Financing state** (evaluated in this precedence — first match wins)
+  - `unscorable`: TTM cash burn missing (or, while burning, runway uncomputable).
+  - `not_burning`: TTM cash burn is 0 (checked before the runway bands).
+  - `adequate`: runway ≥ 24 months.
+  - `watch`: 12 ≤ runway < 24 months.
+  - `constrained`: runway < 12 months.
+
+- **Derived states** (computed only for an eligible overlay; each persists)
+  - **Execution read** — guidance-vs-actual misses. A comparable period *misses* when `(guidance − actual) ÷ guidance ≥ 5%`; `material_single_miss` when the newest comparable period misses by ≥ 20%; `repeated_miss` when ≥ 2 of one metric's latest four comparable periods miss. [note: the research producer is dormant as-built, so this sees only carried prior observations.]
+  - **Economics deterioration** — recent two-quarter average gross margin non-positive **and** down ≥ 5 percentage points.
+  - **Material dilution** — YoY diluted-share change ≥ +15%.
+  - **Severe deterioration** — at least two of {repeated-or-material execution miss, constrained runway, economics deterioration, material dilution} hold, **and** at least one of those is the execution or the economics leg.
 
 - **Research data added later**
   - Production and deliveries.
@@ -622,65 +640,74 @@ Computed before the grade for every stock and persisting even when the stock doe
 
 ### Sub-scores (stocks)
 
-The three letter inputs. As-built each is a fixed-band score with no sector-relative or own-history normalization; the richer form — sector-adjusted bands, the name's own history, and the value-creation reads below — lands with the full grade slice (designed, `docs/portfolio-analysis.md` §Starting parameters).
+The letter’s three inputs (quality, valuation, risk), each on a 0–100 scale where higher is better, plus a momentum read carried outside the letter. As-built each is a fixed-band score with no sector-relative or own-history normalization; the richer form — sector-adjusted bands, the name’s own history, and the value-creation reads below — lands with the full grade slice (designed, `docs/portfolio-analysis.md` §Starting parameters).
 
-- **Quality score**
-  - As-built: net margin and gross margin, each scored over a fixed band.
-  - Return on invested capital versus capital cost — designed.
-  - Gross profitability and free-cash-flow conversion — designed.
-  - Sector-adjusted bands and the company’s history — designed.
+- **Quality score** — profitability on one statement basis. In the letter (40%); stored in the output sub-scores.
+  - Inputs (6a dossier statements, TTM or annual basis): net margin, gross margin.
+  - Equation: `average` of two `scale`d legs —
+    - net margin → `scale(0 → 0.30)` (0% → 0, 15% → 50, ≥30% → 100).
+    - gross margin → `scale(0.15 → 0.65)` (15% → 0, 40% → 50, ≥65% → 100).
+    - a loss-maker scores 0 on the net-margin leg (on-scale, not off-scale); both legs missing → `None`, imputed to 50 at the letter.
+  - Designed, not computed: return-on-invested-capital vs capital cost, gross profitability, free-cash-flow conversion, sector-adjusted bands, own history.
 
-- **Valuation score**
-  - As-built: P/E, P/S, and P/B, each over a fixed band (a negative P/E scores low, not off-scale).
-  - Sector-appropriate metric selection for banks, REITs, cyclicals, and other special cases — designed.
-  - Sector-adjusted bands and the company’s history — designed.
+- **Valuation score** — cheapness via inverted multiples (cheaper → higher). In the letter (30%); stored in the output sub-scores.
+  - Inputs: P/E, P/S, P/B (6a dossier; derived from market cap and the statements when FMP does not supply them).
+  - Equation: `average` of three `scale`d legs —
+    - P/E → `scale(70 → 12)`, inverted (P/E 12 → 100, 41 → 50, ≥70 → 0); a non-positive P/E scores a fixed **20** (low, not off-scale, not `None`).
+    - P/S → `scale(25 → 2)`, inverted (2 → 100, ≥25 → 0).
+    - P/B → `scale(30 → 2)`, inverted (2 → 100, ≥30 → 0).
+    - all three absent → `None`, imputed to 50 at the letter.
+  - Designed, not computed: sector-appropriate metric selection (banks, REITs, cyclicals), sector-adjusted bands, own history.
 
-- **Risk score**
-  - Realized volatility and leverage (debt/equity), each over a fixed band.
-  - Drawdown enters the risk tier, not this score; no liquidity series is on this job's surface.
-  - Higher score means safer.
+- **Risk score** — safety (higher = safer): low realized volatility and low leverage. In the letter (30%); stored in the output sub-scores.
+  - Inputs: realized volatility, debt-to-equity.
+  - Equation: `average` of two inverted `scale`d legs —
+    - volatility → `scale(0.045 → 0.005)` on the raw daily figure (0.005 → 100, ≥0.045 → 0).
+    - debt/equity → `scale(2.5 → 0)` (0 → 100, ≥2.5 → 0); negative book equity scores a fixed **0** (floor).
+  - Drawdown enters the risk tier, not this score; no liquidity series is on this job’s surface.
+
+- **Momentum score** — trailing price return; context, **outside the letter**. Stored in the output sub-scores.
+  - Input: trailing return (first-to-last close over the available history).
+  - Equation: `scale(−0.30 → 0.30)` (−30% → 0, 0 → 50, +30% → 100).
 
 ### Scenario targets (priced stocks)
 
-Computed next; a stock with no admissible driver abstains here, before the letter is finalized.
+Bear / base / bull price targets — one-month and twelve-month — priced from a per-share driver and a rate-anchored multiple; they feed the return hurdle below. Computed before the letter is finalized; a stock with no admissible driver abstains here.
 
-- **Choose the driver**
-  - Positive consensus forward EPS when available.
-  - Otherwise consensus forward revenue per share.
-  - No usable driver → `no-admissible-driver` evidence gap.
+- **Choose the driver** — the per-share fundamental the scenarios are priced from.
+  - Inputs: consensus forward EPS, else consensus forward revenue per share (÷ diluted shares).
+  - Rule (first admissible wins): positive consensus forward EPS; else consensus forward revenue per share; else → `no-admissible-driver` evidence gap.
 
-- **Build bear, base, and bull driver cases**
-  - Use low, middle, and high consensus values.
-  - A missing or half-published spread holds both legs at the mid and records a flat driver.
-  - Revision-dispersion widening is designed, waiting on the revision feed.
-  - Clamp extreme growth assumptions.
+- **Build bear, base, and bull driver cases** — the three per-share driver values.
+  - Inputs: the consensus low / mid / high, and the trailing TTM print (for the clamp).
+  - Equation: base = the mid; bear / bull = the low / high. [note: a missing or half-published spread holds both legs at the mid and records a flat driver; each leg is then clamped to `[trailing × 0.75, trailing × 1.35]` to bound extreme growth (released only when a corroborated trough signature is detected). Revision-dispersion widening is designed, waiting on the revision feed.]
 
-- **Calculate valuation multiples**
-  - Driver yield means the per-share driver divided by the stock price.
-  - Review about three years of historical driver yields.
-  - Compare each yield with the same date’s `DGS10` rate.
-  - Form bear, base, and bull spread percentiles.
-  - Re-anchor them using today’s `DGS10`.
-  - Use recorded raw-multiple fallbacks when history is insufficient.
-  - Repair any crossed bear/base/bull prices and log it.
+- **Calculate the valuation multiple** — the price-per-unit-of-driver applied to each case, rate-anchored so the target tracks rates.
+  - Inputs: ~3 years (12 quarters) of historical driver yields, each paired with the `DGS10` as of that quarter (latest published on or before the anchor date), plus today's `DGS10`.
+  - Equation:
+    - Per historical quarter: driver yield = `driver ÷ price`; spread = `driver yield − that quarter's DGS10`.
+    - Form bear / base / bull spread percentiles (bear = 75th, base = 50th, bull = 25th — a wider spread is a cheaper multiple).
+    - Re-anchor each with today's rate: multiple = `1 ÷ (spread percentile + today's DGS10)` (if that denominator < 0.01, fall back to the raw-multiple percentile).
+    - [note: needs ≥ 8 usable observations; below that, fall back to recorded raw-multiple percentiles; with no history, carry the current `spot ÷ base-driver` multiple.]
 
-- **Calculate returns**
-  - Driver × multiple → scenario price target.
-  - Add forward dividends for twelve-month total return.
-  - Derive the one-month price target from the twelve-month price-return leg.
-  - Keep one-month and twelve-month targets as rolling windows.
+- **Calculate the scenario prices and returns**
+  - Inputs: the driver cases, the multiples, spot, forward dividends.
+  - Equation:
+    - Twelve-month price = `driver × multiple`, per scenario. [note: crossed bear/base/bull prices are repaired to ascending and logged; a dispersion floor = `clamp(daily vol × 15.87 × 0.5, 0.05, 0.20)` widens — never narrows — the bear/bull spread.]
+    - Twelve-month total return = `(price + forward dividends) ÷ spot − 1`.
+    - One-month price = `spot × (1 + twelve-month base price-return ÷ 12)`; the bear/bull legs take a band = `clamp(daily vol × 2, 0.02, 0.15)` (else 5%), dividends excluded.
+
+- **Where these land**
+  - Targets → the output price targets (each with its methodology + provenance flags); total returns → the hurdle read; the drivers, spread / raw percentiles, spot, forward-dividend leg, dispersion floor, and consensus EPS mid persist as the quick-check basis the between-run engine re-anchors against. The multiples themselves are not stored — they are recomputed closed-form from the basis.
 
 ### Letter grade (stocks)
 
-The sub-scores roll up here, once the scenario-target stage above has cleared its floor gate.
+The A–F letter — the weighted roll-up of the three letter sub-scores. Computed once the scenario-target stage above has cleared its floor gate; stored in the output as the grade plus a low-confidence marker.
 
-- **Letter weighting**
-  - Quality: 40%.
-  - Valuation: 30%.
-  - Risk: 30%.
-  - Momentum stays outside the letter.
+- **Equation**
+  - `composite = quality × 40% + valuation × 30% + risk × 30%` — a weighted mean on 0–100. Momentum is not an input.
 
-- **Letter cutoffs**
+- **Letter cutoffs** (on the composite)
   - A: 85 or higher.
   - B: 70–84.
   - C: 55–69.
@@ -688,90 +715,93 @@ The sub-scores roll up here, once the scenario-target stage above has cleared it
   - F: below 40.
 
 - **Missing sub-score handling**
-  - Missing score receives neutral 50.
-  - At least two real sub-scores are still required.
-  - A grade using an imputed score receives a low-confidence marker.
+  - A missing sub-score is imputed to a neutral 50 before the roll-up.
+  - At least two of the three letter sub-scores must be real, else the holding abstains (`insufficient-evidence`).
+  - A letter resting on any imputed sub-score carries the low-confidence marker.
 
 ### Risk tier (priced stock)
 
-Assigned after the grade, then feeding the return hurdle below.
+High / Medium / Low, set after the grade and feeding the return hurdle below. Inputs: market cap, annualized volatility (raw daily × 15.87 — unlike the risk sub-score, which scores the raw daily figure), debt-to-equity, profitability (net or operating income), and max drawdown.
 
-- **Priced stock — High risk when any major high-risk condition fires**
-  - Small company.
-  - Unprofitable.
-  - High volatility or drawdown.
-  - High leverage.
+- **High** — any one condition fires (a missing input cannot fire it)
+  - Small company — market cap < $2B.
+  - High volatility — annualized volatility > 40%.
+  - Deep drawdown — max drawdown > 50%.
+  - High leverage — debt/equity > 2.0, or negative book equity.
+  - Unprofitable — net (or operating) income ≤ 0.
 
-- **Priced stock — Low risk when all low-risk conditions hold**
-  - Large company.
-  - Profitable.
-  - Lower volatility and leverage.
+- **Low** — all four of these hold (drawdown is not a Low condition)
+  - Large company — market cap > $10B.
+  - Profitable — net (or operating) income > 0.
+  - Low leverage — debt/equity in [0, 1.0).
+  - Low volatility — annualized volatility < 25%.
 
-- **Otherwise**
-  - Medium risk.
-  - Wholly missing tier inputs also produce Medium with a gap flag.
-  - The canonical rule's liquidity legs are not on this job's data surface and never fire.
+- **Otherwise — Medium**
+  - Wholly missing tier inputs also produce Medium, with a gap flag.
+  - The canonical rule’s liquidity legs are not on this job’s data surface and never fire.
 
 ### Capital efficiency — the return hurdle (stocks)
 
-Uses the risk tier and the scenario total returns.
+The dead-money read — whether the scenario returns clear the required return for the risk taken. Inputs: the risk tier, `DGS2`, and the twelve-month scenario total returns. Stored in the output hurdle read (state, rate, the total returns tested, and the new-money flag).
 
-- **Return hurdle**
+- **Hurdle rate** — `DGS2 + tier premium`
   - Low risk: `DGS2 + 3 percentage points`.
   - Medium risk: `DGS2 + 5 points`.
   - High risk: `DGS2 + 8 points`.
 
-- **Three-state result**
-  - Bear return clears hurdle → `clears`.
-  - Bull return misses hurdle → `fails`.
-  - Otherwise → `indeterminate`.
+- **Three-state result** (against the hurdle rate)
+  - Bear total return ≥ hurdle → `clears`.
+  - Else bull total return < hurdle → `fails`.
+  - Else → `indeterminate`.
 
 - **Meaning**
-  - Only `fails` means dead money.
-  - `indeterminate` does not force an exit.
-  - New money uses a stricter point test.
-  - Base-case total return must clear before Add is allowed.
+  - Only `fails` means dead money; `indeterminate` does not force an exit.
+  - New money uses a stricter point test — the base-case total return itself must clear (`base ≥ hurdle`) before Add is allowed.
 
 ### The equity-fund path
 
-The alternative branch to the stock spine above; the fund engine makes the final priced-fund vs role-risk-only classification here in Step 6b. A role-risk-only fund takes no grade, target, or risk tier.
+The alternative branch to the stock spine above; the fund engine makes the final priced-fund vs role-risk-only classification here in Step 6b (the routing rules are at Step 6a §Fund routing). A role-risk-only fund takes no grade, target, or risk tier — only the role-risk readout at the end of this section.
 
-- **Expense drag**
-  - The expense ratio rides as evidence for the interpretation call.
-  - No return figure is expense-adjusted deterministically.
+- **Fund valuation** — what the fund’s sector mix costs now vs its own history; the priced fund’s one real valuation input.
+  - Inputs: per-sector P/E snapshots (blended across exchanges), the fund’s current sector weights, ~8–12 quarters of historical sector P/Es.
+  - Equation:
+    - Per sector: earnings yield = `1 ÷ P/E`.
+    - Composite earnings yield = `Σ(weightᵢ ÷ P/Eᵢ) ÷ Σ weightᵢ` over sectors with a usable P/E — renormalized over the **covered** weight; sectors without a usable P/E are skipped.
+    - Coverage = the covered weight as an absolute share of the fund; **≥ 70% is required**, else the valuation is a gap (uncovered weight is reported, never averaged in as zero).
+    - Valuation sub-score = the percentile rank of today’s composite yield within the same-weights-over-historical-multiples series = `(count of history ≤ today ÷ history length) × 100` (higher yield = cheaper = higher score).
+    - [note: needs ≥ 8 history samples, each itself with ≥ 70% coverage.]
 
-- **Exposure tilt**
-  - Use sector and country weights.
-  - The house-view comparison happens at the interpretation call, not here.
+- **Fund sub-scores and grade**
+  - **Quality** — no fund quality axis exists, so it is a fixed neutral **50** (never presented as fund quality; its presence forces the low-confidence marker).
+  - **Valuation** — the coverage-gated percentile above.
+  - **Risk** — `average` of two inverted legs: volatility → `scale(0.04 → 0)`, drawdown → `scale(0.6 → 0)`. A **missing leg is imputed to 50** when the other is present (unlike the stock risk score, which drops it); **both legs absent → the fund abstains** (`insufficient-evidence`). [note: these bands differ from the stock risk bands.]
+  - **Momentum** — trailing return → `scale(−0.30 → 0.30)`, outside the letter.
+  - **Grade** — same weighting and cutoffs as a stock (`quality × 40% + valuation × 30% + risk × 30%`); because fund quality is always 50, this reduces to `20 + valuation × 30% + risk × 30%`, and every priced fund carries the low-confidence marker.
 
-- **Valuation calculation**
-  - Read each sector’s earnings yield from its P/E.
-  - Weight those yields by the fund’s current sector weights.
-  - Ignore sectors without a usable P/E.
-  - Renormalize over the covered fund weight.
-  - Report the uncovered weight separately.
-  - Require at least 70% P/E-usable weight.
-  - Compare today’s constant-mix valuation with its historical version.
+- **Fund metrics**
+  - **Expense ratio** — a decimal ratio; rendered to the interpretation prompt (no return figure is expense-adjusted deterministically).
+  - **US share** — the fund's US country-weight share; rendered to the prompt.
+  - **Composite coverage** — the covered valuation weight from above; rendered to the prompt beside the valuation read.
+  - **NAV premium / discount** — `spot ÷ NAV − 1`, only when NAV > 0 (positive is a premium). Computed but currently consumed by no prompt, score, or rule (it lands with the designed CEF price-vs-NAV leg).
+  - **Exposure tilt** — the sector and country weights. On the priced path only the US share above reaches the prompt; a top-five tilt (sector weights, else country when sector is absent) is rendered only on the role-risk path. The house-view comparison happens at the interpretation call.
 
-- **Fund grade**
-  - Real valuation score.
-  - Real risk score.
-  - Structurally absent quality axis receives neutral 50.
-  - The neutral value is not presented as fund quality.
+- **Fund scenario target** (flat-driver stopgap)
+  - Equation: driver = `spot × composite earnings yield`, held **flat across bear / base / bull**; scenario spread comes only from the multiple axis (and, on the carry path, the volatility-scaled dispersion floor), not the driver.
+  - Open design item: a scenario-differentiated priced-fund target formula is not yet designed; it must be settled before the fund-depth slice is implemented.
 
-- **Open design item**
-  - The shipped flat-driver form (spot × composite yield, flat across scenarios) is the settled stopgap.
-  - A scenario-differentiated priced-fund target formula is not yet designed.
-  - It must be settled before the fund-depth slice is implemented.
+- **Fund risk tier** (priced fund)
+  - High — annualized volatility > 40%, or max drawdown > 50%. (The function also flags leveraged/inverse structure, but those funds route to role-risk and never reach the priced tier.)
+  - Low — no option-overlay flag and annualized volatility < 25%.
+  - Otherwise Medium (an option-overlay flag bars Low without forcing High).
 
-- **Priced equity fund — risk tier**
-  - High for leveraged/inverse structure, high volatility, or deep drawdown.
-  - Low for low volatility and no structural flag.
-  - Otherwise Medium.
+- **Fund hurdle** — identical to the stock hurdle (`DGS2 + tier premium`; same three-state and new-money test).
 
-- **Role-risk-only fund — risk tier**
-  - No risk tier.
-  - Carries an observable risk description instead.
+- **Role-risk-only readout** (no grade, target, tier, or sub-scores)
+  - Class label — bond fund, commodity fund, leveraged / inverse vehicle, equity fund below the US-exposure guard, equity fund without usable weightings, or fund with unresolved strategy class.
+  - Exposure tilt — the top five sector weights, else the top five country weights.
+  - Expense ratio.
+  - Observable risk — annualized realized volatility (the only numeric risk; no tier).
+  - Structural flag, and the evidence-gap manifest (the classification’s own reason appended).
 
 ### Continuity and ledger checks
 
@@ -836,6 +866,8 @@ The inline gates referenced above, gathered — with each branch's requirements 
   - `etf/info` and expense ratio.
   - Usable sector and country weights.
   - At least 70% valuation coverage.
+  - At least one risk leg — volatility or drawdown (both absent → abstain).
+  - At least eight constant-mix history samples (fewer → abstain).
 
 - **Floor failure**
   - Mark `insufficient-evidence` with named reasons.
@@ -857,7 +889,7 @@ The inline gates referenced above, gathered — with each branch's requirements 
     - Of these, the two-arm **engine arm** — the fields **carried in both arms** (authored deterministically here and by the model at 6f) — is just the **sub-scores / letter** and the **scenario targets** (plus the outlook / conviction / action stand-ins assembled later); of those, only the **targets and outlook** are scored against realized outcomes today — and only the target bands additionally get an engine-vs-model head-to-head — while sub-scores, conviction, and action are carried but unscored. The risk tier, hurdle read, and overlay are shared deterministic evidence, and a **role-risk-only** fund is a separate, non-two-arm branch.
   - **Supporting reads emitted as 6f evidence** (none changes the letter):
     - The **computed metrics** — net / gross margin, revenue growth, debt-to-equity, volatility, trailing return, P/E, P/S, P/B.
-    - **Momentum / market setup**; for a fund, **expense drag** and **exposure tilt** (sector / country weights).
+    - **Momentum / market setup**; for a priced fund, the **expense ratio**, **US share**, and **composite coverage** reach the prompt (the computed NAV premium and the full exposure tilt do not).
     - The **ledger evaluation** — the prior ledger's conditions' tripped / fired state.
     - The **input delta** — position change, house-view age, and prior-run values carried for comparison.
     - Designed, not yet emitted: forensic flags, narrative-vs-reality, implied expectations, and the designed conviction-context signals.
