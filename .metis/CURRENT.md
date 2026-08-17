@@ -2,48 +2,56 @@
 
 ## What happened
 
-Ran the **Step 6a** and **Step 6b** clarity batches on the
-`logic-flow-docs/portfolio-analysis-logic-flow.md` walk.
-**6a** (`d93600c`): de-duped the intro/identity paragraphs, grounded the listing
-guard (FMP company-profile fetch queried by the Schwab symbol as-is, US-exchange +
-name cross-check, all four `ListingResolution` outcomes incl. degraded-continue),
-named the gather fields, nested elaborating bullets, rewrote the Output as
-what-leaves. Three Codex rounds.
-**6b** (`a084816`): added an engine-primitives preamble (`scale` / `average` /
-`ratio`) and gave **every value the four-aspect format** — what it is / inputs +
-source / equation / where it lands — grounded against `engine.rs`, `pre_profit.rs`,
-`fund.rs` by four parallel explorer agents (the doc's behavioral claims only the
-Rust pins). Expanded the risk-tier thresholds and fixed nesting. Four Codex rounds.
-Format calls settled this session: **example-fields-in-parens** for gather-leg lists
-(6a); **preamble + four aspects** and **clean equations with footnoted guards** (6b)
-— carry these forward for consistency.
+Ran the **Step 6e** clarity batch on
+`logic-flow-docs/portfolio-analysis-logic-flow.md` (`6786e0c`, pushed).
+Rewrote 6e **as-built-first**: nothing recalculates today — 6b's targets,
+hurdle, letter, and overlay pass through unchanged — and separated that from
+the **designed** refinement, which rewrites a *bounded subset* (targets,
+hurdle, and the overlay's observation history / execution read / severe state
+/ consequences), never the letter, grade sub-scores, or statement-derived
+legs. De-duped the pre-profit engine calculations (**6b is their canonical
+home**; restored the execution-read guards there — higher-is-better only,
+range-low/point finite-positive bound, pairing keys). Marked the
+observation-validation and backfill legs designed/dormant.
+The batch **extended into `docs/portfolio-workflow.md`**: aligned its 6b/6e
+overlay framing to as-built — dropped the misleading "provisional" from the
+financing state, added the as-built anchor (complete overlay at the 6b engine
+seam over an **empty candidate list**, deriving execution from carried prior
+observations), and re-attributed state derivation (financing/economics/
+dilution at 6b; execution→severe→consequences the observation-dependent 6e
+legs). Two Codex rounds; grounded against `pre_profit.rs` / `pipeline.rs` /
+`engine.rs` via parallel explorers.
+Key as-built facts to carry: 6e is a genuine **no-op** today (research stubbed;
+`reanchor_scenarios` is called only by the quick check; **no
+`research_forward_assumption` type exists**).
 
 ## Current state
 
-Clean tree, all pushed. The clarity walk now has **6a + 6b done** and is **paused
-before Step 6e**. Docs-only on the one logic-flow doc; no `BUILD.md` / `INDEX.md`
-change was needed.
+Clean tree, all pushed. The clarity walk now has **6a + 6b + 6e done** and is
+**paused before Step 6f**. Docs-only across the logic-flow doc + one workflow
+doc; no `BUILD.md` / `INDEX.md` change needed.
 
 ## Open questions
 
-- **Scenario-differentiated priced-fund target formula** — undesigned; the shipped
+- **Scenario-differentiated priced-fund target formula** — undesigned; the
   flat-driver form is the settled stopgap. (carried)
 - **Share-based action sizing** — ruled the only legal action numeric, unbuilt;
   nothing blocks on it. (carried)
-- **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant still rests
-  on the 2026-07-16 verification, not re-probed. (carried)
-- **Line-513 "applied" vs "decided"** — the Fund-routing paragraph says the route is
-  "applied" at 6b, but the code decides it there; Codex judged it a non-blocker. A
-  one-word fix if touched. (parked from the 6a batch)
+- **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant still
+  rests on the 2026-07-16 verification, not re-probed. (carried)
+- **Line-513 "applied" vs "decided"** — the 6a Fund-routing paragraph says the
+  route is "applied" at 6b; the code decides it there. Codex non-blocker, a
+  one-word fix if touched. (parked)
 
 ## Where to start
 
-Resume the clarity walk at **Step 6e — Recalculate targets using validated
-research** (as-built: the pre-profit overlay finalization is the whole built work;
-the forward-assumption / observation legs are designed, landing with the research
-loop). **Ground new behavioral claims against the Rust** (`pre_profit.rs`,
-`engine.rs`, `pipeline.rs`, `outcome.rs`, `fund.rs`), not just `docs/` — every 6a/6b
-Codex round came from doc↔as-built divergence; for equation-level sections dispatch
-parallel grounding explorers as 6b did. Reuse the 6b value format + the primitives
-preamble. Codex per batch, commit per batch to `main`; then 6f / 6g, 7–9, and the
-Quick check / Pull holdings sections.
+Resume the clarity walk at **Step 6f — Author the intrinsic verdict** (two model
+calls: interpretation + action decision), then **6g — Validate continuity and
+checkpoint**. **Ground new behavioral claims against the Rust** (`pipeline.rs`,
+`engine.rs`, `outcome.rs`, `pre_profit.rs`) — dispatch parallel grounding
+explorers for equation-level/behavioral sections, as 6a/6b/6e did. Reuse the
+As-built callout + `(designed …)` markers. A precedent this session set: the
+walk now corrects **docs/ drift from as-built in the same batch** (workflow.md
+was tightened for 6e) — watch `portfolio-workflow.md` / `portfolio-analysis.md`
+for the same at 6f/6g. Codex per batch, commit per batch to `main`; then 7–9
+and the Quick check / Pull holdings sections.
