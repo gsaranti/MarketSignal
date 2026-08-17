@@ -482,7 +482,7 @@ Once the stock guard clears — and for every fund — the holding’s remaining
   - FINRA short interest — designed.
 
 - **Option chains**
-  - Fetched per holding from Schwab here, never in the Step-2 pull.
+  - Fetched per holding from Schwab.
   - Volume, open interest, and implied volatility; greeks are not parsed.
   - Put/call ratios and the IV/skew read are computed at dossier assembly.
   - Linking held options to the same stock and classifying the overlay (covered call, protective put, collar) is designed, not built.
