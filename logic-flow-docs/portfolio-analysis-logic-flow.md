@@ -283,9 +283,6 @@
   - Determine the final net long or short side.
   - Preserve original rows for audit and display.
 
-- **Option chains**
-  - Fetched per holding at Step 6a, never here — a selective run's carried tail spends no chain call.
-
 - **Failure logic**
   - Failed holdings pull → fail the run.
 
@@ -449,15 +446,32 @@ Each completed holding is designed to checkpoint separately; as-built only the b
 
 ## Step 6a — Build the holding dossier
 
+For each holding, Step 6a assembles the dossier — the evidence packet Step 6b grades. A stock’s gather opens with one profile fetch that drives the listing guard; only once it clears does the rest of the evidence pull run. A fund has no stock guard and pulls its fund legs instead.
+
+### Resolve stock identity (runs first)
+
+The stock’s gather opens with a single profile fetch; its listing identity drives the guard. A guard-terminal stock — unsupported, non-US, or conflicting — is routed here (not-rated / insufficient-evidence) and spends no further pull. A fund has no stock guard; its route is resolved after its data lands (see Fund routing below).
+
+- **Stock identity validation**
+  - Company profile and listing identity — the one profile fetch, pulled before the rest.
+  - Match Schwab identity to an FMP canonical symbol.
+  - Matching US listing → continue.
+  - US-listed ADR → continue.
+  - No FMP resolution or non-US primary listing → not rated.
+  - Conflicting issuer identities → insufficient evidence.
+
+### Gather the evidence (skipped for a guard-terminal stock)
+
+Once the stock guard clears — and for every fund — the holding’s remaining legs are pulled. A stock pulls its statement / estimate / dividend financials, SEC facts, and (designed) FINRA short interest; a fund pulls its lighter fund financials and fund metadata instead, touching neither the statements nor SEC. Both add the deep price history, the option chain, and the local prior-run data.
+
 - **Stock data retrieved from FMP**
-  - Company profile and listing identity.
   - Income statement, balance sheet, and cash-flow statement.
   - Ratios, key metrics, owner earnings, and enterprise value — designed, not yet pulled.
   - Discounted cash-flow valuation cross-check — designed.
   - Financial scores — designed.
   - Estimates (the forward consensus); the revision signal is designed.
   - Street targets and rating history as opinion evidence — designed.
-  - Earnings and dividends.
+  - Dividends (the trailing distributions); per-symbol earnings are pulled only by the quick check, not this pass.
   - Insider and congressional activity — designed.
   - Peers, float, and revenue segments — designed.
   - Live quote; company-news seeds are designed (research lane).
@@ -495,14 +509,11 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - Shared market context.
   - Portfolio Analysis memory for this holding — semantic recall designed, not built.
 
-- **Stock identity validation**
-  - Match Schwab identity to an FMP canonical symbol.
-  - Matching US listing → continue.
-  - US-listed ADR → continue.
-  - No FMP resolution or non-US primary listing → not rated.
-  - Conflicting issuer identities → insufficient evidence.
+### Fund routing
 
-- **Fund routing (applied by the fund engine at Step 6b)**
+A fund’s route — read from the `etf/info` and weights gathered above — is applied by the fund engine at Step 6b.
+
+- **Fund routing**
   - US equity exposure with usable weights → priced-fund path.
   - Bond or commodity fund → role-risk-only path.
   - International fund below the US-exposure guard → role-risk-only path.
@@ -510,6 +521,10 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - Option-overlay fund → structural path-dependence flag; other priceability rules decide the route.
   - Mutual fund without usable weights → role-risk-only path.
   - Closed-end fund → the price-versus-NAV leg is designed; as-built it routes as a generic fund.
+
+### Semantic recall (designed)
+
+The designed embedding-based recall of this holding’s prior analysis; as-built this section does not run.
 
 - **Embedding model (designed — no 6a semantic recall runs as-built)**
   - Converts a holding-specific query into a vector.
@@ -521,6 +536,8 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - Skip semantic recall.
   - Keep the directly loaded prior verdict and ledger.
   - Record a degraded-input flag.
+
+### Output
 
 - **Output**
   - Complete stock or fund dossier.
