@@ -2,44 +2,43 @@
 
 ## What happened
 
-Shipped the **selective-run badges slice**. A selective Portfolio run now
-analyzes **strictly the user's selection** (ruled 2026-08-16,
-`docs/verification/2026-08-16-selective-badges-ruling.md`): the former automatic
-safety additions no longer force-include the flagged tail — each surfaces as a
-**non-blocking card badge** (attention flag, `unknown` degraded-sweep, evidence
-event, side reversal, stale vintage). A held position with no prior verdict is
-left **not analyzed** (a selectable "run to grade" placeholder card). The
-**held-name research refresh lane** was retired (its only purpose was the
-material-update force-include) and the **pre-`v9` migration gate** removed
-(`whole_book_era_version` kept for its `pipeline.rs` history-label consumer).
-The side-reversal badge is computed from the **invariant long authoring side vs
-the current side** — directional verdicts are only ever authored long (net-short
-/ net-zero are not-rated), so it is robust across a flip through an exactly-zero
-net (Codex flagged an earlier cumulative approach). Full doc sweep +
-`.metis/BUILD.md` / `INDEX.md`.
+Finished the Step 6d clarity cleanup and ran a Step 6b clarity batch on the
+`logic-flow-docs/portfolio-analysis-logic-flow.md` walk.
+**6d** (`c5b9c30`, `c1e74d1`, `d833253`): folded the two routing branches into one
+consolidation-call block **and added the missing deterministic single-vs-hierarchical
+routing fact** (the orchestrator sizes the aggregate; only single-pass sees it whole),
+labeled the merge block, reverted a wrong "stale"→"cached", and rewrote the overflow
+block as **map/reduce distillation calls** (one map per pass + one reduce, 2–4).
+**6b** (`72fbe00`): an order-of-computation + through-line intro, the overlay calcs
+marked **persisted, not scratch**, and the terminal Output rewritten into "what leaves
+the step" — the deterministic analysis vs the true two-arm **engine-arm** subset (only
+sub-scores/letter + targets + later stand-ins; only targets/outlook actually scored),
+the persisted working reads, and the post-interpretation stand-ins. The 6b batch took
+~6 Codex rounds: its behavioral claims diverge from the canonical docs and only the
+Rust pins them.
 
 ## Current state
 
-Slice complete, reviewed, and landed on `main`. Clean tree. Reviewed by the
-Metis task-reviewer (approve) and Codex (three rounds → approve). Verified:
-`cargo test` 1037 + clippy clean; `npm run build` + `npm test` 241 component + 46
-pure. The `logic-flow-docs/portfolio-analysis-logic-flow.md` **clarity walk was
-not advanced this session** — it detoured into this ruling, which began from a
-question about the Work-list section's held-name lane.
+Clean tree, all pushed. The clarity walk is **paused at Step 6e**. This session was
+docs-only on the one logic-flow doc; no `BUILD.md` / `INDEX.md` change was needed. This
+`CURRENT.md` rewrite is the session-end handoff (it retires the long-stale pre-session
+diff that still said "resume at 6d, clean tree").
 
 ## Open questions
 
-- **Scenario-differentiated priced-fund target formula** — undesigned; the
-  shipped flat-driver form is the settled stopgap. (carried)
+- **Scenario-differentiated priced-fund target formula** — undesigned; the shipped
+  flat-driver form is the settled stopgap. (carried)
 - **Share-based action sizing** — ruled the only legal action numeric, unbuilt;
   nothing blocks on it. (carried)
-- **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant still
-  rests on the 2026-07-16 verification, not re-probed. (carried)
+- **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant still rests on
+  the 2026-07-16 verification, not re-probed. (carried)
 
 ## Where to start
 
-Resume the `logic-flow-docs/portfolio-analysis-logic-flow.md` clarity walk from
-**Step 6e onward** (the earlier sections, including the restructured §Work-list,
-were touched this session and are current). Same posture: read each section,
-surface confusions, apply clarity edits with the user, and ground any doubtful
-claim against the canonical `docs/`.
+Resume the clarity walk at **Step 6e — Recalculate targets using validated research**
+(as-built: the pre-profit overlay finalization is the whole built work; the
+forward-assumption / observation legs are designed, landing with the research loop).
+**Ground new behavioral claims against the Rust** (`pre_profit.rs`, `engine.rs`,
+`pipeline.rs`, `outcome.rs`, `fund.rs`), not just `docs/` — the 6b rounds all came from
+doc↔as-built divergence. Codex per batch, commit per batch; then 6f / 6g, 7–9, and the
+Quick check / Pull holdings sections.
