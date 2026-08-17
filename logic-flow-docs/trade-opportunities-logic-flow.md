@@ -550,7 +550,7 @@ Each candidate is checkpointed separately.
   - Proposes follow-up questions.
 
 - **Output**
-  - Full findings for every topic.
+  - Full findings for every worked topic; lower-priority topics the budget couldn't reach drop to a recorded gap.
   - Evidence ledger.
   - Mandatory sourced bear case.
 

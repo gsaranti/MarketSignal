@@ -916,22 +916,42 @@ The orchestrator assembles the topic list deterministically; the reasoner works 
 
 ### Work each topic — the research loop
 
-Each topic runs as its own isolated conversation over a clean context — the dossier facts, that topic's questions, and any seed — and the orchestrator owns every search and fetch, pulling from the sources below and stopping at the holding's budget.
+The orchestrator works the agenda **one topic at a time**. Each topic is its own isolated conversation over a clean context, and the orchestrator — never the model — owns every search and fetch, stopping at the holding's budget.
 
-- **Data retrieved**
-  - Current web sources.
-  - SearXNG first.
-  - Tavily if SearXNG fails.
-  - Dossier facts, plus the company-news seeds — the symbol-scoped FMP `news/stock` headlines pulled into the dossier at Step 6a — which orient the topics as leads (and can trigger the technology-event topic), never as evidence: a seed's claim counts only once the model deep-reads its underlying source.
-  - Previously-fetched pages under about four weeks old come from the document cache (Layer 1) instead of the network, carrying their original retrieval timestamp; new URLs are fetched live.
+- **Two nested levels**
+  - **Topic** — one isolated conversation per agenda topic; topics never share a context.
+  - **Pass** — each topic's conversation is a bounded multi-turn tool loop: one root pass plus up to two follow-up passes, so three passes per topic at most. The cap counts passes (branches), not model calls — a single pass is itself many turns, each turn one model call: the tool-requesting turns ask for a search or fetch the orchestrator runs, and the pass's terminal turn emits its findings.
 
-- **Research loop**
-  - One isolated model conversation per topic.
-  - One initial pass plus up to two follow-up passes.
-  - Maximum three passes per topic.
-  - Orchestrator owns every search and fetch.
-  - Stop when the holding’s fetch or time budget is reached.
-  - Store claims in an append-only evidence ledger.
+- **What each topic conversation is given (its inputs)**
+  - The shared dossier facts — identical for every topic.
+  - That topic's own questions — different per topic.
+  - That topic's own seed, only when a non-expired (< ~4 weeks) cache exists: its own prior distilled object (its tier-1 distillation, or its topic-keyed group from a single-pass run) plus its ledger conditions. The seed is per topic — there is no single shared seed — and a topic with no cached prior starts clean.
+  - The company-news seeds — the symbol-scoped FMP `news/stock` headlines pulled into the dossier at Step 6a — orient the topics as leads (and can trigger the technology-event topic), never as evidence: a seed's claim counts only once the model deep-reads its underlying source.
+  - No other topic's findings — a later topic gets nothing from an earlier one. The topics meet only downstream, at the Step-6d distillation (a single consolidation call, or a reduce when the research is large).
+
+- **What is retrieved during a pass (the data)**
+  - Live web-page text — the pages the model deep-reads, fetched and readability-extracted from the open web. This is what "current web sources" means.
+  - Cached pages — previously-fetched pages under about four weeks old come from the document cache (Layer 1) instead of the network, carrying their original retrieval timestamp; new URLs are fetched live.
+  - Search backend, not a separate data source: the orchestrator runs search SearXNG-first, falling back to Tavily only when SearXNG can't serve.
+
+- **Who owns the context, and what persists**
+  - The orchestrator owns the prompt: on every turn it appends the tool results and the model's non-thinking output (a tool request, or the pass's findings), threading the growing context forward — the model only requests tools, it never touches the network. Prior `<think>` blocks are stripped from history, never accumulated across turns (`docs/local-model-operations.md` §Strip thinking from history).
+  - Carried across the topic's passes (canonical): the append-only evidence ledger and the accumulated per-pass findings, which the orchestrator assembles for the Step-6d distillation. The framing inputs (dossier facts, questions, seed) anchor the conversation from its start.
+  - Raw fetched page text is the bulky working material: it may roll off the context as a pass proceeds, and the durable record of what a page yielded is its claims in the ledger, not the page text itself. How much raw page text survives across a pass boundary is not pinned by the contract.
+
+- **Fitting the fixed context window**
+  - `num_ctx` is fixed per model and never raised to make room — raising it reloads the runner and starves memory (`docs/local-model-operations.md` §The num_ctx trap); context pressure is answered by dropping content, not by growing the window.
+  - When the prompt approaches the ceiling, older raw page text rolls off the working context — but only after its claims are banked in the ledger, so nothing is silently dropped. The roll-off is pressure-driven within a pass; the contract fixes only what is eligible to roll off (raw page text, never the ledger), not an eviction order or a trigger threshold — this stage is still a stub.
+  - It never relies on the model server's own truncation, which silently front-drops the prompt's head and leaves the model to hallucinate over the gap.
+
+- **What each model call returns**
+  - Inside a pass, a turn either requests `web_search` / `web_fetch` calls — the orchestrator executes them and returns the results for the next turn — or, once the topic is answered or the budget is spent, emits that pass's findings.
+  - The model authors each pass's findings write-up; the orchestrator only accumulates them — there is **no topic-close model synthesis**, so the first model consolidation of the findings is the Step-6d distillation.
+  - Each ledger entry is a hybrid: the model supplies the claim, the orchestrator stamps its provenance (the source URL / timestamp).
+
+- **Follow-up passes**
+  - A follow-up is the model's **proposal** — a structured field the orchestrator reads and decides whether to spend; the model never recurses on its own.
+  - It is granted only while depth remains (≤2 follow-ups) **and** the per-item budget has room; on exhaustion it is simply not spent (fail-soft, no follow-up).
 
 - **Model determines**
   - Which sources answer the topic.
@@ -941,6 +961,10 @@ Each topic runs as its own isolated conversation over a clean context — the do
   - Whether a research-only leading indicator exists.
   - Whether primary-source evidence shows fraud.
 
+- **Stops at the budget**
+  - A per-item fetch + wall-clock budget that binds first — a per-holding cap on web-fetches and wall-clock, not a per-pass timer — spent in topic-priority order. When it drains, the lowest-priority remaining topics are skipped fail-soft, each recorded as a degraded-input gap (lower conviction), never failing the run.
+  - The per-topic depth cap (≤2 follow-ups, ≤3 passes) works alongside it, guarding against rabbit-holing one topic.
+
 ### Failure and output
 
 - **Failure logic**
@@ -949,7 +973,7 @@ Each topic runs as its own isolated conversation over a clean context — the do
   - It does not automatically fail the run.
 
 - **Output**
-  - Full findings for every topic.
+  - Full findings for every worked topic; any lower-priority topic the budget couldn't reach is a recorded degraded-input gap (lower conviction).
   - Evidence ledger with sources and timestamps.
   - Proposed follow-up and forward facts.
 

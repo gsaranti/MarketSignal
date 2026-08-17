@@ -428,7 +428,7 @@ Within a pass the model reasons over the fetched, readability-extracted page tex
 **Returns.**
 The topic's **full findings response**, preserved whole (with its evidence-ledger entries), plus any **follow-up proposal** (a structured field the orchestrator decides whether to spend) and any **material forward fact** flagged for the Step-5f refinement.
 The **bear-case topic is non-optional** — the candidate cannot reach scoring without a stated, sourced bear case (the winning traits also appeared in the famous failures).
-Every topic's full response flows intact to distillation — nothing is summarized away in between — where it is consolidated in a single pass or, when the per-candidate research is large, **hierarchically** (a tier-1 distillation per topic-tree → a final reduce, Step 5e).
+Every worked topic's full response flows intact to distillation — nothing is summarized away in between — where it is consolidated in a single pass or, when the per-candidate research is large, **hierarchically** (a tier-1 distillation per topic-tree → a final reduce, Step 5e).
 
 ### Step 5e: Distillation
 
@@ -448,7 +448,7 @@ Hierarchical distillation is **bounded** by a per-candidate sub-distillation cap
 The same resident 122B in non-thinking mode by default (no model-swap cost); the fast 35B tier is a benchmark-gated option ([local-models.md §The model roster and per-task routing](local-models.md#the-model-roster-and-per-task-routing)).
 
 **Prompt — input.**
-*Single pass:* the **full findings response from every topic** (including the bear-case topic) plus the append-only evidence ledger (claims + sources), **and the engine's Step-5c computed reads — the quant composite, the value-creation read, the narrative-vs-reality ratio, and the forensic flags — as the engine lenses the research findings are reconciled against, so the contradiction check can span all five lenses (per the *all-five-lens* rule above)**.
+*Single pass:* the **full findings response from every worked topic** (including the bear-case topic) plus the append-only evidence ledger (claims + sources), **and the engine's Step-5c computed reads — the quant composite, the value-creation read, the narrative-vs-reality ratio, and the forensic flags — as the engine lenses the research findings are reconciled against, so the contradiction check can span all five lenses (per the *all-five-lens* rule above)**.
 *Hierarchical:* each **tier-1** call gets one topic-tree's complete findings + that tree's ledger entries (no engine reads — tier-1 sees only one tree); the **tier-2 reduce** gets the tier-1 structured outputs **plus those same engine reads**, each carrying the citations the contradiction check and downstream gate depend on.
 
 **Returns.**

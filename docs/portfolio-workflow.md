@@ -225,7 +225,7 @@ Within a pass the model reasons over the fetched, readability-extracted page tex
 
 **Returns.**
 The topic's **full findings response**, preserved whole (with its evidence-ledger entries), plus any **follow-up proposal** (a structured field the orchestrator decides whether to spend) and any **material forward fact** flagged for the Step-6e refinement.
-Every topic's full response flows intact to distillation — nothing is summarized away in between — where it is consolidated in a single pass or, when the holding's research is large, **hierarchically** (a tier-1 distillation per topic-tree → a reduce, Step 6d).
+Every worked topic's full response flows intact to distillation — nothing is summarized away in between — where it is consolidated in a single pass or, when the holding's research is large, **hierarchically** (a tier-1 distillation per topic-tree → a reduce, Step 6d).
 
 ### Step 6d: Distillation
 
@@ -244,7 +244,7 @@ It runs as **a single pass by default, or hierarchically** (tier-1 per topic-tre
 The same resident 122B in non-thinking mode by default (no model-swap cost); the fast 35B tier is a benchmark-gated option ([local-models.md §The model roster and per-task routing](local-models.md#the-model-roster-and-per-task-routing)).
 
 **Prompt — input.**
-*Single pass:* the **full findings response from every topic**, the append-only evidence ledger (claims + sources), and — for Portfolio with a non-expired prior — the **seeded per-topic prior objects**, each merged into its own topic and the call's output **keyed by topic** so every group persists as the next run's seed ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).
+*Single pass:* the **full findings response from every worked topic**, the append-only evidence ledger (claims + sources), and — for Portfolio with a non-expired prior — the **seeded per-topic prior objects**, each merged into its own topic and the call's output **keyed by topic** so every group persists as the next run's seed ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).
 *Hierarchical:* each **tier-1** call gets one topic-tree's complete findings + that tree's ledger entries **+ that topic's non-expired prior object** — Portfolio's reuse merges **per topic here**, fresh superseding cached (a topic whose *complete* input — its passes' findings, their evidence-ledger entries, and the prior — would itself overflow one call sub-distills along the pass seam, each pass carrying its findings *and* ledger entries together and the bounded prior retained; a fail-softed pass takes its ledger entries with it — [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)); the **reduce** gets the merged tier-1 structured outputs with their preserved citations, resolves cross-topic claim/metric conflicts by the same newest-wins rule and dedups sources across topics, and **emits both the combined object and the per-topic seed layer reconciled to those winners** — the persisted seed is that reconciled layer, not the raw tier-1 output (no cross-lens contradiction check here — the reduce is consolidation plus that global reconciliation — [web-research.md §The research loop and context management](web-research.md#the-research-loop-and-context-management)).
 
 **Returns.**
