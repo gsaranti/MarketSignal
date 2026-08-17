@@ -984,33 +984,33 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 - **As-built**
   - One unconstrained non-thinking condense of the stub note.
   - No evidence-ledger leg, hierarchy, or output schema until research lands.
+  - The contract below is the designed research-loop shape; it binds when research lands.
   - A role-risk-only holding makes no research or distillation call at all.
 
 - **Data retrieved**
   - No new external data.
 
-- **Normal case**
-  - One consolidation call, its output **keyed by topic** — globally reconciled, since the one call sees every topic — so each topic's group persists as that topic's next-run seed.
+- **The consolidation call — single or hierarchical (designed — research loop)**
+  - The stage's full input is the findings from every worked topic, this run's evidence ledger (claims + sources), and — for a holding with a non-expired cache — each topic's seeded prior object merged into its own topic.
+  - The orchestrator, never the model, sizes that full input to choose single-pass vs hierarchical **deterministically** — so growth *across* topics trips the hierarchical path rather than overflowing one call; the thresholds are config knobs.
+  - That aggregate is what the orchestrator sizes to route, **not what any one call receives**: only the single-pass call sees every topic's findings whole, while hierarchical routing partitions them across the tier-1 → reduce shape below.
+  - **Single-pass:** one call over every topic's findings, its output **keyed by topic** — globally reconciled, since the one call sees every topic — so each topic's group persists as that topic's next-run seed.
+  - **Hierarchical (large input):** distill each topic tree separately (**tier-1**, feeding the reduce, not persisted raw), then one final combining call (**tier-2 reduce**) over the tier-1 objects — it emits the one combined object interpretation reads **and** the per-topic seed layer reconciled to the global winners, that reconciled layer (not the raw tier-1 output) persisting as the next-run seeds.
+  - Either path preserves each claim's citations end to end.
 
-- **Large-input loop**
-  - Distill each topic tree separately (**tier-1**) — feeding the reduce, not persisted raw.
-  - Run one final combining call (**tier-2**) over the tier-1 objects: it emits the one combined object interpretation reads **and** the per-topic seed layer reconciled to the global winners — that reconciled layer, not the raw tier-1 output, persists as the next-run seeds.
-  - Preserve citations through both levels.
-
-- **Merging the seeded prior (Layer 2 cache)**
+- **Merging the seeded prior (Layer 2 cache) (designed — research loop)**
   - The merge is **per topic**: each topic's prior object joins that topic's fresh findings where the topic is first reduced — the tier-1 call when the run goes hierarchical, or the single consolidation call when it is small — fresh superseding cached within that topic.
-  - Cross-topic reconciliation happens at the reduce (the tier-2 reduce, or that same single call): the same newest-wins-by-claim/metric rule is applied **globally** — a metric freshened under one topic supersedes a cached copy another carried forward — on top of source de-duplication, so nothing is double-counted or left conflicting.
+  - Cross-topic conflicts resolve at the reduce (the tier-2 reduce, or that same single call): the newest-wins-by-claim/metric rule is applied **globally** — a metric freshened under one topic supersedes a cached copy another carried forward — on top of source de-duplication, so nothing is double-counted or left conflicting.
   - The reduce **emits the per-topic layer already reconciled to the global winners** — the model that resolved the conflict owns the match, in the same pass, not an app-side re-derivation (Portfolio's claims carry no cross-topic identity key the app could match on) — so no persisted topic object keeps a value another topic superseded, and a later run can't surface it when the fresher topic is dormant.
   - The within-topic fallback triggers on a topic's **complete input** — its passes' findings, their accumulated evidence-ledger entries (claims + sources, which scale with research, distinct from the bounded thesis-ledger conditions that seed at 6c), and its bounded prior — whenever the sum would overflow one call: the research sub-distills along its ≤3-pass seam, each pass carrying its findings *and* ledger entries into a compact per-pass object, then a tree-level reduce over those plus the retained bounded prior; if that still overflows, the cap fail-softs the lowest-priority whole passes to a recorded gap — each taking its findings and ledger entries together, never the prior — so an overflow costs research detail, never seeded status.
   - A cached claim past about four weeks by its own vintage, not re-confirmed this run, expires rather than riding forward; each surviving claim keeps its vintage and whether it is fresh or carried.
-  - The run writes a fresh per-topic layer, one object per analyzed topic, as the next run's seed, and the combined object interpretation reads is its cross-topic reduction; the audit records seeded-vs-cold **per topic** with each seeding object's vintage — a standing topic can seed while a newly-activated conditional topic runs cold.
 
 - **Model**
   - Consolidates evidence.
   - Does not perform new searches.
   - Does not calculate financial numbers.
 
-- **Typed outputs when supported**
+- **Typed outputs when supported (designed — research loop)**
   - `research_forward_assumption`:
     - Sourced numeric forward fact.
     - May affect an engine target after validation.
@@ -1040,7 +1040,10 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - Pure research consolidation only.
 
 - **Output**
-  - One schema-validated research object.
+  - Two schema-validated artifacts, both emitted by the reduce (or the single-pass call) from one reconciliation, so they stay mutually consistent.
+  - The combined distilled findings object interpretation reads — the cross-topic reduction of the per-topic layer.
+  - The fresh per-topic seed layer, one object per analyzed topic, persisted as the next run's seed.
+  - The audit records seeded-vs-cold **per topic** with each seeding object's vintage — a standing topic can seed while a newly-activated conditional topic runs cold.
 
 ---
 
