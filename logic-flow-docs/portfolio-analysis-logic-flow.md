@@ -1005,9 +1005,10 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - **Claim expiry is by claim, not object** — a cached claim past ~4 weeks by its own vintage that this run didn't re-confirm expires rather than riding forward; each surviving claim keeps its vintage and its fresh-vs-carried mark.
 
 - **If a topic's own input overflows one call (designed — research loop)**
-  - The trigger is that topic's **complete input** — its passes' findings, their evidence-ledger entries (claims + sources, which grow with the research, unlike the bounded thesis-ledger conditions seeded at 6c), and its bounded prior — summing past a single distillation call.
-  - The research then sub-distills along its ≤3-pass seam: each pass condenses into a compact per-pass object (its findings *and* ledger entries together), then a tree-level reduce combines those with the retained prior.
-  - If even that reduce overflows, the cap fail-softs the lowest-priority whole passes to a recorded gap — each dropped pass taking its findings and ledger entries with it, never the prior — so an overflow costs research detail, never the topic's seeded status.
+  - **Trigger** — the fallback fires when the topic's **complete input** *summed* would exceed one distillation call: all its passes' findings, their evidence-ledger entries (claims + sources, which grow with the research, unlike the bounded thesis-ledger conditions seeded at 6c), and its retained prior. The sizing is measured on that whole aggregate, not pass by pass.
+  - **Map (one distillation call per pass)** — the topic sub-distills along its ≤3-pass seam: the model condenses each pass on its own into a compact per-pass object (that pass's findings *and* ledger entries together).
+  - **Reduce (one more distillation call)** — a tree-level reduce then combines those per-pass objects **with the retained prior** into the topic's single tier-1 object, which joins the outer **tier-2 reduce** across topics like any other (the sub-distillation is invisible above this point). So building that topic's tier-1 object takes one map call per pass plus one reduce — two to four distillation calls (four for a full three-pass topic) — versus the single distillation call a non-overflowing topic uses, separate from the multi-turn calls the topic's research passes already spent at 6c.
+  - **On further overflow** — if even the tree-level reduce would overflow, the sub-distillation cap fail-softs the lowest-priority whole passes to a recorded gap — each dropped pass taking its findings and ledger entries with it, never the prior — so an overflow costs research detail, never the topic's seeded status.
 
 - **Model**
   - Consolidates evidence.
