@@ -2,42 +2,35 @@
 
 ## What happened
 
-Refined the always-run seed-and-merge reuse (shipped `ab82347`) into a
-**per-topic research-reuse layer**. Each 6c topic now seeds from **its own
-depth-1 distillation** (the tier-1 object under hierarchical 6d, the topic-keyed
-group under single-pass) rather than a slice of the cross-topic combined
-object — richer per-topic seeds for the same budget, and the topic becomes the
-storage partition (seed is a lookup, not a per-claim re-assignment). The rolling
-state is a **per-topic layer**, not one flat object. The reduce resolves
-cross-topic claim/metric conflicts **globally** (newest-wins) and **emits the
-per-topic layer already reconciled** — the model owns the semantic match, since
-Portfolio's claims carry no app-matchable cross-topic identity key (so there is
-no deterministic app-side write-back; raw tier-1 is not persisted).
-**Seeded-vs-cold and the ~4-week gate are per topic**; a dormant conditional
-topic keeps its object aging by its own vintage. Within-topic overflow
-sub-distills along the **pass seam**, the **pass** (findings + its evidence-ledger
-entries) the atomic unit — a dropped pass takes its ledger entries and records a
-gap; the bounded prior rides through. Single-homed at `portfolio-analysis.md
-§Starting parameters`; propagated to portfolio-workflow, storage, web-research
-(the shared distillation primitive), and the logic-flow doc. Eight Codex rounds
-to approval. Shipped `fb0b403` + `c76b08f` (two consistency follow-ups).
+Shipped the **selective-run badges slice**. A selective Portfolio run now
+analyzes **strictly the user's selection** (ruled 2026-08-16,
+`docs/verification/2026-08-16-selective-badges-ruling.md`): the former automatic
+safety additions no longer force-include the flagged tail — each surfaces as a
+**non-blocking card badge** (attention flag, `unknown` degraded-sweep, evidence
+event, side reversal, stale vintage). A held position with no prior verdict is
+left **not analyzed** (a selectable "run to grade" placeholder card). The
+**held-name research refresh lane** was retired (its only purpose was the
+material-update force-include) and the **pre-`v9` migration gate** removed
+(`whole_book_era_version` kept for its `pipeline.rs` history-label consumer).
+The side-reversal badge is computed from the **invariant long authoring side vs
+the current side** — directional verdicts are only ever authored long (net-short
+/ net-zero are not-rated), so it is robust across a flip through an exactly-zero
+net (Codex flagged an earlier cumulative approach). Full doc sweep +
+`.metis/BUILD.md` / `INDEX.md`.
 
 ## Current state
 
-Clean tree on `main` at `c76b08f` (this handoff aside). No work in flight. The
-refinement is **doc-only** — the 6c research stage is still stubbed, so it lands
-when the research-loop slice is built. BUILD/INDEX confirmed **not** to need
-updating (the ruling deepened *within* the contract they already point to). The
-build queue is unchanged: completion block (Step-5 context loads + pre-flag +
-forensic producer; evidence legs incl. FINRA/CBOE; 6a recall + checkpoint/resume
-+ 6g validator; fund depth) → big run (watch-set v9 revision first) → Trade
-Opportunities → research loop + refresh lane.
+Slice complete, reviewed, and landed on `main`. Clean tree. Reviewed by the
+Metis task-reviewer (approve) and Codex (three rounds → approve). Verified:
+`cargo test` 1037 + clippy clean; `npm run build` + `npm test` 241 component + 46
+pure. The `logic-flow-docs/portfolio-analysis-logic-flow.md` **clarity walk was
+not advanced this session** — it detoured into this ruling, which began from a
+question about the Work-list section's held-name lane.
 
 ## Open questions
 
 - **Scenario-differentiated priced-fund target formula** — undesigned; the
-  shipped flat-driver form is the settled stopgap. Needs its ruling before the
-  fund-depth group is planned. (carried)
+  shipped flat-driver form is the settled stopgap. (carried)
 - **Share-based action sizing** — ruled the only legal action numeric, unbuilt;
   nothing blocks on it. (carried)
 - **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant still
@@ -46,6 +39,7 @@ Opportunities → research loop + refresh lane.
 ## Where to start
 
 Resume the `logic-flow-docs/portfolio-analysis-logic-flow.md` clarity walk from
-**Step 6e onward** — 6c/6d's research-loop and reuse mechanics are now settled
-this session. Same posture: read each section, surface confusions, apply clarity
-edits with the user, and ground any doubtful claim against the canonical `docs/`.
+**Step 6e onward** (the earlier sections, including the restructured §Work-list,
+were touched this session and are current). Same posture: read each section,
+surface confusions, apply clarity edits with the user, and ground any doubtful
+claim against the canonical `docs/`.
