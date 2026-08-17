@@ -2,27 +2,27 @@
 
 ## What happened
 
-Finished the Step 6d clarity cleanup and ran a Step 6b clarity batch on the
+Ran the **Step 6a** and **Step 6b** clarity batches on the
 `logic-flow-docs/portfolio-analysis-logic-flow.md` walk.
-**6d** (`c5b9c30`, `c1e74d1`, `d833253`): folded the two routing branches into one
-consolidation-call block **and added the missing deterministic single-vs-hierarchical
-routing fact** (the orchestrator sizes the aggregate; only single-pass sees it whole),
-labeled the merge block, reverted a wrong "stale"→"cached", and rewrote the overflow
-block as **map/reduce distillation calls** (one map per pass + one reduce, 2–4).
-**6b** (`72fbe00`): an order-of-computation + through-line intro, the overlay calcs
-marked **persisted, not scratch**, and the terminal Output rewritten into "what leaves
-the step" — the deterministic analysis vs the true two-arm **engine-arm** subset (only
-sub-scores/letter + targets + later stand-ins; only targets/outlook actually scored),
-the persisted working reads, and the post-interpretation stand-ins. The 6b batch took
-~6 Codex rounds: its behavioral claims diverge from the canonical docs and only the
-Rust pins them.
+**6a** (`d93600c`): de-duped the intro/identity paragraphs, grounded the listing
+guard (FMP company-profile fetch queried by the Schwab symbol as-is, US-exchange +
+name cross-check, all four `ListingResolution` outcomes incl. degraded-continue),
+named the gather fields, nested elaborating bullets, rewrote the Output as
+what-leaves. Three Codex rounds.
+**6b** (`a084816`): added an engine-primitives preamble (`scale` / `average` /
+`ratio`) and gave **every value the four-aspect format** — what it is / inputs +
+source / equation / where it lands — grounded against `engine.rs`, `pre_profit.rs`,
+`fund.rs` by four parallel explorer agents (the doc's behavioral claims only the
+Rust pins). Expanded the risk-tier thresholds and fixed nesting. Four Codex rounds.
+Format calls settled this session: **example-fields-in-parens** for gather-leg lists
+(6a); **preamble + four aspects** and **clean equations with footnoted guards** (6b)
+— carry these forward for consistency.
 
 ## Current state
 
-Clean tree, all pushed. The clarity walk is **paused at Step 6e**. This session was
-docs-only on the one logic-flow doc; no `BUILD.md` / `INDEX.md` change was needed. This
-`CURRENT.md` rewrite is the session-end handoff (it retires the long-stale pre-session
-diff that still said "resume at 6d, clean tree").
+Clean tree, all pushed. The clarity walk now has **6a + 6b done** and is **paused
+before Step 6e**. Docs-only on the one logic-flow doc; no `BUILD.md` / `INDEX.md`
+change was needed.
 
 ## Open questions
 
@@ -30,15 +30,20 @@ diff that still said "resume at 6d, clean tree").
   flat-driver form is the settled stopgap. (carried)
 - **Share-based action sizing** — ruled the only legal action numeric, unbuilt;
   nothing blocks on it. (carried)
-- **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant still rests on
-  the 2026-07-16 verification, not re-probed. (carried)
+- **Live-evidence caveat** — the sector-P/E walk-back's holiday warrant still rests
+  on the 2026-07-16 verification, not re-probed. (carried)
+- **Line-513 "applied" vs "decided"** — the Fund-routing paragraph says the route is
+  "applied" at 6b, but the code decides it there; Codex judged it a non-blocker. A
+  one-word fix if touched. (parked from the 6a batch)
 
 ## Where to start
 
-Resume the clarity walk at **Step 6e — Recalculate targets using validated research**
-(as-built: the pre-profit overlay finalization is the whole built work; the
-forward-assumption / observation legs are designed, landing with the research loop).
-**Ground new behavioral claims against the Rust** (`pre_profit.rs`, `engine.rs`,
-`pipeline.rs`, `outcome.rs`, `fund.rs`), not just `docs/` — the 6b rounds all came from
-doc↔as-built divergence. Codex per batch, commit per batch; then 6f / 6g, 7–9, and the
+Resume the clarity walk at **Step 6e — Recalculate targets using validated
+research** (as-built: the pre-profit overlay finalization is the whole built work;
+the forward-assumption / observation legs are designed, landing with the research
+loop). **Ground new behavioral claims against the Rust** (`pre_profit.rs`,
+`engine.rs`, `pipeline.rs`, `outcome.rs`, `fund.rs`), not just `docs/` — every 6a/6b
+Codex round came from doc↔as-built divergence; for equation-level sections dispatch
+parallel grounding explorers as 6b did. Reuse the 6b value format + the primitives
+preamble. Codex per batch, commit per batch to `main`; then 6f / 6g, 7–9, and the
 Quick check / Pull holdings sections.
