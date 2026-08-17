@@ -622,7 +622,7 @@ Computed before the grade for every stock and persisting even when the stock doe
   - `constrained`: runway < 12 months.
 
 - **Derived states** (computed only for an eligible overlay; each persists)
-  - **Execution read** — guidance-vs-actual misses. A comparable period *misses* when `(guidance − actual) ÷ guidance ≥ 5%`; `material_single_miss` when the newest comparable period misses by ≥ 20%; `repeated_miss` when ≥ 2 of one metric's latest four comparable periods miss. [note: the research producer is dormant as-built, so this sees only carried prior observations.]
+  - **Execution read** — guidance-vs-actual misses, over higher-is-better operating metrics only. A guidance row and an actual pair only when their metric identity, units, issuer scope, and reporting period all match; the *bound* is the range's stated low (a range low winning over point guidance when both are present) and must be finite and positive. A paired period *misses* when `(bound − actual) ÷ bound ≥ 5%`; `material_single_miss` when the newest comparable period misses by ≥ 20%; `repeated_miss` when ≥ 2 of one metric's latest four comparable periods miss (different metrics never combine, and two missed metrics in one period never count twice). [note: the research producer is dormant as-built, so this sees only carried prior observations.]
   - **Economics deterioration** — recent two-quarter average gross margin non-positive **and** down ≥ 5 percentage points.
   - **Material dilution** — YoY diluted-share change ≥ +15%.
   - **Severe deterioration** — at least two of {repeated-or-material execution miss, constrained runway, economics deterioration, material dilution} hold, **and** at least one of those is the execution or the economics leg.
@@ -1113,94 +1113,53 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 ## Step 6e — Recalculate targets using validated research
 
 - **As-built**
-  - The research-assumption legs below are designed; they land with the research loop.
-  - The pre-profit overlay is already complete from Step 6b (its statement-driven rule consequences included); the observation-driven refinement here waits on the research loop.
+  - This step changes nothing today. Everything 6b produced — scenario targets, dead-money hurdle, letter, and pre-profit overlay — passes through unchanged into the verdict, because the two legs that would refine any of it are dormant while research is stubbed: no validated forward fact and no sourced observation reaches this seam.
+  - By design the step *is* a refinement, and it would rewrite a **bounded subset** of 6b's outputs: the **affected scenario targets** and the **dead-money hurdle**, and on the overlay side the **observation history** (with its rejected-row and backfill-attempt audit), the **execution read** derived from it, the **severe-deterioration** state, and the **rule consequences**. A single validated observation can move the history alone without changing the execution read or consequences. It never touches the **letter or grade sub-scores**, nor the overlay's **statement-derived legs** — the statement inputs (runway, burn, margins, share count) and the financing / economics / dilution states built from them — which no research observation moves.
+  - Because both refinement legs are dormant, the 6b overlay pass already ran the observation-merge machinery once, over an empty candidate list, so the overlay is complete *before* this point rather than finished here.
+  - The one piece with genuine as-built content here is the overlay's matched **rule consequences** — computed at 6b, detailed below because 6b defers the detail here — which bind the engine arm at verdict assembly.
+  - A role-risk-only holding skips the step entirely: it has no priced overlay, targets, or hurdle to refine.
 
 - **Data retrieved**
   - No new data.
 
-- **Validation (designed — research loop)**
-  - Reject malformed, unsourced, or nonnumeric claims.
-  - `supplement` may fill only a missing structured value.
-  - `supersede` may replace structured data only when:
-    - It is newer.
-    - It comes from an approved primary-source fact type.
-    - Metric, units, and period match.
-  - Otherwise structured data wins.
-  - Record every accepted or rejected rule.
+- **Pre-profit rule consequences (as-built — bind the engine stand-in arm)**
+  - The overlay's deterioration states (computed at Step 6b) match a fixed set of consequences that act on the **engine stand-in arm only** — never on the model, whose own conviction and action persist as authored with any departure annotated. The letter grade is never among them: the overlay is conviction / risk / action context, not a grade component.
+  - **Repeated execution miss** → engine conviction capped at Medium.
+  - **Constrained runway** → Add and Add aggressively leave the engine action set.
+  - **Severe deterioration** → engine conviction capped at Low, and the engine action set is limited to Trim or Sell all.
+  - **One metric alone cannot force a sale** — the exit-only narrowing rides severe deterioration, which needs at least two warning legs with at least one from execution or economics; a lone miss or lone dilution is a single leg and never trips it.
+  - Where these bind: the conviction ceiling is applied when the engine stand-in arm's conviction is assembled, and the action-set narrowing when the engine's per-holding action set is built for the action call — both at verdict assembly (Step 6f), in deterministic app code, not a model call. [note: the calculations that produce the states — the 5% / 20% miss thresholds, the repeated-miss window, and the economics / dilution / severe rules — are Step 6b's; see §Pre-profit overlay. This step re-feeds them only once research supplies new observations (below).]
 
-- **Calculations (designed — research loop)**
-  - Recalculate the affected scenario targets.
-  - Recalculate the dead-money hurdle result.
-  - Leave backward-looking grade sub-scores unchanged.
+- **Target and hurdle refinement (designed — research loop)**
+  - Validate each research claim before it can move a number: reject malformed, unsourced, or nonnumeric claims; a `supplement` may fill only a missing structured value; a `supersede` may replace structured data only when it is newer, comes from an approved primary-source fact type, and matches on metric, units, and period — otherwise the structured value wins. Record every accepted or rejected rule.
+  - Then recalculate only what a validated forward fact touches: the affected scenario targets and the dead-money hurdle result, leaving the backward-looking grade sub-scores unchanged.
+  - [note: no wire for this exists as-built — there is no `research_forward_assumption` type, and the closed-form re-anchor a recompute would call (`reanchor_scenarios`) is today reached only by the between-run quick check, never by this stage.]
 
-- **Pre-profit observation validation**
-  - Confirm the correct company.
-  - Confirm metric, direction, value, units, and period.
-  - Confirm actual versus guidance role.
-  - Confirm the source states the number.
-  - Reject and log unmatched rows.
-  - Add accepted rows to the period history.
+- **Pre-profit observation validation (designed — research loop; validator built, producer dormant)**
+  - Each sourced observation a research row supplies is checked **structurally** before it enters the period history — a finite numeric value, units, a reporting period, an issuer scope, a source URL, a publication date, a confidence in [0, 1], and a direction (polarity) consistent with the metric kind (the row also carries its actual-versus-guidance role, read later when pairing). A **malformed** row (any of those legs bad) or a **duplicate** — of a stored observation, or of an earlier accepted row in the same batch — is rejected and logged with its reason; every other row is accepted and merged into the period history (append, sort, dedup). A structurally valid but as-yet-**unpaired** row — an actual with no matching guidance, or the reverse — is kept, not rejected: pairing into misses happens later in the execution read, and an unpaired row simply waits for a future match.
+  - Two legs cannot be built until the research producer exists, and the research-loop slice owes both: **confirm the correct company** (the holding-identity cross-check — the typed row carries no issuer symbol yet) and **confirm the source states the number** (source-text corroboration — no source text exists while the producer is dormant). Until then the structural validator alone is not the whole contract.
+  - As-built the validator runs on an empty candidate list, so the overlay sees only carried prior observations plus the statement-derived legs, and no observation is ever guessed. [note: periods compare exactly after trimming and order lexicographically, so the live producer must normalize each issuer's periods to one convention — ISO period end preferred.]
 
-- **Cold-start and history-gap backfill**
-  - Required on the first overlay-eligible full pass.
-  - Required again when a previously used guidance metric has fewer than four comparable stored periods.
-  - Search the latest four reported periods.
-  - Record every period and source checked.
-  - Missing history remains a gap.
-  - Never infer an observation that was not found.
-
-- **Pre-profit engine calculations**
-  - Pair guidance and actuals only when comparable.
-  - Match the same metric, company scope, units, and period.
-  - Guidance lower bound:
-    - Range guidance uses the stated low.
-    - Point guidance uses the stated value.
-  - Guidance miss:
-    - Applies only to a higher-is-better metric.
-    - Lower bound must be finite and positive.
-    - Actual at least 5% below the lower bound.
-    - Smaller shortfall counts as in-line noise.
-  - Repeated miss:
-    - Same normalized metric only.
-    - At least two distinct missed periods.
-    - Look at that metric’s latest four comparable periods.
-    - Different metrics never combine.
-    - Two missed metrics in one period never count twice.
-  - Material single miss:
-    - Latest actual at least 20% below the lower bound.
-  - Economics deterioration:
-    - Latest two-quarter gross margin is non-positive.
-    - At least 5 points below the preceding two-quarter average.
-  - Material dilution:
-    - Diluted shares up at least 15% year over year.
-  - Severe deterioration:
-    - At least two independent warning legs.
-    - At least one must be execution or economics.
-    - Financing plus dilution alone is not enough.
-
-- **Pre-profit rule outputs (binding the engine arm; annotations beside the model arm)**
-  - Repeated execution misses:
-    - Engine conviction capped at Medium.
-  - Constrained runway:
-    - Add and Add aggressively leave the engine action set.
-  - Severe deterioration:
-    - Engine conviction capped at Low.
-    - Engine action set limited to Trim or Sell all.
-  - Letter grade remains unchanged.
-  - One metric alone cannot force a sale.
+- **Cold-start and history-gap backfill (designed — research loop; dormant)**
+  - When live, a backfill search is required on the first overlay-eligible full pass, and again whenever a previously used guidance metric has fewer than four comparable stored periods; it searches the latest four reported periods, records every period and source checked, and marks its coverage complete, partial, or unscorable.
+  - Missing history stays a gap — an observation that was not found is never inferred.
+  - As-built no backfill is required (the producer is dormant); the persisted attempt record exists only to pin the shape, and only prior attempts are carried forward.
 
 - **Role-risk-only rule**
-  - Skip this step.
-  - No price targets or priced-stock overlay exist.
+  - Skip the step: no price targets or priced-stock overlay exist to refine.
 
 - **Model**
   - None.
 
-- **Output**
-  - Final engine-calculated target set.
-  - Logged research assumption and resolution.
-  - Final pre-profit overlay when applicable.
+- **Output — what leaves the step**
+  - **As-built:**
+    - The **final target set** and **hurdle read** — Step 6b's values, unchanged.
+    - The **final pre-profit overlay** — Step 6b's, whose matched rule consequences are now ready to bind the engine stand-in arm at verdict assembly.
+    - No research assumption is logged — the producer is dormant, so there is nothing to resolve.
+  - **Designed (research loop):**
+    - The refined target set and hurdle after validated forward facts are applied.
+    - The logged research assumption and its resolution — accepted or rejected, with the deciding rule.
+    - The overlay's merged observation history (and its rejected-row / backfill audit) and the execution read, severe-deterioration state, and rule consequences re-derived over it.
 
 ---
 
