@@ -536,17 +536,25 @@ the finished verdict, the holding's own evidence, and the investor profile
 Whole-book questions — concentration, overlap, funding, sizing, the deployment
 stance — are the future portfolio planner's. The ledger's target-weight range
 and the `portfolio-weight` series retired with the stage (persisted conditions
-decode but are skipped whole, never unevaluable); a one-time migration gate
-**force-analyzes pre-v9 verdicts instead of carrying them**, so the first v9
-run is structurally full; any future action numeric must be holding-based
-(share counts — ruled, unbuilt). The intrinsic verdict is a discriminated
+decode but are skipped whole, never unevaluable); any future action numeric must
+be holding-based (share counts — ruled, unbuilt). Under the **2026-08-16 badge
+ruling** (`docs/verification/2026-08-16-selective-badges-ruling.md`) a selective
+run analyzes **strictly the selection** — the former automatic safety additions
+surface as non-blocking card badges rather than force-includes, an unselected
+holding with no prior verdict is left not analyzed, and the one-time pre-`v9`
+migration gate was removed (pre-`v9` verdicts carry like any other; a first v9
+run is full only because a full run re-grades the whole book). The intrinsic
+verdict is a discriminated
 union — a `priced` branch (grade, forward outlook, bidirectional conviction,
 portfolio action) and a `role_risk_only` branch for structurally unpriceable
 vehicle classes (no letter, targets, lean or conviction; a reduced {sell all,
 trim, hold} spine), so no fabricated number rides an unpriceable fund — and it
 stays separated from the portfolio action, which the action call may move off
 the intrinsic read on holding evidence + profile. Designed and unbuilt: the
-**live research loop** and the **held-name research refresh lane**.
+**live research loop** (the held-name research refresh lane, once slated to ride
+with it, was retired by the 2026-08-16 badge ruling — it existed only to
+force-include a carried holding on a material update, which selective runs no
+longer do).
 
 **Trade Opportunities — designed, not built** (`docs/trade-opportunities.md`,
 `trade-opportunities-workflow.md`). Discovery runs through three feeders —
@@ -657,8 +665,9 @@ confirmation run** banks every stacked runtime confirmation at once.
    construction stage that no longer exists (evidence in
    `docs/verification/2026-08-10-big-run-attempt-1.md` and
    `docs/verification/2026-08-13-big-run-attempt-2.md`); attempt 3 exercises
-   the v9 shape, and its first run is structurally full — the migration gate
-   force-analyzes every pre-v9 verdict. What stays open behind the run
+   the v9 shape, and its first run is structurally full because it is a full run
+   (the pre-`v9` migration gate was removed by the 2026-08-16 ruling; pre-`v9`
+   verdicts otherwise carry like any other). What stays open behind the run
    (digest compression, `NUM_PREDICT_*` calibration) is owned by the attempt
    records' §Disposition, not this brief.
 3. **Trade Opportunities** — designed, not built, and waiting behind the whole
@@ -670,9 +679,10 @@ confirmation run** banks every stacked runtime confirmation at once.
    raises a warning only; a debut hard trigger becomes a shadow rejection; and a
    soft trigger caps the stand-in while preserving conviction, with no forced
    archival.
-4. **The two remaining Portfolio depth slices** — the **live research loop** and
-   the **held-name research refresh lane**, which rides with it. The shipped
-   schemas don't preclude either, but the research loop carries the pre-profit
+4. **The remaining Portfolio depth slice** — the **live research loop** (the
+   held-name research refresh lane, once slated to ride with it, was retired by
+   the 2026-08-16 badge ruling). The shipped
+   schemas don't preclude it, but the research loop carries the pre-profit
    producer's activation obligation (§Standing constraints) and must discharge
    it before connecting the producer. The loop's cache model is settled —
    **always-run seed-and-merge, never a skip**: recent distilled findings seed

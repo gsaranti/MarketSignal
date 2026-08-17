@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn side_reversal_predicate_reads_the_sign_flip_at_any_magnitude() {
-        // The selective-run force-include reads this predicate off the diff's
+        // The outcome-alignment read uses this predicate off the diff's
         // delta (`docs/portfolio-analysis.md` §Triggering) — a flip must register
         // at equal magnitude too, where the size-based classification alone
         // could miss it.

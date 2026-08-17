@@ -1315,6 +1315,7 @@ Sources and footnotes.
                 thesis_ledger: None,
                 analyzed_at: None,
                 action_source: Default::default(),
+                side_reversed: false,
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
                 aggregates: None,
@@ -1366,6 +1367,7 @@ Sources and footnotes.
                 thesis_ledger: None,
                 analyzed_at: None,
                 action_source: Default::default(),
+                side_reversed: false,
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
                 aggregates: None,
@@ -1437,6 +1439,7 @@ Sources and footnotes.
                 thesis_ledger: None,
                 analyzed_at: Some("2026-07-29T12:00:00Z".into()),
                 action_source: Default::default(),
+                side_reversed: false,
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
                 aggregates: None,

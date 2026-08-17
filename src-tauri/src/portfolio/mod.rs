@@ -307,11 +307,14 @@ impl PositionDelta {
     }
 
     /// Whether the position's net side reversed versus the prior snapshot (a
-    /// long↔short flip) — thesis-changing by construction, so no carried verdict
-    /// survives it: a selective run force-includes the holding
-    /// (`docs/portfolio-analysis.md` §Asset eligibility, §Triggering). `false`
-    /// with no prior counterpart (nothing to reverse from) and on a flat side
-    /// (a zero quantity has no side).
+    /// long↔short flip) — thesis-changing by construction, so no long-side verdict
+    /// is valid across it. This per-run predicate's production caller is **outcome
+    /// alignment** ([`outcome`]); the carried-verdict side-reversal *badge* is
+    /// computed separately in [`job`] from the current side against a directional
+    /// verdict's invariant long authoring side, robust across a flip through an
+    /// exactly-zero net this predicate cannot see (`docs/portfolio-analysis.md`
+    /// §Asset eligibility, §Triggering). `false` with no prior counterpart (nothing
+    /// to reverse from) and on a flat side (a zero quantity has no side).
     pub fn side_reversed(&self, current_quantity: f64) -> bool {
         match self.prior_quantity {
             Some(prior) => {
@@ -413,8 +416,9 @@ impl Action {
     }
 
     /// Whether the rung sits on the exit side of the ladder — the family an
-    /// over-age carry force-includes rather than demotes (`docs/portfolio-analysis.md`
-    /// §Triggering).
+    /// over-age carry keeps as-is behind the stale badge (only the add family
+    /// rule-demotes; since the 2026-08-16 ruling an over-age exit no longer
+    /// force-includes — `docs/portfolio-analysis.md` §Triggering).
     pub fn is_exit_family(&self) -> bool {
         matches!(self, Action::SellAll | Action::Trim)
     }
@@ -1149,6 +1153,15 @@ pub struct HoldingVerdict {
     /// over-age rule demoted a carried add-family action.
     #[serde(default)]
     pub action_source: ActionSource,
+    /// Set on a **carried** verdict whose position's net side reversed since the
+    /// verdict was written (`docs/portfolio-analysis.md` §Triggering) — the
+    /// carried thesis describes the opposite position. Surfaced as a non-blocking
+    /// card badge so the stale, wrong-direction advice is visible rather than
+    /// silently trusted; a selective run no longer force-includes on a reversal
+    /// (selective = strictly the user's selection, ruled 2026-08-16). A fresh pass
+    /// leaves this `false`. `#[serde(default)]` for runs persisted before the field.
+    #[serde(default)]
+    pub side_reversed: bool,
 }
 
 /// A verdict's effective analysis vintage: its own `analyzed_at` stamp, else the
@@ -1505,10 +1518,12 @@ impl PortfolioRun {
 /// (`portfolio-v9`) — the whole-book construction era, whose actions were
 /// 7b-merged finals that may encode retired portfolio context. A missing stamp
 /// is pre-stamp (older still) and an unparseable one reads old, the
-/// conservative side. Two consumers: the selective work-list's one-time
-/// migration force-include (a pre-v9 verdict is never carried into a v9 run —
-/// `docs/portfolio-analysis.md` §Triggering) and the action prompt's history
-/// label on the prior action.
+/// conservative side. Consumed by the action prompt's history label on the
+/// prior action ([`pipeline`]) — a whole-book-era action is labeled history
+/// rather than an unqualified continuity baseline. (Its other consumer, the
+/// selective work-list's one-time pre-`v9` migration force-include, was retired
+/// by the 2026-08-16 badge ruling — a pre-`v9` verdict now carries like any
+/// other, re-graded on the next full run.)
 pub(crate) fn whole_book_era_version(version: Option<&str>) -> bool {
     match version {
         None => true,
@@ -2194,6 +2209,7 @@ mod tests {
             thesis_ledger: Some(ledger.clone()),
             analyzed_at: None,
             action_source: Default::default(),
+            side_reversed: false,
         };
         let s = serde_json::to_value(&verdict).unwrap();
         let back: HoldingVerdict = serde_json::from_value(s).unwrap();

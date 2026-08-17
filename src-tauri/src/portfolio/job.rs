@@ -20,8 +20,8 @@ use crate::portfolio::dossier::{self, HoldingDossier};
 use crate::portfolio::engine::CompanyFinancials;
 use crate::portfolio::pipeline::{analyze_holding, HoldingAnalyst};
 use crate::portfolio::{
-    carried_action, diff, store, ExitedPosition, HoldingAudit, HoldingVerdict, InvestorProfile,
-    PortfolioRollUp, PortfolioRun,
+    diff, store, ExitedPosition, HoldingAudit, HoldingVerdict, InvestorProfile, PortfolioRollUp,
+    PortfolioRun,
 };
 use crate::progress::RunContext;
 use crate::schwab::{Holdings, HoldingsSource};
@@ -363,9 +363,10 @@ pub struct SelectiveRun<'a> {
 
 /// The over-age boundary for a carried verdict — aligned with the suite's ~4-week
 /// research-freshness window (`docs/portfolio-analysis.md` §Triggering; §Starting
-/// parameters — drafted). Beyond it a carried exit-family action force-includes
-/// and a carried add-family action rule-demotes to *hold*. Mirrored by the
-/// card-facing stale badge (`src/components/PortfolioView.vue` `OVER_AGE_DAYS`)
+/// parameters — drafted). Beyond it a carried add-family action rule-demotes to
+/// *hold*; a carried exit or hold stands as-is behind the card-facing stale badge
+/// (since the 2026-08-16 ruling — an over-age exit no longer force-includes).
+/// Mirrored by that stale badge (`src/components/PortfolioView.vue` `OVER_AGE_DAYS`)
 /// — recalibrating one means recalibrating both.
 const OVER_AGE_DAYS: i64 = 28;
 
@@ -587,12 +588,20 @@ fn run_analysis(
     };
 
     // ---- Selective work-list (`docs/portfolio-analysis.md` §Triggering) ------
-    // The initial work-list is the selection plus every holding new since the
-    // last run; the safety sweep and the deterministic legs below then expand it
-    // with every force-inclusion. `None` = the whole-book run — including a
-    // selective request with an empty selection or no prior run to carry from.
-    // (`created_at` / `today` are minted above, before the house-view gate — the
-    // run's first dated decision.)
+    // A selective run analyzes **strictly the user's selection** (ruled
+    // 2026-08-16, `docs/verification/2026-08-16-selective-badges-ruling.md`). The
+    // former automatic safety additions — a sweep flag, an `unknown` family, an
+    // unexamined evidence event, a side reversal, an over-age exit — no longer
+    // force-include; each instead surfaces as a **non-blocking card badge** so an
+    // urgent single-holding run is never blocked by the rest of the book. (A
+    // pre-`v9` verdict likewise no longer force-includes — the migration gate was
+    // removed — but it carries silently, like any other, with no badge of its
+    // own.) A current position with no prior verdict is left **not analyzed**
+    // (no verdict emitted; the frontend renders it from holdings-minus-verdicts)
+    // rather than pulled in. `None` = the whole-book run — a selective request with
+    // an empty selection, or no prior run to carry from. (`created_at` / `today`
+    // are minted above, before the house-view gate — the run's first dated
+    // decision.)
     let mut swept_tail: std::collections::HashMap<
         String,
         crate::portfolio::quick_check::HoldingQuickState,
@@ -604,61 +613,29 @@ fn run_analysis(
                 .iter()
                 .map(|p| p.symbol.to_ascii_uppercase())
                 .collect();
-            let mut work: std::collections::HashSet<String> = sel
+            let work: std::collections::HashSet<String> = sel
                 .selected
                 .iter()
                 .map(|s| s.to_ascii_uppercase())
                 .filter(|s| book.contains(s))
                 .collect();
-            // The deterministic force-include legs that need no retrieval: a
-            // holding new since the last run (no verdict to carry), a position
-            // whose net side reversed (thesis-changing by construction — no
-            // carried verdict survives it), an over-age carried exit-family
-            // action (re-analysis is the only honest resolution; the add family
-            // is rule-demoted at carry instead, and over-age holds stand), and
-            // the one-time contract migration: a verdict authored under the
-            // retired whole-book contract (pre-`portfolio-v9`) is never carried
-            // into a tunnel-vision run — its action was a 7b-merged final that
-            // may encode retired portfolio context, so it re-analyzes instead
-            // (Codex 2026-08-14 round 2, finding 2). Self-neutralizing: one
-            // full pass restamps the book and the check never fires again.
-            for p in &holdings.positions {
-                let key = p.symbol.to_ascii_uppercase();
-                if work.contains(&key) {
-                    continue;
-                }
-                let delta = holdings_diff.delta_for(&p.symbol);
-                let prior_verdict = prior
-                    .verdicts
-                    .iter()
-                    .find(|v| v.symbol.eq_ignore_ascii_case(&p.symbol));
-                let prior_era = prior
-                    .audit
-                    .iter()
-                    .find(|a| a.symbol.eq_ignore_ascii_case(&p.symbol))
-                    .map(|a| a.prompt_version.as_str());
-                let force = delta.change == crate::portfolio::PositionChange::New
-                    || delta.side_reversed(p.quantity)
-                    // A current position with no prior verdict has nothing to
-                    // carry, whatever the diff says.
-                    || prior_verdict.is_none()
-                    || crate::portfolio::whole_book_era_version(prior_era)
-                    || prior_verdict.is_some_and(|v| {
-                        over_age(crate::portfolio::effective_vintage(v, &prior.created_at), today)
-                            && carried_action(v).is_some_and(|a| a.is_exit_family())
-                    });
-                if force {
-                    work.insert(key);
-                }
-            }
-            // The first mixed-vintage safety rule: the engine-only quick check
-            // over the unselected tail. A flag, an `unknown` family (the sweep
-            // could not vouch), or an unexamined evidence event force-includes.
+            // The engine-only quick check still sweeps the **carried tail** — every
+            // unselected holding with a prior verdict to carry — but no longer to
+            // expand the work-list. Its two remaining jobs: refresh each carried
+            // verdict's condition eval-state overlay (so breach streaks and
+            // acknowledgments chain into this run), and persist the attention flags /
+            // evidence-event / degraded notes the card badges render. A position with
+            // no prior verdict is not swept (nothing to check) and stays not analyzed.
+            let prior_symbols: std::collections::HashSet<String> = prior
+                .verdicts
+                .iter()
+                .map(|v| v.symbol.to_ascii_uppercase())
+                .collect();
             let tail: std::collections::HashSet<String> = holdings
                 .positions
                 .iter()
                 .map(|p| p.symbol.to_ascii_uppercase())
-                .filter(|k| !work.contains(k))
+                .filter(|k| !work.contains(k) && prior_symbols.contains(k))
                 .collect();
             let states = crate::portfolio::quick_check::sweep_tail(
                 crate::portfolio::quick_check::TailSweep {
@@ -678,16 +655,7 @@ fn run_analysis(
                 ctx,
             )?;
             for h in states {
-                let key = h.symbol.to_ascii_uppercase();
-                let force = h.flag.is_some()
-                    || h.families
-                        .iter()
-                        .any(|f| f.state == crate::portfolio::quick_check::SweepState::Unknown)
-                    || !h.evidence_events.is_empty();
-                if force {
-                    work.insert(key.clone());
-                }
-                swept_tail.insert(key, h);
+                swept_tail.insert(h.symbol.to_ascii_uppercase(), h);
             }
             Some(work)
         }
@@ -923,7 +891,7 @@ fn run_analysis(
                 .to_string()
         });
         if let Some(verdict) = prior.as_mut().map(|p| &mut p.verdict) {
-            // The freshest condition evaluation states win: a force-included
+            // The freshest condition evaluation states win: a carried
             // holding's in-run tail sweep already chained from the persisted
             // store, so its states supersede the store's; a selected holding
             // (never tail-swept) still overlays the store's.
@@ -1004,10 +972,12 @@ fn run_analysis(
     // condition evaluation states overlaid so streaks and acknowledgments chain,
     // its position-change tag refreshed from this run's diff, and its prior audit
     // row carried whole — the stored `quick_basis` / `fund_exposure` comparators
-    // must survive the carry or the next sweep reads the holding `unknown`. The
-    // over-age rule resolves per action family: a carried add-family action
-    // rule-demotes to *hold*, stamped `action_source: rule-demoted` (exit-family
-    // carries were force-included above; over-age holds stand).
+    // must survive the carry or the next sweep reads the holding `unknown`. Since
+    // the 2026-08-16 badge ruling a carried holding is never force-included, so a
+    // side-reversed carry (marked here for its card badge) and an over-age
+    // exit-family carry now stand — badged, not re-analyzed. The one deterministic
+    // carry rule left is the over-age add-family demotion to *hold*, stamped
+    // `action_source: rule-demoted` (over-age holds and exits stand as-is).
     let mut carried_symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut over_age_carried: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let (Some(work), Some(prior)) = (&work_list, &prior_run) {
@@ -1021,13 +991,36 @@ fn run_analysis(
                 .iter()
                 .find(|v| v.symbol.eq_ignore_ascii_case(&position.symbol))
             else {
-                continue; // unreachable: no prior verdict force-includes above
+                // No prior verdict to carry — an unselected new holding is left
+                // not analyzed since the 2026-08-16 badge ruling (the frontend
+                // renders it from holdings-minus-verdicts); a full run or an
+                // explicit selection grades it.
+                continue;
             };
             let mut carried = prior_verdict.clone();
             let vintage =
                 crate::portfolio::effective_vintage(prior_verdict, &prior.created_at).to_string();
             carried.analyzed_at = Some(vintage.clone());
-            carried.position_change = holdings_diff.delta_for(&position.symbol).change;
+            let carried_delta = holdings_diff.delta_for(&position.symbol);
+            carried.position_change = carried_delta.change;
+            // A carried directional verdict (priced or role/risk) is "side-reversed"
+            // when it now describes the opposite position — marked for the card badge
+            // (`docs/portfolio-analysis.md` §Triggering); no longer force-included. A
+            // directional verdict is only ever authored for a **long** position — a
+            // net-short or net-zero holding takes the not-rated treatment at the
+            // eligibility gate (`pipeline.rs`) — so its authoring side is invariantly
+            // long, and it is reversed exactly when the position it now sits on is
+            // **net-short**, whatever path it took there. Comparing that invariant
+            // authoring side against the current side is robust where a per-run flip
+            // read is not: a flip *through* an exactly-zero net (kept by netting) is
+            // invisible to the diff's sign compare. A fresh pass re-authors for the
+            // current side (or returns not-rated) and leaves the field `false`.
+            carried.side_reversed = position.quantity < 0.0
+                && matches!(
+                    carried.disposition,
+                    crate::portfolio::VerdictDisposition::Priced(_)
+                        | crate::portfolio::VerdictDisposition::RoleRiskOnly(_)
+                );
             if let Some(h) = swept_tail.get(&key) {
                 crate::portfolio::quick_check::overlay_condition_states(&mut carried, h);
             }
@@ -3155,8 +3148,8 @@ mod tests {
     /// (every leg succeeds, nothing fires — the stub's 195 price matches the
     /// authoring-time marks, so spot's relationship to the stored bear–bull band
     /// is unchanged since the ledger was authored and the transition-only band
-    /// flag stays silent), with per-symbol overrides exercising the force-include
-    /// legs. Its `rates` leg is deliberately unreachable: the in-run sweep reads
+    /// flag stays silent), with per-symbol overrides exercising the sweep's
+    /// badge legs. Its `rates` leg is deliberately unreachable: the in-run sweep reads
     /// the run's own fresh prints, never a second FRED call.
     #[derive(Default)]
     struct SelectiveQuickData {
@@ -3552,14 +3545,13 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_v9_carried_verdict_is_force_included_not_carried() {
-        // The one-time contract migration (Codex 2026-08-14 round 2, finding 2):
-        // a prior verdict stamped under the whole-book era re-analyzes on a
-        // selective run rather than carrying — its action was a 7b-merged final
-        // that may encode retired portfolio context. One full pass restamps the
-        // book, so the check self-neutralizes.
+    fn a_pre_v9_carried_verdict_now_carries_rather_than_re_analyzing() {
+        // The one-time pre-`v9` migration force-include was retired by the
+        // 2026-08-16 badge ruling: a whole-book-era stamp no longer forces a fresh
+        // pass on a selective run. An unselected pre-`v9` verdict carries like any
+        // other (a full run re-grades the whole book under `v9`).
         let (_dir, paths) = paths();
-        full_run(&paths, two_stocks());
+        let first = full_run(&paths, two_stocks());
         doctor_latest_run_audit(&paths, "MSFT", |a| {
             a.prompt_version = "portfolio-v8".into();
         });
@@ -3572,8 +3564,8 @@ mod tests {
         let msft = verdict(&second, "MSFT");
         assert_eq!(
             msft.analyzed_at.as_deref(),
-            Some(second.created_at.as_str()),
-            "a whole-book-era verdict re-analyzes; it is never carried into a v9 run"
+            Some(first.created_at.as_str()),
+            "a whole-book-era verdict carries vintage-stamped, no longer force-included"
         );
     }
 
@@ -3644,11 +3636,13 @@ mod tests {
     }
 
     #[test]
-    fn a_tail_sweep_flag_forces_the_holding_into_the_work_list() {
+    fn a_tail_sweep_flag_carries_and_badges_rather_than_force_including() {
         let (_dir, paths) = paths();
-        full_run(&paths, two_stocks());
+        let first = full_run(&paths, two_stocks());
         // MSFT's price crashes far outside its stored bear–bull band: the sweep
-        // flags it, so the selective run must re-analyze it despite no selection.
+        // flags it. Since the 2026-08-16 badge ruling the flag no longer forces a
+        // re-analysis — MSFT carries, and its attention flag rides the retained
+        // sweep state the frontend renders as a card badge.
         let second = selective_run(
             &paths,
             two_stocks(),
@@ -3660,21 +3654,33 @@ mod tests {
         );
         assert_eq!(
             verdict(&second, "MSFT").analyzed_at.as_deref(),
-            Some(second.created_at.as_str()),
-            "a flagged holding is force-included, never carried"
+            Some(first.created_at.as_str()),
+            "a flagged holding carries, no longer force-included"
         );
-        // Every holding got a full pass, so nothing is retained.
+        // The flag is persisted on the retained sweep state → the badge overlay.
         let conn = storage::open(&paths.db_path).unwrap();
-        assert!(store::latest_quick_check(&conn).unwrap().is_none());
+        let qc = store::latest_quick_check(&conn)
+            .unwrap()
+            .expect("carried sweep state retained for the badge");
+        assert_eq!(qc.swept_run_id, second.run_id);
+        let msft_state = qc
+            .holdings
+            .iter()
+            .find(|h| h.symbol == "MSFT")
+            .expect("MSFT swept state retained");
+        assert!(
+            msft_state.flag.is_some(),
+            "the attention flag rides the badge overlay"
+        );
     }
 
     #[test]
-    fn an_unknown_sweep_family_forces_the_holding_into_the_work_list() {
+    fn an_unknown_sweep_family_carries_and_badges_rather_than_force_including() {
         let (_dir, paths) = paths();
-        full_run(&paths, two_stocks());
-        // MSFT's price retrieval fails: the sweep cannot vouch for the carried
-        // verdict, and a verdict the sweep couldn't check never stands on its
-        // silence — the degraded-sweep force-include.
+        let first = full_run(&paths, two_stocks());
+        // MSFT's price retrieval fails: a required family reads `unknown`. Since
+        // the 2026-08-16 badge ruling this no longer force-includes — MSFT carries,
+        // and the degraded-sweep note rides the badge overlay.
         let second = selective_run(
             &paths,
             two_stocks(),
@@ -3686,18 +3692,37 @@ mod tests {
         );
         assert_eq!(
             verdict(&second, "MSFT").analyzed_at.as_deref(),
-            Some(second.created_at.as_str())
+            Some(first.created_at.as_str()),
+            "an `unknown` family carries, no longer force-included"
+        );
+        let conn = storage::open(&paths.db_path).unwrap();
+        let qc = store::latest_quick_check(&conn)
+            .unwrap()
+            .expect("carried sweep state retained for the badge");
+        let msft_state = qc
+            .holdings
+            .iter()
+            .find(|h| h.symbol == "MSFT")
+            .expect("MSFT swept state retained");
+        assert!(
+            msft_state
+                .families
+                .iter()
+                .any(|f| f.state == crate::portfolio::quick_check::SweepState::Unknown),
+            "the `unknown` family rides the badge overlay"
         );
     }
 
     #[test]
-    fn an_unexamined_evidence_event_since_the_holdings_own_vintage_forces_inclusion() {
+    fn an_unexamined_evidence_event_carries_and_badges_rather_than_force_including() {
         let (_dir, paths) = paths();
         full_run(&paths, two_stocks());
         // MSFT's last full pass was 10 days ago; an earnings actual landed 5 days
-        // ago. The per-holding boundary makes it an unexamined event.
+        // ago — an unexamined event. Since the 2026-08-16 badge ruling it no longer
+        // force-includes; MSFT carries and the evidence-event badge rides the overlay.
+        let old = days_ago(10);
         doctor_latest_run(&paths, "MSFT", |v| {
-            v.analyzed_at = Some(days_ago(10));
+            v.analyzed_at = Some(old.clone());
         });
         let second = selective_run(
             &paths,
@@ -3710,8 +3735,21 @@ mod tests {
         );
         assert_eq!(
             verdict(&second, "MSFT").analyzed_at.as_deref(),
-            Some(second.created_at.as_str()),
-            "an unexamined evidence event force-includes"
+            Some(old.as_str()),
+            "an unexamined evidence event carries vintage-stamped, no longer force-included"
+        );
+        let conn = storage::open(&paths.db_path).unwrap();
+        let qc = store::latest_quick_check(&conn)
+            .unwrap()
+            .expect("carried sweep state retained for the badge");
+        let msft_state = qc
+            .holdings
+            .iter()
+            .find(|h| h.symbol == "MSFT")
+            .expect("MSFT swept state retained");
+        assert!(
+            !msft_state.evidence_events.is_empty(),
+            "the evidence event rides the badge overlay"
         );
     }
 
@@ -3805,7 +3843,7 @@ mod tests {
         let (_dir, paths) = paths();
         full_run(&paths, two_stocks());
         // The user trimmed MSFT between runs — a same-side decrease, which
-        // force-includes nothing. The carried action stands as-is (rung-only);
+        // raises no badge. The carried action stands as-is (rung-only);
         // only the position-change tag reads today's diff.
         let trimmed = holdings_of(vec![
             stock("AAPL", 20.0, 3_900.0),
@@ -3828,11 +3866,12 @@ mod tests {
     }
 
     #[test]
-    fn an_over_age_carried_exit_action_is_force_included_not_demoted() {
+    fn an_over_age_carried_exit_action_now_carries_rather_than_force_including() {
         let (_dir, paths) = paths();
         full_run(&paths, two_stocks());
+        let old = days_ago(40);
         doctor_latest_run(&paths, "MSFT", |v| {
-            v.analyzed_at = Some(days_ago(40));
+            v.analyzed_at = Some(old.clone());
             if let crate::portfolio::VerdictDisposition::Priced(g) = &mut v.disposition {
                 g.action = crate::portfolio::Action::Trim;
             }
@@ -3843,15 +3882,44 @@ mod tests {
             &["AAPL"],
             &SelectiveQuickData::default(),
         );
+        let msft = verdict(&second, "MSFT");
+        // Since the 2026-08-16 badge ruling an over-age exit carry stands as-is
+        // (badged by the stale-vintage tag), no longer force-included or demoted —
+        // only over-age add-family carries rule-demote.
         assert_eq!(
-            verdict(&second, "MSFT").analyzed_at.as_deref(),
-            Some(second.created_at.as_str()),
-            "an over-age exit-family carry earns re-analysis, never a demotion"
+            msft.analyzed_at.as_deref(),
+            Some(old.as_str()),
+            "an over-age exit-family carry stands, no longer force-included"
         );
-        assert_eq!(
-            verdict(&second, "MSFT").action_source,
-            crate::portfolio::ActionSource::ModelChosen
+        assert_eq!(msft.action_source, crate::portfolio::ActionSource::ModelChosen);
+        match &msft.disposition {
+            crate::portfolio::VerdictDisposition::Priced(g) => {
+                assert_eq!(g.action, crate::portfolio::Action::Trim);
+            }
+            other => panic!("expected a priced carry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_new_unselected_holding_is_left_not_analyzed() {
+        let (_dir, paths) = paths();
+        full_run(&paths, two_stocks());
+        // A third holding appears, unselected. Since the 2026-08-16 badge ruling a
+        // new holding is no longer force-included into a selective run — it has no
+        // prior verdict to carry, so it is left not analyzed (no verdict emitted;
+        // the frontend renders it from holdings-minus-verdicts).
+        let three = holdings_of(vec![
+            stock("AAPL", 20.0, 3_900.0),
+            stock("MSFT", 20.0, 3_900.0),
+            stock("NVDA", 10.0, 2_000.0),
+        ]);
+        let second = selective_run(&paths, three, &["AAPL"], &SelectiveQuickData::default());
+        assert!(
+            second.verdicts.iter().all(|v| v.symbol != "NVDA"),
+            "an unselected new holding earns no verdict — it is left not analyzed"
         );
+        // The selected AAPL analyzed fresh, MSFT carried — the two prior holdings.
+        assert_eq!(second.verdicts.len(), 2);
     }
 
     /// Wraps [`StubCompanyData`] recording every per-symbol retrieval call, so the
@@ -3937,26 +4005,124 @@ mod tests {
     }
 
     #[test]
-    fn a_side_reversal_re_enters_as_what_it_now_is() {
+    fn a_side_reversal_carries_and_is_marked_rather_than_re_entering() {
         let (_dir, paths) = paths();
-        full_run(&paths, two_stocks());
-        // MSFT flipped net long → net short at equal magnitude since its verdict:
-        // thesis-changing by construction, so no carried verdict survives it.
+        let first = full_run(&paths, two_stocks());
+        // MSFT flipped net long → net short at equal magnitude since its verdict.
+        // Since the 2026-08-16 badge ruling the reversal no longer force-includes;
+        // MSFT carries its prior (now opposite-side) verdict, marked `side_reversed`
+        // for the card badge — the stale, wrong-direction advice stays visible.
         let flipped = holdings_of(vec![
             stock("AAPL", 20.0, 3_900.0),
             stock("MSFT", -20.0, -3_900.0),
         ]);
         let second = selective_run(&paths, flipped, &["AAPL"], &SelectiveQuickData::default());
         let msft = verdict(&second, "MSFT");
-        assert_eq!(msft.analyzed_at.as_deref(), Some(second.created_at.as_str()));
+        assert_eq!(
+            msft.analyzed_at.as_deref(),
+            Some(first.created_at.as_str()),
+            "a side-reversed holding carries, no longer force-included"
+        );
+        assert!(msft.side_reversed, "the reversal is marked for the card badge");
         assert!(
-            matches!(
-                &msft.disposition,
-                crate::portfolio::VerdictDisposition::NotRated { reason }
-                    if reason.contains("net short")
-            ),
-            "a long→short flip re-enters as the not-rated short it now is: {:?}",
+            matches!(&msft.disposition, crate::portfolio::VerdictDisposition::Priced(_)),
+            "it carries its prior priced verdict rather than re-entering as not-rated: {:?}",
             msft.disposition
+        );
+    }
+
+    #[test]
+    fn the_side_reversal_marker_persists_across_repeated_carries_and_clears_on_flip_back() {
+        // Regression (Codex 2026-08-16): a carried directional verdict is authored
+        // long, so its `side_reversed` marker is read from the *current* side each
+        // run — it stays set while the position keeps carrying net-short and clears
+        // when the position returns to long (a fresh pass would also clear it).
+        let (_dir, paths) = paths();
+        let first = full_run(&paths, two_stocks()); // MSFT long +20
+        let short = || {
+            holdings_of(vec![
+                stock("AAPL", 20.0, 3_900.0),
+                stock("MSFT", -20.0, -1_950.0),
+            ])
+        };
+        // Run 2: MSFT flips long → short — marked reversed on the first carry.
+        let r2 = selective_run(&paths, short(), &["AAPL"], &SelectiveQuickData::default());
+        assert!(
+            verdict(&r2, "MSFT").side_reversed,
+            "reversed on the first carry after the flip"
+        );
+        // Run 3: MSFT still short — the marker must PERSIST (the bug cleared it here,
+        // since the run-2→run-3 diff sees no flip).
+        let r3 = selective_run(&paths, short(), &["AAPL"], &SelectiveQuickData::default());
+        let msft3 = verdict(&r3, "MSFT");
+        assert!(
+            msft3.side_reversed,
+            "the marker persists while the carried verdict stays opposite the held side"
+        );
+        assert_eq!(
+            msft3.analyzed_at.as_deref(),
+            Some(first.created_at.as_str()),
+            "still the original long verdict, carried"
+        );
+        // Run 4: MSFT flips back short → long, matching the original long verdict —
+        // the marker clears (direction is coherent again; staleness stays the stale badge's job).
+        let r4 = selective_run(
+            &paths,
+            holdings_of(vec![
+                stock("AAPL", 20.0, 3_900.0),
+                stock("MSFT", 20.0, 1_950.0),
+            ]),
+            &["AAPL"],
+            &SelectiveQuickData::default(),
+        );
+        assert!(
+            !verdict(&r4, "MSFT").side_reversed,
+            "a flip back to the verdict's original side clears the marker"
+        );
+    }
+
+    #[test]
+    fn the_side_reversal_marker_survives_a_flip_through_a_zero_net_position() {
+        // Regression (Codex 2026-08-16, round 2): the marker reads the carried
+        // directional verdict's invariant long authoring side against the *current*
+        // side, so a reversal that passes through an exactly-zero net (kept by
+        // netting, and invisible to a per-run sign-flip read) is still caught.
+        let (_dir, paths) = paths();
+        let first = full_run(&paths, two_stocks()); // MSFT long +20, priced
+        // Run 2: MSFT nets to exactly zero — flat, so no opposite side yet.
+        let zero_net = holdings_of(vec![
+            stock("AAPL", 20.0, 3_900.0),
+            Position {
+                symbol: "MSFT".into(),
+                description: "MSFT Inc.".into(),
+                asset_class: AssetClass::Stock,
+                quantity: 0.0,
+                cost_basis: 0.0,
+                market_value: 0.0,
+                current_price: None,
+            },
+        ]);
+        let r2 = selective_run(&paths, zero_net, &["AAPL"], &SelectiveQuickData::default());
+        assert!(
+            !verdict(&r2, "MSFT").side_reversed,
+            "a flat (zero-net) position has no opposite side to badge"
+        );
+        // Run 3: MSFT nets short — the carried long verdict is now reversed, even
+        // though no single run showed a long→short sign flip.
+        let short = holdings_of(vec![
+            stock("AAPL", 20.0, 3_900.0),
+            stock("MSFT", -20.0, -1_950.0),
+        ]);
+        let r3 = selective_run(&paths, short, &["AAPL"], &SelectiveQuickData::default());
+        let msft = verdict(&r3, "MSFT");
+        assert!(
+            msft.side_reversed,
+            "a reversal through a zero net is still caught"
+        );
+        assert_eq!(
+            msft.analyzed_at.as_deref(),
+            Some(first.created_at.as_str()),
+            "still the original long verdict, carried"
         );
     }
 

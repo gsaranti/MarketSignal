@@ -92,8 +92,10 @@ pub enum SweepFamily {
 /// fired (a new observation evaluated clean, or a successful retrieval confirming
 /// no unseen observation exists); **`flagged`**; or **`unknown`** — the retrieval
 /// failed, the stored basis is missing, or a condition the family covers could
-/// not be resolved this sweep, so the sweep could not vouch either way. `unknown` is load-bearing for selective runs: the holding force-includes
-/// exactly like a flagged one (`docs/portfolio-analysis.md §Triggering`).
+/// not be resolved this sweep, so the sweep could not vouch either way. On a
+/// selective run `unknown` surfaces as a degraded-sweep **card badge**, exactly
+/// like a `flagged` family — it no longer force-includes (since the 2026-08-16
+/// ruling — `docs/portfolio-analysis.md §Triggering`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SweepState {
@@ -863,8 +865,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 // Inclusive of the boundary day: filing dates are date-only, so
                 // a filing landing later on the pass's own ET day cannot be told
                 // apart from one the pass already saw. Inclusive re-raises a
-                // seen boundary-day item on every sweep — and force-includes the
-                // holding — until a full pass on a *later* ET day advances the
+                // seen boundary-day item's badge on every sweep until a full pass
+                // on a *later* ET day advances the
                 // vintage past it (a same-day re-pass re-lands on the boundary);
                 // strict `>` would instead hide the unseen one permanently. One
                 // contract across the filing / earnings / news legs.
@@ -1790,6 +1792,7 @@ mod tests {
             thesis_ledger: Some(ledger(conditions)),
             analyzed_at: None,
             action_source: Default::default(),
+            side_reversed: false,
         }
     }
 
@@ -2203,7 +2206,7 @@ mod tests {
     fn authored_outside_band_flags_only_on_a_relation_change() {
         // A band authored with spot already outside it was an examined observation
         // (the model wrote the ledger seeing it): the standing state must not flag —
-        // and force-include the holding on every selective run — sweep after sweep.
+        // badging the holding on every selective run — sweep after sweep.
         let insert = |conn: &rusqlite::Connection, authored| {
             let mut verdict = priced_verdict("AAPL", vec![]);
             if let Some(l) = verdict.thesis_ledger.as_mut() {
@@ -2434,6 +2437,7 @@ mod tests {
             thesis_ledger: Some(fund_ledger),
             analyzed_at: None,
             action_source: Default::default(),
+            side_reversed: false,
         };
         let mut audit = audit_for("BONDX", None);
         audit.fund_exposure = Some(fund::FundExposureBasis {
@@ -2506,6 +2510,7 @@ mod tests {
             thesis_ledger: Some(fund_ledger),
             analyzed_at: None,
             action_source: Default::default(),
+            side_reversed: false,
         };
         let mut audit = audit_for("BONDX", None);
         audit.fund_exposure = exposure;
@@ -2560,8 +2565,8 @@ mod tests {
     fn a_non_equity_fund_is_not_degraded_by_its_empty_equity_weightings() {
         // A bond fund's empty equity weightings are its expected shape — the
         // weightings legs bear on equity funds alone, so the recorded endpoint
-        // gaps must not read the family unknown (which would force-include the
-        // fund into every selective run forever).
+        // gaps must not read the family unknown (which would badge the
+        // fund on every selective run forever).
         let conn = mem();
         store::insert_run(
             &conn,
@@ -2638,7 +2643,7 @@ mod tests {
         let kinds: Vec<EvidenceEventKind> = h.evidence_events.iter().map(|e| e.kind).collect();
         assert!(kinds.contains(&EvidenceEventKind::FundInfoChange), "{kinds:?}");
         // The degraded weighting legs still read the family unknown — the
-        // transition sweep force-includes rather than silently clearing.
+        // transition sweep badges rather than silently clearing.
         let fam = h
             .families
             .iter()

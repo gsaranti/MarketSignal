@@ -205,7 +205,6 @@ build status lives in `BUILD.md`.*
 - Post-research target refinement — portfolio-analysis.md §The per-holding pipeline; portfolio-workflow.md §Step 6d, §Step 6e
 - Portfolio technology-event impact — portfolio-analysis.md §The position thesis ledger, §The per-holding pipeline; portfolio-workflow.md §Step 6c
 - Research reuse (Portfolio) — portfolio-analysis.md §Starting parameters, §The per-holding pipeline; portfolio-workflow.md §Step 6
-- Portfolio held-name research refresh lane — portfolio-analysis.md §Triggering, §The position thesis ledger, §Starting parameters; portfolio-workflow.md §Step 6 pre-loop; data-sources.md §Portfolio Analysis — endpoint surface; configuration.md §Local Analysis Suite Configuration; storage.md §Local Analysis Suite Storage
 - New-money admission test — portfolio-analysis.md §Starting parameters
 - Portfolio per-holding/per-fund endpoint surface — data-sources.md §Portfolio Analysis — endpoint surface
 - Investor profile default preset — configuration.md §Investor Profile; interface.md §Main Layout (Settings tree)
@@ -306,3 +305,4 @@ the run's own dated record follows it.*
 - Stooq removal — decision, evidence, and removal-slice inventory — verification/2026-08-12-stooq-removal-decision.md; BUILD.md §What remains (Built)
 - Tunnel-vision slice — ruling, build inventory, and per-finding dispositions — verification/2026-08-14-tunnel-vision-slice.md; portfolio-analysis.md §Portfolio action, §Portfolio roll-up
 - Tunnel-vision doc↔code conformance walk — findings, rulings, and applied corrections — verification/2026-08-15-tunnel-vision-conformance-walk.md
+- Selective-run safety additions → card badges — ruling, build inventory, and held-name-lane / pre-v9-gate retirement — verification/2026-08-16-selective-badges-ruling.md; portfolio-analysis.md §Triggering

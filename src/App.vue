@@ -1176,9 +1176,10 @@ async function disconnectSchwab() {
 
 // Run the Portfolio Analysis job (docs/portfolio-analysis.md §Triggering — the
 // one-touch trigger: it pulls fresh holdings itself, never reusing a standalone
-// pull). With a per-card selection the run is a selective re-analysis: the
-// backend sweeps the unselected tail and force-includes anything it can't
-// vouch for, carrying the rest vintage-stamped. Mirrors generate(): the run
+// pull). With a per-card selection the run is a selective re-analysis of
+// strictly those holdings (ruled 2026-08-16): the backend sweeps the carried
+// tail only to badge it (attention flags / evidence-event / degraded notes),
+// carrying the rest vintage-stamped. Mirrors generate(): the run
 // streams into the shared tracker, which replaces the Portfolio page while it
 // runs; a gate block (no run-started ever arrives) surfaces as the page's
 // inline error, never a persistent warning.

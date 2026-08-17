@@ -199,9 +199,7 @@ A third, calibration-side bound is the **shadow-ledger retention cap** — the m
 A fourth bound is the **picked matured-archive cap** — the retention ceiling on frozen, matured picked decision episodes (the active picked set needs no cap: one open episode per lifecycle, each closing by ~12 months plus the shared price-coverage grace — [trade-opportunities.md §Starting parameters](trade-opportunities.md#starting-parameters-calibratable)).
 
 Portfolio Analysis has no discovery-breadth setting: it grades a known holdings list and never screens the universe.
-Its small **held-name research refresh lane** (designed, not built — it lands with the research-loop slice) uses a fixed drafted cap of **2 holdings per Run analysis** for the first implementation, selected by the app from named qualitative ledger drivers / falsifiers and spent only on holdings whose verdict would otherwise be carried (judged from pre-loop-visible evidence) ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).
-The cap is deliberately not user-configurable yet: it is a bounded freshness safeguard, not a quality or admission control, and a material result merely force-includes the holding into the normal full pass.
-Deep research for a carried holding comes from a force-include or the next full run, not from a research-age cap; the ~4-week window governs seed eligibility.
+Deep research for a carried holding comes from selecting it or the next full run, not from a research-age cap; the ~4-week window governs research-seed eligibility ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).
 
 ### Research Context Management (hierarchical distillation)
 

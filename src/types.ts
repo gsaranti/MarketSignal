@@ -579,6 +579,12 @@ export interface HoldingVerdict {
   analyzed_at?: string | null;
   // Absent on pre-field runs (reads as model-chosen).
   action_source?: ActionSource | null;
+  // Set on a carried verdict whose position's net side reversed since it was
+  // written (docs/portfolio-analysis.md §Triggering) — the carried thesis is for
+  // the opposite position, badged so the stale wrong-direction advice is visible.
+  // A selective run no longer force-includes on a reversal (ruled 2026-08-16);
+  // absent/false on fresh passes and on runs persisted before the field.
+  side_reversed?: boolean;
 }
 
 // A position present last run but absent now — surfaced in the roll-up only,

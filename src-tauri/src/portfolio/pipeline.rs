@@ -284,6 +284,7 @@ pub fn analyze_holding(
             // run's `created_at` and preserves an abstention's prior vintage.
             analyzed_at: None,
             action_source: ActionSource::ModelChosen,
+            side_reversed: false,
         };
         // An abstaining stock still records its overlay (fresh statement leg +
         // carried observation history) — engine-only state, no model dependency, so
@@ -303,6 +304,7 @@ pub fn analyze_holding(
             thesis_ledger: None,
             analyzed_at: None,
             action_source: ActionSource::ModelChosen,
+            side_reversed: false,
         };
         return Ok((verdict, audit(Default::default(), None, None, None)));
     }
@@ -333,6 +335,7 @@ pub fn analyze_holding(
             thesis_ledger: None,
             analyzed_at: None,
             action_source: ActionSource::ModelChosen,
+            side_reversed: false,
         };
         return Ok((verdict, audit(Default::default(), None, None, None)));
     }
@@ -366,6 +369,7 @@ pub fn analyze_holding(
                 thesis_ledger: None,
                 analyzed_at: None,
                 action_source: ActionSource::ModelChosen,
+                side_reversed: false,
             };
             return Ok((verdict, audit(Default::default(), None, None, None)));
         }
@@ -522,6 +526,7 @@ pub fn analyze_holding(
                     thesis_ledger: Some(ledger),
                     analyzed_at: None,
                     action_source: ActionSource::ModelChosen,
+                    side_reversed: false,
                 };
                 return Ok((verdict, audit_record));
             }
@@ -662,6 +667,7 @@ pub fn analyze_holding(
         thesis_ledger: Some(ledger),
         analyzed_at: None,
         action_source: ActionSource::ModelChosen,
+        side_reversed: false,
     };
     // The engine's own gap notes (tier-input gaps, the fund composite's uncovered
     // share, an option-overlay structural flag) join the audit's degraded inputs —
@@ -3835,7 +3841,7 @@ mod tests {
     fn six_g_downgrades_a_series_the_asset_class_never_computes() {
         // A statement series on a fund validates as quantitative under a
         // class-blind check, then types unevaluable on every sweep — the family
-        // never clears and every selective run force-includes the holding. The
+        // never clears and every selective run badges the holding. The
         // class-aware check downgrades it to qualitative at 6g instead; the
         // expense ratio is the stock-side mirror.
         let mut fund_draft = stub_ledger_draft(None, "VTI", false);
@@ -3950,6 +3956,7 @@ mod tests {
             thesis_ledger: Some(prior_with_conditions()),
             analyzed_at: None,
             action_source: Default::default(),
+            side_reversed: false,
         });
         let (verdict, _audit) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-04").unwrap();
@@ -4482,6 +4489,7 @@ mod tests {
             thesis_ledger: None,
             analyzed_at: None,
             action_source: Default::default(),
+            side_reversed: false,
         };
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let engine_output = match engine::analyze(&d.financials, &rates()) {
@@ -5857,6 +5865,7 @@ mod tests {
             thesis_ledger: Some(prior_with_conditions()),
             analyzed_at: None,
             action_source: Default::default(),
+            side_reversed: false,
         });
         let (v2, _) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();

@@ -702,6 +702,7 @@ mod tests {
                 thesis_ledger: None,
                 analyzed_at: None,
                 action_source: Default::default(),
+                side_reversed: false,
             }],
             roll_up: PortfolioRollUp {
                 aggregates: None,

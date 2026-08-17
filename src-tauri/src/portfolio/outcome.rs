@@ -2539,6 +2539,7 @@ mod tests {
             thesis_ledger: Some(ledger(weights.0, weights.1)),
             analyzed_at: None,
             action_source: ActionSource::ModelChosen,
+            side_reversed: false,
         }
     }
 

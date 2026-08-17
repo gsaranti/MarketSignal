@@ -116,11 +116,29 @@ const selectionActive = computed(() => selected.value.size > 0);
 const selectionDisabled = computed(
   () => isHistorical.value || props.busy || props.run === null
 );
+// Holdings present in the book but absent from this run's verdicts — new /
+// unselected holdings a selective run left not analyzed since the 2026-08-16
+// badge ruling (docs/portfolio-analysis.md §Triggering). Derived from
+// holdings-minus-verdicts; rendered as placeholder "run to grade" cards,
+// selectable so the next selective run can grade them.
+const notAnalyzed = computed<Position[]>(() => {
+  const graded = new Set(
+    (props.run?.verdicts ?? []).map((v) => v.symbol.toUpperCase())
+  );
+  return (props.run?.holdings.positions ?? []).filter(
+    (p) => !graded.has(p.symbol.toUpperCase())
+  );
+});
+// Every current holding a selective run can target — graded/carried verdicts
+// plus the not-analyzed holdings above.
+const selectableSymbols = computed<string[]>(() => [
+  ...(props.run?.verdicts ?? []).map((v) => v.symbol.toUpperCase()),
+  ...notAnalyzed.value.map((p) => p.symbol.toUpperCase()),
+]);
 const allSelected = computed(
   () =>
-    props.run !== null &&
-    props.run.verdicts.length > 0 &&
-    selected.value.size === props.run.verdicts.length
+    selectableSymbols.value.length > 0 &&
+    selected.value.size === selectableSymbols.value.length
 );
 function isSelected(symbol: string): boolean {
   return selected.value.has(symbol.toUpperCase());
@@ -133,9 +151,7 @@ function toggleSelect(symbol: string) {
   selected.value = next;
 }
 function selectAll() {
-  selected.value = new Set(
-    (props.run?.verdicts ?? []).map((v) => v.symbol.toUpperCase())
-  );
+  selected.value = new Set(selectableSymbols.value);
 }
 function clearSelection() {
   selected.value = new Set();
@@ -157,7 +173,7 @@ const runTitle = computed(() => {
     return props.runBlockedReason ?? "Local-suite configuration is incomplete";
   if (props.busy) return "Another job is running";
   if (selectionActive.value)
-    return "Re-analyze the selected holdings — the safety sweep checks the rest and force-includes anything it can't vouch for";
+    return "Re-analyze the selected holdings — the rest carry forward, badged where the safety sweep flags a change";
   return "Pull fresh holdings and run the analysis";
 });
 const pullTitle = computed(() => {
@@ -204,6 +220,10 @@ const quickBySymbol = computed(() => {
 function quickFor(symbol: string): HoldingQuickState | null {
   return quickBySymbol.value.get(symbol.toUpperCase()) ?? null;
 }
+// The side-reversal badge title — the carried thesis is for the opposite
+// position (docs/portfolio-analysis.md §Triggering).
+const SIDE_REVERSED_TITLE =
+  "This position's net side flipped since this verdict was written — the carried thesis is for the opposite position; re-run to refresh";
 const FLAG_LABELS: Record<FlagTrigger, string> = {
   "confirmed-falsifier-breach": "falsifier breached",
   "fired-trigger": "trigger fired",
@@ -1338,6 +1358,12 @@ const keyFigures = computed(() => {
                       :title="carriedStamp(v)!.title"
                       >{{ carriedStamp(v)!.text }}</span
                     >
+                    <span
+                      v-if="v.side_reversed"
+                      class="ana-tag dh-attention-tag"
+                      :title="SIDE_REVERSED_TITLE"
+                      >Side reversed</span
+                    >
                     <span v-if="noLongerHeld(v.symbol)" class="ana-tag"
                       >No longer held</span
                     >
@@ -1405,6 +1431,12 @@ const keyFigures = computed(() => {
                           class="ana-tag"
                           :title="carriedStamp(v)!.title"
                           >{{ carriedStamp(v)!.text }}</span
+                        >
+                        <span
+                          v-if="v.side_reversed"
+                          class="ana-tag dh-attention-tag"
+                          :title="SIDE_REVERSED_TITLE"
+                          >Side reversed</span
                         >
                         <span v-if="v.disposition.structural_flag" class="ana-tag"
                           >Structurally path-dependent</span
@@ -1691,6 +1723,12 @@ const keyFigures = computed(() => {
                           class="ana-tag"
                           :title="carriedStamp(v)!.title"
                           >{{ carriedStamp(v)!.text }}</span
+                        >
+                        <span
+                          v-if="v.side_reversed"
+                          class="ana-tag dh-attention-tag"
+                          :title="SIDE_REVERSED_TITLE"
+                          >Side reversed</span
                         >
                         <span v-if="demoted(v)" class="ana-tag" :title="DEMOTED_TITLE"
                           >Add demoted to hold</span
@@ -2256,6 +2294,48 @@ const keyFigures = computed(() => {
                   >
                 </footer>
               </template>
+            </article>
+            <!-- Not-analyzed holdings: present in the book but ungraded this run
+                 (new / unselected — docs/portfolio-analysis.md §Triggering).
+                 Selectable so the next selective run can grade them. -->
+            <article
+              v-for="p in notAnalyzed"
+              :key="`na-${p.symbol}`"
+              class="ana-card holding-card"
+            >
+              <div class="hc-reduced">
+                <div class="hc-reduced-main">
+                  <div class="hc-idline">
+                    <label
+                      v-if="!isHistorical"
+                      class="hc-select"
+                      :title="`Select ${p.symbol} to analyze`"
+                    >
+                      <input
+                        type="checkbox"
+                        class="hc-select-input"
+                        :checked="isSelected(p.symbol)"
+                        :disabled="selectionDisabled"
+                        :aria-label="`Select ${p.symbol} to analyze`"
+                        @change="toggleSelect(p.symbol)"
+                      />
+                      <span class="hc-select-box" aria-hidden="true"></span>
+                    </label>
+                    <span class="ana-ticker">{{ p.symbol }}</span>
+                    <span class="hc-class">Not analyzed</span>
+                  </div>
+                  <p class="hc-reason">
+                    Not analyzed in this run — select it and re-run, or run a full
+                    analysis, to grade it.
+                  </p>
+                </div>
+                <div class="hc-reduced-side">
+                  <span class="hc-kicker">Weight</span>
+                  <span class="ana-num hc-weight">{{
+                    weightOf(p) !== null ? fmtPct(weightOf(p)!) : "—"
+                  }}</span>
+                </div>
+              </div>
             </article>
           </div>
 

@@ -12,7 +12,7 @@ The Portfolio Analysis job:
 - decides each holding's portfolio action from that holding's own verdict plus the investor profile — **tunnel vision by design**: the job never compares holdings, and the whole-book reconciliation belongs to the future portfolio-planner job ([portfolio-analysis.md §Portfolio action](portfolio-analysis.md#portfolio-action))
 
 It runs **on demand only**, from a single **Run analysis** trigger that pulls holdings and runs the analysis in one user action (a separate **Pull holdings** control fetches and displays positions without analyzing; the job never reads it — [portfolio-analysis.md §Triggering](portfolio-analysis.md#triggering)), entirely on local models, with **no cost at the model layer**.
-With a card **selection** active, Run analysis becomes a **selective re-analysis** over those holdings **plus Step 6's automatic safety inclusions** ([§Step 6](#step-6-per-holding-analysis-loop)); a third, **engine-only Quick check** control re-evaluates the standing ledgers between full runs without any model call ([§The quick check (engine-only)](#the-quick-check-engine-only)).
+With a card **selection** active, Run analysis becomes a **selective re-analysis** over **strictly those holdings** — the rest carry forward, badged where the quick check flags a change ([§Step 6](#step-6-per-holding-analysis-loop)); a third, **engine-only Quick check** control re-evaluates the standing ledgers between full runs without any model call ([§The quick check (engine-only)](#the-quick-check-engine-only)).
 A **single global run slot** serializes it against the report and Trade Opportunities (only one runs at a time).
 For job states, the global run slot, cancellation, and error handling, see [scheduling.md](scheduling.md) and [run-tracking.md](run-tracking.md); for the failure posture (per-holding checkpoint/resume, fail-soft research), see [portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture).
 
@@ -93,7 +93,7 @@ Each position is classified before analysis (see [portfolio-analysis.md §Asset 
 - **ETFs / funds** — the **reduced** pipeline (Step 6, fund path): no single-company financials; graded on strategy / **exposure** (sector / country weightings — constituent look-through is off-plan), valuation, and the house view.
   The further **strategy classification** (asset class from `etf/info`) is a **loop-time routing decision, not made here** — this step is computed-only and `etf/info` is not retrieved until Step 6a — so each fund is classified and routed at 6a/6b once its metadata is in hand: equity funds the exposure-valuation path (US-exposure-guarded: below ~70% US by country weightings the composite is not an honest read, so the fund is unpriceable); bond / commodity funds a further-reduced path with valuation recorded as a gap; leveraged / inverse vehicles carry the deterministic structurally-path-dependent flag; a CEF adds the NAV read (the CEF leg designed, not built — [portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)).
   Every unpriceable class returns the typed **`role_risk_only`** intrinsic verdict — no letter, no targets; the portfolio action machinery still applies ([portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)).
-- **Options, fixed income, cash, unsupported types — and net-short equities** — marked **not rated**, with a reason, excluded from grading (a short's signed exposure still feeds the roll-up, and a long↔short reversal force-includes in a selective run — [portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)).
+- **Options, fixed income, cash, unsupported types — and net-short equities** — marked **not rated**, with a reason, excluded from grading (a short's signed exposure still feeds the roll-up, and a long↔short reversal marks and badges the carried holding in a selective run — [portfolio-analysis.md §Asset eligibility](portfolio-analysis.md#asset-eligibility)).
   Cash still feeds the roll-up's descriptive cash read ([portfolio-analysis.md §Portfolio roll-up](portfolio-analysis.md#portfolio-roll-up)).
 
 The eligibility decision is explicit and shown in the UI; a not-rated position never receives a fabricated grade.
@@ -133,41 +133,13 @@ The resident **122B reasoner fills every model role in this loop** by switching 
 A **fund** holding runs the reduced engine path (Step 6b) and a **fund-flavored research agenda** (Step 6c); the loop's structure — research, distillation, interpretation, continuity — is otherwise identical.
 Sub-steps 6a–6g are the [portfolio-analysis.md §The per-holding pipeline](portfolio-analysis.md#the-per-holding-pipeline) six stages, with the target refinement (6e) surfaced as its own deterministic phase.
 
-In a **selective re-analysis** (Run analysis with a selection), the **initial work-list** is the selected holdings plus any holding with **nothing to carry** — new since the last run, or carrying no prior verdict whatever the diff says.
-Before the loop, the quick-check evaluation runs over the remaining tail and **expands that work-list** with every holding it flags, every holding whose sweep result is **`unknown`** (a required signal family's retrieval failed or a condition it covers couldn't be resolved — the degraded-sweep rule, [portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)), every holding whose **position side reversed**, every holding carrying an unexamined evidence event, every over-age exit-family carry, every holding whose carried verdict carries a pre-`portfolio-v9` prompt stamp (the one-time contract migration — [portfolio-analysis.md §Triggering](portfolio-analysis.md#triggering)), and any holding whose capped held-name research refresh surfaces a validated material update (the refresh lane is designed, not built).
-Holdings left outside the resulting work-list carry their prior intrinsic verdict, action, and ledger forward, **vintage-stamped**, into the persisted run.
+In a **selective re-analysis** (Run analysis with a selection), the **work-list is strictly the selected holdings** (ruled 2026-08-16, [verification/2026-08-16-selective-badges-ruling.md](verification/2026-08-16-selective-badges-ruling.md)) — nothing else is pulled in.
+Before the loop the quick-check evaluation still runs over the unselected carried tail, but only to **badge** it, not to expand the work-list: a holding it flags, one whose sweep result is **`unknown`** (a required signal family's retrieval failed or a condition it covers couldn't be resolved — the degraded-sweep rule, [portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)), one carrying an unexamined evidence event, and one whose **position side reversed** (marked `side_reversed`) each ride the card as a non-blocking badge ([portfolio-analysis.md §Triggering](portfolio-analysis.md#triggering)).
+Holdings left outside the selection carry their prior intrinsic verdict, action, and ledger forward, **vintage-stamped**, into the persisted run; a held position with **no prior verdict to carry** (new, or never analyzed) is left **not analyzed** — no verdict this run, rendered as a "run to grade" placeholder card, selectable for the next selective run.
 Steps 1–5 run whole-book regardless (the pull, eligibility, diff, and shared context are cheap), so the diff baseline and snapshot semantics are unchanged.
-These force-includes are the first of the safety rules that make mixed vintages analytically safe, specified once in [portfolio-analysis.md §Triggering](portfolio-analysis.md#triggering); the per-family over-age resolution stays deterministic app machinery (add-family rule-demoted to *hold*, stamped `action_source: rule-demoted`; exit-family force-included above).
+The badges — not force-includes — are what keep mixed vintages safe now, specified once in [portfolio-analysis.md §Triggering](portfolio-analysis.md#triggering); the one deterministic carry rule left is the over-age **add-family** demotion to *hold* (stamped `action_source: rule-demoted`), while an over-age exit or hold stands behind the stale-vintage badge.
 Within the loop, research effort is **uniform, not graduated** (designed with the research slice — nothing is cached while 6c is stubbed): every analyzed holding runs 6c–6d in full each run.
 A holding's cached distilled findings younger than the ~4-week window **seed** the loop (deterministically, per topic) and **merge** into its results at distillation rather than skipping any step; older or absent, the loop runs cold — the seed-and-merge contract and window live in [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable), and every **per-topic** seeded-vs-cold decision is logged to the audit record.
-
-### Step 6 pre-loop: Held-Name Research Refresh
-
-**Type:** Local-model call (122B, thinking) + API retrieval (web tool), capped across the run.
-**This whole pre-loop lane is designed, not built** — it lands with the research-loop slice.
-
-This is a small freshness lane, not another analysis path and not part of the engine-only Quick check.
-The app selects at most **2 holdings per run** under the deterministic priority contract in [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable), only from holdings whose prior verdict would otherwise be carried (judged from **pre-loop-visible evidence**) and whose standing ledger names a qualitative research-checkable key driver or falsifier.
-A holding already known at this point to need a fresh full agenda is excluded.
-The technology-event pre-flag does not exist until Step 6b; when that later result independently makes a selected holding's full agenda mandatory, the app logs the refresh slot `late-invalidated`, forwards its evidence into Step 6c, and does not refill the already-planned cap.
-For each selected holding the app chooses one exact ledger-node snapshot and runs one narrow current-search topic over it, using the same SSRF-guarded SearXNG-primary / Tavily-fallback tool rail as Step 6c.
-The model returns a schema-constrained `{status, ledger_node_snapshot, claims, source_urls, published_at, rationale}` result, where `status` is **`material_update` / `no_material_change` / `unscorable`**.
-The app validates issuer identity, exact node linkage, dates, and source lineage; only a validated `material_update` force-includes an otherwise-carried holding into the ordinary 6a–6g loop.
-No result from this lane confirms a condition, mutates the thesis ledger, changes conviction or a target, chooses an action, or advances the holding's full-research vintage.
-A failed or unscorable attempt is logged and preserves the prior state; the holding stays carried until a force-include or the next full run re-analyzes it, the ~4-week window governing seed eligibility rather than re-analysis.
-
-#### Local-model call — Targeted held-name refresh (Qwen3.5-122B, thinking)
-
-**Model.**
-The resident 122B reasoner in thinking mode, with web requests executed by the orchestrator.
-
-**Prompt — input.**
-The holding identity, the exact stored qualitative driver or falsifier, its last supporting evidence and date, the next known catalyst date where present, and the instruction to search only for current evidence that materially confirms, weakens, or falsifies that node.
-The prior verdict's conclusion is omitted except for the node and the deterministic priority fields, so the lane tests evidence rather than re-arguing the whole holding.
-
-**Returns.**
-The typed status and source-backed claim set above.
-The output is an input to work-list decisions only; a normal full pass must interpret any update.
 
 ### Step 6a: Dossier Assembly
 
@@ -225,7 +197,7 @@ This stage ends with the **evidence-floor check** — deterministic, over the fl
 ### Step 6c: Bounded Web Research
 
 **Type:** Local-model call (122B, thinking) + API retrieval (the web tool), **looped**.
-This is the only **per-holding** stage that loops; the pre-loop refresh lane is separately capped across the run.
+This is the only **per-holding** stage that loops.
 **As-built this whole stage is a stub**: no agenda, loop, or web tool runs — the orchestrator records a single research-deferred note, so every run to date has graded on the deterministic financials and the house view alone.
 Everything below (including the model-call block) is the research-loop slice's binding design.
 
@@ -397,7 +369,7 @@ A failed refresh uses cached bars only when they cover the full window; otherwis
 It then appends-or-extends this run's own episodes and derives the scorecard reads over the updated set — label mechanics, bases, and cohort layers all per the canonical contract in [portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration); fresh episodes carry no matured windows, so the reads move only on matured history.
 
 The application persists the run: each holding's verdict, the per-holding **thesis ledger** (carried forward to seed the next run's continuity check), each priced stock's **pre-profit overlay record** (the eligibility read for every priced stock — a priced fund carries none; period-keyed execution observations and derived state where entered), the roll-up, and the **holdings snapshot it ran against** (the next run diffs against this).
-It persists the **run audit record** that makes the run traceable, in the **full design**: sources and retrieval timestamps, distilled findings, computed metrics and derived reads, the input delta and what-changed attribution, every held-name refresh selection / result, the price-target methodology, model ids and quantizations, prompt/schema version, degraded-input flags, and each holding's research-reuse decision.
+It persists the **run audit record** that makes the run traceable, in the **full design**: sources and retrieval timestamps, distilled findings, computed metrics and derived reads, the input delta and what-changed attribution, the price-target methodology, model ids and quantizations, prompt/schema version, degraded-input flags, and each holding's research-reuse decision.
 The field set **and its as-built wired subset** are specified once in [storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage).
 It also **appends or extends** this run's **decision episodes** in the outcome-episode store and attaches any Step-6g-confirmed falsifier events to the episode that carried their condition — creation, extension, event, and vintage semantics per the canonical contract ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)) — and records the outcome-learning pass's matured labels and derived scorecard reads with the audit record, the matured reads additionally embedding as **durable learnings** in the job's memory partition ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)).
 Retention keeps the last N runs; the episode store and its matured archive persist independently of that window ([storage.md](storage.md)).
@@ -442,4 +414,4 @@ The retrieval recipe, the four flag triggers, the evidence-event legs, and the e
 It holds the **single global run slot** and streams per-holding rows to the run tracker like any job.
 Because it makes **no model call**, it skips the daemon-connectivity check and runs even with the daemon configured-but-down — the same run-gate relaxation as ATO's Quick Audit ([trade-opportunities.md §Failure posture](trade-opportunities.md#failure-posture)); because it does **no web research**, it triggers no pre-run SearXNG notice.
 The Schwab connection — and the shared FMP / FRED credential presence — remain presence preconditions, like everywhere in the suite, but no Schwab call is made.
-A failed price refresh has no cache to fall to — the sweep never reads the shared price cache — so the holding's market family types `unknown` and the price-dependent reads skip, force-including it in a selective run rather than passing silently ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)).
+A failed price refresh has no cache to fall to — the sweep never reads the shared price cache — so the holding's market family types `unknown` and the price-dependent reads skip, badging it in a selective run rather than passing silently ([portfolio-analysis.md §The quick check](portfolio-analysis.md#the-quick-check-engine-only)).

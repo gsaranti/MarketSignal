@@ -1696,3 +1696,53 @@ describe("PortfolioView two-arm verdict", () => {
     );
   });
 });
+
+// The 2026-08-16 badge ruling: a selective run analyzes strictly the selection.
+// A held position with no verdict renders a not-analyzed placeholder; a carried
+// verdict whose side reversed carries a "Side reversed" badge.
+describe("PortfolioView badge ruling", () => {
+  test("a held position with no verdict renders a not-analyzed placeholder card", () => {
+    const runWithNew: PortfolioRun = {
+      ...run,
+      holdings: {
+        ...run.holdings,
+        positions: [
+          ...positions,
+          position("NVDA", { cost_basis: 6_000, market_value: 9_000 }),
+        ],
+      },
+    };
+    const wrapper = mountView({ run: runWithNew });
+    expect(stackTickers(wrapper)).toContain("NVDA");
+    expect(wrapper.text()).toContain("Not analyzed in this run");
+  });
+
+  test("the not-analyzed placeholder is selectable for a selective re-run", () => {
+    const runWithNew: PortfolioRun = {
+      ...run,
+      holdings: {
+        ...run.holdings,
+        positions: [
+          ...positions,
+          position("NVDA", { cost_basis: 6_000, market_value: 9_000 }),
+        ],
+      },
+    };
+    const wrapper = mountView({ run: runWithNew });
+    const nvdaCard = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "NVDA")!;
+    expect(nvdaCard.find(".hc-select-input").exists()).toBe(true);
+  });
+
+  test("a side-reversed carried verdict renders a Side reversed badge", () => {
+    const runReversed: PortfolioRun = {
+      ...run,
+      verdicts: run.verdicts.map((v) =>
+        v.symbol === "MSFT" ? { ...v, side_reversed: true } : v
+      ),
+    };
+    const wrapper = mountView({ run: runReversed });
+    expect(wrapper.text()).toContain("Side reversed");
+  });
+});

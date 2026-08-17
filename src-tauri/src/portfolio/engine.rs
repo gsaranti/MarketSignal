@@ -711,8 +711,8 @@ impl LedgerSeries {
     /// persisted conditions still decode (the tunnel-vision ruling, 2026-08-14).
     /// Evaluation skips a retired series **whole** — no crossing, no unevaluable
     /// note, no state update — the same shape as the cadence gate's skip: the
-    /// unevaluable path would type the family `unknown` and force-include the
-    /// holding on every selective run forever. A legacy condition dies at its
+    /// unevaluable path would type the family `unknown` and badge the holding on
+    /// every selective run forever. A legacy condition dies at its
     /// next 6f rewrite, where the draft's claim no longer parses and downgrades
     /// to qualitative.
     pub fn retired(self) -> bool {
@@ -725,7 +725,7 @@ impl LedgerSeries {
     /// carries no statement lines), the expense ratio only for funds. A series
     /// the class can never resolve must downgrade at 6g — admitted, it would
     /// type unevaluable on every sweep, permanently un-clear its family, and
-    /// force-include the holding on every selective run.
+    /// badge the holding on every selective run.
     pub fn computable_for(self, is_fund: bool) -> bool {
         if is_fund {
             matches!(
@@ -4314,7 +4314,7 @@ mod tests {
         // vocabulary and unparseable as a fresh claim, a direct resolution is a
         // typed error, and a persisted legacy condition is skipped WHOLE — no
         // crossing, no unevaluable note (which would type its family `unknown`
-        // and force-include the holding on every selective run), no state
+        // and badge the holding on every selective run), no state
         // update. It dies at the next 6f rewrite instead.
         assert!(!LedgerSeries::ALL.contains(&LedgerSeries::PortfolioWeight));
         assert!(LedgerSeries::parse("portfolio-weight").is_none());

@@ -143,17 +143,13 @@
   - Important when a selective run carries older verdicts forward.
 
 - **Selective re-analysis**
-  - Full analysis of selected holdings plus required safety inclusions.
-  - Unselected safe holdings may keep their earlier intrinsic verdicts.
+  - Full analysis of strictly the selected holdings (ruled 2026-08-16).
+  - Every unselected holding keeps its earlier intrinsic verdict, with the quick check's findings surfaced as non-blocking card badges rather than a forced re-analysis.
+  - A held position with no prior verdict is left not analyzed (a selectable "run to grade" placeholder).
 
 - **Research reuse**
   - Prior distilled web research, under about four weeks old, used to seed and merge into this run's research.
   - It never skips the research loop for an analyzed holding — the loop runs full each run that holding is analyzed.
-
-- **Held-name research refresh**
-  - Tiny current-search check before the main holding loop.
-  - Tests one named qualitative thesis driver or falsifier.
-  - Can require a normal full pass.
   - Cannot change a verdict itself.
 
 - **Pre-profit overlay**
@@ -423,85 +419,26 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - No cards selected.
   - Analyze every gradable holding.
 
-- **Selective run — initial list**
-  - User-selected holdings.
-  - Every new holding.
-  - Every holding with no prior verdict to carry.
-
-- **Selective run — automatic safety additions**
-  - Holding with an attention flag.
-    - The quick check confirmed a problem — a fired falsifier or trigger, a newly-failing dead-money read, or a changed band relation — so the carried verdict is re-analyzed instead of trusted.
-  - Holding whose Quick-check family is `unknown`.
-    - A required signal family couldn't be checked (retrieval failed and no cache proved it current), so the sweep can't vouch for the carried verdict and refuses to let it stand on silence.
-  - Holding whose long/short side reversed.
-    - A long-to-short or short-to-long flip inverts the thesis by construction, so no long-side verdict can carry across it and the position re-enters as what it now is.
-  - Holding with an unexamined evidence event.
-    - New material information the current verdict never saw (earnings, a material filing, or a large estimate revision) landed, and the ledger's anticipated conditions can't catch what nobody anticipated.
-  - Stale holding carrying a trim or sell-all action.
-    - An over-age exit can't be safely softened (weakening risk-reducing advice on stale evidence raises risk) nor left standing as current advice for an irreversible act, so re-analysis is the only honest resolution.
-  - Holding whose carried verdict predates `portfolio-v9` — the one-time migration force-include.
-    - Its action was authored under the retired whole-book contract and may still encode portfolio context the tunnel-vision ruling removed, so one forced pass restamps it and the check never fires again.
-  - Holding whose held-name refresh finds a material update (designed — research slice).
-    - A source-backed material change to a named thesis driver or falsifier pulls the otherwise-carried holding in for a full pass.
-
-- **Holdings outside the final work list**
-  - Keep their previous intrinsic verdict, action, and thesis ledger.
-  - Display the older analysis vintage.
-  - A stale add action is automatically weakened to Hold and marked rule-demoted.
-  - Nothing else may move a carried action without fresh analysis.
-
-- **Research reuse (seed and merge — never a skip)**
-  - The research loop and distillation run in full every run for every analyzed holding.
-  - There is no lighter-vs-heavier case, and Steps 6c and 6d are never skipped.
-  - If non-expired (< ~4 weeks) cached research exists for the holding, it is used two ways: to seed this run's loop and to merge into the results.
-  - The seed is assembled deterministically — no extra model call — and injected per research topic (only claims within their own ~4-week vintage, bounded by a per-topic budget), so each topic sees its own prior distilled object and ledger conditions and the loop hunts what changed.
-  - The merge happens per topic where that topic is first reduced (the tier-1 call, or the single small-run call): fresh findings supersede cached ones on conflict, sources are de-duplicated across topics at the reduce, a cached claim past ~4 weeks by its own vintage expires, and interpretation still reads one compact combined object.
-  - If no non-expired cache exists, the loop simply runs cold.
-
-- **Held-name refresh lane**
-  - Runs before the per-holding loop.
-  - Maximum: two holdings per run.
-  - Looks only at holdings that would otherwise stay carried, judged from information available before Step 6b.
-  - Requires a named qualitative driver or falsifier in the thesis ledger.
-  - Checks one ledger item per selected holding.
-  - Priority:
-    - Nearest dated catalyst or condition window.
-    - Closest prior result to an Add or exit boundary.
-    - Oldest supporting research.
-    - Highest priced-in expectations with uncertain execution.
-    - Ticker as the final tie-break.
-  - Retrieves:
-    - Current web evidence.
-    - Source dates.
-    - Evidence tied to the exact ledger item.
-  - Model returns:
-    - `material_update`.
-    - `no_material_change`.
-    - `unscorable`.
-  - App validates:
-    - Correct company.
-    - Correct ledger item.
-    - Source and publication date.
-  - `material_update` result:
-    - Force-includes the otherwise-carried holding into the selective run.
-    - Sends the evidence into the normal full research pass.
-  - Other results:
-    - Change nothing.
-  - The lane cannot:
-    - Confirm a falsifier.
-    - Rewrite the thesis ledger.
-    - Change conviction.
-    - Change a target.
-    - Choose an action.
-  - Failed search:
-    - Record `unscorable`.
-    - Keep the prior state.
-    - Do not update the full-research date.
-  - Later technology pre-flag:
-    - Step 6b may still require fresh research.
-    - Mark the earlier lane slot `late-invalidated`.
-    - Keep its evidence for the full research pass.
-    - Do not refill the two-holding cap after the loop starts.
+- **Selective run** (analyzes strictly the selection — ruled 2026-08-16, `docs/verification/2026-08-16-selective-badges-ruling.md`)
+  - **Work list**
+    - The user-selected holdings, and nothing else.
+    - No automatic additions — the former safety additions now surface as card badges (below), never a forced re-analysis.
+  - **Carried holdings** (unselected, with a prior verdict)
+    - Keep their previous intrinsic verdict, action, and thesis ledger, vintage-stamped.
+    - Display the older analysis vintage.
+    - A stale (over-age) add action is automatically weakened to Hold and marked rule-demoted.
+    - A stale exit action and a stale hold both stand as-is, behind the stale-vintage badge.
+    - Nothing else may move a carried action without fresh analysis.
+  - **Not-analyzed holdings** (unselected, no prior verdict)
+    - A new or never-analyzed holding is left not analyzed — no verdict is written this run.
+    - It renders as a "run to grade" placeholder card, selectable so the next selective run can grade it (a full run grades the whole book).
+  - **Badges** (the quick check still sweeps the carried tail, but only to inform — it never re-analyzes)
+    - Attention flag — the quick check confirmed a problem (a fired falsifier or trigger, a newly-failing dead-money read, or a changed band relation).
+    - Unknown family — a required signal family couldn't be checked (a degraded-sweep note), so the sweep can't vouch for the carried verdict.
+    - Unexamined evidence event — new material information the verdict never saw (earnings, a material filing, or a large estimate revision).
+    - Side reversed — a long/short flip since the verdict; the carried thesis is for the opposite position (the verdict is marked `side_reversed`).
+    - Stale vintage — the carried verdict is older than the ~4-week window.
+    - Each is a non-blocking badge on the card; the user acts on it by selecting the holding or running a full analysis, so an urgent single-holding run is never blocked by the rest of the book.
 
 - **Resume behavior (designed, not built)**
   - Resume uses the interrupted run’s pinned holdings and context.
@@ -868,11 +805,18 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - Every run to date has graded on the deterministic financials and the house view.
   - The loop below is the research slice's design.
 
+- **Always runs (seed and merge, never a skip)**
+  - The research loop and distillation run in full every run for every analyzed holding.
+  - There is no lighter-vs-heavier case, and Steps 6c and 6d are never skipped.
+
 - **Seeded when (Layer 2 cache)**
   - Non-expired (< ~4 weeks) cached distilled findings exist for this holding — one **per-topic** object apiece, the layer the prior run persisted.
   - The orchestrator injects **each topic's own prior object** — its tier-1 distillation, or its topic-keyed group from a single-pass run — plus that topic's ledger conditions into the topic's opening pass, deterministically and with no extra model call, filtered to claims still within their own ~4-week vintage and bounded by a per-topic seed budget.
   - Seeding from the per-topic distillation, not a slice of the cross-topic combined object, starts each loop with richer, un-re-compressed topic detail; the topic is the storage partition, so the seed is a lookup rather than a per-claim re-assignment.
   - The loop then targets what changed rather than rebuilding the baseline; a cached prior never causes it to be skipped.
+
+- **Cold when (no Layer 2 cache)**
+  - If no non-expired cache exists, the loop simply runs cold.
 
 - **Data retrieved**
   - Current web sources.
@@ -1327,8 +1271,6 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
   - Portfolio roll-up.
   - Sources and timestamps.
   - Distilled research and per-topic seeded-vs-cold decisions (each with its seeding object's vintage).
-  - Held-name refresh eligibility, priority, result, and validation (designed — research slice).
-  - Whether the refresh forced a normal full pass (designed — research slice).
   - Engine calculations and input deltas.
   - Accepted and rejected research assumptions (designed — research loop).
   - Accepted and rejected pre-profit operating observations.
