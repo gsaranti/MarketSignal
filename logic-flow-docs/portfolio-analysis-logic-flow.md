@@ -552,8 +552,23 @@ The designed embedding-based recall of this holding’s prior analysis; as-built
   - No model or web research.
 
 - **How the step runs**
-  - The deterministic engine grades the holding on its resolved vehicle route — a priced stock, a priced equity fund, or a role-risk-only fund — and nothing in the step calls a model or the web.
+  - The deterministic engine analyzes the holding on its resolved vehicle route — a priced stock, a priced equity fund, or a role-risk-only fund — grading the two priced routes and producing a role / risk readout (no grade) for the role-risk-only fund; nothing in the step calls a model or the web.
   - The evidence floor is not a closing stage: its gates fire inline as the values below are computed, and the first failure short-circuits the holding to `insufficient-evidence`, skipping 6c–6f; the gates are gathered under Evidence floor at the end of the step.
+
+- **Order of computation (priced stock)** — computed in sequence, several reads feeding the next:
+  - **Pre-profit overlay** (pre-profit stocks only) — financing / execution health, whose rule consequences later **cap the engine arm's conviction and narrow its action set**.
+  - **Sub-scores** (quality, valuation, risk) → roll up into the letter; **momentum / market setup** is computed alongside them, live, as context outside the letter.
+  - **Scenario targets** (bear / base / bull; one-month and twelve-month) → feed the return hurdle.
+  - **Letter grade** — the weighted roll-up of the sub-scores.
+  - **Risk tier** (High / Medium / Low) → sets the return-hurdle rate.
+  - **Return hurdle** (capital efficiency) — risk tier + scenario returns → the dead-money read.
+  - **Continuity and ledger checks** — the prior ledger's conditions evaluated against the new engine values.
+  - **Designed reads (not computed yet)** — narrative-vs-reality, implied expectations, forensic checks, and the technology-event pre-flag would ride as evidence once built; they are not part of the live order.
+
+- **The through-line**
+  - The load-bearing dependencies: **sub-scores → letter**, **risk tier → hurdle**, **targets → hurdle**, **overlay → conviction cap + action-set narrowing**.
+  - A **fund** swaps this stock spine for the equity-fund path below; a **role-risk-only** fund computes no grade, target, tier, or hurdle.
+  - 6b reaches no verdict of its own: its reads feed each other (the dependencies above) to produce the **deterministic financial analysis** — letter, targets, tier, hurdle, overlay, ledger state — which the interpretation call reasons over at 6f (and whose targets the outcome scoreboard later scores). The evidence floor, gathered at the step's end, is the one gate that acts within the step.
 
 ### Pre-profit overlay (stocks, computed first)
 
@@ -572,7 +587,7 @@ Computed before the grade for every stock and persisting even when the stock doe
   - Quarterly revenue and gross profit.
   - Diluted share count.
 
-- **Engine calculations**
+- **Engine calculations** (all persist on the overlay record)
   - Liquid resources:
     - Cash plus short-term investments.
   - TTM cash burn:
@@ -601,10 +616,10 @@ Computed before the grade for every stock and persisting even when the stock doe
   - Guidance ranges and matching actuals.
   - Unit economics.
 
-- **Output at Step 6b**
-  - Complete overlay as-built; provisional only under the designed Step-6e research merge.
-  - Statement-derived values only.
-  - Research observations are not guessed.
+- **What the overlay emits** (the whole record persists — none of the calculations above are scratch)
+  - The complete overlay record persists for **every priced stock** — the statement inputs above, the **financing state** (one of the five values), the execution / economics reads, the matched **rule consequences** that bind the engine arm (conviction ceiling and action-set narrowing, detailed at Step 6e), plus its eligibility result, unscorable gaps, and (dormant until research) observation history — carried on the holding's audit row so the period history survives run retention.
+  - Only an **eligible** overlay reaches the Step-6f interpretation prompt, and even then the renderer exposes a **selected subset** — the financing / execution states, the matched rules, and the figures behind them (runway, liquid resources, burn) — as engine-arm context, not the entire record.
+  - As-built the overlay is **statement-derived only**; the Step-6e research-observation merge that would finalize the execution legs is dormant, and no research observation is guessed.
 
 ### Sub-scores (stocks)
 
@@ -833,11 +848,23 @@ The inline gates referenced above, gathered — with each branch's requirements 
   - Missing optional research or positioning lowers confidence.
   - Weak web coverage alone does not force abstention.
 
-- **Output**
-  - Deterministic financial analysis.
-  - Grade and provisional scenario targets where applicable.
-  - Risk tier, hurdle state, and forensic flags (forensic designed).
-  - Input delta and evidence-floor result.
+- **Output — the values that leave the step**
+  - **The deterministic financial analysis** (the engine's computed reads the 6f verdict is built on):
+    - The three **sub-scores** and the **letter grade** (a low-confidence marker when a sub-score was imputed).
+    - The **scenario price targets** — bear / base / bull, one-month and twelve-month, each with its exposed **methodology** — plus their **provenance** (anchor form, driver rung, flat / clamp / dispersion flags), or a `no-admissible-driver` abstention.
+    - The **risk tier**, and the **hurdle read**: state (clears / fails / indeterminate), rate, the twelve-month scenario **total returns** it tested, and the new-money admission flag.
+    - For a pre-profit stock, the complete **pre-profit overlay** (statement inputs, financing / execution states, and the rule consequences binding the arm).
+    - For a fund, the **fund grade** and **fund risk tier** (priced); or, for a role-risk-only fund, the engine-computed **role-risk readout** — class label, exposure tilt, expense ratio, numeric observable risk (annualized volatility), structural flag, and evidence gaps (the model authors the role prose on top).
+    - Of these, the two-arm **engine arm** — the fields **carried in both arms** (authored deterministically here and by the model at 6f) — is just the **sub-scores / letter** and the **scenario targets** (plus the outlook / conviction / action stand-ins assembled later); of those, only the **targets and outlook** are scored against realized outcomes today — and only the target bands additionally get an engine-vs-model head-to-head — while sub-scores, conviction, and action are carried but unscored. The risk tier, hurdle read, and overlay are shared deterministic evidence, and a **role-risk-only** fund is a separate, non-two-arm branch.
+  - **Supporting reads emitted as 6f evidence** (none changes the letter):
+    - The **computed metrics** — net / gross margin, revenue growth, debt-to-equity, volatility, trailing return, P/E, P/S, P/B.
+    - **Momentum / market setup**; for a fund, **expense drag** and **exposure tilt** (sector / country weights).
+    - The **ledger evaluation** — the prior ledger's conditions' tripped / fired state.
+    - The **input delta** — position change, house-view age, and prior-run values carried for comparison.
+    - Designed, not yet emitted: forensic flags, narrative-vs-reality, implied expectations, and the designed conviction-context signals.
+  - **Control result**: the **data-gap manifest** and the **evidence-floor outcome** — pass, or `insufficient-evidence` with named reasons (which short-circuits 6c–6f).
+  - **Persisted working reads (not scratch)**: the engine keeps its intermediates too — the overlay's statement inputs (liquid resources, burn, runway, capex intensity, dilution, margin direction) ride the audit row, and the settled per-share drivers, spread / raw-multiple percentiles, spot, and forward-dividend leg persist as the **quick-check basis** the between-run engine paths re-anchor against.
+  - **Assembled later, not here**: the engine arm's mechanical **stand-in outlook / conviction / action** are built at verdict time (after interpretation) from these 6b values — they are not part of the Step-6b output.
 
 ---
 
