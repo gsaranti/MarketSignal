@@ -315,7 +315,7 @@
   - A long US-listed stock can use the full pipeline.
 
 - **Fund rule**
-  - Final strategy routing happens after `etf/info` arrives in Step 6a.
+  - Final strategy routing runs in the fund engine at Step 6b, once `etf/info` has arrived at Step 6a.
   - Supported US equity fund → possible priced verdict.
   - Structurally unpriceable fund → role-risk-only verdict.
 
@@ -502,7 +502,7 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - No FMP resolution or non-US primary listing → not rated.
   - Conflicting issuer identities → insufficient evidence.
 
-- **Fund routing**
+- **Fund routing (applied by the fund engine at Step 6b)**
   - US equity exposure with usable weights → priced-fund path.
   - Bond or commodity fund → role-risk-only path.
   - International fund below the US-exposure guard → role-risk-only path.
@@ -524,7 +524,7 @@ Each completed holding is designed to checkpoint separately; as-built only the b
 
 - **Output**
   - Complete stock or fund dossier.
-  - Final vehicle route.
+  - Final route for a stock; a fund's priced-vs-role-risk route is set at Step 6b.
 
 ---
 
@@ -534,153 +534,13 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - Uses the dossier and shared context.
   - No model or web research.
 
-### Stock grade calculations
+- **How the step runs**
+  - The deterministic engine grades the holding on its resolved vehicle route — a priced stock, a priced equity fund, or a role-risk-only fund — and nothing in the step calls a model or the web.
+  - The evidence floor is not a closing stage: its gates fire inline as the values below are computed, and the first failure short-circuits the holding to `insufficient-evidence`, skipping 6c–6f; the gates are gathered under Evidence floor at the end of the step.
 
-- **Quality score**
-  - Profitability and cash conversion.
-  - Return on invested capital versus capital cost.
-  - Gross profitability and free-cash-flow conversion.
-  - Compared with sector bands and the company’s history.
+### Pre-profit overlay (stocks, computed first)
 
-- **Valuation score**
-  - Uses suitable valuation ratios.
-  - Metric choice changes for banks, REITs, cyclicals, and other special cases.
-  - Compared with sector bands and the company’s history.
-
-- **Risk score**
-  - Realized volatility and leverage (debt/equity).
-  - Drawdown enters the risk tier, not this score; no liquidity series is on this job's surface.
-  - Higher score means safer.
-
-- **Designed letter weighting**
-  - Quality: 40%.
-  - Valuation: 30%.
-  - Risk: 30%.
-  - Momentum stays outside the letter.
-
-- **Letter cutoffs**
-  - A: 85 or higher.
-  - B: 70–84.
-  - C: 55–69.
-  - D: 40–54.
-  - F: below 40.
-
-- **Missing sub-score handling**
-  - Missing score receives neutral 50.
-  - At least two real sub-scores are still required.
-  - A grade using an imputed score receives a low-confidence marker.
-
-### Supported equity-fund calculations
-
-- **Expense drag**
-  - The expense ratio rides as evidence for the interpretation call.
-  - No return figure is expense-adjusted deterministically.
-
-- **Exposure tilt**
-  - Use sector and country weights.
-  - The house-view comparison happens at the interpretation call, not here.
-
-- **Valuation calculation**
-  - Read each sector’s earnings yield from its P/E.
-  - Weight those yields by the fund’s current sector weights.
-  - Ignore sectors without a usable P/E.
-  - Renormalize over the covered fund weight.
-  - Report the uncovered weight separately.
-  - Require at least 70% P/E-usable weight.
-  - Compare today’s constant-mix valuation with its historical version.
-
-- **Fund grade**
-  - Real valuation score.
-  - Real risk score.
-  - Structurally absent quality axis receives neutral 50.
-  - The neutral value is not presented as fund quality.
-
-- **Open design item**
-  - The shipped flat-driver form (spot × composite yield, flat across scenarios) is the settled stopgap.
-  - A scenario-differentiated priced-fund target formula is not yet designed.
-  - It must be settled before the fund-depth slice is implemented.
-
-### Scenario-target calculation for priced stocks
-
-- **Choose the driver**
-  - Positive consensus forward EPS when available.
-  - Otherwise consensus forward revenue per share.
-  - No usable driver → `no-admissible-driver` evidence gap.
-
-- **Build bear, base, and bull driver cases**
-  - Use low, middle, and high consensus values.
-  - A missing or half-published spread holds both legs at the mid and records a flat driver.
-  - Revision-dispersion widening is designed, waiting on the revision feed.
-  - Clamp extreme growth assumptions.
-
-- **Calculate valuation multiples**
-  - Driver yield means the per-share driver divided by the stock price.
-  - Review about three years of historical driver yields.
-  - Compare each yield with the same date’s `DGS10` rate.
-  - Form bear, base, and bull spread percentiles.
-  - Re-anchor them using today’s `DGS10`.
-  - Use recorded raw-multiple fallbacks when history is insufficient.
-  - Repair any crossed bear/base/bull prices and log it.
-
-- **Calculate returns**
-  - Driver × multiple → scenario price target.
-  - Add forward dividends for twelve-month total return.
-  - Derive the one-month price target from the twelve-month price-return leg.
-  - Keep one-month and twelve-month targets as rolling windows.
-
-### Risk-tier calculation
-
-- **Priced stock — High risk when any major high-risk condition fires**
-  - Small company.
-  - Unprofitable.
-  - High volatility or drawdown.
-  - High leverage.
-
-- **Priced stock — Low risk when all low-risk conditions hold**
-  - Large company.
-  - Profitable.
-  - Lower volatility and leverage.
-
-- **Otherwise**
-  - Medium risk.
-  - Wholly missing tier inputs also produce Medium with a gap flag.
-  - The canonical rule's liquidity legs are not on this job's data surface and never fire.
-
-- **Priced equity fund**
-  - High for leveraged/inverse structure, high volatility, or deep drawdown.
-  - Low for low volatility and no structural flag.
-  - Otherwise Medium.
-
-- **Role-risk-only fund**
-  - No risk tier.
-  - Carries an observable risk description instead.
-
-### Other deterministic reads
-
-- **Conviction context**
-  - Estimate and rating changes.
-  - Earnings surprises.
-  - Price momentum and market setup.
-  - Insider, congressional, short-interest, and options activity.
-  - These do not change the letter directly.
-
-- **Narrative versus reality**
-  - Compare multiple expansion with business or estimate improvement.
-  - Thin analyst coverage uses company operating results instead.
-
-- **Implied expectations**
-  - Work backward from the current price.
-  - Estimate the growth or margin range already priced in.
-  - Used as context, not a gate.
-
-- **Forensic checks**
-  - Altman Z and Piotroski weakness.
-  - Profit not supported by operating cash flow.
-  - Receivables or inventory outrunning revenue.
-  - Restatement or auditor change from SEC filings.
-  - Fraud may arrive later from validated primary-source research.
-
-### Pre-profit execution and financing overlay
+Computed before the grade for every stock and persisting even when the stock does not enter the overlay or later abstains. As-built the overlay — its statement states and the rule consequences that bind the engine arm — is produced here in one pass; the design's later research-observation merge (Step 6e) is dormant while research is stubbed.
 
 - **Who enters**
   - Priced stock with non-positive TTM operating income.
@@ -725,11 +585,105 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - Unit economics.
 
 - **Output at Step 6b**
-  - Provisional overlay.
+  - Complete overlay as-built; provisional only under the designed Step-6e research merge.
   - Statement-derived values only.
   - Research observations are not guessed.
 
-### Capital-efficiency calculation
+### Sub-scores (stocks)
+
+The three letter inputs. As-built each is a fixed-band score with no sector-relative or own-history normalization; the richer form — sector-adjusted bands, the name's own history, and the value-creation reads below — lands with the full grade slice (designed, `docs/portfolio-analysis.md` §Starting parameters).
+
+- **Quality score**
+  - As-built: net margin and gross margin, each scored over a fixed band.
+  - Return on invested capital versus capital cost — designed.
+  - Gross profitability and free-cash-flow conversion — designed.
+  - Sector-adjusted bands and the company’s history — designed.
+
+- **Valuation score**
+  - As-built: P/E, P/S, and P/B, each over a fixed band (a negative P/E scores low, not off-scale).
+  - Sector-appropriate metric selection for banks, REITs, cyclicals, and other special cases — designed.
+  - Sector-adjusted bands and the company’s history — designed.
+
+- **Risk score**
+  - Realized volatility and leverage (debt/equity), each over a fixed band.
+  - Drawdown enters the risk tier, not this score; no liquidity series is on this job's surface.
+  - Higher score means safer.
+
+### Scenario targets (priced stocks)
+
+Computed next; a stock with no admissible driver abstains here, before the letter is finalized.
+
+- **Choose the driver**
+  - Positive consensus forward EPS when available.
+  - Otherwise consensus forward revenue per share.
+  - No usable driver → `no-admissible-driver` evidence gap.
+
+- **Build bear, base, and bull driver cases**
+  - Use low, middle, and high consensus values.
+  - A missing or half-published spread holds both legs at the mid and records a flat driver.
+  - Revision-dispersion widening is designed, waiting on the revision feed.
+  - Clamp extreme growth assumptions.
+
+- **Calculate valuation multiples**
+  - Driver yield means the per-share driver divided by the stock price.
+  - Review about three years of historical driver yields.
+  - Compare each yield with the same date’s `DGS10` rate.
+  - Form bear, base, and bull spread percentiles.
+  - Re-anchor them using today’s `DGS10`.
+  - Use recorded raw-multiple fallbacks when history is insufficient.
+  - Repair any crossed bear/base/bull prices and log it.
+
+- **Calculate returns**
+  - Driver × multiple → scenario price target.
+  - Add forward dividends for twelve-month total return.
+  - Derive the one-month price target from the twelve-month price-return leg.
+  - Keep one-month and twelve-month targets as rolling windows.
+
+### Letter grade (stocks)
+
+The sub-scores roll up here, once the scenario-target stage above has cleared its floor gate.
+
+- **Letter weighting**
+  - Quality: 40%.
+  - Valuation: 30%.
+  - Risk: 30%.
+  - Momentum stays outside the letter.
+
+- **Letter cutoffs**
+  - A: 85 or higher.
+  - B: 70–84.
+  - C: 55–69.
+  - D: 40–54.
+  - F: below 40.
+
+- **Missing sub-score handling**
+  - Missing score receives neutral 50.
+  - At least two real sub-scores are still required.
+  - A grade using an imputed score receives a low-confidence marker.
+
+### Risk tier (priced stock)
+
+Assigned after the grade, then feeding the return hurdle below.
+
+- **Priced stock — High risk when any major high-risk condition fires**
+  - Small company.
+  - Unprofitable.
+  - High volatility or drawdown.
+  - High leverage.
+
+- **Priced stock — Low risk when all low-risk conditions hold**
+  - Large company.
+  - Profitable.
+  - Lower volatility and leverage.
+
+- **Otherwise**
+  - Medium risk.
+  - Wholly missing tier inputs also produce Medium with a gap flag.
+  - The canonical rule's liquidity legs are not on this job's data surface and never fire.
+
+### Capital efficiency — the return hurdle (stocks)
+
+Uses the risk tier and the scenario total returns.
 
 - **Return hurdle**
   - Low risk: `DGS2 + 3 percentage points`.
@@ -747,7 +701,50 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - New money uses a stricter point test.
   - Base-case total return must clear before Add is allowed.
 
-### Continuity calculations
+### The equity-fund path
+
+The alternative branch to the stock spine above; the fund engine makes the final priced-fund vs role-risk-only classification here in Step 6b. A role-risk-only fund takes no grade, target, or risk tier.
+
+- **Expense drag**
+  - The expense ratio rides as evidence for the interpretation call.
+  - No return figure is expense-adjusted deterministically.
+
+- **Exposure tilt**
+  - Use sector and country weights.
+  - The house-view comparison happens at the interpretation call, not here.
+
+- **Valuation calculation**
+  - Read each sector’s earnings yield from its P/E.
+  - Weight those yields by the fund’s current sector weights.
+  - Ignore sectors without a usable P/E.
+  - Renormalize over the covered fund weight.
+  - Report the uncovered weight separately.
+  - Require at least 70% P/E-usable weight.
+  - Compare today’s constant-mix valuation with its historical version.
+
+- **Fund grade**
+  - Real valuation score.
+  - Real risk score.
+  - Structurally absent quality axis receives neutral 50.
+  - The neutral value is not presented as fund quality.
+
+- **Open design item**
+  - The shipped flat-driver form (spot × composite yield, flat across scenarios) is the settled stopgap.
+  - A scenario-differentiated priced-fund target formula is not yet designed.
+  - It must be settled before the fund-depth slice is implemented.
+
+- **Priced equity fund — risk tier**
+  - High for leveraged/inverse structure, high volatility, or deep drawdown.
+  - Low for low volatility and no structural flag.
+  - Otherwise Medium.
+
+- **Role-risk-only fund — risk tier**
+  - No risk tier.
+  - Carries an observable risk description instead.
+
+### Continuity and ledger checks
+
+After the branch's engine values are set, the prior ledger's conditions are evaluated against them (the ledger checks). The input delta's pieces — position change, prior values, house-view age — already arrived from Steps 4–5 and the dossier; its engine-computed metric comparison is designed, not built.
 
 - **Input delta**
   - Position change and house-view age.
@@ -765,7 +762,36 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - Large unexplained relative move adds a research topic.
   - It does not claim what caused the move.
 
-### Evidence-floor check
+### Other deterministic reads
+
+Additional stock reads that ride into the interpretation call as evidence; none changes the letter directly, and most are still designed.
+
+- **Conviction context**
+  - Estimate revisions and rating changes — analyst estimates are already pulled (the target driver), but the revision signal is designed; rating history is not yet pulled.
+  - Earnings surprises — designed.
+  - Price momentum and market setup — live.
+  - Insider, congressional, and short-interest activity — designed, not yet pulled; options activity is live.
+  - These do not change the letter directly.
+
+- **Narrative versus reality (designed, not built)**
+  - Compare multiple expansion with business or estimate improvement.
+  - Thin analyst coverage uses company operating results instead.
+
+- **Implied expectations (designed, not built)**
+  - Work backward from the current price.
+  - Estimate the growth or margin range already priced in.
+  - Used as context, not a gate.
+
+- **Forensic checks (designed, not built)**
+  - Altman Z and Piotroski weakness.
+  - Profit not supported by operating cash flow.
+  - Receivables or inventory outrunning revenue.
+  - Restatement or auditor change from SEC filings — the hard-forensic producer.
+  - Fraud may arrive later from validated primary-source research (research lane).
+
+### Evidence floor
+
+The inline gates referenced above, gathered — with each branch's requirements and the short-circuit behavior.
 
 - **Stock requires**
   - Current price.
@@ -793,7 +819,7 @@ Each completed holding is designed to checkpoint separately; as-built only the b
 - **Output**
   - Deterministic financial analysis.
   - Grade and provisional scenario targets where applicable.
-  - Risk tier, hurdle state, and forensic flags.
+  - Risk tier, hurdle state, and forensic flags (forensic designed).
   - Input delta and evidence-floor result.
 
 ---
@@ -804,6 +830,10 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - No web research runs today; a single research-deferred note is recorded.
   - Every run to date has graded on the deterministic financials and the house view.
   - The loop below is the research slice's design.
+
+### How the stage runs
+
+For an analyzed holding the research loop and distillation always run and are never skipped — a recent cache only seeds them, it never replaces them.
 
 - **Always runs (seed and merge, never a skip)**
   - The research loop and distillation run in full every run for every analyzed holding.
@@ -818,12 +848,9 @@ Each completed holding is designed to checkpoint separately; as-built only the b
 - **Cold when (no Layer 2 cache)**
   - If no non-expired cache exists, the loop simply runs cold.
 
-- **Data retrieved**
-  - Current web sources.
-  - SearXNG first.
-  - Tavily if SearXNG fails.
-  - Dossier facts and company-news seeds.
-  - Previously-fetched pages under about four weeks old come from the document cache (Layer 1) instead of the network, carrying their original retrieval timestamp; new URLs are fetched live.
+### Build the agenda (the topics)
+
+The orchestrator assembles the topic list deterministically; the reasoner works it, never authors it. A stock gets the company topics (plus the conditional topics when their trigger fires); a fund swaps in the fund-flavored topics instead.
 
 - **Stock research topics**
   - Competitive and business position.
@@ -870,6 +897,17 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - Whether the exposure is better held directly.
   - Closed-end-fund discount and distribution coverage.
 
+### Work each topic — the research loop
+
+Each topic runs as its own isolated conversation over a clean context — the dossier facts, that topic's questions, and any seed — and the orchestrator owns every search and fetch, pulling from the sources below and stopping at the holding's budget.
+
+- **Data retrieved**
+  - Current web sources.
+  - SearXNG first.
+  - Tavily if SearXNG fails.
+  - Dossier facts, plus the company-news seeds — the symbol-scoped FMP `news/stock` headlines pulled into the dossier at Step 6a — which orient the topics as leads (and can trigger the technology-event topic), never as evidence: a seed's claim counts only once the model deep-reads its underlying source.
+  - Previously-fetched pages under about four weeks old come from the document cache (Layer 1) instead of the network, carrying their original retrieval timestamp; new URLs are fetched live.
+
 - **Research loop**
   - One isolated model conversation per topic.
   - One initial pass plus up to two follow-up passes.
@@ -885,6 +923,8 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - Which forward facts may affect targets.
   - Whether a research-only leading indicator exists.
   - Whether primary-source evidence shows fraud.
+
+### Failure and output
 
 - **Failure logic**
   - Web failure reduces evidence.
@@ -967,7 +1007,7 @@ Each completed holding is designed to checkpoint separately; as-built only the b
 
 - **As-built**
   - The research-assumption legs below are designed; they land with the research loop.
-  - Today the step's work is finalizing the pre-profit overlay at the engine seam.
+  - The pre-profit overlay is already complete from Step 6b (its statement-driven rule consequences included); the observation-driven refinement here waits on the research loop.
 
 - **Data retrieved**
   - No new data.
