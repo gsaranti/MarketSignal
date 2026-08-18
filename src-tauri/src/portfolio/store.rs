@@ -31,12 +31,10 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id      TEXT NOT NULL UNIQUE,
             created_at  TEXT NOT NULL,
-            run_json    TEXT NOT NULL,
-            constructed INTEGER NOT NULL DEFAULT 1
+            run_json    TEXT NOT NULL
         )",
         [],
     )?;
-    migrate_constructed_column(conn)?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS holdings_pulls (
             id            INTEGER PRIMARY KEY CHECK (id = 1),
@@ -89,46 +87,6 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // Cleanup migration: `^SPX` was the market benchmark's Stooq-era cache key
-    // (uppercased at the merge seam); the 2026-08-12 removal renamed the
-    // benchmark to FMP's `^GSPC`, so rows under the dead key can never be read
-    // again. Idempotent — zero rows on every store that never cached it.
-    conn.execute("DELETE FROM price_bars WHERE symbol = '^SPX'", [])?;
-    Ok(())
-}
-
-/// One-time migration: a store created before the `constructed` column gains it,
-/// backfilled from each blob's own truth ([`PortfolioRun::has_constructed_book`])
-/// rather than the column default — a degraded row must never migrate to
-/// constructed. Idempotent via the shared [`crate::storage::column_exists`]
-/// guard, and the ALTER + backfill commit as **one transaction** (SQLite DDL is
-/// transactional): an interruption between them would otherwise strand
-/// pre-marker degraded rows at the column default forever, since the guard
-/// makes every later startup a no-op.
-fn migrate_constructed_column(conn: &Connection) -> Result<()> {
-    if crate::storage::column_exists(conn, "portfolio_runs", "constructed")? {
-        return Ok(());
-    }
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "ALTER TABLE portfolio_runs ADD COLUMN constructed INTEGER NOT NULL DEFAULT 1",
-        [],
-    )?;
-    let rows: Vec<(i64, String)> = tx
-        .prepare("SELECT id, run_json FROM portfolio_runs")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<std::result::Result<_, _>>()?;
-    for (id, json) in rows {
-        // An unparseable blob keeps the default (constructed): latest_run's
-        // loud-skip decode still refuses to serve it as a baseline.
-        if let Ok(run) = serde_json::from_str::<PortfolioRun>(&json) {
-            tx.execute(
-                "UPDATE portfolio_runs SET constructed = ?1 WHERE id = ?2",
-                params![run.has_constructed_book(), id],
-            )?;
-        }
-    }
-    tx.commit()?;
     Ok(())
 }
 
@@ -390,21 +348,20 @@ pub fn latest_pull(conn: &Connection) -> Result<Option<HoldingsPull>> {
 
 /// Insert one completed run. The whole [`PortfolioRun`] is serialized into
 /// `run_json`; `run_id` and `created_at` are projected into columns for listing and
-/// ordering, and `constructed` is mirrored into its column so [`latest_run`] can
-/// filter in SQL without parsing a single blob. The unique `run_id` makes a
-/// re-insert of the same run a clean error rather than a silent duplicate.
+/// ordering. The unique `run_id` makes a re-insert of the same run a clean error
+/// rather than a silent duplicate.
 pub fn insert_run(conn: &Connection, run: &PortfolioRun) -> Result<()> {
     let run_json = serde_json::to_string(run)?;
     conn.execute(
-        "INSERT INTO portfolio_runs (run_id, created_at, run_json, constructed)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![run.run_id, run.created_at, run_json, run.has_constructed_book()],
+        "INSERT INTO portfolio_runs (run_id, created_at, run_json)
+         VALUES (?1, ?2, ?3)",
+        params![run.run_id, run.created_at, run_json],
     )?;
     Ok(())
 }
 
-/// The most recent run **with a constructed book**, or `None` before any exists.
-/// The prior run's verdicts feed the next run's continuity check
+/// The most recent run, or `None` before any exists. The prior run's verdicts
+/// feed the next run's continuity check
 /// (`docs/portfolio-analysis.md` §Continuity and isolation). Newest-first by
 /// **insertion order** (`id` — monotonic within a store, and preserved across
 /// machines by the portability export's id-order): the production identity of
@@ -413,25 +370,14 @@ pub fn insert_run(conn: &Connection, run: &PortfolioRun) -> Result<()> {
 /// baseline (and the page's refresh) back to the prior run while the
 /// just-persisted one sat invisible. `created_at` stays display data.
 ///
-/// Degraded runs are **excluded** — filtered in SQL on the `constructed` column
-/// ([`insert_run`] mirrors [`PortfolioRun::has_constructed_book`] into it), so
-/// no blob is parsed to decide eligibility — and the next run's diff baseline,
-/// carry vintages, quick-check chaining and the page's latest view all reach
-/// past a construction-failed row to the last run that actually constructed a
-/// book: its pre-merge verdict actions are pre-construction values (leans,
-/// carried actions, role-risk placeholders), which must never feed the next
-/// run's carry as if they were 7b-blessed finals (ruled 2026-08-11,
-/// `docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition).
-///
 /// Decode is **loud-skip**: an unparseable blob logs one stderr warning naming
-/// the row and the walk continues to the next constructed row, instead of
-/// erroring the whole read — the callers fail-soft with `.ok().flatten()`, so
-/// an `Err` here silently became "no prior run" (no diff baseline, no carries,
-/// every episode re-debuting) on the strength of one corrupt row.
+/// the row and the walk continues to the next row, instead of erroring the
+/// whole read — the callers fail-soft with `.ok().flatten()`, so an `Err` here
+/// silently became "no prior run" (no diff baseline, no carries, every episode
+/// re-debuting) on the strength of one corrupt row.
 pub fn latest_run(conn: &Connection) -> Result<Option<PortfolioRun>> {
     let mut stmt = conn.prepare(
         "SELECT run_id, run_json FROM portfolio_runs
-         WHERE constructed = 1
          ORDER BY id DESC",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -439,39 +385,21 @@ pub fn latest_run(conn: &Connection) -> Result<Option<PortfolioRun>> {
     })?;
     for row in rows {
         let (run_id, json) = row?;
-        let Some(run) = decode_run(&run_id, &json) else {
-            continue;
-        };
-        // Belt over the SQL filter: the column is the eligibility
-        // accelerator, the blob is truth. Every write path mirrors the
-        // predicate, so a desynced row means a hand edit or a future
-        // write-path bug — either way it must not hand out a degraded
-        // baseline, so it skips loudly like a corrupt row.
-        if !run.has_constructed_book() {
-            eprintln!(
-                "[portfolio-store] latest_run: skipping {run_id}: the column \
-                 says constructed, the blob says degraded"
-            );
-            continue;
+        if let Some(run) = decode_run(&run_id, &json) {
+            return Ok(Some(run));
         }
-        return Ok(Some(run));
     }
     Ok(None)
 }
 
-/// Decode one retained run blob, **loud-skip** on failure: the
-/// parse-then-resolve pair is single-homed here so every read seam ships a
-/// concrete `constructed` marker, and a corrupt row degrades to one stderr
-/// warning instead of erroring its whole surface — unparseable blobs are a
-/// deliberately-retained store state (the migration and import keep them
-/// under the column default), so one must never blank the runs history or
-/// the diff baseline for its entire retention life.
+/// Decode one retained run blob, **loud-skip** on failure: single-homed here so a
+/// corrupt row degrades to one stderr warning instead of erroring its whole
+/// surface — unparseable blobs are a deliberately-retained store state, so one
+/// must never blank the runs history or the diff baseline for its entire
+/// retention life.
 fn decode_run(run_id: &str, json: &str) -> Option<PortfolioRun> {
     match serde_json::from_str::<PortfolioRun>(json) {
-        Ok(mut run) => {
-            run.resolve_constructed();
-            Some(run)
-        }
+        Ok(run) => Some(run),
         Err(e) => {
             eprintln!("[portfolio-store] skipping unparseable run {run_id}: {e}");
             None
@@ -480,11 +408,8 @@ fn decode_run(run_id: &str, json: &str) -> Option<PortfolioRun> {
 }
 
 /// List the most recent runs, newest first, capped at `limit` — the Portfolio page's
-/// run history. Same insertion-order identity as [`latest_run`], but **without its
-/// degraded-run exclusion**: the history deliberately shows persisted *work*, so a
-/// construction-failed row lists (marked via [`PortfolioRunSummary::constructed`])
-/// even though [`latest_run`] reaches past it. Decode is the same loud-skip
-/// ([`decode_run`]): one corrupt blob costs its own row, never the other
+/// run history. Same insertion-order identity as [`latest_run`]. Decode is the same
+/// loud-skip ([`decode_run`]): one corrupt blob costs its own row, never the other
 /// twenty-nine for its retention life.
 pub fn list_recent_runs(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRun>> {
     let mut stmt = conn.prepare(
@@ -519,16 +444,11 @@ pub struct PortfolioRunSummary {
     pub holdings_count: usize,
     /// Graded verdicts in the run (the roll-up's `graded_count`).
     pub graded_count: usize,
-    /// Whether the run carries a constructed book
-    /// ([`PortfolioRun::has_constructed_book`]) — `false` marks a degraded
-    /// construction-failed row so the sidebar can badge it. Column-backed on
-    /// an unreadable row.
-    pub constructed: bool,
     /// Whether the run's blob decoded. An unreadable row still lists — its
-    /// identity and `constructed` marker are column-backed — so the history
-    /// shows the row exists instead of silently shrinking, and the page's
-    /// empty states can tell an unreadable store from a never-ran one
-    /// (Codex round). The counts above are zero on an unreadable row.
+    /// identity is column-backed — so the history shows the row exists instead
+    /// of silently shrinking, and the page's empty states can tell an unreadable
+    /// store from a never-ran one (Codex round). The counts above are zero on an
+    /// unreadable row.
     pub readable: bool,
 }
 
@@ -537,12 +457,12 @@ pub struct PortfolioRunSummary {
 /// [`prune_runs`], so the list shows exactly the retained window. The counts
 /// come from each stored blob (bounded by the retention cap, so this stays a
 /// handful of local parses); the webview never receives the blobs themselves.
-/// An **unreadable** blob still yields a row — identity and the `constructed`
-/// marker read from the SQL columns, counts zero, `readable: false` — so the
-/// history never silently shrinks over a corrupt row.
+/// An **unreadable** blob still yields a row — identity read from the SQL
+/// columns, counts zero, `readable: false` — so the history never silently
+/// shrinks over a corrupt row.
 pub fn list_run_summaries(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRunSummary>> {
     let mut stmt = conn.prepare(
-        "SELECT run_id, created_at, constructed, run_json FROM portfolio_runs
+        "SELECT run_id, created_at, run_json FROM portfolio_runs
          ORDER BY id DESC
          LIMIT ?1",
     )?;
@@ -550,16 +470,14 @@ pub fn list_run_summaries(conn: &Connection, limit: u32) -> Result<Vec<Portfolio
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
-            row.get::<_, bool>(2)?,
-            row.get::<_, String>(3)?,
+            row.get::<_, String>(2)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (run_id, created_at, col_constructed, json) = row?;
+        let (run_id, created_at, json) = row?;
         out.push(match decode_run(&run_id, &json) {
             Some(run) => PortfolioRunSummary {
-                constructed: run.has_constructed_book(),
                 holdings_count: run.holdings.positions.len(),
                 graded_count: run.roll_up.graded_count,
                 run_id: run.run_id,
@@ -571,7 +489,6 @@ pub fn list_run_summaries(conn: &Connection, limit: u32) -> Result<Vec<Portfolio
                 created_at,
                 holdings_count: 0,
                 graded_count: 0,
-                constructed: col_constructed,
                 readable: false,
             },
         });
@@ -598,28 +515,13 @@ pub fn run_by_id(conn: &Connection, run_id: &str) -> Result<Option<PortfolioRun>
     Ok(json.and_then(|j| decode_run(run_id, &j)))
 }
 
-/// Whether any run row exists at all — degraded included. [`latest_run`] returns
-/// `None` both for a never-ran store and for one retaining only degraded rows;
-/// this is the cheap column read that lets a surface tell the two apart and
-/// refuse honestly (a "no runs yet" message over persisted work misdescribes
-/// the store).
+/// Whether any run row exists at all. [`latest_run`] returns `None` both for a
+/// never-ran store and for one whose only rows are unreadable; this is the cheap
+/// column read that lets a surface tell the two apart and refuse honestly (a "no
+/// runs yet" message over persisted work misdescribes the store).
 pub fn any_runs(conn: &Connection) -> Result<bool> {
     let exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM portfolio_runs)",
-        [],
-        |r| r.get(0),
-    )?;
-    Ok(exists)
-}
-
-/// Whether any constructed-marked row exists at all (a column read). With
-/// [`latest_run`] returning `None`, this splits "every retained run is
-/// degraded" (no constructed rows) from "constructed rows exist but none
-/// decoded" (the loud-skip path over corrupt / desynced rows), so a refusal
-/// can name the true state instead of calling unreadable rows degraded.
-pub fn constructed_rows_exist(conn: &Connection) -> Result<bool> {
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM portfolio_runs WHERE constructed = 1)",
         [],
         |r| r.get(0),
     )?;
@@ -705,8 +607,6 @@ mod tests {
                 side_reversed: false,
             }],
             roll_up: PortfolioRollUp {
-                aggregates: None,
-                construction: None,
                 role_risk_only_count: 0,
                 graded_count: 0,
                 not_rated_count: 1,
@@ -735,9 +635,6 @@ mod tests {
             }],
             rate_prints: None,
             outcome: None,
-            // Deliberately pre-marker: the fixture family also exercises the
-            // decode-time shape fallback; persist-seam runs carry `Some`.
-            constructed: None,
         }
     }
 
@@ -747,11 +644,7 @@ mod tests {
         let run = sample_run("run-1", "2026-06-25T12:00:00Z");
         insert_run(&conn, &run).unwrap();
         let back = latest_run(&conn).unwrap().unwrap();
-        // The store's decode seam resolves a pre-marker blob to a concrete
-        // marker; everything else round-trips bit-exact.
-        let mut expected = run;
-        expected.resolve_constructed();
-        assert_eq!(back, expected, "the whole run round-trips");
+        assert_eq!(back, run, "the whole run round-trips");
     }
 
     #[test]
@@ -782,9 +675,7 @@ mod tests {
             structural_flag: Some(false),
         });
         insert_run(&conn, &run).unwrap();
-        let mut expected = run;
-        expected.resolve_constructed();
-        assert_eq!(latest_run(&conn).unwrap().unwrap(), expected);
+        assert_eq!(latest_run(&conn).unwrap().unwrap(), run);
     }
 
     #[test]
@@ -884,7 +775,6 @@ mod tests {
                     created_at: "2026-07-02T00:00:00Z".into(),
                     holdings_count: 1,
                     graded_count: 0,
-                    constructed: true,
                     readable: true,
                 },
                 PortfolioRunSummary {
@@ -892,7 +782,6 @@ mod tests {
                     created_at: "2026-07-01T00:00:00Z".into(),
                     holdings_count: 1,
                     graded_count: 0,
-                    constructed: true,
                     readable: true,
                 },
             ],
@@ -906,164 +795,32 @@ mod tests {
         assert!(run_by_id(&conn, "run-gone").unwrap().is_none());
     }
 
-    /// The legacy Step 7b failure shape (`docs/verification/2026-08-10-big-run-attempt-1.md`
-    /// §Disposition): 7a ran (an aggregates blob is present), no book was
-    /// constructed. The construction era is retired, so the halves are opaque
-    /// legacy blobs — the shape derivation reads only their presence.
-    fn degraded_run(run_id: &str, created_at: &str) -> PortfolioRun {
-        let mut run = sample_run(run_id, created_at);
-        run.roll_up.aggregates = Some(serde_json::json!({ "spine": [] }));
-        run.roll_up.construction = None;
-        run
-    }
-
-    /// A legacy run whose construction completed — both roll-up halves present.
-    fn constructed_run(run_id: &str, created_at: &str) -> PortfolioRun {
-        let mut run = degraded_run(run_id, created_at);
-        run.roll_up.construction = Some(serde_json::json!({ "risk_posture": "balanced" }));
-        run
-    }
-
-    #[test]
-    fn has_constructed_book_reads_the_step7b_shape() {
-        // Both halves present — constructed.
-        assert!(constructed_run("a", "2026-08-11T00:00:00Z").has_constructed_book());
-        // 7a ran, no book — the degraded Step 7b failure shape.
-        assert!(!degraded_run("b", "2026-08-11T00:00:00Z").has_constructed_book());
-        // A pre-construction-era blob (both halves absent) keeps constructed
-        // status: its actions were final under the pre-7b contract.
-        assert!(sample_run("c", "2026-08-11T00:00:00Z").has_constructed_book());
-    }
-
-    #[test]
-    fn the_persisted_marker_wins_over_the_shape_derivation() {
-        // The marker is authored at the persist seam; the shape derivation is
-        // only the pre-marker decode fallback — an authored marker must win in
-        // both directions.
-        let mut run = constructed_run("a", "2026-08-11T00:00:00Z");
-        run.constructed = Some(false);
-        assert!(!run.has_constructed_book());
-        let mut run = degraded_run("b", "2026-08-11T00:00:00Z");
-        run.constructed = Some(true);
-        assert!(run.has_constructed_book());
-        // resolve_constructed fills a pre-marker blob from the derivation and
-        // never touches an authored marker.
-        let mut run = degraded_run("c", "2026-08-11T00:00:00Z");
-        assert_eq!(run.constructed, None);
-        run.resolve_constructed();
-        assert_eq!(run.constructed, Some(false));
-        let mut run = constructed_run("d", "2026-08-11T00:00:00Z");
-        run.constructed = Some(false);
-        run.resolve_constructed();
-        assert_eq!(run.constructed, Some(false), "authored marker untouched");
-    }
-
-    #[test]
-    fn migration_backfills_the_constructed_column_from_blob_truth() {
-        // A store created before the column: old-shape table, rows inserted raw.
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute(
-            "CREATE TABLE portfolio_runs (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id     TEXT NOT NULL UNIQUE,
-                created_at TEXT NOT NULL,
-                run_json   TEXT NOT NULL
-            )",
-            [],
-        )
-        .unwrap();
-        for run in [
-            &constructed_run("old-constructed", "2026-08-09T00:00:00Z"),
-            &degraded_run("old-degraded", "2026-08-10T00:00:00Z"),
-        ] {
-            conn.execute(
-                "INSERT INTO portfolio_runs (run_id, created_at, run_json) VALUES (?1, ?2, ?3)",
-                params![run.run_id, run.created_at, serde_json::to_string(run).unwrap()],
-            )
-            .unwrap();
-        }
-        conn.execute(
-            "INSERT INTO portfolio_runs (run_id, created_at, run_json) \
-             VALUES ('corrupt', '2026-08-11T00:00:00Z', 'not json')",
-            [],
-        )
-        .unwrap();
-        init_schema(&conn).unwrap();
-        let got: Vec<(String, bool)> = conn
-            .prepare("SELECT run_id, constructed FROM portfolio_runs ORDER BY id")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<std::result::Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            got,
-            vec![
-                ("old-constructed".to_string(), true),
-                ("old-degraded".to_string(), false),
-                // An unparseable blob keeps the constructed default; the
-                // loud-skip decode below still refuses to serve it.
-                ("corrupt".to_string(), true),
-            ]
-        );
-        // End-to-end past the migration: the corrupt head row skips loudly,
-        // the degraded row is SQL-filtered, the constructed run is served.
-        let latest = latest_run(&conn).unwrap().unwrap();
-        assert_eq!(latest.run_id, "old-constructed");
-        // Idempotent: a second init is a no-op, not a re-backfill or an error.
-        init_schema(&conn).unwrap();
-    }
-
     #[test]
     fn latest_run_skips_an_unparseable_blob_instead_of_erroring() {
         // The callers fail-soft with `.ok().flatten()`, so an `Err` here would
         // silently become "no prior run" — no diff baseline, no carries — on
         // the strength of one corrupt row. The read skips it loudly instead.
         let conn = mem();
-        record_run(&conn, &constructed_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
+        record_run(&conn, &sample_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
         conn.execute(
-            "INSERT INTO portfolio_runs (run_id, created_at, run_json, constructed) \
-             VALUES ('run-corrupt', '2026-08-11T00:00:00Z', '{\"not\": \"a run\"}', 1)",
+            "INSERT INTO portfolio_runs (run_id, created_at, run_json) \
+             VALUES ('run-corrupt', '2026-08-11T00:00:00Z', '{\"not\": \"a run\"}')",
             [],
         )
         .unwrap();
-        let latest = latest_run(&conn).unwrap().expect("the older constructed run is served");
-        assert_eq!(latest.run_id, "run-good");
-    }
-
-    #[test]
-    fn latest_run_skips_a_row_whose_column_and_blob_disagree() {
-        // No write path produces this (insert, migration, and import all
-        // mirror the blob's predicate into the column) — but the blob is
-        // truth, so a hand-edited or future-bug desync must not hand out a
-        // degraded baseline on the column's word alone.
-        let conn = mem();
-        record_run(&conn, &constructed_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
-        let degraded = degraded_run("run-desynced", "2026-08-11T00:00:00Z");
-        conn.execute(
-            "INSERT INTO portfolio_runs (run_id, created_at, run_json, constructed) \
-             VALUES (?1, ?2, ?3, 1)",
-            params![
-                degraded.run_id,
-                degraded.created_at,
-                serde_json::to_string(&degraded).unwrap()
-            ],
-        )
-        .unwrap();
-        let latest = latest_run(&conn).unwrap().expect("the honest older run is served");
+        let latest = latest_run(&conn).unwrap().expect("the older readable run is served");
         assert_eq!(latest.run_id, "run-good");
     }
 
     #[test]
     fn a_corrupt_row_costs_its_own_listing_row_never_the_history() {
         // Unparseable blobs are a retained store state; one must not blank
-        // the sidebar (or the degraded-only read) for its retention life
-        // (combined-range review).
+        // the sidebar for its retention life (combined-range review).
         let conn = mem();
-        record_run(&conn, &constructed_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
+        record_run(&conn, &sample_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
         conn.execute(
-            "INSERT INTO portfolio_runs (run_id, created_at, run_json, constructed) \
-             VALUES ('run-corrupt', '2026-08-11T00:00:00Z', 'not json', 1)",
+            "INSERT INTO portfolio_runs (run_id, created_at, run_json) \
+             VALUES ('run-corrupt', '2026-08-11T00:00:00Z', 'not json')",
             [],
         )
         .unwrap();
@@ -1073,14 +830,13 @@ mod tests {
             .map(|r| r.run_id)
             .collect();
         assert_eq!(ids, vec!["run-good".to_string()], "the corrupt row skips loudly");
-        // The summaries still LIST the unreadable row — identity and the
-        // constructed marker are column-backed — so the history never
-        // silently shrinks and the page can tell unreadable from never-ran.
+        // The summaries still LIST the unreadable row — identity is column-backed
+        // — so the history never silently shrinks and the page can tell
+        // unreadable from never-ran.
         let summaries = list_run_summaries(&conn, 10).unwrap();
         assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].run_id, "run-corrupt");
         assert!(!summaries[0].readable);
-        assert!(summaries[0].constructed, "column-backed marker");
         assert_eq!(summaries[0].holdings_count, 0);
         assert!(summaries[1].readable);
         // A direct open of the corrupt row reads as not-found: the listing
@@ -1088,81 +844,23 @@ mod tests {
         // out-of-band call reaches it, and the frontend's re-list recovery
         // is exactly right.
         assert!(run_by_id(&conn, "run-corrupt").unwrap().is_none());
-        // The store decode seams ship a concrete marker — never null on the
-        // wire (the TS type is non-nullable).
-        let listed = list_recent_runs(&conn, 10).unwrap();
-        let wire = serde_json::to_value(&listed[0]).unwrap();
-        assert_eq!(wire["constructed"], serde_json::Value::Bool(true), "{wire}");
     }
 
     #[test]
-    fn constructed_rows_exist_reads_the_column() {
-        let conn = mem();
-        assert!(!constructed_rows_exist(&conn).unwrap());
-        record_run(&conn, &degraded_run("run-degraded", "2026-08-11T00:00:00Z")).unwrap();
-        assert!(!constructed_rows_exist(&conn).unwrap(), "degraded rows don't count");
-        record_run(&conn, &constructed_run("run-good", "2026-08-12T00:00:00Z")).unwrap();
-        assert!(constructed_rows_exist(&conn).unwrap());
-    }
-
-    #[test]
-    fn any_runs_sees_degraded_rows() {
+    fn any_runs_splits_never_ran_from_all_unreadable() {
+        // `latest_run` returns `None` both for a never-ran store and one whose
+        // only rows are unreadable; `any_runs` tells the two apart so a refusal
+        // names the true state instead of calling a store of corrupt rows empty.
         let conn = mem();
         assert!(!any_runs(&conn).unwrap());
-        record_run(&conn, &degraded_run("run-degraded", "2026-08-11T00:00:00Z")).unwrap();
-        assert!(any_runs(&conn).unwrap(), "degraded rows are runs");
-        assert!(latest_run(&conn).unwrap().is_none(), "but never a baseline");
-    }
-
-    #[test]
-    fn a_degraded_run_is_listed_but_never_latest() {
-        // The load-bearing pair (`docs/verification/2026-08-10-big-run-attempt-1.md`
-        // §Disposition): a construction-failed run persists into the history but
-        // `latest_run` reaches past it, so the next run's diff/carry/quick-check
-        // baseline never reads its pre-construction actions (leans, carried
-        // actions, role/risk placeholders) as 7b-blessed finals.
-        let conn = mem();
-        record_run(&conn, &constructed_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
-        record_run(&conn, &degraded_run("run-degraded", "2026-08-11T00:00:00Z")).unwrap();
-        // Latest skips the degraded head…
-        assert_eq!(latest_run(&conn).unwrap().unwrap().run_id, "run-good");
-        // …while the history lists both, newest first, the degraded row marked.
-        let ids: Vec<String> = list_recent_runs(&conn, 10)
-            .unwrap()
-            .into_iter()
-            .map(|r| r.run_id)
-            .collect();
-        assert_eq!(ids, vec!["run-degraded".to_string(), "run-good".to_string()]);
-        let summaries = list_run_summaries(&conn, 10).unwrap();
-        assert!(!summaries[0].constructed, "the degraded head is marked");
-        assert!(summaries[1].constructed);
-        // The degraded row still opens read-only by id.
-        assert!(run_by_id(&conn, "run-degraded").unwrap().is_some());
-    }
-
-    #[test]
-    fn latest_run_is_none_when_only_degraded_runs_exist() {
-        // No constructed baseline exists: the next run must see "no prior run"
-        // (first-run semantics), not a degraded head.
-        let conn = mem();
-        record_run(&conn, &degraded_run("run-degraded", "2026-08-11T00:00:00Z")).unwrap();
-        assert!(latest_run(&conn).unwrap().is_none());
-    }
-
-    #[test]
-    fn degraded_runs_count_against_the_one_retention_cap() {
-        // Ruled 2026-08-11: no second retention path — a degraded row evicts
-        // retained history exactly as a constructed one does.
-        let conn = mem();
-        for i in 0..(PORTFOLIO_RUN_RETENTION + 1) {
-            let created_at = format!("2026-08-11T{:02}:00:00Z", i % 24);
-            record_run(&conn, &degraded_run(&format!("deg-{i:02}"), &created_at)).unwrap();
-        }
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM portfolio_runs", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, PORTFOLIO_RUN_RETENTION as i64);
-        assert!(run_by_id(&conn, "deg-00").unwrap().is_none(), "oldest evicted");
+        conn.execute(
+            "INSERT INTO portfolio_runs (run_id, created_at, run_json) \
+             VALUES ('run-corrupt', '2026-08-11T00:00:00Z', 'not json')",
+            [],
+        )
+        .unwrap();
+        assert!(any_runs(&conn).unwrap(), "a persisted (if unreadable) row is a run");
+        assert!(latest_run(&conn).unwrap().is_none(), "but not a decodable baseline");
     }
 
     #[test]
@@ -1226,9 +924,7 @@ mod tests {
         record_run(&conn, &run).unwrap();
         save_pull(&conn, &sample_pull("2026-07-07T12:00:00Z", 999.0)).unwrap();
         let baseline = latest_run(&conn).unwrap().unwrap();
-        let mut expected = run;
-        expected.resolve_constructed();
-        assert_eq!(baseline, expected, "the run snapshot is untouched by a pull");
+        assert_eq!(baseline, run, "the run snapshot is untouched by a pull");
         assert_eq!(baseline.holdings.positions[0].quantity, 100.0);
     }
 
@@ -1247,8 +943,6 @@ mod tests {
             opened: vec![OpenReason::Debut],
             body: EpisodeBody::RoleRiskOnly(RoleRiskEpisode {
                 action: crate::portfolio::Action::Hold,
-                target_weight_low: Some(0.02),
-                target_weight_high: Some(0.05),
                 degraded_inputs: vec![],
             }),
             observations: vec![],
@@ -1353,22 +1047,6 @@ mod tests {
             vec![bar("2026-08-01", 193.0), bar("2026-08-03", 19.5), bar("2026-08-04", 19.6)]
         );
         assert!(load_price_bars(&conn, "MSFT").unwrap().is_empty());
-    }
-
-    #[test]
-    fn init_schema_drops_the_dead_stooq_benchmark_cache_key() {
-        let conn = mem();
-        let bar = |date: &str, close: f64| crate::portfolio::engine::DatedValue {
-            date: date.into(),
-            value: close,
-        };
-        // Seed the Stooq-era key (lowercase in, uppercased at the merge seam)
-        // beside a living symbol, then re-run the idempotent init.
-        merge_price_bars(&conn, "^spx", &[bar("2026-08-01", 5_500.0)]).unwrap();
-        merge_price_bars(&conn, "AAPL", &[bar("2026-08-01", 195.0)]).unwrap();
-        crate::storage::init_schema(&conn).unwrap();
-        assert!(load_price_bars(&conn, "^SPX").unwrap().is_empty());
-        assert_eq!(load_price_bars(&conn, "AAPL").unwrap(), vec![bar("2026-08-01", 195.0)]);
     }
 
     #[test]

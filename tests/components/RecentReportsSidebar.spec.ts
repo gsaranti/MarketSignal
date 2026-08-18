@@ -36,15 +36,12 @@ const reports: ReportSummary[] = deepFreeze([
 ]);
 
 // Two portfolio runs, newest first — the swap-in history for the Portfolio view.
-// The older row is a degraded run (construction failed, no book) so the
-// no-book marking is exercised beside a constructed row.
 const portfolioRuns: PortfolioRunSummary[] = deepFreeze([
   {
     run_id: "prun-2",
     created_at: "2026-07-12T09:00:00Z",
     holdings_count: 23,
     graded_count: 19,
-    constructed: true,
     readable: true,
   },
   {
@@ -52,7 +49,6 @@ const portfolioRuns: PortfolioRunSummary[] = deepFreeze([
     created_at: "2026-07-05T09:00:00Z",
     holdings_count: 1,
     graded_count: 0,
-    constructed: false,
     readable: true,
   },
 ]);
@@ -179,18 +175,9 @@ test("every other view keeps the report history visible", () => {
   }
 });
 
-test("a degraded run row carries the no-book tag; constructed rows don't", () => {
-  // A construction-failed run persists into the history marked, never hidden
-  // (docs/interface.md §Main Layout) — the quiet tag is the marking.
-  const wrapper = makeWrapper({ view: "portfolio" });
-  const rows = wrapper.findAll(".sidebar-list .report-row");
-  expect(rows[0].find(".ana-tag").exists()).toBe(false);
-  expect(rows[1].find(".ana-tag").text()).toBe("no book");
-});
-
-test("an unreadable row tags 'unreadable', winning over the no-book tag", () => {
+test("an unreadable row tags 'unreadable'", () => {
   // A corrupt blob still lists from its column identity (docs/interface.md
-  // §Main Layout) — readability is the sharper fact, so its tag wins.
+  // §Main Layout), tagged unreadable and disabled.
   const wrapper = makeWrapper({
     view: "portfolio",
     portfolioRuns: [
@@ -200,7 +187,6 @@ test("an unreadable row tags 'unreadable', winning over the no-book tag", () => 
   });
   const rows = wrapper.findAll(".sidebar-list .report-row");
   expect(rows[0].find(".ana-tag").text()).toBe("unreadable");
-  // The degraded row is ALSO unreadable — one tag renders, the sharper one.
   expect(rows[1].find(".ana-tag").text()).toBe("unreadable");
 });
 

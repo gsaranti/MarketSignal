@@ -58,13 +58,8 @@ const props = defineProps<{
   // pass; applied only while it swept the rendered (latest) run.
   quick?: QuickCheckState | null;
   quickChecking?: boolean;
-  // The runs history holds rows but none constructed: `run` is null even
-  // though per-holding work is persisted, so the empty latest view must say
-  // so rather than claim nothing ever ran.
-  degradedOnlyHistory?: boolean;
-  // The history holds a constructed row that couldn't be decoded (it would
-  // otherwise BE the latest view) — the page must say unreadable, never
-  // never-ran or degraded-only.
+  // The history holds a row that couldn't be decoded (it would otherwise BE the
+  // latest view) — the page must say unreadable, never never-ran.
   unreadableHistory?: boolean;
   // The runs-history listing itself failed to load: with `run` null the page
   // cannot tell a never-ran store from one whose listing errored, so the
@@ -84,18 +79,6 @@ const emit = defineEmits<{
 // ---- Triggers ---------------------------------------------------------------
 
 const isHistorical = computed(() => props.historical ?? false);
-
-// A legacy degraded run from the retired 7b construction era — that stage
-// failed after the per-holding pass, so the per-holding work persisted with
-// pre-construction action values (a lean, a carried action, a role/risk
-// placeholder). New tunnel-vision runs always persist complete; this state is
-// only ever rendered read-only from history — the backend excludes degraded
-// rows from the latest view. Reads the persist-seam marker the backend ships;
-// never re-derived from roll_up field shapes (the Rust predicate is the
-// single home).
-const isDegradedRun = computed(
-  () => props.run !== null && props.run.constructed === false
-);
 
 const runDisabled = computed(
   () => isHistorical.value || props.runBlocked || props.busy
@@ -724,8 +707,8 @@ const LETTER_SUBSCORES = ["quality", "valuation", "risk"] as const;
 const SETUP_NOTE = "Setup — market-setup read, outside the letter";
 
 // ---- The two-arm verdict (portfolio-v7) --------------------------------------
-// The engine baseline beside the model's own view. A pre-v7 run carries neither
-// arm and renders the legacy single intrinsic column.
+// The engine baseline beside the model's own view. Every persisted verdict
+// carries both arms.
 
 const MODEL_ARM_NOTE =
   "Model view — the model's own numbers, unrestricted; scored against the baseline";
@@ -733,27 +716,21 @@ const MODEL_LETTER_TITLE =
   "The model's letter, derived from its own quality/valuation/risk through the " +
   "shared cutoffs";
 
-function twoArm(d: GradedVerdict): boolean {
-  return d.model_view != null && d.engine_view != null;
-}
-
 // The model outlook's ≠ engine read compares per-horizon against the stand-in;
 // any differing window tags the row — one quiet tag, the conviction/lean idiom.
 function outlookDiverges(d: GradedVerdict): boolean {
   const ev = d.engine_view;
-  if (!ev) return false;
   return (["short", "mid", "long"] as const).some(
     (h) => d.horizon_outlook[h] !== ev.outlook[h]
   );
 }
 
-// Column A renders the engine stand-in's conviction/outlook on a two-arm card
-// and the verdict's own (model-authored) values on a legacy one.
+// Column A renders the engine stand-in's conviction/outlook.
 function armAConviction(d: GradedVerdict): PortfolioConviction {
-  return twoArm(d) ? d.engine_view!.conviction : d.conviction;
+  return d.engine_view.conviction;
 }
 function armAOutlook(d: GradedVerdict): HorizonOutlook {
-  return twoArm(d) ? d.engine_view!.outlook : d.horizon_outlook;
+  return d.engine_view.outlook;
 }
 
 // The matured scoreboard lines for one symbol, from the run's outcome records —
@@ -973,16 +950,8 @@ const keyFigures = computed(() => {
          run is a chosen state, not a problem. -->
     <div v-if="isHistorical && run" class="hist-banner" role="status">
       <span class="hist-banner-label">Past analysis</span>
-      <!-- The degraded marker (quiet tag — the words are the alert): this run
-           persisted its per-holding work but constructed no book. -->
-      <span v-if="isDegradedRun" class="ana-tag">no book</span>
       <span class="hist-banner-text">
         Viewing the run from {{ fmtStamp(run.created_at) }} — read-only.
-        <template v-if="isDegradedRun">
-          Construction failed on this run: no plan was validated. Each action
-          shown is that holding's pre-construction read, not a decided
-          whole-book action; role/risk holdings show none.
-        </template>
       </span>
       <button
         type="button"
@@ -1018,8 +987,8 @@ const keyFigures = computed(() => {
         <span class="pane-error-detail">{{ loadError }}</span>
       </div>
 
-      <!-- The listing failed with nothing else to show: a never-ran store and
-           a degraded-only one are indistinguishable here, so claim neither. -->
+      <!-- The listing failed with nothing else to show: whether a prior
+           analysis exists can't be told from here, so claim neither. -->
       <div v-else-if="!run && !pull && historyUnknown" class="empty-state">
         <h2 class="empty-title">Portfolio state unavailable.</h2>
         <p class="empty-body">
@@ -1029,27 +998,14 @@ const keyFigures = computed(() => {
         </p>
       </div>
 
-      <!-- A constructed run exists in the history but couldn't be decoded:
-           unreadable, not never-ran, and not degraded-only. -->
+      <!-- A run exists in the history but couldn't be decoded: unreadable, not
+           never-ran. -->
       <div v-else-if="!run && !pull && unreadableHistory" class="empty-state">
         <h2 class="empty-title">A prior run couldn't be read.</h2>
         <p class="empty-body">
           The runs history holds an analysis this build could not decode, so it
           can't be shown here — it lists in the sidebar tagged
           <em>unreadable</em> and will age out of retention.
-          <strong>Run analysis</strong> starts a fresh pass.
-        </p>
-      </div>
-
-      <!-- Empty latest view over a degraded-only history: per-holding work is
-           persisted (visible read-only in the runs history), but no run
-           constructed a book — "No holdings yet." would misdescribe the store. -->
-      <div v-else-if="!run && !pull && degradedOnlyHistory" class="empty-state">
-        <h2 class="empty-title">No constructed run yet.</h2>
-        <p class="empty-body">
-          The last analysis persisted its per-holding work but failed before
-          constructing a portfolio — it is in the runs history, tagged
-          <em>no book</em>, and opens read-only.
           <strong>Run analysis</strong> starts a fresh pass.
         </p>
       </div>
@@ -1068,18 +1024,14 @@ const keyFigures = computed(() => {
       <template v-else>
         <!-- Pulled with no latest run: the compact current-holdings view IS the
              page body (docs/portfolio-analysis.md §Storage and display). The
-             subline is history-aware — a pull over a degraded-only or
-             unreadable history must not claim nothing was ever analyzed
-             (Codex round). -->
+             subline is history-aware — a pull over an unreadable history must
+             not claim nothing was ever analyzed (Codex round). -->
         <div v-if="!run && pull" class="pulled-only">
           <h2 class="empty-title">
             {{ pull.holdings.positions.length }}
             {{ pull.holdings.positions.length === 1 ? "holding" : "holdings" }}
             pulled.
             <template v-if="unreadableHistory">A prior run couldn't be read.</template>
-            <template v-else-if="degradedOnlyHistory"
-              >No constructed analysis yet.</template
-            >
             <template v-else-if="historyUnknown">Analysis state unknown.</template>
             <template v-else>Not yet analyzed.</template>
           </h2>
@@ -1089,11 +1041,6 @@ const keyFigures = computed(() => {
             <template v-if="unreadableHistory">
               The runs history holds an analysis this build could not decode —
               it lists in the sidebar tagged <em>unreadable</em>.
-              <strong>Run analysis</strong> starts a fresh pass.
-            </template>
-            <template v-else-if="degradedOnlyHistory">
-              The last analysis persisted its per-holding work but constructed
-              no book — it is in the runs history, tagged <em>no book</em>.
               <strong>Run analysis</strong> starts a fresh pass.
             </template>
             <template v-else-if="historyUnknown">
@@ -1596,25 +1543,16 @@ const keyFigures = computed(() => {
 
                   <div class="hc-col">
                     <span class="hc-kicker">Portfolio action</span>
-                    <!-- On a legacy degraded run (the retired construction era)
-                         no action was ever blessed, so the persisted
-                         placeholder must not render as a decision. -->
-                    <template v-if="!isDegradedRun">
-                      <div class="hc-action">
-                        <span class="hc-action-word">{{
-                          ACTION_LABELS[v.disposition.action]
-                        }}</span>
-                      </div>
-                      <p
-                        v-if="v.disposition.action_rationale"
-                        class="hc-prose hc-rationale"
-                      >
-                        {{ v.disposition.action_rationale }}
-                      </p>
-                    </template>
-                    <p v-else class="hc-prose">
-                      No action — this legacy run's construction failed to
-                      validate a plan.
+                    <div class="hc-action">
+                      <span class="hc-action-word">{{
+                        ACTION_LABELS[v.disposition.action]
+                      }}</span>
+                    </div>
+                    <p
+                      v-if="v.disposition.action_rationale"
+                      class="hc-prose hc-rationale"
+                    >
+                      {{ v.disposition.action_rationale }}
                     </p>
                     <dl class="hc-kv">
                       <dt>Weight</dt>
@@ -1852,17 +1790,10 @@ const keyFigures = computed(() => {
                      the model's own view — the same paired 1fr/1fr hairline grid
                      as the old intrinsic/action split (a recorded design-system
                      extension: no paired-comparison component exists in the kit;
-                     comparison here is adjacency + kicker, the system's idiom).
-                     A pre-v7 run has no model arm and renders the single
-                     intrinsic column full-width instead. -->
-                <div
-                  class="hc-body"
-                  :class="{ 'hc-body-single': !twoArm(v.disposition) }"
-                >
+                     comparison here is adjacency + kicker, the system's idiom). -->
+                <div class="hc-body">
                   <div class="hc-col hc-col-intrinsic">
-                    <span class="hc-kicker">{{
-                      twoArm(v.disposition) ? "Engine baseline" : "Intrinsic verdict"
-                    }}</span>
+                    <span class="hc-kicker">Engine baseline</span>
                     <!-- Letter inputs, then — set apart behind a hairline —
                          the market-setup read (momentum), which is context
                          for conviction and never a grade input (B10). -->
@@ -1964,12 +1895,10 @@ const keyFigures = computed(() => {
                           }}</span>
                         </span>
                       </dd>
-                      <template v-if="twoArm(v.disposition)">
-                        <dt>Action</dt>
-                        <dd>
-                          {{ ACTION_LABELS[v.disposition.engine_view!.action] }}
-                        </dd>
-                      </template>
+                      <dt>Action</dt>
+                      <dd>
+                        {{ ACTION_LABELS[v.disposition.engine_view!.action] }}
+                      </dd>
                     </dl>
                     <!-- Target methodology: engine-computed figures, exposed
                          (a Reveal-style inline disclosure, not a popover). -->
@@ -2003,7 +1932,7 @@ const keyFigures = computed(() => {
                   <!-- The model arm: the model's own numbers, authored
                        unrestricted and persisted exactly as returned — scored
                        against the engine baseline by the outcome scoreboard. -->
-                  <div v-if="twoArm(v.disposition)" class="hc-col">
+                  <div class="hc-col">
                     <span class="hc-kicker hc-armhead"
                       >Model view
                       <span
@@ -2124,14 +2053,9 @@ const keyFigures = computed(() => {
                 <!-- Portfolio action: the per-holding action call's decision —
                      full-width beneath the arms (the action is the model's
                      since the v7 contract; the engine's own rung reads as the
-                     baseline row). On a legacy construction-era degraded run no
-                     final action was validated, so the kicker reads that
-                     holding's pre-construction value (a fresh lean, a carried
-                     action, possibly rule-demoted). -->
+                     baseline row). -->
                 <div class="hc-col hc-actionrow">
-                    <span class="hc-kicker">{{
-                      isDegradedRun ? "Per-holding read" : "Portfolio action"
-                    }}</span>
+                    <span class="hc-kicker">Portfolio action</span>
                     <div class="hc-action">
                       <span class="hc-action-word">{{
                         ACTION_LABELS[v.disposition.action]
@@ -2900,18 +2824,10 @@ const keyFigures = computed(() => {
 /* Two linked columns; stack on narrow windows so nothing crushes. Since v7 the
    pair is engine baseline | model view (a recorded extension of the kit's
    two-linked-blocks grid — comparison by adjacency + kicker, the system's
-   idiom); a pre-v7 run has no model arm and collapses to one column. */
+   idiom). */
 .hc-body {
   display: grid;
   grid-template-columns: 1fr 1fr;
-}
-
-.hc-body-single {
-  grid-template-columns: 1fr;
-}
-
-.hc-body-single .hc-col-intrinsic {
-  border-right: 0;
 }
 
 @media (max-width: 760px) {

@@ -401,8 +401,7 @@ export interface PriceTarget {
 
 // Rolling one-month / twelve-month windows from the run date (the settled rename
 // of end-of-month / end-of-year — docs/portfolio-analysis.md §Starting parameters).
-// The backend decodes legacy field names through serde aliases and always emits
-// these.
+// The backend always emits both fields.
 export interface PriceTargets {
   one_month: PriceTarget | null;
   twelve_month: PriceTarget | null;
@@ -440,7 +439,7 @@ export interface ModelPriceTargets {
 // verdict): the model's own sub-scores, its letter derived through the shared
 // cutoffs, freely-authored targets, and the retrospective self-assessment.
 // Beside it, the verdict's conviction / horizon_outlook / action complete the arm.
-// Absent on runs persisted before portfolio-v7.
+// Present on every persisted verdict (both arms ride every v9 record).
 export interface ModelView {
   sub_scores: SubScores;
   letter: PortfolioGrade;
@@ -450,7 +449,7 @@ export interface ModelView {
 
 // The engine's mechanical stand-in arm — deterministic outlook / conviction /
 // action baselines so every model-authored field has a scored engine counterpart.
-// Absent on pre-v7 runs.
+// Present on every persisted verdict (both arms ride every v9 record).
 export interface EngineView {
   outlook: HorizonOutlook;
   conviction: PortfolioConviction;
@@ -489,10 +488,9 @@ export interface GradedVerdict {
   // The what-changed audit (authored at interpretation; the retired action half
   // no longer exists).
   what_changed: string;
-  // The two arms (portfolio-v7) — both absent on earlier runs, which render the
-  // legacy single-arm card.
-  model_view?: ModelView | null;
-  engine_view?: EngineView | null;
+  // The two arms (portfolio-v7) — always present on every persisted verdict.
+  model_view: ModelView;
+  engine_view: EngineView;
 }
 
 // One exposure weight (a sector or country label and its fraction of the fund).
@@ -522,8 +520,8 @@ export interface RoleRiskVerdict {
 }
 
 // Internally tagged on `status` (serde `tag = "status"`): the analyzed verdict is
-// a two-branch union — `priced` (the full record; legacy `graded` rows re-serialize
-// as this) and `role-risk-only` — beside the two abstention arms.
+// a two-branch union — `priced` (the full record) and `role-risk-only` — beside
+// the two abstention arms.
 export type VerdictDisposition =
   | ({ status: "priced" } & GradedVerdict)
   | ({ status: "role-risk-only" } & RoleRiskVerdict)
@@ -652,12 +650,6 @@ export interface PortfolioRollUp {
   exited: ExitedPosition[];
   // Absent on runs persisted before the field existed.
   data_health?: DataHealth | null;
-  // Decode-only legacy blobs from the retired 7b construction era. Their
-  // presence shape still discriminates a legacy degraded row (aggregates
-  // present, construction null); nothing else reads them and nothing renders
-  // them.
-  aggregates?: unknown | null;
-  construction?: unknown | null;
   overview: string;
 }
 
@@ -730,11 +722,6 @@ export interface PortfolioRun {
   // This run's outcome-learning records (scoreboard subset) — absent on runs
   // persisted before the outcome slice.
   outcome?: OutcomeRecordsView | null;
-  // Whether the run carries a constructed book — authored at the backend's
-  // persist seam and resolved at its store decode, so it is always concrete
-  // on the wire. `false` marks a degraded (construction-failed) run; the UI
-  // reads this, never the roll_up field shapes.
-  constructed: boolean;
 }
 
 // --- Portfolio quick check ---------------------------------------------------
@@ -818,14 +805,9 @@ export interface PortfolioRunSummary {
   created_at: string;
   holdings_count: number;
   graded_count: number;
-  // False marks a degraded run — Step 7b's construction failed after the
-  // per-holding pass, so the row carries verdicts but no constructed book and
-  // is excluded from the latest view (it opens read-only from the history).
-  // Column-backed on an unreadable row.
-  constructed: boolean;
   // False marks a row whose persisted blob no longer decodes: it still lists
-  // (identity and the constructed marker come from store columns, counts are
-  // zero) but cannot open, and ages out of retention like any other row.
+  // (identity comes from store columns, counts are zero) but cannot open, and
+  // ages out of retention like any other row.
   readable: boolean;
 }
 

@@ -193,13 +193,6 @@ pub enum OpenReason {
     Debut,
     BranchFlip,
     ActionChange,
-    /// Construction-era: the standalone lean moved with the final action
-    /// unchanged. Never produced since `portfolio-v9` (the action IS the lean);
-    /// retained so legacy episode rows decode.
-    LeanChange,
-    /// Construction-era: the ledger's target-weight range moved. Never produced
-    /// since `portfolio-v9` (sizing retired); retained so legacy rows decode.
-    WeightRangeChange,
     /// The action change was the over-age rule-demotion, not a model decision.
     RuleDemotion,
 }
@@ -292,26 +285,19 @@ pub struct CalibrationSnapshot {
     /// The model arm's freely-authored target bands, frozen at open — scored by
     /// the same interval-score machinery as the engine bands over the same
     /// exclusion population, so the model-vs-engine head-to-head is fair
-    /// (`docs/portfolio-analysis.md` §Outcome learning). `None` on pre-v7
-    /// episodes, which are excluded from the model-arm reads.
-    #[serde(default)]
-    pub model_price_targets: Option<crate::portfolio::ModelPriceTargets>,
+    /// (`docs/portfolio-analysis.md` §Outcome learning). Present on every priced
+    /// episode a fresh v9-only store writes (both arms ride every verdict).
+    pub model_price_targets: crate::portfolio::ModelPriceTargets,
     /// The model arm's own sub-scores at open (recorded for later predictor-quality
-    /// reads; no scored read yet). `None` on pre-v7 episodes.
-    #[serde(default)]
-    pub model_sub_scores: Option<SubScores>,
+    /// reads; no scored read yet).
+    pub model_sub_scores: SubScores,
     /// Both arms' horizon outlooks at open — the direction hit-rate read scores
-    /// each against the realized sign at its mapped window. `None` on pre-v7.
-    #[serde(default)]
-    pub model_outlook: Option<crate::portfolio::HorizonOutlook>,
-    #[serde(default)]
-    pub engine_outlook: Option<crate::portfolio::HorizonOutlook>,
-    /// The engine stand-in arm's conviction and action rung at open. `None` on
-    /// pre-v7 episodes.
-    #[serde(default)]
-    pub engine_conviction: Option<Conviction>,
-    #[serde(default)]
-    pub engine_action: Option<Action>,
+    /// each against the realized sign at its mapped window.
+    pub model_outlook: crate::portfolio::HorizonOutlook,
+    pub engine_outlook: crate::portfolio::HorizonOutlook,
+    /// The engine stand-in arm's conviction and action rung at open.
+    pub engine_conviction: Conviction,
+    pub engine_action: Action,
 }
 
 /// The priced branch's episode body.
@@ -319,27 +305,6 @@ pub struct CalibrationSnapshot {
 pub struct PricedEpisode {
     /// The final portfolio action.
     pub action: Action,
-    /// The standalone intrinsic rung the calibration's intrinsic reads key on
-    /// (`docs/portfolio-analysis.md §Outcome learning`). Construction-era
-    /// episodes recorded the 6f-authored lean the construction stage
-    /// reconciled; since `portfolio-v9` the action IS the lean, so the field
-    /// equals `action`.
-    pub lean: Action,
-    /// Construction-era: the divergence-from-lean rationale where the final
-    /// action departed the lean — the validated context cause
-    /// (`portfolio-context (…)`), the app-stamped engine bar (`engine-bar: …`),
-    /// or the stale-lean record on a carried row (`carried-stale-lean: …`);
-    /// `None` = matched. Always `None` since `portfolio-v9`; retained so legacy
-    /// episodes decode.
-    #[serde(default)]
-    pub lean_divergence: Option<String>,
-    /// The construction era's **final decided target-weight range as issued** —
-    /// the 7b-validated range legacy episodes recorded (`action_sizing` after
-    /// the construction merge). `None` since `portfolio-v9` — sizing retired
-    /// with the construction stage; the fields survive so legacy episodes
-    /// decode.
-    pub target_weight_low: Option<f64>,
-    pub target_weight_high: Option<f64>,
     pub snapshot: CalibrationSnapshot,
 }
 
@@ -349,8 +314,6 @@ pub struct PricedEpisode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleRiskEpisode {
     pub action: Action,
-    pub target_weight_low: Option<f64>,
-    pub target_weight_high: Option<f64>,
     pub degraded_inputs: Vec<String>,
 }
 
@@ -574,7 +537,7 @@ pub struct CohortStat {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CohortWindowRead {
     pub window_months: u32,
-    /// The intrinsic layer: lean-keyed, vintage-fresh, model-chosen priced episodes.
+    /// The intrinsic layer: vintage-fresh, model-chosen priced episodes, keyed by action.
     pub lean_cohorts: Vec<CohortStat>,
     /// The final-action strata — diagnostic only (raw return ordering cannot score
     /// a risk override), read across vintages, stratified by the action rung.
@@ -691,15 +654,18 @@ pub struct DerivedReads {
     pub target_calibration: Vec<TargetCalibrationRead>,
     /// The model arm's band calibration — same scorer and exclusion rules as
     /// `target_calibration`, over the episodes' frozen model bands (empty until
-    /// v7 episodes mature); each arm's read covers that arm's own full band
-    /// population. `#[serde(default)]` for pre-v7 runs.
+    /// episodes mature); each arm's read covers that arm's own full band
+    /// population. `#[serde(default)]` so a run persisted before the field
+    /// existed still decodes.
     #[serde(default)]
     pub model_target_calibration: Vec<TargetCalibrationRead>,
     /// The paired model-vs-engine head-to-head ([`HeadToHeadRead`]) — the ONLY
-    /// read the arms are compared on. `#[serde(default)]` for pre-v7 runs.
+    /// read the arms are compared on. `#[serde(default)]` so a run persisted
+    /// before the field existed still decodes.
     #[serde(default)]
     pub head_to_head: Vec<HeadToHeadRead>,
-    /// Both arms' outlook direction hit-rates (`#[serde(default)]` for pre-v7).
+    /// Both arms' outlook direction hit-rates. `#[serde(default)]` so a run
+    /// persisted before the field existed still decodes.
     #[serde(default)]
     pub outlook_direction: Vec<OutlookDirectionRead>,
     pub falsifier_lead_times: Vec<FalsifierLeadTimeRead>,
@@ -1021,24 +987,6 @@ pub fn mature_labels(
             continue;
         };
         let mut changed = false;
-        // Pending window ends re-derive from the (ET) anchor and re-stamp when
-        // the stored string disagrees — an episode persisted before ET dating
-        // carries UTC-keyed ends, which would pair the healed ET entry with a
-        // horizon one session long. Recorded labels keep their stamps (they
-        // scored under the end they carry); the re-stamp persists via
-        // `summary.changed`, a one-time self-heal per legacy episode.
-        for l in ep.labels.iter_mut() {
-            if !matches!(l.outcome, LabelOutcome::Pending) {
-                continue;
-            }
-            let expect = window_end(anchor, l.window_months)
-                .format("%Y-%m-%d")
-                .to_string();
-            if l.window_end != expect {
-                l.window_end = expect;
-                changed = true;
-            }
-        }
         // The furthest window this pass will read, so the symbol is fetched once.
         let due_ends: Vec<NaiveDate> = ep
             .labels
@@ -1048,10 +996,6 @@ pub fn mature_labels(
             .filter(|end| *end <= today)
             .collect();
         let Some(furthest) = due_ends.iter().max().copied() else {
-            // No due window this pass — still persist a re-keyed end set.
-            if changed {
-                summary.changed.insert(ep.episode_id.clone());
-            }
             continue;
         };
         let closes = ctx
@@ -1786,13 +1730,6 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                 let body = match &verdict.disposition {
                     VerdictDisposition::Priced(g) => EpisodeBody::Priced(Box::new(PricedEpisode {
                         action: g.action,
-                        // Since `portfolio-v9` the action IS the lean (tunnel
-                        // vision — no construction stage exists to diverge from
-                        // it); the fields survive for legacy episodes' sake.
-                        lean: g.action,
-                        lean_divergence: None,
-                        target_weight_low: None,
-                        target_weight_high: None,
                         snapshot: CalibrationSnapshot {
                             sub_scores: g.sub_scores,
                             grade: g.grade,
@@ -1821,22 +1758,17 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                             // The two-arm freeze (v7): both arms' authored values
                             // ride the episode so the scoreboard can score them
                             // long after the run ages out.
-                            model_price_targets: g
-                                .model_view
-                                .as_ref()
-                                .map(|m| m.price_targets.clone()),
-                            model_sub_scores: g.model_view.as_ref().map(|m| m.sub_scores),
-                            model_outlook: Some(g.horizon_outlook),
-                            engine_outlook: g.engine_view.as_ref().map(|ev| ev.outlook),
-                            engine_conviction: g.engine_view.as_ref().map(|ev| ev.conviction),
-                            engine_action: g.engine_view.as_ref().map(|ev| ev.action),
+                            model_price_targets: g.model_view.price_targets.clone(),
+                            model_sub_scores: g.model_view.sub_scores,
+                            model_outlook: g.horizon_outlook,
+                            engine_outlook: g.engine_view.outlook,
+                            engine_conviction: g.engine_view.conviction,
+                            engine_action: g.engine_view.action,
                         },
                     })),
                     VerdictDisposition::RoleRiskOnly(r) => {
                         EpisodeBody::RoleRiskOnly(RoleRiskEpisode {
                             action: r.action,
-                            target_weight_low: None,
-                            target_weight_high: None,
                             degraded_inputs: audit
                                 .map(|a| a.degraded_inputs.clone())
                                 .unwrap_or_default(),
@@ -1900,19 +1832,12 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
             // stamp `stamp_lead_times` positions against bar dates, so dating it
             // here understated every lead time by the whole sweep-to-run gap — and
             // could sign-flip a falsifier that actually led its drawdown into one
-            // that appeared to follow it.
-            //
-            // The fallback is the consuming run's ET session date, for a legacy
-            // eval state that reached its count before the crossing carried the
-            // field — the old behavior, kept so an upgrade loses no event.
-            let confirmed_at: String = crossing
-                .confirmed_at
-                .clone()
-                .or_else(|| {
-                    crate::market_clock::et_date_of(input.created_at)
-                        .map(|d| d.format("%Y-%m-%d").to_string())
-                })
-                .unwrap_or_else(|| input.created_at.chars().take(10).collect());
+            // that appeared to follow it. A confirmed crossing always carries the
+            // stamp its confirming pass wrote; a confirmed one missing it can't
+            // occur on a fresh v9 store, so skip it rather than guess a date.
+            let Some(confirmed_at) = crossing.confirmed_at.clone() else {
+                continue;
+            };
             let (target, post_maturity) = {
                 // The latest active episode carries the current ledger's
                 // conditions; older still-maturing episodes' forecasts predate
@@ -2065,7 +1990,7 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
             .iter()
             .filter_map(|ep| scored_for(ep, months).map(|s| (ep, s)))
             .collect();
-        // The intrinsic layer: lean-keyed, vintage-fresh, model-chosen, priced.
+        // The intrinsic layer: vintage-fresh, model-chosen, priced.
         let mut lean_cohorts = Vec::new();
         let mut final_action_cohorts = Vec::new();
         for action in [
@@ -2080,7 +2005,7 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
                 .filter(|(ep, _)| {
                     ep.vintage_fresh
                         && ep.action_source == ActionSource::ModelChosen
-                        && matches!(&ep.body, EpisodeBody::Priced(p) if p.lean == action)
+                        && matches!(&ep.body, EpisodeBody::Priced(p) if p.action == action)
                 })
                 .cloned()
                 .collect();
@@ -2124,8 +2049,9 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
     // never mix). One accumulation, parameterized on the band source, runs for
     // BOTH arms: the engine bands and the model arm's frozen bands share the
     // scorer, the exclusion rules, and the population, so the model-vs-engine
-    // head-to-head is fair (`docs/portfolio-analysis.md` §Outcome learning; a
-    // pre-v7 episode with no frozen model band drops out of the model read only).
+    // head-to-head is fair (`docs/portfolio-analysis.md` §Outcome learning):
+    // under v9 both arms ride every priced episode, so they score the same band
+    // population.
     #[derive(Default)]
     struct BandAcc {
         scores: Vec<f64>,
@@ -2218,7 +2144,7 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
         Some((band.bear, band.base, band.bull))
     };
     let model_band = |p: &PricedEpisode, months: u32| -> Option<(f64, f64, f64)> {
-        let t = p.snapshot.model_price_targets.as_ref()?;
+        let t = &p.snapshot.model_price_targets;
         let band = match months {
             1 => &t.one_month,
             _ => &t.twelve_month,
@@ -2287,7 +2213,7 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
         (
             "engine",
             &(|p: &PricedEpisode| p.snapshot.engine_outlook)
-                as &dyn Fn(&PricedEpisode) -> Option<crate::portfolio::HorizonOutlook>,
+                as &dyn Fn(&PricedEpisode) -> crate::portfolio::HorizonOutlook,
         ),
         ("model", &(|p: &PricedEpisode| p.snapshot.model_outlook)),
     ] {
@@ -2305,7 +2231,7 @@ pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
                 let EpisodeBody::Priced(p) = &ep.body else {
                     continue;
                 };
-                let Some(outlook) = pick(p) else { continue };
+                let outlook = pick(p);
                 let Some(label) = scored_for(ep, months) else {
                     continue;
                 };
@@ -2477,8 +2403,37 @@ mod tests {
             },
             action,
             action_rationale: String::new(),
-            model_view: None,
-            engine_view: None,
+            model_view: crate::portfolio::ModelView {
+                sub_scores: SubScores {
+                    quality: 70.0,
+                    valuation: 60.0,
+                    momentum: 55.0,
+                    risk: 65.0,
+                },
+                letter: Grade::B,
+                price_targets: crate::portfolio::ModelPriceTargets {
+                    one_month: crate::portfolio::ModelPriceTarget {
+                        base: 102.0,
+                        bear: 95.0,
+                        bull: 108.0,
+                    },
+                    twelve_month: crate::portfolio::ModelPriceTarget {
+                        base: 120.0,
+                        bear: 90.0,
+                        bull: 150.0,
+                    },
+                },
+                self_assessment: String::new(),
+            },
+            engine_view: crate::portfolio::EngineView {
+                outlook: HorizonOutlook {
+                    short: HorizonRead::Neutral,
+                    mid: HorizonRead::Bullish,
+                    long: HorizonRead::Bullish,
+                },
+                conviction: Conviction::Medium,
+                action,
+            },
             conviction: Conviction::Medium,
             horizon_outlook: HorizonOutlook {
                 short: HorizonRead::Neutral,
@@ -2698,26 +2653,6 @@ mod tests {
         assert_eq!(episodes.len(), 2);
     }
 
-    #[test]
-    fn an_opened_episode_records_no_sizing_range_and_the_action_as_lean() {
-        // Rung-only actions: the episode's weight-range fields stay `None` (they
-        // survive for legacy episodes' decode), and the recorded lean IS the
-        // action — no construction stage exists to diverge from it.
-        let created = "2026-08-04T12:00:00+00:00";
-        let verdicts = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), created)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-1", created, &verdicts, None, &sector), &mut episodes);
-        match &episodes[0].body {
-            EpisodeBody::Priced(p) => {
-                assert_eq!(p.target_weight_low, None);
-                assert_eq!(p.target_weight_high, None);
-                assert_eq!(p.lean, p.action);
-                assert!(p.lean_divergence.is_none());
-            }
-            _ => panic!("expected a priced episode"),
-        }
-    }
 
     #[test]
     fn an_abstention_extends_and_never_opens() {
@@ -2964,9 +2899,9 @@ mod tests {
                     observed_value: 0.12,
                     threshold: 0.15,
                     observation_id: "2026-06-30".into(),
-                    // Legacy shape: a pre-field eval state, so the consumer takes its
-                    // documented fallback to the consuming run's ET date.
-                    confirmed_at: None,
+                    // The engine stamped this on the confirming pass with the run's
+                    // ET session date (`run_date`).
+                    confirmed_at: Some("2026-08-18".into()),
                 }],
                 ..Default::default()
             }),
@@ -2997,10 +2932,11 @@ mod tests {
     #[test]
     fn a_confirmation_stamps_the_et_session_date() {
         // An evening-ET run: 2026-08-19 01:30 UTC = 2026-08-18 21:30 EDT. The
-        // confirmation belongs to the ET session whose print confirmed it — the
-        // UTC date prefix (the 19th) would place it one session late in the
-        // lead-time read (`stamp_lead_times` positions the first bar at or
-        // after this date).
+        // engine stamps the crossing's `confirmed_at` with the run's ET session
+        // date (`run_date`, ET-derived in `job.rs`), so the confirmation belongs
+        // to the ET session whose print confirmed it — the UTC date prefix (the
+        // 19th) would place it one session late in the lead-time read. The
+        // consumer carries that stamp straight onto the event.
         let c1 = "2026-08-19T01:30:00+00:00";
         let hold = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
         let sector = HashMap::new();
@@ -3023,9 +2959,9 @@ mod tests {
                     observed_value: 0.12,
                     threshold: 0.15,
                     observation_id: "2026-08-18".into(),
-                    // Legacy shape: a pre-field eval state, so the consumer takes its
-                    // documented fallback to the consuming run's ET date.
-                    confirmed_at: None,
+                    // The engine stamped this on the confirming pass with the run's
+                    // ET session date (`run_date`).
+                    confirmed_at: Some("2026-08-18".into()),
                 }],
                 ..Default::default()
             }),
@@ -3069,9 +3005,9 @@ mod tests {
                     observed_value: 0.12,
                     threshold: 0.15,
                     observation_id: "2026-06-30".into(),
-                    // Legacy shape: a pre-field eval state, so the consumer takes its
-                    // documented fallback to the consuming run's ET date.
-                    confirmed_at: None,
+                    // The engine stamped this on the confirming pass with the run's
+                    // ET session date (`run_date`).
+                    confirmed_at: Some("2026-08-04".into()),
                 }],
                 ..Default::default()
             }),
@@ -3102,9 +3038,8 @@ mod tests {
     }
 
     /// An audit carrying one confirmed falsifier crossing: the observation id it was
-    /// re-raised against, and the confirmation date the engine stamps on it
-    /// (`None` = a legacy pre-field eval state).
-    fn confirmed_crossing(observation_id: &str, confirmed_at: Option<&str>) -> HoldingAudit {
+    /// re-raised against, and the confirmation date the engine stamps on it.
+    fn confirmed_crossing(observation_id: &str, confirmed_at: &str) -> HoldingAudit {
         HoldingAudit {
             symbol: "AAPL".into(),
             metrics: Default::default(),
@@ -3124,7 +3059,7 @@ mod tests {
                     observed_value: 0.12,
                     threshold: 0.15,
                     observation_id: observation_id.into(),
-                    confirmed_at: confirmed_at.map(|s| s.to_string()),
+                    confirmed_at: Some(confirmed_at.to_string()),
                 }],
                 ..Default::default()
             }),
@@ -3158,7 +3093,7 @@ mod tests {
             ("run-2", "2026-08-06", "2026-08-06T12:00:00+00:00"),
             ("run-3", "2026-08-07", "2026-08-07T12:00:00+00:00"),
         ] {
-            let audits = vec![confirmed_crossing(obs, Some("2026-08-05"))];
+            let audits = vec![confirmed_crossing(obs, "2026-08-05")];
             let mut input = plan_input(run, created, &verdicts, Some(&verdicts), &sector);
             input.audits = &audits;
             plan_episodes(&input, &mut episodes);
@@ -3175,39 +3110,11 @@ mod tests {
 
         // A genuine re-confirmation after a reset is a distinct standing breach and
         // does accrue its own event.
-        let audits = vec![confirmed_crossing("2026-09-10", Some("2026-09-10"))];
+        let audits = vec![confirmed_crossing("2026-09-10", "2026-09-10")];
         let mut input = plan_input("run-4", "2026-09-10T12:00:00+00:00", &verdicts, Some(&verdicts), &sector);
         input.audits = &audits;
         plan_episodes(&input, &mut episodes);
         assert_eq!(episodes[0].falsifier_events.len(), 2);
-    }
-
-    #[test]
-    fn a_legacy_crossing_without_a_confirmation_date_keeps_the_old_stamp() {
-        // Upgrade safety: an eval state that reached its count before the crossing
-        // carried `confirmed_at` still records an event, dated to the consuming
-        // run's ET session — the pre-fix behavior, so no event is lost.
-        let c1 = "2026-08-04T12:00:00+00:00";
-        let verdicts = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
-        let sector = HashMap::new();
-        let mut episodes = Vec::new();
-        plan_episodes(&plan_input("run-0", c1, &verdicts, None, &sector), &mut episodes);
-        // An evening-ET consuming run: its UTC date has rolled to the 6th.
-        let audits = vec![confirmed_crossing("2026-08-05", None)];
-        let mut input = plan_input(
-            "run-1",
-            "2026-08-06T01:30:00+00:00",
-            &verdicts,
-            Some(&verdicts),
-            &sector,
-        );
-        input.audits = &audits;
-        plan_episodes(&input, &mut episodes);
-        assert_eq!(episodes[0].falsifier_events.len(), 1);
-        assert_eq!(
-            episodes[0].falsifier_events[0].confirmed_at, "2026-08-05",
-            "the fallback is the consuming run's ET session, not its UTC prefix"
-        );
     }
 
     #[test]
@@ -3240,9 +3147,9 @@ mod tests {
                     observed_value: 0.12,
                     threshold: 0.15,
                     observation_id: "2026-06-30".into(),
-                    // Legacy shape: a pre-field eval state, so the consumer takes its
-                    // documented fallback to the consuming run's ET date.
-                    confirmed_at: None,
+                    // The engine stamped this on the confirming pass with the run's
+                    // ET session date (`run_date`).
+                    confirmed_at: Some("2026-08-04".into()),
                 }],
                 ..Default::default()
             }),
@@ -3531,10 +3438,6 @@ mod tests {
             opened: vec![OpenReason::Debut],
             body: EpisodeBody::Priced(Box::new(PricedEpisode {
                 action: Action::Hold,
-                lean: Action::Hold,
-                lean_divergence: None,
-                target_weight_low: Some(0.03),
-                target_weight_high: Some(0.06),
                 snapshot: CalibrationSnapshot {
                     sub_scores: SubScores {
                         quality: 70.0,
@@ -3570,7 +3473,7 @@ mod tests {
                     // The two-arm freeze: a model band wider than the engine's and
                     // opposite-direction outlooks, so the head-to-head reads have
                     // something to distinguish.
-                    model_price_targets: Some(crate::portfolio::ModelPriceTargets {
+                    model_price_targets: crate::portfolio::ModelPriceTargets {
                         one_month: crate::portfolio::ModelPriceTarget {
                             base: 108.0,
                             bear: 90.0,
@@ -3581,25 +3484,25 @@ mod tests {
                             bear: 70.0,
                             bull: 200.0,
                         },
-                    }),
-                    model_sub_scores: Some(SubScores {
+                    },
+                    model_sub_scores: SubScores {
                         quality: 80.0,
                         valuation: 40.0,
                         momentum: 60.0,
                         risk: 70.0,
-                    }),
-                    model_outlook: Some(crate::portfolio::HorizonOutlook {
+                    },
+                    model_outlook: crate::portfolio::HorizonOutlook {
                         short: crate::portfolio::HorizonRead::Bullish,
                         mid: crate::portfolio::HorizonRead::Bullish,
                         long: crate::portfolio::HorizonRead::Bullish,
-                    }),
-                    engine_outlook: Some(crate::portfolio::HorizonOutlook {
+                    },
+                    engine_outlook: crate::portfolio::HorizonOutlook {
                         short: crate::portfolio::HorizonRead::Bearish,
                         mid: crate::portfolio::HorizonRead::Neutral,
                         long: crate::portfolio::HorizonRead::Bearish,
-                    }),
-                    engine_conviction: Some(Conviction::Medium),
-                    engine_action: Some(Action::Hold),
+                    },
+                    engine_conviction: Conviction::Medium,
+                    engine_action: Action::Hold,
                 },
             })),
             observations: vec![],
@@ -3718,45 +3621,6 @@ mod tests {
         assert!((new_bridge - 104.7).abs() < 1e-9, "{new_bridge}");
         // EP-NEW's entry still keys on its own anchor (the session after 03-10).
         assert_eq!(new_scored.entry_date, "2026-03-11");
-    }
-
-    #[test]
-    fn legacy_utc_keyed_pending_windows_re_key_to_the_et_anchor() {
-        // Episodes persisted before ET dating carry UTC-keyed window ends: an
-        // evening anchor (2026-02-04 01:30 UTC = ET 02-03) whose legacy labels
-        // were stamped from the UTC prefix (02-04 → 1-month end 03-04). The
-        // label pass re-derives pending ends from the ET anchor and persists
-        // the re-stamp, so the healed entry and the horizon share one session
-        // dating — including an episode with no window due this pass.
-        let conn = mem_conn();
-        let mut due = old_episode("LGCY", "2026-02-04T01:30:00+00:00");
-        due.labels = pending_labels(parse_iso_date_prefix("2026-02-04").unwrap());
-        assert_eq!(due.labels[0].window_end, "2026-03-04", "legacy UTC stamp");
-        let mut idle = old_episode("LGC2", "2026-04-21T01:30:00+00:00");
-        idle.episode_id = "ep-LGC2".into();
-        idle.labels = pending_labels(parse_iso_date_prefix("2026-04-21").unwrap());
-        let mut episodes = vec![due, idle];
-        let source = SyntheticPrices {
-            fail_dividends: false,
-        };
-        let mut ctx = SeriesCtx::new(&conn, Some(&source));
-        let today = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
-        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-05-01");
-        // The 1-month window scored under the ET-derived end (03-03, a Tuesday
-        // bar) — the legacy end would have read one session further (03-04).
-        let scored = scored_for(&episodes[0], 1).expect("1-month scored");
-        assert_eq!(scored.end_date, "2026-03-03");
-        // Still-pending windows carry re-keyed ET ends on both episodes...
-        assert!(episodes[0]
-            .labels
-            .iter()
-            .filter(|l| matches!(l.outcome, LabelOutcome::Pending))
-            .all(|l| l.window_end.ends_with("-03")));
-        assert!(episodes[1].labels.iter().all(|l| l.window_end.ends_with("-20")));
-        // ...and both re-stamps persist — the idle episode via the no-due-window
-        // exit.
-        assert!(summary.changed.contains(&episodes[0].episode_id));
-        assert!(summary.changed.contains("ep-LGC2"));
     }
 
     #[test]

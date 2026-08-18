@@ -524,17 +524,13 @@ pub struct PriceTarget {
 }
 
 /// One-month and twelve-month scenario targets — **rolling windows from the run
-/// date**, not calendar ends (the settled rename of the as-built end-of-month /
-/// end-of-year fields: outside January, calendar year-end is not twelve months away,
-/// and calibration scores these against the 1- and 12-month labels —
+/// date**, not calendar ends (outside January, calendar year-end is not twelve
+/// months away, and calibration scores these against the 1- and 12-month labels —
 /// `docs/portfolio-analysis.md` §Starting parameters). Each `None` when the inputs to
-/// derive it were missing. The serde aliases keep runs persisted under the old field
-/// names decodable.
+/// derive it were missing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PriceTargets {
-    #[serde(alias = "end_of_month")]
     pub one_month: Option<PriceTarget>,
-    #[serde(alias = "end_of_year")]
     pub twelve_month: Option<PriceTarget>,
 }
 
@@ -570,7 +566,6 @@ pub struct ModelPriceTargets {
 /// intentional (the boundary statement: `docs/portfolio-analysis.md` §The
 /// holding verdict); these values carry into the next run's retrospective. Beside this struct, the model-authored `conviction`,
 /// `horizon_outlook`, and `lean` on [`GradedVerdict`] complete the arm.
-/// `None` on runs persisted before `portfolio-v7`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelView {
     /// The model's own four sub-scores on the engine's 0–100 scale (higher = better).
@@ -660,19 +655,20 @@ pub struct GradedVerdict {
     pub financial_summary: String,
     /// The continuity diff against the prior run (model prose, or "new holding") —
     /// the intrinsic what-changed audit, authored at 6f. The retired action half
-    /// (a 7b construction artifact) is ignored on decode of older runs.
+    /// (a 7b construction artifact) went with that stage; this is prose only.
     pub what_changed: String,
     /// The model arm of the two-arm verdict ([`ModelView`]) — the model's own
     /// sub-scores, derived letter, targets, and retrospective self-assessment.
-    /// `#[serde(default)]` for runs persisted before `portfolio-v7`.
-    #[serde(default)]
-    pub model_view: Option<ModelView>,
+    /// Required on every persisted verdict: a fresh v9-only store never holds a
+    /// pre-`portfolio-v7` single-arm row, so a blob missing an arm fails decode
+    /// and loud-skips as unreadable rather than rendering a partial verdict (the
+    /// frontend types both arms as present — `src/types.ts`).
+    pub model_view: ModelView,
     /// The engine's mechanical stand-in arm ([`EngineView`]) — deterministic
     /// outlook / conviction / action baselines beside the model's, so every
-    /// model-authored field has a scored engine counterpart.
-    /// `#[serde(default)]` for pre-v7 runs.
-    #[serde(default)]
-    pub engine_view: Option<EngineView>,
+    /// model-authored field has a scored engine counterpart. Required on every
+    /// persisted verdict, same contract as [`model_view`](Self::model_view).
+    pub engine_view: EngineView,
 }
 
 /// The engine's mechanical stand-in arm of the two-arm verdict
@@ -750,9 +746,7 @@ pub struct RoleRiskVerdict {
 #[serde(rename_all = "kebab-case", tag = "status")]
 pub enum VerdictDisposition {
     // Boxed: the priced body dwarfs the string variants, so without indirection
-    // every disposition would be sized to it. The `graded` alias keeps runs
-    // persisted by the single-equity slice decodable as the priced branch.
-    #[serde(alias = "graded")]
+    // every disposition would be sized to it.
     Priced(Box<GradedVerdict>),
     /// A structurally unpriceable vehicle class — the typed role / risk read
     /// (`docs/portfolio-analysis.md` §Asset eligibility), never `insufficient-evidence`
@@ -1056,9 +1050,9 @@ pub struct ConditionCrossing {
     pub observation_id: String,
     /// The date the crossing **confirmed** on — the run/sweep whose print pushed the
     /// streak to its required count, carried from the condition's own
-    /// [`ConditionEvalState::confirmed_at`]. `None` on a `FirstBreach` (nothing has
-    /// confirmed yet) and on a legacy state that reached its count before this field
-    /// existed.
+    /// [`ConditionEvalState::confirmed_at`]. `None` only on a `FirstBreach` (nothing
+    /// has confirmed yet); a confirmed crossing is always stamped, so the consumer
+    /// reads the date directly rather than dating it at the consuming run.
     ///
     /// It exists because the confirming pass and the pass that *consumes* the
     /// crossing are not the same event: a between-run sweep can confirm days before
@@ -1278,16 +1272,6 @@ pub struct PortfolioRollUp {
     /// persisted before the field existed still decode.
     #[serde(default)]
     pub data_health: Option<DataHealth>,
-    /// Decode-only legacy field: the retired 7b construction era's whole-book
-    /// aggregates blob. New runs never author it; it survives as an opaque value
-    /// solely so [`PortfolioRun::derived_constructed`] can still discriminate a
-    /// pre-marker degraded blob's shape.
-    #[serde(default)]
-    pub aggregates: Option<serde_json::Value>,
-    /// Decode-only legacy field: the retired construction call's portfolio-level
-    /// view blob — same role as `aggregates` above.
-    #[serde(default)]
-    pub construction: Option<serde_json::Value>,
     /// A short deterministic synthesis line.
     pub overview: String,
 }
@@ -1459,82 +1443,13 @@ pub struct PortfolioRun {
     /// before the field existed (`#[serde(default)]`).
     #[serde(default)]
     pub outcome: Option<outcome::OutcomeRecords>,
-    /// Whether this run carries a constructed book — **authored at the persist
-    /// seam** (`Some(true)` on the normal path, `Some(false)` on a degraded
-    /// persist), mirrored into the store's `constructed` column, and shipped to
-    /// the frontend, so no consumer re-derives run health from field shapes.
-    /// `None` only on a blob persisted before the marker existed; the store's
-    /// decode seams resolve it via [`Self::resolve_constructed`], so anything
-    /// past the store always sees a concrete value.
-    #[serde(default)]
-    pub constructed: Option<bool>,
-}
-
-impl PortfolioRun {
-    /// Whether this run is a complete, baseline-worthy run — the one predicate
-    /// every consumer reads, never the raw fields. Under the tunnel-vision
-    /// contract every new run persists complete (`Some(true)`); the predicate
-    /// survives for **legacy degraded rows** from the retired 7b construction
-    /// era (a construction-failed run persisted its per-holding work with
-    /// pre-merge actions; ruled 2026-08-11,
-    /// `docs/verification/2026-08-10-big-run-attempt-1.md` §Disposition) — those
-    /// rows must never serve as a carry / diff / quick-check baseline, and
-    /// [`store::latest_run`] excludes them on this predicate (via the mirrored
-    /// column). Reads the persisted marker; a pre-marker blob falls back to the
-    /// shape derivation.
-    pub fn has_constructed_book(&self) -> bool {
-        self.constructed.unwrap_or_else(|| self.derived_constructed())
-    }
-
-    /// The pre-marker shape derivation: degraded persisted `aggregates: Some`
-    /// (7a ran) with `construction: None` (no book). A pre-construction-era
-    /// blob (both fields `None`) keeps its constructed status — its actions
-    /// were final under the pre-7b contract. Kept only as the decode-time
-    /// fallback for blobs older than the marker; everything downstream reads
-    /// the marker.
-    fn derived_constructed(&self) -> bool {
-        !(self.roll_up.aggregates.is_some() && self.roll_up.construction.is_none())
-    }
-
-    /// Resolve a decoded pre-marker blob to a concrete marker — called at the
-    /// store's decode seams, so consumers and the IPC payload never see `None`.
-    pub fn resolve_constructed(&mut self) {
-        if self.constructed.is_none() {
-            self.constructed = Some(self.derived_constructed());
-        }
-    }
 }
 
 /// The action a carried verdict would stand on — `None` where the disposition
 /// carries no action (not-rated / insufficient-evidence). Consumed by [`job`]'s
 /// carry gate.
 ///
-/// On every tunnel-vision run the action is the per-holding action call's rung.
-/// On a **legacy degraded row** from the retired 7b construction era it holds a
-/// pre-merge value, which is why reading it as a carry baseline is sound only on
-/// complete runs — [`store::latest_run`] excludes degraded rows
-/// ([`PortfolioRun::has_constructed_book`]).
-/// Whether a prompt/schema version predates the tunnel-vision contract
-/// (`portfolio-v9`) — the whole-book construction era, whose actions were
-/// 7b-merged finals that may encode retired portfolio context. A missing stamp
-/// is pre-stamp (older still) and an unparseable one reads old, the
-/// conservative side. Consumed by the action prompt's history label on the
-/// prior action ([`pipeline`]) — a whole-book-era action is labeled history
-/// rather than an unqualified continuity baseline. (Its other consumer, the
-/// selective work-list's one-time pre-`v9` migration force-include, was retired
-/// by the 2026-08-16 badge ruling — a pre-`v9` verdict now carries like any
-/// other, re-graded on the next full run.)
-pub(crate) fn whole_book_era_version(version: Option<&str>) -> bool {
-    match version {
-        None => true,
-        Some(v) => v
-            .strip_prefix("portfolio-v")
-            .and_then(|n| n.parse::<u32>().ok())
-            .map(|n| n < 9)
-            .unwrap_or(true),
-    }
-}
-
+/// The action is the per-holding action call's rung.
 pub(crate) fn carried_action(verdict: &HoldingVerdict) -> Option<Action> {
     match &verdict.disposition {
         VerdictDisposition::Priced(g) => Some(g.action),
@@ -2283,60 +2198,6 @@ mod tests {
         let s = serde_json::to_value(&v).unwrap();
         assert_eq!(s["status"], "not-rated");
         assert_eq!(s["reason"], "option position");
-    }
-
-    #[test]
-    fn legacy_graded_rows_decode_as_the_priced_branch() {
-        // A run persisted by the single-equity slice carries `status: "graded"` and
-        // the old target field names; both must decode into the new union so old
-        // runs stay legible (`docs/portfolio-analysis.md` §Intrinsic verdict).
-        let legacy = json!({
-            "status": "graded",
-            "grade": "B",
-            "sub_scores": { "quality": 70.0, "valuation": 60.0, "momentum": 55.0, "risk": 65.0 },
-            "action": "hold",
-            "action_sizing": {
-                "target_weight_low": 0.05, "target_weight_high": 0.07,
-                "est_share_delta": null, "est_dollar_delta": null
-            },
-            "conviction": "medium",
-            "horizon_outlook": { "short": "neutral", "mid": "bullish", "long": "bullish" },
-            "price_targets": {
-                "end_of_month": null,
-                "end_of_year": {
-                    "base": 210.0, "bear": 180.0, "bull": 240.0,
-                    "methodology": "v1 drift"
-                }
-            },
-            "price_target_rationale": "midpoint",
-            "options_signal": {
-                "put_call_volume": null, "put_call_open_interest": null,
-                "implied_volatility": null, "iv_skew": null
-            },
-            "financial_summary": "fine",
-            "what_changed": "new holding"
-        });
-        let parsed: VerdictDisposition = serde_json::from_value(legacy).unwrap();
-        match parsed {
-            VerdictDisposition::Priced(g) => {
-                assert_eq!(g.grade, Grade::B);
-                // Old field names decode through the aliases into the rolling windows.
-                assert!(g.price_targets.one_month.is_none());
-                assert_eq!(g.price_targets.twelve_month.unwrap().base, 210.0);
-                // Pre-field runs default the new engine reads rather than fabricating.
-                assert!(g.risk_tier.is_none());
-                assert!(g.dead_money.is_none());
-                assert!(!g.low_confidence_grade);
-                // A pre-v7 run carries neither arm — the legacy single-arm render path.
-                assert!(g.model_view.is_none());
-                assert!(g.engine_view.is_none());
-                // Retired-era keys (lean, sizing, the action-half audit) are
-                // simply ignored on decode; the pre-action-call rationale reads
-                // empty.
-                assert!(g.action_rationale.is_empty());
-            }
-            other => panic!("legacy graded row must decode as priced, got {other:?}"),
-        }
     }
 
     #[test]

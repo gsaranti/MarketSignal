@@ -90,12 +90,6 @@ pub struct HoldingDossier {
     /// against the current [`crate::portfolio::engine::GRADE_PARAMETER_VERSION`] so a
     /// band recalibration's letter move is attributed to the retune, not to evidence.
     pub prior_grade_parameter_version: Option<String>,
-    /// The prompt/schema version the prior verdict was authored under (from the
-    /// prior run's audit row; `None` where no audit row survived). The action
-    /// call compares it against [`crate::portfolio::PROMPT_VERSION`] so a
-    /// pre-`portfolio-v9` action — a whole-book-era 7b final — anchors the fresh
-    /// per-holding decision as labeled history, never as an unqualified baseline.
-    pub prior_prompt_version: Option<String>,
     /// The prior run's pre-profit overlay record (from the audit row) — the
     /// period-keyed observation history accumulates through it
     /// (`docs/portfolio-analysis.md` §Starting parameters). `None` on a debut, a
@@ -120,9 +114,6 @@ pub struct PriorHolding {
     /// The grade-band parameter version the prior letter was computed under
     /// (`None` = a pre-stamp run, i.e. the v1 bands).
     pub grade_parameter_version: Option<String>,
-    /// The prompt/schema version the prior verdict was authored under (`None`
-    /// where no audit row survived).
-    pub prompt_version: Option<String>,
     /// The prior pre-profit overlay record — the observation history's carry path.
     pub pre_profit: Option<crate::portfolio::pre_profit::PreProfitOverlay>,
     /// The verdict's **effective analysis vintage** (`analyzed_at`, else the
@@ -355,7 +346,6 @@ pub fn assemble(
     let (
         prior_verdict,
         prior_grade_parameter_version,
-        prior_prompt_version,
         prior_pre_profit,
         prior_vintage,
         prior_spot,
@@ -364,13 +354,12 @@ pub fn assemble(
         Some(p) => (
             Some(p.verdict),
             p.grade_parameter_version,
-            p.prompt_version,
             p.pre_profit,
             Some(p.vintage),
             p.spot,
             p.matured_notes,
         ),
-        None => (None, None, None, None, None, None, Vec::new()),
+        None => (None, None, None, None, None, Vec::new()),
     };
     let mut fmp_financials = fmp_financials;
     let ttm_basis = apply_ttm_statement_basis(&mut fmp_financials);
@@ -447,7 +436,6 @@ pub fn assemble(
         prior_spot,
         prior_matured_notes,
         prior_grade_parameter_version,
-        prior_prompt_version,
         prior_pre_profit,
         listing,
         sources,
@@ -623,17 +611,12 @@ pub fn prior_verdict_for(
         .audit
         .iter()
         .find(|a| a.symbol.eq_ignore_ascii_case(symbol));
-    let (grade_parameter_version, prompt_version, pre_profit, spot) = match audit_row {
+    let (grade_parameter_version, pre_profit, spot) = match audit_row {
         Some(a) => {
             let spot = a.quick_basis.as_ref().map(|b| b.spot);
-            (
-                a.grade_parameter_version.clone(),
-                Some(a.prompt_version.clone()),
-                a.pre_profit.clone(),
-                spot,
-            )
+            (a.grade_parameter_version.clone(), a.pre_profit.clone(), spot)
         }
-        None => (None, None, None, None),
+        None => (None, None, None),
     };
     // The prior run's matured outcome lines for this symbol — the deterministic
     // scored ground the retrospective block renders (empty until windows mature).
@@ -658,7 +641,6 @@ pub fn prior_verdict_for(
     Some(PriorHolding {
         verdict,
         grade_parameter_version,
-        prompt_version,
         pre_profit,
         vintage,
         spot,
@@ -1318,8 +1300,6 @@ Sources and footnotes.
                 side_reversed: false,
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
-                aggregates: None,
-                construction: None,
                 graded_count: 0,
                 not_rated_count: 1,
                 insufficient_evidence_count: 0,
@@ -1333,7 +1313,6 @@ Sources and footnotes.
             audit: vec![],
             rate_prints: None,
             outcome: None,
-            constructed: Some(true),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
@@ -1370,8 +1349,6 @@ Sources and footnotes.
                 side_reversed: false,
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
-                aggregates: None,
-                construction: None,
                 graded_count: 0,
                 not_rated_count: 1,
                 insufficient_evidence_count: 0,
@@ -1400,7 +1377,6 @@ Sources and footnotes.
             }],
             rate_prints: None,
             outcome: None,
-            constructed: Some(true),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
@@ -1442,8 +1418,6 @@ Sources and footnotes.
                 side_reversed: false,
             }],
             roll_up: crate::portfolio::PortfolioRollUp {
-                aggregates: None,
-                construction: None,
                 graded_count: 0,
                 not_rated_count: 1,
                 insufficient_evidence_count: 0,
@@ -1457,7 +1431,6 @@ Sources and footnotes.
             audit: vec![],
             rate_prints: None,
             outcome: None,
-            constructed: Some(true),
         };
         crate::portfolio::store::insert_run(&conn, &run).unwrap();
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
