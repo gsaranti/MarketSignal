@@ -2,40 +2,39 @@
 
 ## What happened
 
-The **logic-flow clarity walk advanced through Step 8**
-(`logic-flow-docs/portfolio-analysis-logic-flow.md`), in two connected moves.
-First, **Step 7 (Outcome learning) now owns the episode open/extend rule** —
-reframed to lead with "where this run's decision becomes an episode" and the
-change-check (a verdict-branch flip or an action change), with the debut /
-abstention-extends / matured-reaffirmation-records-nothing cases and the
-dormant thesis-change leg **moved down from Step 8**; the standing-thesis and
-recovery-reseed nuances were deliberately left below the doc's altitude.
-Second, **Step 8 (Save the run) was grounded against the Rust** (`store.rs` /
-`job.rs` / `outcome.rs` / `pre_profit.rs`, via two parallel code-explorers):
-its "Decision-episode logic" block became a **back-pointer to Step 7**; the
-"Data stored" list was reorganized with built items first and two marked
-groups — *Dormant* (the pre-profit observation / backfill / execution legs,
-carry-and-recompute over an empty producer) and *Designed* (research-loop
-reuse decisions + assumptions, no struct field yet); the episode snapshot's
-overstated "both arms" claim was tightened (only targets / sub-scores /
-outlook / conviction are two-armed — grade / hurdle / dead-money / cap are
-engine-only); the calibration-learning embed was disambiguated (fires on
-newly-matured window labels, not an episode freezing, not every run); and the
-persisted holdings-diff scope was corrected (only the categorical
-position-change tag + exited positions persist — the full `PositionDelta` is
-runtime-only). Cleared **two external Codex rounds** (round 1: 3 findings;
-round 2: 1 — rejected observations aren't carried) to approval; shipped as
-**`f29cb4b`**, pushed to `main`.
+The **logic-flow clarity walk advanced through Step 9 — Display the
+result**, plus a **Step 7 outcome-learning deepening**, in one Codex-approved
+batch (`36f1163`, pushed to `main`). Step 7 broke the black-box "derive the
+scorecard reads" bullet into the **named reads** — what a matured label
+measures (with typed gaps), target-band calibration, the engine-vs-model
+head-to-head, outlook direction, action cohorts, falsifier lead times, and the
+proposal-eligibility gate — and added the **alignment-tags** and
+**pending-coverage** legs to Step 8's persisted `OutcomeRecords` list. Step 9
+was rewritten from a flat skeleton into an **as-built display walkthrough**
+grounded in `PortfolioView.vue` + the load commands: five read-only reads,
+insertion-order latest, corrupt-run loud-skip, the paired two-arm card and
+divergence-tag scope, the **card-badge split** (quick-check overlay — hidden on
+a historical view — vs persisted verdict state, which renders even
+historically), the role-risk-only branch, the roll-up scoreboard (**absent, not
+pending**, until episodes mature), dual-vintage holdings, display-only sorting,
+the read-only past-run view, and Model: none. Drift the walk surfaced was fixed
+in the **same batch**: `portfolio-analysis.md` (scoreboard absent-not-pending;
+only head-to-head + outlook-direction render; embed subset + dedicated-surface
+deferral; **side-reversed asymmetry** — long-authored-now-net-short — at three
+spots), `portfolio-workflow.md` (side-reversed, two spots), and `interface.md`
+(badge-ownership split + sentence-per-line). Four Codex rounds to approval; one
+deliberate **pushback held** (the dated `2026-08-16-selective-badges-ruling.md`
+verification record left untouched — it is a point-in-time record, and its
+`:63` is already precise).
 
 ## Current state
 
-The Step-8 batch is **committed and pushed to `main`** (`f29cb4b`); working
-tree clean, remote in sync. This was a **docs-only** change to
-`logic-flow-docs/` (not `docs/`), so no build / frontend gate applied and no
-code changed. `BUILD.md` and `INDEX.md` were assessed and need **no update** —
-the walk is a documentation-quality effort over `logic-flow-docs/`, which is
-outside the `docs/` corpus INDEX maps and orthogonal to BUILD's as-built
-architecture and status. Nothing in flight.
+Batch **committed and pushed to `main`** (`36f1163`); working tree clean,
+remote in sync. Docs-only (`logic-flow-docs/` + three `docs/` files), so no
+build / frontend gate applied and no code changed. **`BUILD.md` and `INDEX.md`
+were assessed and need no update** — the changes were prose-accuracy
+corrections to already-built, already-mapped contracts (no new concept, no
+renamed/added section, no status change). Nothing in flight.
 
 ## Open questions
 
@@ -45,11 +44,11 @@ architecture and status. Nothing in flight.
 
 ## Where to start
 
-**Resume the logic-flow clarity walk at Step 9 — Display the result.** Done so
-far: **6a / 6b / 6e / 6f / 6g / Step 7 / Step 8**. Then the **Quick check** and
-**Pull holdings** sections. Same method every batch: ground each new behavioral
-claim against the Rust (`pipeline.rs` / `engine.rs` / `outcome.rs` / `job.rs`)
-via parallel explorers, write as-built-first with `**As-built**` /
-`(designed …)` / `[note: …]` markers, fix any `portfolio-workflow.md` /
-`portfolio-analysis.md` drift in the same batch, Codex per batch, commit per
-batch to `main`.
+**Resume the logic-flow clarity walk at the Quick check section**, then **Pull
+holdings**. Done so far: **6a / 6b / 6e / 6f / 6g / Step 7 / Step 8 / Step 9**.
+Same method every batch: ground each new behavioral claim against the Rust
+(`pipeline.rs` / `engine.rs` / `outcome.rs` / `job.rs` / the Vue components for
+display-side claims) via parallel explorers, write as-built-first with
+`**As-built**` / `(designed …)` / `[note: …]` markers, fix any
+`portfolio-workflow.md` / `portfolio-analysis.md` drift in the same batch,
+Codex per batch, commit per batch to `main`.
