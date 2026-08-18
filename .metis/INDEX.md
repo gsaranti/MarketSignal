@@ -193,7 +193,7 @@ build status lives in `BUILD.md`.*
 - Portfolio outcome learning — portfolio-analysis.md §Outcome learning, §Starting parameters; portfolio-workflow.md §Step 7; storage.md §Local Analysis Suite Storage
 - Portfolio hard-forensic outcome — portfolio-analysis.md §Portfolio action, §Starting parameters; portfolio-workflow.md §Step 6g; trade-opportunities.md §Starting parameters; storage.md §Local Analysis Suite Storage
 - What-changed audit — portfolio-analysis.md §What changed; portfolio-workflow.md §Step 6g
-- Degraded-run persistence + constructed marker (construction-era legacy) — portfolio-analysis.md §Failure posture; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
+- Degraded-run persistence + constructed marker (removed by the fresh-start slice) — verification/2026-08-17-fresh-start-legacy-removal.md; BUILD.md §Runtime, observability & failure posture
 - Holdings normalization / book-level netting — schwab-integration.md §What is pulled, §Manual import (supplement); portfolio-workflow.md §Step 2; portfolio-analysis.md §Holdings change tracking
 - Holdings change tracking — portfolio-analysis.md §Holdings change tracking
 - Net-short equity handling — portfolio-analysis.md §Asset eligibility, §Triggering, §Holdings change tracking, §Outcome learning
@@ -306,3 +306,4 @@ the run's own dated record follows it.*
 - Tunnel-vision slice — ruling, build inventory, and per-finding dispositions — verification/2026-08-14-tunnel-vision-slice.md; portfolio-analysis.md §Portfolio action, §Portfolio roll-up
 - Tunnel-vision doc↔code conformance walk — findings, rulings, and applied corrections — verification/2026-08-15-tunnel-vision-conformance-walk.md
 - Selective-run safety additions → card badges — ruling, build inventory, and held-name-lane / pre-v9-gate retirement — verification/2026-08-16-selective-badges-ruling.md; portfolio-analysis.md §Triggering
+- Fresh-start legacy removal — the ruling, the full pre-`v9` removal inventory, and the kept-vs-removed boundary — verification/2026-08-17-fresh-start-legacy-removal.md; BUILD.md §Runtime, observability & failure posture

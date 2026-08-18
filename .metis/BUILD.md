@@ -272,20 +272,15 @@ polled at step/request boundaries and mid-stream, never interrupting an in-fligh
 request. Two load-bearing UI invariants: a **run is never a report** (a cancel/fail
 removes nothing that was shown), and the terminal `run-finished` event is
 emitted **before** any job-history write error can propagate, so a DB failure
-can't strand the UI mid-run. The first invariant carries one deliberate
-exception on the Portfolio-runs history, now **legacy-only**: the retired
-construction era persisted a construction-failed run's per-holding work as a
-**degraded run** — terminally failed, excluded from `latest_run`, marked by a
-persisted `constructed` marker mirrored into a store column (the exclusion
-filters in SQL without parsing a blob; the listing row and the full-run payload
-ship it, so the UI's "no book" tag reads the marker rather than re-deriving run
-health from field shapes). Those rows still list and open read-only, and a
-degraded row's pre-construction actions can never become the next run's
-diff/carry/quick-check baseline; since `portfolio-v9` no construction stage
-exists to fail that way. Corrupt run rows hold the same posture at read: an unparseable blob
-costs its own surface (skipped with a logged warning), never the history
-listing or the next run's baseline, and the refusal surfaces distinguish a
-degraded-only store from an unreadable one.
+can't strand the UI mid-run. The first invariant now holds without
+exception on the Portfolio-runs history: since `portfolio-v9` removed the
+construction stage, no run can fail into a persisted **degraded run**, so the
+fresh-start legacy slice (2026-08-17) deleted the `constructed` marker, its
+store column, the `latest_run` degraded-exclusion, and the UI's "no book"
+surface whole (`docs/verification/2026-08-17-fresh-start-legacy-removal.md`).
+The one read-time posture that stays is the corrupt-run loud-skip: an
+unparseable blob costs its own surface (skipped with a logged warning), never
+the history listing or the next run's baseline.
 The full runtime contract is in `docs/run-tracking.md`.
 
 ## Testing approach
@@ -508,9 +503,9 @@ bands, and the acknowledgment transition. Selective re-analysis adds the seams
 later slices consume: per-holding vintages (`effective_vintage`), the persisted
 `action_source` vocabulary, and the subset sweep. Outcome learning adds the
 episode store and the `HoldingAudit.hurdle` snapshot the calibration-proposal
-slice will consume; its episode `lean` / `lean_divergence` pair is
-construction-era legacy — since `portfolio-v9` the action is the lean and the
-divergence stays `None`, the fields kept so old episodes decode.
+slice will consume; its episode `lean` / `lean_divergence` pair was
+construction-era legacy that the fresh-start slice removed — since
+`portfolio-v9` the action is the lean and no divergence exists.
 
 Deliberate reductions in the quick check, surfaced rather than latent so they
 are not mistaken for defects: FMP quote plus dated-EOD only (never the shared
@@ -535,9 +530,10 @@ the finished verdict, the holding's own evidence, and the investor profile
 (the profile's only entry point; 6f interpretation stays profile-blind).
 Whole-book questions — concentration, overlap, funding, sizing, the deployment
 stance — are the future portfolio planner's. The ledger's target-weight range
-and the `portfolio-weight` series retired with the stage (persisted conditions
-decode but are skipped whole, never unevaluable); any future action numeric must
-be holding-based (share counts — ruled, unbuilt). Under the **2026-08-16 badge
+and the `portfolio-weight` series retired with the stage, and the fresh-start
+slice removed the series variant outright (no pre-`v9` conditions exist to
+decode); any future action numeric must be holding-based (share counts — ruled,
+unbuilt). Under the **2026-08-16 badge
 ruling** (`docs/verification/2026-08-16-selective-badges-ruling.md`) a selective
 run analyzes **strictly the selection** — the former automatic safety additions
 surface as non-blocking card badges rather than force-includes, an unselected
