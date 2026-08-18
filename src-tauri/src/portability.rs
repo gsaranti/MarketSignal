@@ -725,17 +725,10 @@ pub fn import_archive(
         }
     }
     for row in &run_rows {
-        // The `constructed` column mirrors the blob's own marker, same stance
-        // as the store migration: an unparseable blob keeps the constructed
-        // default — `latest_run`'s loud-skip decode still refuses to serve it
-        // as a baseline.
-        let constructed = serde_json::from_str::<crate::portfolio::PortfolioRun>(&row.run_json)
-            .map(|r| r.has_constructed_book())
-            .unwrap_or(true);
         tx.execute(
-            "INSERT INTO portfolio_runs (run_id, created_at, run_json, constructed) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![row.run_id, row.created_at, row.run_json, constructed],
+            "INSERT INTO portfolio_runs (run_id, created_at, run_json) \
+             VALUES (?1, ?2, ?3)",
+            params![row.run_id, row.created_at, row.run_json],
         )?;
     }
     for row in &pull_rows {
@@ -1268,16 +1261,15 @@ mod tests {
             [],
         )
         .unwrap();
-        // A decodable degraded run: import must recompute its `constructed`
-        // column from the blob's own marker, not the column default.
+        // A second decodable run — both import and round-trip.
         conn.execute(
             "INSERT INTO portfolio_runs (run_id, created_at, run_json)
-             VALUES ('run-degraded', '2026-07-06T14:00:00Z',
-                     '{\"run_id\":\"run-degraded\",\"created_at\":\"2026-07-06T14:00:00Z\",
+             VALUES ('run-two', '2026-07-06T14:00:00Z',
+                     '{\"run_id\":\"run-two\",\"created_at\":\"2026-07-06T14:00:00Z\",
                        \"holdings\":{\"positions\":[],\"cash\":0.0,\"account_total\":0.0,\"source_rows\":[]},
                        \"verdicts\":[],
                        \"roll_up\":{\"graded_count\":0,\"not_rated_count\":0,\"insufficient_evidence_count\":0,\"top_position_weight\":0.0,\"cash_weight\":0.0,\"overview\":\"x\"},
-                       \"audit\":[],\"constructed\":false}')",
+                       \"audit\":[]}')",
             [],
         )
         .unwrap();
@@ -1418,24 +1410,6 @@ mod tests {
         assert_eq!(loaded.skipped_reports, 0);
 
         let conn = storage::open(&target.db_path).unwrap();
-        // The `constructed` column is recomputed from each imported blob: the
-        // degraded run's marker survives the trip, and the undecodable legacy
-        // blob keeps the constructed default (latest_run's loud-skip decode
-        // still refuses to serve it).
-        let markers: Vec<(String, bool)> = conn
-            .prepare("SELECT run_id, constructed FROM portfolio_runs ORDER BY id")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<std::result::Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            markers,
-            vec![
-                ("run-one".to_string(), true),
-                ("run-degraded".to_string(), false),
-            ]
-        );
         // The quick-check between-run state rides the archive (format v2).
         let state_json: String = conn
             .query_row(

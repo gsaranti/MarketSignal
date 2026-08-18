@@ -75,9 +75,9 @@ function runTitle(r: PortfolioRunSummary): string {
       <div class="sidebar-header">Portfolio runs · last 30</div>
       <div class="sidebar-list">
         <!-- One row per retained run, newest first. Selecting a row opens that
-             run on the Portfolio page (the newest constructed = the live latest
-             view; any other — older, or a degraded newest — the read-only
-             historical view — App decides). -->
+             run on the Portfolio page (the newest readable run = the live latest
+             view; any other — older — the read-only historical view — App
+             decides). -->
         <template v-if="portfolioRuns.length > 0">
           <button
             v-for="r in portfolioRuns"
@@ -103,14 +103,9 @@ function runTitle(r: PortfolioRunSummary): string {
                 >
                 <!-- An unreadable row — the persisted blob no longer decodes;
                      it lists from its column identity (no counts — the
-                     summary's zeros are placeholders, not facts), cannot
-                     open (the button disables), and wins over the degraded
-                     tag: readability is the sharper fact. -->
+                     summary's zeros are placeholders, not facts) and cannot
+                     open (the button disables). -->
                 <span v-if="!r.readable" class="ana-tag row-tag">unreadable</span>
-                <!-- A degraded run — construction failed, verdicts persisted
-                     with no book (the words are the alert: the quiet ana-tag,
-                     never the accent). It opens read-only like any past run. -->
-                <span v-else-if="!r.constructed" class="ana-tag row-tag">no book</span>
               </div>
             </div>
           </button>

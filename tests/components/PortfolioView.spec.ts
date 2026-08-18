@@ -38,12 +38,6 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     grade: "B",
     sub_scores: { quality: 70, valuation: 55, momentum: 62, risk: 68 },
     action: "hold",
-    action_sizing: {
-      target_weight_low: 0.1,
-      target_weight_high: 0.2,
-      est_share_delta: null,
-      est_dollar_delta: null,
-    },
     conviction: "medium",
     horizon_outlook: { short: "neutral", mid: "bullish", long: "bullish" },
     price_targets: {
@@ -69,6 +63,24 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     structural_flag: false,
     financial_summary: "Solid margins.",
     what_changed: "First analyzed run.",
+    // Every persisted verdict carries both arms (portfolio-v7). The base
+    // fixture's engine arm mirrors its top-level model reads, so no "≠ engine"
+    // divergence tag or retrospective shows unless a test overrides the arms
+    // (e.g. twoArmGraded).
+    model_view: {
+      sub_scores: { quality: 70, valuation: 55, momentum: 62, risk: 68 },
+      letter: "B",
+      price_targets: {
+        one_month: { base: 205, bear: 195, bull: 215 },
+        twelve_month: { base: 210, bear: 180, bull: 240 },
+      },
+      self_assessment: "",
+    },
+    engine_view: {
+      outlook: { short: "neutral", mid: "bullish", long: "bullish" },
+      conviction: "medium",
+      action: "hold",
+    },
     ...over,
   };
 }
@@ -118,8 +130,6 @@ function ledger(over: Partial<ThesisLedger> = {}): ThesisLedger {
     what_must_improve: "Hardware upgrade cycle re-accelerates",
     what_must_not_break: "Services attach rate holds above 30%",
     conditions: [],
-    target_weight_low: 0.05,
-    target_weight_high: 0.08,
     ...over,
   };
 }
@@ -174,7 +184,6 @@ const run: PortfolioRun = {
   },
   audit: [],
   // The persist-seam marker the backend ships (always concrete on the wire).
-  constructed: true,
 };
 
 // A pull FRESHER than the run: NVDA appears (new), MSFT is gone (no longer held).
@@ -248,34 +257,25 @@ describe("PortfolioView states", () => {
   });
 
   test("an errored runs listing renders the unknown state, claiming neither", () => {
-    // With the listing failed and nothing else loaded, a never-ran store and
-    // a degraded-only one are indistinguishable — the empty state must not
-    // assert either shape.
+    // With the listing failed and nothing else loaded, whether a prior
+    // analysis exists can't be told — the empty state must not assert either.
     const wrapper = mountView({ historyUnknown: true });
     expect(wrapper.text()).toContain("Portfolio state unavailable.");
     expect(wrapper.text()).not.toContain("No holdings yet.");
-    expect(wrapper.text()).not.toContain("No constructed run yet.");
   });
 
-  test("an unreadable constructed history reads as unreadable, claiming neither", () => {
-    // A constructed row that couldn't be decoded would otherwise BE the
-    // latest view — the empty state must say unreadable, not never-ran or
-    // degraded-only (Codex round).
+  test("an unreadable history reads as unreadable, claiming neither", () => {
+    // A row that couldn't be decoded would otherwise BE the latest view — the
+    // empty state must say unreadable, not never-ran (Codex round).
     const wrapper = mountView({ unreadableHistory: true });
     expect(wrapper.text()).toContain("A prior run couldn't be read.");
     expect(wrapper.text()).not.toContain("No holdings yet.");
-    expect(wrapper.text()).not.toContain("No constructed run yet.");
   });
 
-  test("a pull over a degraded-only or unreadable history never claims never-analyzed", () => {
-    // Pull holdings, then a first analysis that fails at construction: the
-    // pull and the persisted per-holding work coexist, so "Not yet analyzed."
-    // would be false (Codex round).
-    const degraded = mountView({ pull: fresherPull, degradedOnlyHistory: true });
-    expect(degraded.text()).toContain("No constructed analysis yet.");
-    expect(degraded.text()).toContain("no book");
-    expect(degraded.text()).not.toContain("Not yet analyzed.");
-    expect(degraded.text()).not.toContain("Nothing is graded");
+  test("a pull over an unreadable history never claims never-analyzed", () => {
+    // Pull holdings while the only prior run is unreadable: the pull and the
+    // persisted (if corrupt) work coexist, so "Not yet analyzed." would be
+    // false (Codex round).
     const unreadable = mountView({ pull: fresherPull, unreadableHistory: true });
     expect(unreadable.text()).toContain("A prior run couldn't be read.");
     expect(unreadable.text()).not.toContain("Not yet analyzed.");
@@ -283,28 +283,6 @@ describe("PortfolioView states", () => {
     const plain = mountView({ pull: fresherPull });
     expect(plain.text()).toContain("Not yet analyzed.");
     expect(plain.text()).toContain("Nothing is graded");
-  });
-
-  test("a degraded-only history reads as no-constructed-run, never never-ran", () => {
-    // The store holds persisted per-holding work (visible in the runs
-    // history), so "No holdings yet." would misdescribe it.
-    const wrapper = mountView({ degradedOnlyHistory: true });
-    expect(wrapper.text()).toContain("No constructed run yet.");
-    expect(wrapper.text()).toContain("runs history");
-    expect(wrapper.text()).not.toContain("No holdings yet.");
-    expect(wrapper.text()).toContain("Run analysis");
-  });
-
-  test("the degraded tag is driven by the shipped marker alone", () => {
-    // The backend authors `constructed` at its persist seam; the view must
-    // not re-derive degradedness from roll_up field shapes.
-    const markerDegraded: PortfolioRun = {
-      ...run,
-      run_id: "prun-marker",
-      constructed: false,
-    };
-    const wrapper = mountView({ run: markerDegraded, historical: true });
-    expect(wrapper.find(".hist-banner .ana-tag").text()).toBe("no book");
   });
 
   test("loading state shows while nothing is cached", () => {
@@ -357,118 +335,6 @@ describe("PortfolioView historical mode", () => {
 
     await banner.find(".hist-banner-back").trigger("click");
     expect(wrapper.emitted("back-to-latest")).toHaveLength(1);
-  });
-
-  test("a degraded run banners its missing book and tags the vintage line", () => {
-    // Step 7b's construction failed after the per-holding pass: the run opens
-    // read-only with the 7a aggregates persisted and no constructed book, and
-    // the banner names what the actions are — pre-construction per-holding
-    // reads, not a validated plan.
-    const degraded: PortfolioRun = {
-      ...run,
-      run_id: "prun-degraded",
-      constructed: false,
-      roll_up: {
-        ...run.roll_up,
-        aggregates: {
-          spine: [],
-          sector_exposure: [],
-          unknown_sector_weight: 0,
-          overlap_clusters: [],
-          not_rated: [],
-          cash_weight: 0.078,
-          top_position_weight: 0.5,
-          correlation_note: "deferred",
-        },
-        construction: null,
-      },
-    };
-    const wrapper = mountView({ run: degraded, historical: true });
-    const banner = wrapper.find(".hist-banner");
-    expect(banner.text()).toContain("read-only");
-    expect(banner.find(".ana-tag").text()).toBe("no book");
-    expect(banner.text()).toContain("no plan was validated");
-    expect(banner.text()).toContain("pre-construction read");
-    // Priced cards keep their action word, but the kicker drops the
-    // whole-book claim — the value is a per-holding read, not a decision.
-    expect(wrapper.find(".hc-action-word").exists()).toBe(true);
-    expect(wrapper.find(".hc-actionrow .hc-kicker").text()).toBe(
-      "Per-holding read"
-    );
-  });
-
-  test("a degraded run suppresses the role-risk placeholder action", () => {
-    // The role-risk branch's action is authored wholly at 7b construction; on
-    // a degraded run that call never blessed one, so the persisted placeholder
-    // must not render as a decision.
-    const degradedRole: PortfolioRun = {
-      ...run,
-      run_id: "prun-degraded-role",
-      constructed: false,
-      holdings: {
-        positions: [
-          position("BND", {
-            asset_class: "etf",
-            cost_basis: 9_000,
-            market_value: 10_000,
-          }),
-        ],
-        cash: 0,
-        account_total: 10_000,
-      },
-      verdicts: [
-        verdict(
-          "BND",
-          {
-            status: "role-risk-only",
-            class_label: "bond fund",
-            role_summary: "Core fixed-income sleeve.",
-            exposure_tilt: [],
-            expense_drag: null,
-            observable_risk: null,
-            structural_flag: false,
-            evidence_gaps: [],
-            action: "hold",
-            action_sizing: {
-              target_weight_low: 0.9,
-              target_weight_high: 1.1,
-              est_share_delta: null,
-              est_dollar_delta: null,
-            },
-            what_changed: "new holding",
-          },
-          { asset_class: "etf" }
-        ),
-      ],
-      roll_up: {
-        ...run.roll_up,
-        graded_count: 0,
-        role_risk_only_count: 1,
-        aggregates: {
-          spine: [],
-          sector_exposure: [],
-          unknown_sector_weight: 0,
-          overlap_clusters: [],
-          not_rated: [],
-          cash_weight: 0,
-          top_position_weight: 1,
-          correlation_note: "deferred",
-        },
-        construction: null,
-      },
-    };
-    const wrapper = mountView({ run: degradedRole, historical: true });
-    expect(wrapper.find(".hc-action-word").exists()).toBe(false);
-    expect(wrapper.text()).toContain(
-      "No action — this legacy run's construction failed to validate a plan."
-    );
-    // The role read itself still renders — it IS the persisted analytical work.
-    expect(wrapper.text()).toContain("Core fixed-income sleeve");
-  });
-
-  test("a constructed historical run carries no degraded tag", () => {
-    const wrapper = mountView({ run, pull: fresherPull, historical: true });
-    expect(wrapper.find(".hist-banner .ana-tag").exists()).toBe(false);
   });
 
   test("the latest view renders no banner and keeps the triggers live", () => {
@@ -565,12 +431,6 @@ describe("PortfolioView setup tile and thesis monitor", () => {
             structural_flag: false,
             evidence_gaps: [],
             action: "hold",
-            action_sizing: {
-              target_weight_low: 0.9,
-              target_weight_high: 1.1,
-              est_share_delta: null,
-              est_dollar_delta: null,
-            },
             what_changed: "new holding",
           },
           {
@@ -783,12 +643,6 @@ describe("PortfolioView verdict cards", () => {
             structural_flag: false,
             evidence_gaps: ["no on-plan duration/credit surface"],
             action: "hold",
-            action_sizing: {
-              target_weight_low: 0.9,
-              target_weight_high: 1.1,
-              est_share_delta: null,
-              est_dollar_delta: null,
-            },
             what_changed: "new holding",
           },
           { asset_class: "etf" }
@@ -1435,12 +1289,6 @@ describe("PortfolioView selective re-analysis", () => {
             structural_flag: false,
             evidence_gaps: [],
             action: "hold",
-            action_sizing: {
-              target_weight_low: 0.9,
-              target_weight_high: 1.1,
-              est_share_delta: null,
-              est_dollar_delta: null,
-            },
             what_changed: "carried",
           },
           {
@@ -1459,8 +1307,7 @@ describe("PortfolioView selective re-analysis", () => {
 
 describe("PortfolioView per-holding action", () => {
   // Tunnel-vision runs (portfolio-v9): the action call's rationale renders
-  // under the rung; retired construction-era panels never render, even when a
-  // legacy blob carries their fields.
+  // under the rung.
   const actionRun: PortfolioRun = {
     ...run,
     verdicts: [
@@ -1488,29 +1335,6 @@ describe("PortfolioView per-holding action", () => {
       .findAll(".holding-card")
       .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
     expect(aapl.find(".hc-rationale").exists()).toBe(false);
-  });
-
-  test("legacy construction-era fields never render their retired panels", () => {
-    // A legacy blob carrying the retired construction view + divergence-era
-    // fields: decode keeps them opaque and the page renders none of it.
-    const legacyRun = {
-      ...run,
-      roll_up: {
-        ...run.roll_up,
-        construction: {
-          risk_posture: "Balanced, equity-heavy.",
-          deployment_stance: "Trim MSFT to fund nothing — raise cash.",
-          concentration_read: "MSFT breaches the comfort band.",
-          external_funding: -6_000,
-          retried: true,
-        },
-      },
-    } as PortfolioRun;
-    const wrapper = mountView({ run: legacyRun });
-    expect(wrapper.find(".rollup-construction").exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("Balanced, equity-heavy.");
-    expect(wrapper.find(".hc-lean-tag").exists()).toBe(false);
-    expect(wrapper.find(".hc-changed-action").exists()).toBe(false);
   });
 });
 
@@ -1589,22 +1413,6 @@ describe("PortfolioView two-arm verdict", () => {
     expect(tags.filter((t) => t === "≠ engine").length).toBe(2);
   });
 
-  test("a pre-v7 card renders the legacy single intrinsic column, no model view", () => {
-    const wrapper = mountView({
-      run: {
-        ...run,
-        verdicts: [verdict("AAPL", { status: "priced", ...graded() })],
-      },
-    });
-    const card = wrapper.find(".holding-card");
-    expect(card.find(".hc-body").classes()).toContain("hc-body-single");
-    const kickers = card.findAll(".hc-kicker").map((k) => k.text());
-    expect(kickers).toContain("Intrinsic verdict");
-    expect(kickers.some((k) => k.startsWith("Model view"))).toBe(false);
-    expect(kickers).not.toContain("Model retrospective");
-    // The action strip still renders (one universal layout).
-    expect(card.find(".hc-actionrow .hc-action-word").exists()).toBe(true);
-  });
 
   test("an inverted model band renders as authored with the annotation tag", () => {
     const inverted = twoArmGraded();

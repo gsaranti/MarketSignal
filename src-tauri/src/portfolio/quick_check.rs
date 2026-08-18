@@ -435,18 +435,12 @@ pub fn run_quick_check(
 ) -> Result<QuickCheckState> {
     let run = match store::latest_run(conn)? {
         Some(run) => run,
-        // Three distinct refusals — `latest_run` returns `None` for all of
-        // them, and each must be named truthfully: constructed rows that
-        // exist but decoded on none of the loud-skip passes are *unreadable*,
-        // not degraded; a store of only degraded rows holds persisted
-        // per-holding work, not nothing; and only the empty store never ran.
-        None if store::constructed_rows_exist(conn)? => anyhow::bail!(
-            "the retained constructed runs could not be read (see the app log) — \
-             nothing to quick-check"
-        ),
+        // Two distinct refusals — `latest_run` returns `None` for both, and each
+        // must be named truthfully: runs that exist but decoded on none of the
+        // loud-skip passes are *unreadable*; only the empty store never ran.
         None if store::any_runs(conn)? => anyhow::bail!(
-            "the retained Portfolio Analysis runs are all degraded (no constructed \
-             book) — nothing to quick-check"
+            "the retained Portfolio Analysis runs could not be read (see the app \
+             log) — nothing to quick-check"
         ),
         None => anyhow::bail!("no Portfolio Analysis run exists yet — nothing to quick-check"),
     };
@@ -1757,8 +1751,24 @@ mod tests {
                 sub_scores: SubScores { quality: 70.0, valuation: 60.0, momentum: 50.0, risk: 65.0 },
                 action: crate::portfolio::Action::Hold,
                 action_rationale: String::new(),
-                model_view: None,
-                engine_view: None,
+                model_view: crate::portfolio::ModelView {
+                    sub_scores: SubScores { quality: 70.0, valuation: 60.0, momentum: 50.0, risk: 65.0 },
+                    letter: Grade::B,
+                    price_targets: crate::portfolio::ModelPriceTargets {
+                        one_month: crate::portfolio::ModelPriceTarget { base: 195.0, bear: 180.0, bull: 210.0 },
+                        twelve_month: crate::portfolio::ModelPriceTarget { base: 210.0, bear: 150.0, bull: 260.0 },
+                    },
+                    self_assessment: String::new(),
+                },
+                engine_view: crate::portfolio::EngineView {
+                    outlook: HorizonOutlook {
+                        short: HorizonRead::Neutral,
+                        mid: HorizonRead::Bullish,
+                        long: HorizonRead::Bullish,
+                    },
+                    conviction: crate::portfolio::Conviction::Medium,
+                    action: crate::portfolio::Action::Hold,
+                },
                 conviction: crate::portfolio::Conviction::Medium,
                 horizon_outlook: HorizonOutlook {
                     short: HorizonRead::Neutral,
@@ -1848,8 +1858,6 @@ mod tests {
             },
             verdicts: vec![verdict],
             roll_up: PortfolioRollUp {
-                aggregates: None,
-                construction: None,
                 graded_count: 1,
                 not_rated_count: 0,
                 insufficient_evidence_count: 0,
@@ -1869,7 +1877,6 @@ mod tests {
                 fetched_at: "2026-07-20T00:00:00Z".into(),
             }),
             outcome: None,
-            constructed: Some(true),
         }
     }
 
@@ -1966,8 +1973,6 @@ mod tests {
             },
             verdicts: vec![fresh, carried],
             roll_up: PortfolioRollUp {
-                aggregates: None,
-                construction: None,
                 graded_count: 2,
                 not_rated_count: 0,
                 insufficient_evidence_count: 0,
@@ -1984,7 +1989,6 @@ mod tests {
             ],
             rate_prints: None,
             outcome: None,
-            constructed: Some(true),
         };
         store::insert_run(&conn, &run).unwrap();
         let mut data = StubData::quiet(195.0, "2026-08-02");
@@ -2110,37 +2114,20 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_only_store_refuses_as_unreadable_not_degraded() {
-        // Constructed-marked rows that decode on none of the loud-skip passes
-        // are unreadable, not degraded — the refusal must not affirm the
-        // defined degraded product state over corrupt rows (combined-range
-        // review).
+    fn an_unreadable_only_store_refuses_as_unreadable_not_never_ran() {
+        // Rows that decode on none of the loud-skip passes are unreadable, not
+        // absent — the refusal must not claim "no run exists" over persisted
+        // (if corrupt) work (combined-range review).
         let conn = mem();
         conn.execute(
-            "INSERT INTO portfolio_runs (run_id, created_at, run_json, constructed) \
-             VALUES ('run-corrupt', '2026-08-11T00:00:00Z', 'not json', 1)",
+            "INSERT INTO portfolio_runs (run_id, created_at, run_json) \
+             VALUES ('run-corrupt', '2026-08-11T00:00:00Z', 'not json')",
             [],
         )
         .unwrap();
         let err = run_quick_check(&StubData::quiet(195.0, "2026-08-01"), &conn, &noop_ctx())
             .unwrap_err();
         assert!(err.to_string().contains("could not be read"), "{err}");
-        assert!(!err.to_string().contains("degraded"), "{err}");
-    }
-
-    #[test]
-    fn a_degraded_only_store_refuses_as_degraded_not_never_ran() {
-        // `latest_run` is None for both an empty store and a degraded-only one;
-        // the refusal must not claim "no run exists" over persisted work
-        // (attempt-1 review sweep).
-        let conn = mem();
-        let mut run = sample_run(priced_verdict("AAPL", vec![]), audit_for("AAPL", None));
-        run.constructed = Some(false);
-        store::record_run(&conn, &run).unwrap();
-        let err = run_quick_check(&StubData::quiet(195.0, "2026-08-01"), &conn, &noop_ctx())
-            .unwrap_err();
-        assert!(err.to_string().contains("degraded"), "{err}");
-        assert!(err.to_string().contains("no constructed book"), "{err}");
         assert!(!err.to_string().contains("no Portfolio Analysis run exists"), "{err}");
     }
 

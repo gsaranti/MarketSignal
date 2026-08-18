@@ -111,12 +111,6 @@ export const samplePortfolioRun: PortfolioRun = {
         grade: "B",
         sub_scores: { quality: 70, valuation: 55, momentum: 62, risk: 68 },
         action: "hold",
-        action_sizing: {
-          target_weight_low: 0.55,
-          target_weight_high: 0.75,
-          est_share_delta: null,
-          est_dollar_delta: null,
-        },
         conviction: "medium",
         horizon_outlook: { short: "neutral", mid: "bullish", long: "bullish" },
         price_targets: {
@@ -142,6 +136,20 @@ export const samplePortfolioRun: PortfolioRun = {
         structural_flag: false,
         financial_summary: "Solid margins.",
         what_changed: "First analyzed run.",
+        model_view: {
+          sub_scores: { quality: 70, valuation: 55, momentum: 62, risk: 68 },
+          letter: "B",
+          price_targets: {
+            one_month: { base: 205, bear: 195, bull: 215 },
+            twelve_month: { base: 210, bear: 180, bull: 240 },
+          },
+          self_assessment: "",
+        },
+        engine_view: {
+          outlook: { short: "neutral", mid: "bullish", long: "bullish" },
+          conviction: "medium",
+          action: "hold",
+        },
       },
     },
   ],

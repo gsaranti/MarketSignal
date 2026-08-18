@@ -915,7 +915,6 @@ describe("App.vue portfolio wiring", () => {
             created_at: samplePortfolioRun.created_at,
             holdings_count: 1,
             graded_count: 1,
-            constructed: true,
             readable: true,
           },
           {
@@ -923,7 +922,6 @@ describe("App.vue portfolio wiring", () => {
             created_at: "2026-06-01T12:00:00Z",
             holdings_count: 1,
             graded_count: 0,
-            constructed: true,
             readable: true,
           },
         ],
@@ -958,21 +956,18 @@ describe("App.vue portfolio wiring", () => {
     wrapper.unmount();
   });
 
-  test("an unreadable degraded row classifies as unreadable, not degraded-only", async () => {
-    // A previously degraded row whose blob becomes corrupt has
-    // constructed: false AND readable: false — it must trip the unreadable
-    // read, never the degraded-only copy whose opens-read-only claim is
-    // false for a row that cannot open (Codex round).
+  test("an unreadable row classifies as unreadable, not never-ran", async () => {
+    // A row whose blob is corrupt has readable: false — it must trip the
+    // unreadable read, never the never-ran copy (Codex round).
     tauri.invoke.mockImplementation(
       makeInvokeRouter({
         latest_portfolio_run: () => null,
         list_portfolio_runs: () => [
           {
-            run_id: "prun-corrupt-degraded",
+            run_id: "prun-corrupt",
             created_at: "2026-08-11T12:00:00Z",
             holdings_count: 0,
             graded_count: 0,
-            constructed: false,
             readable: false,
           },
         ],
@@ -984,10 +979,8 @@ describe("App.vue portfolio wiring", () => {
     await flushPromises();
     const portfolio = wrapper.findComponent(PortfolioView);
     expect(portfolio.props("unreadableHistory")).toBe(true);
-    // degradedOnlyHistory may also compute true; the view gives the
-    // unreadable state precedence, which the PortfolioView specs pin.
     expect(portfolio.text()).toContain("A prior run couldn't be read.");
-    expect(portfolio.text()).not.toContain("No constructed run yet.");
+    expect(portfolio.text()).not.toContain("No holdings yet.");
     wrapper.unmount();
   });
 
@@ -1001,7 +994,6 @@ describe("App.vue portfolio wiring", () => {
             created_at: "2026-06-01T12:00:00Z",
             holdings_count: 1,
             graded_count: 0,
-            constructed: true,
             readable: true,
           },
         ],
@@ -1042,7 +1034,6 @@ describe("App.vue portfolio wiring", () => {
             created_at: samplePortfolioRun.created_at,
             holdings_count: 1,
             graded_count: 1,
-            constructed: true,
             readable: true,
           },
           {
@@ -1050,7 +1041,6 @@ describe("App.vue portfolio wiring", () => {
             created_at: "2026-06-01T12:00:00Z",
             holdings_count: 1,
             graded_count: 0,
-            constructed: true,
             readable: true,
           },
         ],

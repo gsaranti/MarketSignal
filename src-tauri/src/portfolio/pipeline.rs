@@ -120,16 +120,6 @@ pub struct ActionInput<'a> {
     pub profile: &'a crate::portfolio::InvestorProfile,
 }
 
-/// Whether a prior verdict was authored under the retired whole-book contract —
-/// any prompt version before `portfolio-v9`, a missing stamp (pre-stamp era)
-/// included; an unparseable version reads old, the conservative side. Such an
-/// action is a 7b-merged final that may encode retired portfolio context, so
-/// the action prompt labels it as history rather than an unqualified
-/// continuity baseline.
-fn prior_action_is_whole_book_era(version: Option<&str>) -> bool {
-    crate::portfolio::whole_book_era_version(version)
-}
-
 /// The app-stamped annotation for a chosen rung outside the engine's per-holding
 /// action set — the choice persists exactly as authored; the departure records on
 /// the holding's audit (`docs/portfolio-analysis.md` §Portfolio action, the
@@ -631,13 +621,13 @@ pub fn analyze_holding(
         // The model arm: persisted exactly as authored, letter derived from the
         // model's own scores through the shared cutoffs (the two-arm contract —
         // `docs/portfolio-analysis.md` §The holding verdict).
-        model_view: Some(ModelView {
+        model_view: ModelView {
             sub_scores: interpretation.model_sub_scores,
             letter: engine::grade_from_subscores(&interpretation.model_sub_scores),
             price_targets: interpretation.model_price_targets.clone(),
             self_assessment: interpretation.self_assessment.clone(),
-        }),
-        engine_view: Some(engine_view),
+        },
+        engine_view,
     };
     // The per-holding action call — the profile's one entry point: the finished
     // verdict plus the holding's own evidence decide the rung, tunnel vision by
@@ -1587,16 +1577,14 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
         });
         [t1, t12].into_iter().flatten().collect::<Vec<_>>().join(", ")
     };
-    let engine_rest = match &g.engine_view {
-        Some(ev) => format!(
-            "conviction {:?}, {}, action {}",
-            ev.conviction,
-            outlook(&ev.outlook),
-            ev.action.as_kebab()
-        )
-        .to_lowercase(),
-        None => "conviction/outlook/action not recorded".to_string(),
-    };
+    let ev = &g.engine_view;
+    let engine_rest = format!(
+        "conviction {:?}, {}, action {}",
+        ev.conviction,
+        outlook(&ev.outlook),
+        ev.action.as_kebab()
+    )
+    .to_lowercase();
     p.push_str(&format!(
         "- prior ENGINE arm: grade {} (q {:.0} / v {:.0} / r {:.0}; momentum {:.0}); {}; {}\n",
         g.grade.as_str(),
@@ -1612,34 +1600,28 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
         engine_rest,
     ));
 
-    match &g.model_view {
-        Some(mv) => {
-            let mt = &mv.price_targets;
-            p.push_str(&format!(
-                "- prior MODEL arm (yours): letter {} (q {:.0} / v {:.0} / m {:.0} / r {:.0}); \
-                 1-mo base {:.2} [{:.2}\u{2013}{:.2}], 12-mo base {:.2} [{:.2}\u{2013}{:.2}]; \
-                 conviction {:?}, {}, action {}\n",
-                mv.letter.as_str(),
-                mv.sub_scores.quality,
-                mv.sub_scores.valuation,
-                mv.sub_scores.momentum,
-                mv.sub_scores.risk,
-                mt.one_month.base,
-                mt.one_month.bear,
-                mt.one_month.bull,
-                mt.twelve_month.base,
-                mt.twelve_month.bear,
-                mt.twelve_month.bull,
-                g.conviction,
-                outlook(&g.horizon_outlook),
-                g.action.as_kebab(),
-            ));
-        }
-        None => p.push_str(
-            "- prior MODEL arm: not recorded (the prior run predates the two-arm \
-             contract) — your prior conviction/outlook/lean above rode the single-arm \
-             verdict.\n",
-        ),
+    {
+        let mv = &g.model_view;
+        let mt = &mv.price_targets;
+        p.push_str(&format!(
+            "- prior MODEL arm (yours): letter {} (q {:.0} / v {:.0} / m {:.0} / r {:.0}); \
+             1-mo base {:.2} [{:.2}\u{2013}{:.2}], 12-mo base {:.2} [{:.2}\u{2013}{:.2}]; \
+             conviction {:?}, {}, action {}\n",
+            mv.letter.as_str(),
+            mv.sub_scores.quality,
+            mv.sub_scores.valuation,
+            mv.sub_scores.momentum,
+            mv.sub_scores.risk,
+            mt.one_month.base,
+            mt.one_month.bear,
+            mt.one_month.bull,
+            mt.twelve_month.base,
+            mt.twelve_month.bear,
+            mt.twelve_month.bull,
+            g.conviction,
+            outlook(&g.horizon_outlook),
+            g.action.as_kebab(),
+        ));
     }
 
     if let Some(spot) = d.financials.current_price {
@@ -1688,14 +1670,12 @@ fn retrospective_prompt_section(d: &HoldingDossier) -> String {
                             ));
                         }
                     }
-                    if let Some(mv) = &g.model_view {
-                        let b = mv.price_targets.twelve_month.base;
-                        if b > 0.0 {
-                            vs.push(format!(
-                                "distance to the prior model 12-mo base {:+.1}% (basis-bridged)",
-                                (spot / (b * bridge) - 1.0) * 100.0
-                            ));
-                        }
+                    let b = g.model_view.price_targets.twelve_month.base;
+                    if b > 0.0 {
+                        vs.push(format!(
+                            "distance to the prior model 12-mo base {:+.1}% (basis-bridged)",
+                            (spot / (b * bridge) - 1.0) * 100.0
+                        ));
                     }
                 }
                 p.push_str(&format!(
@@ -2047,25 +2027,11 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
         }
     ));
     if let Some(prior) = d.prior_verdict.as_ref().and_then(crate::portfolio::carried_action) {
-        if prior_action_is_whole_book_era(d.prior_prompt_version.as_deref()) {
-            // A pre-`portfolio-v9` action is a 7b-merged whole-book final — it
-            // may encode retired portfolio context, so it anchors this call as
-            // labeled history, never an unqualified baseline (Codex 2026-08-14,
-            // finding 1).
-            p.push_str(&format!(
-                "Prior run's action for this holding: {} — authored under the \
-                 RETIRED whole-book contract, where book-level context could set \
-                 the rung. Treat it as history, not a baseline: re-derive this \
-                 decision from the verdict and profile alone.\n",
-                prior.as_kebab()
-            ));
-        } else {
-            p.push_str(&format!(
-                "Prior run's action for this holding: {} (continuity baseline — move \
-                 only on materially moved evidence).\n",
-                prior.as_kebab()
-            ));
-        }
+        p.push_str(&format!(
+            "Prior run's action for this holding: {} (continuity baseline — move \
+             only on materially moved evidence).\n",
+            prior.as_kebab()
+        ));
     }
 
     match &input.subject {
@@ -2098,7 +2064,8 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                     .map(|s| format!("{s:?}").to_lowercase())
                     .unwrap_or_else(|| "(gap)".to_string()),
             ));
-            if let Some(mv) = &graded.model_view {
+            {
+                let mv = &graded.model_view;
                 p.push_str(&format!(
                     "MODEL ARM: letter {}; sub-scores quality {:.0} / valuation {:.0} / \
                      momentum {:.0} / risk {:.0}.\n",
@@ -3358,7 +3325,6 @@ mod tests {
             prior_spot: None,
             prior_matured_notes: Vec::new(),
             prior_grade_parameter_version: None,
-            prior_prompt_version: None,
             sources: vec!["FMP".into()],
             prior_pre_profit: None,
             listing: None,
@@ -4130,11 +4096,10 @@ mod tests {
     }
 
     #[test]
-    fn action_prompt_labels_a_whole_book_era_prior_action_as_history() {
-        // A prior action authored before portfolio-v9 is a 7b-merged whole-book
-        // final — it must anchor the fresh call as labeled history, never an
-        // unqualified continuity baseline (Codex 2026-08-14, finding 1). A
-        // same-contract prior keeps the plain baseline line.
+    fn action_prompt_labels_the_prior_action_as_a_continuity_baseline() {
+        // The prior action anchors the fresh call as a plain continuity baseline.
+        // The retired whole-book-era history label was removed with the pre-v9
+        // legacy (fresh-start ruling 2026-08-17).
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (prior, _) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
@@ -4150,28 +4115,16 @@ mod tests {
             panic!("expected a priced verdict");
         };
         let graded = graded.clone();
-        let render = |d: &HoldingDossier| {
-            action_user_prompt(&ActionInput {
-                dossier: d,
-                subject: ActionSubject::Priced {
-                    graded: &graded,
-                    engine: &engine_output,
-                    pre_profit: None,
-                },
-                engine_set: &engine_set,
-                profile: &d.profile,
-            })
-        };
-        // Pre-v9 stamps (and a missing stamp) take the history label.
-        for version in [Some("portfolio-v8"), Some("portfolio-v2"), None] {
-            d.prior_prompt_version = version.map(str::to_string);
-            let user = render(&d);
-            assert!(user.contains("RETIRED whole-book contract"), "{version:?}: {user}");
-            assert!(!user.contains("continuity baseline"), "{version:?}: {user}");
-        }
-        // A same-contract prior keeps the plain baseline.
-        d.prior_prompt_version = Some(crate::portfolio::PROMPT_VERSION.to_string());
-        let user = render(&d);
+        let user = action_user_prompt(&ActionInput {
+            dossier: &d,
+            subject: ActionSubject::Priced {
+                graded: &graded,
+                engine: &engine_output,
+                pre_profit: None,
+            },
+            engine_set: &engine_set,
+            profile: &d.profile,
+        });
         assert!(user.contains("continuity baseline"), "{user}");
         assert!(!user.contains("RETIRED whole-book contract"), "{user}");
     }
@@ -4802,9 +4755,9 @@ mod tests {
                     condition_id: "trig-1".into(),
                     role: ConditionRole::Trigger,
                     trigger_family: Some(TriggerFamily::Trim),
-                    statement: "Trim above 25% of the portfolio".into(),
+                    statement: "Trim after a 25% trailing run-up".into(),
                     quant: Some(QuantCore {
-                        series: engine::LedgerSeries::PortfolioWeight,
+                        series: engine::LedgerSeries::TrailingReturn,
                         comparator: LedgerComparator::Above,
                         threshold: 0.25,
                         margin: 0.0,
@@ -5404,9 +5357,9 @@ mod tests {
                 observed_value: -0.45,
                 threshold: -0.40,
                 observation_id: "2026-07-16".into(),
-                // Legacy shape: a pre-field eval state, so the consumer takes its
-                // documented fallback to the consuming run's ET date.
-                confirmed_at: None,
+                // The engine stamped this on the confirming pass with the run's
+                // ET session date (`run_date`).
+                confirmed_at: Some("2026-07-16".into()),
             }],
             unevaluable: vec![],
             unevaluable_series: vec![],
@@ -5592,9 +5545,9 @@ mod tests {
                 observed_value: -0.45,
                 threshold: -0.40,
                 observation_id: "2026-07-16".into(),
-                // Legacy shape: a pre-field eval state, so the consumer takes its
-                // documented fallback to the consuming run's ET date.
-                confirmed_at: None,
+                // The engine stamped this on the confirming pass with the run's
+                // ET session date (`run_date`).
+                confirmed_at: Some("2026-07-16".into()),
             }],
             unevaluable: vec!["condition 'x': net margin is a gap this run".into()],
             unevaluable_series: vec![engine::LedgerSeries::NetMargin],
@@ -6063,7 +6016,6 @@ mod tests {
             panic!("expected a priced verdict");
         };
         assert_eq!(g.conviction, Conviction::High);
-        assert_eq!(overlay.clamped_from, None);
         assert!(overlay
             .consequences
             .matched_rules
@@ -6150,8 +6102,7 @@ mod tests {
         };
         assert_eq!(g.action, Action::Add, "the model's lean persists as authored");
         assert_eq!(g.conviction, Conviction::High, "no clamp under v7");
-        assert_eq!(overlay.clamped_from, None);
-        let ev = g.engine_view.expect("the engine arm rides the verdict");
+        let ev = &g.engine_view;
         assert!(
             matches!(ev.action, Action::Trim | Action::SellAll),
             "the engine arm obeys its own severe bar, got {:?}",

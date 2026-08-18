@@ -1200,12 +1200,12 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 - **Options activity**
   - Put/call by volume and open interest, IV, and IV skew.
   - Labeled proxy-only, never a grade input.
-- **Data gaps** from the dossier.
-- **Distilled research** — the merged object (this run's fresh findings plus any seeded prior).
-- **House view (when under one week old)**
+- **Data gaps** — the dossier's degraded-input notes naming financial legs the gather could not resolve (e.g. an SEC CIK-mapping miss, an SEC company-facts fetch failure, an unwired fund-metadata source); distinct from the per-metric `(gap)` markers in the computed-metrics block above, which flag one missing computed value.
+- **Distilled research** — as-built the condensed **research-deferred stub note** (research is stubbed at Step 6c, so no sourced findings reach the model); the merged object of this run's fresh findings plus any seeded prior is the *designed* shape.
+- **House view (loaded only when the latest report is ≤ 7 ET days old; older drops the whole view)**
   - The latest report's Thesis, Investment Strategy, and Forward Outlook sections.
-  - Recent report stances: date, thesis stance, and risk posture.
-  - Scope-limited to horizon reads and market setup.
+  - Recent report stances — up to three, the most recent by date: date, thesis stance, and risk posture.
+  - Both are scope-limited to horizon reads and market setup — context for the outlook, never by itself a reason to exit the holding. (In the prompt the explicit caveat sits on the latest sections; the stances ride as a bare list.)
 - **Continuity block**
   - Whether a prior verdict exists.
   - A band-recalibration note when the grade bands changed since the prior letter.
@@ -1225,6 +1225,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - The narrative-versus-reality read.
   - Absolute street opinions.
   - The same-stock option overlay.
+  - Positioning-context feeds — insider and congressional activity, and FINRA short interest — gathered at Step 6a once their data legs land; on the live options signal's precedent they reach the model as positioning evidence, held out of the grade.
 
 ### Interpretation call — what the model authors
 
@@ -1245,13 +1246,12 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Role-risk-only ledger uses condition-only scenarios and Trim/Sell triggers.
 - **The intrinsic what-changed explanation.**
 
-- **For a role-risk-only holding the same call instead authors**
-  - Portfolio-independent role.
-  - Exposure and observable risk.
-  - Expense drag and structural concerns.
-  - Evidence gaps.
-  - Updated reduced fund ledger.
+- **For a role-risk-only holding the same call authors instead**
+  - The portfolio-independent **role** read.
+  - The **updated reduced fund ledger** — condition-only scenarios and Trim/Sell triggers only.
+  - The intrinsic **what-changed** line.
   - No letter, target, or conviction.
+  - [note: exposure tilt, observable risk, expense drag, the structural flag, and the evidence gaps are **engine-supplied** from the fund readout, not authored by this call — they ride onto the branch verdict beside the model's three fields.]
 
 - **Model boundaries**
   - The engine arm is app-stamped; nothing the model returns can alter an engine value, overlay state, or monitor stamp.
@@ -1268,7 +1268,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 - **Exact inputs**
   - Holding identity: symbol, name, quantity, total cost basis, and total market value.
   - Unrealized P/L, with the tax framing flagged as a user consideration, never the mover.
-  - The prior run's action as continuity baseline — labeled as retired-contract history when authored before `portfolio-v9`.
+  - The prior run's action, as a continuity baseline (move only on materially moved evidence).
   - Priced digest: engine arm grade, sub-scores, risk tier, and dead-money state; model arm letter and sub-scores; the verdict's conviction and horizon outlook; implied twelve-month bear/base/bull moves as percentages against the current price; a one-line target provenance; the financial summary; the pre-profit overlay when present.
   - Role-risk digest: class label, role, exposure tilt, expense drag, observable risk, structural flag, and evidence gaps.
   - The engine's per-holding action set, shown as evidence with the engine's own pick withheld.
@@ -1291,6 +1291,9 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 
 ## Step 6g — Validate continuity and checkpoint
 
+- **As-built**
+  - The validators here run every run, but the legs that depend on the stubbed research producer or its unbuilt downstream validator are dormant: the what-changed **attribution** check, the repeated-execution-miss cap's trigger, and the ledger's qualitative-trip → sourced-research leg. What runs today: the two-arm stamping, the engine-series ledger validation, the live severe-deterioration cap, and the attention clear-and-acknowledge; the per-holding checkpoint is designed, not built.
+
 - **Data retrieved**
   - No new data.
 
@@ -1299,31 +1302,32 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Nothing the model returns can alter an engine grade, target, overlay value, or monitor stamp.
   - The model arm's own numbers are structurally validated only, never compared against the engine's.
 
-- **What-changed validation**
-  - Every claimed external change must map to:
+- **What-changed validation (designed — the attribution validator is unbuilt)**
+  - As-built the what-changed audit is model-authored prose, persisted as returned; only the interpretation prompt disciplines it, and the self-correction counters stay structurally zero. No app code checks the attribution today.
+  - Designed, every claimed external change must map to one of:
     - An input-delta entry.
     - A sourced research finding.
     - An accepted forward assumption.
-  - Unsupported change becomes a labeled self-correction.
-  - Or the response fails validation.
+  - Then an unsupported change becomes a labeled self-correction, or the response fails validation.
+  - [note: the forward-assumption leg has no wire at all — there is no `research_forward_assumption` type in the code (the same gap Step 6e records); the input-delta and research legs await the validator, and the research leg additionally awaits the stubbed research producer.]
 
 - **Conviction and cap handling**
   - The model's conviction is its own; no app recalculation, ceiling, or clamp touches it.
   - The old one-level conviction raise and its re-derivation are retired.
-  - Matched cap rules record as audit annotations that bind the engine arm:
-    - Hard forensic trip: engine conviction capped at Low; Add rungs leave the engine set.
-    - Repeated execution miss: engine conviction capped at Medium.
-    - Severe deterioration: engine conviction capped at Low; engine set limited to Trim or Sell all.
+  - Matched cap rules record as audit annotations that bind the **engine stand-in arm only** (the overlay-derived caps are computed at Step 6b, their mechanics detailed at Step 6e §Pre-profit rule consequences). Their as-built status:
+    - **Severe deterioration** (→ Low ceiling, engine set limited to Trim or Sell all) is **live** — its legs are statement-derived (economics, financing/runway, dilution), so it can trip without research.
+    - **Repeated execution miss** (→ Medium ceiling) is built but **dormant** — its execution read needs the stubbed research observations.
+    - **Hard forensic trip** (→ Low ceiling, Add rungs leave the set) is **designed, unbuilt** — it has a separate producer (a filing-classified restatement/auditor change, or a validated `forensic_event` research claim) that does not exist yet, so the overlay carries no such rule today (its ceiling is Medium or Low, both from the deterioration legs above).
   - The strictest matched ceiling wins on the engine arm.
   - A model value past a ceiling renders beside the recorded rule.
-  - Model prose cannot create an overlay warning state.
+  - Model prose cannot create an overlay warning state — the overlay is computed deterministically from statements and (dormant) observations.
   - Grade remains unchanged by these caps.
 
-- **Ledger validation**
-  - Tripped quantitative condition must map to an engine crossing.
-  - Tripped qualitative condition must map to sourced research.
+- **Ledger validation** (built — the seam runs every run)
+  - Tripped quantitative condition must map to a confirmed engine crossing.
+  - Tripped qualitative condition must map to sourced research — as-built this leg always clears the trip and logs it, because research is stubbed and no source-backed finding exists to support one.
   - New quantitative conditions must resolve to an engine series.
-  - Unresolvable condition becomes qualitative.
+  - Unresolvable condition becomes qualitative (downgraded and logged, never dropped).
   - App assigns and preserves condition IDs.
   - Changed machine logic starts a fresh evaluation streak.
 
@@ -1402,7 +1406,6 @@ Each holding's action is now final when its per-holding loop finishes; whole-boo
   - Anchor date.
   - Intrinsic-analysis vintage.
   - The action.
-  - Legacy lean, divergence, and weight fields survive on construction-era episodes.
   - Decision-time grade, conviction, targets, hurdle, and cap inputs — both arms' values — when present.
   - Sector identity for later benchmark comparison.
   - Parameter version.

@@ -656,15 +656,11 @@ pub enum LedgerSeries {
     PbRatio,
     ExpenseRatio,
     Price,
-    PortfolioWeight,
 }
 
 impl LedgerSeries {
     /// Every resolvable series — the vocabulary the ledger schema advertises and the
-    /// interpretation prompt lists. `portfolio-weight` is **retired** from the
-    /// surface (the tunnel-vision ruling, user decision 2026-08-14: a weight is a
-    /// book fact, and any numeric tied to an action must be holding-based), so it
-    /// no longer appears here, in the schema enum, or in a parseable claim.
+    /// interpretation prompt lists.
     pub const ALL: [LedgerSeries; 11] = [
         LedgerSeries::NetMargin,
         LedgerSeries::GrossMargin,
@@ -693,7 +689,6 @@ impl LedgerSeries {
             LedgerSeries::PbRatio => "pb-ratio",
             LedgerSeries::ExpenseRatio => "expense-ratio",
             LedgerSeries::Price => "price",
-            LedgerSeries::PortfolioWeight => "portfolio-weight",
         }
     }
 
@@ -705,18 +700,6 @@ impl LedgerSeries {
             .iter()
             .copied()
             .find(|s| s.as_kebab() == claim.trim())
-    }
-
-    /// A series retired from the closed surface but kept on the enum so
-    /// persisted conditions still decode (the tunnel-vision ruling, 2026-08-14).
-    /// Evaluation skips a retired series **whole** — no crossing, no unevaluable
-    /// note, no state update — the same shape as the cadence gate's skip: the
-    /// unevaluable path would type the family `unknown` and badge the holding on
-    /// every selective run forever. A legacy condition dies at its
-    /// next 6f rewrite, where the draft's claim no longer parses and downgrades
-    /// to qualitative.
-    pub fn retired(self) -> bool {
-        matches!(self, LedgerSeries::PortfolioWeight)
     }
 
     /// Whether the engine ever computes this series for the holding's vehicle
@@ -732,7 +715,6 @@ impl LedgerSeries {
                 self,
                 LedgerSeries::ExpenseRatio
                     | LedgerSeries::Price
-                    | LedgerSeries::PortfolioWeight
                     | LedgerSeries::ReturnVolatility
                     | LedgerSeries::TrailingReturn
             )
@@ -758,8 +740,7 @@ impl LedgerSeries {
             | LedgerSeries::PeRatio
             | LedgerSeries::PsRatio
             | LedgerSeries::PbRatio
-            | LedgerSeries::Price
-            | LedgerSeries::PortfolioWeight => MarketData,
+            | LedgerSeries::Price => MarketData,
         }
     }
 
@@ -774,8 +755,7 @@ impl LedgerSeries {
     /// distinct observations, so a basis step can confirm within days.
     ///
     /// The expense ratio rides the fund's own print and funds carry no statement
-    /// lines at all; the price-derived series and the portfolio weight are untouched
-    /// by a basis change.
+    /// lines at all; the price-derived series are untouched by a basis change.
     pub fn statement_derived(&self) -> bool {
         matches!(
             self,
@@ -812,7 +792,6 @@ impl LedgerSeries {
             LedgerSeries::PbRatio => "price / book multiple",
             LedgerSeries::ExpenseRatio => "fund expense ratio (decimal)",
             LedgerSeries::Price => "the holding's price (account currency)",
-            LedgerSeries::PortfolioWeight => "the position's portfolio weight (fraction 0-1)",
         }
     }
 }
@@ -960,12 +939,6 @@ pub fn resolve_series(
             value: metric(fin.current_price, "current price")?,
             observation_id: market_obs()?,
         }),
-        // Retired from the closed surface (the tunnel-vision ruling,
-        // 2026-08-14) — evaluation skips it before resolution ever runs, so
-        // this arm answers only a direct caller.
-        LedgerSeries::PortfolioWeight => Err("portfolio-weight is retired from the \
-             closed series surface"
-            .to_string()),
     }
 }
 
@@ -1025,7 +998,7 @@ pub fn evaluate_ledger_conditions_gated(
     let mut out = LedgerEvaluation::default();
     for cond in &ledger.conditions {
         let Some(quant) = &cond.quant else { continue };
-        if quant.series.retired() || !allow(quant.series) {
+        if !allow(quant.series) {
             continue;
         }
         let resolved = match resolve_series(quant.series, metrics, fin) {
@@ -4306,34 +4279,6 @@ mod tests {
         assert_eq!(p.observation_id, "2026-07-15", "market series keys to the newest close date");
         // A gap is a typed error, never a silent clear.
         assert!(resolve_series(LedgerSeries::ExpenseRatio, &metrics, &fin).is_err());
-    }
-
-    #[test]
-    fn portfolio_weight_is_retired_from_the_closed_surface() {
-        // The tunnel-vision ruling (2026-08-14): the series is off the schema
-        // vocabulary and unparseable as a fresh claim, a direct resolution is a
-        // typed error, and a persisted legacy condition is skipped WHOLE — no
-        // crossing, no unevaluable note (which would type its family `unknown`
-        // and badge the holding on every selective run), no state
-        // update. It dies at the next 6f rewrite instead.
-        assert!(!LedgerSeries::ALL.contains(&LedgerSeries::PortfolioWeight));
-        assert!(LedgerSeries::parse("portfolio-weight").is_none());
-        assert!(LedgerSeries::PortfolioWeight.retired());
-        let fin = strong();
-        let metrics = compute_metrics(&fin);
-        assert!(resolve_series(LedgerSeries::PortfolioWeight, &metrics, &fin).is_err());
-        let ledger = ledger_of(vec![quant_cond(
-            "w",
-            LedgerSeries::PortfolioWeight,
-            LedgerComparator::Above,
-            0.25,
-            0.0,
-            None,
-        )]);
-        let eval = evaluate_ledger_conditions(&ledger, &metrics, &fin, "2026-08-03");
-        assert!(eval.crossings.is_empty());
-        assert!(eval.unevaluable.is_empty(), "skipped whole, never unevaluable");
-        assert!(eval.updated_states.is_empty(), "carried state stands frozen");
     }
 
     #[test]

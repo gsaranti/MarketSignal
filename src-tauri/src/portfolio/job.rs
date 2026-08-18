@@ -1167,10 +1167,6 @@ fn run_analysis(
             fetched_at: created_at.clone(),
         }),
         outcome: Some(outcome_records),
-        // Authored at the persist seam. Every tunnel-vision run persists
-        // complete — the marker survives for legacy degraded rows' sake
-        // (`PortfolioRun::has_constructed_book`).
-        constructed: Some(true),
     };
 
     ctx.step_started("persist", "Persist run");
@@ -1352,8 +1348,6 @@ fn build_roll_up(
         String::new()
     };
     PortfolioRollUp {
-        aggregates: None,
-        construction: None,
         graded_count: graded,
         not_rated_count: not_rated,
         insufficient_evidence_count: insufficient,
@@ -3429,8 +3423,6 @@ mod tests {
                 body: crate::portfolio::outcome::EpisodeBody::RoleRiskOnly(
                     crate::portfolio::outcome::RoleRiskEpisode {
                         action: crate::portfolio::Action::Hold,
-                        target_weight_low: Some(0.02),
-                        target_weight_high: Some(0.05),
                         degraded_inputs: vec![],
                     },
                 ),

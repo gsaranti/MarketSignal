@@ -350,13 +350,6 @@ pub struct PreProfitOverlay {
     pub backfill_attempts: Vec<BackfillAttempt>,
     pub consequences: OverlayConsequences,
     pub unscorable_gaps: Vec<String>,
-    /// Pre-v7 recorded semantics: the model conviction the app clamped from when
-    /// a ceiling engaged (the pipeline clamped post-interpretation through
-    /// `portfolio-v6`). Since `portfolio-v7` nothing clamps the model — the
-    /// ceiling binds the engine arm's stand-in — so new runs persist `None`; the
-    /// field decodes old audits.
-    #[serde(default)]
-    pub clamped_from: Option<Conviction>,
     pub parameter_version: String,
 }
 
@@ -433,7 +426,6 @@ pub fn compute_overlay(
         backfill_attempts,
         consequences,
         unscorable_gaps: gaps,
-        clamped_from: None,
         parameter_version: PRE_PROFIT_PARAMETER_VERSION.to_string(),
     }
 }
@@ -956,8 +948,7 @@ fn derive_consequences(
 /// [`crate::portfolio::engine::engine_view`], where it binds the **engine
 /// stand-in arm's** conviction (the engine obeys its own rules; the model's
 /// exceedance persists as an annotation — `docs/portfolio-analysis.md` §The
-/// holding verdict). Pre-v7 runs' persisted `clamped_from` values carry these
-/// same semantics.
+/// holding verdict).
 pub fn clamp_conviction(
     conviction: Conviction,
     ceiling: Option<ConvictionCeiling>,
@@ -976,16 +967,6 @@ pub fn clamp_conviction(
         (cap, true)
     } else {
         (conviction, false)
-    }
-}
-
-/// **Retired with `portfolio-v7`** (see [`clamp_conviction`]): the schema always
-/// offers all three labels now; no production caller remains.
-pub fn allowed_conviction_labels(ceiling: Option<ConvictionCeiling>) -> &'static [&'static str] {
-    match ceiling {
-        None => &["high", "medium", "low"],
-        Some(ConvictionCeiling::Medium) => &["medium", "low"],
-        Some(ConvictionCeiling::Low) => &["low"],
     }
 }
 
@@ -1521,19 +1502,6 @@ mod tests {
             (Low, true)
         );
         assert_eq!(clamp_conviction(Low, Some(ConvictionCeiling::Low)), (Low, false));
-    }
-
-    #[test]
-    fn schema_labels_narrow_with_the_ceiling() {
-        assert_eq!(allowed_conviction_labels(None).len(), 3);
-        assert_eq!(
-            allowed_conviction_labels(Some(ConvictionCeiling::Medium)),
-            &["medium", "low"]
-        );
-        assert_eq!(
-            allowed_conviction_labels(Some(ConvictionCeiling::Low)),
-            &["low"]
-        );
     }
 
     // ---- Canonicalization + boundaries ----

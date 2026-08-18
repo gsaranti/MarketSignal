@@ -435,18 +435,8 @@ const quickChecking = ref(false);
 // `historicalRun === null` means the page shows the live latest view.
 const portfolioRuns = ref<PortfolioRunSummary[]>([]);
 const portfolioRunsError = ref<string | null>(null);
-// The history holds rows but none constructed — the latest view is empty even
-// though per-holding work is persisted, and its empty state must say so.
-const degradedOnlyHistory = computed(
-  () =>
-    portfolioRuns.value.length > 0 &&
-    portfolioRuns.value.every((r) => !r.constructed)
-);
-// Any unreadable row makes the history's empty-state read "unreadable":
-// a corrupt CONSTRUCTED row would otherwise be the latest view, and a
-// corrupt DEGRADED row must not activate the degraded-only copy, whose
-// opens-read-only claim is false for a row that cannot open (Codex round).
-// The view gives this precedence over degradedOnlyHistory.
+// A history row whose blob couldn't be decoded makes the empty-state read
+// "unreadable" rather than "never ran": it would otherwise be the latest view.
 const unreadableHistory = computed(() =>
   portfolioRuns.value.some((r) => !r.readable)
 );
@@ -585,9 +575,9 @@ async function refreshPortfolio() {
     portfolioRunsError.value = String(e);
   }
   // Loading clears only once BOTH the page state and the history listing have
-  // landed: the degraded-only empty state derives from the listing, so
-  // clearing after the first round-trip painted "No holdings yet." over a
-  // degraded-only store until the second one resolved (combined-range
+  // landed: the unreadable-history empty state derives from the listing, so
+  // clearing after the first round-trip painted "No holdings yet." over an
+  // unreadable-only store until the second one resolved (combined-range
   // review). A superseded read leaves the flag to whichever refresh is
   // current.
   if (epoch === portfolioEpoch) portfolioLoading.value = false;
@@ -602,9 +592,8 @@ async function refreshPortfolio() {
 let historicalSeq = 0;
 
 // Open one run from the sidebar's history. The row matching the live latest
-// run (the newest CONSTRUCTED — a degraded newest fails the id match and takes
-// the historical path) shows the live view; any other row fetches the full
-// persisted run and renders it read-only. An id the backend no longer has
+// run (the newest readable run) shows the live view; any other row fetches the
+// full persisted run and renders it read-only. An id the backend no longer has
 // (pruned between listing and click) re-lists and stays on the latest.
 async function selectPortfolioRun(runId: string) {
   view.value = "portfolio";
@@ -1696,7 +1685,6 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
             :history-error="historicalError"
             :quick="quickCheck"
             :quick-checking="quickChecking"
-            :degraded-only-history="degradedOnlyHistory"
             :unreadable-history="unreadableHistory"
             :history-unknown="portfolioRunsError !== null"
             @run="generatePortfolio"
