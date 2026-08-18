@@ -2,60 +2,45 @@
 
 ## What happened
 
-The **fresh-start legacy-removal slice shipped end to end.** It began inside the
-logic-flow clarity walk at Step 6f: the 6f "prior action" question surfaced that
-Portfolio Analysis carries pre-`portfolio-v9` backward-compat it will never use,
-and the user ruled (2026-08-17) that the job runs from a **fresh v9-only store** —
-remove ALL one-time / construction-era / pre-v9 backward-compat, keeping only
-forward-facing serde-default compat and the unparseable-blob loud-skip. Executed
-across Rust + frontend + tests + docs, converged through **six external review
-rounds**, and landed:
-
-- **PR #68 squash-merged to `main`** (`525a853`). The full removal inventory is
-  `docs/verification/2026-08-17-fresh-start-legacy-removal.md` (items 1–16 plus
-  the kept-vs-removed boundary).
-- **`.metis/BUILD.md` + `INDEX.md` aligned** (`6945eb3`) — the
-  degraded-run/`constructed`-marker paragraph, the episode
-  `lean`/`lean_divergence` note, and the `portfolio-weight` series now read as
-  removed, not decode-only legacy.
-
-The keep-vs-cut principle it produced is auto-memory
-`avoid-premature-backward-compat.md`.
-
-Along the way the **logic-flow clarity walk completed Steps 6f + 6g** — grounded
-as-built against the Rust and aligned in `portfolio-workflow.md` /
-`portfolio-analysis.md`.
+The **logic-flow clarity walk advanced through Step 7**
+(`logic-flow-docs/portfolio-analysis-logic-flow.md`), with a 6f clarity pass
+alongside. Step 7's removal-history intro was replaced with **purpose prose**,
+and its roll-up + outcome-learning claims were **grounded against
+`pipeline.rs` / `job.rs` / `outcome.rs` and corrected** (episode
+open-on-change / extend lifecycle, coverage-grace label end-states, four-bucket
+verdict counts, data-health breadth). **6f**: the prior-ledger input was
+reframed as the **model-facing projection** (not the full persisted record —
+`technology_class` + app-owned bookkeeping held out), with a boundary note that
+the **app validates the ledger while the model arm is preserved**. The doc's
+**heading levels were normalized** (Steps 6 & 7 → `##`, sub-parts cascaded); a
+stale `outcome.rs` "four derived scorecard reads" doc-comment was fixed. Cleared
+**two external Codex rounds** (7 findings, all valid + fixed); shipped as
+**`a18b326`**, pushed to `main`.
 
 ## Current state
 
-Everything is **committed and merged to `main`** (tip `6945eb3`); working tree
-clean, remote up to date. All gates were green at merge: `cd src-tauri && cargo
-test --all-features` (0 failed) and `cargo clippy --all-targets --all-features`
-(warning-free); `npm run build` (vue-tsc + Vite) and `npm test` (46 pure + 233
-component). Nothing is in flight.
+The Step-7 batch is **committed and pushed to `main`** (`a18b326`); this
+session-end handoff is the only follow-up commit. Working tree otherwise clean,
+remote in sync. Backend gates green: `cargo clippy --all-targets --all-features`
+(warning-free) and `cargo test` (1021 + integration, 0 failed). Docs-only edits
+need no frontend gate. Nothing in flight.
 
 ## Open questions
 
-- **The user may want to re-review Steps 6f + 6g** before continuing the walk —
-  they are marked done but were not re-read this session, and the user flagged
-  wanting another look.
-- **Auto-memory `local-suite-hardware-gated.md`** (the portfolio-arc tracker)
-  still wants a one-line entry for this slice (PR #68, `525a853`); offered, not
-  yet added.
+- **Auto-memory `local-suite-hardware-gated.md`** still wants its **PR #68
+  (`525a853`) one-line entry** — carried from last session, offered, not yet
+  added.
+- The **heading normalization** was a mechanical reflow interleaved with content
+  edits in the same commit — not isolated for `.git-blame-ignore-revs` (accepted;
+  noted in case blame cleanliness matters later).
 
 ## Where to start
 
-**Resume the logic-flow clarity walk in
-`logic-flow-docs/portfolio-analysis-logic-flow.md`.** Done so far: **6a / 6b / 6e
-/ 6f / 6g**. The user may want to **re-review 6f + 6g first**; then continue at:
-
-1. **Step 7 — Roll up the run and score past decisions**
-2. **Step 8 — Save**
-3. **Step 9 — Display**
-4. The **Quick check** and **Pull holdings** sections.
-
-Same method every batch: ground each new behavioral claim against the Rust
-(`pipeline.rs` / `engine.rs` / `outcome.rs` / `job.rs`) via parallel explorers,
-write it as-built-first with `**As-built**` / `(designed …)` / `[note: …]`
-markers, fix any `portfolio-workflow.md` / `portfolio-analysis.md` drift in the
-same batch, Codex per batch, commit per batch to `main`.
+**Resume the logic-flow clarity walk at Step 8 — Save the run and learning
+history.** Done so far: **6a / 6b / 6e / 6f / 6g / Step 7**. Then **Step 9
+(Display)**, then the **Quick check** and **Pull holdings** sections. Same method
+every batch: ground each new behavioral claim against the Rust (`pipeline.rs` /
+`engine.rs` / `outcome.rs` / `job.rs`) via parallel explorers, write
+as-built-first with `**As-built**` / `(designed …)` / `[note: …]` markers, fix
+any `portfolio-workflow.md` / `portfolio-analysis.md` drift in the same batch,
+Codex per batch, commit per batch to `main`.
