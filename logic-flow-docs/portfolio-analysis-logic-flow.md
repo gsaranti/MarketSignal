@@ -404,13 +404,13 @@
 
 ---
 
-# Step 6 — Per-holding analysis loop
+## Step 6 — Per-holding analysis loop
 
 The following sequence runs once for every holding in the work list.
 
 Each completed holding is designed to checkpoint separately; as-built only the between-holdings cancellation check exists.
 
-## Work-list logic
+### Work-list logic
 
 - **Full run**
   - No cards selected.
@@ -444,11 +444,11 @@ Each completed holding is designed to checkpoint separately; as-built only the b
 
 ---
 
-## Step 6a — Build the holding dossier
+### Step 6a — Build the holding dossier
 
 For each holding, Step 6a assembles the dossier — the evidence packet the deterministic engine computes over at Step 6b. The gather is guard-ordered: a stock resolves its listing identity first and pulls the rest of its evidence only if that guard clears.
 
-### Resolve stock identity (runs first)
+#### Resolve stock identity (runs first)
 
 A guard-terminal stock — one the guard finds unsupported, non-US, or identity-conflicting — is routed straight to its verdict here (not-rated or insufficient-evidence) and spends no further pull. A fund carries no stock guard; its priced-vs-role-risk route is decided later, once its data lands (see Fund routing below).
 
@@ -460,7 +460,7 @@ A guard-terminal stock — one the guard finds unsupported, non-US, or identity-
     - US exchange but the issuer names share no significant token → insufficient evidence (a possibly-transient identity conflict).
     - A failed or unreadable profile fetch, or identity too sparse to cross-check on either side — a resolved profile missing its exchange or name, or a Schwab description with no issuer name (or only a ticker the FMP name doesn’t contain) → continue with a recorded degraded input.
 
-### Gather the evidence (skipped for a guard-terminal stock)
+#### Gather the evidence (skipped for a guard-terminal stock)
 
 Once the stock guard clears — and for every fund — the remaining legs are pulled. Stocks and funds pull disjoint financial legs — a fund touches neither the company statements nor SEC — but both share the deep price history, the option chain, and the local prior-run legs.
 
@@ -508,7 +508,7 @@ Once the stock guard clears — and for every fund — the remaining legs are pu
   - Shared market context.
   - Portfolio Analysis memory for this holding — semantic recall designed, not built.
 
-### Fund routing
+#### Fund routing
 
 A fund’s route — read from the `etf/info` and weights gathered above — is applied by the fund engine at Step 6b.
 
@@ -521,7 +521,7 @@ A fund’s route — read from the `etf/info` and weights gathered above — is 
   - Mutual fund without usable weights → role-risk-only path.
   - Closed-end fund → the price-versus-NAV leg is designed; as-built it routes as a generic fund.
 
-### Semantic recall (designed)
+#### Semantic recall (designed)
 
 The designed embedding-based recall of this holding’s prior analysis; as-built this section does not run.
 
@@ -536,7 +536,7 @@ The designed embedding-based recall of this holding’s prior analysis; as-built
   - Keep the directly loaded prior verdict and ledger.
   - Record a degraded-input flag.
 
-### Output
+#### Output
 
 - **Output**
   - Complete stock or fund dossier.
@@ -544,7 +544,7 @@ The designed embedding-based recall of this holding’s prior analysis; as-built
 
 ---
 
-## Step 6b — Calculate the financial picture
+### Step 6b — Calculate the financial picture
 
 - **Data retrieved**
   - Uses the dossier and shared context.
@@ -569,7 +569,7 @@ The designed embedding-based recall of this holding’s prior analysis; as-built
   - A **fund** swaps this stock spine for the equity-fund path below; a **role-risk-only** fund computes no grade, target, tier, or hurdle.
   - 6b reaches no verdict of its own: its reads feed each other (the dependencies above) to produce the **deterministic financial analysis** — letter, targets, tier, hurdle, overlay, ledger state — which the interpretation call reasons over at 6f (and whose targets the outcome scoreboard later scores). The evidence floor, gathered at the step's end, is the one gate that acts within the step.
 
-### Engine primitives (used in the formulas below)
+#### Engine primitives (used in the formulas below)
 
 Three primitives recur in the value formulas that follow, so they are defined once here.
 
@@ -577,7 +577,7 @@ Three primitives recur in the value formulas that follow, so they are defined on
 - **`average(…)`** is the unweighted mean of whichever legs are present — a missing leg is dropped *inside* a value; a wholly-absent value is handled per section (usually imputed to a neutral 50 at the roll-up, never dropped there).
 - A **ratio** `a ÷ b` is `None` when the denominator is missing or zero; a few ratios below add a stricter `> 0` guard, noted where they do.
 
-### Pre-profit overlay (stocks, computed first)
+#### Pre-profit overlay (stocks, computed first)
 
 Computed before the grade for every stock and persisting even when the stock does not enter the overlay or later abstains. As-built the overlay — its statement states and the rule consequences that bind the engine arm — is produced here in one pass; the design's later research-observation merge (Step 6e) is dormant while research is stubbed.
 
@@ -638,7 +638,7 @@ Computed before the grade for every stock and persisting even when the stock doe
   - Only an **eligible** overlay reaches the Step-6f interpretation prompt, and even then the renderer exposes a **selected subset** — the financing / execution states, the matched rules, and the figures behind them (runway, liquid resources, burn) — as engine-arm context, not the entire record.
   - As-built the overlay is **statement-derived only**; the Step-6e research-observation merge that would finalize the execution legs is dormant, and no research observation is guessed.
 
-### Sub-scores (stocks)
+#### Sub-scores (stocks)
 
 The letter’s three inputs (quality, valuation, risk), each on a 0–100 scale where higher is better, plus a momentum read carried outside the letter. As-built each is a fixed-band score with no sector-relative or own-history normalization; the richer form — sector-adjusted bands, the name’s own history, and the value-creation reads below — lands with the full grade slice (designed, `docs/portfolio-analysis.md` §Starting parameters).
 
@@ -670,7 +670,7 @@ The letter’s three inputs (quality, valuation, risk), each on a 0–100 scale 
   - Input: trailing return (first-to-last close over the available history).
   - Equation: `scale(−0.30 → 0.30)` (−30% → 0, 0 → 50, +30% → 100).
 
-### Scenario targets (priced stocks)
+#### Scenario targets (priced stocks)
 
 Bear / base / bull price targets — one-month and twelve-month — priced from a per-share driver and a rate-anchored multiple; they feed the return hurdle below. Computed before the letter is finalized; a stock with no admissible driver abstains here.
 
@@ -700,7 +700,7 @@ Bear / base / bull price targets — one-month and twelve-month — priced from 
 - **Where these land**
   - Targets → the output price targets (each with its methodology + provenance flags); total returns → the hurdle read; the drivers, spread / raw percentiles, spot, forward-dividend leg, dispersion floor, and consensus EPS mid persist as the quick-check basis the between-run engine re-anchors against. The multiples themselves are not stored — they are recomputed closed-form from the basis.
 
-### Letter grade (stocks)
+#### Letter grade (stocks)
 
 The A–F letter — the weighted roll-up of the three letter sub-scores. Computed once the scenario-target stage above has cleared its floor gate; stored in the output as the grade plus a low-confidence marker.
 
@@ -719,7 +719,7 @@ The A–F letter — the weighted roll-up of the three letter sub-scores. Comput
   - At least two of the three letter sub-scores must be real, else the holding abstains (`insufficient-evidence`).
   - A letter resting on any imputed sub-score carries the low-confidence marker.
 
-### Risk tier (priced stock)
+#### Risk tier (priced stock)
 
 High / Medium / Low, set after the grade and feeding the return hurdle below. Inputs: market cap, annualized volatility (raw daily × 15.87 — unlike the risk sub-score, which scores the raw daily figure), debt-to-equity, profitability (net or operating income), and max drawdown.
 
@@ -740,7 +740,7 @@ High / Medium / Low, set after the grade and feeding the return hurdle below. In
   - Wholly missing tier inputs also produce Medium, with a gap flag.
   - The canonical rule’s liquidity legs are not on this job’s data surface and never fire.
 
-### Capital efficiency — the return hurdle (stocks)
+#### Capital efficiency — the return hurdle (stocks)
 
 The dead-money read — whether the scenario returns clear the required return for the risk taken. Inputs: the risk tier, `DGS2`, and the twelve-month scenario total returns. Stored in the output hurdle read (state, rate, the total returns tested, and the new-money flag).
 
@@ -758,7 +758,7 @@ The dead-money read — whether the scenario returns clear the required return f
   - Only `fails` means dead money; `indeterminate` does not force an exit.
   - New money uses a stricter point test — the base-case total return itself must clear (`base ≥ hurdle`) before Add is allowed.
 
-### The equity-fund path
+#### The equity-fund path
 
 The alternative branch to the stock spine above; the fund engine makes the final priced-fund vs role-risk-only classification here in Step 6b (the routing rules are at Step 6a §Fund routing). A role-risk-only fund takes no grade, target, or risk tier — only the role-risk readout at the end of this section.
 
@@ -803,7 +803,7 @@ The alternative branch to the stock spine above; the fund engine makes the final
   - Observable risk — annualized realized volatility (the only numeric risk; no tier).
   - Structural flag, and the evidence-gap manifest (the classification’s own reason appended).
 
-### Continuity and ledger checks
+#### Continuity and ledger checks
 
 After the branch's engine values are set, the prior ledger's conditions are evaluated against them (the ledger checks). The input delta's pieces — position change, prior values, house-view age — already arrived from Steps 4–5 and the dossier; its engine-computed metric comparison is designed, not built.
 
@@ -823,7 +823,7 @@ After the branch's engine values are set, the prior ledger's conditions are eval
   - Large unexplained relative move adds a research topic.
   - It does not claim what caused the move.
 
-### Other deterministic reads
+#### Other deterministic reads
 
 Additional stock reads that ride into the interpretation call as evidence; none changes the letter directly, and most are still designed.
 
@@ -850,7 +850,7 @@ Additional stock reads that ride into the interpretation call as evidence; none 
   - Restatement or auditor change from SEC filings — the hard-forensic producer.
   - Fraud may arrive later from validated primary-source research (research lane).
 
-### Evidence floor
+#### Evidence floor
 
 The inline gates referenced above, gathered — with each branch's requirements and the short-circuit behavior.
 
@@ -899,14 +899,14 @@ The inline gates referenced above, gathered — with each branch's requirements 
 
 ---
 
-## Step 6c — Research the holding
+### Step 6c — Research the holding
 
 - **As-built: stubbed**
   - No web research runs today; a single research-deferred note is recorded.
   - Every run to date has graded on the deterministic financials and the house view.
   - The loop below is the research slice's design.
 
-### How the stage runs
+#### How the stage runs
 
 For an analyzed holding the research loop and distillation always run and are never skipped — a recent cache only seeds them, it never replaces them.
 
@@ -923,7 +923,7 @@ For an analyzed holding the research loop and distillation always run and are ne
 - **Cold when (no Layer 2 cache)**
   - If no non-expired cache exists, the loop simply runs cold.
 
-### Build the agenda (the topics)
+#### Build the agenda (the topics)
 
 The orchestrator assembles the topic list deterministically; the reasoner works it, never authors it. A stock gets the company topics (plus the conditional topics when their trigger fires); a fund swaps in the fund-flavored topics instead.
 
@@ -972,7 +972,7 @@ The orchestrator assembles the topic list deterministically; the reasoner works 
   - Whether the exposure is better held directly.
   - Closed-end-fund discount and distribution coverage.
 
-### Work each topic — the research loop
+#### Work each topic — the research loop
 
 The orchestrator works the agenda **one topic at a time**. Each topic is its own isolated conversation over a clean context, and the orchestrator — never the model — owns every search and fetch, stopping at the holding's budget.
 
@@ -1023,7 +1023,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - A per-item fetch + wall-clock budget that binds first — a per-holding cap on web-fetches and wall-clock, not a per-pass timer — spent in topic-priority order. When it drains, the lowest-priority remaining topics are skipped fail-soft, each recorded as a degraded-input gap (lower conviction), never failing the run.
   - The per-topic depth cap (≤2 follow-ups, ≤3 passes) works alongside it, guarding against rabbit-holing one topic.
 
-### Failure and output
+#### Failure and output
 
 - **Failure logic**
   - Web failure reduces evidence.
@@ -1037,7 +1037,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 
 ---
 
-## Step 6d — Distill the research
+### Step 6d — Distill the research
 
 - **As-built**
   - One unconstrained non-thinking condense of the stub note.
@@ -1110,7 +1110,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 
 ---
 
-## Step 6e — Recalculate targets using validated research
+### Step 6e — Recalculate targets using validated research
 
 - **As-built**
   - This step changes nothing today. Everything 6b produced — scenario targets, dead-money hurdle, letter, and pre-profit overlay — passes through unchanged into the verdict, because the two legs that would refine any of it are dormant while research is stubbed: no validated forward fact and no sourced observation reaches this seam.
@@ -1163,12 +1163,12 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 
 ---
 
-## Step 6f — Author the intrinsic verdict
+### Step 6f — Author the intrinsic verdict
 
 Two model calls run in this step.
 The interpretation call writes the intrinsic verdict; the action decision then picks the rung.
 
-### Interpretation call — exact inputs
+#### Interpretation call — exact inputs
 
 - **Holding identity**
   - Symbol, issuer name, quantity, total cost basis, and total market value.
@@ -1214,8 +1214,9 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - The prior run's model arm in full, labeled as the model's own.
   - The price move since the prior read.
   - The holding's matured scoreboard lines.
-- **Prior thesis ledger**
-  - The whole ledger, with this run's engine condition evaluation.
+- **Prior thesis ledger** — one ledger per holding, model-authored on the prior run and shared by both arms (not an engine-arm or model-arm ledger of its own).
+  - The prior ledger as a **model-facing projection** (not the complete persisted record) — thesis (original + current), key drivers, the whole bear/base/bull monitor, and every falsifier and trigger (both roles), each with its statement plus, for quantitative ones, the machine core and current breach streak. Unscoped, unlike the house view and retrospective above. Held out of the prompt: the app-owned bookkeeping (condition ids, supersession lineage, downgrade/trip flags, the rest of the evaluation state, the authored band relation) and the model-authored falsifier `technology_class` tag.
+  - Beside it, **this run's engine condition evaluation**: the engine's deterministic re-evaluation of that ledger's *quantitative* conditions against this run's computed surface — each crossing tagged confirmed or first-breach, plus the typed unevaluable notes. The engine evaluates the conditions; it does not author the ledger.
 - **Deliberately excluded**
   - The investor profile.
   - The engine's current-run stand-in outlook, conviction, and action picks.
@@ -1227,7 +1228,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - The same-stock option overlay.
   - Positioning-context feeds — insider and congressional activity, and FINRA short interest — gathered at Step 6a once their data legs land; on the live options signal's precedent they reach the model as positioning evidence, held out of the grade.
 
-### Interpretation call — what the model authors
+#### Interpretation call — what the model authors
 
 - **The model arm (unrestricted; scored later against the engine baseline)**
   - Its own four sub-scores; the app derives its letter from them through the shared cutoffs.
@@ -1257,10 +1258,11 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - The engine arm is app-stamped; nothing the model returns can alter an engine value, overlay state, or monitor stamp.
   - The model arm is its own: structurally validated only, never checked against the engine's numbers.
   - Engine caps and ceilings bind the engine arm and annotate the model's departures; they never clamp the model's values.
+  - The rewritten **ledger is the exception to "the model's output stands"**: model-authored here but app-validated at Step 6g, not preserved like the model arm. There the app clears any tripped/fired claim no confirmed engine crossing (or, for a qualitative condition, no source-backed finding) supports, downgrades a non-executable quantitative core to qualitative, and owns every condition id and its lineage across the rewrite (Step 6g §Ledger validation). What is preserved exactly is the model *arm* — its sub-scores, targets, and conviction; what the app corrects is unsupported ledger claims and structure.
   - Cannot see the investor profile.
   - Does not choose an action — the dedicated action decision below does.
 
-### Action decision (second model call, same step)
+#### Action decision (second model call, same step)
 
 - The profile enters the job here and nowhere else.
 - Tunnel vision is stated in the prompt: no whole-book input exists, and a separate planning stage reconciles the book later.
@@ -1289,7 +1291,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 
 ---
 
-## Step 6g — Validate continuity and checkpoint
+### Step 6g — Validate continuity and checkpoint
 
 - **As-built**
   - The validators here run every run, but the legs that depend on the stubbed research producer or its unbuilt downstream validator are dormant: the what-changed **attribution** check, the repeated-execution-miss cap's trigger, and the ledger's qualitative-trip → sourced-research leg. What runs today: the two-arm stamping, the engine-series ledger validation, the live severe-deterioration cap, and the attention clear-and-acknowledge; the per-holding checkpoint is designed, not built.
@@ -1342,29 +1344,33 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 
 ---
 
-# Step 7 — Roll up the run and score past decisions
+## Step 7 — Roll up the run and score past decisions
 
-The construction stage that used to live here — whole-book constraints, a final-action synthesis, and a joint-feasibility check — was removed by the tunnel-vision ruling (2026-08-14).
-Each holding's action is now final when its per-holding loop finishes; whole-book reasoning belongs to the portfolio-planner job.
+The post-loop stage — by now every action that exists is final, whether set in this run's per-holding loop, carried from a prior run, or rule-demoted by the app, so this step makes none. It does two independent things: **roll up** the finished run into a book-level summary, and run **outcome learning**, which grades how *earlier* decisions have actually turned out.
 
-## Roll-up
+### Roll-up
+
+A descriptive, book-level summary of the finished run — for the results display and the stored run record. It decides and drives nothing.
 
 - **Calculations**
-  - Verdict counts by disposition.
+  - Verdict counts by disposition (graded, role-risk-only, not-rated, insufficient-evidence — role-risk-only kept separate from graded).
   - Largest single-position weight and cash weight (descriptive reads only).
   - Positions closed since the prior run, acknowledged rather than dropped.
-  - Run-level data-health read, including context-pressure detection.
+  - Run-level data-health read — target-provenance and degraded-input aggregates, the generation-health signals (context-pressure and output-length-stop), and the run's attention flag.
+  - A deterministic one-line run overview string.
 
-## Outcome learning
+### Outcome learning
+
+Scores *past* decisions, not this run's. A **decision episode** opens when a holding's recommendation changes and, while it holds, extends the still-active episode — a reaffirmation after that episode has matured records nothing. Each episode carries **outcome labels** due at 1 / 3 / 6 / 12 months (both terms are defined in Important terms): when a window arrives its label is scored, or — if price coverage is missing — held pending inside a grace and closed unscorable past it. This run's own decisions are then folded into the episode store for future scoring, the raw material for later calibration.
 
 - **Data retrieved**
   - FMP dated-EOD bars for maturing outcome episodes.
   - FMP dividends for maturing outcome episodes.
 
 - **Logic**
-  - Tag each active episode's net alignment from the holdings diff.
+  - Tag net alignment from the holdings diff — only for still-untagged episodes anchored to the immediately-prior run (that diff observed only that move); nothing is tagged on a first run.
   - Mature any window labels whose dates have arrived, including for symbols no longer held.
-  - A failed price refresh leaves the label pending inside the coverage grace.
+  - A failed price refresh leaves the label pending while inside the coverage grace; past the grace it closes as a typed unscorable label rather than staying pending. A failed dividend pull instead degrades to a price-only label, never blocking maturation.
   - Append or extend this run's decision episodes.
   - Derive the scorecard reads over the updated episode set.
 

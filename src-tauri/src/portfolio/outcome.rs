@@ -646,8 +646,10 @@ pub struct EligibilityRecord {
     pub note: String,
 }
 
-/// The four derived scorecard reads (`docs/portfolio-analysis.md §Outcome
-/// learning`), computed per matured window on unique-holding counts.
+/// The derived scorecard reads (`docs/portfolio-analysis.md §Outcome learning`),
+/// computed over the updated episode set: cohort return-spreads, both arms'
+/// target-band calibration and their head-to-head, outlook-direction hit-rates,
+/// falsifier lead-times, self-correction, and proposal eligibility.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivedReads {
     pub cohorts: Vec<CohortWindowRead>,
@@ -1980,7 +1982,7 @@ fn cohort_stat(key: &str, members: &[(&DecisionEpisode, &ScoredLabel)]) -> Optio
     })
 }
 
-/// Compute the four derived scorecard reads over the episode store
+/// Compute the derived scorecard reads over the episode store
 /// (`docs/portfolio-analysis.md §Outcome learning`). Pure; attribution stays at the
 /// cohort level — no per-decision P&L verdict is ever assigned.
 pub fn derive_reads(episodes: &[DecisionEpisode]) -> DerivedReads {
