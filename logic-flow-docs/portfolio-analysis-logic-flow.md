@@ -1361,7 +1361,7 @@ A descriptive, book-level summary of the finished run — for the results displa
 
 ### Outcome learning
 
-Scores *past* decisions, not this run's. A **decision episode** opens when a holding's recommendation changes and, while it holds, extends the still-active episode — a reaffirmation after that episode has matured records nothing. Each episode carries **outcome labels** due at 1 / 3 / 6 / 12 months (both terms are defined in Important terms): when a window arrives its label is scored, or — if price coverage is missing — held pending inside a grace and closed unscorable past it. This run's own decisions are then folded into the episode store for future scoring, the raw material for later calibration.
+Outcome learning has two halves that share one unit, the **decision episode** — a bounded twelve-month instrument measuring how a single recommendation actually turned out. One half **scores** *earlier* episodes as their outcome windows come due; the other is **where this run's decision becomes an episode**, the raw material later calibration reads. For each holding the run compares its recommendation state against the prior run's and **opens a new episode when that state has changed** — a verdict-**branch flip** (priced ↔ role-risk) or a change in the **action** — otherwise extending the holding's still-active episode. Each episode carries **outcome labels** due at 1 / 3 / 6 / 12 months (both terms are defined in Important terms): when a window arrives its label is scored, or — if price coverage is missing — held pending inside a grace and closed unscorable past it.
 
 - **Data retrieved**
   - FMP dated-EOD bars for maturing outcome episodes.
@@ -1371,14 +1371,16 @@ Scores *past* decisions, not this run's. A **decision episode** opens when a hol
   - Tag net alignment from the holdings diff — only for still-untagged episodes anchored to the immediately-prior run (that diff observed only that move); nothing is tagged on a first run.
   - Mature any window labels whose dates have arrived, including for symbols no longer held.
   - A failed price refresh leaves the label pending while inside the coverage grace; past the grace it closes as a typed unscorable label rather than staying pending. A failed dividend pull instead degrades to a price-only label, never blocking maturation.
-  - Append or extend this run's decision episodes.
+  - Append or extend this run's decision episodes — the run's episode-creation step: open a new episode when a holding's recommendation state changed since the prior run (a verdict-branch flip or an action change), otherwise extend the still-active episode.
+  - A holding's first analysis opens a debut episode; an abstention extends the standing episode without opening one; a reaffirmation after the episode has matured records nothing.
+  - A thesis-change trigger is designed but dormant until the attribution validator lands; wording-only thesis edits never open an episode.
   - Derive the scorecard reads over the updated episode set.
 
 ---
 
 ## Step 8 — Save the run and learning history
 
-- **Data stored**
+- **Data stored** (the whole run persists as one serialized blob; the *Dormant* and *Designed* groups at the end are not populated on a run today — each states why)
   - Normalized holdings snapshot used by the run.
   - Every intrinsic verdict.
   - Every portfolio action and its rationale.
@@ -1386,35 +1388,24 @@ Scores *past* decisions, not this run's. A **decision episode** opens when a hol
   - Analysis vintages (attention flags live only in the quick-check store).
   - Portfolio roll-up.
   - Sources and timestamps.
-  - Distilled research and per-topic seeded-vs-cold decisions (each with its seeding object's vintage).
-  - Engine calculations and input deltas.
-  - Accepted and rejected research assumptions (designed — research loop).
-  - Accepted and rejected pre-profit operating observations.
-  - Period-keyed pre-profit observation history.
-  - Required backfill periods, sources, completion state, and gaps.
-  - Runway, execution, economics, dilution, and severe-deterioration states.
-  - Every matched pre-profit conviction or action rule.
-  - Matched cap rules.
+  - Engine calculations, each holding's categorical position-change tag, and the roll-up's exited positions (the full position delta — prior quantity and cost basis — is runtime-only; per-value input-delta attribution is the designed input-delta validator's).
+  - Every priced stock's pre-profit overlay record — the runway, economics, dilution, and severe-deterioration states computed live from statements, with the conviction, action, and cap rules they fire.
   - What-changed audits.
   - Model, prompt, schema, and parameter versions.
   - Degraded-input flags.
+  - *Dormant producer — no pre-profit research loop feeds these yet:* the accepted pre-profit observation history (period-keyed) and the backfill legs carry forward from the prior run, and the execution-miss state and its rule recompute from that carried history each run; the rejected-observation list, by contrast, is rebuilt from the current candidate batch, not carried. All are empty on a fresh v9 store today — by carry / recompute over an empty producer, not a forced-empty field.
+  - *Designed — lands with the research loop:* per-topic research-reuse decisions (seeded-from-cache vs cold, each with its seeding vintage) and accepted / rejected research assumptions; distilled research itself is a transient prompt input, not persisted.
 
 - **Decision-episode logic**
-  - Open an episode when the recommendation state changes.
-  - Change may occur in the verdict branch or the action.
-  - A thesis-change leg is designed but dormant until the attribution validator lands.
-  - Wording-only thesis edits do not open an episode.
-  - A reaffirmation extends an active episode.
-  - A matured episode does not remain active forever.
-  - The next genuine recommendation change opens a new episode.
+  - Decided in Step 7's outcome learning (the open / extend rule lives there); this step only persists the resulting episodes.
 
 - **Episode contents**
   - Anchor date.
   - Intrinsic-analysis vintage.
   - The action.
-  - Decision-time grade, conviction, targets, hurdle, and cap inputs — both arms' values — when present.
+  - Decision-time calibration snapshot (priced branch only): both arms' targets, sub-scores, outlook, and conviction, plus the engine arm's grade, hurdle, dead-money, and cap signals.
   - Sector identity for later benchmark comparison.
-  - Parameter version.
+  - Grade and target parameter versions.
   - `model-chosen` or `rule-demoted` action source.
 
 - **Retention**
@@ -1423,7 +1414,7 @@ Scores *past* decisions, not this run's. A **decision episode** opens when a hol
   - Freeze matured episodes into their own capped archive.
 
 - **Embedding model**
-  - Embed matured calibration lessons.
+  - Embed a calibration learning only when this run records newly matured outcome-window labels — keyed to window-label maturation, not to an episode freezing into the archive, and not fired every run.
   - Per-holding thesis, read, and action embeddings are designed, not built.
   - Store vectors only in Portfolio Analysis memory.
   - Failed embedding drops only that memory row.
