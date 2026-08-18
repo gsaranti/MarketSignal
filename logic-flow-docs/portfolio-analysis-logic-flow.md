@@ -433,7 +433,7 @@ Each completed holding is designed to checkpoint separately; as-built only the b
     - Attention flag — the quick check confirmed a problem (a fired falsifier or trigger, a newly-failing dead-money read, or a changed band relation).
     - Unknown family — a required signal family couldn't be checked (a degraded-sweep note), so the sweep can't vouch for the carried verdict.
     - Unexamined evidence event — new material information the verdict never saw (earnings, a material filing, or a large estimate revision).
-    - Side reversed — a long/short flip since the verdict; the carried thesis is for the opposite position (the verdict is marked `side_reversed`).
+    - Side reversed — the carried verdict now sits on a net-short position, so its thesis is for the opposite side (a directional verdict is only ever authored for a long; the verdict is marked `side_reversed`).
     - Stale vintage — the carried verdict is older than the ~4-week window.
     - Each is a non-blocking badge on the card; the user acts on it by selecting the holding or running a full analysis, so an urgent single-holding run is never blocked by the rest of the book.
 
@@ -1370,11 +1370,22 @@ Outcome learning has two halves that share one unit, the **decision episode** �
 - **Logic**
   - Tag net alignment from the holdings diff — only for still-untagged episodes anchored to the immediately-prior run (that diff observed only that move); nothing is tagged on a first run.
   - Mature any window labels whose dates have arrived, including for symbols no longer held.
+  - Each matured (scored) label measures, from split-adjusted daily closes: the price-only return (the always-present cross-entry common basis) and the maximum drawdown, plus — each recorded with a typed gap when its source is missing — the dividend-inclusive total return (the primary basis) and the price-only spreads vs the market (`^GSPC`) and the entry-stamped sector; on the 12-month window a confirmed ledger falsifier attached to its still-active episode (not one that landed post-maturity), whose bear-line basis resolves, additionally carries its signed trading-day lead time to the first close below that line, or `no-material-drawdown`.
   - A failed price refresh leaves the label pending while inside the coverage grace; past the grace it closes as a typed unscorable label rather than staying pending. A failed dividend pull instead degrades to a price-only label, never blocking maturation.
   - Append or extend this run's decision episodes — the run's episode-creation step: open a new episode when a holding's recommendation state changed since the prior run (a verdict-branch flip or an action change), otherwise extend the still-active episode.
   - A holding's first analysis opens a debut episode; an abstention extends the standing episode without opening one; a reaffirmation after the episode has matured records nothing.
   - A thesis-change trigger is designed but dormant until the attribution validator lands; wording-only thesis edits never open an episode.
-  - Derive the scorecard reads over the updated episode set.
+  - Derive the scorecard reads over the updated episode set — the reads below.
+
+- **Scorecard reads** (derived deterministically over the updated episode set — engine-computed, never model-judged; of them the roll-up surfaces only the head-to-head and outlook-direction reads, as the model-vs-engine scoreboard, and each holding's own matured window lines ride back into its next interpretation — they decide nothing on their own, the calibration loop they feed only ever proposes)
+  - Both arms are scored, separately: the engine baseline and the unrestricted model arm each froze their own targets and outlook on the episode at open, and the reads below score each arm on its own — the target-band read is the one place they meet directly head-to-head — because grading the model against the baseline is the whole point of the two-arm design.
+  - **Target-band calibration** — the bear–bull band's coverage of the realized price against its declared nominal 80%, an interval score rewarding calibration and sharpness together, and the base case's mean signed error; scored on the price-only label at the **1- and 12-month windows only** (each band against its matching window — the 3- and 6-month labels are never band-scored), over vintage-fresh priced episodes, split by target-parameter version so a recalibration never mixes bases. The same scorer runs unchanged for the engine bands and for the model's frozen bands.
+  - **Engine-vs-model head-to-head** — that same interval score and coverage for both arms over the paired population alone (the 1- and 12-month episodes where both arms carried the band and the window scored), so neither arm is graded on an easier sample; this is the only read the two arms are directly compared on.
+  - **Outlook direction hit-rate** — each arm's short / mid / long read scored against the realized price sign at its mapped window (short → 1-month, mid → 6-month, long → 12-month); a flat outcome scores a directional call as a miss, and a neutral read is counted beside the hit-rate, never inside it.
+  - **Action cohorts** — mean total and price return plus vs-market / vs-sector spreads, grouped by the action rung recorded at episode creation, across all four windows: the cohort spreads the action ranking is read from (do the add cohorts out-return the hold cohort, and hold the trim / sell cohorts). Computed over model-chosen priced episodes — a vintage-fresh intrinsic-layer set reported beside the all-model-chosen final-action set; role-risk-only and rule-demoted episodes are counted in their own classes, out of the pooled read.
+  - **Falsifier lead times** — the 12-month bear-line crossings above, surfaced per episode.
+  - **Proposal eligibility** — a gate counting the unique holdings with a scored matured window against a bar (drafted 30). **As-built the gate is built but the proposals are not**: below the bar the pass records the typed below-bar note and proposes nothing, and above it the proposal statistics still land with a later slice once enough matured data exists — and even then the loop only proposes, never auto-applies.
+  - [note: the self-correction accumulation is a scorecard field but reads structurally zero — its producer is the dormant 6g what-changed attribution validator, the same one gating the standing-thesis episode-open leg above.]
 
 ---
 
@@ -1391,6 +1402,7 @@ Outcome learning has two halves that share one unit, the **decision episode** �
   - Engine calculations, each holding's categorical position-change tag, and the roll-up's exited positions (the full position delta — prior quantity and cost basis — is runtime-only; per-value input-delta attribution is the designed input-delta validator's).
   - Every priced stock's pre-profit overlay record — the runway, economics, dilution, and severe-deterioration states computed live from statements, with the conviction, action, and cap rules they fire.
   - What-changed audits.
+  - The outcome-learning records for this run — the opened-episode notes, the symbols whose episode this run extended, the net-alignment tags, the matured window labels, the symbols with a window still pending on a price-coverage gap, and the derived scorecard reads (detailed in Step 7's outcome learning).
   - Model, prompt, schema, and parameter versions.
   - Degraded-input flags.
   - *Dormant producer — no pre-profit research loop feeds these yet:* the accepted pre-profit observation history (period-keyed) and the backfill legs carry forward from the prior run, and the execution-miss state and its rule recompute from that carried history each run; the rejected-observation list, by contrast, is rebuilt from the current candidate batch, not carried. All are empty on a fresh v9 store today — by carry / recompute over an empty producer, not a forced-empty field.
@@ -1429,48 +1441,54 @@ Outcome learning has two halves that share one unit, the **decision episode** �
 
 ## Step 9 — Display the result
 
-- **Data retrieved**
-  - Persisted run.
-  - Latest standalone holdings snapshot when available.
+Display is a **pure read**: the frontend invokes read-only commands that return the persisted run blob verbatim and renders it — no model runs, and the backend shapes nothing (one presentational Vue page computes every derived read from the returned struct; the app layer owns the invokes).
 
-- **Per-holding display**
-  - Both arms side by side: the engine baseline and the model view.
-  - Backward-looking grade and sub-scores in each arm.
-  - Forward outlook, targets, and conviction in each arm, with divergence tags.
-  - Standing thesis and scenario monitor.
-  - The action and its rationale.
-  - Financial summary.
-  - What changed.
-  - Attention flag.
-  - Analysis vintage.
+- **Data retrieved** (read-only commands — no model, no view-model shaping)
+  - The **latest run** — the whole persisted run blob, selected **id-primary (insertion order), never `created_at`**, so a backward clock step can never hand the page to a prior run while the just-saved one sits invisible.
+  - An **older run by id** for the read-only history view — a pure read, with no re-run entry point.
+  - The **run-summary listing** for the sidebar (columns only, never blobs).
+  - The **latest standalone holdings snapshot**, when present — a separate single-row store distinct from the snapshot inside each run and never read by the job; when a run exists it feeds the dual-vintage comparison, and with no run yet it is the page body on its own.
+  - The **latest quick-check state**, loaded alongside — the overlay that badges the latest live view (below), applied only when its swept run matches the rendered run.
+  - **As-built** an unparseable stored run costs only its own surface: the latest read skips it to the next-newest, an id fetch reads it as not-found, and the listing still emits its row marked **unreadable** with zeroed counts — never dropping the history listing or the next run's baseline.
 
-- **Role-risk-only display**
-  - Role.
-  - Exposure.
-  - Observable risk.
-  - Expense drag.
-  - Structural flag and evidence gaps.
-  - The action and its rationale.
-  - No empty grade or target fields.
+- **Per-holding display — priced branch** (the two arms in a paired side-by-side grid)
+  - **Engine-baseline arm** — the letter sub-scores (quality / valuation / risk) plus a divider-separated **Setup** tile (the market-setup read, deliberately outside the letter), the engine conviction meter, the 1- and 12-month targets (base plus bear–bull band, each shown only when the engine authored it), the engine outlook (short / mid / long), the engine's own action, and a target-methodology reveal; the card-head letter is the engine (canonical) grade.
+  - **Model-view arm** — the model's own letter, sub-scores, conviction, 1- and 12-month target bands (always present on this arm), outlook, and action.
+  - **Divergence tags** — a quiet **≠ engine** tag rides the model arm wherever it departs from the baseline on **conviction, outlook, or action**: a display cue for where the arms differ, distinct from the scoreboard's scoring (which grades the target bands head-to-head and the outlooks per arm, and leaves conviction and action unscored). The letter, sub-scores, and target bands carry no tag, and an authored **inverted-band** note is a data-integrity flag rather than a divergence.
+  - **Standing thesis** (clamped, with a reveal) and the **thesis monitor** — each scenario's probability, engine target (when non-null), and conditions, plus the improve / must-not-break goalposts.
+  - **Action + rationale** as a full-width row beneath the arms, with the position weight and — when present — the same-stock **options-activity** signal (put/call volume and open interest, ATM IV, IV skew).
+  - **Financial summary** and the **model retrospective** (the model arm's self-assessment), the **what-changed** footer, the holding's **matured scoreboard lines**, and its categorical position-change tag.
+  - Plus the per-card **selection control**, **attention flag**, and **analysis-vintage stamp** — the badge surface below.
+  - [note: the engine's persisted `risk_tier` and dead-money reads, the ledger's key drivers, and the authored band relation are carried on the verdict but rendered nowhere today.]
 
-- **Portfolio display**
-  - Run-level roll-up counts and data health.
-  - Closed positions.
-  - Not-rated and insufficient-evidence reasons.
+- **Card badges** (non-blocking, all quiet except the two amber ones noted), split by what drives them
+  - **Quick-check overlay** — **attention** (the one amber, actionable badge; the sweep's four triggers: falsifier breached, trigger fired, hurdle newly fails, band relation changed), **evidence event(s)**, and **sweep degraded** (naming the `unknown` families it couldn't vouch for). These render **only on the latest live view whose swept run matches the rendered run** — never on a historical past-run view.
+  - **Persisted verdict state** — the **carried / stale-vintage** stamp (stale past the over-age boundary), **side reversed** (amber; the carried long-authored verdict now sits on a net-short position — a directional verdict is only ever authored for a long, so the compromised carry stays visible), and **add-demoted-to-hold** (the over-age rule demotion). These read off the stored verdict, so they render outside the overlay guard — **including on a historical view**.
+  - A held position with **no prior verdict to carry** renders as a distinct **not-analyzed placeholder** card, selectable to grade on the next run — never a fabricated verdict.
 
-- **Holdings display**
-  - Current quantities, prices, values, cost bases, and gains.
-  - When newer than the analysis, show both vintages clearly.
-  - Do not mutate the older analysis cards.
+- **Role-risk-only display** (the discriminated union's unpriceable branch)
+  - Role summary, top exposure tilts, expense drag, realized-vol observable risk, evidence gaps, the structural-flag badge, and the action + rationale; standing thesis and a condition-only monitor (no engine target).
+  - **No empty priced fields** — the branch's type carries no grade, targets, conviction, sub-scores, or arm views at all, so the priced fields are absent by construction, never blanked.
 
-- **Sorting**
-  - Overall value.
-  - Dollar gain.
-  - Percentage gain.
-  - Total cash invested.
+- **Portfolio roll-up display**
+  - A **key-figures strip** — account value, positions, the disposition counts (graded and not-rated always; role/risk and insufficient only when non-zero), cash weight, and top-position weight.
+  - The **roll-up card** — the overview line, the **data-health** read (an amber attention tag plus its summary), the **model-vs-engine scoreboard** (paired head-to-head interval scores and per-arm outlook-direction hit-rates), and the positions **closed since last run**.
+  - **As-built** the scoreboard renders **only once episodes have matured** — a run with nothing scored omits the block rather than showing a labeled *pending* state, so absence reads the same as no outcome records; the target-band calibration reads are carried but not rendered, and not-rated / insufficient reasons render on their own cards, not here.
+  - [note: the sidebar's per-run **"rated N"** binds to the graded (priced-only) count while the word reads broader than the number it shows — a recorded open-ruling item, unsettled here.]
+
+- **Holdings display — dual vintage**
+  - The standalone holdings pull is **view-only, never merged into the run-anchored cards**, and the **frontend** decides freshness (the backend hands over both timestamped payloads and compares nothing): when the pull is newer than the run, a separate **Current holdings** section renders **above** the verdict cards, stamped with both vintages and carrying presence-only churn tags (*new · not in last analysis* / *no longer held*).
+  - The older analysis cards are never mutated, and the whole comparison is suppressed on a historical view.
+
+- **Sorting** (display-only — reorders already-computed cards, computes nothing)
+  - Four keys — **Value**, **$ gain**, **% gain**, **Cash invested** — a stable in-place sort with an alphabetical ticker tie-break, nulls last, and the last-used key persisted; shown only with more than one verdict. The current-holdings table carries its own independent column sort.
+
+- **Read-only past-run view** (any sidebar row but the newest readable one)
+  - The older run renders on the same page with every trigger locked — run analysis, pull holdings, and quick check all disabled with the reason stated — no selection controls, and the current-holdings comparison suppressed.
+  - A quiet informational **vintage banner** names the run's date and carries **Back to latest**.
 
 - **Model**
-  - None.
+  - None — no display command invokes a model; the page is a deterministic render of the persisted run.
 
 ---
 
