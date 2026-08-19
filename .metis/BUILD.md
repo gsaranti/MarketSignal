@@ -385,7 +385,10 @@ this section carries only the decisions a plan must not work against.
 - **Reuses the spine.** Each feature is a new Tauri command + job under the
   **single global run slot** (report + both local jobs are mutually exclusive,
   matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
-  and the `vector_memory` / `Embedder` modules. Local-gate failures get their
+  and the `vector_memory` / `Embedder` modules. The slot is claimed **before
+  any external fetch** — the SEC CIK map loads lazily inside it — so the
+  local-only daemon probe is the one pre-slot check (2026-08-18; the eager
+  load had also bailed on a stale cancel flag). Local-gate failures get their
   own warning categories, kept **off the cloud `validate` gate** — a
   disconnected account blocks only the local jobs, never the report. Both jobs
   are personalized by a **fixed default investor-profile preset** (user config
@@ -539,7 +542,10 @@ run analyzes **strictly the selection** — the former automatic safety addition
 surface as non-blocking card badges rather than force-includes, an unselected
 holding with no prior verdict is left not analyzed, and the one-time pre-`v9`
 migration gate was removed (pre-`v9` verdicts carry like any other; a first v9
-run is full only because a full run re-grades the whole book). The intrinsic
+run is full only because a full run re-grades the whole book). A selective
+request with **no readable prior run** runs the whole book — nothing to carry,
+and the page cannot offer a selection without a rendered run (as-built, ruled
+2026-08-18). The intrinsic
 verdict is a discriminated
 union — a `priced` branch (grade, forward outlook, bidirectional conviction,
 portfolio action) and a `role_risk_only` branch for structurally unpriceable
@@ -599,7 +605,11 @@ confirmation run** banks every stacked runtime confirmation at once.
   grade bands, and the interpretation-prompt contract, each tuned against the
   first live run's persisted dataset.
 - **The pre-run correctness program** — the conformance walks and their ruling
-  rounds, the per-doc sweeps, and the long-doc-line cleanup.
+  rounds, the per-doc sweeps, the long-doc-line cleanup, the logic-flow
+  as-built walk, and the closing 2026-08-18 doc/code audit (21 findings, all
+  addressed — in-slot CIK, pinned sector-P/E dating, honest audit provenance,
+  logged fail-soft prior-state reads, the empty-rationale guard;
+  `docs/verification/2026-08-18-portfolio-analysis-doc-code-audit.md`).
 - **The progress step-ownership contract** — request events are stamped with
   their owning step at the progress seam's single choke point, and the tracker
   attaches rows by the stamp (the bracket-inference and synthesized-step
@@ -654,10 +664,11 @@ confirmation run** banks every stacked runtime confirmation at once.
 2. **The single big confirmation run** — now waiting only on the Portfolio
    completion block above. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
-   now the FMP quota-consumption and 429-ladder watches) — **pending a v9
-   revision before attempt 3**, since several watches target machinery the
-   tunnel-vision ruling deleted; read `data-health` early, since several items
-   resolve off that surface alone. Attempts 1 and 2 both failed in the
+   now the FMP quota-consumption and 429-ladder watches), **revised to the v9
+   shape 2026-08-18** (construction / lean / sizing watches removed, the
+   prompt-fit watch re-homed to the per-holding prompts); read `data-health`
+   early, since several items resolve off that surface alone. Attempts 1 and 2
+   both failed in the
    construction stage that no longer exists (evidence in
    `docs/verification/2026-08-10-big-run-attempt-1.md` and
    `docs/verification/2026-08-13-big-run-attempt-2.md`); attempt 3 exercises
@@ -684,7 +695,10 @@ confirmation run** banks every stacked runtime confirmation at once.
    **always-run seed-and-merge, never a skip**: recent distilled findings seed
    each topic and merge (fresh superseding cached) at distillation
    (`docs/portfolio-analysis.md §Starting parameters`); extending it to Trade
-   Opportunities is **wanted but deferred**.
+   Opportunities is **wanted but deferred**. The disconfirming-fetch pass's
+   placement is likewise ruled (2026-08-18): once per holding after its topics,
+   spent from the holding's budget and outside any topic's three-pass depth
+   (`docs/portfolio-workflow.md §Step 6c`).
 
 ### Owned by no slice
 
@@ -727,8 +741,6 @@ Recorded rather than absorbed, each needing a decision before it becomes work:
 - **Unannotated off-scale model-arm renders** — model-arm sub-scores and targets
   are grammar-unbounded and render unannotated when off-scale; the inverted-band
   case got a tag, off-scale values did not.
-- **The sidebar's "rated N" wording** — it reads broader than the priced-only
-  count it renders.
 - **`rate_prints.fetched_at`** — stamped with the run's `created_at` though the
   FRED fetch precedes the per-holding loop; consumed only by a last-resort
   fallback.
