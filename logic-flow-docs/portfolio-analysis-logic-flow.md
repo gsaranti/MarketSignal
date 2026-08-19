@@ -1496,6 +1496,10 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
 
 `Load last run → Refresh monitorable data → Evaluate ledgers → Raise warnings → Save state`
 
+- **As-built**
+  - The quick check **runs today, engine-only** — no model call, no web research, no Schwab pull. Every leg below is live except the FINRA short-interest refresh, which is unwired (its own subsection below).
+  - It is the between-run freshness safeguard the 2026-08-16 badge ruling leans on: it **warns without deciding**, and its warnings ride as non-blocking card badges, never a forced re-analysis.
+
 - **Purpose**
   - Keep existing thesis ledgers alive between full analyses.
   - Warn without rewriting decisions.
@@ -1503,30 +1507,32 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
 - **Data retrieved from local storage**
   - Last analysis run’s holdings snapshot.
   - Existing thesis ledgers.
-  - Stored target inputs and rate anchors.
+  - Stored target inputs and rate anchors — the last full pass's drivers, spread / raw-multiple percentiles, spot, and forward-dividend leg (the quick-check basis the between-run engine re-anchors against).
   - No fresh Schwab holdings pull.
 
 - **Shared data refreshed**
-  - Current holding prices from FMP (quote plus dated EOD).
-  - `DGS2` and `DGS10` from FRED.
-  - Failed rate pull may use a cached print under one week old.
-  - No eligible rate cache → rate-dependent families become `unknown`.
+  - Current holding prices from FMP — the live `quote` plus dated-EOD closes (two FMP calls per holding; the sweep never reads the shared price cache).
+  - `DGS2` and `DGS10` from FRED (one print each).
+  - A failed rate pull fails soft to the freshest cached print — a prior quick check's own print first, else the last run's — eligible only within a drafted ~1-week bound (`RATE_CACHE_MAX_AGE_DAYS = 7`).
+  - No eligible rate cache → the rate-dependent families read `unknown`.
+  - A failed price refresh has no cache to fall to → that holding's market family reads `unknown` and its price-dependent reads skip.
 
-- **Stock data refreshed when needed**
-  - SEC filing check.
-  - Analyst-estimate snapshot.
-  - Earnings history.
-  - Statements and dividends after a new filing.
-  - Company news for technology-falsifier holdings.
-  - FINRA file when a short-interest condition exists.
+- **Per-stock data refreshed**
+  - Always, per stock: the SEC EDGAR filing check (CIK-gated), an analyst-estimate snapshot (the revision preflight), and an earnings-history re-pull.
+  - Only after the EDGAR check surfaces a **new filing**: an income-statement, balance-sheet, and dividends re-pull, so a filing-cadence condition's fresh observation arrives with the value it reads. [note: no cash-flow re-pull exists; the hurdle's payout term is the dividend leg alone.]
+  - Only for a holding carrying a **standing technology-class falsifier**: a `news/stock` pull (the qualifying-news-seed leg).
   - Unresolved SEC CIK → filing family becomes `unknown`.
 
+- **FINRA short-interest refresh (designed, not wired)**
+  - Designed as a conditional once-per-run consolidated-file pull, read only when some holding carries a validated short-interest-fed condition.
+  - As-built the leg is **absent**: the closed engine series surface has no short-interest series, so no condition can validate as short-interest-fed and the trigger never arms. It activates only when a short-interest series joins the surface.
+
 - **Fund data refreshed**
-  - `etf/info`.
-  - Sector and country weights — always fetched; the gating is evaluation-side.
+  - `etf/info` plus **both** the sector and country weight sets — fetched unconditionally for every fund (bond and commodity funds included).
+  - The equity / condition gating is evaluation-side, not fetch-side.
 
 - **Calculations**
-  - Evaluate every machine-checkable falsifier and trigger.
+  - Evaluate every machine-checkable falsifier and trigger — **quantitative conditions only** (qualitative falsifiers are research-checkable, so they stay a full pass's job).
   - Market-data condition → every pass.
   - Filing condition → only after a new filing-style observation.
   - Re-anchor stored v2 multiples using current `DGS10`.
@@ -1553,9 +1559,10 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
   - Fund mandate, expense, or major exposure change → quiet evidence-event badge.
 
 - **State updates**
-  - Advance condition streak only on a new observation.
-  - Persist first breach and confirmation state.
-  - Keep model-authored thesis and triggers frozen.
+  - Advance a condition streak only on a distinct new observation (a new trading day's print, a new filing).
+  - Persist first-breach and confirmation state.
+  - Keep model-authored thesis and triggers frozen — the sweep evaluates against a clone and writes back only each condition's evaluation state.
+  - The **standalone** sweep persists its whole result only to the quick check's **own single-row store — it never creates or updates a run**, so it can't contaminate run history, `latest_run`, or the diff baseline. [note: quick-check eval-state does reach `portfolio_runs`, but only downstream and by design — a later **selective** analysis overlays its in-run carried-tail sweep's eval-state onto the carried verdicts it saves in the new run's blob (the cross-run condition-state chaining); the quick check never writes to `portfolio_runs` itself.]
 
 - **Cannot**
   - Rewrite a grade.
@@ -1568,10 +1575,11 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
   - None.
   - Can run while the model server is configured but offline.
 
-- **Selective-run effect**
-  - `flagged` holding is automatically analyzed.
-  - `unknown` holding is also automatically analyzed.
-  - A failed check never counts as a clean result.
+- **Selective-run effect** (badges, never forced re-analysis — ruled 2026-08-16)
+  - A selective run analyzes **strictly the user's selection**; the sweep's findings never expand the work list.
+  - A `flagged` holding rides its card as a non-blocking amber attention badge.
+  - An `unknown` family rides its card as a quiet degraded-sweep badge — a verdict the sweep couldn't check is badged, never silently trusted on the sweep's silence.
+  - The user acts on a badge by selecting the holding (or running a full analysis); an urgent single-holding run is never blocked by the rest of the book.
 
 - **Output**
   - Attention flags.
@@ -1586,15 +1594,16 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
 
 - **Purpose**
   - View current holdings without running analysis.
-  - Requires a connected Schwab account.
+  - Requires a connected Schwab account — only the Schwab connection, no local-model configuration.
+  - Holds the single global run slot like any job, then releases it before the quick local persist.
 
 - **Data retrieved**
-  - Current positions from Schwab.
+  - Current positions from Schwab — the same holdings fetch the full run uses at Step 2.
 
 - **Logic**
-  - Normalize holdings by ticker.
-  - Persist a standalone pulled-at snapshot.
-  - Compare symbol presence with the latest analysis for display tags.
+  - Normalize holdings by ticker — the same signed-quantity / cost-basis netting as the analysis run.
+  - Persist a **standalone** pulled-at snapshot to its own single-row store — never read by the analysis job.
+  - Compare symbol presence with the latest analysis for display tags — a **frontend, presence-only** comparison (new / no-longer-held); the backend compares nothing.
 
 - **Model**
   - None.
