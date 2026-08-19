@@ -26,7 +26,7 @@
 
 - **Debut**
   - A candidate with no live opportunity record — new to the matrix this run.
-  - Only a debut can be held out at the entry gate or the evidence floor; a carry instead takes a warning or holds its verdict — a deep-validated hard trigger is the one carried removal.
+  - Only a debut can be held out at the entry gate or the evidence floor; a carry instead takes a warning or holds its verdict — it leaves only when a deep pass judges it invalidated (model-judged, or app-forced by a validated hard trigger).
 
 - **Carried-forward (a carry)**
   - An existing live opportunity loaded from the prior run.
@@ -145,7 +145,7 @@
 
 - **Gate**
   - A mandatory rule.
-  - Failure prevents a debut from entering the matrix; a carried name failing the entry gate instead takes a warning (a deep-validated hard trigger archives it — the one carried removal).
+  - Failure prevents a debut from entering the matrix; a carried name failing the entry gate instead takes a warning (only a deep pass's invalidated verdict — model-judged, or app-forced by a hard trigger — removes a carry).
 
 - **Evidence floor**
   - The minimum evidence a candidate needs before any judgment is written: price + history, a validated leading metric, current sources, and statements (or an archetype-defined operating substitute).
@@ -728,7 +728,7 @@ The lens that decides which signals matter for this candidate.
 The application assembles the candidate's evidence packet deterministically; the Step-5a responses are reused from the run cache, and every per-candidate row fires once. This is the per-candidate surface — the budget driver — so it runs only for the narrowed slate, never the discovery longlist.
 
 - **Data retrieved from FMP**
-  - Fundamentals — `income-statement` (+ TTM), `balance-sheet-statement`, `cash-flow-statement`; `key-metrics`, `ratios` (+ TTM); `financial-scores` (Altman Z, Piotroski); `owner-earnings`, `enterprise-values`, `discounted-cash-flow`; `financial-growth` (multi-year per-share revenue / EPS / FCF / book-value CAGRs); `dividends` — the trailing distributions, the scenario function's forward-dividend leg (a name with no distributions contributes a zero leg).
+  - Fundamentals — `income-statement` (+ TTM), `balance-sheet-statement`, `cash-flow-statement`; `key-metrics`, `ratios` (+ TTM); `financial-scores` (Altman Z, Piotroski); `owner-earnings`, `enterprise-values`, `discounted-cash-flow`; `financial-growth` (multi-year per-share revenue / EPS / FCF / book-value CAGRs); `dividends` — the trailing distributions, the scenario function's forward-dividend leg (a nonpayer contributes a clean zero leg; a failed pull reads zero too, but with a recorded degraded-input gap — conservative at the entry gate, and the gap feeds the stand-in's flag leg).
   - Segments — `revenue-product-segmentation`, `revenue-geographic-segmentation` (annual only — trajectory context and the own-history basis; the quarterly acceleration series is research-extracted at Step 5d).
   - The revision signal — `analyst-estimates` (forward consensus, snapshotted run to run for velocity), `grades` / `grades-historical` / `grades-consensus` (the rating distribution and actions), `price-target-consensus` / `price-target-summary` (street target level and trend), `ratings-snapshot` / `ratings-historical`, `earnings` (next earnings date + actual-vs-estimate history).
   - Positioning (all symbol-keyed) — `insider-trading/search` + `insider-trading/statistics`, `acquisition-of-beneficial-ownership` (SC 13D / 13G activist stakes), `senate-trades` + `house-trades`.
@@ -1391,7 +1391,7 @@ The user-directed maintenance job. No discovery: the user selects one or more **
 - The scoreboard is single-valued: outcome labels, `resolution_mode`, realized return, and drawdown stay engine-computed — whoever keeps score cannot also be a player.
 - A candidate with no inflecting, dated, third-party leading metric is a story stock and never enters the matrix; missing floor-bearing evidence causes abstention, not a guessed verdict.
 - Fast checks may warn; only a deep re-evaluation — confirmed under fresh, currently searched research — may rewrite a model-authored field or remove an opportunity. Missing data never causes removal; staleness alone never archives; there is no "target met" exit.
-- Only a debut can be excluded at the entry gate or the evidence floor; a carried name failing the entry gate takes a warning, an inconclusive re-read holds its last verdict, and a deep-validated hard trigger — the one exception — forces it to the archive.
+- Only a debut can be excluded at the entry gate or the evidence floor; a carried name failing the entry gate takes a warning, an inconclusive re-read holds its last verdict, and it leaves only when a deep pass judges it invalidated — model-judged, or app-forced by a validated hard trigger (the one app-forced removal).
 - Price never raises conviction: the since-flagged read is cap-only, the price-action confirmer adjusts but never substitutes for the anchor, and the archive never promotes itself — re-entry is a fresh start.
 - Every name the funnel affirmatively judges and turns away is still tracked (the shadow ledger; an unworthy deferral carries no state), and what it teaches only ever proposes a calibration change — never applies one.
 - Holdings never influence what is found or chosen; the owned tag is display-only, and the job never places an order.
