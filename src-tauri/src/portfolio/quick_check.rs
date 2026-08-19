@@ -240,11 +240,17 @@ pub trait QuickCheckDataSource {
     fn rates(&self) -> Result<(DatedValue, DatedValue)>;
 }
 
-/// The live composition: FMP + SEC (CIK-gated) + FRED.
+/// The live composition: FMP + SEC (CIK-gated) + FRED. Constructing it performs no
+/// network I/O — the same ordering invariant as
+/// [`crate::portfolio::job::LiveCompanyData`]: every external fetch, the ticker →
+/// CIK map refresh included, happens inside the global run slot after
+/// `reset_cancel` + `run_started`.
 pub struct LiveQuickCheckData {
     pub fmp: crate::fmp::FmpDataSource,
     pub sec: crate::sec::SecEdgarSource,
-    pub cik: crate::sec::CikResolver,
+    /// The ticker → CIK map, **loaded on first use** (the first stock's filing
+    /// sweep inside the slot) — [`crate::sec::LazyCikResolver`].
+    pub cik: crate::sec::LazyCikResolver,
     pub fred: crate::fred::FredDataSource,
 }
 
@@ -259,7 +265,7 @@ impl QuickCheckDataSource for LiveQuickCheckData {
     }
 
     fn recent_filings(&self, symbol: &str) -> FilingSweep {
-        let Some(cik) = self.cik.resolve(symbol) else {
+        let Some(cik) = self.cik.resolve(&self.sec, symbol) else {
             return FilingSweep::NoCik;
         };
         match self.sec.fetch_recent_filings(cik) {

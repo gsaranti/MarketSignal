@@ -1097,6 +1097,14 @@ describe("PortfolioView quick check", () => {
     expect(quickBtn().attributes("disabled")).toBeDefined();
     expect(quickBtn().attributes("title")).toContain("Run an analysis first");
 
+    // A corrupt-only history (audit L3): a run exists but no readable ledger
+    // does — the lock explains unreadable, never "run first".
+    const unreadable = mountView({ unreadableHistory: true });
+    const unreadableBtn = unreadable.findAll(".toolbar-actions button").at(1)!;
+    expect(unreadableBtn.attributes("disabled")).toBeDefined();
+    expect(unreadableBtn.attributes("title")).toContain("couldn't be read");
+    expect(unreadableBtn.attributes("title")).not.toContain("Run an analysis first");
+
     const wrapper = mountView({ run });
     const btn = wrapper.findAll(".toolbar-actions button").at(1)!;
     expect(btn.text()).toBe("Quick check");
@@ -1243,6 +1251,31 @@ describe("PortfolioView selective re-analysis", () => {
     expect(xyzCard.text()).not.toContain("analyzed");
   });
 
+  test("an unreadable vintage tags stale — vintage unknown — matching the engine, never a NaN date", () => {
+    // Audit L1: the engine reads an unparseable `analyzed_at` as over-age
+    // (`job.rs over_age`); the card must not lose the stale warning, and the
+    // garbage stamp must never render (localDate would print NaN-NaN-NaN).
+    const malformedRun: PortfolioRun = {
+      ...run,
+      verdicts: [
+        verdict(
+          "MSFT",
+          { status: "priced", ...graded() },
+          { analyzed_at: "soon" }
+        ),
+      ],
+    };
+    const wrapper = mountView({ run: malformedRun });
+    const tag = wrapper
+      .findAll(".ana-tag")
+      .find((t) => t.text() === "Stale · vintage unknown")!;
+    expect(tag.exists()).toBe(true);
+    expect(tag.attributes("title")).toContain("could not be read");
+    expect(tag.classes()).not.toContain("dh-attention-tag");
+    expect(wrapper.text()).not.toContain("NaN");
+    expect(wrapper.text()).not.toContain("soon");
+  });
+
   test("the stale boundary counts whole ET session days, matching the engine", () => {
     // Analyzed 2026-06-03 00:30 EDT (04:30Z); run 2026-07-01 23:00 EDT
     // (07-02 03:00Z): exactly 28 whole ET days — inside the carry window, so
@@ -1371,7 +1404,12 @@ describe("PortfolioView two-arm verdict", () => {
         verdicts: [verdict("AAPL", { status: "priced", ...twoArmGraded() })],
       },
     });
-    const card = wrapper.find(".holding-card");
+    // Located by ticker: the book's other holdings (MSFT, XYZ, OPT) have no
+    // verdict here, so their not-analyzed placeholders sort into the same
+    // stack by value and MSFT's stands first.
+    const card = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "AAPL")!;
     const kickers = card.findAll(".hc-kicker").map((k) => k.text());
     expect(kickers.some((k) => k.startsWith("Engine baseline"))).toBe(true);
     expect(kickers.some((k) => k.startsWith("Model view"))).toBe(true);
@@ -1541,6 +1579,65 @@ describe("PortfolioView badge ruling", () => {
       .findAll(".card-stack .holding-card")
       .find((c) => c.find(".ana-ticker").text() === "NVDA")!;
     expect(nvdaCard.find(".hc-select-input").exists()).toBe(true);
+  });
+
+  test("the sort bar orders placeholders into the stack on the same position keys", async () => {
+    // Audit L2 (2026-08-18 ruling): the placeholder is a holding card too —
+    // it sorts on its own position, never appended after the verdicts.
+    const runWithNew: PortfolioRun = {
+      ...run,
+      holdings: {
+        ...run.holdings,
+        positions: [
+          ...positions,
+          // 9k value sits between AAPL (19.5k) and XYZ (5k); +50% gain sits
+          // between XYZ (+150%) and AAPL (+39.3%).
+          position("NVDA", { cost_basis: 6_000, market_value: 9_000 }),
+        ],
+      },
+    };
+    const wrapper = mountView({ run: runWithNew });
+    // Default value-desc interleaves the placeholder by market value.
+    expect(stackTickers(wrapper)).toEqual(["MSFT", "AAPL", "NVDA", "XYZ", "OPT"]);
+    const nvdaCard = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "NVDA")!;
+    expect(nvdaCard.text()).toContain("Not analyzed in this run");
+    // A different key reorders it with the rest.
+    const pctButton = wrapper
+      .findAll(".ana-sortbar button")
+      .find((b) => b.text().includes("% gain"))!;
+    await pctButton.trigger("click");
+    expect(stackTickers(wrapper)).toEqual(["XYZ", "NVDA", "AAPL", "MSFT", "OPT"]);
+    // The placeholder keeps its selection box after the reorder.
+    const moved = wrapper
+      .findAll(".card-stack .holding-card")
+      .find((c) => c.find(".ana-ticker").text() === "NVDA")!;
+    expect(moved.find(".hc-select-input").exists()).toBe(true);
+  });
+
+  test("the sort bar shows once the stack has two cards, placeholders counted", () => {
+    // One verdict alone: nothing to reorder, no bar.
+    const single: PortfolioRun = {
+      ...run,
+      holdings: { ...run.holdings, positions: [positions[0]] },
+      verdicts: [run.verdicts[0]],
+    };
+    expect(mountView({ run: single }).find(".ana-sortbar").exists()).toBe(false);
+    // One verdict plus one not-analyzed placeholder: two cards, the bar shows.
+    const withPlaceholder: PortfolioRun = {
+      ...single,
+      holdings: {
+        ...single.holdings,
+        positions: [
+          positions[0],
+          position("NVDA", { cost_basis: 6_000, market_value: 9_000 }),
+        ],
+      },
+    };
+    const wrapper = mountView({ run: withPlaceholder });
+    expect(wrapper.find(".ana-sortbar").exists()).toBe(true);
+    expect(stackTickers(wrapper)).toEqual(["MSFT", "NVDA"]);
   });
 
   test("a side-reversed carried verdict renders a Side reversed badge", () => {

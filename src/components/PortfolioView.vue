@@ -180,6 +180,10 @@ const quickTitle = computed(() => {
   if (props.runBlocked)
     return props.runBlockedReason ?? "Local-suite configuration is incomplete";
   if (props.busy) return "Another job is running";
+  // A corrupt-only history: a run exists but no readable ledger does — never
+  // "run first", which claims nothing ever ran (audit L3).
+  if (props.run === null && props.unreadableHistory)
+    return "The latest run couldn't be read — run a fresh analysis to rebuild the thesis ledger before checking it";
   if (props.run === null) return "Run an analysis first — there is no thesis ledger to check yet";
   return "Re-check every standing thesis ledger against fresh data — engine-only, no model call";
 });
@@ -251,7 +255,10 @@ function degradedBadge(h: HoldingQuickState): { text: string; title: string } | 
 // 28-day carry boundary exactly: whole ET session days, date-diffed (job.rs
 // OVER_AGE_DAYS + market_clock::et_date_of — recalibrate both together; a
 // fractional-ms age disagreed with the engine around the boundary); quiet
-// informational tags, never the amber action color.
+// informational tags, never the amber action color. A vintage the ET dating
+// cannot read is stale too — the engine's conservative resolution (an
+// unparseable `analyzed_at` reads over-age) — but the raw stamp never renders
+// (localDate would print NaN-NaN-NaN).
 const OVER_AGE_DAYS = 28;
 function carriedStamp(
   v: HoldingVerdict
@@ -259,7 +266,13 @@ function carriedStamp(
   const run = props.run;
   if (!run || !v.analyzed_at || v.analyzed_at === run.created_at) return null;
   const ageDays = etDayDiff(v.analyzed_at, run.created_at);
-  if (ageDays === null) return null;
+  if (ageDays === null) {
+    return {
+      text: "Stale · vintage unknown",
+      title:
+        "The analysis vintage could not be read — treated as over-age like the engine does; select it to refresh the analysis",
+    };
+  }
   const when = localDate(v.analyzed_at);
   return ageDays > OVER_AGE_DAYS
     ? {
@@ -483,10 +496,10 @@ function pickSort(key: SortKey) {
   }
 }
 
-// The sort metric for one card, or null when undefined for the key (no reported
-// cost basis) — nulls sort last under every direction, per the docs.
-function sortMetric(symbol: string, key: SortKey): number | null {
-  const pos = positionFor(symbol);
+// The sort metric for one card's position, or null when undefined for the key
+// (no reported cost basis) — nulls sort last under every direction, per the
+// docs.
+function sortMetric(pos: Position | null, key: SortKey): number | null {
   if (!pos) return null;
   switch (key) {
     case "value":
@@ -502,16 +515,46 @@ function sortMetric(symbol: string, key: SortKey): number | null {
   }
 }
 
-// The card stack: every verdict (graded, not-rated, insufficient), reordered in
-// place; exited positions live only in the roll-up. Stable sort with an
-// alphabetical ticker tie-break.
-const sortedVerdicts = computed<HoldingVerdict[]>(() => {
-  const verdicts = [...(props.run?.verdicts ?? [])];
+// One entry of the card stack: a verdict card (`v`) or a not-analyzed
+// placeholder (`p`) — exactly one is set. The template destructures both
+// names so each card's markup keeps its own loop variable; `pos` is the
+// position the sort keys read (a verdict's book position, or the placeholder's
+// own).
+interface StackCard {
+  key: string;
+  symbol: string;
+  pos: Position | null;
+  v: HoldingVerdict | null;
+  p: Position | null;
+}
+
+// The card stack: every verdict (graded, not-rated, insufficient) AND every
+// not-analyzed placeholder, one stack reordered in place on the same
+// position-level keys (docs/interface.md §Main Layout — the bar reorders the
+// holding cards in place, placeholders included); exited positions live only
+// in the roll-up. Stable sort with an alphabetical ticker tie-break.
+const sortedCards = computed<StackCard[]>(() => {
+  const cards: StackCard[] = [
+    ...(props.run?.verdicts ?? []).map((v) => ({
+      key: v.symbol,
+      symbol: v.symbol,
+      pos: positionFor(v.symbol),
+      v,
+      p: null,
+    })),
+    ...notAnalyzed.value.map((p) => ({
+      key: `na-${p.symbol}`,
+      symbol: p.symbol,
+      pos: p,
+      v: null,
+      p,
+    })),
+  ];
   const { key, dir } = sort.value;
   const sign = dir === "desc" ? -1 : 1;
-  return verdicts.sort((a, b) => {
-    const ma = sortMetric(a.symbol, key);
-    const mb = sortMetric(b.symbol, key);
+  return cards.sort((a, b) => {
+    const ma = sortMetric(a.pos, key);
+    const mb = sortMetric(b.pos, key);
     if (ma === null && mb === null) return a.symbol.localeCompare(b.symbol);
     if (ma === null) return 1;
     if (mb === null) return -1;
@@ -1214,9 +1257,10 @@ const keyFigures = computed(() => {
                row owns the shared spacing so the two don't each guess). -->
           <div class="stack-controls">
             <!-- Sort bar: display-only card-stack reorder; aria-pressed toggles,
-                 never aria-sort (reserved for the grid heads). -->
+                 never aria-sort (reserved for the grid heads). Shown once the
+                 stack has two cards to order — verdicts and placeholders alike. -->
             <div
-              v-if="run.verdicts.length > 1"
+              v-if="sortedCards.length > 1"
               class="ana-sortbar"
               role="group"
               aria-label="Sort holdings"
@@ -1265,11 +1309,13 @@ const keyFigures = computed(() => {
             </div>
           </div>
 
-          <!-- The holding-card stack -->
+          <!-- The holding-card stack: one sorted stack of verdict cards and
+               not-analyzed placeholders (each entry sets exactly one of v / p;
+               the destructuring keeps each card's own loop variable). -->
           <div class="card-stack">
+            <template v-for="{ key, v, p } in sortedCards" :key="key">
             <article
-              v-for="v in sortedVerdicts"
-              :key="v.symbol"
+              v-if="v"
               class="ana-card holding-card"
             >
               <!-- Not-rated / insufficient-evidence: a legitimately reduced card. -->
@@ -2223,8 +2269,7 @@ const keyFigures = computed(() => {
                  (new / unselected — docs/portfolio-analysis.md §Triggering).
                  Selectable so the next selective run can grade them. -->
             <article
-              v-for="p in notAnalyzed"
-              :key="`na-${p.symbol}`"
+              v-else-if="p"
               class="ana-card holding-card"
             >
               <div class="hc-reduced">
@@ -2261,6 +2306,7 @@ const keyFigures = computed(() => {
                 </div>
               </div>
             </article>
+            </template>
           </div>
 
           <!-- Whole-book roll-up (+ the exited positions from the holdings diff). -->

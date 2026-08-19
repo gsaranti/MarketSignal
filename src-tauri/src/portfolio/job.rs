@@ -47,7 +47,12 @@ const SKIP_REASON: &str = "another run is already in progress";
 /// unnecessary," and the persisted audit/prompt loses a material signal.
 #[derive(Debug, Clone, Default)]
 pub struct SecData {
-    pub facts: CompanyFacts,
+    /// The facts the company-facts endpoint returned: `Some` whenever the endpoint
+    /// was **queried** (a failed fetch degrades to `Some(default)` beside its gap),
+    /// `None` when it never was — a ticker with no CIK mapping, whose gap says so.
+    /// The audit's source label reads this distinction (`dossier::assemble`): a
+    /// queried-but-empty leg labels "(empty)", a never-queried one carries no label.
+    pub facts: Option<CompanyFacts>,
     /// Degraded-input notes — empty when SEC contributed cleanly (or genuinely had
     /// nothing to add for a ticker it could resolve).
     pub gaps: Vec<String>,
@@ -84,9 +89,16 @@ pub trait CompanyDataSource {
             ..Default::default()
         }
     }
-    /// Today's per-sector aggregate P/E snapshot (both exchanges) — run-level,
-    /// memoized by the caller across funds.
-    fn sector_pe_snapshot(&self) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+    /// The per-sector aggregate P/E snapshot (both exchanges) for the run's
+    /// pinned **ET session** `session` — the caller passes the run's `today`
+    /// (minted once from `created_at`), never a fresh clock read, so a run that
+    /// crosses ET midnight before its first fund still snapshots the session it
+    /// belongs to (the fund context's `as_of` is stamped the same way).
+    /// Run-level, memoized by the caller across funds.
+    fn sector_pe_snapshot(
+        &self,
+        _session: chrono::NaiveDate,
+    ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
         Ok(vec![])
     }
     /// The trailing per-sector P/E history (both exchanges) for one sector —
@@ -177,13 +189,53 @@ const SECTOR_PE_EXCHANGES: [&str; 2] = ["NYSE", "NASDAQ"];
 /// fail-soft — an unresolved ticker or a fetch error degrades to empty facts, and the
 /// FMP half plus the derived multiples still carry the holding — but each such
 /// degradation is recorded as a gap so the audit stays honest.
+///
+/// **Ordering invariant:** constructing this performs no network I/O. Every external
+/// fetch — including the ticker → CIK map refresh — happens inside the global run
+/// slot, after `run_portfolio_job` has claimed it and called `reset_cancel` +
+/// `run_started`, so each request sees the run's own cancel state and streams its
+/// tracker row under the active step. The command's daemon probe is the one
+/// pre-slot check, and it is local-only.
 pub struct LiveCompanyData {
     pub fmp: crate::fmp::FmpDataSource,
     pub sec: SecEdgarSource,
-    /// The ticker → CIK resolver over SEC's full `company_tickers.json` map
-    /// ([`crate::sec::load_cik_resolver`]) — an unresolved ticker degrades to a typed
-    /// gap, never a fabricated mapping.
-    pub cik: crate::sec::CikResolver,
+    /// The ticker → CIK resolver over SEC's full `company_tickers.json` map,
+    /// **loaded on first use** ([`crate::sec::LazyCikResolver`] over
+    /// [`crate::sec::load_cik_resolver`]) — the first stock's `facts` call inside
+    /// the slot triggers it. An unresolved ticker degrades to a typed gap, never a
+    /// fabricated mapping.
+    pub cik: crate::sec::LazyCikResolver,
+}
+
+/// The SEC company-facts leg shared by [`LiveCompanyData::facts`] and the job's
+/// slot-ordering test: resolve the CIK (loading the map on first use through
+/// `sec`), then fetch the facts. Each degradation — no mapping, or a failed fetch —
+/// is a recorded gap, never silently-empty facts.
+pub(crate) fn sec_company_facts(
+    cik: &crate::sec::LazyCikResolver,
+    sec: &SecEdgarSource,
+    symbol: &str,
+) -> SecData {
+    match cik.resolve(sec, symbol) {
+        // A ticker with no EDGAR mapping: the facts endpoint was never queried.
+        None => SecData {
+            facts: None,
+            gaps: vec![format!("SEC: no CIK mapping for {symbol}")],
+        },
+        Some(cik) => match sec.fetch_company_facts(cik) {
+            // A clean fetch that genuinely carried nothing is not a degradation.
+            Ok(facts) => SecData {
+                facts: Some(facts),
+                gaps: Vec::new(),
+            },
+            // An outage / 404 / parse failure is a real degraded input — the
+            // endpoint was queried, so the leg still labels as consulted (empty).
+            Err(e) => SecData {
+                facts: Some(CompanyFacts::default()),
+                gaps: vec![format!("SEC company facts unavailable: {e}")],
+            },
+        },
+    }
 }
 
 /// How many days of deep price history the anchor join needs: the ~12-quarter window
@@ -230,14 +282,21 @@ impl CompanyDataSource for LiveCompanyData {
         self.fmp.fetch_fund_data(symbol)
     }
 
-    fn sector_pe_snapshot(&self) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+    fn sector_pe_snapshot(
+        &self,
+        session: chrono::NaiveDate,
+    ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
         // The snapshot endpoint is date-keyed, so the date has to be a session that
         // actually traded. Two things follow, and this path had neither:
         //
         // - **The date is the ET session date**, not the UTC calendar date. An
         //   evening-ET run (after ~8 PM EDT / 7 PM EST) has already rolled to the
         //   next UTC day, so a UTC read asks for a session that has not happened —
-        //   and the endpoint answers 200 with an empty array, not an error.
+        //   and the endpoint answers 200 with an empty array, not an error. And it
+        //   is the **run's pinned** session (`today`, minted from `created_at`),
+        //   passed in by the caller — not a clock read here — so a run crossing ET
+        //   midnight before its first fund cannot snapshot next-session data
+        //   inside a prior-session run.
         // - **The walk backs over weekday candidates**, exactly as the report path
         //   does ([`crate::fmp::FmpDataSource::fetch_sector_pe_for_exchange`]).
         //   Its warrant is that empty answer, not holidays: the adapter records
@@ -249,7 +308,7 @@ impl CompanyDataSource for LiveCompanyData {
         // Both matter because an empty snapshot is not inert: every priced US-equity
         // fund fails `composite_yield` and abstains, attributed to "no P/E-usable
         // sector overlap" rather than to the missing snapshot.
-        let today = crate::market_clock::et_session_date(chrono::Utc::now());
+        let today = session;
         let mut last_err = None;
         for candidate in sector_pe_candidates(today) {
             let date = candidate.format("%Y-%m-%d").to_string();
@@ -315,25 +374,7 @@ impl CompanyDataSource for LiveCompanyData {
     }
 
     fn facts(&self, symbol: &str) -> SecData {
-        match self.cik.resolve(symbol) {
-            // A ticker with no EDGAR mapping: SEC could not be consulted.
-            None => SecData {
-                facts: CompanyFacts::default(),
-                gaps: vec![format!("SEC: no CIK mapping for {symbol}")],
-            },
-            Some(cik) => match self.sec.fetch_company_facts(cik) {
-                // A clean fetch that genuinely carried nothing is not a degradation.
-                Ok(facts) => SecData {
-                    facts,
-                    gaps: Vec::new(),
-                },
-                // An outage / 404 / parse failure is a real degraded input.
-                Err(e) => SecData {
-                    facts: CompanyFacts::default(),
-                    gaps: vec![format!("SEC company facts unavailable: {e}")],
-                },
-            },
-        }
+        sec_company_facts(&self.cik, &self.sec, symbol)
     }
 }
 
@@ -387,6 +428,13 @@ fn over_age(vintage: &str, today: chrono::NaiveDate) -> bool {
 /// `Err` only on an infrastructure failure (the database); a failed analysis is a
 /// normal `Ok(Failed)`. The model/persistence half is **fail-hard** (a model error
 /// fails the run); the research half is fail-soft (stubbed this slice, so moot).
+///
+/// **Slot ordering:** the global run slot is claimed here (`try_begin`), then the
+/// cancel flag is cleared and `run_started` emitted, and only then does any
+/// external fetch happen — the sources handed in must not have fetched during
+/// construction (the live ones defer, e.g. [`LiveCompanyData`]'s lazy CIK map).
+/// The command's daemon probe is the one pre-slot check, and it is local-only. A
+/// competing attempt therefore records `Skipped` having contacted nothing.
 #[allow(clippy::too_many_arguments)]
 pub fn run_portfolio_job(
     holdings_source: &dyn HoldingsSource,
@@ -531,7 +579,9 @@ fn run_analysis(
     // (Step 4), computed in the app layer before any model stage — the
     // compute-don't-guess boundary. Fail-soft: an unreadable prior run reads as "no
     // prior snapshot", so every position tags `new`, exactly as a first run does.
-    let prior_run = store::latest_run(conn).ok().flatten();
+    // A corrupt row is loud-skipped inside the store; a store read error (SQL /
+    // query failure) degrades the same way here, logged (`prior_state_read`).
+    let prior_run = prior_state_read("prior-run", store::latest_run(conn));
     let prior_run_id = prior_run.as_ref().map(|r| r.run_id.clone());
     let prior_created_at = prior_run.as_ref().map(|r| r.created_at.clone());
     let holdings_diff = diff::diff_holdings(prior_run.as_ref().map(|r| &r.holdings), &holdings);
@@ -540,10 +590,10 @@ fn run_analysis(
     // each prior ledger before this run evaluates it, so the between-run sweeps'
     // streaks and acknowledgments chain instead of silently resetting
     // (`docs/portfolio-analysis.md §The quick check`). Only a state swept against
-    // the same prior run applies.
-    let quick_state = store::latest_quick_check(conn)
-        .ok()
-        .flatten()
+    // the same prior run applies. Same fail-soft as the prior run: an unreadable
+    // (corrupt — loud-skipped in the store) or unreadable-by-error state reads as
+    // "no quick check since the last pass", logged.
+    let quick_state = prior_state_read("quick-check-state", store::latest_quick_check(conn))
         .filter(|s| Some(&s.swept_run_id) == prior_run_id.as_ref());
 
     // The run's one wall-clock instant, minted before any dated decision: the
@@ -800,6 +850,13 @@ fn run_analysis(
             company_data.facts(&position.symbol)
         };
         fmp_financials.gaps.extend(sec_data.gaps);
+        // The SEC leg's outcome for the audit: the facts endpoint was queried (`Some`
+        // — a clean fetch, an empty one, or a failed one with its gap) or never was
+        // (a fund, a skipped retrieval, or no CIK mapping — the gap says which).
+        let sec_leg = match &sec_data.facts {
+            Some(facts) => dossier::LegOutcome::Got(facts),
+            None => dossier::LegOutcome::NotRun,
+        };
         // Deep dated history (FMP dated EOD) for the anchor join and drawdown reads.
         let (deep_closes, deep_gaps) = if skip_retrieval {
             (vec![], vec![])
@@ -820,7 +877,10 @@ fn run_analysis(
         let fund_ctx = if is_fund {
             let mut fund = company_data.fund_data(&position.symbol);
             if sector_pe_cache.is_none() {
-                sector_pe_cache = Some(match company_data.sector_pe_snapshot() {
+                // Dated on the run's pinned ET session (`today`), the same
+                // session the fund context's `as_of` below carries — never a
+                // fresh clock read at fetch time.
+                sector_pe_cache = Some(match company_data.sector_pe_snapshot(today) {
                     Ok(rows) => rows,
                     Err(e) => {
                         sector_pe_gap = Some(format!("sector-P/E snapshot unavailable: {e}"));
@@ -868,18 +928,26 @@ fn run_analysis(
         // recorded in the manifest so it reaches the audit and prompt rather than reading
         // as "no options listed" (`docs/schwab-integration.md §Failure posture`). Never a
         // whole-job failure; the error carries status/context only, never a token.
+        // The chain leg's outcome for the audit: requested and returned (`Got`),
+        // requested and none came back or the request failed (`Empty` — a consulted
+        // adapter either way), or never requested (`NotRun`, the retrieval gate).
         let chain = if skip_retrieval {
             None
         } else {
             match holdings_source.option_chain(&position.symbol) {
-                Ok(chain) => chain,
+                Ok(chain) => Some(chain),
                 Err(e) => {
                     fmp_financials
                         .gaps
                         .push(format!("Option chain unavailable for {}: {e}", position.symbol));
-                    None
+                    Some(None)
                 }
             }
+        };
+        let chain_leg = match &chain {
+            Some(Some(chain)) => dossier::LegOutcome::Got(chain),
+            Some(None) => dossier::LegOutcome::Empty,
+            None => dossier::LegOutcome::NotRun,
         };
         let mut prior = dossier::prior_verdict_for(prior_run.as_ref(), &position.symbol);
         // The prior verdict's effective analysis vintage — preserved on an
@@ -909,8 +977,11 @@ fn run_analysis(
             position.clone(),
             holdings_diff.delta_for(&position.symbol),
             fmp_financials,
-            &sec_data.facts,
-            chain.as_ref(),
+            // Each leg's consulted / empty / not-run outcome, so the audit can label a
+            // consulted-but-empty fetch and skip a leg that never ran
+            // (`dossier::assemble`).
+            sec_leg,
+            chain_leg,
             profile.clone(),
             house_view.clone(),
             fund_ctx,
@@ -1569,6 +1640,24 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// The fail-soft shell around a prior-state store read (the prior run, the
+/// quick-check state): a store `Err` — a SQL / query failure, since the store
+/// already loud-skips corrupt rows to `Ok(None)` — degrades to `None` ("no prior
+/// state"), never a run failure, but leaves one labeled stderr line, the
+/// portfolio counterpart of the report pipeline's `read_db_fail_soft`. Without
+/// the trace a degraded read was indistinguishable from a genuine first run —
+/// no diff baseline, no carries, no quick-check chaining — with nothing to show
+/// for it.
+fn prior_state_read<T>(what: &str, read: Result<Option<T>>) -> Option<T> {
+    match read {
+        Ok(state) => state,
+        Err(e) => {
+            eprintln!("[portfolio-job] {what} read degraded to none: {e:#}");
+            None
+        }
+    }
+}
+
 /// The ordered sector-P/E snapshot dates to try for a run whose **ET session date**
 /// is `today`: that session first, then earlier weekdays, weekends skipped without
 /// spending a request. Shares the report chain's walk
@@ -1882,8 +1971,12 @@ mod tests {
         }
         fn facts(&self, _symbol: &str) -> SecData {
             // The stub's FMP half already carries the financials, so SEC adds nothing
-            // and — being a stub, not a failed fetch — records no gap.
-            SecData::default()
+            // and — being a stub, not a failed fetch — records no gap. The endpoint
+            // was "queried" (`Some`), so the audit labels the leg consulted-but-empty.
+            SecData {
+                facts: Some(CompanyFacts::default()),
+                gaps: Vec::new(),
+            }
         }
     }
 
@@ -1926,7 +2019,10 @@ mod tests {
                 gaps: vec![],
             }
         }
-        fn sector_pe_snapshot(&self) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+        fn sector_pe_snapshot(
+            &self,
+            _session: chrono::NaiveDate,
+        ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
             Ok([("Technology", 30.0, 34.0), ("Financial Services", 14.0, 16.0)]
                 .iter()
                 .flat_map(|(sector, nyse, nasdaq)| {
@@ -1981,8 +2077,8 @@ mod tests {
             fin.daily_closes = vec![];
             fin
         }
-        fn facts(&self, _symbol: &str) -> SecData {
-            SecData::default()
+        fn facts(&self, symbol: &str) -> SecData {
+            StubCompanyData.facts(symbol)
         }
         fn deep_price_history(
             &self,
@@ -2007,7 +2103,7 @@ mod tests {
         }
         fn facts(&self, symbol: &str) -> SecData {
             SecData {
-                facts: CompanyFacts::default(),
+                facts: Some(CompanyFacts::default()),
                 gaps: vec![format!("SEC company facts unavailable: simulated outage for {symbol}")],
             }
         }
@@ -2509,7 +2605,10 @@ mod tests {
             fn fund_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
                 FundCompanyData.fund_data(symbol)
             }
-            fn sector_pe_snapshot(&self) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+            fn sector_pe_snapshot(
+                &self,
+                _session: chrono::NaiveDate,
+            ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
                 anyhow::bail!("no sector-P/E snapshot in the 5 weekdays through 2026-08-07")
             }
             fn sector_pe_history(
@@ -2608,8 +2707,11 @@ mod tests {
         fn fund_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
             FundCompanyData.fund_data(symbol)
         }
-        fn sector_pe_snapshot(&self) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
-            FundCompanyData.sector_pe_snapshot()
+        fn sector_pe_snapshot(
+            &self,
+            session: chrono::NaiveDate,
+        ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+            FundCompanyData.sector_pe_snapshot(session)
         }
         fn sector_pe_history(
             &self,
@@ -2679,6 +2781,210 @@ mod tests {
         assert!(matches!(outcome, PortfolioJobOutcome::Skipped(_)));
     }
 
+    /// The sector-P/E snapshot is dated on the run's **pinned** ET session — the
+    /// `today` minted from `created_at` — not on a fresh clock read at fetch time,
+    /// so a run crossing ET midnight before its first fund cannot pull
+    /// next-session sector data into a prior-session run. The recording stub
+    /// captures the date the job passed; it must equal the persisted run's
+    /// `created_at` ET session (the same date the fund context's `as_of` carries).
+    #[test]
+    fn the_sector_pe_snapshot_is_dated_on_the_runs_pinned_et_session() {
+        struct RecordingSnapshotData {
+            asked: std::sync::Mutex<Vec<chrono::NaiveDate>>,
+        }
+        impl CompanyDataSource for RecordingSnapshotData {
+            fn financials(&self, symbol: &str) -> CompanyFinancials {
+                FundCompanyData.financials(symbol)
+            }
+            fn facts(&self, symbol: &str) -> SecData {
+                FundCompanyData.facts(symbol)
+            }
+            fn fund_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
+                FundCompanyData.fund_data(symbol)
+            }
+            fn sector_pe_snapshot(
+                &self,
+                session: chrono::NaiveDate,
+            ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+                self.asked.lock().unwrap().push(session);
+                FundCompanyData.sector_pe_snapshot(session)
+            }
+            fn sector_pe_history(
+                &self,
+                sector: &str,
+            ) -> Result<Vec<crate::portfolio::fund::SectorPe>> {
+                FundCompanyData.sector_pe_history(sector)
+            }
+        }
+
+        let (_dir, paths) = paths();
+        let guard = RunGuard::default();
+        let data = RecordingSnapshotData {
+            asked: std::sync::Mutex::new(Vec::new()),
+        };
+        let mut first = stock("VTI", 50.0, 9_750.0);
+        first.asset_class = AssetClass::Etf;
+        let mut second = stock("ITOT", 40.0, 7_800.0);
+        second.asset_class = AssetClass::Etf;
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings_of(vec![first, second])),
+            &data,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            &paths,
+            &guard,
+            &ctx(),
+        )
+        .unwrap();
+        let run = match outcome {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+        let asked = data.asked.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1, "fetched once, memoized across both funds");
+        let run_session = crate::market_clock::et_date_of(&run.created_at)
+            .expect("created_at is RFC3339");
+        assert_eq!(
+            asked[0], run_session,
+            "the snapshot date is the run's created_at ET session"
+        );
+    }
+
+    /// The slot-ordering invariant, driven through the **real** lazy CIK path: a
+    /// [`LazyCikResolver`] over a real [`SecEdgarSource`] pointed at a localhost
+    /// mock, with the FMP half stubbed. Constructing the source fetches nothing;
+    /// the ticker-map fetch fires only inside the run — after `run_started`, under
+    /// the active per-holding step (its request row is attributed, not dropped) —
+    /// and it fires **even though the context's cancel flag was left set** by an
+    /// earlier cancelled run: `reset_cancel` runs after the slot claim and before
+    /// any fetch, so the map loads instead of silently bailing to empty (which
+    /// gapped every holding's EDGAR leg before this fix).
+    #[test]
+    fn the_cik_map_is_fetched_inside_the_slot_after_run_started_and_reset_cancel() {
+        use crate::progress::{ProgressEvent, RecordingReporter};
+        use crate::sec::LazyCikResolver;
+        use crate::test_http::{Canned, MockHttp};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct LazySecData {
+            sec: SecEdgarSource,
+            cik: LazyCikResolver,
+        }
+        impl CompanyDataSource for LazySecData {
+            fn financials(&self, symbol: &str) -> CompanyFinancials {
+                StubCompanyData.financials(symbol)
+            }
+            fn facts(&self, symbol: &str) -> SecData {
+                sec_company_facts(&self.cik, &self.sec, symbol)
+            }
+        }
+
+        // The mock serves the ticker map, then one company-facts reply.
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}}"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"cik": 320193, "facts": {"us-gaap": {}}}"#,
+            },
+        ]);
+        let cache_dir = tempfile::tempdir().unwrap();
+        // A cancel flag still set from an earlier cancelled run — the shape that
+        // made the eager pre-slot load bail to empty.
+        let cancel = Arc::new(AtomicBool::new(true));
+        let recorder = Arc::new(RecordingReporter::default());
+        let ctx = RunContext::new("slot-order", recorder.clone(), cancel.clone());
+        let sec = SecEdgarSource::new()
+            .unwrap()
+            .with_base_url(&server.base_url)
+            .with_context(ctx.clone());
+        let data = LazySecData {
+            sec,
+            cik: LazyCikResolver::new(cache_dir.path().join("sec_company_tickers.json")),
+        };
+        assert!(!data.cik.is_loaded(), "construction loads nothing");
+        assert_eq!(server.attempts(), 0, "construction fetches nothing");
+
+        let (_dir, paths) = paths();
+        let guard = RunGuard::default();
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(holdings_of(vec![stock(
+                "AAPL", 20.0, 3_900.0,
+            )])),
+            &data,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            &paths,
+            &guard,
+            &ctx,
+        )
+        .unwrap();
+        let run = match outcome {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+        assert!(!cancel.load(Ordering::Relaxed), "the slot claim reset the flag");
+        assert!(data.cik.is_loaded(), "the map loaded during the run");
+        assert_eq!(
+            server.request_paths(),
+            vec![
+                "/files/company_tickers.json".to_string(),
+                "/api/xbrl/companyfacts/CIK0000320193.json".to_string(),
+            ],
+            "the map fetch happened (not bailed) and resolved AAPL for the facts call"
+        );
+        assert!(
+            !run.audit[0]
+                .degraded_inputs
+                .iter()
+                .any(|g| g.contains("no CIK mapping")),
+            "no spurious CIK gap: {:?}",
+            run.audit[0].degraded_inputs
+        );
+
+        // Ordering on the emitted stream: RunStarted precedes the ticker-map
+        // request row, and that row is owned by the active per-holding step.
+        let msgs = recorder.messages();
+        let run_started_seq = msgs
+            .iter()
+            .find(|m| matches!(m.event, ProgressEvent::RunStarted { .. }))
+            .map(|m| m.seq)
+            .expect("run_started emitted");
+        let tickers_row = msgs
+            .iter()
+            .find(|m| {
+                matches!(
+                    &m.event,
+                    ProgressEvent::RequestStarted { provider, group, .. }
+                        if provider == "SEC" && group == "company-tickers"
+                )
+            })
+            .expect("the ticker-map fetch emitted a request row");
+        assert!(
+            tickers_row.seq > run_started_seq,
+            "ticker-map fetch (seq {}) must follow run_started (seq {run_started_seq})",
+            tickers_row.seq
+        );
+        match &tickers_row.event {
+            ProgressEvent::RequestStarted { step, .. } => assert!(
+                step.is_some(),
+                "the ticker-map request row is owned by the active step, not unattributed"
+            ),
+            _ => unreachable!(),
+        }
+    }
+
     /// The slice's acceptance check: drive the **real** local daemon (the 122B
     /// reasoner + 35B fast model) over the fixture holding plus live FMP + keyless SEC,
     /// and validate that a graded verdict comes back, and the wall-clock runtime. This
@@ -2712,13 +3018,13 @@ mod tests {
             .expect("build FMP source");
         let sec = SecEdgarSource::new().expect("build SEC source");
         // The live smoke resolves CIKs from the real map (fetched or cached in the
-        // temp dir), the same path the command wires.
+        // temp dir), the same lazy-inside-the-slot path the command wires.
         let (_cik_dir, cik_cache) = {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("sec_company_tickers.json");
             (dir, path)
         };
-        let cik = crate::sec::load_cik_resolver(&cik_cache, &sec);
+        let cik = crate::sec::LazyCikResolver::new(cik_cache);
         let company = LiveCompanyData { fmp, sec, cik };
 
         let (_dir, paths) = paths();
@@ -3030,8 +3336,8 @@ mod tests {
                     StubCompanyData.financials(symbol)
                 }
             }
-            fn facts(&self, _symbol: &str) -> SecData {
-                SecData::default()
+            fn facts(&self, symbol: &str) -> SecData {
+                StubCompanyData.facts(symbol)
             }
         }
         let second = run(&AbstainBbb);

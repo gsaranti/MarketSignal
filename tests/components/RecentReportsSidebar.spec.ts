@@ -162,7 +162,7 @@ test("the Portfolio view swaps the history list to portfolio runs", () => {
   expect(rows).toHaveLength(2);
   expect(rows[0].find(".row-title").text()).toBe("Full book · 23 holdings");
   expect(rows[0].find(".row-meta").text()).toBe(
-    `${localDateTime(portfolioRuns[0].created_at)} · rated 19`
+    `${localDateTime(portfolioRuns[0].created_at)} · graded 19`
   );
   // The report list is not rendered on this view.
   expect(wrapper.find(".sidebar-header").text()).not.toContain("Recent reports");
@@ -192,7 +192,7 @@ test("an unreadable row tags 'unreadable'", () => {
 
 test("an unreadable row is unavailable and fabricates no counts", async () => {
   // The summary's zeros are placeholders (the blob no longer decodes), so
-  // neither the holdings count nor "rated 0" may render as fact — and the
+  // neither the holdings count nor "graded 0" may render as fact — and the
   // row cannot open, so it must not present as a live button.
   const wrapper = makeWrapper({
     view: "portfolio",
@@ -200,7 +200,7 @@ test("an unreadable row is unavailable and fabricates no counts", async () => {
   });
   const row = wrapper.find(".sidebar-list .report-row");
   expect(row.attributes("disabled")).toBeDefined();
-  expect(row.text()).not.toContain("rated");
+  expect(row.text()).not.toContain("graded");
   expect(row.text()).not.toContain("holdings");
   expect(row.find(".row-title").text()).toBe("Full book");
   await row.trigger("click");

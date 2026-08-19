@@ -99,7 +99,7 @@ function runTitle(r: PortfolioRunSummary): string {
               <div class="row-meta">
                 {{ shortStamp(r.created_at)
                 }}<template v-if="r.readable">
-                  · rated {{ r.graded_count }}</template
+                  · graded {{ r.graded_count }}</template
                 >
                 <!-- An unreadable row — the persisted blob no longer decodes;
                      it lists from its column identity (no counts — the
