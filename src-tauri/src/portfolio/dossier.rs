@@ -324,18 +324,61 @@ pub fn merge_financials(
     fmp
 }
 
+/// One retrieval leg's outcome as the job hands it to assembly, so the audit's
+/// source list can tell a leg that was **consulted** (a request was made — the
+/// contract at `docs/storage.md` §Local Analysis Suite Storage: "the source labels
+/// name every adapter the holding consulted") from one the job never ran. The SEC
+/// company-facts leg and the Schwab option-chain leg share this vocabulary.
+#[derive(Debug)]
+pub enum LegOutcome<'a, T> {
+    /// The job never ran this leg (a fund, a guard-terminal stock, a class the
+    /// pipeline never grades, a ticker with no CIK mapping). No source label.
+    NotRun,
+    /// The leg ran and returned nothing (or failed — the failure's gap lands in the
+    /// manifest separately). Labeled as consulted, with the empty note.
+    Empty,
+    /// The leg ran and returned this.
+    Got(&'a T),
+}
+
+// Manual, bound-free `Copy` / `Clone`: the enum only ever holds a shared
+// reference, so it copies whether or not `T` does (the derive would demand
+// `T: Copy`).
+impl<T> Clone for LegOutcome<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for LegOutcome<'_, T> {}
+
+impl<'a, T> LegOutcome<'a, T> {
+    /// The value the leg returned, if any.
+    pub fn value(self) -> Option<&'a T> {
+        match self {
+            LegOutcome::Got(v) => Some(v),
+            LegOutcome::NotRun | LegOutcome::Empty => None,
+        }
+    }
+}
+
 /// Assemble the dossier from already-fetched pieces. Pure: the network fetches (FMP,
 /// SEC, the Schwab chain) happen in the job, which hands the results here so this
 /// assembly stays deterministic and testable. The options signal is computed from the
 /// chain when present; absent, it is empty (and the grade is unaffected, since the
 /// signal never feeds it).
+///
+/// `sec_facts` and `chain` each carry their leg's [`LegOutcome`]: `Got` / `Empty`
+/// whenever the job **consulted** the leg (a request was made — the SEC facts
+/// endpoint queried, the Schwab chain requested), `NotRun` when it never did, so the
+/// audit's source list can tell consulted-but-empty from not consulted. A `Got` SEC
+/// leg whose facts are all-`None` labels as empty too.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble(
     position: Position,
     position_delta: PositionDelta,
     fmp_financials: CompanyFinancials,
-    sec_facts: &CompanyFacts,
-    chain: Option<&OptionChain>,
+    sec_facts: LegOutcome<'_, CompanyFacts>,
+    chain: LegOutcome<'_, OptionChain>,
     profile: InvestorProfile,
     house_view: HouseView,
     fund: Option<crate::portfolio::fund::FundContext>,
@@ -363,8 +406,14 @@ pub fn assemble(
     };
     let mut fmp_financials = fmp_financials;
     let ttm_basis = apply_ttm_statement_basis(&mut fmp_financials);
-    let financials = merge_financials(fmp_financials, sec_facts, ttm_basis);
+    let no_sec_facts = CompanyFacts::default();
+    let financials = merge_financials(
+        fmp_financials,
+        sec_facts.value().unwrap_or(&no_sec_facts),
+        ttm_basis,
+    );
     let options_signal = chain
+        .value()
         .map(crate::portfolio::engine::options_signal)
         .unwrap_or(OptionsSignal {
             put_call_volume: None,
@@ -387,24 +436,70 @@ pub fn assemble(
                 | crate::portfolio::listing::ListingResolution::Conflict { .. }
         )
     );
+    //
+    // Every holding's position values — eligibility, side, P/L, the action call's
+    // sizing evidence — come from the Schwab holdings snapshot, so every branch names
+    // it: the not-gradeable branch in its own wording (there the snapshot's asset
+    // class is the evidence that decided the verdict), the guard-terminal branch
+    // beside the profile read that decided it, and the gradeable branch beside the
+    // FMP pull that actually ran — the stock statements / consensus surface, or the
+    // fund's quote + EOD + dividend surface (`FmpDataSource::fetch_fund_financials`),
+    // which never touches the statement endpoints.
+    let is_fund = matches!(
+        position.asset_class,
+        crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
+    );
     let mut sources = if guard_terminal {
-        vec!["FMP company profile (listing-resolution guard)".to_string()]
+        vec![
+            "Schwab position (holdings snapshot)".to_string(),
+            "FMP company profile (listing-resolution guard)".to_string(),
+        ]
     } else if !position.asset_class.is_gradeable() {
         vec![format!(
             "Schwab position ({} — not graded by the equity pipeline)",
             position.asset_class.label()
         )]
+    } else if is_fund {
+        vec![
+            "Schwab position (holdings snapshot)".to_string(),
+            "FMP fund financials (quote, EOD history, dividends)".to_string(),
+        ]
     } else {
-        vec!["FMP company financials".to_string()]
+        vec![
+            "Schwab position (holdings snapshot)".to_string(),
+            "FMP company financials".to_string(),
+        ]
     };
+    // The one-per-stock profile lookup runs whenever a listing resolution is
+    // present, and on the common (resolved / unverified) route it still supplied the
+    // listing identity, the issuer name, and the outcome sector — so it is a
+    // consulted source there too, not only when it was guard-terminal.
+    if listing.is_some() && !guard_terminal {
+        sources.push("FMP company profile (listing identity, issuer name, sector)".to_string());
+    }
     if ttm_basis {
         sources.push("FMP TTM statement basis (four-quarter sums)".to_string());
     }
-    if !sec_facts.is_empty() {
-        sources.push("SEC EDGAR company facts".to_string());
+    // SEC is labeled whenever the leg was consulted — a fetch that returned nothing
+    // (or failed, with its gap in the manifest) still leaves its trace, distinct from
+    // a leg the job never ran (a fund, a skipped retrieval, or a ticker with no CIK
+    // mapping — where the facts endpoint was never queried and the gap says so).
+    match sec_facts {
+        LegOutcome::Got(facts) if !facts.is_empty() => {
+            sources.push("SEC EDGAR company facts".to_string());
+        }
+        LegOutcome::Got(_) | LegOutcome::Empty => {
+            sources.push("SEC EDGAR company facts (empty)".to_string());
+        }
+        LegOutcome::NotRun => {}
     }
-    if chain.is_some() {
-        sources.push("Schwab option chain".to_string());
+    // The chain likewise: every eligible stock requests it, so a request that came
+    // back with no chain (or failed, its gap in the manifest) is still a consulted
+    // adapter, distinct from a leg the retrieval gate skipped.
+    match chain {
+        LegOutcome::Got(_) => sources.push("Schwab option chain".to_string()),
+        LegOutcome::Empty => sources.push("Schwab option chain (none returned)".to_string()),
+        LegOutcome::NotRun => {}
     }
     if fund.is_some() {
         sources.push("FMP fund metadata (etf/info + weightings + sector P/E)".to_string());
@@ -1119,8 +1214,8 @@ Sources and footnotes.
             position,
             PositionDelta::new_position(),
             fmp_only(),
-            &sec,
-            Some(&chain),
+            LegOutcome::Got(&sec),
+            LegOutcome::Got(&chain),
             InvestorProfile::default_fixture(),
             HouseView::default(),
             None,
@@ -1130,9 +1225,88 @@ Sources and footnotes.
         );
         assert!(dossier.sources.iter().any(|s| s.contains("FMP")));
         assert!(dossier.sources.iter().any(|s| s.contains("SEC")));
-        assert!(dossier.sources.iter().any(|s| s.contains("option chain")));
+        assert!(dossier.sources.contains(&"Schwab option chain".to_string()));
         assert!(dossier.options_signal.put_call_volume.unwrap() > 1.0);
         assert!(dossier.prior_verdict.is_none(), "new holding");
+    }
+
+    #[test]
+    fn option_chain_leg_is_labeled_whenever_consulted_and_none_is_distinct_from_not_run() {
+        // Every eligible stock requests the chain (`job`), so a request that came back
+        // with nothing — or failed, its gap in the manifest — is still a consulted
+        // adapter (`docs/storage.md`: "the source labels name every adapter the
+        // holding consulted"); only a leg the retrieval gate skipped leaves no label.
+        let chain_labels = |sources: Vec<String>| -> Vec<String> {
+            sources.into_iter().filter(|s| s.contains("option chain")).collect()
+        };
+        let chain = OptionChain {
+            underlying: "AAPL".into(),
+            underlying_price: Some(195.0),
+            contracts: vec![],
+        };
+        // Consulted, returned a chain: the plain label.
+        assert_eq!(
+            chain_labels(stock_sources_with_chain(LegOutcome::Got(&chain))),
+            vec!["Schwab option chain".to_string()]
+        );
+        // Consulted, none returned (or the request failed): labeled as consulted,
+        // with the none-returned note.
+        assert_eq!(
+            chain_labels(stock_sources_with_chain(LegOutcome::Empty)),
+            vec!["Schwab option chain (none returned)".to_string()]
+        );
+        // Never requested: no chain label at all.
+        assert!(chain_labels(stock_sources_with_chain(LegOutcome::NotRun)).is_empty());
+    }
+
+    #[test]
+    fn a_gradeable_holding_names_the_schwab_position_snapshot() {
+        // Every holding's position values — eligibility, side, P/L, the action call's
+        // sizing evidence — come from the Schwab holdings snapshot, so a gradeable
+        // holding names it beside the FMP pull; the not-gradeable branch keeps its
+        // own wording (pinned in `assembly_never_claims_the_house_view_...`).
+        let sources = stock_sources(LegOutcome::NotRun, None);
+        assert_eq!(
+            sources,
+            vec![
+                "Schwab position (holdings snapshot)".to_string(),
+                "FMP company financials".to_string(),
+            ],
+            "{sources:?}"
+        );
+        // A fund's FMP pull is `fetch_fund_financials` — quote + EOD + dividends, never
+        // the statement / consensus endpoints — so its label says so rather than
+        // borrowing the stock surface's name (Codex round 2, 2026-08-18).
+        let fund = assemble(
+            Position {
+                symbol: "QQQ".into(),
+                description: "Invesco QQQ".into(),
+                asset_class: AssetClass::Etf,
+                quantity: 10.0,
+                cost_basis: 3_000.0,
+                market_value: 4_000.0,
+                current_price: Some(400.0),
+            },
+            PositionDelta::new_position(),
+            fmp_only(),
+            LegOutcome::NotRun,
+            LegOutcome::NotRun,
+            InvestorProfile::default_fixture(),
+            HouseView::default(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .sources;
+        assert_eq!(
+            fund,
+            vec![
+                "Schwab position (holdings snapshot)".to_string(),
+                "FMP fund financials (quote, EOD history, dividends)".to_string(),
+            ],
+            "{fund:?}"
+        );
     }
 
     #[test]
@@ -1141,7 +1315,8 @@ Sources and footnotes.
         // unconditionally made every ordinary cash, option and bond audit claim a
         // source that holding's verdict never consulted: both the non-gradeable
         // eligibility route and the guard-terminal route return from
-        // `pipeline::analyze_holding` ahead of either 6f prompt and the 7b prompt.
+        // `pipeline::analyze_holding` ahead of either 6f prompt and the per-holding
+        // action call's prompt.
         let house_view = HouseView {
             recent_summaries: Vec::new(),
             latest_sections: Some("## Market Signal Thesis\nrisk-on.".into()),
@@ -1160,8 +1335,8 @@ Sources and footnotes.
                 position(asset_class),
                 PositionDelta::new_position(),
                 fmp_only(),
-                &CompanyFacts::default(),
-                None,
+                LegOutcome::NotRun,
+                LegOutcome::NotRun,
                 InvestorProfile::default_fixture(),
                 house_view.clone(),
                 None,
@@ -1187,6 +1362,126 @@ Sources and footnotes.
                 .iter()
                 .any(|src| src.contains("house view")),
             "assembly never claims the house view — it cannot know"
+        );
+    }
+
+    /// The source list for a stock assembled with the given SEC leg, chain leg, and
+    /// listing.
+    fn stock_sources_full(
+        sec_facts: LegOutcome<'_, CompanyFacts>,
+        chain: LegOutcome<'_, OptionChain>,
+        listing: Option<crate::portfolio::listing::ListingResolution>,
+    ) -> Vec<String> {
+        let position = Position {
+            symbol: "AAPL".into(),
+            description: "Apple Inc".into(),
+            asset_class: AssetClass::Stock,
+            quantity: 10.0,
+            cost_basis: 1_000.0,
+            market_value: 1_950.0,
+            current_price: Some(195.0),
+        };
+        assemble(
+            position,
+            PositionDelta::new_position(),
+            fmp_only(),
+            sec_facts,
+            chain,
+            InvestorProfile::default_fixture(),
+            HouseView::default(),
+            None,
+            None,
+            listing,
+            None,
+        )
+        .sources
+    }
+
+    /// The source list for a stock assembled with the given SEC leg and listing (no
+    /// chain leg run).
+    fn stock_sources(
+        sec_facts: LegOutcome<'_, CompanyFacts>,
+        listing: Option<crate::portfolio::listing::ListingResolution>,
+    ) -> Vec<String> {
+        stock_sources_full(sec_facts, LegOutcome::NotRun, listing)
+    }
+
+    /// The source list for a stock assembled with the given chain leg (no SEC leg
+    /// run, no listing).
+    fn stock_sources_with_chain(chain: LegOutcome<'_, OptionChain>) -> Vec<String> {
+        stock_sources_full(LegOutcome::NotRun, chain, None)
+    }
+
+    #[test]
+    fn sec_leg_is_labeled_whenever_consulted_and_empty_is_distinct_from_not_run() {
+        // M3 of the 2026-08-18 doc/code audit: the label used to depend on the facts
+        // being nonempty, so a consulted-but-empty EDGAR fetch left no trace and read
+        // exactly like a leg the job never ran.
+        let sec_labels = |sources: Vec<String>| -> Vec<String> {
+            sources.into_iter().filter(|s| s.contains("SEC")).collect()
+        };
+        // Consulted, nonempty: the plain label.
+        let facts = CompanyFacts {
+            revenue: Some(400_000_000_000),
+            ..CompanyFacts::default()
+        };
+        assert_eq!(
+            sec_labels(stock_sources(LegOutcome::Got(&facts), None)),
+            vec!["SEC EDGAR company facts".to_string()]
+        );
+        // Consulted, empty: labeled as consulted, with the empty note — whether the
+        // job hands over the empty facts a queried endpoint returned or the bare
+        // `Empty` outcome.
+        assert_eq!(
+            sec_labels(stock_sources(LegOutcome::Got(&CompanyFacts::default()), None)),
+            vec!["SEC EDGAR company facts (empty)".to_string()]
+        );
+        assert_eq!(
+            sec_labels(stock_sources(LegOutcome::Empty, None)),
+            vec!["SEC EDGAR company facts (empty)".to_string()]
+        );
+        // Never run: no SEC label at all. This is also the no-CIK case — the facts
+        // endpoint was never queried, and the "no CIK mapping" gap (recorded by the
+        // job's `sec_company_facts`, pinned there) is the trace it leaves.
+        assert!(sec_labels(stock_sources(LegOutcome::NotRun, None)).is_empty());
+    }
+
+    #[test]
+    fn profile_lookup_is_a_source_on_the_common_resolved_route_too() {
+        // The one-per-stock profile lookup feeds the listing identity, the issuer
+        // name, and the outcome sector on every stock — the audit named it only when
+        // it was guard-terminal (M3, 2026-08-18).
+        use crate::portfolio::listing::ListingResolution;
+        let identity = "FMP company profile (listing identity, issuer name, sector)".to_string();
+        let guard = "FMP company profile (listing-resolution guard)".to_string();
+
+        // Resolved: the identity label beside the financials pull.
+        let resolved = stock_sources(LegOutcome::NotRun, Some(ListingResolution::SupportedUs));
+        assert!(resolved.contains(&identity), "{resolved:?}");
+        assert!(resolved.contains(&"FMP company financials".to_string()));
+        assert!(!resolved.contains(&guard));
+        // Unverified (an FMP profile gap): the lookup still ran and is named; the
+        // guard's degraded input is the pipeline's to record.
+        let unverified = stock_sources(
+            LegOutcome::NotRun,
+            Some(ListingResolution::Unverified {
+                detail: "FMP profile unavailable".into(),
+            }),
+        );
+        assert!(unverified.contains(&identity), "{unverified:?}");
+        // Guard-terminal: the Schwab snapshot the position came from plus the guard
+        // label — the profile read is the evidence that decided the verdict, and no
+        // FMP financials pull ran.
+        let terminal = stock_sources(LegOutcome::NotRun, Some(ListingResolution::Unresolved));
+        assert_eq!(
+            terminal,
+            vec!["Schwab position (holdings snapshot)".to_string(), guard]
+        );
+        // No listing resolution (no lookup ran): no profile label.
+        assert!(
+            !stock_sources(LegOutcome::NotRun, None).iter().any(|s| s.contains("company profile")),
+            "{:?}",
+            stock_sources(LegOutcome::NotRun, None)
         );
     }
 

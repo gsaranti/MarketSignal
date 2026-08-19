@@ -62,7 +62,7 @@ const props = defineProps<{
   // (docs/configuration.md §Investor Profile). `null` = not yet loaded /
   // unavailable (the section is omitted, like diagnostics). Display strings
   // arrive ready-to-render from the backend — the same label source the
-  // Step-7b construction prompt uses.
+  // per-holding action call's prompt uses.
   investorProfile: InvestorProfileDisplay | null;
   // Charles Schwab connection (docs/schwab-integration.md, docs/interface.md
   // §Connection status). `null` = not yet loaded / unavailable (the section is
@@ -991,7 +991,8 @@ const importDataLabel = computed(() =>
              save — the preset is not user-configured until a configurable profile
              ships — so it sits outside every form, on its own data channel like
              diagnostics (omitted while unavailable). Values arrive ready-to-render
-             from the backend, the same label source the construction prompt uses.
+             from the backend, the same label source the per-holding action call's
+             prompt uses.
              Generic-chrome register: monochrome, no analytical palette. -->
         <section
           v-if="investorProfile"

@@ -276,6 +276,13 @@ pub fn save_quick_check(
 
 /// The latest quick-check state, or `None` before any quick check ran (or after a
 /// full pass cleared it).
+///
+/// Decode is **loud-skip**, like [`latest_run`]: an unparseable state logs one
+/// stderr warning and reads as `None`, never an `Err` — so a corrupt row neither
+/// blanks the Portfolio page load (the `latest_quick_check` command) nor, at the
+/// job, silently drops the quick-check chaining behind a swallowed error. Only a
+/// store read error (SQL / query failure) is an `Err`; the job degrades that the
+/// same way, logged (`job::prior_state_read`).
 pub fn latest_quick_check(
     conn: &Connection,
 ) -> Result<Option<crate::portfolio::quick_check::QuickCheckState>> {
@@ -286,10 +293,13 @@ pub fn latest_quick_check(
             |row| row.get::<_, String>(0),
         )
         .optional()?;
-    match json {
-        Some(j) => Ok(Some(serde_json::from_str(&j)?)),
-        None => Ok(None),
-    }
+    Ok(json.and_then(|j| match serde_json::from_str(&j) {
+        Ok(state) => Some(state),
+        Err(e) => {
+            eprintln!("[portfolio-store] skipping unparseable quick-check state: {e}");
+            None
+        }
+    }))
 }
 
 /// Drop the quick-check state — the successful full pass's clear-and-acknowledge
@@ -372,9 +382,11 @@ pub fn insert_run(conn: &Connection, run: &PortfolioRun) -> Result<()> {
 ///
 /// Decode is **loud-skip**: an unparseable blob logs one stderr warning naming
 /// the row and the walk continues to the next row, instead of erroring the
-/// whole read — the callers fail-soft with `.ok().flatten()`, so an `Err` here
-/// silently became "no prior run" (no diff baseline, no carries, every episode
-/// re-debuting) on the strength of one corrupt row.
+/// whole read — the job caller fails soft to "no prior run", so an `Err` here
+/// silently became no diff baseline, no carries, every episode re-debuting on
+/// the strength of one corrupt row. What remains an `Err` is a store read error
+/// (SQL / query failure); the job degrades that the same way, logged
+/// (`job::prior_state_read`), and the page commands surface it.
 pub fn latest_run(conn: &Connection) -> Result<Option<PortfolioRun>> {
     let mut stmt = conn.prepare(
         "SELECT run_id, run_json FROM portfolio_runs
@@ -810,6 +822,30 @@ mod tests {
         .unwrap();
         let latest = latest_run(&conn).unwrap().expect("the older readable run is served");
         assert_eq!(latest.run_id, "run-good");
+    }
+
+    #[test]
+    fn latest_quick_check_skips_an_unparseable_state_instead_of_erroring() {
+        // Same loud-skip as `latest_run`: a corrupt quick-check row reads as
+        // "no quick check since the last pass" — never an `Err` that would blank
+        // the Portfolio page load or, at the job, silently drop the chaining.
+        let conn = mem();
+        conn.execute(
+            "INSERT INTO portfolio_quick_checks (id, checked_at, state_json) \
+             VALUES (1, '2026-08-11T00:00:00Z', '{\"not\": \"a state\"}')",
+            [],
+        )
+        .unwrap();
+        assert!(latest_quick_check(&conn).unwrap().is_none());
+        // A readable state still round-trips (the skip is decode-only).
+        let state = crate::portfolio::quick_check::QuickCheckState {
+            swept_run_id: "run-1".into(),
+            last_checked_at: "2026-08-12T00:00:00Z".into(),
+            rate_cache: None,
+            holdings: vec![],
+        };
+        save_quick_check(&conn, &state).unwrap();
+        assert_eq!(latest_quick_check(&conn).unwrap().unwrap(), state);
     }
 
     #[test]

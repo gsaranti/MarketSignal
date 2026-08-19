@@ -4,6 +4,7 @@ The single big confirmation run banks every runtime confirmation the locked pre-
 This file is the checklist it reads against: what to look for, grouped by the surface that produces it.
 It is forward-looking, unlike the dated records beside it — those are written after the fact, this one is written before.
 Findings go into a dated record once the run completes; this file is then the index of what that record has to answer.
+Revised 2026-08-18 to the `portfolio-v9` shape: the construction-stage, lean / divergence, and sizing watches are removed, since that machinery no longer exists.
 
 Nothing here is a defect report.
 Each item is a behavior that has only ever been exercised against fixtures, a small live run, or a single symbol, and needs a read at real scale (a 47-position book) before it can be called confirmed.
@@ -74,16 +75,10 @@ Sector-resolution rates through the fail-soft profile read.
 
 The below-bar eligibility note — proposal statistics stay deferred behind the ≥ 30 unique holdings with matured windows bar (`outcome::PROPOSAL_ELIGIBILITY_BAR`).
 
-## Construction and the two-arm verdict
+## The two-arm verdict
 
-The first live construction pass: lean-divergence, engine-bar and carried-stale-lean rates at 47-position scale.
-
-The construction prompt's fit inside the shared 131 K `num_ctx`.
+The per-holding interpretation and action-call prompts' fit inside the shared 131 K `num_ctx`.
 The settled response to pressure is to compress digests, never to raise `num_ctx`, and the fit is instrumented — per-call prompt counts and sent size, with pressure and truncation flags on the data-health read.
-
-The overlay-classification read against real Schwab OCC rows.
-
-The 7b sizing-only decided-range movement rate, which is what would justify a band-relative episode trigger.
 
 The first two-arm vintage: the retrospective and model-arm brief's prompt fit under the same instrumentation, feasibility-annotation rates, model-vs-engine divergence rates, and the paired two-arm card render at 47-position scale.
 

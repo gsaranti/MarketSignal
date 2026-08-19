@@ -250,6 +250,7 @@
 - **Checks**
   - No other Market Signal job is running.
   - Local reasoning and embedding models are configured and available.
+    - That availability probe — a local-only daemon call, no investment-data API — is the one check that runs before the run slot is claimed; every external fetch happens inside the slot.
   - Schwab is connected.
   - Schwab’s seven-day refresh token is still valid.
   - FMP and FRED credentials exist.
@@ -420,6 +421,7 @@ Each completed holding is designed to checkpoint separately; as-built only the b
   - **Work list**
     - The user-selected holdings, and nothing else.
     - No automatic additions — the former safety additions now surface as card badges (below), never a forced re-analysis.
+    - A selective request that finds no readable prior run runs the whole book — there is nothing to carry, and the page cannot offer a selection without a rendered run (as-built, ruled 2026-08-18).
   - **Carried holdings** (unselected, with a prior verdict)
     - Keep their previous intrinsic verdict, action, and thesis ledger, vintage-stamped.
     - Display the older analysis vintage.
@@ -857,9 +859,9 @@ The inline gates referenced above, gathered — with each branch's requirements 
 - **Stock requires**
   - Current price.
   - Financial statements.
-  - Matching issuer identity.
+  - No resolved identity conflict (an unverified cross-check proceeds with a degraded-input flag).
   - At least two real sub-scores.
-  - A usable target driver once the v2 function is active.
+  - An admissible target driver on the v2 ladder (`no-admissible-driver` is a live floor exit).
 
 - **Exposure-priced fund requires**
   - Current quote or NAV.
@@ -1011,6 +1013,10 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - A follow-up is the model's **proposal** — a structured field the orchestrator reads and decides whether to spend; the model never recurses on its own.
   - It is granted only while depth remains (≤2 follow-ups) **and** the per-item budget has room; on exhaustion it is simply not spent (fail-soft, no follow-up).
 
+- **Disconfirming-fetch pass (designed — research loop; canonical placement `docs/portfolio-workflow.md` §Step 6c)**
+  - The disconfirming-fetch pass (`docs/web-research.md` §Source quality and evidence weighting) runs once per holding after its topics, once the thesis has formed.
+  - It is spent from the holding's fetch / wall-clock budget, is not counted against any topic's three-pass depth, and fail-softs to a recorded gap when the budget is already exhausted.
+
 - **Model determines**
   - Which sources answer the topic.
   - Which findings are supported.
@@ -1029,6 +1035,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - Web failure reduces evidence.
   - It may lower conviction.
   - It does not automatically fail the run.
+  - A model-call failure inside the required 6c–6f path (the action call included) is hard — it fails the run, and as-built no partial work persists (`docs/portfolio-analysis.md` §Failure posture).
 
 - **Output**
   - Full findings for every worked topic; any lower-priority topic the budget couldn't reach is a recorded degraded-input gap (lower conviction).
@@ -1279,7 +1286,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - House view, research, computed metrics, and absolute target prices.
   - Every book-level value: cash, weights, concentration, other holdings.
 - **Returns**
-  - One rung from the fixed ladder plus a one-sentence rationale.
+  - One rung from the fixed ladder plus a short rationale (prompted as one sentence; an empty rationale fails the run).
   - No target weight, share count, or dollar figure — sizing belongs to the portfolio planner.
   - A rung outside the engine set persists as authored, annotated on the audit.
 
@@ -1398,7 +1405,7 @@ Outcome learning has two halves that share one unit, the **decision episode** �
   - Thesis ledgers and condition evaluation states.
   - Analysis vintages (attention flags live only in the quick-check store).
   - Portfolio roll-up.
-  - Sources and timestamps.
+  - Source labels (URLs and per-source retrieval timestamps are designed — they land with the research loop).
   - Engine calculations, each holding's categorical position-change tag, and the roll-up's exited positions (the full position delta — prior quantity and cost basis — is runtime-only; per-value input-delta attribution is the designed input-delta validator's).
   - Every priced stock's pre-profit overlay record — the runway, economics, dilution, and severe-deterioration states computed live from statements, with the conviction, action, and cap rules they fire.
   - What-changed audits.
@@ -1406,7 +1413,7 @@ Outcome learning has two halves that share one unit, the **decision episode** �
   - Model, prompt, schema, and parameter versions.
   - Degraded-input flags.
   - *Dormant producer — no pre-profit research loop feeds these yet:* the accepted pre-profit observation history (period-keyed) and the backfill legs carry forward from the prior run, and the execution-miss state and its rule recompute from that carried history each run; the rejected-observation list, by contrast, is rebuilt from the current candidate batch, not carried. All are empty on a fresh v9 store today — by carry / recompute over an empty producer, not a forced-empty field.
-  - *Designed — lands with the research loop:* per-topic research-reuse decisions (seeded-from-cache vs cold, each with its seeding vintage) and accepted / rejected research assumptions; distilled research itself is a transient prompt input, not persisted.
+  - *Designed — lands with the research loop:* per-topic research-reuse decisions (seeded-from-cache vs cold, each with its seeding vintage) and accepted / rejected research assumptions; the distilled findings themselves persist — the combined cross-topic object on the run audit record, and the reconciled per-topic seed layer as the next run's seeds (`docs/storage.md` §Local Analysis Suite Storage).
 
 - **Decision-episode logic**
   - Decided in Step 7's outcome learning (the open / extend rule lives there); this step only persists the resulting episodes.
@@ -1474,14 +1481,14 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
   - A **key-figures strip** — account value, positions, the disposition counts (graded and not-rated always; role/risk and insufficient only when non-zero), cash weight, and top-position weight.
   - The **roll-up card** — the overview line, the **data-health** read (an amber attention tag plus its summary), the **model-vs-engine scoreboard** (paired head-to-head interval scores and per-arm outlook-direction hit-rates), and the positions **closed since last run**.
   - **As-built** the scoreboard renders **only once episodes have matured** — a run with nothing scored omits the block rather than showing a labeled *pending* state, so absence reads the same as no outcome records; the target-band calibration reads are carried but not rendered, and not-rated / insufficient reasons render on their own cards, not here.
-  - [note: the sidebar's per-run **"rated N"** binds to the graded (priced-only) count while the word reads broader than the number it shows — a recorded open-ruling item, unsettled here.]
+  - [note: the sidebar's per-run label is **`graded N`** — it names the priced (graded) count it renders; role-risk-only holdings are excluded from it and appear only in the open run's key-figures strip, never pooled into the sidebar number (ruled 2026-08-18; the former `rated N` wording read broader than its number).]
 
 - **Holdings display — dual vintage**
   - The standalone holdings pull is **view-only, never merged into the run-anchored cards**, and the **frontend** decides freshness (the backend hands over both timestamped payloads and compares nothing): when the pull is newer than the run, a separate **Current holdings** section renders **above** the verdict cards, stamped with both vintages and carrying presence-only churn tags (*new · not in last analysis* / *no longer held*).
   - The older analysis cards are never mutated, and the whole comparison is suppressed on a historical view.
 
 - **Sorting** (display-only — reorders already-computed cards, computes nothing)
-  - Four keys — **Value**, **$ gain**, **% gain**, **Cash invested** — a stable in-place sort with an alphabetical ticker tie-break, nulls last, and the last-used key persisted; shown only with more than one verdict. The current-holdings table carries its own independent column sort.
+  - Four keys — **Value**, **$ gain**, **% gain**, **Cash invested** — a stable in-place sort with an alphabetical ticker tie-break, nulls last, and the last-used key persisted; shown only with more than one card. It sorts every card — verdict cards and not-analyzed placeholders together, on the same position-level keys (ruled 2026-08-18). The current-holdings table carries its own independent column sort.
 
 - **Read-only past-run view** (any sidebar row but the newest readable one)
   - The older run renders on the same page with every trigger locked — run analysis, pull holdings, and quick check all disabled with the reason stated — no selection controls, and the current-holdings comparison suppressed.
@@ -1499,6 +1506,7 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
 - **As-built**
   - The quick check **runs today, engine-only** — no model call, no web research, no Schwab pull. Every leg below is live except the FINRA short-interest refresh, which is unwired (its own subsection below).
   - It is the between-run freshness safeguard the 2026-08-16 badge ruling leans on: it **warns without deciding**, and its warnings ride as non-blocking card badges, never a forced re-analysis.
+  - Its gate is presence-only — the local-model configuration plus FMP / FRED credential presence, with no daemon probe — and the Schwab connection is a precondition even though no Schwab call is made; it holds the single global run slot like any job.
 
 - **Purpose**
   - Keep existing thesis ledgers alive between full analyses.

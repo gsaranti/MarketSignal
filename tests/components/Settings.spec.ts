@@ -338,7 +338,7 @@ test("the investor-profile section renders the five preset rows verbatim, with n
   expect(section.exists()).toBe(true);
 
   // The five rows, in template order, rendering the backend strings verbatim
-  // (they are the shared label source with the construction prompt — never
+  // (they are the shared label source with the action call's prompt — never
   // re-worded frontend-side).
   const labels = section.findAll(".profile-row dt").map((d) => d.text());
   expect(labels).toEqual([

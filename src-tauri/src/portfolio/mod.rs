@@ -13,8 +13,8 @@
 //! the engine computes every **baseline-arm** number (sub-scores, the composite
 //! grade, scenario price targets, the options-activity signal, the mechanical
 //! stand-ins), and since `portfolio-v7` the model authors its **own arm** beside
-//! it — its sub-scores, derived letter, and target bands, plus the lean,
-//! conviction, horizon reads, and prose — with model-arm judgment values never
+//! it — its sub-scores, derived letter, and target bands, plus the conviction,
+//! horizon reads, and prose — with model-arm judgment values never
 //! altering or binding the engine baseline (the boundary statement:
 //! `docs/portfolio-analysis.md` §The holding verdict). The engine grade stays a
 //! deterministic roll-up of the
@@ -561,11 +561,12 @@ pub struct ModelPriceTargets {
 /// the engine's values in the prompt as evidence and **never validated against
 /// them**. It never alters or binds the engine baseline — the quick check,
 /// hurdle tests, monitor stamps, and outcome labels read engine values only,
-/// while machinery acting on the model's *choices* (7b coherence + sizing, the
-/// episode lifecycle, the letter derivation, the scoreboard's scoring) is
-/// intentional (the boundary statement: `docs/portfolio-analysis.md` §The
-/// holding verdict); these values carry into the next run's retrospective. Beside this struct, the model-authored `conviction`,
-/// `horizon_outlook`, and `lean` on [`GradedVerdict`] complete the arm.
+/// while machinery acting on the model's *choices* (the per-holding action
+/// call, the episode lifecycle, the letter derivation, the scoreboard's scoring)
+/// is intentional (the boundary statement: `docs/portfolio-analysis.md` §The
+/// holding verdict); these values carry into the next run's retrospective.
+/// Beside this struct, the model-authored `conviction` and `horizon_outlook` on
+/// [`GradedVerdict`] complete the arm.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelView {
     /// The model's own four sub-scores on the engine's 0–100 scale (higher = better).
@@ -611,8 +612,7 @@ pub struct GradedVerdict {
     /// The **per-holding portfolio action**, authored by the dedicated action
     /// call from this holding's own evidence plus the investor profile — rung
     /// only, no sizing; the whole-book reconciliation is the future portfolio
-    /// planner's job (`docs/portfolio-analysis.md` §Portfolio action). On runs
-    /// persisted before the tunnel-vision contract this is the 7b-merged final.
+    /// planner's job (`docs/portfolio-analysis.md` §Portfolio action).
     pub action: Action,
     /// The action call's one-line rationale for the chosen rung. Empty on runs
     /// persisted before the action call existed (`#[serde(default)]`).
@@ -726,8 +726,7 @@ pub struct RoleRiskVerdict {
     pub evidence_gaps: Vec<String>,
     /// The per-holding action, authored by the dedicated action call from the
     /// branch's own attributes plus the investor profile — rung only, the full
-    /// ladder open (`docs/portfolio-analysis.md` §Portfolio action). On runs
-    /// persisted before the tunnel-vision contract this is the 7b-merged final.
+    /// ladder open (`docs/portfolio-analysis.md` §Portfolio action).
     pub action: Action,
     /// The action call's one-line rationale. Empty on pre-action-call runs
     /// (`#[serde(default)]`).
@@ -1284,9 +1283,23 @@ pub struct PortfolioRollUp {
 pub struct HoldingAudit {
     pub symbol: String,
     pub metrics: engine::ComputedMetrics,
-    /// The data sources consulted, with a note each (e.g. "FMP company financials").
+    /// The data sources this holding's verdict **actually consulted**, with a note
+    /// each (e.g. "FMP company financials"). Assembly-time labels come from the
+    /// dossier (the Schwab holdings snapshot every position reads from, the FMP
+    /// pull that actually ran — the stock statement / consensus surface or the
+    /// fund's quote + EOD + dividend surface — the profile lookup where it ran, the SEC leg where its facts endpoint
+    /// was queried — "(empty)" when it returned nothing, no label when no CIK
+    /// mapping meant it never was — the chain leg where it was requested — "(none
+    /// returned)" when nothing came back — and the fund surface); the pipeline
+    /// appends the FRED rate anchors only where a priced engine output computed
+    /// from them and the house view only where a prompt rendered it.
     pub sources: Vec<String>,
-    /// The local model ids used (reasoner / fast), for reproducibility.
+    /// The local model ids the verdict was **actually authored with**, in
+    /// first-call order — recorded beside each call that ran, never read off the
+    /// configured roster: empty on every no-model exit (not-rated, the listing
+    /// guard, an evidence-floor abstention), the reasoner alone on the role/risk
+    /// branch, the fast tier plus the reasoner on the priced path (one entry when
+    /// they are the same model).
     pub model_ids: Vec<String>,
     /// The prompt/schema version the interpretation ran under.
     pub prompt_version: String,
@@ -1693,23 +1706,32 @@ pub const ROLE_RISK_KEYS: [&str; 3] = ["role_summary", "what_changed", "ledger"]
 /// The priced branch's response-contract sentence, generated from
 /// [`INTERPRETATION_KEYS`]. The nested shapes are stated after the key list because
 /// they are structure the model benefits from, not part of the top-level set.
+///
+/// The enforcement clause claims only what the decode path guarantees: the schema
+/// grammar enforces the `required` keys and each value's shape, and an extra key is
+/// **dropped** on decode (the schema sets no `additionalProperties: false`, and the
+/// struct denies no unknown fields) — never rejected.
 pub fn interpretation_response_contract() -> String {
     format!(
         "Respond with a single JSON object carrying exactly these keys: {}. \
          Within them: horizon_outlook is short / mid / long; model_sub_scores is \
          quality / valuation / momentum / risk; model_price_targets is one_month and \
-         twelve_month, each base / bear / bull. The response format is enforced by \
-         the decoder, so spend no reasoning on shape — put it into the read.",
+         twelve_month, each base / bear / bull. The decoder's grammar enforces the \
+         required keys and value shapes, and any key outside this set is dropped on \
+         decode — so spend no reasoning on shape; put it into the read.",
         INTERPRETATION_KEYS.join(", ")
     )
 }
 
-/// The `role_risk_only` branch's contract, generated from [`ROLE_RISK_KEYS`].
+/// The `role_risk_only` branch's contract, generated from [`ROLE_RISK_KEYS`] — the
+/// same enforcement clause as [`interpretation_response_contract`], for the same
+/// reason.
 pub fn role_risk_response_contract() -> String {
     format!(
         "Respond with a single JSON object carrying exactly these keys: {}. The \
-         response format is enforced by the decoder, so spend no reasoning on shape \
-         — put it into the read.",
+         decoder's grammar enforces the required keys and value shapes, and any key \
+         outside this set is dropped on decode — so spend no reasoning on shape; put \
+         it into the read.",
         ROLE_RISK_KEYS.join(", ")
     )
 }
@@ -1837,12 +1859,15 @@ pub struct ActionDecision {
 /// cannot diverge.
 pub const ACTION_KEYS: [&str; 2] = ["action", "rationale"];
 
-/// The action call's response-contract sentence, generated from [`ACTION_KEYS`].
+/// The action call's response-contract sentence, generated from [`ACTION_KEYS`] —
+/// the same enforcement clause as [`interpretation_response_contract`], for the same
+/// reason.
 pub fn action_response_contract() -> String {
     format!(
         "Respond with a single JSON object carrying exactly these keys: {}. The \
-         response format is enforced by the decoder, so spend no reasoning on shape \
-         — put it into the decision.",
+         decoder's grammar enforces the required keys and value shapes, and any key \
+         outside this set is dropped on decode — so spend no reasoning on shape; put \
+         it into the decision.",
         ACTION_KEYS.join(", ")
     )
 }
@@ -1874,7 +1899,7 @@ mod tests {
 
     /// Pins the read-only Settings payload for the fixed preset — the exact
     /// snake_case keys the frontend types against and the shared label strings
-    /// (one label source with the Step-7b prompt — the 2026-08-05 B7 slice).
+    /// (one label source with the per-holding action call's prompt).
     #[test]
     fn investor_profile_display_pins_preset_rows() {
         let shape = serde_json::to_value(InvestorProfile::default_fixture().display()).unwrap();

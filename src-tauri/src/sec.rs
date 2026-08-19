@@ -135,11 +135,33 @@ impl CikResolver {
     }
 }
 
+/// The file name of the cached `company_tickers.json`, kept beside the app database.
+const CIK_CACHE_FILE: &str = "sec_company_tickers.json";
+
+/// Where the ticker → CIK cache lives for a given app database: the sibling
+/// [`CIK_CACHE_FILE`] in the database's directory (the bare file name when the
+/// path has no parent). Single-homed so both local jobs resolve against one cache.
+pub fn cik_cache_path_beside(db_path: &std::path::Path) -> std::path::PathBuf {
+    db_path
+        .parent()
+        .map(|d| d.join(CIK_CACHE_FILE))
+        .unwrap_or_else(|| std::path::PathBuf::from(CIK_CACHE_FILE))
+}
+
 /// Load the ticker → CIK resolver: the on-disk cache when fresh
 /// ([`CIK_CACHE_MAX_AGE`]), else a fetch that rewrites the cache. Fail-soft at every
 /// step — a failed fetch falls back to a stale cache when one exists, and to the
 /// empty resolver when none does, so an SEC outage degrades filings coverage to
 /// typed gaps rather than blocking the run.
+///
+/// The refresh fetch honors the shared cancel flag like every SEC request
+/// ([`SecEdgarSource::fetch_company_tickers`] bails without a request when it is
+/// set), so it falls to the same stale-or-empty floor. That flag is only cleared
+/// once a job owns the global run slot (`RunContext::reset_cancel`), which is why
+/// the live jobs defer this load to first use inside the slot
+/// ([`LazyCikResolver`]) rather than calling it eagerly at setup: an eager load
+/// after a cancelled run would silently ship a stale or empty map into the whole
+/// run, and its request row would fire before `run_started`.
 pub fn load_cik_resolver(cache_path: &std::path::Path, source: &SecEdgarSource) -> CikResolver {
     let cached = std::fs::read_to_string(cache_path).ok();
     let cache_fresh = std::fs::metadata(cache_path)
@@ -179,6 +201,61 @@ fn stale_or_empty(cached: Option<String>) -> CikResolver {
         .unwrap_or_else(CikResolver::empty)
 }
 
+/// The ticker → CIK resolver **deferred to first use** — the carrier of the local
+/// jobs' ordering invariant: every external fetch happens inside the global run
+/// slot, after `try_begin` + `reset_cancel` + `run_started`, so the ticker-map
+/// refresh (a) sees the run's own cancel state rather than a prior cancelled run's
+/// leftover flag, and (b) streams its request row under the active step instead
+/// of firing before the tracker is listening. Constructing one performs no I/O;
+/// the first [`Self::get`] runs [`load_cik_resolver`] once and memoizes the result
+/// for the run (a fail-soft stale/empty map is memoized too — the same one-load-
+/// per-run behavior the eager call had). The daemon probe stays the one pre-slot
+/// check, and it is local-only.
+pub struct LazyCikResolver {
+    cache_path: std::path::PathBuf,
+    resolver: std::sync::OnceLock<CikResolver>,
+}
+
+impl LazyCikResolver {
+    /// Bind the cache location; nothing is read or fetched until [`Self::get`].
+    pub fn new(cache_path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            cache_path: cache_path.into(),
+            resolver: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// A resolver that is already resolved — no cache, no fetch, ever. For a
+    /// caller that holds a map (tests, offline smokes).
+    pub fn preloaded(resolver: CikResolver) -> Self {
+        let cell = std::sync::OnceLock::new();
+        let _ = cell.set(resolver);
+        Self {
+            cache_path: std::path::PathBuf::from(CIK_CACHE_FILE),
+            resolver: cell,
+        }
+    }
+
+    /// The resolver, loading it through `source` on the first call (see
+    /// [`load_cik_resolver`]) and serving the memoized map after that.
+    pub fn get(&self, source: &SecEdgarSource) -> &CikResolver {
+        self.resolver
+            .get_or_init(|| load_cik_resolver(&self.cache_path, source))
+    }
+
+    /// Resolve one ticker, loading the map on first use — [`CikResolver::resolve`]
+    /// behind the lazy load.
+    pub fn resolve(&self, source: &SecEdgarSource, ticker: &str) -> Option<&str> {
+        self.get(source).resolve(ticker)
+    }
+
+    /// Whether the map has been loaded yet — the ordering tests' probe.
+    #[cfg(test)]
+    pub fn is_loaded(&self) -> bool {
+        self.resolver.get().is_some()
+    }
+}
+
 /// The keyless SEC EDGAR company-facts adapter. Mirrors the gated adapters' shape
 /// (`http` + `base_url` + `progress`), minus the API key.
 pub struct SecEdgarSource {
@@ -208,9 +285,10 @@ impl SecEdgarSource {
 
     /// Point the adapter at a mock base URL for the offline round-trip test. Trailing
     /// slash trimmed so the joined path's leading slash doesn't double up. Points both
-    /// hosts at the mock, since a test exercises one endpoint at a time.
+    /// hosts at the mock, since a test exercises one endpoint at a time (crate-visible
+    /// so the portfolio job's slot-ordering test can drive the real fetch path).
     #[cfg(test)]
-    fn with_base_url(mut self, base_url: &str) -> Self {
+    pub(crate) fn with_base_url(mut self, base_url: &str) -> Self {
         let base = base_url.trim_end_matches('/').to_string();
         self.tickers_base_url = base.clone();
         self.base_url = base;
@@ -744,14 +822,100 @@ mod tests {
         std::fs::write(&cache, tickers_body()).unwrap();
         // Age the cache past the freshness window so a refresh is attempted; the
         // unreachable fetch then falls back to the stale cache rather than empty.
-        let stale = std::time::SystemTime::now() - (CIK_CACHE_MAX_AGE + Duration::from_secs(60));
-        let file = std::fs::File::options().append(true).open(&cache).unwrap();
-        file.set_modified(stale).unwrap();
+        age_past_freshness(&cache);
         let sec_offline = SecEdgarSource::new().unwrap().with_base_url("http://127.0.0.1:1");
         let resolver = load_cik_resolver(&cache, &sec_offline);
         assert_eq!(resolver.resolve("AAPL"), Some("0000320193"), "stale beats empty");
         // No cache at all → the empty fail-soft floor.
         let resolver = load_cik_resolver(&dir.path().join("missing.json"), &sec_offline);
         assert!(resolver.is_empty());
+    }
+
+    /// Age a cache file past the freshness window so a refresh is attempted.
+    fn age_past_freshness(cache: &std::path::Path) {
+        let stale = std::time::SystemTime::now() - (CIK_CACHE_MAX_AGE + Duration::from_secs(60));
+        let file = std::fs::File::options().append(true).open(cache).unwrap();
+        file.set_modified(stale).unwrap();
+    }
+
+    /// Documents the bail: the ticker-map refresh honors the shared cancel flag
+    /// like every SEC request, so under a set flag it makes **no request** and
+    /// falls to the stale map. This is exactly why the live jobs must not load
+    /// the resolver before the slot clears the flag (`reset_cancel`) — an eager
+    /// load after a cancelled run would ship this stale (or empty) map into the
+    /// whole run without a single request row.
+    #[test]
+    fn load_cik_resolver_under_a_set_cancel_flag_and_stale_cache_returns_the_stale_map() {
+        use std::sync::atomic::AtomicBool;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("sec_company_tickers.json");
+        std::fs::write(&cache, tickers_body()).unwrap();
+        age_past_freshness(&cache);
+        // A mock that WOULD serve a fresh map — it must see no connection.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: tickers_body(),
+        }]);
+        let cancelled = RunContext::new(
+            "cancelled-earlier",
+            Arc::new(crate::progress::NoopReporter),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let sec = SecEdgarSource::new()
+            .unwrap()
+            .with_base_url(&server.base_url)
+            .with_context(cancelled);
+        let resolver = load_cik_resolver(&cache, &sec);
+        assert_eq!(
+            resolver.resolve("AAPL"),
+            Some("0000320193"),
+            "the stale cache is served, not empty"
+        );
+        assert_eq!(server.attempts(), 0, "a set cancel flag skips the refresh fetch");
+        // With no cache the same bail lands on the empty floor.
+        let resolver = load_cik_resolver(&dir.path().join("missing.json"), &sec);
+        assert!(resolver.is_empty());
+        assert_eq!(server.attempts(), 0);
+    }
+
+    /// The lazy carrier: constructing it performs no I/O; the first `get` loads
+    /// (one request), the second serves the memoized map (no request).
+    #[test]
+    fn lazy_cik_resolver_fetches_on_first_use_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("sec_company_tickers.json");
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: tickers_body(),
+        }]);
+        let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
+        let lazy = LazyCikResolver::new(&cache);
+        assert!(!lazy.is_loaded());
+        assert_eq!(server.attempts(), 0, "construction fetches nothing");
+        assert_eq!(lazy.resolve(&sec, "MSFT"), Some("0000789019"));
+        assert!(lazy.is_loaded());
+        assert_eq!(server.attempts(), 1);
+        // Memoized: no second connection (the mock has no second reply anyway).
+        assert_eq!(lazy.resolve(&sec, "AAPL"), Some("0000320193"));
+        assert_eq!(server.attempts(), 1);
+        // A preloaded resolver never touches the source.
+        let pre = LazyCikResolver::preloaded(CikResolver::from_json(tickers_body()).unwrap());
+        assert!(pre.is_loaded());
+        assert_eq!(pre.resolve(&sec, "XOM"), Some("0000034088"));
+        assert_eq!(server.attempts(), 1);
+    }
+
+    #[test]
+    fn cik_cache_lives_beside_the_database() {
+        assert_eq!(
+            cik_cache_path_beside(std::path::Path::new("/data/app/market_signal.db")),
+            std::path::PathBuf::from("/data/app/sec_company_tickers.json")
+        );
+        assert_eq!(
+            cik_cache_path_beside(std::path::Path::new("market_signal.db")),
+            std::path::PathBuf::from("sec_company_tickers.json")
+        );
     }
 }

@@ -134,6 +134,7 @@ The loop collapses near-duplicate and same-canonical-origin hits so apparent cor
 **A disconfirming-fetch pass.**
 Beyond the existing bear case and adversarial passes ([trade-opportunities.md §The research method](trade-opportunities.md#the-research-method)), once a thesis is formed the loop spends one bounded pass searching specifically for **what would disprove it** — a disconfirming *fetch*, not just a disconfirming *prompt*.
 It is **spent from the existing per-item / per-route fetch + wall-clock budget, never added on top of the ceilings** ([§The research loop and context management](#the-research-loop-and-context-management)): a high-priority item *within* that budget that **fail-softs to a recorded gap (and lower conviction) when the budget is already exhausted**, so a thesis is tested against contrary evidence before it earns conviction without ever breaching the loop's hard bound.
+Portfolio's placement of the pass — per holding, after its topics — is specified at [portfolio-workflow.md §Step 6c](portfolio-workflow.md#step-6c-bounded-web-research).
 
 **Extraction telemetry.**
 The fetch layer tracks, per domain, how often it recovers full article text vs a thin paywall / JS stub (the same telemetry stance as the report's document-truncation tracking).

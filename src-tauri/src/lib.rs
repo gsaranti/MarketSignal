@@ -712,11 +712,19 @@ fn schwab_disconnect() -> Result<(), String> {
 /// escape hatch swaps in the offline fixture so the pipeline still validates with no
 /// Schwab connection.
 ///
-/// The gate is the **local-suite gate** (daemon reachable + roster present), independent
-/// of the cloud-report gate — probed inside `spawn_blocking` since the probe is a
-/// blocking call. Like `generate_report_manual`, the blocking run (Schwab + local model
-/// HTTP + FMP/SEC) goes through `spawn_blocking` and shares the single global `RunGuard`,
-/// so the report and both local jobs are mutually exclusive.
+/// The gate is the **local-suite gate** (daemon reachable + roster present + FMP /
+/// FRED key presence), independent of the cloud-report gate — probed inside
+/// `spawn_blocking` since the probe is a blocking call. Like `generate_report_manual`,
+/// the blocking run (Schwab + local model HTTP + FMP/SEC) goes through
+/// `spawn_blocking` and shares the single global `RunGuard`, so the report and both
+/// local jobs are mutually exclusive.
+///
+/// **Ordering:** the daemon probe is the one check that runs before the global run
+/// slot, and it is local-only (loopback to the daemon). Every external fetch —
+/// FMP, SEC (the ticker → CIK map included, loaded lazily on first use), FRED,
+/// Schwab — happens inside `run_portfolio_job`, after it claims the slot and
+/// clears the cancel flag, so a competing attempt that records `Skipped` has
+/// contacted nothing, and no request row fires before `run_started`.
 #[tauri::command]
 async fn generate_portfolio_manual(
     app: tauri::AppHandle,
@@ -733,8 +741,9 @@ async fn generate_portfolio_manual(
     let endpoint = local_model::endpoint_from_config(&cfg)
         .ok_or_else(|| "Local model daemon endpoint is not configured".to_string())?;
     let roster = local_model::roster_from_config(&cfg);
-    // FMP supplies the per-company price/financials; an absent key degrades to gaps
-    // (the holding may then abstain), which is fail-soft for this slice.
+    // FMP supplies the per-company price/financials. Key presence is enforced by
+    // `local_gate` below (a missing FMP or FRED key blocks the run before any
+    // work); the `unwrap_or_default` only satisfies the constructor's signature.
     let fmp_key = cfg.fmp_api_key.clone().unwrap_or_default();
     let profile = portfolio::InvestorProfile::default_fixture();
     let paths = report_paths(&app)?;
@@ -747,7 +756,8 @@ async fn generate_portfolio_manual(
             .with_context(ctx.clone());
 
         // Local-suite execution gate: probe the daemon, then gate on config + reachability
-        // + roster presence. Blocked runs refuse before any analysis work.
+        // + roster presence + FMP / FRED key presence. Blocked runs refuse before any
+        // analysis work. This probe is the one pre-slot check, and it is local-only.
         let probe = client.probe_daemon(&roster);
         let report = local_model::local_gate(&cfg, &probe);
         if report.is_blocked {
@@ -770,13 +780,13 @@ async fn generate_portfolio_manual(
             .with_context(ctx.clone());
         // Ticker→CIK resolution over SEC's full company_tickers.json map, cached
         // beside the database with a staleness window; a failed refresh falls back
-        // fail-soft (stale cache, else empty → typed gaps per holding).
-        let cik_cache = paths
-            .db_path
-            .parent()
-            .map(|d| d.join("sec_company_tickers.json"))
-            .unwrap_or_else(|| std::path::PathBuf::from("sec_company_tickers.json"));
-        let cik = sec::load_cik_resolver(&cik_cache, &sec);
+        // fail-soft (stale cache, else empty → typed gaps per holding). Bound here,
+        // **loaded on first use inside the run slot** (`LazyCikResolver`) — never
+        // eagerly at setup, where a prior cancelled run's still-set cancel flag
+        // would make the refresh bail and its request row fire before the tracker
+        // is listening.
+        let cik_cache = sec::cik_cache_path_beside(&paths.db_path);
+        let cik = sec::LazyCikResolver::new(&cik_cache);
         let company = portfolio::job::LiveCompanyData { fmp, sec, cik };
         // The run-level rate anchors (FRED DGS2/DGS10 + the DGS10 anchor-window
         // history) — hard-fail inside the job, before any per-holding work.
@@ -805,7 +815,9 @@ async fn generate_portfolio_manual(
             let qc_sec = sec::SecEdgarSource::new()
                 .map_err(|e| e.to_string())?
                 .with_context(ctx.clone());
-            let qc_cik = sec::load_cik_resolver(&cik_cache, &qc_sec);
+            // Its own lazy handle over the same cache file: the tail sweep loads
+            // (or reuses the cache the main surface just wrote) on first use.
+            let qc_cik = sec::LazyCikResolver::new(&cik_cache);
             let qc_fred =
                 crate::fred::FredDataSource::new(cfg.fred_api_key.clone().unwrap_or_default())
                     .map_err(|e| e.to_string())?
@@ -871,7 +883,9 @@ async fn generate_portfolio_manual(
 /// connection precondition — the daemon-connectivity probe is deliberately skipped,
 /// so the check runs even configured-but-down (`docs/interface.md §Connection
 /// status`). Holds the single global run slot like any job and streams per-holding
-/// rows to the tracker.
+/// rows to the tracker. No external fetch precedes the slot: the sources are built
+/// here but fetch only inside `run_quick_check_job` (the ticker → CIK map lazily on
+/// first use), after the slot is claimed and the cancel flag cleared.
 #[tauri::command]
 async fn run_portfolio_quick_check(
     app: tauri::AppHandle,
@@ -906,12 +920,11 @@ async fn run_portfolio_quick_check(
         let sec = sec::SecEdgarSource::new()
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        let cik_cache = paths
-            .db_path
-            .parent()
-            .map(|d| d.join("sec_company_tickers.json"))
-            .unwrap_or_else(|| std::path::PathBuf::from("sec_company_tickers.json"));
-        let cik = sec::load_cik_resolver(&cik_cache, &sec);
+        // The ticker→CIK map is loaded lazily on first use inside the run slot
+        // (`LazyCikResolver`), never eagerly here — same ordering invariant as the
+        // full run: no external fetch before the slot is claimed and the cancel
+        // flag cleared.
+        let cik = sec::LazyCikResolver::new(sec::cik_cache_path_beside(&paths.db_path));
         let fred = crate::fred::FredDataSource::new(cfg.fred_api_key.clone().unwrap_or_default())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
@@ -1542,7 +1555,8 @@ fn truncation_stats(app: tauri::AppHandle) -> storage::TruncationStats {
 /// (`docs/configuration.md` §Investor Profile; `docs/interface.md` Settings tree).
 /// Pure — no store, no side effects: the preset is not user-configured, so the
 /// display derives from [`portfolio::InvestorProfile::default_fixture`] alone,
-/// through the same label source the Step-7b construction prompt renders.
+/// through the same label source the per-holding action call's prompt renders
+/// (`portfolio::pipeline::action_user_prompt` — the INVESTOR PROFILE block).
 #[tauri::command]
 fn get_investor_profile() -> portfolio::InvestorProfileDisplay {
     portfolio::InvestorProfile::default_fixture().display()

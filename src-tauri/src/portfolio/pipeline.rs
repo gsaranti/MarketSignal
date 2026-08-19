@@ -135,6 +135,30 @@ fn outside_set_annotation(action: Action, engine_set: &[Action]) -> Option<Strin
     })
 }
 
+/// The audit's source line for the FRED rate anchors — appended by
+/// [`analyze_holding`] only where they actually fed the engine: the priced stock
+/// path and the priced fund path (scenario targets + the hurdle read). Never on a
+/// no-model exit or the role/risk branch, which compute nothing from them.
+pub const RATE_ANCHORS_SOURCE: &str =
+    "FRED rate anchors (DGS10 / DGS2 + anchor-window history)";
+
+/// The action call's response contract says the rationale is one sentence and
+/// never empty (`docs/portfolio-analysis.md` §Portfolio action) — the schema only
+/// types it as a string, so the nonempty half is enforced here, fail-hard like the
+/// rest of the model stage. The one-sentence shape is a prompt preference, not
+/// validated (M6 of the 2026-08-18 doc/code audit).
+fn ensure_action_rationale(
+    symbol: &str,
+    decision: &crate::portfolio::ActionDecision,
+) -> Result<()> {
+    anyhow::ensure!(
+        !decision.rationale.trim().is_empty(),
+        "action decision for {symbol} returned an empty rationale — the response \
+         contract requires one sentence"
+    );
+    Ok(())
+}
+
 /// The model-backed stages of the pipeline, behind a trait so the orchestration is
 /// stub-driven offline and daemon-driven live. The research stage is a deterministic
 /// app-layer function ([`research`]) this slice, not part of the trait.
@@ -154,8 +178,14 @@ pub trait HoldingAnalyst {
     /// finished verdict plus the investor profile — tunnel vision, no book
     /// context (the 122B reasoner in thinking mode, live).
     fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision>;
-    /// The model ids this analyst used, for the run's audit record.
-    fn model_ids(&self) -> Vec<String>;
+    /// The model id [`Self::distill`] runs on (the fast tier — or the reasoner,
+    /// when the fast tier fell back to it). `analyze_holding` records it on the
+    /// audit only after a distill call actually ran.
+    fn fast_id(&self) -> String;
+    /// The model id [`Self::interpret`], [`Self::interpret_role_risk`], and
+    /// [`Self::decide_action`] run on. Recorded on the audit only after one of
+    /// those calls actually ran.
+    fn reasoner_id(&self) -> String;
     /// Drain the prompt-size observations the calls above accumulated
     /// ([`crate::local_model::PromptUsage`]) — the data-health context-fit read
     /// (`docs/portfolio-analysis.md` §Portfolio roll-up). Defaulted empty so
@@ -235,11 +265,32 @@ pub fn analyze_holding(
     // reaches a role/risk verdict as nothing at all. Each predicate is defined beside
     // its own render site so the claim cannot drift from what is actually rendered.
     let house_view_consulted = std::cell::Cell::new(false);
+    // Whether the FRED rate anchors actually fed this holding's verdict. They enter
+    // only through the priced engine outputs (the scenario targets and the hurdle
+    // read, on the stock path and the priced fund path); every earlier exit and the
+    // role/risk branch computes nothing from them, so their audits must not name
+    // them (M3 of the 2026-08-18 doc/code audit).
+    let rates_consulted = std::cell::Cell::new(false);
+    // The model ids this holding's verdict was **actually** authored with, in
+    // first-call order — recorded beside each call that ran, never read off the
+    // analyst's configuration: a no-model exit persists none, the role/risk branch
+    // the reasoner only, the priced path the fast tier and the reasoner (one entry
+    // when they are the same model).
+    let models_used: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    let used_model = |id: String| {
+        let mut used = models_used.borrow_mut();
+        if !used.contains(&id) {
+            used.push(id);
+        }
+    };
     // The audit's source list. **Both** audit construction sites go through this — the
     // closure below for every early return, and the priced path's own record — because
     // duplicating it is how the house-view claim survived the first fix.
     let audit_sources = || {
         let mut sources = dossier.sources.clone();
+        if rates_consulted.get() {
+            sources.push(RATE_ANCHORS_SOURCE.to_string());
+        }
         if house_view_consulted.get() {
             sources.push(crate::portfolio::dossier::HOUSE_VIEW_SOURCE.to_string());
         }
@@ -249,7 +300,7 @@ pub fn analyze_holding(
         symbol: symbol.clone(),
         metrics,
         sources: audit_sources(),
-        model_ids: analyst.model_ids(),
+        model_ids: models_used.borrow().clone(),
         prompt_version: PROMPT_VERSION.to_string(),
         degraded_inputs: degraded.clone(),
         action_annotations: Vec::new(),
@@ -460,6 +511,7 @@ pub fn analyze_holding(
                         ledger_eval: ledger_eval.as_ref(),
                     })
                     .context("interpreting the role/risk holding")?;
+                used_model(analyst.reasoner_id());
                 // The 6g ledger seam: validate the rewrite — executability,
                 // condition identity / carry, tripped / fired claims, the branch's
                 // reductions (condition-only monitor, trim / sell triggers).
@@ -501,9 +553,14 @@ pub fn analyze_holding(
                         profile: &dossier.profile,
                     })
                     .context("deciding the role/risk holding's action")?;
+                used_model(analyst.reasoner_id());
+                ensure_action_rationale(&symbol, &decision)?;
                 rr.action = decision.action;
                 rr.action_rationale = decision.rationale;
-                let mut audit_record = audit(Default::default(), None, Some(ledger_audit), None);
+                // The branch's computed surface persists as the audit's metrics — the
+                // same expense-ratio + price-derived legs the ledger evaluation above
+                // read, never the empty default (M3 of the 2026-08-18 audit).
+                let mut audit_record = audit(fund_metrics, None, Some(ledger_audit), None);
                 audit_record.action_annotations.extend(outside_set_annotation(
                     decision.action,
                     &crate::portfolio::ROLE_RISK_ACTIONS,
@@ -539,6 +596,9 @@ pub fn analyze_holding(
             }
         }
     };
+    // Only a priced engine output computed from the rate anchors (scenario targets,
+    // hurdle) — every route above returned without one.
+    rates_consulted.set(true);
 
     // The overlay's rules join only when the stock actually entered the overlay
     // (a priced fund carries none) — they bind the engine arm's stand-in and the
@@ -566,6 +626,7 @@ pub fn analyze_holding(
     let distilled = analyst
         .distill(dossier, &findings)
         .context("distilling research findings")?;
+    used_model(analyst.fast_id());
     let interpretation = analyst
         .interpret(&InterpretationInput {
             dossier,
@@ -575,6 +636,7 @@ pub fn analyze_holding(
             pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
         })
         .context("interpreting the holding")?;
+    used_model(analyst.reasoner_id());
     // The v7 unrestricted contract: the model's conviction persists exactly as
     // authored — no bail, no clamp (`docs/portfolio-analysis.md` §The holding
     // verdict). Any matched pre-profit ceiling stays recorded on the overlay /
@@ -647,6 +709,8 @@ pub fn analyze_holding(
             profile: &dossier.profile,
         })
         .context("deciding the holding's action")?;
+    used_model(analyst.reasoner_id());
+    ensure_action_rationale(&symbol, &decision)?;
     graded.action = decision.action;
     graded.action_rationale = decision.rationale;
     let verdict = HoldingVerdict {
@@ -668,7 +732,7 @@ pub fn analyze_holding(
         symbol: symbol.clone(),
         metrics: engine_output.metrics.clone(),
         sources: audit_sources(),
-        model_ids: analyst.model_ids(),
+        model_ids: models_used.borrow().clone(),
         prompt_version: PROMPT_VERSION.to_string(),
         degraded_inputs,
         action_annotations: outside_set_annotation(decision.action, &engine_set)
@@ -1414,7 +1478,8 @@ pub fn role_risk_system_prompt() -> String {
     format!(
         "You are a disciplined portfolio analyst assessing one holding whose vehicle \
      class this pipeline is structurally unable to price (a bond or commodity fund, \
-     an ex-US fund, a leveraged/inverse vehicle, or a fund without usable weightings). \
+     an equity fund below the US-exposure guard, a leveraged/inverse vehicle, or a \
+     fund without usable weightings). \
      Do NOT produce a grade, price target, conviction, or action — none exists for \
      this branch here (its action is set afterward by a dedicated decision stage; \
      the engine arm's set for this branch is sell-all / trim / hold, rendered there \
@@ -1866,7 +1931,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     );
 
     if let Some(overlay) = input.pre_profit {
-        p.push_str(&pre_profit_prompt_section(overlay));
+        p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Interpretation));
     }
 
     p.push_str(
@@ -2110,7 +2175,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
             ));
             p.push_str(&format!("FINANCIAL SUMMARY: {}\n", graded.financial_summary));
             if let Some(overlay) = pre_profit {
-                p.push_str(&pre_profit_prompt_section(overlay));
+                p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Action));
             }
         }
         ActionSubject::RoleRisk { verdict } => {
@@ -2170,12 +2235,27 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     p
 }
 
+/// Which prompt the pre-profit overlay section is rendered into. The deterministic
+/// facts block is the same on both; the consequence lines address what THAT stage
+/// authors — conviction at interpretation (which chooses no action), the rung at
+/// the per-holding action call (which authors no conviction) — and state the other
+/// stage's consequence as context only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptStage {
+    /// The intrinsic interpretation prompt (Step 6f): authors conviction, no action.
+    Interpretation,
+    /// The per-holding action call: authors the rung, no conviction.
+    Action,
+}
+
 /// Render the finalized pre-profit execution / financing overlay for an eligible
-/// stock's interpretation prompt (`docs/portfolio-workflow.md` §Step 6f): the
-/// engine's states and matched rules, framed as the ENGINE arm's own bindings —
-/// evidence the unrestricted model arm weighs, with departures recorded as
-/// annotations, never prompt-level clamps (the v7 two-arm contract).
-fn pre_profit_prompt_section(o: &PreProfitOverlay) -> String {
+/// stock's interpretation prompt and its per-holding action prompt
+/// (`docs/portfolio-workflow.md` §Step 6f): the engine's states and matched rules,
+/// framed as the ENGINE arm's own bindings — evidence the unrestricted model arm
+/// weighs, with departures recorded as annotations, never prompt-level clamps (the
+/// v7 two-arm contract). `stage` picks which consequence line carries the model
+/// arm's guidance (see [`PromptStage`]).
+fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String {
     use crate::portfolio::pre_profit::{ConvictionCeiling, FinancingState};
     let i = &o.statement_inputs;
     let mut p = String::new();
@@ -2238,32 +2318,63 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay) -> String {
         "- severe deterioration (conjunctive): {}\n",
         if o.severe_deterioration { "YES" } else { "no" }
     ));
+    // The consequence lines are stage-aware: each stage gets the model-arm guidance
+    // for what it authors, and the other stage's consequence as context only.
     if let Some(ceiling) = o.consequences.conviction_ceiling {
-        p.push_str(&format!(
-            "CONVICTION CEILING (engine rule): the engine arm holds its own conviction at \
-             or beneath {} — matched rule(s): {}. Your conviction is UNRESTRICTED: exceeding \
-             the ceiling persists as authored, with the departure recorded beside the rule — \
-             so weigh the execution evidence honestly rather than deferring to the ceiling.\n",
-            match ceiling {
-                ConvictionCeiling::Medium => "medium",
-                ConvictionCeiling::Low => "low",
-            },
-            o.consequences.matched_rules.join("; "),
-        ));
+        let ceiling = match ceiling {
+            ConvictionCeiling::Medium => "medium",
+            ConvictionCeiling::Low => "low",
+        };
+        let rules = o.consequences.matched_rules.join("; ");
+        match stage {
+            PromptStage::Interpretation => p.push_str(&format!(
+                "CONVICTION CEILING (engine rule): the engine arm holds its own conviction \
+                 at or beneath {ceiling} — matched rule(s): {rules}. Your conviction is \
+                 UNRESTRICTED: exceeding the ceiling persists as authored, with the \
+                 departure recorded beside the rule — so weigh the execution evidence \
+                 honestly rather than deferring to the ceiling.\n",
+            )),
+            // The action call authors no conviction: the ceiling is context.
+            PromptStage::Action => p.push_str(&format!(
+                "CONVICTION CEILING (engine rule, context): the engine arm holds its own \
+                 conviction at or beneath {ceiling} — matched rule(s): {rules}. The \
+                 interpretation stage authored the conviction; this call authors no \
+                 conviction.\n",
+            )),
+        }
     }
     if o.consequences.exit_family_only {
-        p.push_str(
-            "SEVERE DETERIORATION (engine rule): the engine's own lean set narrows to the \
-             exit family {trim, sell-all} and its stand-in action follows it. Your lean is \
-             UNRESTRICTED — a rung outside the exit family persists as authored with the \
-             departure recorded; weigh the validated deterioration evidence before \
-             departing.\n",
-        );
+        match stage {
+            // Interpretation chooses no action: the narrowing is context; the
+            // evidence behind it belongs in the conviction and risk read.
+            PromptStage::Interpretation => p.push_str(
+                "SEVERE DETERIORATION (engine rule): the engine's own action set narrows to \
+                 the exit family {trim, sell-all} and its stand-in action follows it; the \
+                 action decision stage that follows weighs this — here, weigh the \
+                 validated deterioration evidence in your conviction and risk read.\n",
+            ),
+            PromptStage::Action => p.push_str(
+                "SEVERE DETERIORATION (engine rule): the engine's own action set narrows to \
+                 the exit family {trim, sell-all} and its stand-in action follows it. Your \
+                 rung is UNRESTRICTED — a rung outside the exit family persists as authored \
+                 with the departure recorded; weigh the validated deterioration evidence \
+                 before departing.\n",
+            ),
+        }
     } else if o.consequences.bar_add_family {
-        p.push_str(
-            "Note: the engine's own set drops the add family on the overlay's financing \
-             rule; your lean is unrestricted, the departure recorded.\n",
-        );
+        match stage {
+            PromptStage::Interpretation => p.push_str(
+                "Note: the engine's own action set drops the add family on the overlay's \
+                 financing rule; the action decision stage that follows weighs this — \
+                 here, weigh the financing evidence in your conviction and risk read.\n",
+            ),
+            PromptStage::Action => p.push_str(
+                "Note: the engine's own action set drops the add family on the overlay's \
+                 financing rule; your rung is UNRESTRICTED — an add-family rung persists as \
+                 authored with the departure recorded; weigh the financing evidence before \
+                 departing.\n",
+            ),
+        }
     }
     p
 }
@@ -2760,8 +2871,12 @@ impl HoldingAnalyst for StubAnalyst {
         })
     }
 
-    fn model_ids(&self) -> Vec<String> {
-        vec!["stub-analyst".to_string()]
+    fn fast_id(&self) -> String {
+        "stub-analyst".to_string()
+    }
+
+    fn reasoner_id(&self) -> String {
+        "stub-analyst".to_string()
     }
 }
 
@@ -3127,12 +3242,14 @@ impl HoldingAnalyst for LocalAnalyst {
         })
     }
 
-    fn model_ids(&self) -> Vec<String> {
-        let mut ids = vec![self.reasoner_model.clone(), self.fast_model.clone()];
-        // One entry when the fast tier fell back to the reasoner, so the audit
-        // record doesn't list the same model twice.
-        ids.dedup();
-        ids
+    fn fast_id(&self) -> String {
+        // The reasoner's id when the fast tier fell back to it (`new`), so the
+        // audit records the model distillation actually ran on.
+        self.fast_model.clone()
+    }
+
+    fn reasoner_id(&self) -> String {
+        self.reasoner_model.clone()
     }
 
     fn take_prompt_usage(&self) -> Vec<crate::local_model::PromptUsage> {
@@ -3569,6 +3686,212 @@ mod tests {
         );
     }
 
+    /// A stub with a distinct fast tier and reasoner, so the audit's model list can
+    /// be checked against the calls that actually ran.
+    struct TieredStub;
+    impl HoldingAnalyst for TieredStub {
+        fn distill(&self, d: &HoldingDossier, f: &ResearchFindings) -> Result<String> {
+            StubAnalyst.distill(d, f)
+        }
+        fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+            StubAnalyst.interpret(input)
+        }
+        fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
+            StubAnalyst.interpret_role_risk(input)
+        }
+        fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
+            StubAnalyst.decide_action(input)
+        }
+        fn fast_id(&self) -> String {
+            "fast-tier".into()
+        }
+        fn reasoner_id(&self) -> String {
+            "reasoner".into()
+        }
+    }
+
+    /// The role/risk fixture: a bond fund routes to the union's other branch.
+    fn bond_fund() -> FundData {
+        let mut bond = us_equity_fund();
+        bond.symbol = "BND".into();
+        bond.asset_class = Some("Fixed Income".into());
+        bond.sector_weights = vec![];
+        bond
+    }
+
+    #[test]
+    fn audit_model_ids_name_only_the_models_actually_called() {
+        // M3 of the 2026-08-18 doc/code audit: the audit's model list was the
+        // analyst's configured roster on every row — a not-rated cash row and an
+        // evidence-floor abstention both "used" two models. It must record only
+        // the calls that ran.
+        let run = |d: &HoldingDossier| {
+            analyze_holding(&TieredStub, d, &rates(), "2026-08-03").unwrap()
+        };
+
+        // No-model exits persist an empty list: the eligibility gate ...
+        let (v, a) = run(&dossier(AssetClass::Cash, strong_financials()));
+        assert!(matches!(v.disposition, VerdictDisposition::NotRated { .. }));
+        assert!(a.model_ids.is_empty(), "{:?}", a.model_ids);
+        // ... a net-short position ...
+        let mut short = dossier(AssetClass::Stock, strong_financials());
+        short.position.quantity = -100.0;
+        let (v, a) = run(&short);
+        assert!(matches!(v.disposition, VerdictDisposition::NotRated { .. }));
+        assert!(a.model_ids.is_empty(), "{:?}", a.model_ids);
+        // ... the listing guard ...
+        let mut guarded = dossier(AssetClass::Stock, strong_financials());
+        guarded.listing = Some(crate::portfolio::listing::ListingResolution::Unresolved);
+        let (_, a) = run(&guarded);
+        assert!(a.model_ids.is_empty(), "{:?}", a.model_ids);
+        // ... and an evidence-floor abstention (no current price).
+        let mut floored = dossier(AssetClass::Stock, strong_financials());
+        floored.financials.current_price = None;
+        let (v, a) = run(&floored);
+        assert!(matches!(v.disposition, VerdictDisposition::InsufficientEvidence { .. }));
+        assert!(a.model_ids.is_empty(), "{:?}", a.model_ids);
+
+        // The role/risk branch runs the reasoner only (role read + action call) —
+        // never the fast tier, which only distills on the priced path.
+        let (v, a) = run(&fund_dossier(bond_fund()));
+        assert!(matches!(v.disposition, VerdictDisposition::RoleRiskOnly(_)));
+        assert_eq!(a.model_ids, vec!["reasoner".to_string()]);
+
+        // The priced path runs both, in call order: distill (fast) then the
+        // reasoner's interpretation + action call.
+        let (v, a) = run(&dossier(AssetClass::Stock, strong_financials()));
+        assert!(matches!(v.disposition, VerdictDisposition::Priced(_)));
+        assert_eq!(a.model_ids, vec!["fast-tier".to_string(), "reasoner".to_string()]);
+        // And the priced fund path likewise.
+        let (v, a) = run(&fund_dossier(us_equity_fund()));
+        assert!(matches!(v.disposition, VerdictDisposition::Priced(_)), "{v:?}");
+        assert_eq!(a.model_ids, vec!["fast-tier".to_string(), "reasoner".to_string()]);
+
+        // One entry when the fast tier is the reasoner (the blank-fast-tier
+        // fallback, or a same-model stub) — never the same id twice.
+        let (_, a) = analyze_holding(
+            &StubAnalyst,
+            &dossier(AssetClass::Stock, strong_financials()),
+            &rates(),
+            "2026-08-03",
+        )
+        .unwrap();
+        assert_eq!(a.model_ids, vec!["stub-analyst".to_string()]);
+    }
+
+    #[test]
+    fn rate_anchors_are_a_source_only_where_a_priced_output_computed_from_them() {
+        // The FRED anchors feed the scenario targets and the hurdle read — priced
+        // outputs only. The role/risk branch and every earlier exit compute nothing
+        // from them, so their audits must not name them (M3, 2026-08-18).
+        let sources = |d: &HoldingDossier| {
+            analyze_holding(&StubAnalyst, d, &rates(), "2026-08-03")
+                .unwrap()
+                .1
+                .sources
+        };
+        let names_fred = |s: &[String]| s.iter().any(|x| x == RATE_ANCHORS_SOURCE);
+
+        assert!(names_fred(&sources(&dossier(AssetClass::Stock, strong_financials()))));
+        assert!(names_fred(&sources(&fund_dossier(us_equity_fund()))));
+
+        assert!(!names_fred(&sources(&fund_dossier(bond_fund()))), "role/risk");
+        assert!(!names_fred(&sources(&dossier(AssetClass::Cash, strong_financials()))));
+        let mut floored = dossier(AssetClass::Stock, strong_financials());
+        floored.financials.current_price = None;
+        assert!(!names_fred(&sources(&floored)), "evidence-floor abstention");
+        let mut short = dossier(AssetClass::Stock, strong_financials());
+        short.position.quantity = -100.0;
+        assert!(!names_fred(&sources(&short)), "net-short");
+    }
+
+    #[test]
+    fn role_risk_audit_persists_the_branch_computed_metrics() {
+        // The role/risk branch computes the expense ratio plus the price-derived
+        // legs (the surface its ledger evaluation reads); the audit row must carry
+        // them, not the empty default it used to persist (M3, 2026-08-18).
+        let (verdict, audit) = analyze_holding(
+            &StubAnalyst,
+            &fund_dossier(bond_fund()),
+            &rates(),
+            "2026-08-03",
+        )
+        .unwrap();
+        assert!(matches!(verdict.disposition, VerdictDisposition::RoleRiskOnly(_)));
+        assert_eq!(audit.metrics.expense_ratio, Some(0.0003));
+        assert!(audit.metrics.trailing_return.is_some(), "{:?}", audit.metrics);
+        assert!(audit.metrics.return_volatility.is_some(), "{:?}", audit.metrics);
+        // The reduced surface only — no statement-derived stock legs.
+        assert!(audit.metrics.pe_ratio.is_none());
+        assert!(audit.metrics.revenue_growth.is_none());
+    }
+
+    #[test]
+    fn an_empty_action_rationale_fails_the_holding() {
+        // M6 of the 2026-08-18 audit: the schema types the rationale as any string,
+        // so the contract's "never empty" is enforced app-side, fail-hard like the
+        // rest of the model stage — on both branches' action calls.
+        struct EmptyRationaleStub;
+        impl HoldingAnalyst for EmptyRationaleStub {
+            fn distill(&self, d: &HoldingDossier, f: &ResearchFindings) -> Result<String> {
+                StubAnalyst.distill(d, f)
+            }
+            fn interpret(&self, input: &InterpretationInput) -> Result<Interpretation> {
+                StubAnalyst.interpret(input)
+            }
+            fn interpret_role_risk(
+                &self,
+                input: &RoleRiskInput,
+            ) -> Result<RoleRiskInterpretation> {
+                StubAnalyst.interpret_role_risk(input)
+            }
+            fn decide_action(
+                &self,
+                _input: &ActionInput,
+            ) -> Result<crate::portfolio::ActionDecision> {
+                Ok(crate::portfolio::ActionDecision {
+                    action: Action::Hold,
+                    rationale: "   \n".to_string(),
+                })
+            }
+            fn fast_id(&self) -> String {
+                "empty".into()
+            }
+            fn reasoner_id(&self) -> String {
+                "empty".into()
+            }
+        }
+        let err = analyze_holding(
+            &EmptyRationaleStub,
+            &dossier(AssetClass::Stock, strong_financials()),
+            &rates(),
+            "2026-08-03",
+        )
+        .expect_err("an empty rationale must fail the priced holding");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("AAPL") && msg.contains("empty rationale"), "{msg}");
+
+        let err = analyze_holding(
+            &EmptyRationaleStub,
+            &fund_dossier(bond_fund()),
+            &rates(),
+            "2026-08-03",
+        )
+        .expect_err("an empty rationale must fail the role/risk holding");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("BND") && msg.contains("empty rationale"), "{msg}");
+
+        // A rationale with content passes untouched — the one-sentence shape is a
+        // prompt preference, not validated.
+        assert!(analyze_holding(
+            &StubAnalyst,
+            &dossier(AssetClass::Stock, strong_financials()),
+            &rates(),
+            "2026-08-03",
+        )
+        .is_ok());
+    }
+
     #[test]
     fn gradeable_holding_produces_a_priced_verdict_offline() {
         let (verdict, audit) = analyze_holding(
@@ -3682,7 +4005,8 @@ mod tests {
         match verdict.disposition {
             VerdictDisposition::RoleRiskOnly(r) => {
                 assert_eq!(r.class_label, "bond fund");
-                // The provisional placeholder until 7b sets the action; the stub holds.
+                // The per-holding action call authors the branch's action; the
+                // stub's role/risk decision is hold.
                 assert_eq!(r.action, Action::Hold);
                 assert!(!r.role_summary.is_empty());
                 assert!(!r.evidence_gaps.is_empty());
@@ -4157,8 +4481,11 @@ mod tests {
                     rationale: "rogue: aggressive regardless of the engine set".to_string(),
                 })
             }
-            fn model_ids(&self) -> Vec<String> {
-                vec!["rogue-stub".to_string()]
+            fn fast_id(&self) -> String {
+                "rogue-stub".to_string()
+            }
+            fn reasoner_id(&self) -> String {
+                "rogue-stub".to_string()
             }
         }
         // A weak book: the C-ish fixture's engine set won't offer add-aggressively
@@ -4676,18 +5003,18 @@ mod tests {
     fn blank_fast_tier_falls_back_to_the_reasoner() {
         // The fast tier is optional and never gates (`docs/configuration.md`), so a
         // blank slot must not reach the daemon as an empty model id — distillation
-        // runs on the reasoner instead, and the audit's model list carries it once.
+        // runs on the reasoner instead, so the id the audit records for the distill
+        // call is the reasoner's (`analyze_holding` dedups the two into one entry).
         let client = LocalModelClient::new("http://127.0.0.1:1").unwrap();
         let analyst = LocalAnalyst::new(client, "qwen3.5:122b".into(), "  ".into());
-        assert_eq!(analyst.model_ids(), vec!["qwen3.5:122b".to_string()]);
+        assert_eq!(analyst.fast_id(), "qwen3.5:122b");
+        assert_eq!(analyst.reasoner_id(), "qwen3.5:122b");
 
         // A configured fast tier is used as-is.
         let client = LocalModelClient::new("http://127.0.0.1:1").unwrap();
         let analyst = LocalAnalyst::new(client, "r".into(), "f".into());
-        assert_eq!(
-            analyst.model_ids(),
-            vec!["r".to_string(), "f".to_string()]
-        );
+        assert_eq!(analyst.reasoner_id(), "r");
+        assert_eq!(analyst.fast_id(), "f");
     }
 
     // ---- Thesis-ledger validation (the 6g seam) + prompt rendering -------------
@@ -6080,8 +6407,11 @@ mod tests {
                     rationale: "defiant: add against the severe overlay".to_string(),
                 })
             }
-            fn model_ids(&self) -> Vec<String> {
-                vec!["defiant".into()]
+            fn fast_id(&self) -> String {
+                "defiant".into()
+            }
+            fn reasoner_id(&self) -> String {
+                "defiant".into()
             }
         }
         let mut fin = pre_profit_financials();
@@ -6115,6 +6445,57 @@ mod tests {
             Conviction::Low,
             "the severe overlay's Low ceiling binds the engine arm's conviction"
         );
+
+        // The overlay section is stage-aware: each prompt carries the model-arm
+        // guidance for what THAT stage authors, and the other stage's consequence
+        // as context only. Interpretation authors conviction and no action; the
+        // action call authors the rung and no conviction.
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let interp = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "none",
+            ledger_eval: None,
+            pre_profit: Some(&overlay),
+        });
+        assert!(interp.contains("Your conviction is UNRESTRICTED"), "{interp}");
+        assert!(
+            interp.contains("the engine's own action set narrows to the exit family"),
+            "{interp}"
+        );
+        assert!(interp.contains("the action decision stage that follows weighs this"), "{interp}");
+        assert!(!interp.contains("Your rung is UNRESTRICTED"), "{interp}");
+
+        let engine_set = engine::feasible_actions(
+            engine_output.grade,
+            &engine_output.hurdle,
+            Some(&overlay.consequences),
+        );
+        let action = action_user_prompt(&ActionInput {
+            dossier: &d,
+            subject: ActionSubject::Priced {
+                graded: &g,
+                engine: &engine_output,
+                pre_profit: Some(&overlay),
+            },
+            engine_set: &engine_set,
+            profile: &d.profile,
+        });
+        assert!(action.contains("Your rung is UNRESTRICTED"), "{action}");
+        assert!(action.contains("CONVICTION CEILING (engine rule, context)"), "{action}");
+        assert!(action.contains("this call authors no conviction"), "{action}");
+        assert!(!action.contains("Your conviction is UNRESTRICTED"), "{action}");
+        assert!(!action.contains("the action decision stage that follows"), "{action}");
+
+        // The retired "lean" vocabulary is gone from both renders.
+        for prompt in [&interp, &action] {
+            assert!(!prompt.contains("lean set"), "{prompt}");
+            assert!(!prompt.contains("your lean"), "{prompt}");
+            assert!(!prompt.contains("Your lean"), "{prompt}");
+        }
     }
 
     #[test]

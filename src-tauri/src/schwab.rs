@@ -3,13 +3,16 @@
 //! option chains from which the deterministic options-activity signal is computed,
 //! so a connected account is a hard precondition for the job.
 //!
-//! This slice runs against a **fixture** source ([`FixtureHoldingsSource`]) behind
-//! the [`HoldingsSource`] trait — a single equity position plus a stub option chain,
-//! entirely offline — so the per-holding pipeline can be validated for quality and
-//! runtime before the live OAuth integration lands. The live Schwab Trader API
-//! adapter (the OAuth loopback, the 30-min/7-day token lifecycle, Keychain token
-//! storage) implements the same trait in a later slice, so nothing downstream of
-//! this seam changes when it does.
+//! Two sources implement the [`HoldingsSource`] trait. Production wires the **live
+//! Schwab Trader API adapter** (`crate::schwab_live`, built by `lib.rs`
+//! `build_holdings_source` — OAuth via `crate::schwab_oauth`: the loopback flow, the
+//! 30-min/7-day token lifecycle, Keychain token storage) once the account is
+//! connected; a disconnected account blocks the run with a re-auth prompt rather
+//! than degrading. The **fixture** source ([`FixtureHoldingsSource`]) — a single
+//! equity position plus a stub option chain, entirely offline — is the test double
+//! and the `MARKET_SIGNAL_SCHWAB_FIXTURE` escape hatch, so the per-holding pipeline
+//! still validates with no Schwab connection. Nothing downstream of this seam
+//! distinguishes the two.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

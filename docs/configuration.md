@@ -155,7 +155,7 @@ The default posture:
   The preset is represented as the **aggressive** rung of the three-step tolerance scale and renders as "aggressive (medium-to-high)" in the action call's prompt and the read-only Settings block — one shared framing, per the 2026-08-05 B7 ruling.
 - **cash — always available.**
   Buying power is treated as **unconstrained**: the user may hold cash in accounts the app can't see, so *add aggressively* and full-size entries are **never** gated on observed Schwab cash.
-  (Concentration and risk limits still apply; only the cash constraint is lifted.)
+  (The engine's forensic and risk discipline still applies; only the cash constraint is lifted — whole-book concentration belongs to the future portfolio planner.)
 - **tax sensitivity — no precise modeling.**
   No tax-lot, holding-period, account-type, or marginal-rate calculation is applied to actions — the job never computes a tax harvest.
   It does treat the **possible tax benefit of realizing a loss** as one *generic, qualitative* counterweight once a position's forward prospects have already been judged poor, weighed beside the redeployment value of freed cash ([portfolio-analysis.md §Portfolio action](portfolio-analysis.md#portfolio-action)); it is framed as *possible* precisely because account type and rate are unmodeled, so the user judges their own specifics.
