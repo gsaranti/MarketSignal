@@ -410,12 +410,18 @@ Consolidation is one reusable primitive — *distill one complete research topic
 - **Data retrieved**
   - No investment data yet.
 
-- **Checks**
-  - No other Market Signal job is running.
-  - Local reasoning model is available.
-  - Embedding model is available.
-  - Schwab connection is configured.
-  - FMP and FRED credentials exist.
+- **Checks** (the same gate Portfolio Analysis clears)
+  - The single global run slot is free — no report, Portfolio Analysis, or other Trade Opportunities job is running.
+  - Local reasoning and embedding models are configured (presence) and the daemon is reachable with the roster pulled (connectivity, checked here at the run-gate — never at startup).
+    - That availability probe — a local-only daemon call, no investment-data API — is the suite's one check before the run slot is claimed; every external fetch happens inside the slot.
+  - Schwab is connected and its seven-day refresh token is still valid — needed only for the per-candidate option chains and the Step-8 holdings label, but a hard precondition all the same.
+  - FMP and FRED credentials exist (presence only; Tavily deliberately does not gate the local suite).
+  - SearXNG is **not** on the gate: an unreachable instance raises a pre-run notice (model-led discovery can't run; per-candidate validation falls back to metered Tavily; flagged *not recommended* when Tavily is absent too) and the run proceeds degraded, never blocked.
+
+- **Failure logic**
+  - Missing configuration (daemon endpoint or roster id unset, Schwab not connected or token lapsed, FMP / FRED credential missing) locks the Run buttons and shows a persistent warning *before* this step — one per category.
+  - A live connectivity failure caught here (daemon unreachable, a rostered model not pulled) blocks the attempt inline, not as a persistent warning.
+  - Schwab API reachability is not tested here — it surfaces when the option-chain or holdings fetch runs.
 
 - **Model**
   - None.
@@ -428,25 +434,48 @@ Consolidation is one reusable primitive — *distill one complete research topic
 
 ## Step 2 — Load shared market context
 
-- **Data retrieved**
-  - Latest Market Signal house view.
-  - Fixed investor-profile preset.
-  - Previous opportunity matrix.
-  - Previous opportunity graph.
-  - Discovery coverage ledger.
-  - `DGS2` and `DGS10` Treasury rates from FRED.
-  - Historical `DGS10` data for valuation calculations.
-  - Commodity prices from FRED and FMP.
-  - Commodity positioning from CFTC.
-  - Broad put/call data from CBOE.
-  - Economic-release dates from FRED.
+Loaded once per run and shared across every candidate; nothing here is re-requested per name.
+
+- **Data retrieved from local storage**
+  - The Market Signal house view — the latest report's Thesis, Investment Strategy, and Forward Outlook sections plus recent report summaries (`thesis_stance`, `forward_outlook_themes`, `key_risks`), with the report's creation date; loaded deterministically from the report store, never by vector search.
+  - The fixed investor-profile preset — long-term horizon, profit-maximization objective, medium-to-high ("aggressive") risk tolerance, cash treated as always available, no tax modeling.
+  - The prior run's persisted opportunity matrix (the live carries).
+  - The opportunity graph — prior hypotheses with their value-chain traces, and the watchlist nodes with each one's leading metric, re-check class, falsifiers, latest gap, and refresh timestamps.
+  - The discovery-coverage ledger — last-attempted / last-successfully-completed per route class and per coverage subject.
+
+- **Data retrieved from FRED**
+  - Current `DGS2` (one print) and `DGS10` (one print), plus the anchor-window `DGS10` history as dated observations (one date-ranged request) the v2 spread percentiles join against.
+  - The macro-release calendar (`/release/dates` — names + dates).
+  - Daily energy prices `DCOILWTICO` (WTI) and `DHHNGSP` (Henry Hub); monthly IMF metals `PCOPPUSDM`, `PALUMUSDM`, `PNICKUSDM`, `PIORECRUSDM`, `PURANUSDM`.
+
+- **Data retrieved from FMP**
+  - The daily commodity series `HGUSD` (copper), `GCUSD` (gold), `SIUSD` (silver) — a *series*, not a point level, because the cyclical sleeve reads a turn.
+
+- **Data retrieved from CFTC and CBOE**
+  - CFTC Commitments of Traders — `gpe5-46if` (E-mini S&P 500, Nasdaq-100, 10Y / 2Y Treasuries, USD index) and `72hh-3qpy` (gold, WTI crude, copper).
+  - CBOE daily put/call ratios (total, equity, index).
 
 - **Logic**
-  - Ignore the house view if older than one week.
-  - Use `DGS10` in price-target calculations.
-  - Use `DGS2` in minimum-return requirements.
-  - Load previous ideas for continuity.
-  - Treat all rates and returns as decimal values internally.
+  - Omit the house view when the report is older than one week — recorded as a gap, never fed as current.
+  - Normalize rates into decimal form (`N pts = N ⁄ 100`); every later return and threshold reads that representation.
+  - The house view's `market_cycle` × `risk_posture` is the job's macro / regime backbone — reused, never recomputed; the forward thematic map that completes the worldview is built at Step 3b.
+
+- **What each context input feeds (later steps, not here)**
+  - House view → the Step 3b planning and route prompts (steers *where* the job hunts, never a number the engine consumes), the Step 5g scoring prompt, and the Step 6 ranking prompt.
+  - Investor profile → Step 5g scoring and Step 6 ranking — entry framing and conviction emphasis only, never which candidates qualify; because cash is unconstrained, full-size entries are never gated on observed Schwab cash.
+  - `DGS10` and its history → the v2 scenario multiples at Steps 5c / 5f and every cheap re-derivation (Step 7, Quick Audit).
+  - `DGS2` → the entry-asymmetry gate at Step 5h and every cheap re-derivation.
+  - Commodity series (FRED + FMP) → the Step 3a commodity-turn feeder and per-candidate context for a commodity cyclical (Step 5c); Step 2 is the sole commodity owner — nothing re-fetches them.
+  - CFTC positioning → the commodity-cyclical candidate's underlying-positioning read (Step 5c) and the macro / rates / FX backdrop for the Step 3b theme scan.
+  - CBOE put/call → a venue-level sentiment backdrop for the worldview — broad-market context, never a per-name signal.
+  - Macro-release calendar → seed input to the Step 3b routes.
+  - Prior matrix → the Step 4 budget split (the rotation slice and re-surfacer reconciliation), the Step 5b carried dossier, and the Step 7 carry-forward.
+  - Opportunity graph → Step 3b (extend or retire prior theses; withheld from the outside-view route), Step 3c (the watchlist re-check), and the Step 7 reconcile.
+  - Coverage ledger → the Step 3b coverage rotation.
+
+- **Failure rule**
+  - `DGS2` or `DGS10` still unavailable after the shared bounded retries → fail the run here, before any per-candidate work (DTO and Deep Audit; the Quick Audit instead fail-softs to a cached print — see ATO).
+  - Optional market context (commodities, CFTC, CBOE, the calendar) fails softly to a gap.
 
 - **Model**
   - None.
@@ -459,193 +488,186 @@ Consolidation is one reusable primitive — *distill one complete research topic
 
 ## Step 3 — Discover candidates
 
-Three discovery feeders run.
+Three feeders run and converge: the bottom-up structured screens (3a), the model-led hypothesis-research lane (3b — the job's edge, where names are *found* by reasoning rather than looked up), and the carried-forward watchlist (3c — the discovery memory). All three are fail-soft — a failed screen, route, or re-check means fewer candidates, never a failed run — and each reduces to a candidate set with the signal that surfaced each name attached.
 
 ### Step 3a — Structured market screens
 
-- **Data retrieved**
-  - FMP company screener.
-  - FMP insider-buy feed.
-  - FMP earnings and event calendars.
-  - FMP merger, IPO, filing, and market-mover feeds.
-  - FINRA short-interest file.
-  - Commodity prices already loaded in Step 2.
+- **Data retrieved (FMP discovery layer; each a bounded number of calls per run)**
+  - `company-screener` — every eligible name with market cap, sector / industry, beta, price, dividend, volume, exchange, `isActivelyTrading`.
+  - `insider-trading/latest` — the market-wide newest Form-4 feed.
+  - `biggest-gainers`, `biggest-losers`, `most-actives` — movers.
+  - `earnings-calendar` — read forward for upcoming reporters, and **backward over the trailing window** (the paid calendar carries consensus + actuals) as the post-earnings surprise screen.
+  - `mergers-acquisitions-latest`, `sec-filings-8k`, `ipos-calendar` — fresh corporate events.
+  - The FINRA consolidated short-interest file — **fetched once per run** and reused as a local lookup by Steps 3c, 5b, and 7.
+  - The commodity series already loaded at Step 2 — read, not re-fetched.
 
 - **Logic**
-  - Keep active US-listed equities.
-  - Apply minimum price, volume, and market-cap rules.
-  - Tag companies by size, sector, and industry.
-  - Find:
-    - Insider-buy clusters.
-    - Short-interest extremes.
-    - Recent positive earnings surprises.
-    - New corporate events.
-    - Commodity-price turns.
-  - Standardize earnings surprises against the company’s history.
-  - Do not perform full financial scoring yet.
+  - **Universe and stratification** — the screener applies the hard tradability gates (price / volume / market-cap floors, `isActivelyTrading`, the allowed exchange set, equities only — the floor values are not yet drafted) and tags every eligible name with its **market-cap band and sector / industry**. This is the breadth backbone — it defines the strata Step 4 fills, not a ranked shortlist: the screener carries no valuation, profitability, or growth field, and the `*-bulk` universe-scoring endpoints are off-plan, so the universe **cannot be pre-scored**.
+  - **Insider-buy clusters** — open-market buys by multiple insiders from the Form-4 feed.
+  - **Short-interest extremes** — from the FINRA file: level, trend (current vs prior settlement), and days-to-cover (short interest ÷ average daily volume). Short interest is a **bearish-by-default** factor; the squeeze reading is a narrow conditional setup (an inflecting leading metric + a near-term catalyst + evidence the bear case is breaking) decided per candidate at Step 5, never here.
+  - **Post-earnings surprise screen** — for each recent reporter, the surprise is **standardized** against the name's own surprise history (SUE-style — the surprise scaled by the dispersion of its past surprises, never a raw percentage; the scaling window is not yet drafted); large positive surprises surface as **continuation-mode** candidates, prioritized where the revenue surprise agrees with the EPS surprise (post-earnings drift is markedly stronger when both point the same way). The beat-and-raise streak itself is confirmed per candidate at Step 5c from `earnings`. This feeder skews coincident / lagging by construction — a defect for early detection, exactly right for continuation.
+  - **Corporate events** — M&A deal flow, 8-K material events, movers, recently priced and upcoming IPOs → fresh-catalyst candidates.
+  - **Commodity-price turns** — over the Step-2 FRED / FMP series, a spot / contract-price turn at washed-out sentiment (CFTC positioning) surfaces commodity-cyclical candidates. [note: the turn read's exact rule is not yet drafted; the docs name the read, not its threshold.]
+  - **No fundamental scoring here** — the multi-factor composite and the forensic gate are computed per candidate at Step 5c, on the narrowed set only; the activist (13D / 13G) and congressional feeds are symbol-keyed on the current plan, so they enter per candidate at Step 5b, never as discovery feeders.
 
 - **Model**
   - None.
 
 - **Output**
-  - Broad candidate list.
-  - Each candidate carries its discovery signal.
+  - A broad candidate longlist.
+  - Each name carries its feeder, its surfacing signal, its cap band, and its sector / industry.
 
 ---
 
 ### Step 3b — Model-led hypothesis discovery
 
+The job's edge: a research-active feeder that forms investable **hypotheses** and reasons its way to names — *worldview → hypothesis → mechanism → value-chain node → leading metric → candidate* — so the model commits to a hypothesis before it commits to a ticker. It runs in three movements: a planning call chooses the routes, each route is researched in the shared loop and consolidated into hypothesis cards, and the app validates and promotes.
+
 - **Data retrieved**
-  - House view.
-  - Previous opportunity graph.
-  - FMP news and articles.
-  - Economic-release schedule.
-  - Current web sources through SearXNG.
+  - Seeds — ticker-tagged, dated headline / snippet / URL rows from `news/general-latest`, `news/stock-latest`, and `fmp-articles`, plus the macro-release calendar from Step 2; each seed the orchestrator feeds a route gets a stable seed ID.
+  - The house view, the opportunity graph, and the coverage ledger from Step 2.
+  - Live web pages through the shared loop — **keyless SearXNG only** (no Tavily, no GDELT); a down SearXNG means this lane yields fewer candidates.
+  - FMP industry classification (`industry-classification-search`, `all-industry-classification`, `available-sectors`) and `stock-peers` to resolve a hypothesis to its exposed public names; the screener fields to verify each name (exists, US-listed, clears the tradability gate).
 
-- **Model — planning call**
-  - Chooses a limited set of research routes.
-  - Examples:
-    - Supply-chain changes.
-    - Regulation.
-    - Technical bottlenecks.
-    - Customer spending.
-    - Industry history.
-    - Major technology events.
-  - One mandatory route ignores previous ideas.
-  - Purpose: prevent the job from becoming anchored.
+#### Movement 1 — Research-strategy planning (one model call, thinking, no web tool)
 
-- **Coverage rotation**
-  - App finds the stalest route type and coverage subject.
-  - Coverage subjects include broad industries and active themes.
-  - Reserves the next route slot after the outside-view route.
-  - Uses calendar age, not number of job runs.
-  - A completed search counts even when it finds no opportunity.
-  - A failed search does not clear the coverage debt.
-  - Cannot force a hypothesis or candidate.
+- **Exact inputs**
+  - The house view (regime, themes, forward outlook).
+  - The carried-forward opportunity graph (prior hypotheses + watchlist status).
+  - The route menu with each route's source-strategy rubric — *policy / regulatory* → legislation, agency notices, procurement databases; *supply chain* → trade journals, filings, customer / supplier commentary; *technical bottleneck* → standards bodies, engineering blogs, patent / product docs; *procurement / grant / capex*; *customer capex*; *industry history*; *failure analogue*; *event-impact / value-chain repricing* → the announcing company's primary materials, standards bodies, teardowns, the affected names' segment disclosures.
+  - The app-computed coverage ages per route class and per coverage subject, and any app-inserted overdue route.
+  - The run's route cap and discovery-budget posture.
 
-- **Research loop**
-  - For each route:
-    - Split the route into focused topics.
-    - Start a clean model conversation for each topic.
-    - Search and fetch sources.
-    - Allow up to three passes per topic.
-    - Stop when the time or fetch budget is reached.
+- **Returns**
+  - A priority-ordered route list under the route cap — each route with its source strategy, selection rationale, `selection_origin` (`outside-view` / `coverage-rotation` / `model`), any coverage-unit ids it is expected to work, and its **topic list** (the focused questions the route is worked as, each topic one isolated conversation).
+  - App-validated, like the route list: the planning call proposes the topics, the app validates them (ruled 2026-08-19) — the one agenda in the suite the reasoner proposes.
 
-- **Model — hypothesis work**
-  - Determines:
-    - What is changing.
-    - Why it matters economically.
-    - Which part of the value chain benefits.
-    - Who has pricing power.
-    - Which public companies are exposed.
-    - Which leading metric would prove the idea.
-    - What could invalidate it.
-    - Why the idea may already be priced in.
+- **App-enforced clauses (never model discretion)**
+  - The **outside-view route** is always present and marked graph-blind — inserted if the model omitted it — so the discovery memory can't anchor the job to its own prior theses.
+  - The **coverage-rotation route** is app-owned: the model may refine its questions and source plan but cannot remove it, substitute a less-overdue unit, or claim its debt cleared.
+  - The **event-impact route** may be chosen speculatively — its materiality gate is research-derived and unknowable at planning time, so it is enforced at card formation (below).
 
-- **App validation**
-  - Verify each ticker exists.
-  - Verify it is tradable and US-listed.
-  - Check the hypothesis score against fixed thresholds.
-  - Drop unsupported technology-event claims.
-  - Keep weaker but credible ideas on the watchlist.
+- **Coverage rotation — how the inserted route is chosen**
+  - Age is tracked separately for each canonical route class and each coverage subject (the stable broad-industry taxonomy plus currently active house-view themes), in calendar time against the ~4-week window — never run count.
+  - When debt exists the app pairs the oldest compatible overdue class + subject and inserts that route in the first slot after the outside-view route; ties break by canonical route order, then stable subject id; a model-proposed duplicate merges into the inserted route rather than taking a second slot.
+  - A newly active theme starts due; a successfully completed route advances every unit it actually researched even when it correctly emits no hypothesis; a failed or budget-exhausted route records an attempt and does not clear its debt.
+  - If the route cap leaves no slot beyond the outside-view route, the debt stays overdue and the run audit surfaces it — liveness is best-effort under the cap, never bought by dropping the outside-view guard.
+  - Coverage can force research, never a hypothesis, promotion, or opportunity.
 
-- **Large-route handling**
-  - Split large research routes into smaller pieces.
-  - Distill each piece.
-  - Combine them into hypothesis cards.
+#### Movement 2 — Route research and card formation (the shared loop, aimed at discovery)
+
+- **The loop, as it runs here** (mechanics in *The research loop*, above)
+  - Nesting is `route ⊃ topic ⊃ pass ⊃ fetch`: each route is worked as its topic list, each topic its own isolated conversation of a root pass plus ≤2 follow-ups, each pass a bounded tool loop of `web_search` / `web_fetch` requests the orchestrator executes.
+  - Each topic conversation is given the house view, the opportunity graph (withheld from the outside-view route), the route's source strategy, that topic's questions, and the seeds relevant to the route — and nothing from any other topic or route.
+  - Two ceilings bind: per-topic depth ≤2 (≤3 passes per topic, counting passes, not searches), and the **per-run discovery fetch + wall-clock budget** across every route, spent in route-priority order, fail-soft on exhaustion.
+  - The Step-2 house view steers the hunt without confining it; a seed whose URL is deep-read stamps the resulting claim `surfaced_by`.
+
+- **Card formation (one consolidating call per route)**
+  - Inputs: the route's accumulated topic findings and their evidence-ledger entries, whole — or, for a heavy route, the tier-1 sub-distillates in its reduce form (no further web-tool turns).
+  - Returns: a schema-validated set of **hypothesis cards**, each — *what is changing in the world* → *the affected system / mechanism* → *the economic value-chain trace* (margin capture, bargaining power, capacity constraint / bottleneck, pricing power **versus mere exposure** — past the crowded pure-plays to the picks-and-shovels enablers, often mid / small cap) → *the leading metric that would prove it* (tagged with its re-check class) → *the likely public-company expressions* → *bear case* → *key falsifiers + sources*.
+  - Each card also carries its **hypothesis score** — the equal-weighted mean of magnitude, durability, horizon fit, leading-metric observability, 1 − crowding, and margin-capture clarity, each 0–1 — scored on the hypothesis's own merits *before any ticker*; its **adversarial-pass verdicts** — *why is this already priced?*, *why might the obvious beneficiary be the wrong expression?*, *who actually captures the margin instead?* — and a bounded, config-capped **`seeded_by`** list (the seeds the reasoner judges oriented it, each validated against the route's fed seed IDs; unknown references dropped and logged).
+  - An **event-impact route's cards are two-sided**: they trace the chain into **beneficiaries**, **feared losers** (the names that sold off, with the *actually-exposed* revenue / profit pool sized), and **latent names** (chain nodes that did not move but should be affected); each affected name carries its side and a typed **`technology_read`** — `{ technical claim, deployment timeline, substitute / complement / mix-shift, affected workload or use case, exposed revenue / profit estimate, adoption constraints, switching costs, margin-capturing node, source confidence, leading metric to monitor }` — and a feared-loser name gets the symmetric pass: *is the impairment real or panic, and what is the actually-exposed pool?*
+  - The model proposes hypotheses and names; it fetches no per-symbol data and scores no name here.
+
+- **Heavy routes sub-distill first** (the shared distillation primitive)
+  - Classified heavy **deterministically**, after the route's loop completes and before card formation: when its accumulated findings + ledger would overflow a single card-formation call's input budget (a byte / token measure against a configured fraction), **or** it spans more than one substantial sub-agenda (a side whose ledger size crosses the per-side threshold; the event-impact route's beneficiary / feared-loser / latent sides count substantial whenever populated), **or** it resolves to more than *K* distinct hypotheses.
+  - Tier-1 sub-distillation per side / sub-agenda, then the route-level reduce **is** the card-formation call in its reduce form — it still emits many distinct cards (structure within the route, never a cross-route merge); bounded by the per-route sub-distillation cap from the discovery budget, the classification and sub-unit count logged.
+
+#### Movement 3 — App validation and promotion
+
+- **Per card**
+  - Score ≥ 0.60 **and** the adversarial passes survived → **promoted**: its names are resolved against FMP's industry classification / peers and each is verified — exists, US-listed, clears the tradability gate — before it can earn enrichment budget.
+  - 0.40 ≤ score < 0.60, or a failing pass → recorded in the opportunity graph with its score, falsifiers, and the failing pass; it may seed a **watchlist node** if it meets the discovery-worthiness bar (Step 3c).
+  - Score < 0.40 → recorded in the graph only.
+  - An **event-impact card** must carry the typed material-event evidence — the announcement plus at least one corroborating condition (meaningful group repricing, credible primary-source documentation, a customer-adoption signal, clear value-chain exposure), with source lineage — or it is **dropped and logged**; a route whose research surfaces no qualifying event emits nothing and stays dormant.
+
+- **Model**
+  - The 122B reasoner in thinking mode — once for planning, per topic conversation in the loop, once per route for card formation (plus tier-1 calls for a heavy route).
 
 - **Output**
-  - Promoted hypothesis cards with candidate names.
-  - Watchlist hypotheses.
-  - Sources and discovery lineage.
+  - Promoted candidate names, each with hypothesis lineage, surfacing rationale, and source URLs → Step 4.
+  - Every card written to the opportunity graph (the persisted discovery memory), with its seed lineage and, for an event-impact card, its `technology_read` and side.
+  - Watchlist-bar hypotheses → Step 3c admission.
+  - The hypothesis set retained as run-level worldview context for Step 5d's thematic-fit topic.
+  - A completed-route record per route → the coverage ledger.
 
 ---
 
 ### Step 3c — Recheck the old watchlist
 
-- **Data retrieved**
-  - Stored watchlist.
-  - FMP metrics.
-  - Filing data.
-  - FINRA short interest when needed.
+Discovery is stateful: every worthy-but-unpicked name from prior runs is a watchlist node, re-checked here at its metric's cadence — so a deferred name that quietly starts compounding is caught rather than left to chance.
 
-- **Logic**
-  - Recheck each watchlist metric by class:
-    - `structured`: every run.
-    - `filing`: when a new filing appears.
-    - `research`: when discovery finds it again or the targeted refresh lane selects it.
-  - Select a small number of `research` metrics for a targeted current-search refresh.
-  - Starting cap:
-    - One watchlist name per DTO run.
-  - Refresh priority:
-    - New filing, contract, or material event.
-    - Approaching catalyst or thesis milestone.
-    - Near-promotion or near-gate candidate.
-    - Higher hypothesis score.
-    - Oldest successful research refresh.
-  - Search only for the stored metric, falsifier, or milestone.
-  - Do not rewrite the thesis, targets, conviction, or opportunity record.
-  - If the metric improves:
-    - Promote the name into the candidate list.
-  - If the thesis fails or expires:
-    - Retire it.
-  - Otherwise:
-    - Keep watching it.
+- **Data retrieved**
+  - The watchlist nodes from the Step-2 graph.
+  - For a **`structured`-class** node — the engine's structured feeds: `analyst-estimates` (revision velocity), `earnings` (surprise), dated-EOD bars through the shared price-bar cache (relative strength), and the once-per-run FINRA file (short interest).
+  - For a **`filing`-class** node — on the filing-cadence rider: when the swept `earnings` row shows a new reported period, the statement-derived rows re-pull (`income-statement` / `balance-sheet-statement` / `cash-flow-statement`, `key-metrics` / `ratios`, `financial-scores`, `financial-growth`; SEC XBRL facts where resolved).
+  - For a **`research`-class** node — nothing (no engine feed), unless the refresh lane selects it.
+  - The swept population is **one union** — every live matrix carry (Step 7's cheap re-derivation) plus every recheckable watchlist node — with cache / dedup applied per distinct symbol after the union; a `research`-class node never enters the per-symbol sweep.
+
+- **Watchlist admission (this step, over the Step-3b returns)**
+  - The discovery-worthiness bar is app-enforced: a node qualifies only with a named, countable, dated leading metric (tagged by re-check class), a stated economic mechanism, at least one falsifier, and a hypothesis score ≥ 0.40.
+  - Class resolution: a `structured` claim must resolve to an engine series the sweep re-pulls; a `filing` claim to a standardized field the filing-cadence feeds carry model-free; a claim that doesn't resolve exactly is **re-classed `research` and logged, never dropped**. The filing-derived quarterly segment series rides the `research` class (its observations exist only where a deep pass extracted them).
+
+- **Per `structured` / `filing` node — re-pull at class cadence, then one of three outcomes**
+  - Metric **inflected or continued** (the hypothesis is confirming) → promoted as a **priority feeder** into Step 4.
+  - **Falsifiers tripped, metric dead or stale, or the carry horizon elapsed** (drafted ~4 of the metric's own reporting periods — never runs; a `research`-class metric counts calendar time) → **retired**: removed from active monitoring, kept in history, one retirement-class shadow episode opened so the forward path still teaches the gates.
+  - Otherwise → stays on the watchlist with a refreshed timestamp.
+
+- **The research-watchlist refresh lane (`research`-class nodes only)**
+  - Selects at most the configured number of nodes (drafted **one per DTO run**), deterministically and in priority order: a newly detected filing / contract / material event tied to the node → a catalyst or validated milestone entering its expected window → a prior result close to promotion or an entry gate → highest hypothesis score; ties by oldest successful research refresh, then ticker.
+  - Runs the shared loop per node (SearXNG only; spent from the discovery ceiling) — inputs: the node's stored hypothesis, named leading metric, key falsifiers, relevant milestone / catalyst, latest validation gap, prior observation vintage, and this run's matching structured-event seeds; no dossier, target methodology, conviction, or opportunity record.
+  - Returns one typed **`watchlist_research_refresh`** `{ node_id, dated metric observations, falsifier facts, milestone facts, source lineage, result — confirming / falsified / unchanged / insufficient }`; the app revalidates identity, dates, units, sources, and linkage to the named claim, drops and logs out-of-scope fields, and **never** moves a node on the bare result: a confirmed metric promotes into Step 4, a validated falsifier may retire, and no result / a failed call / ambiguous evidence leaves the node unchanged without advancing `last_successful_research_refresh_at`.
+  - It is a discovery refresh, not a deep re-evaluation: it never stamps `last_deep_researched_at`, rewrites an opportunity record, clears a warning, or archives — and promotion buys only normal Step-4 candidacy.
 
 - **Capacity logic**
-  - Watchlist has a maximum size.
-  - Lowest-scoring names leave first.
-  - Evicted names still receive shadow episodes.
+  - The watchlist retention cap is enforced deterministically at add time, after the pruning above: the **lowest hypothesis score** retires first, ties by oldest successful metric refresh then ticker, persisted reason `capacity-evicted`, graph history retained, exactly one retirement-class shadow episode.
 
 - **Model**
-  - None for structured and filing checks.
-  - Targeted reasoning and web research for selected `research` metrics only.
+  - None for `structured` and `filing` checks.
+  - The reasoner (thinking) plus the web tool for the selected `research` nodes only.
 
 - **Output**
-  - Promoted watchlist candidates.
-  - Updated watchlist and retired nodes.
-  - Targeted-refresh audit record.
+  - Promoted watchlist candidates (flagged *maturing watchlist*) → Step 4.
+  - The updated watchlist, retired nodes, and their shadow episodes.
+  - The refresh-lane audit — every node considered / selected / skipped, its priority inputs, evidence result, and timestamp decision.
 
 ---
 
 ## Step 4 — Consolidate and allocate research slots
 
 - **Data retrieved**
-  - No major new data.
+  - No new external data — the screener fields and surfacing tags are already in hand.
 
-- **Logic**
-  - Combine all three discovery feeders.
-  - Remove duplicate tickers.
-  - Remove funds and non-equities.
-  - Recheck basic tradability.
-  - Preserve every discovery reason.
+- **Consolidation logic (deterministic, no model)**
+  - Union the three feeders and **dedup by ticker**.
+  - Tradability sanity filter — exchange listing, a liquidity / price floor, and an instrument-type filter: funds and non-equities drop out, since the job hunts operating businesses by archetype.
+  - Tag each surviving name with **every** signal that surfaced it — which screen, which hypothesis, the positioning flag, whether it is a maturing watchlist name — plus its cap band and sector / industry.
+  - Reconcile against the live matrix: a name **already live** is a **re-surfacer** (reconciled against its record, never re-discovered blind); a name matching a **departed (archived)** ticker is a fresh **debut** — nothing from the archive carries.
+  - Assign a **provisional archetype** deterministically from sector / industry + the surfacing tags — used only for the archetype quota below; Step 5a's confirmed archetype is authoritative from 5c on.
+  - This is the cross-feeder reduce and it is deliberately computed: distinct hypotheses are never collapsed by a model, which would destroy auditable breadth and could silently drop a name.
 
-- **Research-budget allocation**
-  - First: existing opportunities needing maintenance.
-  - Second: new candidates.
-  - Third: existing opportunities that resurfaced.
-
-- **Maintenance priority**
-  - Warning-bearing opportunities.
-  - Near-term catalysts.
-  - Names close to failing the return gate.
-  - Oldest deep research.
-
-- **New-name diversity rules**
-  - Protect mid- and small-cap representation.
-  - Limit mega-cap concentration.
-  - Limit one feeder, archetype, sector, or theme from dominating.
+- **The deep-research budget (a Settings knob — how many names get the expensive Step-5 loop this run)**
+  - Spent in three slices, in this order:
+    1. **The rotation slice** — a configured share (default ~20%, never rounding below one slot) on **live opportunities** in maintenance-priority order: warning-bearing names first (a tripped falsifier or continuation break never queues behind an uneventful stale name), then catalyst proximity, then names near the entry threshold, then stalest by `last_deep_researched_at`. A **max-age service level** force-promotes any live name whose research age exceeds the configured bound whether or not it re-surfaced (ties by `became_opportunity_at`, then ticker). When more names are overdue than the slice can carry, the slice does **not** expand — the overflow forms a priority backlog in the same order, drained stalest-first across runs, its count and oldest research age surfaced in the run audit and the pre-run notice.
+    2. **New names** — the remainder, filled under the diversity guardrails below.
+    3. **Leftover** → re-surfaced existing opportunities, oldest `last_deep_researched_at` first.
+  - **Diversity guardrails (new-name slice only)** — each a floor or ceiling, never a single ranking: mid / small-cap **floor ≥ 40%** of the new-name slots and a mega-cap **ceiling ≤ 30%**; **per feeder ≤ 50%** (no one screen, the hypothesis lane, the watchlist, or a positioning scan may supply more); **per (provisional) archetype ≤ 40%**; **per sector / theme ≤ 35%**. Within each floor and ceiling names rank by **signal strength × house-view fit**. Default allocation is **equal per cap-band × sector bucket** (proportional-to-population and signal-adaptive variants are calibration knobs).
+  - Why stratify rather than rank: no universe-wide composite exists at this point (the fundamental score and forensic gate are computed per candidate at 5c), so a flat top-N on the cheap surfacing signals would collapse the funnel onto whatever is loudest — mega-cap momentum, the most-covered AI names, one crowded theme — and throw away the breadth that is the job's edge.
+  - The **maintenance spend** (the rotation slice and the re-surfacer leftover) is **exempt from diversity** — a quota never blocks a warning-bearing or max-age-promoted name.
+  - All three classes enter the **same Step-5 loop** as candidates; a rotation pick or re-surfacer is flagged carried-forward so Step 5b loads its prior record and `continuity_weight`. A carried name's deep pass therefore runs in Step 5, before matrix assembly, not in Step 7.
+  - Every ticker deep-researched — rotation, new, or re-surfaced — is recorded in the **run-scoped deep-research set**, so Step 7 never also cheap-sweeps it: at most one deep pass per ticker per run.
 
 - **Deferred names**
-  - Not treated as rejected.
-  - Worthy names go to the watchlist.
+  - Not rejected — nothing is validated yet. A genuinely worthy deferral (a real hypothesis + an identified leading metric, meeting the watchlist bar) is written to the opportunity graph as a **watchlist node** and re-checked every later run; a name not worth watchlisting carries no state and is simply re-derivable. A re-surfacer that wins no leftover slot falls to the Step-7 cheap re-derivation, its re-surfacing raising the attention warning so the user can choose a Deep Audit.
 
 - **Model**
   - None.
 
 - **Output**
-  - Final list receiving expensive Step-5 validation.
-  - Record of which existing names receive a deep pass.
+  - The narrowed candidate slate — debuts plus carried names — each with its tags and provisional archetype, receiving Step-5 validation.
+  - The run-scoped deep-research set, and the rotation backlog record.
+  - Watchlist writes for worthy deferrals.
+  - The budget bounds how many names get **researched**, never how many validated opportunities reach the matrix — the gates alone set that (Step 6).
 
 ---
 
