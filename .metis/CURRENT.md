@@ -2,33 +2,36 @@
 
 ## What happened
 
-**The 2026-08-18 Portfolio Analysis doc/code audit (Codex) was fully
-dispositioned and shipped** — 2 high, 10 medium, 8 low findings plus the
-research-loop decision and two completeness gaps. Every finding was
-re-verified against code before acting; none refuted outright, several
-narrower than framed (H1 needed no ruling — canonical docs already pinned it;
-M4/M6 overstated). One was **worse** than stated: the eager pre-slot SEC CIK
-load bailed on a stale cancel flag, so the first run after a cancelled run on
-a cold cache silently gapped every EDGAR leg — now lazy inside the slot
-(`sec::LazyCikResolver`). Other load-bearing code: sector-P/E dated on the
-run's pinned ET session; audit provenance recorded from work actually done
-(`LegOutcome` for SEC/chain, branch-aware model ids); logged fail-soft
-prior-state reads + quick-check loud-skip; nonempty action-rationale guard;
-stage-aware pre-profit prompt section (no "lean"). Four user rulings: M5
-document as-built (no-prior-run selective → whole book), L2 placeholders sort
-into the stack, L8 `graded N`, disconfirming pass per holding after topics
-(canonical `portfolio-workflow.md §Step 6c`). Codex pushed back once on the
-forward-spec voice (`docs/README.md` banner) — withdrawn. Two Codex rounds,
-approved. Shipped as PR #69 (`053a38a`); BUILD/INDEX absorbed in `a7ff50d`.
-The record: `docs/verification/2026-08-18-portfolio-analysis-doc-code-audit.md`.
+**The TO logic-flow grounding pass ran and closed** —
+`logic-flow-docs/trade-opportunities-logic-flow.md` rewritten end-to-end
+(968 → ~1,400 lines) against the technical docs, the Portfolio walk's
+learnings applied: the shared research loop and distillation documented
+**once** in sections up front (Steps 3b / 3c / 5d / Deep Audit state only
+what differs), exact inputs/returns per model call, named endpoints and
+series throughout, stale conviction-raise language purged, execution-order
+steps with what-leaves-the-step outputs. Six rewrite groups, then three
+Codex rounds (8 → 3 → 1 findings) to approval; every finding verified
+before acting, one mechanism corrected (the stand-in causal loop runs
+through the derived horizon, not the model bands). Six contract rulings
+landed canonically (all 2026-08-19): disconfirming-fetch pass once per
+candidate after its 5d topics; the 3b planning call proposes each route's
+topics, app-validated (the suite's one model-proposed agenda); the engine
+conviction stand-in computed at 5h only, never a 5g input; a per-candidate
+FMP `dividends` producer (zero-with-gap failure at target time, the gap on
+the stand-in's flag leg — matching the as-built shared engine); the
+since-flagged two-part contract propagated to the TO workflow; hard trigger
+scoped to the one *app-forced* carried removal. BUILD + INDEX absorbed
+(`cd9aa46`).
 
 ## Current state
 
-Nothing in flight. `main` in sync, tree clean, all gates green (cargo test
-1,035 / clippy clean / npm build + 46 + 236 tests). The pre-run correctness
-program is now closed on both fronts — logic-flow walk and the closing audit.
-One residue deliberately left: `mod.rs` DataHealth's harmless
-"pre-2026-08-12 `deep_history_fallbacks` key" note.
+Nothing in flight. Ten commits (`bbc95fd`..`cd9aa46`), tree clean. Docs-only
+session — no code touched, no gates run (none needed). Eight TO design gaps
+are deliberately marked inline in the logic-flow doc as "not yet drafted"
+(screener floors, commodity-turn threshold, SUE window, classification
+cut-points, per-sector factor bands, archetype weight vectors,
+cost-of-capital / R&D conventions, tradability band boundaries) — they are
+the TO implementation plan's to sweep, not open work now.
 
 ## Open questions
 
@@ -37,7 +40,7 @@ _None carried._
 ## Where to start
 
 **Pick the next initiative — nothing is queued.** The natural next is the
-**Portfolio completion block** (`BUILD.md` §What remains item 1 — run-evidence
-slice first, planning against the now-doubly-verified contracts). Alternative:
-give `logic-flow-docs/trade-opportunities-logic-flow.md` the same grounding
-pass (designed-voice, TO unbuilt). Let the user choose.
+**Portfolio completion block** (`BUILD.md` §What remains item 1 —
+run-evidence slice first), which has been the queue's head since 2026-08-14
+and was deferred twice for doc work; both logic-flow docs are now grounded,
+so there is no remaining doc reason to defer it. Let the user choose.
