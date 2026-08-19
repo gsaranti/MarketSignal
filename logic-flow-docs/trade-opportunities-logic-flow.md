@@ -1138,105 +1138,116 @@ An app-layer validator and tier-assigner, not a recorder. No model. Every rule b
 
 ## Step 6 — Rank and assemble new survivors
 
+The risk tier and horizon are already deterministic (Step 5h), so every survivor's **cell is predetermined**. This step never chooses *which* opportunities appear — only their **order within a cell** and which near-duplicates **collapse** — and completeness is enforced by the app, not the model's good behavior.
+
 - **Data retrieved**
   - No external data.
 
-- **Model**
-  - Ranks survivors within each predetermined cell.
-  - Suggests merges for near-identical opportunities.
+- **Model — per-cell ranking and dedup proposal (one call, thinking)**
+  - Exact inputs: every gated opportunity record from Step 5 with its assigned cell; a compact card for every **still-valid carried opportunity without a fresh Step-5h verdict this run** — the cheap-swept names Step 7 will re-place, and the inconclusive deep-read carries holding their prior verdict — each with ticker, thesis summary, leading metric, catalyst, and its assigned cell (current for an inconclusive deep-read carry; necessarily the **prior** cell for a cheap-swept card, whose Step-7 re-tier hasn't run yet), supplied as **collapse targets only**; the house view and investor profile; the count of candidates competing per cell.
+  - Returns: per cell, a **conviction ranking** of that cell's gated survivors — ordered on the **model arm's** conviction, the value the card headlines — plus any **dedup-collapse proposals**, each naming the merged-away candidate, the peer it collapses into, and a reason (near-identical thesis / shared leading metric / shared catalyst).
+  - The model cannot drop or hide a survivor, cannot move one to another tier or horizon, and can neither rank nor merge the carried cards.
 
-- **App validation**
-  - A merge requires:
-    - Same matrix cell.
-    - Shared hypothesis, leading metric, or catalyst.
-  - Invalid merge:
-    - List both opportunities.
-  - Existing live opportunity:
-    - Cannot be merged away.
-  - Every survivor must appear or have a validated merge record.
+- **App validation — collapse eligibility is typed, never judged**
+  - A proposal is accepted only when the pair is equivalent on **typed identity**: both records in the **same assigned cell** *and* sharing at least one of — a hypothesis-lineage node in the opportunity graph, an identical leading-metric series identity, or the same typed catalyst. The free-text reason is recorded color, never the acceptance basis.
+  - A proposal failing the predicate **defaults to list-both** — fail-open to redundancy, never omission — rejected and logged, every proposal's predicate inputs and validator result persisting with the collapse audit.
+  - **Direction is enforced**: a debut may collapse into a live carry's lifecycle (the carry's record absorbs it), but a **live carry can never be collapsed away** — carries are targets only, since a live pick leaves the matrix solely through deep invalidation; a proposal to collapse a carry is a validation error.
+  - An acceptance whose target is a **cheap-swept carry is provisional**: only the same-cell leg can go stale (the cheap sweep never rewrites lineage, metric identity, or catalyst), so Step 7 re-checks that leg against the carry's final re-placed cell — a mismatch reinstates the debut in its own cell. A collapse into a debut or an inconclusive deep-read carry is final here.
+
+- **Completeness validation and assembly (app)**
+  - Assemble the 3×3 survivor matrix from the deterministic cells and the model's ranking, applying each accepted collapse (recorded with its reason, predicate inputs, validator result, and direction, and written to the **shadow ledger** as a `dedup-substitute` episode so the merged-away peer's forward path is still scored — a provisional acceptance defers that write until Step 7 confirms it).
+  - Every Step-5h survivor must be listed in its cell or recorded as a predicate-validated collapsed peer; a survivor absent from both **fails the run's matrix validation** rather than vanishing.
+  - This covers **this run's survivor set only** — the matrix is final after Step 7 re-places the carried opportunities and re-validates over the union.
+  - No per-cell cap: a cell holds as many or as few ideas as cleared the gates; an empty cell is honest, never padded, and a rich cell is never trimmed.
 
 - **Output**
-  - Ranked survivor matrix.
-  - Validated duplicate records.
-  - No fixed number of opportunities per cell.
+  - The ranked survivor matrix (this run's set), the validated collapse records (final and provisional), and the completeness check.
 
 ---
 
 ## Step 7 — Refresh existing ideas and finalize the matrix
 
+The continuity step — an app-layer validator with no model: the rotation picks' and re-surfacers' deep passes already ran in Step 5, so this step reconciles their verdicts, **cheap-sweeps every other live opportunity**, finalizes the matrix over the union, scores past decisions, and reconciles the graph and archive. The dividing rule throughout: **only a deep pass can archive**.
+
 - **Data retrieved**
-  - FMP prices and estimates.
-  - New filing-derived metrics when available.
-  - FINRA short interest when needed.
-  - Deep FMP price history.
-  - Stored opportunity and shadow episodes.
+  - The prior matrix (Step 2) and the run-scoped deep-research set (Step 4).
+  - For each cheap-swept name: FMP `quote` and `analyst-estimates` (the swept-union population with Step 3c; one sweep per distinct symbol); dated-EOD bars through the shared price-bar cache; on the **filing-cadence rider** (a new reported period on the swept `earnings` row) the statement-derived rows — statements, `key-metrics` / `ratios`, `financial-scores`, `financial-growth`; the once-per-run FINRA file where a stored condition is short-interest-fed; current `DGS2` / `DGS10` (Step 2).
+  - For outcome labels: FMP dated-EOD bars through the window end per maturing picked **or shadow** episode (symbol-deduped; requested until the series covers the window end), and the run-level benchmark bars — `^GSPC` plus the SPDR sector ETFs — the market and sector legs.
+  - For the archive: dated-EOD bars per distinct archived symbol (deduped against the swept and label-time populations).
 
-- **Deep-researched existing names**
-  - Use their Step-5 result.
-  - Still valid → remain in matrix.
-  - Invalidated → move to archive.
-  - Inconclusive → keep previous verdict.
+### Reconcile the deep-researched carries
 
-- **All other live names**
-  - Run cheap re-derivation.
-  - Recalculate targets and risk tier.
-  - Recheck entry gate.
-  - Recheck structured falsifiers.
-  - Recheck structured and filing-based milestones.
-  - Refresh since-flagged performance.
-  - Raise “Consider Deep Audit” when needed.
-  - Never archive.
+- A carried name that won a deep pass this run (rotation pick or re-surfacer) has its fresh Step-5h verdict: **still-valid** → reconciles into the matrix; **invalidated** (model-judged, or app-forced on a hard trigger — the only path that archives in DTO: a qualitative erosion the cheap read can't see, or an exhausted-upside / continuation-failure finding *confirmed* under fresh research) → moved to the **archive** here; **inconclusive** (the re-read fell below the floor) → reconciles on its prior verdict with its typed refresh gap, treated exactly like a cheap-swept carry, its freshness never advanced so it stays rotation-eligible.
+- Every such ticker is in the deep-research set, so the cheap sweep skips it.
 
-- **Final matrix logic**
-  - Reinsert every surviving existing opportunity.
-  - Update its risk row if risk changed.
-  - Keep its last deep-pass horizon.
-  - Revalidate completeness.
+### The cheap re-derivation (every other live opportunity; engine-only, never archives)
 
-- **Outcome calculations**
-  - Measure picked opportunities after:
-    - 1 month.
-    - 3 months.
-    - 6 months.
-    - 12 months.
-  - Calculate:
-    - Return.
-    - Return versus sector and market.
-    - Maximum drawdown.
-    - Whether the leading metric continued.
-    - Why the result likely occurred.
+- **Re-derive the engine arm's targets** — the v2 multiples re-anchored closed-form on the fresh `DGS10` against the stored anchor-window percentiles and drivers; the last deep pass's persisted direct assumptions and `research_target_scenario` re-evaluated over current engine fields **while fresh** (inside the ~4-week window, the external evidence leaves frozen at their cited vintage) and **decayed to the retained structured-only baseline past it**, so a stale prop cannot keep a target inflated. Decay alone raises no warning — it surfaces only as the quiet *Research stale* badge.
+- **Re-run the full entry-asymmetry gate on both arms** against the live quote — every recomputable leg live: the refreshed tier, fresh `DGS2`, the banded liquidity haircut from live tradability inputs, the emerging leg's **H** re-read from the persisted realization basis (a milestone-chain basis remeasuring months to the validated payoff window's earliest date). The model arm needs **no model call**: its bands are frozen numbers from the last deep pass, re-measured against the live price exactly as the engine's — and unlike the research-informed set they **do not decay** (a dated judgment is not a stale prop; its age rides the *Research stale* badge).
+- **Re-derive the deterministic risk tier** from the refreshed inputs.
+- **Evaluate the stored key falsifiers and machine-checkable milestone conditions by class** — `structured` every run, `filing` when a fresh filing landed, `research` held for a deep pass — under the persistence semantics: a streak advances only on a distinct new observation (a new print or filing), keyed by `condition_id`; a filing-cadence condition confirms on its first qualifying breach (count 1), a high-frequency one logs a quiet first-breach note and confirms on the second (count 2); once a deep pass clears a warning, the acknowledging observation id is stored so the warning re-raises only on a breach confirmed against a *later* observation. Milestones: the plan, its timing, and the horizon stay the last deep pass's; the cheap path updates only resolution-backed evaluation state and months-to-date for the gate.
+- **Refresh the engine-computed fields** — the since-flagged read (below), the leading-metric-continuation state (a `research`-class anchor holds its last read), the narrative-vs-reality ratio, the forensic computations on the rider.
+- **Raise the attention warning — *Consider Deep Audit* — on any of three high-bar triggers**, and otherwise act on nothing:
+  - **Upside exhausted** — **neither arm's** re-derived base case still clears the full entry gate (the engine's, structured-only once any prop decayed; the model's frozen bands re-measured); while either arm clears, the divergence is recorded and no warning fires — mirroring either-arm admission.
+  - **A tripwire** — a stored `structured` / `filing` falsifier confirming a breach, a machine-checkable milestone missing its validated window, a forensic flag newly tripping, a **continuation-failure signal** (estimate revisions rolling over, a beat-and-raise streak breaking, shipments diverging below sell-through), a since-flagged gain diverging hard from leading-metric continuation, the narrative-vs-reality read crossing into `hype`, the margin of safety compressing near the exhaustion line, or a drawdown breach.
+  - **A re-surfacing** — the name re-appeared in discovery without winning a leftover-budget deep pass.
+  - Both readings are fail-soft: a *missing* input holds the opportunity on its last verdict, never an escalation; only an affirmative signal **confirmed under a deep pass** ends an opportunity. The model-authored fields — thesis, conviction, the model arm's sub-scores / bands / implied-expectations read, bear case, falsifiers, catalyst, milestone plan, archetype, advisory views, `technology_read`, entry consideration — stay **frozen** between deep passes.
 
-- **Shadow scorecard**
-  - Measure rejected, deferred, and merged-away names.
-  - Identify false negatives.
-  - Never automatically promote them.
+### Final matrix assembly over the union
 
-- **Graph updates**
-  - Add or refresh watchlist names.
-  - Retire failed hypotheses.
-  - Mark archived picks as departed.
+- Re-place each still-valid carried opportunity in its **current cell**: the refreshed risk tier sets the row (a changed tier moves the card — a re-placement, never a re-rate; verdict and frozen conviction hold), and the horizon keeps its last deep-pass value (only a deep pass remaps it).
+- Insert each carry deterministically into the cell's Step-6 ranking by its **frozen model-arm conviction**, ties by ticker — computed-only, no model re-orders anything.
+- **Finalize the provisional collapses**: re-check each debut-into-cheap-carry acceptance's same-cell leg against the carry's final cell — a match confirms it and lands the deferred shadow-ledger write; a mismatch rejects it and **reinstates the debut in its own cell** at its Step-6 rank, cancelling that write.
+- **Re-validate completeness over the union**: every Step-5h survivor present in its cell (a reinstated debut included) or recorded as a finally-confirmed collapsed peer, and every still-valid carry present in its possibly re-placed cell — anything absent fails the run's matrix validation.
+- **What-changed attribution**: each status or conviction move a Step-5g record claims as *external* must resolve to a concrete input-delta entry (this run's metrics / positioning / price vs the prior run's stored values), a source-backed research finding, a logged direct / composite target assumption, or a validated milestone claim; an attribution that resolves to nothing is downgraded to a self-correction (or fails schema), so a no-new-facts swing can't be laundered as "the thesis changed".
+
+### Outcome learning
+
+Each DTO run turns the job's own track record into structured feedback. The unit is the **decision episode** — a picked episode per pick (opened at its `became_opportunity_at` run with its entry calibration snapshot, keyed by lifecycle id), and a shadow episode per turn-away — every label engine-computed, never model-judged: whoever keeps score cannot also be a player.
+
+- **Matured-window labels (1 / 3 / 6 / 12 months, each window evaluated independently)** for every prior pick old enough:
+  - Forward return, absolute and **vs sector and vs market** — split-adjusted, **price-only as the common basis** (total return carried supplementary where dividends exist); entry reference = the **next session's daily close** after the decision (a consistent, conservative anchor — never the same-day bar the decision couldn't have traded); the sector leg from the episode's **entry-stamped sector identity** (sector label + resolved SPDR benchmark symbol, frozen at entry — never a label-time re-classification; no mapping → `sector-unscorable`, the sector legs excluded, counted and logged).
+  - **Maximum drawdown** over the window — the path, not only the endpoint.
+  - **Did the leading metric continue?** — per the anchor's re-check class and lifecycle state: a `structured` anchor re-pulls freely, a `filing` anchor reads its filing feed, a `research` anchor advances only where a deep pass produced a dated observation; persisted / stalled / reversed where a path exists; a window with no legal refresh path (a research anchor with no fresh observation, a pick that departed before the window matured) records `leading-metric-unscorable` — excluded from denominators and rollover attribution, counted and logged.
+  - **`resolution_mode`** — assigned per matured window by an ordered, first-match-wins tree over the episode's own inputs (the entry snapshot: both arms' entry-vintage targets + methodology + parameter version, the admission provenance and gate vectors, the valuation / revision baseline, the falsifier `condition_id`s and entry states, the initial forensic state, the sector stamp — plus the dated events recorded while live; never a pruned audit, never a later run's values):
+    1. **Terminal typing** — an acquisition realizes the label at the final trading price, a bankruptcy scores to zero, an ambiguous delisting is `terminal-unscorable`; a terminal type is assigned **only from an already-recorded corporate-action fact** (the M&A-involvement read, the archive's failing signal, a filing event already in a run record) — a disappearance with no recorded fact resolves conservatively to `terminal-unscorable`, never a guessed class.
+    2. **`forensic-materialization`** — a forensic hard flag newly tripped, or a forensic-class falsifier confirmed, within the window; price direction irrelevant.
+    3. **`leading-metric-rollover`** — the window's continuation state is reversed (a price winner with a reversed anchor lands here deliberately: a lucky win is a gate miss).
+    4. **`multiple-unwind`** — market-relative return ≤ **−10%** (the loser bar) *and* multiple contraction ≥ **60%** of the market-relative down-move with estimate revisions within a **±5%** noise band (the downside mirror of the 70% hype decomposition).
+    5. **`market-beta`** — absolute return ≤ −10% while within **±5 pts** of the sector benchmark's return, with no stored falsifier confirmed in the window (the name fell with its group, thesis intact); `sector-unscorable` leaves this branch unevaluable.
+    6. **`thesis-played-out`** — a dated-EOD daily close reached the **engine arm's entry-vintage base-case target** during the window with the metric persisted — an internal-calibration label, not a matrix status (hitting a target is not an exit).
+    7. **`no-dominant-mode`** — the explicit residual, **guarded on input completeness**: it claims only a window whose still-relevant branches were all evaluable; a window with any still-relevant branch blocked by an unavailable input (a live `leading-metric-unscorable` window blocks 3 and 6; `sector-unscorable` blocks 5; the post-departure window the limiting case) records **`resolution-unscorable`** instead — excluded like its terminal / metric counterparts, counted and logged. The explanation is templated from the matched branch.
+  - Price labels populate only when the refreshed bars **cover the window end**; a failed refresh leaves the label **pending with a price-coverage gap**, bounded by the shared price-coverage grace (drafted ~3 months past the window end), past which it closes as the typed `price-coverage-unscorable` label — the same bound turning a transiently stale series into a genuine disappearance for the terminal contract.
+  - The labels record onto the pick's durable episode (independent of matrix presence, archive retention, and run retention) and **score both arms identically** off the stored entry-vintage bands: per-arm target calibration, a head-to-head over the paired population only, and the slice by **admission provenance** — `model-only` admissions measured against the `gate-reject` shadow population they were drawn from and against their own admitting hurdle, `engine-only` as the symmetric read on the model's refusals; each arm's **conviction is recorded unscored** behind the ≥ 30-unique-issuer bar. The single-valued `resolution_mode` keys on the engine arm's entry-vintage target. A debut pick's episode **opens in this pass** with its entry snapshot; each later live pass appends its dated events.
+- **The shadow scorecard** — the same price-derived labels (return vs sector / market, drawdown — never a leading-metric re-pull, so no research or model spend) over the persisted shadow ledger: Step-5h held-outs, Step-6 dedup-collapsed peers, and the graph's retired / still-unpromoted watchlist nodes — never `departed` pick tombstones (their outcomes live on the picked episodes). Each entry anchors on the run that turned it away (a deferral on its first-surfaced date; a retirement on both that date and its retirement date). The labels reduce **per decision class, never pooled** — picks vs **gate rejects** is the headline **picked-vs-rejected spread** (unique-issuer counted; sliceable by feeder, route, archetype, and gate); deferrals, abstentions, dedup substitutes, and retirements read separately — and a **false-negative flag** on any turned-away name whose market-relative return exceeds **+15% at 6 months** or **+25% at 12 months**, tradability-discounted through the haircut band (the severe band exempt entirely). Calibration-only: a flagged false negative tunes the gates, never re-promotes or re-surfaces the name.
+- **The continuous since-flagged read** — refreshed for every carried-forward opportunity (live from its first subsequent run; a debut carries none yet): running return since `became_opportunity_at` (absolute, vs sector, vs market), maximum drawdown, and leading-metric continuation, reconstructed from the daily-bar cache from the first close after `became_opportunity_at` to the latest cached close — one engine primitive with three readers: the discrete horizons feed calibration, the continuous read feeds the matrix card, and (for a carried name re-validated this run) it fed Step 5g as cap-only context. The matured labels attach to it as they elapse.
+- Calibration **proposes, never applies**: no proposal until ≥ 30 unique issuers with matured windows, and then with effect size and an issuer-clustered interval for the user's review; the labels are recorded and audited as the job's honest scorecard meanwhile.
+
+### Graph and archive reconciliation (same pass)
+
+- **Opportunity graph** — this run's picks link to their matrix entry (`picked`); worthy-but-unpicked names are added or refreshed as `watchlist` nodes; nodes whose falsifiers tripped or whose carry horizon elapsed are `retired` (Step 3c); a deeply invalidated pick's node moves to **`departed`** in the same pass as its archival — a terminal tombstone visible in route context as a dead thesis, never a feeder, never re-promotable in place, excluded from shadow scoring; a genuine re-entry opens a new node under a new lifecycle. Departed tombstones prune on the archive's retention.
+- **Archive** — an `invalidated` opportunity is moved to the archive (the most recent **100**, oldest evicted first) as a **frozen verdict snapshot** — thesis, archetype, leading metric, catalyst, final milestone plan, bear case, `became_opportunity_at`, the departure date, the failing signal (`failed-reevaluation`), admission provenance, conviction at exit (the model arm's value with the engine stand-in beside it), the stamped sector identity, and any status-override divergence. Afterward **only the price is tracked** — each run refreshes its since-flagged return (absolute, vs sector / market) and drawdown from the bar cache; no leading-metric continuation, no research, no model call; a still-maturing episode freezes its metric state at the last live refresh. There is no "target met" exit; staleness alone never archives.
+- **Re-entry is a fresh start**: a later run that independently re-discovers an archived ticker removes it from the archive and it enters as a new opportunity with a new `became_opportunity_at`; none of the archived record influences the new one (the old episode keeps maturing under its own lifecycle). A ticker is in exactly one state — live, departed, or neither; the archive never promotes itself.
 
 - **Model**
   - None.
 
 - **Output**
-  - Final matrix.
-  - Attention warnings.
-  - Archive changes.
-  - Picked and shadow outcome episodes.
-  - Updated opportunity graph.
+  - The final matrix over the union (re-placed carries, reinstated debuts, confirmed collapses), validated complete.
+  - Attention warnings raised, archive moves, the updated opportunity graph and coverage state.
+  - This run's opened picked episodes, newly matured labels (picked and shadow), the since-flagged reads, the scorecard reads, and the what-changed attribution.
 
 ---
 
 ## Step 8 — Mark opportunities you already own
 
 - **Data retrieved**
-  - Fresh holdings from Schwab.
-  - Cached holdings if the pull fails.
+  - The holdings list, **pulled fresh from Schwab at this step** — the run's sole holdings consumer, so the tags are current rather than hours stale after a long run.
+  - On a failed pull: the most recent persisted holdings snapshot, the tags labeled with its captured-at date; with no snapshot, the owned tags are omitted as a typed gap. Never a failed run.
 
 - **Logic**
-  - Add owned/not-owned labels.
-  - Holdings do not affect discovery or selection.
+  - Flag each matrix opportunity owned / not-owned.
+  - Runs *after* discovery, selection, and continuity, and reads only the holdings list — never the Portfolio Analysis memory partition — so holdings never influence what is found or chosen; the job stays independent of the account.
 
 - **Model**
   - None.
@@ -1248,52 +1259,50 @@ An app-layer validator and tier-assigner, not a recorder. No model. Every rule b
 
 ## Step 9 — Save everything
 
-- **Data stored**
-  - Final matrix.
-  - Opportunity graph.
-  - Discovery coverage ledger.
-  - Watchlist research-refresh state.
-  - Archived opportunities.
-  - Structured-only and research-informed target calculations.
-  - Target assumption bridges.
-  - Thesis milestone plans and their evaluation states.
-  - Limited-history evidence and mapping decisions.
-  - Picked and shadow episodes.
-  - Outcome labels.
-  - Sources and timestamps.
-  - Calculations and model versions.
-  - Rejection and dedup reasons.
+- **Data stored — the six persisted structures**
+  - **The run record** — the 3×3 matrix (every opportunity's record: thesis, detection mode, archetype, leading metric + its stored series, typed catalyst, validated milestone plan with condition ids and evaluation states, horizon + realization basis, `business_runway` + its inputs, both target sets + the bridge tree and delta, risk tier, both arms' conviction / sub-scores / bands / implied-expectations reads, narrative-vs-reality read, bear case, class-typed falsifiers with evaluation state, hypothesis + seed lineage, any `technology_read`, entry consideration, risk / forensic flags + any `forensic_event`, `admitted_by` + both gate vectors, status, attention-warning state + trigger, `became_opportunity_at`, `last_deep_researched_at`, entry-stamped sector identity, since-flagged read) plus the **run audit record** — sources and retrieval timestamps with their source-quality annotations, the discovery and screening inputs (which screens / routes / themes surfaced each candidate, the coverage-debt snapshot and inserted route, attempted / completed units, every refresh-lane node considered / selected / skipped with its result), the distilled findings, the typed claims and accepted / rejected rules and bridge legs, limited-history mapping decisions, the engine calculations with the target methodology (the job-time `quote`, the anchor-window percentiles and drivers the cheap paths re-anchor against), the engine stand-in's matched ceiling annotations and any hard-trigger record, the recorded divergences (archetype overturn, advisory views, status override), the run-level **band and conviction divergence rates** (band: the model's base differs from the engine's authoritative base by > 10% or the base bands don't overlap; conviction: different rungs; pooled over the last 5 pick-producing DTO runs), any `self_assessment`, the input delta and what-changed attribution, the dedup-collapse decisions (predicate inputs, result, direction, provisional → confirmed / reinstated), the outcome labels and since-flagged reads, the shadow scorecard, each pass's reused-vs-fresh document split, model ids and quantizations, prompt / schema / parameter versions, and degraded-input flags.
+  - **The opportunity graph** — hypotheses with value-chain traces; watchlist nodes with lineage, seed lineage, score, metric + class, falsifiers, latest gap, `last_successful_research_refresh_at`, refresh-attempt state, status, timestamps; event-impact nodes with `technology_read` + side.
+  - **The discovery-coverage ledger** — per route class and coverage subject: first seen, last attempted, last successfully completed, last route id, completion / gap state, computed debt.
+  - **The archive** — the most recent 100 departed picks as frozen snapshots (Step 7); since-flagged numbers recomputed, never stored.
+  - **The shadow ledger** — typed turn-away episodes (gate-reject / abstention / deferral / dedup-substitute / retired-hypothesis, a capacity eviction a retirement carrying `capacity-evicted`), each with its identity fields, the Step-5g digest, per-class content, anchor date(s), sector stamp; bounded by its retention cap, matured entries frozen into a compact archive (drafted 5,000 rows).
+  - **The picked-episode store** — one immutable episode per lifecycle: the entry calibration snapshot, the dated live events, the matured labels; independent of matrix presence, archive retention, and run retention; matured episodes frozen under their own cap (drafted 5,000).
+  - Shared stores touched: the price-bar cache, the document research cache, the factor-distribution store (one current observation per issuer per factor), the web-research source state.
 
-- **Embedding model**
-  - DTO:
-    - Embeds opportunity summaries.
-    - Embeds newly matured lessons and false negatives.
-  - ATO Deep:
-    - Embeds touched opportunity summaries only.
-  - ATO Quick:
-    - No embedding call.
+- **Retention**
+  - The last N Trade Opportunities runs; the archive at 100; `departed` tombstones on the archive's retention; the watchlist under its cap; the shadow ledger and picked matured archives under theirs.
+
+- **Embedding model (DTO and Deep Audit only; a Quick Audit never invokes it)**
+  - Each opportunity's record summary embedded individually — a `summary`-kind row stamped with the pick's lifecycle id (the rows Step 5b's recall reads); a Deep Audit embeds the touched opportunities' summaries only.
+  - **On DTO only**: each outcome label newly matured since the prior DTO pass (an ATO-refreshed label included, so each is written once) and each new shadow false-negative flag — durable `learning`-kind rows (for a false negative: the name, the failing gate, the model's conviction at refusal, the return it posted), consumed only by the calibration pass, never a dossier input.
+  - Vectors land in the Trade Opportunities partition only; a failed or invalid vector costs the memory row, never the persisted run.
 
 - **Output**
-  - Durable run record.
-  - Searchable continuity memory.
+  - A durable run and audit record, the carried stores for the next run's Step 2, and the searchable Trade Opportunities memory.
 
 ---
 
 ## Step 10 — Display the result
 
-- **Data retrieved**
-  - Persisted results.
-  - Cached daily bars for current display values.
+Display is a pure read of the persisted matrix; no model runs.
 
-- **UI output**
-  - 3×3 risk-by-horizon matrix.
-  - Optional flat sortable list.
-  - Thesis, target, bear case, catalyst, and conviction.
-  - Performance since first selection.
-  - Owned/not-owned status.
-  - Research-stale badge.
-  - Consider-Deep-Audit warning.
-  - Separate archive.
+- **Data retrieved**
+  - The persisted run (matrix, archive, badges' inputs).
+  - The per-ticker daily-bar cache — the since-flagged read and the % upside to target are **re-derived at render** from the latest cached close (the cache refreshes a symbol lazily, after 8 PM ET and at most once per 24 hours, fail-soft), so the card is current between runs with no fetch on open; the live `quote` is a job-time input only, never a render dependency.
+
+- **The matrix (default, canonical view)**
+  - Three risk sections × three horizons; each card: archetype, directional thesis, leading metric, catalyst, **the model arm's conviction and forward outlook headlining** (base-case target and bear / bull range over the twelve-month window), narrative-vs-reality read, entry consideration, bear case, status, `became_opportunity_at`, `last_deep_researched_at`, owned / not-owned, and — for a carried idea — the since-flagged performance (return since it became an opportunity, vs sector / market, a compact running curve, maximum drawdown).
+  - **Two arms by progressive disclosure**: a quiet **divergence tag** where the arms materially disagree (conviction rung, band overlap, or a recorded advisory tier / horizon divergence); the paired engine / model view on card expand; the `admitted_by` tag on both single-arm states — `engine-only` (the headline model target did *not* itself clear the gate; the engine admitted it) and `model-only` (the headline admitted it; the baseline dissented); consensus cards untagged.
+  - Lifecycle affordances per card: the selection control (plus select-all / deselect-all), an amber actionable **Consider Deep Audit** badge when the attention warning is set, a green **Deep-researched today** badge when `last_deep_researched_at` is the current local-timezone day, a quiet **Research stale** badge when the last deep pass is older than ~4 weeks (computed at render; never amber).
+  - Empty cells shown as empty.
+
+- **List view (toggle)**
+  - All nine cells flattened into one sortable grid, each row keeping its risk tier, horizon, selection control, badges, and engine-target / model-target / divergence columns; sort keys: **forward % upside to target** (default, descending — the model arm's target against the cached close; the engine's sortable in its own column) or **realized since-flagged return** (a debut sorts last). Display-only reordering.
+
+- **Archived opportunities (separate view)**
+  - Each departed pick's frozen record, departure date, and live since-flagged return — **no forward prediction**; sortable by since-flagged return or drawdown, default departure date descending.
+
+- **Controls**
+  - **Discover** (DTO) and a selection-gated **Audit** button forking to Quick Audit / Deep Audit (a large Deep-Audit selection confirms first). While a job runs the run tracker replaces the page; a run is never a report — a cancel or failure removes nothing.
 
 - **Model**
   - None.
