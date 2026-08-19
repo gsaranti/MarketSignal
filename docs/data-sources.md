@@ -765,6 +765,7 @@ The classification subset of these rows — `profile` plus the statement-derived
 | `price-target-consensus`, `price-target-summary` | per-candidate | street target level + trend — *evidence, not an engine input* |
 | `ratings-snapshot`, `ratings-historical` | per-candidate | FMP composite rating — opinion cross-check only |
 | `earnings` | per-candidate + per swept name (carried-matrix / watchlist sweep; doubles as the filing-cadence-rider trigger) | next earnings date (catalyst) + actual-vs-estimate surprise / SUE history |
+| `dividends` | per-candidate + per maturing picked episode (label time — the supplementary total-return leg; shadow episodes stay price-only) | trailing distributions → the shared v2 scenario-target function's forward-dividend leg (total-return targets; the function is single-homed at [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)); a nonpayer contributes a zero dividend leg, and a failed label-time pull costs only the supplementary total-return read — the price-only common basis is unaffected (ruled 2026-08-19) |
 | `news/stock` (Search Stock News) | per-candidate | symbol-scoped **structured news** → seeds the narrative / sentiment and catalyst reads, then deep-read via the web tool |
 | `insider-trading/search`, `insider-trading/statistics` | per-candidate | insider buy clusters + aggregate statistics |
 | `acquisition-of-beneficial-ownership` | per-candidate | SC 13D / 13G beneficial-ownership filings → **activist / large-stake accumulation** catalyst |

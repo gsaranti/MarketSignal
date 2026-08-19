@@ -26,7 +26,7 @@
 
 - **Debut**
   - A candidate with no live opportunity record — new to the matrix this run.
-  - Only a debut can be held out at a gate (a carry takes a warning instead).
+  - Only a debut can be held out at the entry gate or the evidence floor; a carry instead takes a warning or holds its verdict — a deep-validated hard trigger is the one carried removal.
 
 - **Carried-forward (a carry)**
   - An existing live opportunity loaded from the prior run.
@@ -145,7 +145,7 @@
 
 - **Gate**
   - A mandatory rule.
-  - Failure prevents a debut from entering the matrix; a carried name instead takes a warning.
+  - Failure prevents a debut from entering the matrix; a carried name failing the entry gate instead takes a warning (a deep-validated hard trigger archives it — the one carried removal).
 
 - **Evidence floor**
   - The minimum evidence a candidate needs before any judgment is written: price + history, a validated leading metric, current sources, and statements (or an archetype-defined operating substitute).
@@ -239,7 +239,7 @@
 - **FMP — per-candidate surface (the budget driver; fires only for the narrowed set)**
   - `profile` — sector, industry, beta, description.
   - `income-statement` (+ TTM), `balance-sheet-statement`, `cash-flow-statement` — the core statements.
-  - `key-metrics`, `ratios` (+ TTM), `financial-scores` (Altman Z, Piotroski), `owner-earnings`, `enterprise-values`, `discounted-cash-flow`, `financial-growth` (multi-year per-share CAGRs).
+  - `key-metrics`, `ratios` (+ TTM), `financial-scores` (Altman Z, Piotroski), `owner-earnings`, `enterprise-values`, `discounted-cash-flow`, `financial-growth` (multi-year per-share CAGRs), `dividends` (trailing distributions — the targets' forward-dividend leg).
   - `revenue-product-segmentation`, `revenue-geographic-segmentation` — annual only; the quarterly segment series is research-extracted.
   - `analyst-estimates` (snapshotted run to run for revision velocity), `grades`, `grades-historical`, `grades-consensus`, `price-target-consensus`, `price-target-summary`, `ratings-snapshot`, `ratings-historical`, `earnings` (next date + surprise history).
   - `news/stock` — symbol-scoped headlines seeding the candidate’s narrative read.
@@ -728,7 +728,7 @@ The lens that decides which signals matter for this candidate.
 The application assembles the candidate's evidence packet deterministically; the Step-5a responses are reused from the run cache, and every per-candidate row fires once. This is the per-candidate surface — the budget driver — so it runs only for the narrowed slate, never the discovery longlist.
 
 - **Data retrieved from FMP**
-  - Fundamentals — `income-statement` (+ TTM), `balance-sheet-statement`, `cash-flow-statement`; `key-metrics`, `ratios` (+ TTM); `financial-scores` (Altman Z, Piotroski); `owner-earnings`, `enterprise-values`, `discounted-cash-flow`; `financial-growth` (multi-year per-share revenue / EPS / FCF / book-value CAGRs).
+  - Fundamentals — `income-statement` (+ TTM), `balance-sheet-statement`, `cash-flow-statement`; `key-metrics`, `ratios` (+ TTM); `financial-scores` (Altman Z, Piotroski); `owner-earnings`, `enterprise-values`, `discounted-cash-flow`; `financial-growth` (multi-year per-share revenue / EPS / FCF / book-value CAGRs); `dividends` — the trailing distributions, the scenario function's forward-dividend leg (a name with no distributions contributes a zero leg).
   - Segments — `revenue-product-segmentation`, `revenue-geographic-segmentation` (annual only — trajectory context and the own-history basis; the quarterly acceleration series is research-extracted at Step 5d).
   - The revision signal — `analyst-estimates` (forward consensus, snapshotted run to run for velocity), `grades` / `grades-historical` / `grades-consensus` (the rating distribution and actions), `price-target-consensus` / `price-target-summary` (street target level and trend), `ratings-snapshot` / `ratings-historical`, `earnings` (next earnings date + actual-vs-estimate history).
   - Positioning (all symbol-keyed) — `insider-trading/search` + `insider-trading/statistics`, `acquisition-of-beneficial-ownership` (SC 13D / 13G activist stakes), `senate-trades` + `house-trades`.
@@ -841,7 +841,7 @@ The anchor the whole thesis hangs on — per archetype: revision velocity (AI-in
 #### Earnings surprise, positioning, and the price-action confirmer
 
 - **SUE** — each reported surprise standardized against the name's own surprise history (from `earnings`); the beat-and-raise streak confirmed here; post-announcement drift as a continuation tell.
-- **Positioning** — insider net buying (`insider-trading/*`), congressional buys, activist 13D / 13G stakes, short-interest level / trend / days-to-cover (FINRA), CFTC positioning for a commodity cyclical's underlying (Step 2), and the **options-activity signal** from the Step-5b chain — put/call by volume and by open interest, ATM implied volatility, IV skew — an activity proxy, **held out of the grade** until calibrated.
+- **Positioning** — insider net buying (`insider-trading/*`), congressional buys, activist 13D / 13G stakes, short-interest level / trend / days-to-cover (FINRA), CFTC positioning for a commodity cyclical's underlying (Step 2), and the **options-activity signal** from the Step-5b chain — put/call by volume and by open interest, and the IV/skew read (the whole-chain form: mean put IV minus mean call IV, no moneyness banding; the banded form is the calibration slice's) — an activity proxy, **held out of the grade** until calibrated.
 - **Price-action confirmer** — relative strength vs the market (`^GSPC`) and the sector benchmark, and proximity to a multi-year base breakout, from the dated-EOD deep history (reusing the shared engine's momentum / volatility computations). A cross-archetype **confirmer, not a trigger** — it adjusts conviction at 5g, never substitutes for the leading-metric anchor.
 
 #### Scenario targets — the v2 rate-anchored function (structured-only set)
@@ -856,7 +856,7 @@ Bear / base / bull price targets over the fixed **twelve-month** window, priced 
   - No positive forward-EPS consensus and no computable forward revenue per share → `no-admissible-driver`, an evidence-floor abstention (the gate cannot price a name with no computable target).
 - **Build the three driver cases** — base = the consensus mid, bear / bull = the low / high (a missing spread holds both at the mid, flagged flat), each clamped to `[trailing × 0.75, trailing × 1.35]`.
 - **Calculate the multiple** — per historical quarter (~12): driver yield = `driver ÷ price`, spread = `yield − that quarter's DGS10` (latest on or before); the bear / base / bull spread percentiles (75th / 50th / 25th — a wider spread is a cheaper multiple); re-anchored with today's `DGS10`: `multiple = 1 ÷ (spread percentile + today's DGS10)` (needs ≥ 8 observations; else raw-multiple percentiles; with no history, the current `spot ÷ base driver` multiple carried).
-- **Price and return** — `twelve-month price = driver × multiple` per scenario (crossed scenarios repaired to ascending; a volatility-scaled dispersion floor widens, never narrows, the bear / bull spread); `total return = (price + forward dividends) ÷ spot − 1`.
+- **Price and return** — `twelve-month price = driver × multiple` per scenario (crossed scenarios repaired to ascending; a volatility-scaled dispersion floor widens, never narrows, the bear / bull spread); `total return = (price + forward dividends) ÷ spot − 1` (the dividend leg from the 5b-pulled trailing distributions; a nonpayer contributes zero).
 - **Where these land** — the structured-only target set with its `TargetMeta` (anchor form: rate-anchored / current-multiple carry / raw-percentile fallback; driver rung; flat / clamp / dispersion flags) on the engine arm; a **provisional scenario menu** until Step 5f; the entry gate (5h) and the implied-expectations inversion below read it; the anchor-window percentiles and drivers persist as the basis every cheap re-derivation re-anchors against.
 
 #### The three derived reads selection leans on
@@ -871,7 +871,7 @@ Bear / base / bull price targets over the fixed **twelve-month** window, priced 
 #### Tradability flag and since-flagged read
 
 - **Tradability flag** — Amihud-style illiquidity plus days-to-cover, resolved into the entry gate's **banded liquidity haircut**: unflagged 0 / flagged −3 pts / severely flagged −6 pts (the band boundaries from the flag's own inputs — not yet drafted) — so a small illiquid name is discounted, not silently excluded.
-- **Since-flagged read (carried names only)** — running return since `became_opportunity_at` (absolute, vs sector, vs market), maximum drawdown over that window, and leading-metric-continuation state, from the same dated-EOD history — the identical primitive Step 7's scorecard uses — so 5g can weigh how the idea has actually done, cap-only.
+- **Since-flagged read (carried names only)** — the price legs — running return since `became_opportunity_at` (absolute, vs sector, vs market) and maximum drawdown over that window — from the dated-EOD history, the identical primitive Step 7's scorecard uses, so 5g can weigh how the idea has actually done, cap-only. The leading-metric-continuation state is the read's other part and is **not** price-derived — it comes from the metric's own re-check-class path (a `research`-class anchor holds its last read between deep passes).
 
 - **Model**
   - None.
@@ -1012,7 +1012,6 @@ The opportunity-authoring call, and the stage where the **model arm is written**
   - The structured-only and research-informed scenario targets with their exposed methodology (`TargetMeta`) and the bridge delta.
   - The narrative-vs-reality read, the forensic flags, the implied-expectations range.
   - The price-action confirmer; the positioning reads and the options signal.
-  - The engine's mechanical conviction stand-in with any matched ceiling annotation.
   - Exposing the methodology is deliberate — the model is asked to dispute a *derivation* where it disagrees, not merely to name a different number.
 - **The distilled research** — the per-lens findings including the mandatory bear case, the target-scenario and milestone evidence, the cross-lens contradiction read and key falsifiers, the validated leading indicator.
 - **The candidate's archetype and surfacing signals** (its hypothesis lineage and any `technology_read`).
@@ -1020,7 +1019,7 @@ The opportunity-authoring call, and the stage where the **model arm is written**
 - **Any prior opportunity record for this name**, framed by `continuity_weight` — continued research to anchor on, blended, or a prior view to test skeptically.
 - **For a carried-forward name**: the own-lifecycle retrospective (the prior pass's both-arm values, this name's matured labels and their `resolution_mode`s, its leading-metric-continuation state) plus the since-flagged read — one price primitive behind both, the retrospective quoting its segment since the prior deep pass, the card since first entry.
 - **The absolute street opinions** (consensus target level, current rating consensus, FMP's ratings snapshot) — evidence to weigh against both arms' reads, not numbers to adopt.
-- **Deliberately excluded**: raw statements, filings, and page text — only computed values and distilled research reach the model.
+- **Deliberately excluded**: raw statements, filings, and page text — only computed values and distilled research reach the model; and the engine's **mechanical conviction stand-in**, computed only at Step 5h (its gate-distance leg needs the horizon derived there from this call's own milestone plan — feeding it back would be a causal loop; ruled 2026-08-19, mirroring Portfolio's 6f holdout of the engine's stand-in picks).
 
 #### Discipline the prompt states (prompt-side, human-auditable — not an app clamp)
 
@@ -1220,14 +1219,14 @@ Each DTO run turns the job's own track record into structured feedback. The unit
   - Price labels populate only when the refreshed bars **cover the window end**; a failed refresh leaves the label **pending with a price-coverage gap**, bounded by the shared price-coverage grace (drafted ~3 months past the window end), past which it closes as the typed `price-coverage-unscorable` label — the same bound turning a transiently stale series into a genuine disappearance for the terminal contract.
   - The labels record onto the pick's durable episode (independent of matrix presence, archive retention, and run retention) and **score both arms identically** off the stored entry-vintage bands: per-arm target calibration, a head-to-head over the paired population only, and the slice by **admission provenance** — `model-only` admissions measured against the `gate-reject` shadow population they were drawn from and against their own admitting hurdle, `engine-only` as the symmetric read on the model's refusals; each arm's **conviction is recorded unscored** behind the ≥ 30-unique-issuer bar. The single-valued `resolution_mode` keys on the engine arm's entry-vintage target. A debut pick's episode **opens in this pass** with its entry snapshot; each later live pass appends its dated events.
 - **The shadow scorecard** — the same price-derived labels (return vs sector / market, drawdown — never a leading-metric re-pull, so no research or model spend) over the persisted shadow ledger: Step-5h held-outs, Step-6 dedup-collapsed peers, and the graph's retired / still-unpromoted watchlist nodes — never `departed` pick tombstones (their outcomes live on the picked episodes). Each entry anchors on the run that turned it away (a deferral on its first-surfaced date; a retirement on both that date and its retirement date). The labels reduce **per decision class, never pooled** — picks vs **gate rejects** is the headline **picked-vs-rejected spread** (unique-issuer counted; sliceable by feeder, route, archetype, and gate); deferrals, abstentions, dedup substitutes, and retirements read separately — and a **false-negative flag** on any turned-away name whose market-relative return exceeds **+15% at 6 months** or **+25% at 12 months**, tradability-discounted through the haircut band (the severe band exempt entirely). Calibration-only: a flagged false negative tunes the gates, never re-promotes or re-surfaces the name.
-- **The continuous since-flagged read** — refreshed for every carried-forward opportunity (live from its first subsequent run; a debut carries none yet): running return since `became_opportunity_at` (absolute, vs sector, vs market), maximum drawdown, and leading-metric continuation, reconstructed from the daily-bar cache from the first close after `became_opportunity_at` to the latest cached close — one engine primitive with three readers: the discrete horizons feed calibration, the continuous read feeds the matrix card, and (for a carried name re-validated this run) it fed Step 5g as cap-only context. The matured labels attach to it as they elapse.
+- **The continuous since-flagged read** — refreshed for every carried-forward opportunity (live from its first subsequent run; a debut carries none yet): its price-derived parts — running return since `became_opportunity_at` (absolute, vs sector, vs market) and maximum drawdown — reconstructed from the daily-bar cache from the first close after `became_opportunity_at` to the latest cached close, and its leading-metric-continuation state read from the metric's own re-check-class path (a structured re-pull, never price bars) — one engine primitive with three readers: the discrete horizons feed calibration, the continuous read feeds the matrix card, and (for a carried name re-validated this run) it fed Step 5g as cap-only context. The matured labels attach to it as they elapse.
 - Calibration **proposes, never applies**: no proposal until ≥ 30 unique issuers with matured windows, and then with effect size and an issuer-clustered interval for the user's review; the labels are recorded and audited as the job's honest scorecard meanwhile.
 
 ### Graph and archive reconciliation (same pass)
 
 - **Opportunity graph** — this run's picks link to their matrix entry (`picked`); worthy-but-unpicked names are added or refreshed as `watchlist` nodes; nodes whose falsifiers tripped or whose carry horizon elapsed are `retired` (Step 3c); a deeply invalidated pick's node moves to **`departed`** in the same pass as its archival — a terminal tombstone visible in route context as a dead thesis, never a feeder, never re-promotable in place, excluded from shadow scoring; a genuine re-entry opens a new node under a new lifecycle. Departed tombstones prune on the archive's retention.
-- **Archive** — an `invalidated` opportunity is moved to the archive (the most recent **100**, oldest evicted first) as a **frozen verdict snapshot** — thesis, archetype, leading metric, catalyst, final milestone plan, bear case, `became_opportunity_at`, the departure date, the failing signal (`failed-reevaluation`), admission provenance, conviction at exit (the model arm's value with the engine stand-in beside it), the stamped sector identity, and any status-override divergence. Afterward **only the price is tracked** — each run refreshes its since-flagged return (absolute, vs sector / market) and drawdown from the bar cache; no leading-metric continuation, no research, no model call; a still-maturing episode freezes its metric state at the last live refresh. There is no "target met" exit; staleness alone never archives.
-- **Re-entry is a fresh start**: a later run that independently re-discovers an archived ticker removes it from the archive and it enters as a new opportunity with a new `became_opportunity_at`; none of the archived record influences the new one (the old episode keeps maturing under its own lifecycle). A ticker is in exactly one state — live, departed, or neither; the archive never promotes itself.
+- **Archive** — an `invalidated` opportunity is moved to the archive (the most recent **100**, oldest evicted first) as a **frozen verdict snapshot** — thesis, archetype, leading metric, catalyst, final milestone plan, bear case, `became_opportunity_at`, the departure date, the archive trigger (`failed-reevaluation` — the single trigger, always a deep pass) with the specific failing signal that retired it, admission provenance, conviction at exit (the model arm's value with the engine stand-in beside it), the stamped sector identity, and any status-override divergence. Afterward **only the price is tracked** — each run refreshes its since-flagged return (absolute, vs sector / market) and drawdown from the bar cache; no leading-metric continuation, no research, no model call; a still-maturing episode freezes its metric state at the last live refresh. There is no "target met" exit; staleness alone never archives.
+- **Re-entry is a fresh start**: a later run that independently re-discovers an archived ticker removes it from the archive and it enters as a new opportunity with a new `became_opportunity_at`; none of the archived record influences the new one (the old episode keeps maturing under its own lifecycle). In the matrix and the archive a ticker is in exactly one state — live, departed, or neither (a re-entry vacates its archived slot); the graph is lifecycle-scoped, so the old node's `departed` tombstone remains beside the re-entry's new node. The archive never promotes itself.
 
 - **Model**
   - None.
@@ -1287,7 +1286,7 @@ Display is a pure read of the persisted matrix; no model runs.
 
 - **Data retrieved**
   - The persisted run (matrix, archive, badges' inputs).
-  - The per-ticker daily-bar cache — the since-flagged read and the % upside to target are **re-derived at render** from the latest cached close (the cache refreshes a symbol lazily, after 8 PM ET and at most once per 24 hours, fail-soft), so the card is current between runs with no fetch on open; the live `quote` is a job-time input only, never a render dependency.
+  - The per-ticker daily-bar cache — the since-flagged read's **price-derived parts** (return vs sector / market, drawdown) and the % upside to target are **re-derived at render** from the latest cached close (the cache refreshes a symbol lazily, after 8 PM ET and at most once per 24 hours, fail-soft), so the card is current between runs and opening the page costs no fetch **once the day's bar is cached**; the leading-metric-continuation state needs a structured re-pull, so it refreshes only when a job runs; the live `quote` is a job-time input only, never a render dependency.
 
 - **The matrix (default, canonical view)**
   - Three risk sections × three horizons; each card: archetype, directional thesis, leading metric, catalyst, **the model arm's conviction and forward outlook headlining** (base-case target and bear / bull range over the twelve-month window), narrative-vs-reality read, entry consideration, bear case, status, `became_opportunity_at`, `last_deep_researched_at`, owned / not-owned, and — for a carried idea — the since-flagged performance (return since it became an opportunity, vs sector / market, a compact running curve, maximum drawdown).
@@ -1392,7 +1391,7 @@ The user-directed maintenance job. No discovery: the user selects one or more **
 - The scoreboard is single-valued: outcome labels, `resolution_mode`, realized return, and drawdown stay engine-computed — whoever keeps score cannot also be a player.
 - A candidate with no inflecting, dated, third-party leading metric is a story stock and never enters the matrix; missing floor-bearing evidence causes abstention, not a guessed verdict.
 - Fast checks may warn; only a deep re-evaluation — confirmed under fresh, currently searched research — may rewrite a model-authored field or remove an opportunity. Missing data never causes removal; staleness alone never archives; there is no "target met" exit.
-- Only a debut can be excluded at a gate; a carried name takes a warning, and a carried name's inconclusive re-read holds its last verdict.
+- Only a debut can be excluded at the entry gate or the evidence floor; a carried name failing the entry gate takes a warning, an inconclusive re-read holds its last verdict, and a deep-validated hard trigger — the one exception — forces it to the archive.
 - Price never raises conviction: the since-flagged read is cap-only, the price-action confirmer adjusts but never substitutes for the anchor, and the archive never promotes itself — re-entry is a fresh start.
-- Every name the funnel turns away is still tracked (the shadow ledger), and what it teaches only ever proposes a calibration change — never applies one.
+- Every name the funnel affirmatively judges and turns away is still tracked (the shadow ledger; an unworthy deferral carries no state), and what it teaches only ever proposes a calibration change — never applies one.
 - Holdings never influence what is found or chosen; the owned tag is display-only, and the job never places an order.
