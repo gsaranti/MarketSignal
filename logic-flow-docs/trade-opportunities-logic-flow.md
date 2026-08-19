@@ -1311,60 +1311,88 @@ Display is a pure read of the persisted matrix; no model runs.
 
 # ATO: Audit selected opportunities
 
+The user-directed maintenance job. No discovery: the user selects one or more **existing** matrix opportunities (per-card selection, select-all / deselect-all — from the matrix or the List view) and chooses **Quick Audit** or **Deep Audit**; the job re-evaluates exactly that selection by reusing DTO's stages, and re-renders. It holds the same single global run slot and clears the same **presence** gate; the fork differs only at run-gate **connectivity**. ATO's depth is bounded by the selection, never the DTO deep-research budget.
+
+## Gate and load (Steps 1–2, reused)
+
+- **Gate**
+  - Presence is uniform — local models configured, Schwab connected (a presence precondition even though Quick Audit reads no Schwab data), FMP / FRED present.
+  - **Deep Audit** clears the full Step-1 gate (daemon reachable + roster pulled — it makes model calls) and triggers the SearXNG pre-run notice when the instance is down (its selected names get thinner evidence; *not recommended* without Tavily).
+  - **Quick Audit** is engine-only, so it **skips the daemon-connectivity check** and runs with the daemon configured-but-down; no web research, so no pre-run notice.
+
+- **Load**
+  - Deep Audit: the Step-2 load as in DTO (house view, profile, run-level FRED / FMP-commodity / CFTC / CBOE, the prior matrix and opportunity graph).
+  - Quick Audit: only the subset its engine pass needs — the FRED rate anchors (`DGS2` for the entry threshold, `DGS10` for the v2 re-anchor) under the **quick-path cached-print rule** (a failed FRED retrieval fail-softs to the last cached print with its as-of date, eligible only within the shared rate-cache max age; older, or no cache, types the rate-dependent reads `unknown` rather than computing off a stale anchor), and **conditionally** the once-per-run FINRA consolidated file when a selected name carries a short-interest-fed `structured` condition (a failed file fetch types those conditions `unknown`).
+  - The selection is the work list; no discovery feeders run.
+
 ## Quick Audit
 
-`Selected names → Refresh numbers → Check warnings → Save`
+`Selected names → Refresh numbers → Re-run both arms' gates → Check warnings → Save`
 
-- **Data retrieved**
-  - FMP price and estimates.
-  - Deep FMP price history.
-  - FRED rates.
-  - FINRA data when required.
+- **Data retrieved (per selected name)**
+  - FMP `quote` and `analyst-estimates`; dated-EOD bars through the shared price-bar cache; on the filing-cadence rider, the statement-derived rows; the conditional FINRA lookup. No Schwab data (the options signal is held out of the grade and is not an input).
 
-- **Logic**
-  - Recalculate targets.
-  - Recheck the entry gate.
-  - Recheck structured falsifiers.
-  - Recheck structured and filing-based milestones.
-  - Refresh performance.
-  - Raise or retain warnings.
+- **Logic — the same cheap re-derivation Step 7 applies to the DTO matrix tail**
+  - Re-derive the engine arm's scenario targets — the v2 multiples re-anchored closed-form on the fresh `DGS10` against the stored anchor-window percentiles and drivers; a still-fresh `research_target_scenario` / direct assumption re-evaluated over current engine fields, a stale one decayed to the structured-only baseline.
+  - Re-run the **full entry-asymmetry gate on both arms** — the engine's live targets and the model's frozen, non-decaying bands against the current price; re-derive the risk tier.
+  - Evaluate the stored `structured` / `filing` key falsifiers and milestone completion conditions under the persistence semantics (a short-interest condition reading the conditional file); refresh the since-flagged read and the leading-metric-continuation state where a structured path exists.
+  - Raise or retain the **attention warning** on an upside-exhaustion (neither arm clears) or tripwire reading — never an archive.
 
 - **Model**
-  - None.
-  - Can run while the model server is offline.
+  - None — it cannot fail on research, and it runs while the model server is offline.
 
 - **Cannot**
-  - Rewrite the thesis.
-  - Change conviction.
-  - Perform new research.
+  - Rewrite the thesis, conviction, or any model-authored field (they stay frozen).
+  - Perform new research; stamp `last_deep_researched_at`; clear a warning.
   - Archive an opportunity.
+  - It never checkpoints — engine-only and fast, it simply re-runs.
+
+- **Persist and render**
+  - Step 9's deterministic persistence leg only — the embedder is never invoked; the Step-8 holdings cross-reference re-runs over the touched names; the page re-renders.
 
 ## Deep Audit
 
-`Selected names → Full Step-5 loop → Reconcile → Save`
+`Selected names → Full Step-5 loop → Reconcile → Save → Display`
 
 - **Data retrieved**
-  - Full per-company data and fresh web research.
+  - Everything a Step-5 candidate gets — the full per-symbol surface and fresh web research (the shared loop, SearXNG first, Tavily fallback).
+
+- **Logic**
+  - Each selected name runs the Step-5 per-candidate loop as a **carried-forward candidate**: 5a affirm-or-overturn on the prior archetype → 5b dossier with the prior record, its `continuity_weight` (from the age of `last_deep_researched_at`), and the own-lifecycle retrospective → 5c engine → 5d research → 5e distillation → 5f refinement → 5g scoring (with the since-flagged read, cap-only) → 5h validation.
+  - A **large selection prompts a confirmation first** — the loop runs per name and can be long.
+  - Resume holds under the same per-candidate checkpoint contract over its smaller pinned set (the selected names and the run's shared context).
 
 - **Model**
-  - Full archetype, research, distillation, and scoring calls.
+  - The full archetype, research, distillation, and scoring calls, per selected name; the embedder for the touched summaries at persist.
 
-- **Can**
-  - Rewrite thesis and conviction.
-  - Refresh research assumptions.
-  - Replace the thesis milestone plan.
-  - Clear warnings after a successful pass.
-  - Mark an opportunity invalidated.
-  - Move an invalidated opportunity to the archive.
+- **Can — contingent on a floor-clearing verdict whose floor-bearing freshness reads were met from currently searched results (the document cache never substitutes for a live search)**
+  - Rewrite the model-authored fields — thesis, both model-arm reads, bear case, falsifiers, catalyst, entry consideration.
+  - Write fresh direct assumptions / `research_target_scenario` and a validated `thesis_milestone_plan` (restarting their freshness window).
+  - Stamp `last_deep_researched_at` (the green *Deep-researched today* badge) and **clear the attention warning**.
+  - Judge the name `invalidated` → the **archive** — model-judged, or app-forced on a validated hard trigger with the status-override divergence; the archival write atomically takes the touched picked node to `departed` under the same lifecycle id. It is the **only** ATO path that can archive.
+  - A selected name whose re-read abstains `insufficient-evidence` holds its last verdict under the carried-name rule — no stamp, no decay restart, no warning clear.
 
 - **Does not**
-  - Run discovery.
-  - Rebuild the full watchlist.
+  - Run discovery, add watchlist nodes, or run the re-check retirements — the touched picked nodes' lifecycle transition is the graph's only mutation.
   - Modify unrelated opportunities.
 
-## The most important safety rule
+- **Continuity, persist, and render (Steps 7–10, reduced)**
+  - The audited records reconcile into the matrix under the same what-changed attribution discipline; an `invalidated` result moves to the archive; the labels the pass refreshes record onto the touched names' episodes (the durable `learning`-kind embed of a matured label stays the next DTO pass's side-effect, written once).
+  - The Step-8 holdings cross-reference re-runs over the touched names; the run + audit record persist with the touched summaries embedded; the page re-renders.
 
-- Fast checks may warn.
-- Only fresh deep research may remove an opportunity.
-- Missing data never causes automatic removal.
-- A rejected candidate is still tracked for later evaluation.
+---
+
+# The most important safety rules
+
+- The engine calculates every fact and its arithmetic — prices, statements, positioning, short interest, the options signal, Altman Z, Piotroski, the composite's normalization — once; a second version of a fact is fabrication, not judgment.
+- The model arm never binds or alters an engine value: engine-owned values are app-stamped directly and never echoed through the model; the model's own sub-scores, bands, implied-expectations read, and conviction are structurally validated only, persisted exactly as authored, and scored on realized outcomes (its target bands the one read graded head-to-head against the engine; conviction recorded unscored).
+- Every ceiling binds the engine arm's conviction stand-in and annotates the model's exceedance; nothing clamps the model's value.
+- Admission is either-arm — scoped to the entry-asymmetry gate alone, stamped `admitted_by`, both gate vectors persisted; the evidence floor, the hard forensic triggers, and anchorless `hype` bind both arms absolutely.
+- Placement is single-valued: the risk tier and horizon are rule-derived; the model's disagreement persists as an advisory view, never the assignment.
+- The scoreboard is single-valued: outcome labels, `resolution_mode`, realized return, and drawdown stay engine-computed — whoever keeps score cannot also be a player.
+- A candidate with no inflecting, dated, third-party leading metric is a story stock and never enters the matrix; missing floor-bearing evidence causes abstention, not a guessed verdict.
+- Fast checks may warn; only a deep re-evaluation — confirmed under fresh, currently searched research — may rewrite a model-authored field or remove an opportunity. Missing data never causes removal; staleness alone never archives; there is no "target met" exit.
+- Only a debut can be excluded at a gate; a carried name takes a warning, and a carried name's inconclusive re-read holds its last verdict.
+- Price never raises conviction: the since-flagged read is cap-only, the price-action confirmer adjusts but never substitutes for the anchor, and the archive never promotes itself — re-entry is a fresh start.
+- Every name the funnel turns away is still tracked (the shadow ledger), and what it teaches only ever proposes a calibration change — never applies one.
+- Holdings never influence what is found or chosen; the owned tag is display-only, and the job never places an order.
