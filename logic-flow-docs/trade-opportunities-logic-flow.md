@@ -673,120 +673,215 @@ Discovery is stateful: every worthy-but-unpicked name from prior runs is a watch
 
 ## Step 5 — Deep validation loop
 
-The following sequence runs once for every selected candidate.
+The following sequence runs once for every candidate on the Step-4 slate — debuts and carried names alike.
 
-Each candidate is checkpointed separately.
+- **Checkpoint and resume**
+  - Each candidate's completed stages persist (the checkpoint is written at Step 5h), so a cancellation or a single model failure resumes the unfinished candidates rather than restarting the run. Resume reopens the interrupted run's ID and pins everything upstream of the loop — the Step-2 context, the Step-3 feeder outputs and route plan, the Step-4 slate with its budget allocation — for a drafted ~48-hour window; a new Discover run discards the old checkpoints. The document-level research cache survives independently.
+
+- **One model, switched by mode**
+  - The resident 122B reasoner fills every model role in the loop — archetype confirmation (thinking), the research passes (thinking), distillation (non-thinking), scoring (thinking) — so moving a candidate through them pays no model-swap cost. The fixed 4B embedder handles continuity retrieval.
+
+- **The engine is shared with Portfolio Analysis**
+  - The same Rust financial-analysis engine computes every number; the difference is the **archetype**, which selects which signals it weights and which valuation lens it applies. The engine's values are the **engine arm** — a disclosed baseline the model reads as evidence at Step 5g and against which it authors its own arm. Nothing the model returns alters an engine value.
+
+---
 
 ### Step 5a — Classify the archetype
 
-- **Data retrieved**
-  - FMP company profile.
-  - Income statements.
-  - Ratios and key metrics.
-  - Segment information.
-  - Historical financial patterns.
+The lens that decides which signals matter for this candidate.
 
-- **Logic**
-  - Calculate classification features:
-    - Sector and industry.
-    - Margin structure.
-    - Recurring revenue.
-    - Cyclicality.
-    - Discovery signals.
+- **Data retrieved (the classification prefetch — fired once per candidate, cached for the run and reused by Step 5b)**
+  - FMP `profile` — sector, industry, beta, description.
+  - The statement-derived rows the feature extractor reads: `income-statement` plus `key-metrics` / `ratios` for margin structure; the annual `revenue-product-segmentation` / `revenue-geographic-segmentation` rows for recurring-revenue structure; the statement history for cyclicality.
 
-- **Model**
-  - Confirms one archetype:
-    - Secular compounder.
-    - AI infrastructure.
-    - Commodity cyclical.
-    - Category disruptor.
-    - Quality compounder.
+- **Calculations — the classification features (deterministic)**
+  - Sector and industry (from `profile`).
+  - Margin structure — gross and operating margin levels and their trend from the statements.
+  - Recurring-revenue structure — the share of revenue in recurring / platform segments, from the annual segment rows.
+  - Cyclicality — the variability of revenue and margin across the statement history.
+  - The signals that surfaced the name (the Step-4 tags).
+  - [note: the docs name these feature families, not their exact formulas — the cut-points are implementation-time.]
 
-- **Validation**
-  - Exactly one archetype must result.
-  - Failed calls use a deterministic fallback.
-  - Existing names cannot change archetype without changed evidence.
+- **Model — archetype confirmation (one call, thinking, no web access)**
+  - Exact inputs: the classification features and surfacing signals only — a compact, clean context; for a carried name, also the prior archetype.
+  - Returns: one archetype label — secular compounder / AI-infra / commodity cyclical / disruptor / quality compounder — plus a short rationale and a confidence; the rationale may name a runner-up lens as diagnostics riding the audit only, never a second lens in targets, weights, or gates.
+
+- **Validation — the branch is total: one authoritative archetype always emerges**
+  - A valid but **low-confidence** label stands as authoritative, the record carrying an `archetype_low_confidence` degraded-input flag that Step 5g weighs interpretively — lowering conviction weight, never gating, never touching an engine number.
+  - A **contradictory or schema-invalid** confirmation, or a **failed call**, adopts the Step-4 deterministic provisional archetype, flagged and logged — a deterministic fallback, never a model retry.
+  - A **carried name's archetype is sticky**: the call is an affirm-or-overturn; an overturn must cite the classification feature that changed, and the app validates that the cited feature actually moved in the input delta. An unvalidated overturn does **not** take effect — the prior label holds — and is recorded as a **divergence** (the proposed label, its cited feature, the validator's reason) beside the label that held, so a lens the model repeatedly disputes is a visible, scoreable pattern.
+
+- **What the archetype decides downstream**
+  - The composite's **signal weighting** and the **valuation lens** for 5c–5g: a commodity cyclical is judged on P/B, P/NAV, and mid-cycle EPS with trailing P/E suppressed; an AI-infra name on segment-revenue acceleration and forward P/E against its revision rate; a secular compounder on PEG and revisions-vs-multiple; a disruptor on its leading operating metric rather than EPS; a quality compounder on operating-income-decoupling with valuation as a risk gate, not an entry.
+  - The **target driver override** on the shared v2 scenario-target function (Step 5c).
+  - The **horizon rule's Long branch** (a compounder archetype can earn Long on multi-year compounding — Step 5h).
+  - The **risk tier takes no archetype input** — any archetype–tier correlation is emergent through the rule's measurable legs.
 
 - **Output**
-  - Authoritative archetype.
-  - Confidence and rationale.
+  - The authoritative archetype, its confidence and rationale, and any recorded overturn divergence.
+  - The cached classification responses, reused by Step 5b.
 
 ---
 
 ### Step 5b — Build the candidate dossier
 
-- **Data retrieved**
-  - FMP:
-    - Statements and ratios.
-    - Estimates and revisions.
-    - Earnings surprises.
-    - Insider and congressional activity.
-    - Activist filings.
-    - Peers, float, news, and corporate events.
-  - SEC EDGAR filings.
-  - FINRA short interest.
-  - Deep FMP price history.
-  - Live FMP quote.
-  - Schwab option chain.
-  - Relevant prior analysis from local memory.
-  - For an eligible recent listing or separation:
-    - S-1 or Form 10 history.
-    - Predecessor or carved-out business disclosures.
-    - Contracts and dated operating milestones.
-    - Customer and supplier evidence.
+The application assembles the candidate's evidence packet deterministically; the Step-5a responses are reused from the run cache, and every per-candidate row fires once. This is the per-candidate surface — the budget driver — so it runs only for the narrowed slate, never the discovery longlist.
+
+- **Data retrieved from FMP**
+  - Fundamentals — `income-statement` (+ TTM), `balance-sheet-statement`, `cash-flow-statement`; `key-metrics`, `ratios` (+ TTM); `financial-scores` (Altman Z, Piotroski); `owner-earnings`, `enterprise-values`, `discounted-cash-flow`; `financial-growth` (multi-year per-share revenue / EPS / FCF / book-value CAGRs).
+  - Segments — `revenue-product-segmentation`, `revenue-geographic-segmentation` (annual only — trajectory context and the own-history basis; the quarterly acceleration series is research-extracted at Step 5d).
+  - The revision signal — `analyst-estimates` (forward consensus, snapshotted run to run for velocity), `grades` / `grades-historical` / `grades-consensus` (the rating distribution and actions), `price-target-consensus` / `price-target-summary` (street target level and trend), `ratings-snapshot` / `ratings-historical`, `earnings` (next earnings date + actual-vs-estimate history).
+  - Positioning (all symbol-keyed) — `insider-trading/search` + `insider-trading/statistics`, `acquisition-of-beneficial-ownership` (SC 13D / 13G activist stakes), `senate-trades` + `house-trades`.
+  - `stock-peers`, `shares-float` (free float / liquidity), optionally `historical-employee-count` + `key-executives`.
+  - `news/stock` — the symbol-scoped headline feed that seeds the Step-5d narrative / sentiment and catalyst topics.
+  - M&A involvement — acquirer or target, matched from the market-wide `mergers-acquisitions-latest` + `sec-filings-8k` (the per-symbol M&A search is off-plan).
+  - `quote` — the live price the engine prices targets and runs the gate against (a job-time input, logged in the audit; never a persisted current-price field).
+  - `historical-price-eod/light` (dated) — the deep daily history, through the shared price-bar cache.
+  - Off-plan, and where they go instead: earnings-call transcript language (backlog, book-to-bill, guidance, supply discipline) → the Step-5d research lane; press releases → `sec-filings-8k` + the web; 13F institutional flow → SEC EDGAR 13F (coarse, often omitted) and held out of the grade regardless.
+
+- **Data retrieved elsewhere**
+  - SEC EDGAR — the submissions feed (10-K / 10-Q / 8-K, item-classified) and XBRL company facts as the authoritative cross-check; for an eligible new listing or separation, the S-1 / Form 10 history. Ticker → CIK resolution is non-blocking here: an unresolved CIK degrades the EDGAR legs to the FMP working feed and reads the filing-kind forensic legs `unknown`.
+  - FINRA short interest — looked up in the once-per-run file (level, trend, days-to-cover).
+  - The Schwab option chain, if the name is optionable — per-contract volume, open interest, implied volatility (greeks not parsed) → the options-activity signal computed at 5c; a chain failure is a typed gap, never a failed run.
+  - The Step-2 shared context.
 
 - **Logic**
-  - Cross-check FMP data against SEC filings.
-  - Assemble one evidence packet.
-  - Keep prior analysis within the same opportunity lifecycle.
-  - Give older prior research less influence.
-  - App determines limited-history eligibility from listing and corporate-identity facts.
-  - Missing provider data cannot create limited-history eligibility.
+  - Cross-check the FMP working feed against SEC filings and assemble one evidence packet.
+  - **Limited-history eligibility** — before research, derive a mode from objective identity facts only: `new-listing`, `spin-off-carve-out`, or `new-economic-perimeter`, and only when that event is why comparable public history is short; a missing provider response never creates eligibility, and the model never chooses it. For an eligible candidate the dossier carries the filing identifiers and source plan to recover pre-listing / predecessor evidence (S-1 or Form 10 historicals, carved-out or predecessor segment disclosures, contracts, customer / supplier observations, dated operational / technical milestones) for the Step-5d topic.
+  - **For a carried-forward candidate** (a rotation pick, a budget-winning re-surfacer, or a Deep Audit selection):
+    - Load its prior opportunity record and derive the **`continuity_weight`** from the age of `last_deep_researched_at` — ≤ ~1 week *continued research* (anchor on it), ~1–4 weeks *blended*, > ~4 weeks *fresh look* (test it skeptically). It frames how hard Step 5g leans on the prior thesis / conviction / bear case / milestone plan; it weights interpretation only, never an engine number.
+    - Carry its **own-lifecycle retrospective** — the prior deep pass's both-arm values, the realized move since that pass, this name's matured outcome labels with their `resolution_mode`s, and its leading-metric-continuation state. The price leg is the since-flagged primitive read over a second window (since the prior deep pass rather than since entry) — a segment of the same reconstructed curve, no extra fetch, and no independent price signal; it is cap-only wherever it appears.
+    - A name re-entering **from the archive** is a new lifecycle: it carries no continuity weight and no retrospective.
+  - The aggregate calibration reads (picked-vs-rejected spreads, false-negative flags, archetype resolution-mode distributions) are never a dossier input — they feed the calibration pass only, behind the ≥ 30-unique-issuer bar.
 
-- **Embedding model**
-  - Converts the candidate query into a vector.
-  - Retrieves similar prior analysis.
-  - Performs no reasoning.
+- **Embedding model — vector continuity retrieval (one call, no reasoning)**
+  - Input text: a query string built deterministically from the candidate — symbol, archetype, sector / industry, and the prior opportunity's thesis themes if carried — byte-capped before the call.
+  - Returns: a vector validated against the shared embedding-response contract; the app runs a brute-force cosine search scoped to the **Trade Opportunities** memory partition, restricted to **record-summary rows** (the `summary` kind — a calibration learning can never match) and **scoped by lifecycle id**, so a fresh re-entry retrieves nothing from a prior lifecycle.
+  - An invalid or failed response skips semantic recall fail-soft (a degraded-input flag); the deterministically loaded prior record is unaffected.
 
 - **Output**
-  - Complete candidate dossier.
+  - The complete candidate dossier — statements, ratios, scores, growth, segments, the revision signal, positioning, float, news seeds, price history, the live quote, the option chain, the SEC cross-check, FINRA short interest, the shared context, any limited-history eligibility + source plan, any carried record + `continuity_weight` + retrospective, and the retrieved prior analysis.
 
 ---
 
 ### Step 5c — Calculate the financial picture
 
 - **Data retrieved**
-  - Uses the dossier.
+  - Uses the dossier and the shared context.
   - No model or web research.
 
-- **Calculations**
-  - Value, quality, momentum, volatility, and revision composite.
-  - Return on invested capital versus capital cost.
-  - Owner earnings and reinvestment runway.
-  - Leading-metric trend.
-  - Standardized earnings surprises.
-  - Insider, short-interest, congressional, and options signals.
-  - Relative price strength.
-  - Liquidity and days-to-cover.
-  - Bear, base, and bull price targets.
-  - Growth already implied by the current price.
-  - Price movement versus actual business improvement.
-  - Accounting and governance warnings.
-  - Performance since first becoming an opportunity.
+- **How the step runs**
+  - The deterministic engine computes the candidate's quantitative picture **weighted by the Step-5a archetype** — the archetype selects which sub-scores dominate and which valuation lens applies. Everything it produces is the **engine arm**, carried into Step 5g with its methodology exposed (the `TargetMeta` derivation flags, the driver rung taken, the normalization basis, any neutral-midpoint imputation) so the model can dispute a *derivation*, not merely a number.
+  - The risk-tier **inputs** (market cap, volatility, leverage, profitability, drawdown, liquidity, event exposure) are computed here; the tier itself is assigned by rule at Step 5h.
+  - Limited-history eligibility changes nothing here: the engine uses current structured rows plus any already-persisted app-validated comparable history, flags thin own-history as degraded, and leaves a too-short leading-metric family unmeasurable until Step 5f validates this pass's recovered observations.
 
-- **Forensic events**
-  - Restatement: SEC Item 4.02.
-  - Auditor change: SEC Item 4.01.
-  - Fraud: primary-source research only.
-  - Missing evidence becomes `unknown`, not “clear.”
+- **Order of computation** — each read feeding the next where noted:
+  - **Quant composite** (the multi-factor backward anchor) → **value-creation read** → **leading-metric series and its inflection read** → **earnings surprise / SUE** and **positioning** → **price-action confirmer** → **scenario targets** (structured-only, provisional) → the **three derived reads** (narrative-vs-reality, forensic flags + `forensic_event`, implied expectations) → **tradability flag** → for a carried name, the **since-flagged read**.
+
+#### Engine primitives (used below)
+
+- **`scale(x, lo → hi)`** maps `x` linearly onto 0–100 and clamps it; an inverted band (`lo > hi`) scores lower inputs higher. In this job the bands are **sector-adjusted** — a per-sector `lo → hi` per factor (the band values are not yet drafted).
+- A **ratio** `a ÷ b` is `None` when the denominator is missing or zero.
+- **Winsorizing** clips a factor value to a bounded percentile range of its reference distribution before scoring, so one outlier can't dominate a composite.
+
+#### Quant composite (the backward anchor, computed here for the first time)
+
+Discovery only stratified by coarse fields, so the multi-factor picture is computed here, on the narrowed slate.
+
+- **Factors** (each a 0–100 factor score)
+  - **Value** — earnings yield, FCF yield, and EBIT-to-EV.
+  - **Momentum** — 12-month-minus-1-month price return *and* the name's own time-series trend.
+  - **Quality** — anchored on gross profitability `(revenue − COGS) ÷ total assets` (the least-polluted quality metric), plus profitability, growth, and safety legs.
+  - **Low beta** (from `profile`).
+  - **Conservative investment** — low asset growth.
+  - Size enters **only within quality** (small-*and*-high-quality, never raw small-cap).
+
+- **Event / flow signals** (ride beside the composite)
+  - **Estimate-revision breadth** `(up − down) ÷ total` and revision velocity from the run-to-run `analyst-estimates` snapshots; **rating drift** from `grades-historical`.
+  - **Earnings surprise (SUE)** and its post-announcement drift (below).
+  - **Insider cluster buys** (open-market, multiple insiders — strongest in small caps); **institutional accumulation** (13F off-plan → omitted or coarse EDGAR); **short interest** — bearish by default, a squeeze read only as the conditional setup (inflecting metric + catalyst + breaking bear case).
+
+- **Normalization and roll-up**
+  - Each factor is scored against its **sector-adjusted absolute band** plus the company's **own-history distribution**, winsorized — honest without any accumulated sample, and the sector adjustment keeps the composite from being a disguised sector bet.
+  - It is deliberately **not** a within-cohort rank: a within-run cohort has no statistical mass (the quotas spread the slate to one-to-three names per bucket), ranking against live peers would multiply the per-symbol budget, and the persisted **factor-distribution store** is a selected convenience sample — so that store is **diagnostic-only, never a score input** (shown in the dossier / audit as context once a bucket holds ≥ 20 unique issuers, drafted).
+  - A factor that failed to resolve is **imputed to its band's neutral midpoint** (disclosed), so a missing call can't silently sink a name; the factors integrate at **one final composite score** rather than chained hard cutoffs — value and momentum are negatively correlated, so sequential cutoffs would collapse breadth.
+  - **Archetype weights** — the archetype's dominant axes tilted ~2× over a neutral baseline: AI-infra → momentum / revision; commodity cyclical → valuation (P/B, P/NAV); quality- and secular-compounder → quality / ROIC; disruptor → growth / leading metric; the remaining axes balanced. [note: the exact weight vectors are not yet drafted.]
+  - A composite resting on thin own-history carries a **low-confidence degraded-input flag** — lowers conviction weight, never gates.
+  - Where it lands: the engine arm's **sub-scores** (on the shared 0–100 scale, so the model's own sub-scores at 5g are comparable by construction) and the value lens's read for scoring.
+
+#### Value-creation read
+
+Whether the business *creates* value rather than just growing.
+
+- **ROIC vs cost of capital** — the spread; growth funded below the cost of capital destroys value however fast revenue grows.
+- **Owner earnings with R&D capitalized** — so research-heavy leaders aren't mis-scored as unprofitable.
+- **Reinvestment runway** `g ≈ ROIC × reinvestment rate`.
+- **Moat-source features** — intangibles, switching costs, network effects, cost advantage, efficient scale — weighted by how often each actually sustains a durable advantage.
+- Inputs: the statements, `key-metrics` / `ratios`, `owner-earnings`, `financial-growth` (the multi-year per-share CAGRs → growth trajectory and the runway read).
+- [note: the cost-of-capital and R&D-capitalization conventions are not yet drafted.]
+
+#### Leading-metric series and the inflection read
+
+The anchor the whole thesis hangs on — per archetype: revision velocity (AI-infra), segment-revenue acceleration (AI-infra / disruptor / secular compounder), a commodity-price turn (commodity cyclical), margin decoupling — operating income growing faster than revenue (quality compounder), or a disruptor's named operating metric.
+
+- **The series** — built from the structured feeds where the class is `structured` / `filing`, or from the **stored** research-extracted series where it is `research`: the quarterly segment observations are app-appended per filing from Step 5e's typed returns (FMP's segment endpoints are annual-only), so a **debut's** segment series can read unmeasurable here and become measurable only through the Step-5f recompute once this run's research lands.
+- **"Inflecting" is metric-family-shaped, archetype-mapped, two-phase, noise-floored** — the shape test belongs to the family declared on the metric:
+  - *Accelerating* (segment revenue, revision velocity, net-adds) — the rate of change rising.
+  - *Turned-and-holding* (commodity prices, ASPs) — a positive move after a declining stretch, or holding above a turn ≤ 4 reporting periods back; never re-demanding re-acceleration.
+  - *Stability-under-stress / decoupling* (a renewal rate through a price hike; operating income outgrowing revenue with the gap widening).
+  - *Threshold-crossing* (a first profit, an FCF turn).
+  - *Deterioration* — the exit shape the continuation state watches for.
+- **Comparability** — changes are seasonally comparable (YoY for quarterly reported series, never QoQ on seasonal data); trend is a robust slope over the available points, never the latest two deltas alone.
+- **Continuation phase** (a continuation-mode candidate, or any re-check of an already-inflected anchor) — inflected within the trailing ~4 reporting periods and not rolled over; steady post-inflection strength passes.
+- **Noise floor and minimum history** — a qualifying move must exceed `0.5 × σ` of the series' trailing comparable changes (up to 8); *accelerating* / *turned-and-holding* need ≥ 5 comparable changes, *stability-under-stress* the full stressor window, *threshold-crossing* the crossing plus one confirming observation; below its family minimum the series is **unmeasurable** → an evidence-floor abstention at 5h unless research supplies further dated third-party observations — never a story-stock rejection.
+- **Direction** is by declared metric polarity — a narrowing loss counts as improvement.
+- Always dated and third-party-sourced, else the candidate is a story stock.
+- Where it lands: the leading-metric trend and continuation state on the engine arm; the evidence floor (5h); the `business_runway` durability read, which the engine derives from validated runway proxies — penetration + falling unit cost, contracted multi-year backlog coverage, a multi-year forward assumption, a validated multi-year milestone chain — mapped to years at Step 5f (penetration ≲ 20% with unit cost still falling → ≥ ~5 years; contracted backlog coverage → the covered years, ≥ ~3 clears; an assumption or milestone chain → its validated span; none cleared → `unknown`, a degraded input, never a gate). On a debut with no validated research yet, runway reads `unknown` here.
+
+#### Earnings surprise, positioning, and the price-action confirmer
+
+- **SUE** — each reported surprise standardized against the name's own surprise history (from `earnings`); the beat-and-raise streak confirmed here; post-announcement drift as a continuation tell.
+- **Positioning** — insider net buying (`insider-trading/*`), congressional buys, activist 13D / 13G stakes, short-interest level / trend / days-to-cover (FINRA), CFTC positioning for a commodity cyclical's underlying (Step 2), and the **options-activity signal** from the Step-5b chain — put/call by volume and by open interest, ATM implied volatility, IV skew — an activity proxy, **held out of the grade** until calibrated.
+- **Price-action confirmer** — relative strength vs the market (`^GSPC`) and the sector benchmark, and proximity to a multi-year base breakout, from the dated-EOD deep history (reusing the shared engine's momentum / volatility computations). A cross-archetype **confirmer, not a trigger** — it adjusts conviction at 5g, never substitutes for the leading-metric anchor.
+
+#### Scenario targets — the v2 rate-anchored function (structured-only set)
+
+Bear / base / bull price targets over the fixed **twelve-month** window, priced from a per-share driver and a rate-anchored multiple. The function is the same one Portfolio runs — restated compactly here; the clamp, repair, and fallback detail is at `portfolio-analysis-logic-flow.md` §Scenario targets — with one Trade Opportunities leg: the **archetype driver override**.
+
+- **Choose the driver** — the archetype names the preferred driver / multiple form, the shared ladder's fallback discipline applying when it isn't computable:
+  - Quality- and secular-compounder → consensus forward EPS / P-E.
+  - AI-infra and disruptor → forward revenue per share / P-S while pre-profit — the ladder climbs back to EPS once a positive EPS consensus exists.
+  - Commodity cyclical → **mid-cycle EPS** = median margin over the trailing cycle window (drafted ~5 years) × forward revenue per share, / P-E — spot earnings mislead at cycle extremes (the archetype's P/B / P/NAV read stays a scoring lens, never a target path).
+  - Every per-share conversion reads the ladder's one share basis — the latest reported diluted count.
+  - No positive forward-EPS consensus and no computable forward revenue per share → `no-admissible-driver`, an evidence-floor abstention (the gate cannot price a name with no computable target).
+- **Build the three driver cases** — base = the consensus mid, bear / bull = the low / high (a missing spread holds both at the mid, flagged flat), each clamped to `[trailing × 0.75, trailing × 1.35]`.
+- **Calculate the multiple** — per historical quarter (~12): driver yield = `driver ÷ price`, spread = `yield − that quarter's DGS10` (latest on or before); the bear / base / bull spread percentiles (75th / 50th / 25th — a wider spread is a cheaper multiple); re-anchored with today's `DGS10`: `multiple = 1 ÷ (spread percentile + today's DGS10)` (needs ≥ 8 observations; else raw-multiple percentiles; with no history, the current `spot ÷ base driver` multiple carried).
+- **Price and return** — `twelve-month price = driver × multiple` per scenario (crossed scenarios repaired to ascending; a volatility-scaled dispersion floor widens, never narrows, the bear / bull spread); `total return = (price + forward dividends) ÷ spot − 1`.
+- **Where these land** — the structured-only target set with its `TargetMeta` (anchor form: rate-anchored / current-multiple carry / raw-percentile fallback; driver rung; flat / clamp / dispersion flags) on the engine arm; a **provisional scenario menu** until Step 5f; the entry gate (5h) and the implied-expectations inversion below read it; the anchor-window percentiles and drivers persist as the basis every cheap re-derivation re-anchors against.
+
+#### The three derived reads selection leans on
+
+- **Narrative-vs-reality ratio** — estimate-revision pace vs multiple change over a trailing 12-month window (or since `became_opportunity_at` when the idea is younger): *justified-expensive* when estimates outrun the multiple; **`hype`** when multiple expansion exceeds **70%** of the price move. For a thinly-covered name whose estimates are absent or stale, the numerator falls back to **operating reality** — the hard operating momentum the company itself reports (segment revenue, backlog / bookings, gross profit, unit economics, cohort retention — the archetype's leading metric) against the move in price and multiple. Where it lands: the engine-arm read the model weighs at 5g; the 5h forensic / risk gate (`hype` caps; anchorless `hype` excludes a debut).
+- **Forensic flags** — computed from the statements and `financial-scores`:
+  - Soft flags (each a 5h **cap** trigger): Altman Z < 1.8; Piotroski ≤ 3; net income > 1.3× operating cash flow; receivables / inventory growth > 1.5× revenue growth.
+  - Also computed as evidence: margin compression while revenue accelerates; the restatement / auditor-change history.
+  - **Hard forensic triggers are typed events with named producers, never bare model assertions** — the shared `forensic_event` record `{ event kind — restatement / auditor-change / fraud; issuer; event / filing date; source lineage; confidence }`. The two **filing kinds are engine-detected, model-free**, from the item-classified SEC 8-K submissions already on the surface — a restatement from an Item 4.02 non-reliance filing, an auditor change from an Item 4.01 filing; an unresolved CIK reads these legs `unknown` (a logged degraded input, never a fabricated clear). The **fraud kind is research-fed only** — it enters as a validated Step-5e `forensic_event` claim cited to a primary-source document (regulator / court / the issuer's own filing), and 5h enforces it only from those validated records.
+- **Implied-expectations read** — the v2 scenario math inverted at the live quote under the archetype's driver override: the driver growth the spot implies across the scenario multiples, plus the margin dimension where the driver is revenue-based → a **range** of growth / margin trajectories the price already assumes under stated assumptions, never one solved number (many combinations justify a price). Where it lands: the engine arm's implied-expectations read — the anchor for 5g's priced-in / crowding judgment and the *why is this already priced?* discipline.
+
+#### Tradability flag and since-flagged read
+
+- **Tradability flag** — Amihud-style illiquidity plus days-to-cover, resolved into the entry gate's **banded liquidity haircut**: unflagged 0 / flagged −3 pts / severely flagged −6 pts (the band boundaries from the flag's own inputs — not yet drafted) — so a small illiquid name is discounted, not silently excluded.
+- **Since-flagged read (carried names only)** — running return since `became_opportunity_at` (absolute, vs sector, vs market), maximum drawdown over that window, and leading-metric-continuation state, from the same dated-EOD history — the identical primitive Step 7's scorecard uses — so 5g can weigh how the idea has actually done, cap-only.
 
 - **Model**
   - None.
 
-- **Output**
-  - Deterministic financial analysis.
-  - Provisional price targets.
-  - Risk and forensic flags.
+- **Output — the engine arm, provisional**
+  - The archetype-weighted **sub-scores** and quant composite (with the normalization basis and any neutral-midpoint imputation disclosed), the value-creation read, the leading-metric series / trend / continuation state, SUE, positioning and the options signal, the price-action confirmer.
+  - The **structured-only scenario target set** with its `TargetMeta`, the narrative-vs-reality read, the forensic flags and any filing-kind `forensic_event`, the implied-expectations range, the tradability flag and its haircut band, `business_runway` (or `unknown`), the risk-tier inputs.
+  - For a carried name, the since-flagged read.
+  - The degraded-input flags disclosed so far (thin own-history, `archetype_low_confidence`, imputed factors, vector-recall miss) — the engine stand-in's flag leg at 5h.
+  - Nothing the model returns downstream alters any of these values.
 
 ---
 
