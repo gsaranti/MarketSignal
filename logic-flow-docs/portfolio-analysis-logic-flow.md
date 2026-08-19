@@ -1622,9 +1622,11 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
 
 # The most important safety rules
 
-- The engine calculates every financial number in the baseline arm; the model's own arm is scored against it.
+- The engine calculates every financial number in the baseline arm; the model's own arm never binds or alters an engine value — it is structurally validated only, then scored on realized outcomes (its target bands the one read graded head-to-head against the engine).
 - Engine evidence annotates the model's choices, never bars them.
 - Missing floor-bearing data causes abstention, not a guessed grade.
+- A role-risk-only verdict carries no fabricated priced number — no letter grade, price target, or conviction on a structurally unpriceable vehicle.
+- A directional verdict is only ever **authored** for a long position — a fresh pass returns not-rated for a net-short or net-zero holding; a selective run's unselected carry instead keeps its prior directional verdict (marked `side_reversed` when now net-short), rather than re-rating it without a fresh pass.
 - The investor profile never changes the intrinsic verdict.
 - Quick check warns but never rewrites a recommendation.
 - A failed Quick-check retrieval becomes `unknown`, never clean.
