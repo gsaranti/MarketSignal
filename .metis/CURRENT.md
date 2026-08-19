@@ -2,45 +2,30 @@
 
 ## What happened
 
-The **logic-flow clarity walk advanced through Step 9 — Display the
-result**, plus a **Step 7 outcome-learning deepening**, in one Codex-approved
-batch (`36f1163`, pushed to `main`). Step 7 broke the black-box "derive the
-scorecard reads" bullet into the **named reads** — what a matured label
-measures (with typed gaps), target-band calibration, the engine-vs-model
-head-to-head, outlook direction, action cohorts, falsifier lead times, and the
-proposal-eligibility gate — and added the **alignment-tags** and
-**pending-coverage** legs to Step 8's persisted `OutcomeRecords` list. Step 9
-was rewritten from a flat skeleton into an **as-built display walkthrough**
-grounded in `PortfolioView.vue` + the load commands: five read-only reads,
-insertion-order latest, corrupt-run loud-skip, the paired two-arm card and
-divergence-tag scope, the **card-badge split** (quick-check overlay — hidden on
-a historical view — vs persisted verdict state, which renders even
-historically), the role-risk-only branch, the roll-up scoreboard (**absent, not
-pending**, until episodes mature), dual-vintage holdings, display-only sorting,
-the read-only past-run view, and Model: none. Drift the walk surfaced was fixed
-in the **same batch**: `portfolio-analysis.md` (scoreboard absent-not-pending;
-only head-to-head + outlook-direction render; embed subset + dedicated-surface
-deferral; **side-reversed asymmetry** — long-authored-now-net-short — at three
-spots), `portfolio-workflow.md` (side-reversed, two spots), and `interface.md`
-(badge-ownership split + sentence-per-line). Four Codex rounds to approval; one
-deliberate **pushback held** (the dated `2026-08-16-selective-badges-ruling.md`
-verification record left untouched — it is a point-in-time record, and its
-`:63` is already precise).
+**Auto-memory-store housekeeping only — no repo/project work, and the
+logic-flow clarity walk did not advance.** Retired 7 stale auto-memories
+(`local-suite-hardware-gated` plus `cftc-cot-positioning`,
+`ux-polish-round3-scope`, `thinking-streaming-plan`, `token-budget-tuning`,
+`next-session-local-report-run`, `utc-vs-local-report-date`) — all spent
+history or resolved conventions already carried by git + `docs/` +
+`BUILD.md`/`CURRENT.md`. Preserved the one live nugget (Ollama `keep_alive:-1`
+residency) into `local-model-operational-reference`, repointed ~18 inbound
+`[[links]]` across surviving memories so none dangle, and dropped the index
+lines (`MEMORY.md` now 53 lines). The memory store lives outside the repo, so
+none of that touched tracked files. The prior **PR #68 open question is
+resolved by deletion** — the memory it targeted no longer exists. Last actual
+project work remains the Step-9 logic-flow batch (`36f1163`).
 
 ## Current state
 
-Batch **committed and pushed to `main`** (`36f1163`); working tree clean,
-remote in sync. Docs-only (`logic-flow-docs/` + three `docs/` files), so no
-build / frontend gate applied and no code changed. **`BUILD.md` and `INDEX.md`
-were assessed and need no update** — the changes were prose-accuracy
-corrections to already-built, already-mapped contracts (no new concept, no
-renamed/added section, no status change). Nothing in flight.
+This `CURRENT.md` rewrite is the **only repo change this session**, committed +
+pushed to `main` at the user's request. Working tree otherwise clean, remote in
+sync; `BUILD.md` / `INDEX.md` unchanged and need no update. Nothing in flight.
 
 ## Open questions
 
-- **Auto-memory `local-suite-hardware-gated.md`** still wants its **PR #68
-  (`525a853`) one-line entry** — carried across sessions, offered again, not
-  yet added.
+_None carried._ The prior PR #68 memory-entry question is resolved by the
+deletion of the memory it targeted.
 
 ## Where to start
 
