@@ -880,7 +880,7 @@ Bear / base / bull price targets over the fixed **twelve-month** window, priced 
   - The archetype-weighted **sub-scores** and quant composite (with the normalization basis and any neutral-midpoint imputation disclosed), the value-creation read, the leading-metric series / trend / continuation state, SUE, positioning and the options signal, the price-action confirmer.
   - The **structured-only scenario target set** with its `TargetMeta`, the narrative-vs-reality read, the forensic flags and any filing-kind `forensic_event`, the implied-expectations range, the tradability flag and its haircut band, `business_runway` (or `unknown`), the risk-tier inputs.
   - For a carried name, the since-flagged read.
-  - The degraded-input flags disclosed so far (thin own-history, `archetype_low_confidence`, imputed factors, vector-recall miss) — the engine stand-in's flag leg at 5h.
+  - The degraded-input flags disclosed so far (thin own-history, `archetype_low_confidence`, imputed factors, vector-recall miss, a failed dividend pull's zero-leg gap) — the engine stand-in's flag leg at 5h.
   - Nothing the model returns downstream alters any of these values.
 
 ---
@@ -1080,7 +1080,7 @@ An app-layer validator and tier-assigner, not a recorder. No model. Every rule b
   - Tier + horizon → the matrix cell.
 
 - **Engine conviction stand-in (computed here, the bearer of every ceiling)**
-  - Flag leg — the count of this candidate's disclosed degraded inputs (thin-own-history composite, `archetype_low_confidence`, neutral-midpoint-imputed factors, `freshness-unscorable` floor inputs, a degraded limited-history recast, a fail-soft vector-recall miss): **0 → High, 1–2 → Medium, ≥ 3 → Low**.
+  - Flag leg — the count of this candidate's disclosed degraded inputs (thin-own-history composite, `archetype_low_confidence`, neutral-midpoint-imputed factors, `freshness-unscorable` floor inputs, a degraded limited-history recast, a fail-soft vector-recall miss, a failed dividend retrieval's zero-leg gap): **0 → High, 1–2 → Medium, ≥ 3 → Low**.
   - Distance leg — the entry gate's signed distance-to-threshold on the binding leg, in return points (the base and double-over-horizon legs are returns; the shape leg reads as base upside − bear downside; the liquidity haircut is already inside the distance): **≥ 5 pts → High, 0 to < 5 → Medium, negative → Low**.
   - Rung = the **min** over the two legs; every matched soft ceiling is then applied to it and persisted as an annotation. It is never shown as the job's conviction.
 
