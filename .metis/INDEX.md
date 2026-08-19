@@ -225,6 +225,7 @@ build status lives in `BUILD.md`.*
 - Research-driven candidate discovery — trade-opportunities.md §The pipeline; trade-opportunities-workflow.md §Step 3
 - Post-earnings surprise screen — trade-opportunities.md §The pipeline; trade-opportunities-workflow.md §Step 3a; data-sources.md §Trade Opportunities — endpoint surface
 - Model-led hypothesis research lane — trade-opportunities-workflow.md §Step 3b
+- Discovery route-topic proposal (the one model-proposed agenda) — trade-opportunities-workflow.md §Step 3b; web-research.md §The research loop and context management
 - Discovery coverage rotation / ledger — trade-opportunities-workflow.md §Step 3b; trade-opportunities.md §Starting parameters; configuration.md §Local Analysis Suite Configuration; storage.md §Local Analysis Suite Storage
 - Discovery memory / opportunity graph — trade-opportunities.md §Discovery memory; trade-opportunities-workflow.md §Step 3c, §Step 7, §ATO: the audit flow
 - Research-watchlist refresh lane — trade-opportunities-workflow.md §Step 3c; trade-opportunities.md §Starting parameters; configuration.md §Local Analysis Suite Configuration; storage.md §Local Analysis Suite Storage
@@ -238,6 +239,7 @@ build status lives in `BUILD.md`.*
 - Implied-expectations read — trade-opportunities.md §The pipeline; trade-opportunities-workflow.md §Step 5c, §Step 5g
 - Cross-lens contradiction / falsification check — trade-opportunities.md §Reconciling the lenses; trade-opportunities-workflow.md §Step 5e, §Step 5g, §Step 5h
 - Conviction-cap ceiling & precedence — trade-opportunities.md §Starting parameters, §Reconciling the lenses; trade-opportunities-workflow.md §Step 5g, §Step 5h; portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6g; storage.md §Local Analysis Suite Storage
+- Engine-arm conviction stand-in (the Step-5h computation is canonical; never a Step-5g input) — trade-opportunities.md §Starting parameters, §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h; storage.md §Local Analysis Suite Storage
 - Key-falsifier / milestone re-check classes (the canonical vocabulary, owned by §Step 3c) — trade-opportunities.md §The opportunity, §Reconciling the lenses; trade-opportunities-workflow.md §Step 3c, §Step 5e, §Step 5h, §Step 7, §ATO: the audit flow; storage.md §Local Analysis Suite Storage
 - Thesis milestone plan + horizon assignment — trade-opportunities.md §The opportunity, §Starting parameters; trade-opportunities-workflow.md §Step 5e, §Step 5g, §Step 5h, §Step 7; storage.md §Local Analysis Suite Storage
 - Matrix final assembly over the union — trade-opportunities-workflow.md §Step 6, §Step 7; trade-opportunities.md §The opportunity; storage.md §Local Analysis Suite Storage
@@ -261,7 +263,7 @@ build status lives in `BUILD.md`.*
 - Evidence floor (each job defines its own) — portfolio-analysis.md §Evidence floor; trade-opportunities.md §Evidence floor; trade-opportunities-workflow.md §Step 5h, §Step 7
 - Evidence-floor freshness basis — trade-opportunities.md §Starting parameters, §Evidence floor; trade-opportunities-workflow.md §Step 5h; web-research.md §Source quality and evidence weighting; portfolio-analysis.md §Evidence floor
 - Deterministic risk-tier assignment (the TO rule is canonical) — trade-opportunities.md §The opportunity space, §Starting parameters; portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6b
-- Scenario-target function — portfolio-analysis.md §Starting parameters, §Evidence floor; trade-opportunities.md §Starting parameters, §Evidence floor; portfolio-workflow.md §Step 6b; trade-opportunities-workflow.md §Step 5c; data-sources.md (both `analyst-estimates` rows)
+- Scenario-target function — portfolio-analysis.md §Starting parameters, §Evidence floor; trade-opportunities.md §Starting parameters, §Evidence floor; portfolio-workflow.md §Step 6b; trade-opportunities-workflow.md §Step 5c; data-sources.md (both `analyst-estimates` rows, both `dividends` rows)
 - Rate-anchor failure rule — portfolio-analysis.md §Failure posture, §Starting parameters, §The quick check; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §ATO: the audit flow; data-sources.md §Portfolio Analysis — endpoint surface (FRED), §Trade Opportunities — endpoint surface (FRED)
 - Factor normalization basis — trade-opportunities-workflow.md §Step 5c; trade-opportunities.md §Starting parameters, §The lenses; storage.md §Local Analysis Suite Storage
 - ET session dating — data-sources.md (intro session-dating rule); portfolio-analysis.md §The quick check, §Triggering, §Outcome learning; portfolio-workflow.md §The quick check
@@ -272,7 +274,7 @@ build status lives in `BUILD.md`.*
 - Research agenda — portfolio-analysis.md; trade-opportunities.md
 - Seed lineage — web-research.md §The research loop and context management; trade-opportunities-workflow.md §Step 3b; configuration.md §Research Context Management; storage.md §Local Analysis Suite Storage; trade-opportunities.md §The opportunity, §Signal inputs, §Discovery memory
 - Hierarchical distillation — web-research.md §The research loop and context management; trade-opportunities-workflow.md §Step 5e; portfolio-workflow.md §Step 6d; configuration.md §Research Context Management
-- Disconfirming-fetch pass (the Portfolio placement is canonical at Step 6c) — portfolio-workflow.md §Step 6c; web-research.md §Source quality and evidence weighting
+- Disconfirming-fetch pass (each job's placement is canonical in its own workflow) — portfolio-workflow.md §Step 6c; trade-opportunities-workflow.md §Step 5d; web-research.md §Source quality and evidence weighting
 - Heavy-route sub-distillation — trade-opportunities-workflow.md §Step 3b, §Step 4; configuration.md §Research Context Management
 - SEC EDGAR primary source — data-sources.md §SEC EDGAR
 - SEC EDGAR role for Trade Opportunities — data-sources.md §SEC EDGAR

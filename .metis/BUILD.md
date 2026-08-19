@@ -679,7 +679,23 @@ confirmation run** banks every stacked runtime confirmation at once.
    records' §Disposition, not this brief.
 3. **Trade Opportunities** — designed, not built, and waiting behind the whole
    block. The design is settled and the paid FMP shapes are live-verified, so
-   implementation planning codes against verified shapes. Five hard-trigger
+   implementation planning codes against verified shapes. A doc-grounding pass
+   ran 2026-08-19: `logic-flow-docs/trade-opportunities-logic-flow.md` was
+   rewritten end-to-end against the workflow contracts (the Portfolio walk's
+   treatment — shared research-loop/distillation sections written once, exact
+   inputs/returns per model call, named endpoints throughout), three Codex
+   rounds to approval. Four contract rulings landed with it: the
+   disconfirming-fetch pass sits once per candidate after its Step-5d topics;
+   the Step-3b planning call proposes each route's topics, app-validated (the
+   suite's one model-proposed agenda); the engine conviction stand-in is
+   computed at Step 5h only and never enters the 5g prompt (its gate-distance
+   leg needs the horizon derived there — a causal loop otherwise); and a
+   per-candidate FMP `dividends` producer joins the endpoint surface
+   (zero-with-gap failure semantics, the gap on the stand-in's flag leg). The
+   remaining not-yet-drafted constants (screener floors, archetype weight
+   vectors, per-sector factor bands, the commodity-turn threshold, and the
+   like) are marked inline in the logic-flow doc for the implementation plan
+   to sweep. Five hard-trigger
    acceptance cases are parked for this slice and have no other home: a carried
    pick with a deep hard trigger archives with no shadow entry; a name arriving
    identically through all three deep-pass routes; a cheap-pass hard signal
