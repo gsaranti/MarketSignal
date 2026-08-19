@@ -2,38 +2,44 @@
 
 ## What happened
 
-**Auto-memory-store housekeeping only — no repo/project work, and the
-logic-flow clarity walk did not advance.** Retired 7 stale auto-memories
-(`local-suite-hardware-gated` plus `cftc-cot-positioning`,
-`ux-polish-round3-scope`, `thinking-streaming-plan`, `token-budget-tuning`,
-`next-session-local-report-run`, `utc-vs-local-report-date`) — all spent
-history or resolved conventions already carried by git + `docs/` +
-`BUILD.md`/`CURRENT.md`. Preserved the one live nugget (Ollama `keep_alive:-1`
-residency) into `local-model-operational-reference`, repointed ~18 inbound
-`[[links]]` across surviving memories so none dangle, and dropped the index
-lines (`MEMORY.md` now 53 lines). The memory store lives outside the repo, so
-none of that touched tracked files. The prior **PR #68 open question is
-resolved by deletion** — the memory it targeted no longer exists. Last actual
-project work remains the Step-9 logic-flow batch (`36f1163`).
+**The logic-flow clarity walk was carried to completion.** Walked the last
+two sub-flows of `logic-flow-docs/portfolio-analysis-logic-flow.md` — **Quick
+check** and **Pull holdings** — grounding every behavioral claim against the
+Rust (`quick_check.rs` / `engine.rs` / `job.rs` / `store.rs` / `pipeline.rs`
+and the Schwab+Tauri command layer) via parallel explorers, then a
+sanity-check pass on **The most important safety rules**. Load-bearing
+corrections: the Quick check's **Selective-run effect** block was stale — it
+claimed `flagged`/`unknown` holdings are *automatically analyzed*, which the
+2026-08-16 badge ruling reversed (force-include legs removed in `job.rs`;
+work-list = selection ∩ book), so it was rewritten to non-blocking badges;
+**FINRA** was broken out as `(designed, not wired)` — the closed engine
+series surface carries no short-interest series, so no condition validates as
+short-interest-fed and the trigger never arms. The safety-rules pass scoped
+two-arm scoring (**target bands are the one head-to-head read**; outlooks
+per-arm; sub-scores/conviction unscored) and added two invariants
+(role-risk-only carries no fabricated priced number; a directional verdict is
+*authored* long-only). Two Codex rounds, every finding verified against code
+before applying. Shipped as `ecd0422` (Quick check + Pull holdings) and
+`b7f5afc` (safety rules).
 
 ## Current state
 
-This `CURRENT.md` rewrite is the **only repo change this session**, committed +
-pushed to `main` at the user's request. Working tree otherwise clean, remote in
-sync; `BUILD.md` / `INDEX.md` unchanged and need no update. Nothing in flight.
+**The walk is complete end-to-end** — Steps 1–9, Quick check, Pull holdings,
+and the safety rules are all grounded as-built with `(designed …)` / `[note:
+…]` markers. No code changed this session (doc-only). Working tree clean,
+`main` in sync. No canonical-doc drift surfaced (`portfolio-analysis.md` /
+`portfolio-workflow.md` / `interface.md` were already swept to the badge
+ruling + FINRA-dormant marker). Nothing in flight.
 
 ## Open questions
 
-_None carried._ The prior PR #68 memory-entry question is resolved by the
-deletion of the memory it targeted.
+_None carried._
 
 ## Where to start
 
-**Resume the logic-flow clarity walk at the Quick check section**, then **Pull
-holdings**. Done so far: **6a / 6b / 6e / 6f / 6g / Step 7 / Step 8 / Step 9**.
-Same method every batch: ground each new behavioral claim against the Rust
-(`pipeline.rs` / `engine.rs` / `outcome.rs` / `job.rs` / the Vue components for
-display-side claims) via parallel explorers, write as-built-first with
-`**As-built**` / `(designed …)` / `[note: …]` markers, fix any
-`portfolio-workflow.md` / `portfolio-analysis.md` drift in the same batch,
-Codex per batch, commit per batch to `main`.
+**No walk is queued — pick the next initiative.** Natural candidates: the
+**Portfolio completion block** (`BUILD.md` §What remains item 1 — run-evidence
+slice first), or giving `logic-flow-docs/trade-opportunities-logic-flow.md`
+the same as-built grounding pass (last touched 2026-08-16, pre-tunnel-vision;
+but TO is designed-not-built, so that doc stays designed-voice). Neither is
+started; let the user choose.
