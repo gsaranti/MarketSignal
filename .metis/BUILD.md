@@ -591,10 +591,11 @@ and picked-episode store.
 
 The queue is governed by the **pre-run completion bar** (standing user
 decision; widened 2026-08-14 from the original locked pre-test block, which was
-fully built): no further live runs until everything buildable for Portfolio
-Analysis is built — every designed leg except work gated on the live research
-loop or on realized-outcome evidence — after which one **single big
-confirmation run** banks every stacked runtime confirmation at once.
+fully built, and again 2026-08-20 to fold the live research loop inside it):
+no further live runs until **the entire Portfolio Analysis job is built** —
+every designed leg except work gated on realized-outcome evidence, which can
+only come from a run — after which one **single big confirmation run** banks
+every stacked runtime confirmation at once.
 
 ### Built
 
@@ -665,17 +666,34 @@ confirmation run** banks every stacked runtime confirmation at once.
      shipped flat-driver v2-over-composite form is the settled stopgap,
      ruled 2026-08-15), the CEF price-vs-NAV leg, and optionally N-PORT
      look-through.
-   Excluded by the same decision: everything gated on the live research loop
-   (which stays a later depth slice, its activation obligations riding with
-   it) and everything gated on realized-outcome evidence (grade
-   normalization, the calibration proposals, the derive-reads strata).
-2. **The single big confirmation run** — now waiting only on the Portfolio
-   completion block above. Its checklist is
+   Excluded by the same decision: only work gated on realized-outcome evidence
+   (grade normalization, the calibration proposals, the derive-reads strata),
+   which can come only from a run. The live research loop is no longer
+   excluded — the 2026-08-20 widening folds it in as the final pre-run
+   Portfolio slice (item 2 below), its activation obligations discharged there.
+2. **The live research loop** — the final Portfolio Analysis slice, folded
+   inside the pre-run bar by the 2026-08-20 widening (the held-name research
+   refresh lane, once slated to ride with it, was retired by the 2026-08-16
+   badge ruling). The shipped schemas don't preclude it, but the research loop
+   carries the pre-profit producer's activation obligation (§Standing
+   constraints) and must discharge it before connecting the producer. The
+   loop's cache model is settled — **always-run seed-and-merge, never a skip**:
+   recent distilled findings seed each topic and merge (fresh superseding
+   cached) at distillation (`docs/portfolio-analysis.md §Starting parameters`);
+   extending it to Trade Opportunities is **wanted but deferred**. The
+   disconfirming-fetch pass's placement is likewise ruled (2026-08-18): once
+   per holding after its topics, spent from the holding's budget and outside
+   any topic's three-pass depth (`docs/portfolio-workflow.md §Step 6c`).
+3. **The single big confirmation run** — now waiting on the completion block
+   and the live research loop above (the entire Portfolio Analysis job). Its
+   checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
    shape 2026-08-18** (construction / lean / sizing watches removed, the
-   prompt-fit watch re-homed to the per-holding prompts); read `data-health`
-   early, since several items resolve off that surface alone. Attempts 1 and 2
+   prompt-fit watch re-homed to the per-holding prompts) and still needs
+   research-loop and pre-profit-activation watches added under the 2026-08-20
+   bar widening; read `data-health` early, since several items resolve off
+   that surface alone. Attempts 1 and 2
    both failed in the
    construction stage that no longer exists (evidence in
    `docs/verification/2026-08-10-big-run-attempt-1.md` and
@@ -685,9 +703,10 @@ confirmation run** banks every stacked runtime confirmation at once.
    verdicts otherwise carry like any other). What stays open behind the run
    (digest compression, `NUM_PREDICT_*` calibration) is owned by the attempt
    records' §Disposition, not this brief.
-3. **Trade Opportunities** — designed, not built, and waiting behind the whole
-   block. The design is settled and the paid FMP shapes are live-verified, so
-   implementation planning codes against verified shapes. A doc-grounding pass
+4. **Trade Opportunities** — designed, not built, and waiting behind the
+   entire Portfolio job and its confirmation run. The design is settled and
+   the paid FMP shapes are live-verified, so implementation planning codes
+   against verified shapes. A doc-grounding pass
    ran 2026-08-19: `logic-flow-docs/trade-opportunities-logic-flow.md` was
    rewritten end-to-end against the workflow contracts (the Portfolio walk's
    treatment — shared research-loop/distillation sections written once, exact
@@ -735,19 +754,6 @@ confirmation run** banks every stacked runtime confirmation at once.
    raises a warning only; a debut hard trigger becomes a shadow rejection; and a
    soft trigger caps the stand-in while preserving conviction, with no forced
    archival.
-4. **The remaining Portfolio depth slice** — the **live research loop** (the
-   held-name research refresh lane, once slated to ride with it, was retired by
-   the 2026-08-16 badge ruling). The shipped
-   schemas don't preclude it, but the research loop carries the pre-profit
-   producer's activation obligation (§Standing constraints) and must discharge
-   it before connecting the producer. The loop's cache model is settled —
-   **always-run seed-and-merge, never a skip**: recent distilled findings seed
-   each topic and merge (fresh superseding cached) at distillation
-   (`docs/portfolio-analysis.md §Starting parameters`); extending it to Trade
-   Opportunities is **wanted but deferred**. The disconfirming-fetch pass's
-   placement is likewise ruled (2026-08-18): once per holding after its topics,
-   spent from the holding's budget and outside any topic's three-pass depth
-   (`docs/portfolio-workflow.md §Step 6c`).
 
 ### Owned by no slice
 

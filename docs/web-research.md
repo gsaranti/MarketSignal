@@ -18,6 +18,10 @@ A follow-up is the model's *proposal*, carried as a structured field the orchest
 
 The orchestrator — not the model — owns every request, so the loop is bounded the way the report's research executor is.
 Two ceilings work together: the per-topic depth cap above (a quality guard against rabbit-holing one topic) and a **per-item budget that binds first** — a cap on **web-fetches and wall-clock per item**, spent across all topics in priority order and polled at each request boundary (see [report-workflow.md](report-workflow.md)).
+That boundary poll is a *between-requests gate*, never a mid-request kill — a model call or fetch already in flight always runs to completion.
+A spent budget then stops further fetches, any follow-up pass, and the move to the next topic, but does not suppress the current pass's one terminal findings turn.
+That turn emits findings rather than requesting tools — the rule the per-job logic flows already state, *once the topic is answered or the budget is spent, emits that pass's findings* — so a budget-interrupted pass still yields findings, not nothing.
+A genuinely hung request is still abandoned by a *separate* per-call stuck-daemon timeout, so honoring in-flight completion never hands a non-responding call an unbounded lease.
 When the budget drains, the lowest-priority remaining topics are skipped fail-soft (recorded as a degraded-input gap, lower conviction), never failing the run.
 The model decides *what* to look up; the application decides *how much* it is allowed to.
 The fetch-count, topic, and depth caps are pinned defaults; the wall-clock cap is calibrated against measured local throughput on first runs.
