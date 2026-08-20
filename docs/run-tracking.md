@@ -1,6 +1,6 @@
 # Run Tracking and Cancellation
 
-While a job is running, the application shows a live **run tracker** in place of the **running job's own page** — a report run replaces the report, a Portfolio run replaces the Portfolio page — so the user can watch the job progress and stop it at any point.
+While a job is running, the application shows a live **run tracker** in place of the **running job's own page** — a report run replaces the report, a Portfolio run replaces the Portfolio page, and a Trade Opportunities run (Discover or Audit) replaces the Trade Opportunities page — so the user can watch the job progress and stop it at any point.
 It is one shared tracker (the local-suite jobs stream into the same component and event seam as a report run — [interface.md](interface.md)), placed on whichever page owns the run.
 The tracker is presentation only — it observes the workflow defined in [report-workflow.md](report-workflow.md) (or the local job's workflow doc); it does not change what the job does.
 
