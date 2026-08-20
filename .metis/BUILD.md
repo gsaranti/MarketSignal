@@ -566,7 +566,10 @@ structured feeders (the screener stratifies — stratification IS the breadth
 mechanism, no bulk pre-scoring), and a persisted **opportunity-graph watchlist**
 refreshing at class cadence. Per-candidate validation runs under an archetype
 lens, a mandatory bear case and a leading-metric hard gate. It runs as two jobs
-sharing one page (**Discover** / **Audit**, the latter forking Quick/Deep).
+sharing one page (**Discover** / **Audit**, the latter forking Quick/Deep) under
+**one `trade_opportunities` job identity** — each run record mode-labeled
+(`discover` / `audit-quick` / `audit-deep`), history / retention / footer stamps
+reading one pool (ruled 2026-08-19).
 Judgment fields carry in the same **two arms** as Portfolio, and **admission is
 either-arm** — both arms run the same entry-asymmetry gate and a name clearing
 either enters, with both gate vectors persisted — the grant scoped to that gate
@@ -703,10 +706,28 @@ confirmation run** banks every stacked runtime confirmation at once.
    and the gate's shared legs — retiring the advisory-view mechanism, the
    cheap-pass re-placement leg, and the provisional-collapse machinery
    (collapses final at Step 6), swept through the logic-flow doc and the
-   canonical docs, five Codex rounds to approval. The
+   canonical docs, five Codex rounds to approval. A **full-corpus
+   documentation audit** closed the grounding program (Codex, 2026-08-19;
+   28 findings — one refuted, several overstated, every finding verified
+   before acceptance; the record is
+   `docs/verification/2026-08-19-trade-opportunities-documentation-audit.md`):
+   seven rulings landed with its correction sweep, two Codex review rounds
+   to approval. Beyond the job identity above: the Step-5g status enum is
+   **origin-constrained** (a debut app-stamps `new`; a carry offers only
+   `still-valid` / `invalidated`); turn-away shadow episodes class by fixed
+   **hard-trigger → floor → gate-reject** precedence, the Step-5g digest
+   scoped to post-5g classes; the rotation's max-age backstop drains through
+   a **reserved overdue sub-slot** (structural liveness, warnings-first
+   otherwise); the archive row carries `admitted_by` alone (gate vectors on
+   the episode); the tier rule adopts Portfolio's missing-input stance; and
+   the target bands score on the **built Winkler interval scorer** — now
+   documented exactly at its `portfolio-analysis.md §Outcome learning`
+   single home — at the matured 12-month window only. The
    remaining not-yet-drafted constants (screener floors, archetype weight
    vectors, per-sector factor bands, the commodity-turn threshold, and the
-   like) are marked inline in the logic-flow doc for the implementation plan
+   like — joined by the audit's diversity-allocation mechanics and the
+   `illiquid` / event-exposure tier predicates) are marked inline in the
+   logic-flow doc for the implementation plan
    to sweep. Five hard-trigger
    acceptance cases are parked for this slice and have no other home: a carried
    pick with a deep hard trigger archives with no shadow entry; a name arriving

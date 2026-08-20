@@ -213,6 +213,7 @@ build status lives in `BUILD.md`.*
 ### Trade Opportunities
 - Trade Opportunities job — trade-opportunities.md
 - Trade Opportunities workflow — trade-opportunities-workflow.md
+- Trade Opportunities job identity and run modes — trade-opportunities.md §The two jobs; trade-opportunities-workflow.md (intro); scheduling.md §Job Status Visibility; storage.md §Local Analysis Suite Storage; configuration.md §Local Analysis Suite Configuration; interface.md §Main Layout
 - Trade Opportunities — what it hunts — trade-opportunities.md §What the job hunts
 - Trade Opportunities research method — trade-opportunities.md §The research method
 - Opportunity schema — trade-opportunities.md §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h; storage.md §Local Analysis Suite Storage
@@ -245,11 +246,14 @@ build status lives in `BUILD.md`.*
 - Thesis milestone plan + engine-horizon derivation — trade-opportunities.md §The opportunity, §Starting parameters; trade-opportunities-workflow.md §Step 5e, §Step 5g, §Step 5h, §Step 7; storage.md §Local Analysis Suite Storage
 - Matrix final assembly over the union — trade-opportunities-workflow.md §Step 6, §Step 7; trade-opportunities.md §The opportunity; storage.md §Local Analysis Suite Storage
 - Opportunity re-evaluation lifecycle — trade-opportunities-workflow.md §Step 7, §ATO: the audit flow; trade-opportunities.md §The two jobs, §The opportunity, §Archived opportunities, §Starting parameters; storage.md §Local Analysis Suite Storage; interface.md; local-models.md §Serving runtime
+- Opportunity carry-forward status vocabulary — trade-opportunities.md §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 7
 - DTO deep-budget rotation — trade-opportunities.md §The two jobs, §Archived opportunities; trade-opportunities-workflow.md §Step 4, §Step 7; configuration.md §Local Analysis Suite Configuration
 - Carried-name hard-trigger forced archival — trade-opportunities.md §Starting parameters, §Archived opportunities; trade-opportunities-workflow.md §Step 5h; storage.md §Local Analysis Suite Storage
 - Archived opportunities — trade-opportunities.md §Archived opportunities; trade-opportunities-workflow.md §Step 7, §Step 9, §Step 10; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
 - Trade Opportunities outcome learning / calibration — trade-opportunities.md §Outcome learning, §Storage and display; trade-opportunities-workflow.md §Step 5c, §Step 5g, §Step 7, §Step 9; storage.md §Local Analysis Suite Storage; data-sources.md §Trade Opportunities — endpoint surface
 - Shadow outcome ledger / picked-vs-rejected calibration — trade-opportunities.md §Outcome learning, §Starting parameters; trade-opportunities-workflow.md §Step 3c, §Step 5h, §Step 6, §Step 7, §Step 9; storage.md §Local Analysis Suite Storage; configuration.md §Local Analysis Suite Configuration
+- Turn-away decision-class precedence (the §Step 5h statement is canonical) — trade-opportunities-workflow.md §Step 5h; trade-opportunities.md §Outcome learning
+- Shadow-episode Step-5g record digest — trade-opportunities.md §Outcome learning; trade-opportunities-workflow.md §Step 5h; storage.md §Local Analysis Suite Storage
 - Outcome measurement contract — trade-opportunities.md §Outcome learning; storage.md §Local Analysis Suite Storage
 - Picked decision episodes / lifecycle id — trade-opportunities.md §Outcome learning, §Starting parameters; storage.md §Local Analysis Suite Storage; trade-opportunities-workflow.md §Step 5b, §Step 7; configuration.md §Local Analysis Suite Configuration; data-portability.md §Build-order placement
 - Trade Opportunities endpoint surface — data-sources.md §Trade Opportunities — endpoint surface, §FMP — current paid-plan tier audit; storage.md §Local Analysis Suite Storage (price-bar cache)
@@ -265,6 +269,7 @@ build status lives in `BUILD.md`.*
 - Evidence-floor freshness basis — trade-opportunities.md §Starting parameters, §Evidence floor; trade-opportunities-workflow.md §Step 5h; web-research.md §Source quality and evidence weighting; portfolio-analysis.md §Evidence floor
 - Deterministic risk-tier assignment — the engine arm's rule (the TO form is canonical) — trade-opportunities.md §The opportunity space, §Starting parameters; portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6b
 - Scenario-target function — portfolio-analysis.md §Starting parameters, §Evidence floor; trade-opportunities.md §Starting parameters, §Evidence floor; portfolio-workflow.md §Step 6b; trade-opportunities-workflow.md §Step 5c; data-sources.md (both `analyst-estimates` rows, both `dividends` rows)
+- Target-band interval scorer (the portfolio-analysis.md §Outcome learning definition is canonical) — portfolio-analysis.md §Outcome learning; trade-opportunities.md §Outcome learning; trade-opportunities-workflow.md §Step 7; local-models.md §Context-memory discipline
 - Rate-anchor failure rule — portfolio-analysis.md §Failure posture, §Starting parameters, §The quick check; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §ATO: the audit flow; data-sources.md §Portfolio Analysis — endpoint surface (FRED), §Trade Opportunities — endpoint surface (FRED)
 - Factor normalization basis — trade-opportunities-workflow.md §Step 5c; trade-opportunities.md §Starting parameters, §The lenses; storage.md §Local Analysis Suite Storage
 - ET session dating — data-sources.md (intro session-dating rule); portfolio-analysis.md §The quick check, §Triggering, §Outcome learning; portfolio-workflow.md §The quick check
@@ -313,3 +318,4 @@ the run's own dated record follows it.*
 - Selective-run safety additions → card badges — ruling, build inventory, and held-name-lane / pre-v9-gate retirement — verification/2026-08-16-selective-badges-ruling.md; portfolio-analysis.md §Triggering
 - Fresh-start legacy removal — the ruling, the full pre-`v9` removal inventory, and the kept-vs-removed boundary — verification/2026-08-17-fresh-start-legacy-removal.md; BUILD.md §Runtime, observability & failure posture
 - Portfolio Analysis doc/code audit — the 21 findings, their re-verification and dispositions, four rulings, and two Codex rounds — verification/2026-08-18-portfolio-analysis-doc-code-audit.md; BUILD.md §What remains (Built)
+- Trade Opportunities documentation audit — the 28 findings, their verification verdicts, seven rulings, dispositions, and two review rounds — verification/2026-08-19-trade-opportunities-documentation-audit.md; BUILD.md §What remains
