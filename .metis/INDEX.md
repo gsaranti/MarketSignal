@@ -218,6 +218,7 @@ build status lives in `BUILD.md`.*
 - Opportunity schema — trade-opportunities.md §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h; storage.md §Local Analysis Suite Storage
 - Two-arm contract — TO form (the boundary statement is single-homed) — trade-opportunities.md §The opportunity, §Starting parameters; local-models.md §Context-memory discipline; trade-opportunities-workflow.md §Step 5g, §Step 5h; storage.md §Local Analysis Suite Storage
 - Either-arm admission — trade-opportunities.md §The opportunity, §Evidence floor, §Outcome learning, §Starting parameters; trade-opportunities-workflow.md §Step 5h, §Step 7
+- Model-authored matrix placement (the §The opportunity space statement is canonical) — trade-opportunities.md §The opportunity space, §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h, §Step 7; local-models.md §Context-memory discipline; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
 - Blind-first diagnostic reservation — trade-opportunities.md §The opportunity, §Failure posture; trade-opportunities-workflow.md §Step 5g
 - Opportunity archetype lens — trade-opportunities.md §Archetype
 - Archetype stickiness on carried-forward names — trade-opportunities.md §Archetype; trade-opportunities-workflow.md §Step 5a
@@ -241,7 +242,7 @@ build status lives in `BUILD.md`.*
 - Conviction-cap ceiling & precedence — trade-opportunities.md §Starting parameters, §Reconciling the lenses; trade-opportunities-workflow.md §Step 5g, §Step 5h; portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6g; storage.md §Local Analysis Suite Storage
 - Engine-arm conviction stand-in (the Step-5h computation is canonical; never a Step-5g input) — trade-opportunities.md §Starting parameters, §The opportunity; trade-opportunities-workflow.md §Step 5g, §Step 5h; storage.md §Local Analysis Suite Storage
 - Key-falsifier / milestone re-check classes (the canonical vocabulary, owned by §Step 3c) — trade-opportunities.md §The opportunity, §Reconciling the lenses; trade-opportunities-workflow.md §Step 3c, §Step 5e, §Step 5h, §Step 7, §ATO: the audit flow; storage.md §Local Analysis Suite Storage
-- Thesis milestone plan + horizon assignment — trade-opportunities.md §The opportunity, §Starting parameters; trade-opportunities-workflow.md §Step 5e, §Step 5g, §Step 5h, §Step 7; storage.md §Local Analysis Suite Storage
+- Thesis milestone plan + engine-horizon derivation — trade-opportunities.md §The opportunity, §Starting parameters; trade-opportunities-workflow.md §Step 5e, §Step 5g, §Step 5h, §Step 7; storage.md §Local Analysis Suite Storage
 - Matrix final assembly over the union — trade-opportunities-workflow.md §Step 6, §Step 7; trade-opportunities.md §The opportunity; storage.md §Local Analysis Suite Storage
 - Opportunity re-evaluation lifecycle — trade-opportunities-workflow.md §Step 7, §ATO: the audit flow; trade-opportunities.md §The two jobs, §The opportunity, §Archived opportunities, §Starting parameters; storage.md §Local Analysis Suite Storage; interface.md; local-models.md §Serving runtime
 - DTO deep-budget rotation — trade-opportunities.md §The two jobs, §Archived opportunities; trade-opportunities-workflow.md §Step 4, §Step 7; configuration.md §Local Analysis Suite Configuration
@@ -262,7 +263,7 @@ build status lives in `BUILD.md`.*
 - Deterministic financial-analysis engine — local-models.md §Context-memory discipline; portfolio-analysis.md
 - Evidence floor (each job defines its own) — portfolio-analysis.md §Evidence floor; trade-opportunities.md §Evidence floor; trade-opportunities-workflow.md §Step 5h, §Step 7
 - Evidence-floor freshness basis — trade-opportunities.md §Starting parameters, §Evidence floor; trade-opportunities-workflow.md §Step 5h; web-research.md §Source quality and evidence weighting; portfolio-analysis.md §Evidence floor
-- Deterministic risk-tier assignment (the TO rule is canonical) — trade-opportunities.md §The opportunity space, §Starting parameters; portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6b
+- Deterministic risk-tier assignment — the engine arm's rule (the TO form is canonical) — trade-opportunities.md §The opportunity space, §Starting parameters; portfolio-analysis.md §Starting parameters; portfolio-workflow.md §Step 6b
 - Scenario-target function — portfolio-analysis.md §Starting parameters, §Evidence floor; trade-opportunities.md §Starting parameters, §Evidence floor; portfolio-workflow.md §Step 6b; trade-opportunities-workflow.md §Step 5c; data-sources.md (both `analyst-estimates` rows, both `dividends` rows)
 - Rate-anchor failure rule — portfolio-analysis.md §Failure posture, §Starting parameters, §The quick check; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §ATO: the audit flow; data-sources.md §Portfolio Analysis — endpoint surface (FRED), §Trade Opportunities — endpoint surface (FRED)
 - Factor normalization basis — trade-opportunities-workflow.md §Step 5c; trade-opportunities.md §Starting parameters, §The lenses; storage.md §Local Analysis Suite Storage

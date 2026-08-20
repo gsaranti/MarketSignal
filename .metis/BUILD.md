@@ -571,8 +571,13 @@ Judgment fields carry in the same **two arms** as Portfolio, and **admission is
 either-arm** — both arms run the same entry-asymmetry gate and a name clearing
 either enters, with both gate vectors persisted — the grant scoped to that gate
 alone: the evidence floor, the forensic hard triggers and anchorless `hype` bind
-absolutely on both arms. Three classes stay single-valued: facts and their
-arithmetic, tier/horizon placement, and the outcome machinery. Deterministic
+absolutely on both arms. Two classes stay single-valued: facts and their
+arithmetic, and the outcome machinery — placement moved to the model arm by the
+placement ruling (2026-08-19): the model authors its own tier / horizon /
+runway, its tier × horizon places the matrix card (frozen between deep passes),
+and the engine's rule-derived pair persists beside it as the baseline while the
+gate's tier-scaled hurdle, haircut, and H stay engine-shared, so the model
+never sets its own admission bar. Deterministic
 outcome labels on prior picks **and a shadow scorecard over every name the
 funnel turned away** feed a **propose-only, never auto-applied** calibration.
 Persistence separates six structures: matrix, opportunity graph,
@@ -691,7 +696,14 @@ confirmation run** banks every stacked runtime confirmation at once.
    computed at Step 5h only and never enters the 5g prompt (its gate-distance
    leg needs the horizon derived there — a causal loop otherwise); and a
    per-candidate FMP `dividends` producer joins the endpoint surface
-   (zero-with-gap failure semantics, the gap on the stand-in's flag leg). The
+   (zero-with-gap failure semantics, the gap on the stand-in's flag leg). A
+   second same-day pass landed the **placement ruling** (2026-08-19): tier,
+   horizon, and `business_runway` went two-arm — the model's authored
+   tier × horizon places the card, the engine's derivations stay the baseline
+   and the gate's shared legs — retiring the advisory-view mechanism, the
+   cheap-pass re-placement leg, and the provisional-collapse machinery
+   (collapses final at Step 6), swept through the logic-flow doc and the
+   canonical docs, five Codex rounds to approval. The
    remaining not-yet-drafted constants (screener floors, archetype weight
    vectors, per-sector factor bands, the commodity-turn threshold, and the
    like) are marked inline in the logic-flow doc for the implementation plan
@@ -767,7 +779,9 @@ Recorded rather than absorbed, each needing a decision before it becomes work:
   entry-vintage values) and the outlook-direction hit-rate; Trade Opportunities
   is designed to the same target-band contract, unbuilt — the outlook-direction
   read is Portfolio-only. Extending either to sub-scores and
-  conviction is a calibration-tier question neither job has settled.
+  conviction is a calibration-tier question neither job has settled. TO's
+  authored tier / horizon / runway reads ride the same recorded-unscored
+  treatment since the placement ruling (2026-08-19).
 
 ### Deferred by decision
 
