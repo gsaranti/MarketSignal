@@ -613,12 +613,13 @@ export interface DataHealth {
   // window — docs/portfolio-workflow.md §Step 5); informational, rides `summary`.
   house_view_omitted: boolean;
   // Run-level enriching-feed gaps (commodity context / CFTC positioning / the
-  // CBOE backdrop / sector-benchmark series) — counted and named in `summary`,
-  // never attention triggers (the feeds are fail-soft and additive). Absent on
-  // runs persisted before the fields existed.
+  // CBOE backdrop / FINRA short interest / sector-benchmark series) — counted
+  // and named in `summary`, never attention triggers (the feeds are fail-soft
+  // and additive). Absent on runs persisted before the fields existed.
   commodity_gaps?: number;
   positioning_gaps?: number;
   cboe_gap?: boolean;
+  finra_gap?: boolean;
   benchmark_gaps?: number;
   // Local chat calls under context pressure (the digest-compression covenant's
   // detection leg) — near-full (≥ 90% of num_ctx) or likely front-truncated (a

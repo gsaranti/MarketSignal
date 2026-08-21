@@ -84,6 +84,11 @@ pub struct InterpretationInput<'a> {
     /// (`docs/portfolio-analysis.md` §Starting parameters) — rendered only when
     /// fired; it asserts nothing about the cause.
     pub tech_pre_flag: Option<&'a engine::TechEventPreFlag>,
+    /// The narrative-vs-reality read, where it was computable
+    /// (`docs/portfolio-analysis.md` §Starting parameters) — layer-(b)
+    /// conviction evidence; a tripped hype cap renders with its engine-matched
+    /// rule.
+    pub narrative: Option<&'a engine::NarrativeRead>,
 }
 
 /// What the `role_risk_only` interpretation reads: the dossier plus the engine's
@@ -284,6 +289,7 @@ pub fn analyze_holding(
     let positioning_consulted = std::cell::Cell::new(false);
     let benchmark_consulted = std::cell::Cell::new(false);
     let commodity_consulted = std::cell::Cell::new(false);
+    let short_interest_consulted = std::cell::Cell::new(false);
     // The model ids this holding's verdict was **actually** authored with, in
     // first-call order — recorded beside each call that ran, never read off the
     // analyst's configuration: a no-model exit persists none, the role/risk branch
@@ -317,6 +323,9 @@ pub fn analyze_holding(
         }
         if positioning_consulted.get() {
             sources.push("CFTC COT positioning (fund underlying)".to_string());
+        }
+        if short_interest_consulted.get() {
+            sources.push("FINRA consolidated short interest (biweekly file)".to_string());
         }
         if benchmark_consulted.get() {
             sources.push(
@@ -353,6 +362,13 @@ pub fn analyze_holding(
         // The pre-flag is evaluated on the priced path only (it reads the
         // engine's volatility); an early exit records none.
         tech_event_pre_flag: None,
+        // Provenance like the sweep state: the row resolved at gather time,
+        // recorded wherever it exists (the source label stays render-scoped).
+        short_interest: dossier.short_interest.clone(),
+        // Computed on the priced path only; an early exit records none.
+        implied_expectations: None,
+        narrative: None,
+        option_overlay: dossier.option_overlay.clone(),
     };
     let abstain = |reason: String, metrics, meta, pre_profit| {
         let verdict = HoldingVerdict {
@@ -727,11 +743,51 @@ pub fn analyze_holding(
         )
     });
 
+    // The narrative-vs-reality read (`docs/portfolio-analysis.md` §Starting
+    // parameters) — a stock's pace pair against the prior run's stored
+    // comparator (a fund has neither consensus nor statements to read). An
+    // unreadable pace on a *carried* holding records its typed reason; a debut
+    // has no comparator and records nothing (the debut-null convention). A
+    // tripped hype read is the suite's shared soft Medium ceiling on the
+    // engine arm — annotation-recorded, never a clamp on the model's value.
+    let (narrative, narrative_gap) = if is_fund {
+        (None, None)
+    } else {
+        let elapsed = dossier.prior_vintage.as_deref().and_then(|v| {
+            let prior_session = crate::market_clock::et_date_of(v)?;
+            let run = chrono::NaiveDate::parse_from_str(run_date, "%Y-%m-%d").ok()?;
+            Some((run - prior_session).num_days())
+        });
+        match engine::narrative_vs_reality(
+            &dossier.financials,
+            engine_output
+                .quick_basis
+                .as_ref()
+                .map(|b| b.spot)
+                .or(dossier.financials.current_price)
+                .unwrap_or(f64::NAN),
+            dossier.prior_spot,
+            dossier.prior_consensus_eps_mid,
+            elapsed,
+        ) {
+            Ok(read) => (Some(read), None),
+            Err(reason) => (
+                None,
+                dossier
+                    .prior_verdict
+                    .is_some()
+                    .then(|| format!("narrative-vs-reality unreadable: {reason}")),
+            ),
+        }
+    };
+    let narrative_hype = narrative.as_ref().is_some_and(|n| n.hype_capped());
+
     // Research (stubbed) → distill → interpret.
     house_view_consulted.set(priced_prompt_renders_house_view(dossier));
     backdrop_consulted.set(dossier.put_call_backdrop.is_some());
     positioning_consulted.set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
     commodity_consulted.set(!dossier.commodity_context.is_empty());
+    short_interest_consulted.set(dossier.short_interest.is_some());
     let findings = research(dossier);
     let distilled = analyst
         .distill(dossier, &findings)
@@ -745,6 +801,7 @@ pub fn analyze_holding(
             ledger_eval: ledger_eval.as_ref(),
             pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
             tech_pre_flag: tech_pre_flag.as_ref(),
+            narrative: narrative.as_ref(),
         })
         .context("interpreting the holding")?;
     used_model(analyst.reasoner_id());
@@ -771,7 +828,7 @@ pub fn analyze_holding(
     // The engine stand-in arm — mechanical outlook / conviction / action baselines
     // beside the model's (`docs/portfolio-analysis.md` §The holding verdict).
     let engine_view =
-        engine::engine_view(&engine_output, &dossier.financials, &degraded, overlay_rules, hard_forensic);
+        engine::engine_view(&engine_output, &dossier.financials, &degraded, overlay_rules, hard_forensic, narrative_hype);
     let mut graded = GradedVerdict {
         grade: engine_output.grade,
         sub_scores: engine_output.sub_scores,
@@ -842,6 +899,7 @@ pub fn analyze_holding(
     let mut degraded_inputs = degraded.clone();
     degraded_inputs.extend(engine_output.tier_gaps.iter().cloned());
     degraded_inputs.extend(tech_pre_flag_gap.clone());
+    degraded_inputs.extend(narrative_gap.clone());
     let audit_record = HoldingAudit {
         symbol: symbol.clone(),
         metrics: engine_output.metrics.clone(),
@@ -874,6 +932,10 @@ pub fn analyze_holding(
                 state,
             }),
         tech_event_pre_flag: tech_pre_flag,
+        short_interest: dossier.short_interest.clone(),
+        implied_expectations: engine_output.implied_expectations.clone(),
+        narrative,
+        option_overlay: dossier.option_overlay.clone(),
     };
     Ok((verdict, audit_record))
 }
@@ -1973,6 +2035,188 @@ fn put_call_backdrop_prompt_section(d: &HoldingDossier) -> String {
     )
 }
 
+/// The implied-expectations range (`docs/portfolio-analysis.md` §Starting
+/// parameters): the engine's scenario math inverted at the live price — the
+/// priced-in anchor the forward outlook (and the trim-a-winner judgment) is
+/// read against. Conviction / action evidence only, never a gate. Empty where
+/// the engine computed none (a fund, the current-multiple carry).
+fn implied_expectations_prompt_section(e: &engine::EngineOutput) -> String {
+    let Some(ie) = &e.implied_expectations else {
+        return String::new();
+    };
+    let pct = |g: f64| format!("{:+.1}%", g * 100.0);
+    let growth = match &ie.implied_growth {
+        Some(g) => format!(
+            "implied {} growth vs the trailing TTM print: {} at the bull multiple, \
+             {} at the base multiple, {} at the bear multiple",
+            if ie.revenue_based { "revenue-per-share" } else { "EPS" },
+            pct(g[2]),
+            pct(g[1]),
+            pct(g[0]),
+        ),
+        None => format!(
+            "implied per-share driver ({}): {:.2} at the bull multiple, {:.2} at the \
+             base multiple, {:.2} at the bear multiple (trailing print absent or \
+             non-positive, so growth is undefinable)",
+            ie.driver_rung, ie.implied_drivers[2], ie.implied_drivers[1], ie.implied_drivers[0],
+        ),
+    };
+    format!(
+        "\nIMPLIED EXPECTATIONS (the engine's scenario math inverted at the live \
+         price — what the current price ALREADY assumes, a range under stated \
+         assumptions, never a gate): {growth}. Assumptions: {} multiples{}{}. Read \
+         your forward outlook against this priced-in anchor — \"strong outlook, \
+         already paid for\" is a computed contrast here, not a vibe.\n",
+        if ie.rate_anchored { "rate-anchored (spread-percentile)" } else { "raw-percentile" },
+        if ie.rate_anchored {
+            format!(", DGS10 {:.2}%", ie.dgs10 * 100.0)
+        } else {
+            String::new()
+        },
+        if ie.revenue_based {
+            " — revenue rung: the range assumes prevailing margins (the margin \
+             dimension is a stated assumption, not a solved number)"
+        } else {
+            ""
+        },
+    )
+}
+
+/// The same-underlying option overlay (`docs/portfolio-workflow.md` §Step 6a):
+/// the holding's own option legs, classified, with coverage and net delta —
+/// rendered into BOTH 6f prompts, because the overlay changes what the right
+/// action is. Empty where the holding carries no option legs.
+fn option_overlay_prompt_section(d: &HoldingDossier) -> String {
+    use crate::portfolio::dossier::{OverlayClass, OverlayDirection};
+    let Some(o) = &d.option_overlay else {
+        return String::new();
+    };
+    let class = match o.class {
+        OverlayClass::CoveredCall => "covered call",
+        OverlayClass::ProtectivePut => "protective put",
+        OverlayClass::Collar => "collar",
+        OverlayClass::Other => "other (unrecognized or multi-leg)",
+    };
+    let mut s = format!(
+        "\nSAME-UNDERLYING OPTION OVERLAY (held option positions on this name — \
+         this changes what the right action is): classified {class}"
+    );
+    if let Some(cr) = o.coverage_ratio {
+        s.push_str(&format!(", covering {:.0}% of the held shares", cr * 100.0));
+    }
+    if let Some(nd) = o.net_delta {
+        s.push_str(&format!("; net delta {nd:+.0} share-equivalents"));
+    }
+    s.push_str(".\n");
+    for l in &o.legs {
+        s.push_str(&format!(
+            "- {} {}× {} — strike {}, expiry {}, delta {}\n",
+            match l.direction {
+                OverlayDirection::Long => "LONG",
+                OverlayDirection::Short => "SHORT",
+            },
+            l.quantity,
+            l.kind
+                .map(|k| match k {
+                    crate::schwab::OptionKind::Call => "CALL",
+                    crate::schwab::OptionKind::Put => "PUT",
+                })
+                .unwrap_or("UNRECOGNIZED"),
+            l.strike.map(|v| format!("{v:.2}")).unwrap_or_else(|| "?".into()),
+            l.expiry.as_deref().unwrap_or("?"),
+            l.delta.map(|v| format!("{v:+.2}")).unwrap_or_else(|| "(gap)".into()),
+        ));
+    }
+    if !o.gaps.is_empty() {
+        s.push_str(&format!("Overlay gaps: {}\n", o.gaps.join("; ")));
+    }
+    s
+}
+
+/// The narrative-vs-reality read (`docs/portfolio-analysis.md` §Starting
+/// parameters): the conviction-layer red-flag ratio, rendered as layer-(b)
+/// evidence — a tripped hype cap names its engine-matched rule (an engine-arm
+/// bound, never a clamp on the model's own values), and the letter grade is
+/// untouched either way. Empty where the read was uncomputable (the audit's
+/// gap manifest carries the reason).
+fn narrative_prompt_section(n: Option<&engine::NarrativeRead>) -> String {
+    use crate::portfolio::engine::{NarrativeClass, NarrativeForm};
+    let Some(n) = n else {
+        return String::new();
+    };
+    let pct = |v: f64| format!("{:+.1}%", v * 100.0);
+    let (expansion_label, reality_label) = match n.form {
+        NarrativeForm::RevisionBased => (
+            "forward-multiple change since the prior read",
+            "consensus-EPS revision over the same interval",
+        ),
+        NarrativeForm::OperatingReality => (
+            "annualized price move since the prior read (thin coverage — the \
+             operating-reality-vs-price fallback)",
+            "reported TTM revenue growth, year over year",
+        ),
+    };
+    let class_line = match n.classification {
+        NarrativeClass::JustifiedExpensive => {
+            "JUSTIFIED-EXPENSIVE — the reality leg underwrites the re-rating".to_string()
+        }
+        NarrativeClass::Neutral => {
+            "NEUTRAL — no meaningful multiple expansion to classify".to_string()
+        }
+        NarrativeClass::Hype => format!(
+            "HYPE — the expansion outran the reality leg{}",
+            n.ratio
+                .map(|r| format!(" ({r:.1}×)"))
+                .unwrap_or_else(|| " (reality flat or declining)".to_string()),
+        ),
+    };
+    let mut s = format!(
+        "\nNARRATIVE VS REALITY ({} days elapsed — conviction evidence, NOT a grade \
+         input): {expansion_label} {}; {reality_label} {}. Read: {class_line}.\n",
+        n.elapsed_days,
+        pct(n.expansion),
+        pct(n.reality),
+    );
+    if let Some(rule) = &n.matched_rule {
+        s.push_str(&format!(
+            "Engine-matched soft rule (binds the ENGINE arm; your own values stay \
+             yours, departures annotated): {rule}.\n"
+        ));
+    }
+    s
+}
+
+/// The FINRA consolidated short-interest read (`docs/data-sources.md §FINRA`):
+/// per-holding risk / squeeze-context **positioning evidence** off the biweekly
+/// file — level, trend, and days-to-cover, held out of every sub-score. Empty
+/// where the holding has no row or the leg never ran.
+fn short_interest_prompt_section(d: &HoldingDossier) -> String {
+    let Some(si) = &d.short_interest else {
+        return String::new();
+    };
+    let trend = match si.previous_short_interest {
+        Some(prev) if prev > 0.0 => format!(
+            "{:+.1}% vs the prior settlement's {prev:.0}",
+            (si.current_short_interest / prev - 1.0) * 100.0
+        ),
+        _ => "prior settlement (gap)".to_string(),
+    };
+    format!(
+        "\nSHORT INTEREST (FINRA consolidated biweekly file, settlement {} — \
+         risk / squeeze context, positioning evidence only, NOT a grade input; \
+         the file lags its settlement by ~7 business days): {:.0} shares short \
+         ({trend}), avg daily volume {}, days to cover {}\n",
+        si.settlement_date,
+        si.current_short_interest,
+        si.average_daily_volume
+            .map(|v| format!("{v:.0}"))
+            .unwrap_or_else(|| "(gap)".to_string()),
+        si.days_to_cover
+            .map(|v| format!("{v:.2}"))
+            .unwrap_or_else(|| "(gap)".to_string()),
+    )
+}
+
 /// The run-level commodity context, rendered for a commodity-linked holding
 /// (`docs/portfolio-workflow.md` §Step 5): published levels with their print
 /// dates — as-of evidence for the conviction and narrative reads, never a score
@@ -2192,6 +2436,9 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
          weak exit evidence.\n",
     );
 
+    p.push_str(&implied_expectations_prompt_section(e));
+    p.push_str(&narrative_prompt_section(input.narrative));
+
     if let Some(overlay) = input.pre_profit {
         p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Interpretation));
     }
@@ -2218,6 +2465,8 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         opt(s.iv_skew),
     ));
     p.push_str(&put_call_backdrop_prompt_section(d));
+    p.push_str(&short_interest_prompt_section(d));
+    p.push_str(&option_overlay_prompt_section(d));
 
     if !d.financials.gaps.is_empty() {
         p.push_str(&format!("\nDATA GAPS: {}\n", d.financials.gaps.join("; ")));
@@ -2497,6 +2746,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
 
     p.push_str(&forensic_prompt_section(input.dossier));
     p.push_str(&commodity_prompt_section(input.dossier));
+    p.push_str(&option_overlay_prompt_section(input.dossier));
 
     p.push_str(
         "\nENGINE SET (the engine arm's own restriction — evidence, not a bound; \
@@ -3728,12 +3978,15 @@ mod tests {
             prior_verdict: None,
             prior_vintage: None,
             prior_spot: None,
+            prior_consensus_eps_mid: None,
             prior_matured_notes: Vec::new(),
             prior_grade_parameter_version: None,
             sources: vec!["FMP".into()],
             prior_pre_profit: None,
             listing: None,
             filing_events: None,
+            short_interest: None,
+            option_overlay: None,
             put_call_backdrop: None,
             commodity_context: Vec::new(),
             sector_benchmark: None,
@@ -4633,6 +4886,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         };
         let user = interpretation_user_prompt(&input);
         assert!(user.contains("ENGINE GRADE (the baseline arm"), "{user}");
@@ -4695,6 +4949,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(interp.contains("COMMODITY CONTEXT"), "{interp}");
         assert!(interp.contains("78.40 USD per barrel (as of 2026-08-18"), "{interp}");
@@ -4708,6 +4963,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(!interp.contains("COMMODITY CONTEXT"), "{interp}");
     }
@@ -4734,6 +4990,7 @@ mod tests {
                 ledger_eval: None,
                 pre_profit: None,
                 tech_pre_flag: f,
+                narrative: None,
             })
         };
         let fired = flag(true);
@@ -4922,6 +5179,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(interp.contains("MARKET OPTIONS SENTIMENT"), "{interp}");
         assert!(interp.contains("as of August 19, 2026"), "{interp}");
@@ -4944,6 +5202,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(!interp.contains("MARKET OPTIONS SENTIMENT"), "{interp}");
     }
@@ -4987,6 +5246,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(interp.contains("HARD TRIGGER TRIPPED"), "{interp}");
         assert!(interp.contains("restatement (Item 4.02 non-reliance)"), "{interp}");
@@ -5031,6 +5291,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(interp.contains("UNKNOWN — no CIK mapping"), "{interp}");
     }
@@ -5079,6 +5340,103 @@ mod tests {
         assert!(!user.contains("OVERLAP"), "{user}");
         assert!(!user.contains("- cash:"), "{user}");
         assert!(!user.contains("unconstrained"), "{user}");
+    }
+
+    #[test]
+    fn evidence_leg_sections_render_when_present_and_stay_silent_when_absent() {
+        use crate::portfolio::dossier::{
+            OptionOverlay, OverlayClass, OverlayDirection, OverlayLeg,
+        };
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let interp = |d: &HoldingDossier, narrative: Option<&engine::NarrativeRead>| {
+            interpretation_user_prompt(&InterpretationInput {
+                dossier: d,
+                engine: &engine_output,
+                distilled: "findings",
+                ledger_eval: None,
+                pre_profit: None,
+                tech_pre_flag: None,
+                narrative,
+            })
+        };
+        // Absent legs stay silent — no empty scaffolding sections.
+        let base = interp(&d, None);
+        assert!(!base.contains("SHORT INTEREST"), "{base}");
+        assert!(!base.contains("SAME-UNDERLYING OPTION OVERLAY"), "{base}");
+        assert!(!base.contains("NARRATIVE VS REALITY"), "{base}");
+        // Present legs render with their evidence framing.
+        d.short_interest = Some(crate::finra::ShortInterestRead {
+            settlement_date: "2026-07-31".into(),
+            current_short_interest: 5_000_000.0,
+            previous_short_interest: Some(4_000_000.0),
+            average_daily_volume: Some(2_000_000.0),
+            days_to_cover: Some(2.5),
+        });
+        d.option_overlay = Some(OptionOverlay {
+            legs: vec![OverlayLeg {
+                contract: "AAPL  270115C00210000".into(),
+                direction: OverlayDirection::Short,
+                quantity: 1.0,
+                kind: Some(crate::schwab::OptionKind::Call),
+                strike: Some(210.0),
+                expiry: Some("2027-01-15".into()),
+                delta: Some(0.40),
+            }],
+            class: OverlayClass::CoveredCall,
+            coverage_ratio: Some(1.0),
+            net_delta: Some(-40.0),
+            delta_source_consulted: true,
+            gaps: vec![],
+        });
+        let n = engine::NarrativeRead {
+            form: engine::NarrativeForm::RevisionBased,
+            expansion: 0.36,
+            reality: 0.10,
+            ratio: Some(3.6),
+            classification: engine::NarrativeClass::Hype,
+            elapsed_days: 30,
+            matched_rule: Some("narrative-vs-reality hype: test rule".into()),
+        };
+        let p = interp(&d, Some(&n));
+        assert!(
+            p.contains("SHORT INTEREST") && p.contains("+25.0% vs the prior settlement"),
+            "{p}"
+        );
+        assert!(
+            p.contains("SAME-UNDERLYING OPTION OVERLAY") && p.contains("covered call"),
+            "{p}"
+        );
+        assert!(
+            p.contains("NARRATIVE VS REALITY")
+                && p.contains("HYPE")
+                && p.contains("binds the ENGINE arm"),
+            "{p}"
+        );
+        assert!(p.contains("IMPLIED EXPECTATIONS"), "{p}");
+        // The action call sees the overlay too — it changes what the right
+        // action is (`docs/portfolio-analysis.md` §The per-holding pipeline).
+        let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
+            panic!("expected a priced verdict");
+        };
+        let engine_set =
+            engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
+        let action = action_user_prompt(&ActionInput {
+            dossier: &d,
+            subject: ActionSubject::Priced {
+                graded,
+                engine: &engine_output,
+                pre_profit: None,
+            },
+            engine_set: &engine_set,
+            profile: &d.profile,
+        });
+        assert!(action.contains("SAME-UNDERLYING OPTION OVERLAY"), "{action}");
+        assert!(!action.contains("SHORT INTEREST"), "positioning stays interpretation-side: {action}");
     }
 
     #[test]
@@ -5204,6 +5562,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(user.contains("RETROSPECTIVE (prior read 2026-07-29T12:00:00Z)"), "{user}");
         assert!(user.contains("prior ENGINE arm: grade"), "{user}");
@@ -5241,6 +5600,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(!debut_user.contains("RETROSPECTIVE"), "{debut_user}");
         assert!(debut_user.contains("new holding (no prior verdict)"), "{debut_user}");
@@ -5278,6 +5638,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(user.contains("anchor close 180.00"), "{user}");
     }
@@ -5312,6 +5673,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(
             user.contains(
@@ -5350,6 +5712,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(user.contains("RETROSPECTIVE (prior read"), "{user}");
         assert!(
@@ -5378,6 +5741,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(anchored.contains("spread-anchored on 40 rate observations"), "{anchored}");
         // The weighing sentence's signal grammar (two Codex rounds): flat_driver is
@@ -5409,6 +5773,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(carried.contains("current multiple was carried"), "{carried}");
         assert!(carried.contains("driver held FLAT"), "{carried}");
@@ -5423,6 +5788,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(fallback.contains("raw-percentile fallback"), "{fallback}");
     }
@@ -5454,6 +5820,7 @@ mod tests {
                 ledger_eval: None,
                 pre_profit: None,
                 tech_pre_flag: None,
+                narrative: None,
             })
         };
 
@@ -5488,6 +5855,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         // The scope rides the house-view block header itself, not a floating line.
         let hv_block = user
@@ -5591,6 +5959,7 @@ mod tests {
                 ledger_eval: None,
                 pre_profit: None,
                 tech_pre_flag: None,
+                narrative: None,
             },
         );
         assert_eq!(interpret.think, Some(true));
@@ -6627,6 +6996,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: None,
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(user.contains("REWRITE THE THESIS LEDGER"), "{user}");
         assert!(interpretation_system_prompt().contains("THESIS LEDGER"));
@@ -7082,6 +7452,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: Some(&overlay),
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(user.contains("PRE-PROFIT EXECUTION / FINANCING OVERLAY"), "{user}");
         // The ceiling renders as the ENGINE arm's own rule with the model arm
@@ -7180,6 +7551,7 @@ mod tests {
             ledger_eval: None,
             pre_profit: Some(&overlay),
             tech_pre_flag: None,
+            narrative: None,
         });
         assert!(interp.contains("Your conviction is UNRESTRICTED"), "{interp}");
         assert!(

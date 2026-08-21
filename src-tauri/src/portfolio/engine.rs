@@ -618,6 +618,12 @@ pub struct EngineOutput {
     /// The stored closed-form re-anchor basis the engine-only quick paths read
     /// (`docs/portfolio-analysis.md` §The quick check) — persisted on the audit.
     pub quick_basis: Option<QuickCheckBasis>,
+    /// The implied-expectations range ([`ImpliedExpectations`]) — computed on
+    /// the stock path; `None` on the fund path (its flat-driver stopgap prices
+    /// no driver trajectory to invert), the current-multiple carry, and
+    /// pre-field runs (`#[serde(default)]`).
+    #[serde(default)]
+    pub implied_expectations: Option<ImpliedExpectations>,
 }
 
 /// What the engine resolved to: an analysis, or an explicit abstention when the
@@ -1270,6 +1276,7 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
         fund_class_label: None,
         structural_flag: false,
         quick_basis: Some(bundle.basis),
+        implied_expectations: bundle.implied,
     }))
 }
 
@@ -1482,6 +1489,10 @@ pub struct TargetBundle {
     /// The closed-form re-anchor basis the run persists for the engine-only quick
     /// paths (`docs/portfolio-analysis.md` §The quick check).
     pub basis: QuickCheckBasis,
+    /// The implied-expectations range ([`ImpliedExpectations`]) — the same
+    /// scenario multiples inverted at the spot. `None` on the current-multiple
+    /// carry (no independent multiple to invert against).
+    pub implied: Option<ImpliedExpectations>,
 }
 
 /// The stored basis the engine-only quick paths re-anchor against
@@ -1613,42 +1624,8 @@ fn scenarios_from_surfaces(
     forward_income_per_share: f64,
     dispersion_floor: f64,
 ) -> ScenarioSet {
-    let mut degenerate = 0usize;
-    let mut current_multiple_carry = false;
-
-    let multiples: [f64; 3] = match (spread_ps, raw_ps) {
-        (Some(spread_ps), raw_ps) => {
-            // Inverse mapping in the spread domain; the raw fallback maps direct.
-            // The rate-anchored path always has raw percentiles too (every
-            // spread-admissible quarter is driver-admissible), so the degenerate
-            // guard's fallback is real history; a stored basis missing them keeps
-            // the reciprocal (recorded via `degenerate_scenarios` staying zero).
-            let mut ms = [0.0; 3];
-            for s in 0..3 {
-                let denom = spread_ps[s] + dgs10_now;
-                if denom < DEGENERATE_DENOMINATOR_EPS {
-                    if let Some(raw_ps) = raw_ps {
-                        degenerate += 1;
-                        ms[s] = raw_ps[s];
-                    } else {
-                        ms[s] = 1.0 / denom.max(DEGENERATE_DENOMINATOR_EPS);
-                    }
-                } else {
-                    ms[s] = 1.0 / denom;
-                }
-            }
-            ms
-        }
-        (None, Some(raw_ps)) => raw_ps,
-        (None, None) => {
-            // No anchor history at all: the caller's carry multiple (the full pass's
-            // spot over its base driver — a *stored* multiple on the re-anchor path,
-            // never the fresh print's), so scenario spread comes from driver
-            // dispersion alone — recorded.
-            current_multiple_carry = true;
-            [carry_multiple, carry_multiple, carry_multiple]
-        }
-    };
+    let (multiples, degenerate, current_multiple_carry) =
+        scenario_multiples(spread_ps, raw_ps, carry_multiple, dgs10_now);
 
     let mut prices = [
         drivers[0] * multiples[0],
@@ -1699,6 +1676,127 @@ fn scenarios_from_surfaces(
         spread_percentiles: spread_ps,
         raw_percentiles: raw_ps,
     }
+}
+
+/// The three scenario multiples `[bear, base, bull]` off the percentile
+/// surfaces, plus the degenerate-scenario count and the carry marker — the
+/// **single** multiple derivation: [`scenarios_from_surfaces`] prices with it
+/// and [`implied_expectations`] inverts against it, so the two can never
+/// disagree on which multiple a scenario used.
+fn scenario_multiples(
+    spread_ps: Option<[f64; 3]>,
+    raw_ps: Option<[f64; 3]>,
+    carry_multiple: f64,
+    dgs10_now: f64,
+) -> ([f64; 3], usize, bool) {
+    let mut degenerate = 0usize;
+    let mut current_multiple_carry = false;
+    let multiples: [f64; 3] = match (spread_ps, raw_ps) {
+        (Some(spread_ps), raw_ps) => {
+            // Inverse mapping in the spread domain; the raw fallback maps direct.
+            // The rate-anchored path always has raw percentiles too (every
+            // spread-admissible quarter is driver-admissible), so the degenerate
+            // guard's fallback is real history; a stored basis missing them keeps
+            // the reciprocal (recorded via `degenerate_scenarios` staying zero).
+            let mut ms = [0.0; 3];
+            for s in 0..3 {
+                let denom = spread_ps[s] + dgs10_now;
+                if denom < DEGENERATE_DENOMINATOR_EPS {
+                    if let Some(raw_ps) = raw_ps {
+                        degenerate += 1;
+                        ms[s] = raw_ps[s];
+                    } else {
+                        ms[s] = 1.0 / denom.max(DEGENERATE_DENOMINATOR_EPS);
+                    }
+                } else {
+                    ms[s] = 1.0 / denom;
+                }
+            }
+            ms
+        }
+        (None, Some(raw_ps)) => raw_ps,
+        (None, None) => {
+            // No anchor history at all: the caller's carry multiple (the full pass's
+            // spot over its base driver — a *stored* multiple on the re-anchor path,
+            // never the fresh print's), so scenario spread comes from driver
+            // dispersion alone — recorded.
+            current_multiple_carry = true;
+            [carry_multiple, carry_multiple, carry_multiple]
+        }
+    };
+    (multiples, degenerate, current_multiple_carry)
+}
+
+/// The implied-expectations range (`docs/portfolio-analysis.md` §Starting
+/// parameters): the scenario math inverted at the live price — the per-share
+/// driver, and its growth against the trailing TTM print, that the spot
+/// **already assumes** at each scenario multiple `M_bear … M_bull`. A
+/// closed-form **range under stated assumptions**, never one solved number:
+/// the surface that produced the multiples and the DGS10 print ride the
+/// record as the assumptions. On the revenue rung the range reads as the
+/// revenue trajectory the price assumes at prevailing margins — the margin
+/// dimension is a stated assumption, not a second solved axis. Conviction /
+/// action evidence only — never a gate, never a sub-score input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImpliedExpectations {
+    /// The per-share driver the spot implies at each scenario multiple,
+    /// `[at M_bear, at M_base, at M_bull]`. The inversion runs opposite to
+    /// pricing: the cheap bear multiple demands the **largest** driver, so the
+    /// range's demanding end is index 0.
+    pub implied_drivers: [f64; 3],
+    /// Implied growth vs the trailing TTM print (decimal, same order); `None`
+    /// where the trailing print is absent or non-positive (growth undefinable —
+    /// the implied drivers still carry the level read).
+    pub implied_growth: Option<[f64; 3]>,
+    /// The driver ladder rung the read inverts (the same rung the targets
+    /// priced).
+    pub driver_rung: String,
+    /// True on the revenue rung — the margin-dimension caveat above applies.
+    pub revenue_based: bool,
+    /// Which surface produced the multiples (the stated assumption): the
+    /// rate-anchored spread percentiles, else the raw-multiple percentiles.
+    pub rate_anchored: bool,
+    /// The DGS10 print the rate-anchored multiples used (decimal ratio).
+    pub dgs10: f64,
+}
+
+/// Invert the scenario multiples at the live price ([`ImpliedExpectations`]).
+/// `None` on the current-multiple carry — its multiple is derived *from* the
+/// spot, so the inversion would only hand back the priced driver (no
+/// independent read exists) — and on a non-positive spot or a multiple the
+/// surfaces cannot produce finitely.
+pub fn implied_expectations(
+    spot: f64,
+    scenario: &ScenarioSet,
+    trailing_print: Option<f64>,
+    driver_rung: &str,
+    use_eps: bool,
+    dgs10_now: f64,
+) -> Option<ImpliedExpectations> {
+    if !(spot.is_finite() && spot > 0.0) || scenario.current_multiple_carry {
+        return None;
+    }
+    let (multiples, _, carry) = scenario_multiples(
+        scenario.spread_percentiles,
+        scenario.raw_percentiles,
+        f64::NAN,
+        dgs10_now,
+    );
+    if carry || multiples.iter().any(|m| !m.is_finite() || *m <= 0.0) {
+        return None;
+    }
+    let implied_drivers = multiples.map(|m| spot / m);
+    let implied_growth = trailing_print
+        .filter(|t| *t > 0.0)
+        .map(|t| implied_drivers.map(|d| d / t - 1.0));
+    Some(ImpliedExpectations {
+        implied_drivers,
+        implied_growth,
+        driver_rung: driver_rung.to_string(),
+        revenue_based: !use_eps,
+        rate_anchored: scenario.rate_anchored,
+        dgs10: dgs10_now,
+    })
 }
 
 /// The engine-only quick paths' **closed-form re-anchor**
@@ -2112,11 +2210,20 @@ pub fn scenario_targets_v2(
         clamp_released,
         parameter_version: SCENARIO_TARGET_PARAMETER_VERSION.to_string(),
     };
+    let implied = implied_expectations(
+        spot,
+        &scenario,
+        read.trailing_print,
+        read.rung,
+        read.use_eps,
+        rates.dgs10,
+    );
     TargetOutcome::Computed(Box::new(TargetBundle {
         targets,
         scenario,
         meta,
         basis,
+        implied,
     }))
 }
 
@@ -2558,6 +2665,7 @@ pub fn engine_view(
     input_gaps: &[String],
     overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
     hard_forensic: bool,
+    narrative_hype: bool,
 ) -> EngineView {
     let action = engine_action(out.grade, &out.hurdle, overlay_rules, hard_forensic);
     // The engine arm observes its own cap rules: a matched pre-profit conviction
@@ -2565,11 +2673,23 @@ pub fn engine_view(
     // the stand-in action (`docs/portfolio-analysis.md` §The holding verdict —
     // caps bind the engine arm, annotate the model's). A tripped hard forensic
     // trigger is the strict Low ceiling, dominating any soft Medium ceiling
-    // (hard > soft — `docs/portfolio-analysis.md` §Starting parameters).
+    // (hard > soft — `docs/portfolio-analysis.md` §Starting parameters). The
+    // soft ceilings merge strictest-binds: a matched overlay Low outranks the
+    // narrative read's Medium ([`NarrativeRead`] — conviction only, never an
+    // action-set bar).
+    use crate::portfolio::pre_profit::ConvictionCeiling;
     let ceiling = if hard_forensic {
-        Some(crate::portfolio::pre_profit::ConvictionCeiling::Low)
+        Some(ConvictionCeiling::Low)
     } else {
-        overlay_rules.and_then(|r| r.conviction_ceiling)
+        let overlay = overlay_rules.and_then(|r| r.conviction_ceiling);
+        let narrative = narrative_hype.then_some(ConvictionCeiling::Medium);
+        match (overlay, narrative) {
+            (Some(ConvictionCeiling::Low), _) => Some(ConvictionCeiling::Low),
+            (Some(ConvictionCeiling::Medium), _) | (None, Some(_)) => {
+                Some(ConvictionCeiling::Medium)
+            }
+            (None, None) => None,
+        }
     };
     let (conviction, _) = crate::portfolio::pre_profit::clamp_conviction(
         engine_conviction(out, input_gaps),
@@ -2580,6 +2700,187 @@ pub fn engine_view(
         conviction,
         action,
     }
+}
+
+// ---- Narrative-vs-reality (the conviction-layer red-flag ratio) ---------------
+
+/// The hype threshold: multiple expansion outrunning revisions by more than this
+/// ratio trips the soft cap (drafted, calibratable — `docs/portfolio-analysis.md`
+/// §Starting parameters).
+pub const NARRATIVE_HYPE_RATIO: f64 = 1.5;
+
+/// The multiple-expansion floor (decimal) below which the read never caps —
+/// sub-threshold expansion is noise, not a re-rating (drafted, calibratable).
+pub const NARRATIVE_MIN_MULTIPLE_EXPANSION: f64 = 0.05;
+
+/// The minimum elapsed interval for a pace comparison — under it the two legs
+/// are same-week noise, and the fallback's annualization would explode
+/// (drafted, calibratable).
+pub const NARRATIVE_MIN_ELAPSED_DAYS: i64 = 7;
+
+/// Which form the read took (`docs/trade-opportunities.md` §The two
+/// non-negotiables — the shared definition; Portfolio computes the held-name
+/// form): the primary revisions-vs-multiple pace comparison, or the
+/// operating-reality-vs-price fallback where analyst coverage is too thin to
+/// read revisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NarrativeForm {
+    RevisionBased,
+    OperatingReality,
+}
+
+/// What the ratio classified: *justified-expensive* (estimates underwrite the
+/// re-rating), *hype* (the multiple outran flat or declining estimates — the
+/// soft-cap signature), or *neutral* (no meaningful expansion to classify).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NarrativeClass {
+    JustifiedExpensive,
+    Hype,
+    Neutral,
+}
+
+/// The narrative-vs-reality read (`docs/portfolio-analysis.md` §Starting
+/// parameters — the conviction-layer caps): revision pace vs multiple change
+/// since the prior run, both legs over the same elapsed interval (the
+/// cadence-honest pace pair — the interval cancels in the ratio), falling back
+/// to the company's own reported operating series against the annualized price
+/// move where coverage is too thin. Conviction / risk evidence only — a
+/// tripped cap is the suite's shared **soft Medium ceiling on the engine
+/// arm's** mechanical conviction, an annotation beside the model's own value,
+/// never a clamp on it, and never a letter input. As-built the cap fires on
+/// the ratio alone: no leading-metric anchor producer exists in Portfolio, so
+/// every holding reads anchor-absent — the anchor exception joins with the
+/// research loop (ruled 2026-08-21).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NarrativeRead {
+    pub form: NarrativeForm,
+    /// The expansion leg (decimal): the forward-multiple change since the prior
+    /// run on the revision form; the annualized price move on the fallback.
+    pub expansion: f64,
+    /// The reality leg (decimal): the consensus-mid revision over the same
+    /// interval, or the TTM-revenue year-over-year growth on the fallback.
+    pub reality: f64,
+    /// expansion ÷ reality, where reality is positive — `None` on flat or
+    /// declining reality (the ratio is unbounded there; classification says
+    /// what that means).
+    pub ratio: Option<f64>,
+    pub classification: NarrativeClass,
+    /// Elapsed days between the prior read's session and this run's.
+    pub elapsed_days: i64,
+    /// The matched soft rule, recorded when the cap fired (engine conviction
+    /// ceiling Medium) — the audit's matched-cap-rule leg.
+    pub matched_rule: Option<String>,
+}
+
+impl NarrativeRead {
+    /// Whether the soft cap fired (the engine arm's Medium ceiling).
+    pub fn hype_capped(&self) -> bool {
+        self.matched_rule.is_some()
+    }
+}
+
+/// TTM revenue summed over quarters `[start, start+4)` — `None` unless the
+/// window is contiguous with every revenue line present.
+fn ttm_revenue_window(fin: &CompanyFinancials, start: usize) -> Option<f64> {
+    let rows = fin.quarterly_income.get(start..start + 4)?;
+    if !quarters_contiguous(rows.iter().map(|r| r.period_end.as_str())) {
+        return None;
+    }
+    rows.iter().map(|r| r.revenue).sum()
+}
+
+/// Compute the narrative-vs-reality read against the prior run's stored
+/// comparator ([`QuickCheckBasis`]'s spot + consensus mid — both persisted, so
+/// the pace pair needs no new history). `Err` is the typed unreadable reason
+/// (a debut, a too-short interval, or neither form's legs resolving) — a gap,
+/// never a fabricated neutral.
+pub fn narrative_vs_reality(
+    fin: &CompanyFinancials,
+    spot: f64,
+    prior_spot: Option<f64>,
+    prior_consensus_eps_mid: Option<f64>,
+    elapsed_days: Option<i64>,
+) -> std::result::Result<NarrativeRead, String> {
+    let prior_spot = prior_spot
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .ok_or("no prior authoring-time spot (a debut, or a prior audit without a basis)")?;
+    let elapsed_days =
+        elapsed_days.ok_or("no readable elapsed interval since the prior read")?;
+    if elapsed_days < NARRATIVE_MIN_ELAPSED_DAYS {
+        return Err(format!(
+            "only {elapsed_days} day(s) since the prior read (need {NARRATIVE_MIN_ELAPSED_DAYS})"
+        ));
+    }
+    if !(spot.is_finite() && spot > 0.0) {
+        return Err("no positive current price".to_string());
+    }
+
+    let mid_now = fin
+        .consensus
+        .as_ref()
+        .and_then(|c| c.eps_mid)
+        .filter(|m| m.is_finite() && *m > 0.0);
+    let prior_mid = prior_consensus_eps_mid.filter(|m| m.is_finite() && *m > 0.0);
+
+    let (form, expansion, reality) = match (mid_now, prior_mid) {
+        // The primary form: forward-multiple change vs consensus revision, both
+        // over the same interval — the ratio is interval-invariant.
+        (Some(mid_now), Some(prior_mid)) => {
+            let expansion = (spot / mid_now) / (prior_spot / prior_mid) - 1.0;
+            let reality = mid_now / prior_mid - 1.0;
+            (NarrativeForm::RevisionBased, expansion, reality)
+        }
+        // The thin-coverage fallback (`docs/trade-opportunities.md` §The two
+        // non-negotiables): the company's own reported operating momentum (TTM
+        // revenue YoY — an annual rate) against the price move annualized onto
+        // the same basis.
+        _ => {
+            let ttm_now = ttm_revenue_window(fin, 0)
+                .filter(|r| *r > 0.0)
+                .ok_or("thin coverage and no contiguous current TTM revenue window")?;
+            let ttm_prior = ttm_revenue_window(fin, 4)
+                .filter(|r| *r > 0.0)
+                .ok_or("thin coverage and no contiguous prior-year TTM revenue window")?;
+            let reality = ttm_now / ttm_prior - 1.0;
+            let expansion =
+                (spot / prior_spot).powf(365.25 / elapsed_days as f64) - 1.0;
+            (NarrativeForm::OperatingReality, expansion, reality)
+        }
+    };
+
+    let ratio = (reality > 0.0).then(|| expansion / reality);
+    let classification = if expansion < NARRATIVE_MIN_MULTIPLE_EXPANSION {
+        NarrativeClass::Neutral
+    } else if reality <= 0.0 || ratio.is_some_and(|r| r > NARRATIVE_HYPE_RATIO) {
+        NarrativeClass::Hype
+    } else {
+        NarrativeClass::JustifiedExpensive
+    };
+    let matched_rule = (classification == NarrativeClass::Hype).then(|| {
+        format!(
+            "narrative-vs-reality hype: {} outran {} >{NARRATIVE_HYPE_RATIO}× (no \
+             leading-metric anchor) — engine conviction capped Medium",
+            match form {
+                NarrativeForm::RevisionBased => "forward-multiple expansion",
+                NarrativeForm::OperatingReality => "the annualized price move",
+            },
+            match form {
+                NarrativeForm::RevisionBased => "estimate revisions",
+                NarrativeForm::OperatingReality => "reported TTM revenue growth",
+            },
+        )
+    });
+    Ok(NarrativeRead {
+        form,
+        expansion,
+        reality,
+        ratio,
+        classification,
+        elapsed_days,
+        matched_rule,
+    })
 }
 
 // ---- Technology-event pre-flag (the input delta's repricing screen) -----------
@@ -3685,11 +3986,11 @@ mod tests {
         clean.tier_gaps.clear();
         clean.hurdle.state = crate::portfolio::HurdleState::Clears;
         let fin = strong();
-        let view = engine_view(&clean, &fin, &[], None, false);
+        let view = engine_view(&clean, &fin, &[], None, false, false);
         assert_eq!(view.conviction, Conviction::High, "no assembled gap → High");
         let degraded =
             ["listing-resolution guard unverified — FMP profile unavailable".to_string()];
-        let view = engine_view(&clean, &fin, &degraded, None, false);
+        let view = engine_view(&clean, &fin, &degraded, None, false, false);
         assert_eq!(
             view.conviction,
             Conviction::Medium,
@@ -3932,9 +4233,9 @@ mod tests {
         clean.tier_gaps.clear();
         clean.hurdle.state = crate::portfolio::HurdleState::Clears;
         let fin = strong();
-        let view = engine_view(&clean, &fin, &[], None, true);
+        let view = engine_view(&clean, &fin, &[], None, true, false);
         assert_eq!(view.conviction, Conviction::Low);
-        let view = engine_view(&clean, &fin, &[], None, false);
+        let view = engine_view(&clean, &fin, &[], None, false, false);
         assert_eq!(view.conviction, Conviction::High);
     }
 
@@ -4008,6 +4309,7 @@ mod tests {
                     volume: 1000.0,
                     open_interest: 5000.0,
                     implied_volatility: Some(0.25),
+                    delta: None,
                 },
                 OptionQuote {
                     kind: OptionKind::Put,
@@ -4016,6 +4318,7 @@ mod tests {
                     volume: 2000.0,
                     open_interest: 9000.0,
                     implied_volatility: Some(0.33),
+                    delta: None,
                 },
             ],
         };
@@ -5086,5 +5389,176 @@ mod tests {
             eval.updated_states.is_empty(),
             "state untouched on an unevaluable family"
         );
+    }
+
+    /// The implied-expectations inversion round-trips the pricing arithmetic:
+    /// inverting at a scenario's own price recovers that scenario's driver,
+    /// because both sides read the one shared multiple derivation.
+    #[test]
+    fn implied_expectations_round_trips_the_scenario_multiples() {
+        // Constant spread 0.05 + DGS10 0.05 → every scenario multiple is 10.
+        let obs: Vec<AnchorObservation> = (0..8)
+            .map(|_| AnchorObservation {
+                spread: Some(0.05),
+                raw_multiple: 10.0,
+            })
+            .collect();
+        let drivers = [9.0, 10.0, 11.0];
+        let scenario = spread_anchored_scenarios(100.0, drivers, &obs, 0.05, 0.0, 0.0);
+        assert!(scenario.rate_anchored);
+        assert_eq!(scenario.base, 100.0);
+        // Inverting at the base price recovers the base driver exactly.
+        let ie = implied_expectations(
+            scenario.base,
+            &scenario,
+            Some(8.0),
+            "consensus forward EPS",
+            true,
+            0.05,
+        )
+        .expect("rate-anchored surface inverts");
+        assert!((ie.implied_drivers[1] - drivers[1]).abs() < 1e-9, "{ie:?}");
+        // Growth vs the trailing print: 10 / 8 − 1 = 25% at every multiple here.
+        let g = ie.implied_growth.expect("positive trailing print");
+        assert!((g[1] - 0.25).abs() < 1e-9, "{g:?}");
+        assert!(ie.rate_anchored);
+        assert!(!ie.revenue_based);
+        // No trailing print → the level read survives, growth is undefinable.
+        let ie = implied_expectations(100.0, &scenario, None, "r", false, 0.05).unwrap();
+        assert!(ie.implied_growth.is_none());
+        assert!(ie.revenue_based);
+    }
+
+    /// The inversion runs opposite to pricing — the cheap bear multiple demands
+    /// the largest implied driver — and the current-multiple carry inverts to
+    /// nothing (its multiple is derived from the spot itself).
+    #[test]
+    fn implied_expectations_orders_inversely_and_declines_the_carry() {
+        let spreads = [0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16];
+        let obs: Vec<AnchorObservation> = spreads
+            .iter()
+            .map(|s| AnchorObservation {
+                spread: Some(*s),
+                raw_multiple: 12.0,
+            })
+            .collect();
+        let scenario = spread_anchored_scenarios(100.0, [10.0, 10.0, 10.0], &obs, 0.04, 0.0, 0.0);
+        let ie = implied_expectations(100.0, &scenario, Some(9.0), "r", true, 0.04).unwrap();
+        assert!(
+            ie.implied_drivers[0] > ie.implied_drivers[2],
+            "the bear multiple is the demanding end: {ie:?}"
+        );
+        // No anchor history at all → the carry — nothing independent to invert.
+        let scenario = spread_anchored_scenarios(100.0, [10.0, 10.0, 10.0], &[], 0.04, 0.0, 0.0);
+        assert!(scenario.current_multiple_carry);
+        assert!(implied_expectations(100.0, &scenario, Some(9.0), "r", true, 0.04).is_none());
+        // A non-positive spot never inverts.
+        let scenario = spread_anchored_scenarios(100.0, [10.0, 10.0, 10.0], &obs, 0.04, 0.0, 0.0);
+        assert!(implied_expectations(0.0, &scenario, Some(9.0), "r", true, 0.04).is_none());
+    }
+
+    /// A minimal narrative-read fixture: an optional NTM consensus mid and an
+    /// optional 8-quarter contiguous revenue window (newest first).
+    fn narrative_fin(mid: Option<f64>, quarterly_revenue: Option<[f64; 8]>) -> CompanyFinancials {
+        let mut fin = CompanyFinancials {
+            symbol: "NARR".into(),
+            ..CompanyFinancials::default()
+        };
+        if let Some(mid) = mid {
+            fin.consensus = Some(ConsensusEstimate {
+                eps_mid: Some(mid),
+                ..ConsensusEstimate::default()
+            });
+        }
+        if let Some(revs) = quarterly_revenue {
+            fin.quarterly_income = quarter_ends(8)
+                .iter()
+                .zip(revs)
+                .map(|(end, r)| QuarterlyIncomeRow {
+                    period_end: end.clone(),
+                    filing_date: None,
+                    revenue: Some(r),
+                    eps_diluted: None,
+                    diluted_shares: None,
+                    net_income: None,
+                    gross_profit: None,
+                    cost_of_revenue: None,
+                    operating_income: None,
+                })
+                .collect();
+        }
+        fin
+    }
+
+    #[test]
+    fn narrative_revision_form_classifies_hype_justified_and_neutral() {
+        // Hype: forward multiple 10 → 13.6 (+36%) on a +10% revision → ratio > 1.5.
+        let fin = narrative_fin(Some(11.0), None);
+        let n = narrative_vs_reality(&fin, 150.0, Some(100.0), Some(10.0), Some(30)).unwrap();
+        assert_eq!(n.form, NarrativeForm::RevisionBased);
+        assert_eq!(n.classification, NarrativeClass::Hype);
+        assert!(n.matched_rule.is_some());
+        assert!(n.ratio.unwrap() > NARRATIVE_HYPE_RATIO);
+        // Justified-expensive: a +20% revision underwrites a +8.3% multiple move.
+        let fin = narrative_fin(Some(12.0), None);
+        let n = narrative_vs_reality(&fin, 130.0, Some(100.0), Some(10.0), Some(30)).unwrap();
+        assert_eq!(n.classification, NarrativeClass::JustifiedExpensive);
+        assert!(n.matched_rule.is_none());
+        // Real expansion over FLAT revisions: the unbounded case — hype, ratio None.
+        let fin = narrative_fin(Some(10.0), None);
+        let n = narrative_vs_reality(&fin, 150.0, Some(100.0), Some(10.0), Some(30)).unwrap();
+        assert_eq!(n.classification, NarrativeClass::Hype);
+        assert!(n.ratio.is_none());
+        // Sub-floor expansion is neutral even over flat revisions — noise, not a
+        // re-rating.
+        let n = narrative_vs_reality(&fin, 102.0, Some(100.0), Some(10.0), Some(30)).unwrap();
+        assert_eq!(n.classification, NarrativeClass::Neutral);
+        assert!(n.matched_rule.is_none());
+    }
+
+    #[test]
+    fn narrative_falls_back_to_operating_reality_and_types_its_absences() {
+        // Thin coverage (no consensus leg on either side) → the
+        // operating-reality-vs-price fallback: TTM revenue YoY vs the
+        // annualized price move.
+        let revs = [110.0, 110.0, 110.0, 110.0, 100.0, 100.0, 100.0, 100.0];
+        let fin = narrative_fin(None, Some(revs));
+        let n = narrative_vs_reality(&fin, 140.0, Some(100.0), None, Some(365)).unwrap();
+        assert_eq!(n.form, NarrativeForm::OperatingReality);
+        assert!((n.reality - 0.1).abs() < 1e-9, "{n:?}");
+        assert_eq!(n.classification, NarrativeClass::Hype, "{n:?}");
+        // Price pace ≈ operating pace reads justified.
+        let n = narrative_vs_reality(&fin, 110.0, Some(100.0), None, Some(365)).unwrap();
+        assert_eq!(n.classification, NarrativeClass::JustifiedExpensive, "{n:?}");
+        // Absences are typed errors, never fabricated neutrals: a debut, a
+        // too-short interval, and thin coverage with no statement window.
+        assert!(narrative_vs_reality(&fin, 140.0, None, None, Some(365)).is_err());
+        assert!(narrative_vs_reality(&fin, 140.0, Some(100.0), None, Some(3)).is_err());
+        let bare = narrative_fin(None, None);
+        assert!(narrative_vs_reality(&bare, 140.0, Some(100.0), None, Some(365)).is_err());
+    }
+
+    #[test]
+    fn narrative_hype_caps_the_engine_arm_at_medium_and_low_still_dominates() {
+        let out = match analyze(&strong(), &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let mut clean = (*out).clone();
+        clean.low_confidence_grade = false;
+        clean.target_meta = TargetMeta { rate_anchored: true, ..Default::default() };
+        clean.tier_gaps.clear();
+        clean.hurdle.state = crate::portfolio::HurdleState::Clears;
+        let fin = strong();
+        // The soft cap is a plain min on the engine arm's mechanical conviction.
+        let view = engine_view(&clean, &fin, &[], None, false, true);
+        assert_eq!(view.conviction, Conviction::Medium, "hype soft cap → Medium");
+        // A matched overlay Low outranks the narrative Medium (strictest binds).
+        let overlay = crate::portfolio::pre_profit::OverlayConsequences {
+            conviction_ceiling: Some(crate::portfolio::pre_profit::ConvictionCeiling::Low),
+            ..Default::default()
+        };
+        let view = engine_view(&clean, &fin, &[], Some(&overlay), false, true);
+        assert_eq!(view.conviction, Conviction::Low);
     }
 }

@@ -178,6 +178,16 @@ pub trait MarketContextSource {
     fn put_call_backdrop(&self) -> (Option<crate::cboe::PutCallBackdrop>, Option<String>) {
         (None, None)
     }
+
+    /// The FINRA consolidated short-interest file (`docs/data-sources.md
+    /// §FINRA`) — fetched **once per run**, each held stock reading it as a
+    /// local lookup at dossier assembly (risk / squeeze-context positioning
+    /// evidence, never a sub-score input), wholly fail-soft. `(None, None)` =
+    /// the leg is not wired (a stub); the live impl returns the parsed file or
+    /// its typed gap.
+    fn short_interest(&self) -> (Option<crate::finra::ShortInterestFile>, Option<String>) {
+        (None, None)
+    }
 }
 
 /// How many days of DGS10 history the anchor-window request covers: the ~12-quarter
@@ -199,6 +209,9 @@ pub struct LiveMarketContext {
     /// The keyless Cboe daily-statistics adapter (the venue-level put/call
     /// backdrop). `None` records the sentiment leg as a gap.
     pub cboe: Option<crate::cboe::CboeDataSource>,
+    /// The keyless FINRA short-interest adapter (the once-per-run consolidated
+    /// file). `None` records the short-interest leg as a gap.
+    pub finra: Option<crate::finra::FinraDataSource>,
 }
 
 /// The FRED commodity catalog the live commodity load walks: series id, display
@@ -323,6 +336,16 @@ impl MarketContextSource for LiveMarketContext {
                 Err(e) => (None, Some(format!("CBOE put/call backdrop unavailable: {e}"))),
             },
             None => (None, Some("CBOE source not wired".to_string())),
+        }
+    }
+
+    fn short_interest(&self) -> (Option<crate::finra::ShortInterestFile>, Option<String>) {
+        match &self.finra {
+            Some(finra) => match finra.short_interest() {
+                Ok(f) => (Some(f), None),
+                Err(e) => (None, Some(format!("FINRA short interest unavailable: {e}"))),
+            },
+            None => (None, Some("FINRA source not wired".to_string())),
         }
     }
 }
@@ -848,6 +871,14 @@ fn run_analysis(
     let (put_call_backdrop, cboe_gap) = market.put_call_backdrop();
     ctx.step_finished("sentiment", "ok", cboe_gap.clone());
 
+    // The FINRA consolidated short-interest file — one fail-soft fetch per
+    // run; each held stock reads it as a local lookup at dossier assembly
+    // (risk / squeeze-context positioning evidence — `docs/data-sources.md
+    // §FINRA`).
+    ctx.step_started("short-interest", "Load FINRA short interest");
+    let (short_interest_file, finra_gap) = market.short_interest();
+    ctx.step_finished("short-interest", "ok", finra_gap.clone());
+
     // ---- Selective work-list (`docs/portfolio-analysis.md` §Triggering) ------
     // A selective run analyzes **strictly the user's selection** (ruled
     // 2026-08-16, `docs/verification/2026-08-16-selective-badges-ruling.md`). The
@@ -1260,6 +1291,104 @@ fn run_analysis(
         } else {
             None
         };
+        // The same-underlying option overlay (`docs/portfolio-workflow.md`
+        // §Step 6a): the Step-2 pull's option rows linked by the deterministic
+        // OCC symbol decode, with the **targeted delta fetch** per distinct held
+        // strike — scoped to the held contracts' expiry window so the activity
+        // signal's bounded NTM query is never widened. Each failed targeted
+        // fetch degrades that strike's deltas to typed gaps, recorded.
+        let option_overlay = if is_stock && !skip_retrieval {
+            let key = position.symbol.to_ascii_uppercase();
+            let option_rows: Vec<&crate::schwab::Position> = holdings
+                .positions
+                .iter()
+                .filter(|p| {
+                    // A zero-net row (fully offset contracts, deliberately kept
+                    // by normalization) carries no economic exposure — never a
+                    // leg, never a delta-fetch trigger.
+                    p.quantity != 0.0
+                        && p.asset_class == crate::portfolio::AssetClass::OptionContract
+                        && crate::schwab::parse_occ_symbol(&p.symbol)
+                            .is_some_and(|c| c.underlying == key)
+                })
+                .collect();
+            if option_rows.is_empty() {
+                None
+            } else {
+                let contracts: Vec<crate::schwab::OccContract> = option_rows
+                    .iter()
+                    .filter_map(|p| crate::schwab::parse_occ_symbol(&p.symbol))
+                    .collect();
+                let mut strikes: Vec<f64> = Vec::new();
+                for c in &contracts {
+                    if !strikes.iter().any(|s| (s - c.strike).abs() < 1e-6) {
+                        strikes.push(c.strike);
+                    }
+                }
+                let mut served: Vec<crate::schwab::OptionQuote> = Vec::new();
+                // "Consulted" comes from the capability probe, not the answer:
+                // the stub default answers `Ok(None)` with no wire call, so
+                // only a source that actually issues targeted requests labels
+                // — a live empty answer included.
+                let consulted =
+                    holdings_source.supports_targeted_chain() && !strikes.is_empty();
+                // Fetch failures ride the overlay's own gap list (it is the
+                // record that owns the delta legs), not the financials manifest.
+                let mut fetch_gaps: Vec<String> = Vec::new();
+                for strike in strikes {
+                    let at_strike: Vec<&crate::schwab::OccContract> = contracts
+                        .iter()
+                        .filter(|c| (c.strike - strike).abs() < 1e-6)
+                        .collect();
+                    let from = at_strike.iter().map(|c| c.expiry.as_str()).min();
+                    let to = at_strike.iter().map(|c| c.expiry.as_str()).max();
+                    let (Some(from), Some(to)) = (from, to) else {
+                        continue;
+                    };
+                    match holdings_source.option_chain_at_strike(&position.symbol, strike, from, to)
+                    {
+                        Ok(Some(chain)) => served.extend(chain.contracts),
+                        Ok(None) => {}
+                        Err(e) => fetch_gaps.push(format!(
+                            "delta chain unavailable at strike {strike}: {e}"
+                        )),
+                    }
+                }
+                let mut overlay = dossier::assemble_option_overlay(
+                    position.quantity,
+                    &option_rows,
+                    |c: &crate::schwab::OccContract| {
+                        served
+                            .iter()
+                            .find(|q| {
+                                q.kind == c.kind
+                                    && q.expiry == c.expiry
+                                    && (q.strike - c.strike).abs() < 1e-6
+                            })
+                            .and_then(|q| q.delta)
+                    },
+                    consulted,
+                );
+                if let Some(o) = overlay.as_mut() {
+                    o.gaps.extend(fetch_gaps);
+                }
+                overlay
+            }
+        } else {
+            None
+        };
+        // The per-holding FINRA lookup off the once-per-run file — stocks only
+        // (`docs/data-sources.md §FINRA`: a held-equity risk / squeeze read; a
+        // fund wrapper has no issuer-level short-interest row). A symbol absent
+        // from the consolidated file carries no read — a market fact, not a gap.
+        let short_interest = if is_stock && !skip_retrieval {
+            short_interest_file
+                .as_ref()
+                .and_then(|f| f.by_symbol.get(&position.symbol.to_ascii_uppercase()))
+                .cloned()
+        } else {
+            None
+        };
         let dossier: HoldingDossier = dossier::assemble(
             position.clone(),
             holdings_diff.delta_for(&position.symbol),
@@ -1279,6 +1408,8 @@ fn run_analysis(
                 .cloned()
                 .flatten(),
             filing_events,
+            short_interest,
+            option_overlay,
             put_call_backdrop.clone(),
             // The run-level commodity prints matched to this holding's profile
             // sector (stocks only — a fund's commodity read is the designed
@@ -1478,6 +1609,7 @@ fn run_analysis(
             commodity: commodities.gaps.len(),
             positioning: cot_gaps.len(),
             cboe: cboe_gap.is_some(),
+            finra: finra_gap.is_some(),
             benchmark: benchmark_gaps.len(),
         },
         analyst.take_prompt_usage(),
@@ -1683,6 +1815,7 @@ pub(crate) struct FeedGaps {
     pub commodity: usize,
     pub positioning: usize,
     pub cboe: bool,
+    pub finra: bool,
     pub benchmark: usize,
 }
 
@@ -1825,6 +1958,9 @@ fn build_data_health(
     }
     if feed_gaps.cboe {
         parts.push("CBOE put/call backdrop unavailable".to_string());
+    }
+    if feed_gaps.finra {
+        parts.push("FINRA short interest unavailable".to_string());
     }
     if feed_gaps.benchmark > 0 {
         parts.push(format!(
@@ -1975,6 +2111,7 @@ fn build_data_health(
         commodity_gaps: feed_gaps.commodity,
         positioning_gaps: feed_gaps.positioning,
         cboe_gap: feed_gaps.cboe,
+        finra_gap: feed_gaps.finra,
         benchmark_gaps: feed_gaps.benchmark,
         context_pressure,
         peak_prompt,
@@ -2086,6 +2223,7 @@ mod tests {
                 commodity: 2,
                 positioning: 1,
                 cboe: true,
+                finra: true,
                 benchmark: 1,
             },
             vec![],
@@ -2093,11 +2231,13 @@ mod tests {
         assert_eq!(dh.commodity_gaps, 2);
         assert_eq!(dh.positioning_gaps, 1);
         assert!(dh.cboe_gap);
+        assert!(dh.finra_gap);
         assert_eq!(dh.benchmark_gaps, 1);
         assert!(!dh.attention, "enriching-feed gaps never trip attention");
         assert!(dh.summary.contains("commodity context: 2 series gap(s)"), "{}", dh.summary);
         assert!(dh.summary.contains("CFTC positioning: 1 contract gap(s)"), "{}", dh.summary);
         assert!(dh.summary.contains("CBOE put/call backdrop unavailable"), "{}", dh.summary);
+        assert!(dh.summary.contains("FINRA short interest unavailable"), "{}", dh.summary);
         assert!(dh.summary.contains("sector benchmark series failed on 1 symbol(s)"), "{}", dh.summary);
         // Clean feeds leave the line untouched.
         let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![]);
@@ -3418,6 +3558,7 @@ mod tests {
             fmp: None,
             cot: None,
             cboe: None,
+            finra: None,
         };
         let outcome = run_portfolio_job(
             &FixtureHoldingsSource::new(),

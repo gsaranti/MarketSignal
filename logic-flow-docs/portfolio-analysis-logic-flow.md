@@ -193,12 +193,12 @@
 - **Charles Schwab**
   - Current holdings.
   - Quantities, cost basis, market value, and instrument identity.
-  - Option chains for held stocks — fetched per holding at Step 6a; greeks are not parsed.
+  - Option chains for held stocks — fetched per holding at Step 6a; per-contract delta is parsed for the option overlay's targeted per-strike fetch (the activity signal never reads it).
 
 - **FMP**
   - Company profiles.
   - Financial statements; the ratio endpoints are designed, not yet pulled.
-  - Estimates, earnings, dividends, and live quotes; the revision signal is designed.
+  - Estimates, earnings, dividends, and live quotes; the narrative read's revision-pace leg compares the estimates against the prior run's stored comparator.
   - Deep historical stock prices.
   - Sector benchmark prices — loaded run-level per carried holding's sector, memoized.
   - Outcome-label price history.
@@ -217,8 +217,9 @@
   - Historical ten-year yields for target calculations.
   - Energy and metals commodity prices — level-basis windows, loaded run-level.
 
-- **FINRA (designed, not yet wired)**
-  - Short-interest level, trend, and days-to-cover.
+- **FINRA**
+  - Short-interest level, trend, and days-to-cover — the consolidated file, fetched once per run and looked up per stock.
+  - The quick check's conditional refresh stays dormant (no short-interest series exists in the closed engine surface).
 
 - **CFTC**
   - Futures positioning for commodity, index, rate, and currency funds.
@@ -472,7 +473,7 @@ Once the stock guard clears — and for every fund — the remaining legs are pu
   - Ratios (P/E, P/B, debt/equity), key metrics (return on invested capital, free-cash-flow conversion, gross profitability), owner earnings, and enterprise value (EV, EV/EBITDA) — designed, not yet pulled; P/E, P/S, and P/B are derived from market cap and the statements today instead.
   - Discounted-cash-flow valuation cross-check (intrinsic value vs price) — designed.
   - Financial scores (Piotroski F-score, Altman Z-score) — designed.
-  - Forward consensus estimates (revenue, EPS); the revision signal is designed.
+  - Forward consensus estimates (revenue, EPS); the narrative read's revision-pace leg diffs the NTM mid against the prior run's stored comparator.
   - Street targets and rating history (consensus target price, upgrade/downgrade actions) as opinion evidence — designed.
   - Dividends (the trailing distributions); per-symbol earnings are pulled only by the quick check, not this pass.
   - Insider and congressional activity (Form 4 insider buys/sells, congressional trades) — designed.
@@ -482,13 +483,14 @@ Once the stock guard clears — and for every fund — the remaining legs are pu
 
 - **Stock data retrieved elsewhere**
   - SEC XBRL company facts (revenue, gross profit, net income, total assets, equity) — the filings index is read by the quick check's material sweep and this pass's item-classified forensic sweep.
-  - FINRA short interest (level, trend, days-to-cover) — designed.
+  - FINRA short interest (level, trend, days-to-cover) — the once-per-run consolidated file, looked up per stock; a symbol absent from the file carries no read (a market fact, not a gap).
 
 - **Option chains**
   - Fetched per holding from Schwab.
-  - Volume, open interest, and implied volatility; greeks are not parsed.
+  - Volume, open interest, implied volatility, and per-contract delta (delta feeds only the option overlay, never the activity signal).
   - Put/call ratios and the IV/skew read are computed at dossier assembly.
-  - Linking held options to the same stock and classifying the overlay (covered call, protective put, collar) is designed, not built.
+  - Held options link to the same stock by the OCC symbol decode and classify into the typed overlay (covered call, protective put, collar, other); delta comes from a targeted per-strike fetch scoped to the held contracts, so the activity signal's bounded NTM query never widens.
+  - A row whose symbol does not decode to the holding's root never links — fail-safe absence.
   - Chain fetch failure or malformed body → typed options gap.
   - An empty chain on an un-optioned name is a quiet market fact, not a gap.
   - Option-chain failure does not fail the run.
@@ -566,7 +568,9 @@ The designed embedding-based recall of this holding’s prior analysis; as-built
   - **Return hurdle** (capital efficiency) — risk tier + scenario returns → the dead-money read.
   - **Continuity and ledger checks** — the prior ledger's conditions evaluated against the new engine values.
   - **The hard forensic state and the technology-event pre-flag** — computed here as input-delta / conviction-layer evidence.
-  - **Designed reads (not computed yet)** — narrative-vs-reality, implied expectations, and the soft forensic checks would ride as evidence once built; they are not part of the live order.
+  - **Implied expectations** — the scenario multiples inverted at the live price (computed with the targets, sharing their one multiple derivation); absent on the current-multiple carry.
+  - **Narrative versus reality** — the pace pair against the prior run's stored comparator (or the operating-reality fallback), computed before interpretation; a hype read soft-caps the engine arm's conviction at Medium.
+  - **Designed reads (not computed yet)** — the soft forensic checks would ride as evidence once built; they are not part of the live order.
 
 - **The through-line**
   - The load-bearing dependencies: **sub-scores → letter**, **risk tier → hurdle**, **targets → hurdle**, **overlay → conviction cap + action-set narrowing**.
@@ -832,20 +836,22 @@ After the branch's engine values are set, the prior ledger's conditions are eval
 Additional stock reads that ride into the interpretation call as evidence; none changes the letter directly, and most are still designed.
 
 - **Conviction context**
-  - Estimate revisions and rating changes — analyst estimates are already pulled (the target driver), but the revision signal is designed; rating history is not yet pulled.
+  - Estimate revisions — the narrative read's revision-pace leg (live); rating history is not yet pulled.
   - Earnings surprises — designed.
   - Price momentum and market setup — live.
-  - Insider, congressional, and short-interest activity — designed, not yet pulled; options activity is live.
+  - Short-interest activity — live (the FINRA lookup); insider and congressional activity — designed, not yet pulled; options activity is live.
   - These do not change the letter directly.
 
-- **Narrative versus reality (designed, not built)**
-  - Compare multiple expansion with business or estimate improvement.
-  - Thin analyst coverage uses company operating results instead.
+- **Narrative versus reality (live)**
+  - Compare multiple expansion with estimate improvement — both legs paced over the interval since the prior run's stored comparator.
+  - Thin analyst coverage falls back to company operating results against the annualized price move.
+  - A hype read (expansion outrunning reality >1.5×, above a 5% expansion floor) soft-caps the engine arm's conviction at Medium — annotation-recorded, the model's own value untouched.
+  - A debut has no comparator and carries no read.
 
-- **Implied expectations (designed, not built)**
+- **Implied expectations (live)**
   - Work backward from the current price.
-  - Estimate the growth or margin range already priced in.
-  - Used as context, not a gate.
+  - Estimate the growth or margin range already priced in — per scenario multiple, sharing pricing's one multiple derivation.
+  - Used as context, not a gate; absent on the current-multiple carry (nothing independent to invert).
 
 - **Hard forensic state (live)**
   - Restatement or auditor change from the item-classified SEC filings sweep — the hard-forensic filing kinds' producer.
@@ -899,7 +905,8 @@ The inline gates referenced above, gathered — with each branch's requirements 
     - The **ledger evaluation** — the prior ledger's conditions' tripped / fired state.
     - The **input delta** — position change, house-view age, and prior-run values carried for comparison.
     - The **hard forensic state** (the filings sweep, with its engine-matched rule when tripped) and a **fired technology-event pre-flag**.
-    - Designed, not yet emitted: the soft forensic flags, narrative-vs-reality, implied expectations, and the designed conviction-context signals.
+    - The **implied-expectations range**, the **narrative-vs-reality read** (with its matched soft rule when tripped), the **FINRA short-interest read**, and the **option overlay** (both 6f prompts).
+    - Designed, not yet emitted: the soft forensic flags and the remaining conviction-context signals (rating history, surprises, insider / congressional).
   - **Control result**: the **data-gap manifest** and the **evidence-floor outcome** — pass, or `insufficient-evidence` with named reasons (which short-circuits 6c–6f).
   - **Persisted working reads (not scratch)**: the engine keeps its intermediates too — the overlay's statement inputs (liquid resources, burn, runway, capex intensity, dilution, margin direction) ride the audit row, and the settled per-share drivers, spread / raw-multiple percentiles, spot, and forward-dividend leg persist as the **quick-check basis** the between-run engine paths re-anchor against.
   - **Assembled later, not here**: the engine arm's mechanical **stand-in outlook / conviction / action** are built at verdict time (after interpretation) from these 6b values — they are not part of the Step-6b output.
@@ -1233,12 +1240,14 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - The investor profile.
   - The engine's current-run stand-in outlook, conviction, and action picks.
   - Raw statements, filings, and price-bar series — only computed values and distilled research reach the model.
+- **Evidence sections in the prompt since the evidence-legs slice**
+  - The implied-expectations range (beside the forward outlook, never a gate).
+  - The narrative-versus-reality read, with its engine-matched soft rule when the hype cap fired.
+  - The FINRA short-interest read — positioning evidence on the options signal's precedent, held out of the grade.
+  - The same-stock option overlay (this prompt and the action prompt).
 - **Designed additions not yet in the prompt**
-  - The implied-expectations range.
-  - The narrative-versus-reality read.
   - Absolute street opinions.
-  - The same-stock option overlay.
-  - Positioning-context feeds — insider and congressional activity, and FINRA short interest — gathered at Step 6a once their data legs land; on the live options signal's precedent they reach the model as positioning evidence, held out of the grade.
+  - Insider and congressional activity — gathered at Step 6a once their data legs land; positioning evidence on the same precedent.
 
 #### Interpretation call — what the model authors
 
@@ -1509,7 +1518,7 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
 `Load last run → Refresh monitorable data → Evaluate ledgers → Raise warnings → Save state`
 
 - **As-built**
-  - The quick check **runs today, engine-only** — no model call, no web research, no Schwab pull. Every leg below is live except the FINRA short-interest refresh, which is unwired (its own subsection below).
+  - The quick check **runs today, engine-only** — no model call, no web research, no Schwab pull. Every leg below is live except the FINRA short-interest refresh, which is dormant (its own subsection below).
   - It is the between-run freshness safeguard the 2026-08-16 badge ruling leans on: it **warns without deciding**, and its warnings ride as non-blocking card badges, never a forced re-analysis.
   - Its gate is presence-only — the local-model configuration plus FMP / FRED credential presence, with no daemon probe — and the Schwab connection is a precondition even though no Schwab call is made; it holds the single global run slot like any job.
 
@@ -1536,9 +1545,9 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
   - Only for a holding carrying a **standing technology-class falsifier**: a `news/stock` pull (the qualifying-news-seed leg).
   - Unresolved SEC CIK → filing family becomes `unknown`.
 
-- **FINRA short-interest refresh (designed, not wired)**
+- **FINRA short-interest refresh (dormant)**
   - Designed as a conditional once-per-run consolidated-file pull, read only when some holding carries a validated short-interest-fed condition.
-  - As-built the leg is **absent**: the closed engine series surface has no short-interest series, so no condition can validate as short-interest-fed and the trigger never arms. It activates only when a short-interest series joins the surface.
+  - The FINRA adapter itself is built (the full run's dossier leg uses it), but this sweep leg stays **dormant**: the closed engine series surface has no short-interest series, so no condition can validate as short-interest-fed and the trigger never arms. It activates only when a short-interest series joins the surface.
 
 - **Fund data refreshed**
   - `etf/info` plus **both** the sector and country weight sets — fetched unconditionally for every fund (bond and commodity funds included).

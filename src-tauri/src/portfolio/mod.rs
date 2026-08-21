@@ -1227,6 +1227,10 @@ pub struct DataHealth {
     /// `#[serde(default)]` for pre-field runs.
     #[serde(default)]
     pub cboe_gap: bool,
+    /// The FINRA consolidated short-interest file was unavailable this run —
+    /// same posture. `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub finra_gap: bool,
     /// Sector-benchmark series that failed to fetch (each starves the
     /// technology-event pre-flag for its holdings) — same counted-only posture.
     /// `#[serde(default)]` for pre-field runs.
@@ -1437,6 +1441,36 @@ pub struct HoldingAudit {
     /// `None` on debuts, funds, and pre-field runs (`#[serde(default)]`).
     #[serde(default)]
     pub tech_event_pre_flag: Option<engine::TechEventPreFlag>,
+    /// This holding's FINRA short-interest row off the once-per-run
+    /// consolidated file (`docs/data-sources.md §FINRA`) — risk /
+    /// squeeze-context positioning evidence, held out of every sub-score.
+    /// `None` on funds, symbols absent from the file, runs whose file fetch
+    /// gapped, and pre-field runs (`#[serde(default)]`).
+    #[serde(default)]
+    pub short_interest: Option<crate::finra::ShortInterestRead>,
+    /// The implied-expectations range ([`engine::ImpliedExpectations`]) the
+    /// interpretation prompt rendered — the priced-in anchor, recorded per
+    /// priced stock (`docs/portfolio-analysis.md` §Starting parameters).
+    /// `None` on funds, the current-multiple carry, every early exit, and
+    /// pre-field runs (`#[serde(default)]`).
+    #[serde(default)]
+    pub implied_expectations: Option<engine::ImpliedExpectations>,
+    /// The narrative-vs-reality read ([`engine::NarrativeRead`]) — the
+    /// conviction-layer red-flag ratio with, when tripped, its matched soft
+    /// rule (the engine arm's Medium ceiling), persisted as an annotation
+    /// exactly as a pre-profit ceiling is (`docs/portfolio-workflow.md`
+    /// §Step 6g). `None` on funds, debuts, unreadable paces (the reason rides
+    /// `degraded_inputs`), every early exit, and pre-field runs
+    /// (`#[serde(default)]`).
+    #[serde(default)]
+    pub narrative: Option<engine::NarrativeRead>,
+    /// The typed same-underlying option overlay
+    /// ([`dossier::OptionOverlay`]) the holding carried — legs, class,
+    /// coverage, and delta gaps, recorded wherever the dossier assembled one.
+    /// `None` on holdings with no option legs, funds, skipped retrievals, and
+    /// pre-field runs (`#[serde(default)]`).
+    #[serde(default)]
+    pub option_overlay: Option<dossier::OptionOverlay>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the

@@ -1850,6 +1850,10 @@ mod tests {
             hurdle: None,
             forensic: None,
             tech_event_pre_flag: None,
+            short_interest: None,
+            implied_expectations: None,
+            narrative: None,
+            option_overlay: None,
         }
     }
 

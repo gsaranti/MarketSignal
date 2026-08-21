@@ -124,6 +124,196 @@ pub fn commodity_prints_for_holding(
         .collect()
 }
 
+// ---- Same-underlying option overlay (`docs/portfolio-workflow.md` §Step 6a) ----
+
+/// A leg's side, read off the netted signed quantity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OverlayDirection {
+    Long,
+    Short,
+}
+
+/// The overlay's deterministic classification (`docs/portfolio-analysis.md`
+/// §The per-holding pipeline Step 1): a naked short call must never read as
+/// covered, and an unrecognized multi-leg reads `other` with its net delta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OverlayClass {
+    CoveredCall,
+    ProtectivePut,
+    Collar,
+    Other,
+}
+
+/// One same-underlying option position, decoded and typed.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OverlayLeg {
+    /// The contract symbol as held (trimmed OCC form).
+    pub contract: String,
+    pub direction: OverlayDirection,
+    /// Contracts held (absolute count; the side rides `direction`).
+    pub quantity: f64,
+    /// Call / put — `None` when the OCC symbol did not decode (the leg then
+    /// forces the `other` classification).
+    pub kind: Option<crate::schwab::OptionKind>,
+    pub strike: Option<f64>,
+    pub expiry: Option<String>,
+    /// The contract's delta off the targeted chain fetch — `None` is the typed
+    /// gap (a failed fetch or the sentinel). A standalone option never becomes
+    /// a leg at all (ruled 2026-08-21 — absence, not a recorded gap).
+    pub delta: Option<f64>,
+}
+
+/// The typed same-underlying option overlay (`docs/portfolio-workflow.md`
+/// §Step 6a): the holding's option legs off the Step-2 pull, linked by the
+/// deterministic OCC symbol decode, classified, with the coverage ratio and
+/// the net share-equivalent delta. Evidence for the verdict and the action
+/// call — the overlay changes what the right action is — never a grade input.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OptionOverlay {
+    pub legs: Vec<OverlayLeg>,
+    pub class: OverlayClass,
+    /// The classified strategy's covered fraction of the held shares —
+    /// `(contracts × 100) ÷ shares` for the covering side; `None` on `other`.
+    pub coverage_ratio: Option<f64>,
+    /// Net delta in share-equivalents (Σ ±quantity × 100 × delta) — `None`
+    /// whenever any leg's delta is a gap, never a partial sum.
+    pub net_delta: Option<f64>,
+    /// Whether the targeted delta fetch actually served or failed (vs never
+    /// running — the stub default), for the audit's source labels.
+    pub delta_source_consulted: bool,
+    /// Typed gaps: unrecognized symbols, missing deltas, the naked-short-call
+    /// note.
+    pub gaps: Vec<String>,
+}
+
+/// Build the typed overlay from the holding's same-underlying option rows.
+/// `shares` is the holding's netted quantity; `delta_for` resolves a decoded
+/// contract to its chain delta (the job's targeted-fetch lookup). `None` when
+/// no option rows exist — the common case, no overlay to carry.
+pub fn assemble_option_overlay(
+    shares: f64,
+    option_rows: &[&Position],
+    delta_for: impl Fn(&crate::schwab::OccContract) -> Option<f64>,
+    delta_source_consulted: bool,
+) -> Option<OptionOverlay> {
+    let mut legs = Vec::new();
+    let mut gaps = Vec::new();
+    let mut unrecognized = false;
+    // Recognized contract totals by (side, kind), in contracts.
+    let (mut short_calls, mut long_calls, mut short_puts, mut long_puts) = (0.0, 0.0, 0.0, 0.0);
+    for row in option_rows {
+        // A zero-net row is no economic exposure — no leg (defensive; the job's
+        // collector already excludes them).
+        if row.quantity == 0.0 {
+            continue;
+        }
+        let direction = if row.quantity >= 0.0 {
+            OverlayDirection::Long
+        } else {
+            OverlayDirection::Short
+        };
+        let quantity = row.quantity.abs();
+        match crate::schwab::parse_occ_symbol(&row.symbol) {
+            Some(c) => {
+                use crate::schwab::OptionKind;
+                match (direction, c.kind) {
+                    (OverlayDirection::Short, OptionKind::Call) => short_calls += quantity,
+                    (OverlayDirection::Long, OptionKind::Call) => long_calls += quantity,
+                    (OverlayDirection::Short, OptionKind::Put) => short_puts += quantity,
+                    (OverlayDirection::Long, OptionKind::Put) => long_puts += quantity,
+                }
+                let delta = delta_for(&c);
+                if delta.is_none() {
+                    gaps.push(format!("delta unavailable for {}", row.symbol.trim()));
+                }
+                legs.push(OverlayLeg {
+                    contract: row.symbol.trim().to_string(),
+                    direction,
+                    quantity,
+                    kind: Some(c.kind),
+                    strike: Some(c.strike),
+                    expiry: Some(c.expiry),
+                    delta,
+                });
+            }
+            None => {
+                unrecognized = true;
+                gaps.push(format!(
+                    "unrecognized contract symbol {} — classified other",
+                    row.symbol.trim()
+                ));
+                legs.push(OverlayLeg {
+                    contract: row.symbol.trim().to_string(),
+                    direction,
+                    quantity,
+                    kind: None,
+                    strike: None,
+                    expiry: None,
+                    delta: None,
+                });
+            }
+        }
+    }
+
+    if legs.is_empty() {
+        return None;
+    }
+
+    // Classification (drafted rules): single-strategy shapes only; anything
+    // else — an unrecognized leg, a non-long underlying, a naked short call, or
+    // extra legs — is `other`. A short call is covered only up to the held
+    // shares; any excess is naked and must never read as covered.
+    let covered = |contracts: f64| contracts * 100.0 <= shares + 1e-9;
+    let naked_short_call = short_calls > 0.0 && (shares <= 0.0 || !covered(short_calls));
+    if naked_short_call {
+        gaps.push(
+            "short calls exceed the held shares (naked) — never reads covered".to_string(),
+        );
+    }
+    let class = if unrecognized || shares <= 0.0 || naked_short_call {
+        OverlayClass::Other
+    } else if short_calls > 0.0 && long_puts > 0.0 && long_calls == 0.0 && short_puts == 0.0 {
+        OverlayClass::Collar
+    } else if short_calls > 0.0 && long_puts == 0.0 && long_calls == 0.0 && short_puts == 0.0 {
+        OverlayClass::CoveredCall
+    } else if long_puts > 0.0 && short_calls == 0.0 && long_calls == 0.0 && short_puts == 0.0 {
+        OverlayClass::ProtectivePut
+    } else {
+        OverlayClass::Other
+    };
+    let coverage_ratio = match class {
+        OverlayClass::CoveredCall => Some(short_calls * 100.0 / shares),
+        OverlayClass::ProtectivePut => Some(long_puts * 100.0 / shares),
+        // A collar's covered fraction is its narrower side.
+        OverlayClass::Collar => Some(short_calls.min(long_puts) * 100.0 / shares),
+        OverlayClass::Other => None,
+    };
+    // Net delta in share-equivalents — whole or not at all: a partial sum over
+    // gapped legs would fabricate a hedged read.
+    let net_delta = legs
+        .iter()
+        .map(|l| {
+            l.delta.map(|d| {
+                let sign = match l.direction {
+                    OverlayDirection::Long => 1.0,
+                    OverlayDirection::Short => -1.0,
+                };
+                sign * l.quantity * 100.0 * d
+            })
+        })
+        .sum::<Option<f64>>();
+    Some(OptionOverlay {
+        legs,
+        class,
+        coverage_ratio,
+        net_delta,
+        delta_source_consulted,
+        gaps,
+    })
+}
+
 /// One sector benchmark's dated closes (FMP dated EOD — the identity table in
 /// `docs/data-sources.md §Financial Modeling Prep`), fetched run-level and
 /// memoized per symbol; the input delta's technology-event pre-flag reads it.
@@ -171,6 +361,11 @@ pub struct HoldingDossier {
     /// the anchor-close bridge's authoring leg for re-basing the prior authored
     /// targets. `None` on a debut or a prior audit without a quick-check basis.
     pub prior_spot: Option<f64>,
+    /// The prior read's stored NTM consensus-EPS mid (the same quick-check
+    /// basis) — the narrative-vs-reality read's revision comparator
+    /// ([`crate::portfolio::engine::narrative_vs_reality`]). `None` on a debut
+    /// or a basis that carried none.
+    pub prior_consensus_eps_mid: Option<f64>,
     /// The prior run's matured outcome-window lines for this symbol (deterministic,
     /// engine-computed) — the scored ground the retrospective reads against, where
     /// any windows have matured. Empty on a debut or before any window matures.
@@ -203,6 +398,18 @@ pub struct HoldingDossier {
     /// ([`commodity_prints_for_holding`]) — empty for a non-commodity-linked
     /// holding, a fund, or a run whose commodity leg never ran.
     pub commodity_context: Vec<CommodityPrint>,
+    /// This holding's FINRA short-interest row, looked up off the once-per-run
+    /// consolidated file (`docs/data-sources.md §FINRA`) — risk /
+    /// squeeze-context **positioning evidence**, held out of every sub-score.
+    /// `None` on a fund, a symbol absent from the file (a market fact, not a
+    /// gap), or a run whose file fetch gapped (that gap rides data health).
+    pub short_interest: Option<crate::finra::ShortInterestRead>,
+    /// The typed same-underlying option overlay ([`OptionOverlay`]) — the
+    /// holding's option legs off the Step-2 pull, classified, with delta and
+    /// coverage. `None` on the common no-option-legs case, funds, and skipped
+    /// retrievals. The verdict and the action call both see it — the overlay
+    /// changes what the right action is.
+    pub option_overlay: Option<OptionOverlay>,
     /// The run-level CBOE venue-level put/call backdrop — the same value on
     /// every dossier (broad-market sentiment context, never a per-name signal);
     /// `None` when the leg failed or never ran (its gap rides data health).
@@ -234,6 +441,10 @@ pub struct PriorHolding {
     /// the base the retrospective's realized price move computes against. `None`
     /// where the prior audit carried no basis.
     pub spot: Option<f64>,
+    /// The prior run's NTM consensus-EPS mid (the same stored basis) — the
+    /// narrative-vs-reality read's revision comparator. `None` where the prior
+    /// basis carried none.
+    pub consensus_eps_mid: Option<f64>,
     /// The prior run's matured outcome-window lines for this symbol.
     pub matured_notes: Vec<String>,
 }
@@ -495,6 +706,8 @@ pub fn assemble(
     listing: Option<crate::portfolio::listing::ListingResolution>,
     company_name: Option<String>,
     filing_events: Option<crate::portfolio::ForensicFilingState>,
+    short_interest: Option<crate::finra::ShortInterestRead>,
+    option_overlay: Option<OptionOverlay>,
     put_call_backdrop: Option<crate::cboe::PutCallBackdrop>,
     commodity_context: Vec<CommodityPrint>,
     sector_benchmark: Option<BenchmarkSeries>,
@@ -505,6 +718,7 @@ pub fn assemble(
         prior_pre_profit,
         prior_vintage,
         prior_spot,
+        prior_consensus_eps_mid,
         prior_matured_notes,
     ) = match prior {
         Some(p) => (
@@ -513,9 +727,10 @@ pub fn assemble(
             p.pre_profit,
             Some(p.vintage),
             p.spot,
+            p.consensus_eps_mid,
             p.matured_notes,
         ),
-        None => (None, None, None, None, None, Vec::new()),
+        None => (None, None, None, None, None, None, Vec::new()),
     };
     let mut fmp_financials = fmp_financials;
     let ttm_basis = apply_ttm_statement_basis(&mut fmp_financials);
@@ -628,6 +843,15 @@ pub fn assemble(
         }
         Some(crate::portfolio::ForensicFilingState::Unknown { queried: false, .. }) | None => {}
     }
+    // The same-underlying option overlay: its positions ride the already-labeled
+    // Schwab snapshot, and the targeted delta fetch labels only where it actually
+    // served or failed (the stub default never makes a request).
+    if let Some(o) = &option_overlay {
+        sources.push("Schwab option positions (same-underlying overlay)".to_string());
+        if o.delta_source_consulted {
+            sources.push("Schwab option chain (overlay-delta strikes)".to_string());
+        }
+    }
     // The run-level commodity context deliberately does NOT label here: like
     // the house view, whether a verdict actually consulted it is unknowable at
     // assembly (the early exits never render a prompt), so the interpretation
@@ -660,11 +884,14 @@ pub fn assemble(
         prior_verdict,
         prior_vintage,
         prior_spot,
+        prior_consensus_eps_mid,
         prior_matured_notes,
         prior_grade_parameter_version,
         prior_pre_profit,
         listing,
         filing_events,
+        short_interest,
+        option_overlay,
         put_call_backdrop,
         commodity_context,
         sector_benchmark,
@@ -841,12 +1068,13 @@ pub fn prior_verdict_for(
         .audit
         .iter()
         .find(|a| a.symbol.eq_ignore_ascii_case(symbol));
-    let (grade_parameter_version, pre_profit, spot) = match audit_row {
+    let (grade_parameter_version, pre_profit, spot, consensus_eps_mid) = match audit_row {
         Some(a) => {
             let spot = a.quick_basis.as_ref().map(|b| b.spot);
-            (a.grade_parameter_version.clone(), a.pre_profit.clone(), spot)
+            let mid = a.quick_basis.as_ref().and_then(|b| b.consensus_eps_mid);
+            (a.grade_parameter_version.clone(), a.pre_profit.clone(), spot, mid)
         }
-        None => (None, None, None),
+        None => (None, None, None, None),
     };
     // The prior run's matured outcome lines for this symbol — the deterministic
     // scored ground the retrospective block renders (empty until windows mature).
@@ -874,6 +1102,7 @@ pub fn prior_verdict_for(
         pre_profit,
         vintage,
         spot,
+        consensus_eps_mid,
         matured_notes,
     })
 }
@@ -1378,6 +1607,7 @@ Sources and footnotes.
                     volume: 1000.0,
                     open_interest: 5000.0,
                     implied_volatility: Some(0.25),
+                    delta: None,
                 },
                 OptionQuote {
                     kind: OptionKind::Put,
@@ -1386,6 +1616,7 @@ Sources and footnotes.
                     volume: 1500.0,
                     open_interest: 6000.0,
                     implied_volatility: Some(0.31),
+                    delta: None,
                 },
             ],
         };
@@ -1401,6 +1632,8 @@ Sources and footnotes.
             LegOutcome::Got(&chain),
             InvestorProfile::default_fixture(),
             HouseView::default(),
+            None,
+            None,
             None,
             None,
             None,
@@ -1486,6 +1719,8 @@ Sources and footnotes.
             None,
             None,
             None,
+            None,
+            None,
             Vec::new(),
             None,
         )
@@ -1530,6 +1765,8 @@ Sources and footnotes.
                 LegOutcome::NotRun,
                 InvestorProfile::default_fixture(),
                 house_view.clone(),
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -1587,6 +1824,8 @@ Sources and footnotes.
             None,
             None,
             listing,
+            None,
+            None,
             None,
             None,
             None,
@@ -1870,6 +2109,10 @@ Sources and footnotes.
                 hurdle: None,
                 forensic: None,
                 tech_event_pre_flag: None,
+                short_interest: None,
+                implied_expectations: None,
+                narrative: None,
+                option_overlay: None,
             }],
             rate_prints: None,
             outcome: None,
@@ -1932,5 +2175,110 @@ Sources and footnotes.
         let latest = crate::portfolio::store::latest_run(&conn).unwrap();
         let prior = prior_verdict_for(latest.as_ref(), "AAPL").expect("verdict present");
         assert_eq!(prior.vintage, "2026-07-29T12:00:00Z");
+    }
+
+    fn opt_row(symbol: &str, quantity: f64) -> Position {
+        Position {
+            symbol: symbol.into(),
+            description: String::new(),
+            asset_class: AssetClass::OptionContract,
+            quantity,
+            cost_basis: 0.0,
+            market_value: 0.0,
+            current_price: None,
+        }
+    }
+
+    const CALL_210: &str = "AAPL  270115C00210000";
+    const PUT_180: &str = "AAPL  270115P00180000";
+
+    #[test]
+    fn overlay_classifies_the_single_strategy_shapes_with_coverage_and_delta() {
+        let with_delta = |c: &crate::schwab::OccContract| {
+            Some(match c.kind {
+                crate::schwab::OptionKind::Call => 0.40,
+                crate::schwab::OptionKind::Put => -0.30,
+            })
+        };
+        // Covered call: 2 short calls fully covered by 200 shares.
+        let rows = [opt_row(CALL_210, -2.0)];
+        let refs: Vec<&Position> = rows.iter().collect();
+        let o = assemble_option_overlay(200.0, &refs, with_delta, true).unwrap();
+        assert_eq!(o.class, OverlayClass::CoveredCall);
+        assert_eq!(o.coverage_ratio, Some(1.0));
+        assert_eq!(o.net_delta, Some(-80.0), "{o:?}"); // −2 × 100 × 0.40
+        assert!(o.gaps.is_empty(), "{o:?}");
+        // Protective put on the same book.
+        let rows = [opt_row(PUT_180, 2.0)];
+        let refs: Vec<&Position> = rows.iter().collect();
+        let o = assemble_option_overlay(200.0, &refs, with_delta, true).unwrap();
+        assert_eq!(o.class, OverlayClass::ProtectivePut);
+        assert_eq!(o.coverage_ratio, Some(1.0));
+        // Collar: the covered fraction is the narrower side.
+        let rows = [opt_row(CALL_210, -1.0), opt_row(PUT_180, 2.0)];
+        let refs: Vec<&Position> = rows.iter().collect();
+        let o = assemble_option_overlay(200.0, &refs, with_delta, true).unwrap();
+        assert_eq!(o.class, OverlayClass::Collar);
+        assert_eq!(o.coverage_ratio, Some(0.5));
+        // No option rows → no overlay at all — and a zero-net row (fully
+        // offset contracts) is no exposure, never a leg or an overlay.
+        assert!(assemble_option_overlay(200.0, &[], with_delta, true).is_none());
+        let rows = [opt_row(CALL_210, 0.0)];
+        let refs: Vec<&Position> = rows.iter().collect();
+        assert!(assemble_option_overlay(200.0, &refs, with_delta, true).is_none());
+        // A zero row beside a real leg drops silently; the real leg classifies.
+        let rows = [opt_row(CALL_210, -1.0), opt_row(PUT_180, 0.0)];
+        let refs: Vec<&Position> = rows.iter().collect();
+        let o = assemble_option_overlay(200.0, &refs, with_delta, true).unwrap();
+        assert_eq!(o.legs.len(), 1, "{o:?}");
+        assert_eq!(o.class, OverlayClass::CoveredCall);
+    }
+
+    #[test]
+    fn overlay_never_reads_naked_or_unrecognized_legs_as_covered() {
+        let no_delta = |_: &crate::schwab::OccContract| None;
+        // A naked short call (2 contracts over 100 shares) must never read
+        // covered — `other`, with the naked note.
+        let rows = [opt_row(CALL_210, -2.0)];
+        let refs: Vec<&Position> = rows.iter().collect();
+        let o = assemble_option_overlay(100.0, &refs, no_delta, false).unwrap();
+        assert_eq!(o.class, OverlayClass::Other, "{o:?}");
+        assert!(o.coverage_ratio.is_none());
+        assert!(o.gaps.iter().any(|g| g.contains("naked")), "{o:?}");
+        // An unrecognized symbol forces `other`; its delta is a gap, so the
+        // net delta is None — whole or not at all.
+        let rows = [opt_row("AAPL WEIRD LEG", 1.0)];
+        let refs: Vec<&Position> = rows.iter().collect();
+        let o = assemble_option_overlay(100.0, &refs, no_delta, false).unwrap();
+        assert_eq!(o.class, OverlayClass::Other);
+        assert!(o.net_delta.is_none());
+        assert!(o.gaps.iter().any(|g| g.contains("unrecognized")), "{o:?}");
+        // A multi-leg outside the three shapes (long call + short put) is
+        // `other` with its net delta where deltas resolve.
+        let with_delta = |c: &crate::schwab::OccContract| {
+            Some(match c.kind {
+                crate::schwab::OptionKind::Call => 0.40,
+                crate::schwab::OptionKind::Put => -0.30,
+            })
+        };
+        let rows = [opt_row(CALL_210, 1.0), opt_row(PUT_180, -1.0)];
+        let refs: Vec<&Position> = rows.iter().collect();
+        let o = assemble_option_overlay(100.0, &refs, with_delta, true).unwrap();
+        assert_eq!(o.class, OverlayClass::Other);
+        assert_eq!(o.net_delta, Some(70.0)); // +100×0.40 − 100×(−0.30)
+        // A non-long underlying never classifies a strategy.
+        let rows = [opt_row(CALL_210, -1.0)];
+        let refs: Vec<&Position> = rows.iter().collect();
+        let o = assemble_option_overlay(-100.0, &refs, with_delta, true).unwrap();
+        assert_eq!(o.class, OverlayClass::Other);
+        // A gapped delta on a classified shape: the class holds, the net delta
+        // does not.
+        let rows = [opt_row(CALL_210, -1.0)];
+        let refs: Vec<&Position> = rows.iter().collect();
+        let o = assemble_option_overlay(100.0, &refs, |_: &crate::schwab::OccContract| None, true)
+            .unwrap();
+        assert_eq!(o.class, OverlayClass::CoveredCall);
+        assert!(o.net_delta.is_none());
+        assert!(o.gaps.iter().any(|g| g.contains("delta unavailable")), "{o:?}");
     }
 }

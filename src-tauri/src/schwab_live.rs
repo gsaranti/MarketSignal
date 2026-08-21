@@ -163,6 +163,37 @@ impl HoldingsSource for SchwabApiSource {
             other => bail!("Schwab option-chain request failed (HTTP {other})"),
         }
     }
+
+    fn option_chain_at_strike(
+        &self,
+        symbol: &str,
+        strike: f64,
+        from: &str,
+        to: &str,
+    ) -> Result<Option<OptionChain>> {
+        let token = (self.token)()?;
+        // The overlay's targeted delta fetch: one strike across the held
+        // contracts' expiry window, so the activity signal's bounded NTM query
+        // is never widened (`docs/data-sources.md` — the chains row).
+        let query = format!(
+            "symbol={}&contractType=ALL&strike={strike}&fromDate={from}&toDate={to}",
+            encode_query(symbol),
+        );
+        let (status, body) = self.get(
+            &format!("{}/marketdata/v1/chains?{query}", self.base),
+            &token,
+            "schwab option chain (overlay strike)",
+        )?;
+        match status {
+            200 => parse_chain(symbol, &body),
+            404 => Ok(None),
+            other => bail!("Schwab targeted option-chain request failed (HTTP {other})"),
+        }
+    }
+
+    fn supports_targeted_chain(&self) -> bool {
+        true
+    }
 }
 
 /// Build the bounded `/chains` query for `symbol` as of `today`: a near-the-money strike
@@ -375,6 +406,13 @@ fn collect_contracts(
                     .and_then(Value::as_f64)
                     .filter(|v| *v >= 0.0)
                     .map(|v| v / 100.0);
+                // Delta rides already-scaled; the same -999 sentinel means "no
+                // value", and anything outside a delta's [-1, 1] range is the
+                // sentinel family, never a greek.
+                let delta = c
+                    .get("delta")
+                    .and_then(Value::as_f64)
+                    .filter(|v| v.abs() <= 1.0);
                 out.push(OptionQuote {
                     kind,
                     strike,
@@ -382,6 +420,7 @@ fn collect_contracts(
                     volume,
                     open_interest,
                     implied_volatility,
+                    delta,
                 });
             }
         }
@@ -453,10 +492,10 @@ mod tests {
           "symbol": "AAPL",
           "underlyingPrice": 195.0,
           "callExpDateMap": {"2026-07-17:5": {"195.0": [
-            {"putCall":"CALL","strikePrice":195.0,"totalVolume":4000,"openInterest":12000,"volatility":27.0}
+            {"putCall":"CALL","strikePrice":195.0,"totalVolume":4000,"openInterest":12000,"volatility":27.0,"delta":0.52}
           ]}},
           "putExpDateMap": {"2026-07-17:5": {"185.0": [
-            {"putCall":"PUT","strikePrice":185.0,"totalVolume":3100,"openInterest":9500,"volatility":-999.0}
+            {"putCall":"PUT","strikePrice":185.0,"totalVolume":3100,"openInterest":9500,"volatility":-999.0,"delta":-999.0}
           ]}}
         }"#;
         let chain = parse_chain("AAPL", body).unwrap().expect("chain present");
@@ -466,8 +505,50 @@ mod tests {
         let call = chain.contracts.iter().find(|c| c.kind == OptionKind::Call).unwrap();
         assert_eq!(call.strike, 195.0);
         assert_eq!(call.implied_volatility, Some(0.27)); // 27% → 0.27
+        assert_eq!(call.delta, Some(0.52));
         let put = chain.contracts.iter().find(|c| c.kind == OptionKind::Put).unwrap();
         assert_eq!(put.implied_volatility, None); // -999 sentinel → no value
+        assert_eq!(put.delta, None); // -999 sentinel → no greek
+        // An absent delta key reads as no value too.
+        let bare = r#"{"symbol":"AAPL","callExpDateMap":{"2026-07-17:5":{"195.0":[
+            {"putCall":"CALL","strikePrice":195.0,"totalVolume":10,"openInterest":5,"volatility":25.0}
+        ]}},"putExpDateMap":{}}"#;
+        let chain = parse_chain("AAPL", bare).unwrap().unwrap();
+        assert_eq!(chain.contracts[0].delta, None);
+    }
+
+    #[test]
+    fn targeted_strike_fetch_scopes_the_query_and_parses_deltas() {
+        let body = r#"{"symbol":"AAPL","underlyingPrice":195.0,
+          "callExpDateMap": {"2027-01-15:512": {"210.0": [
+            {"putCall":"CALL","strikePrice":210.0,"totalVolume":10,"openInterest":500,"volatility":31.0,"delta":0.41}
+          ]}},
+          "putExpDateMap": {}
+        }"#;
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![("Content-Type", "application/json")],
+            body,
+        }]);
+        let source = SchwabApiSource::with_base_url(
+            server.base_url.trim_end_matches('/').to_string(),
+            static_token(),
+        );
+        let chain = source
+            .option_chain_at_strike("AAPL", 210.0, "2027-01-15", "2027-01-15")
+            .unwrap()
+            .expect("targeted chain present");
+        assert_eq!(chain.contracts.len(), 1);
+        assert_eq!(chain.contracts[0].delta, Some(0.41));
+        // The query is strike-scoped, never the NTM band.
+        let targets = server.request_targets();
+        assert!(targets[0].contains("strike=210"), "{targets:?}");
+        assert!(targets[0].contains("fromDate=2027-01-15"), "{targets:?}");
+        assert!(!targets[0].contains("range=NTM"), "{targets:?}");
+        // The live source declares its targeted path; the fixture keeps the
+        // default (no wire call → never labeled consulted).
+        assert!(source.supports_targeted_chain());
+        assert!(!crate::schwab::FixtureHoldingsSource::new().supports_targeted_chain());
     }
 
     #[test]

@@ -114,7 +114,8 @@ pub enum OptionKind {
     Put,
 }
 
-/// One contract row from an option chain — the fields the activity signal reads.
+/// One contract row from an option chain — the fields the activity signal reads,
+/// plus the per-contract delta the same-underlying option overlay matches on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OptionQuote {
     pub kind: OptionKind,
@@ -125,6 +126,66 @@ pub struct OptionQuote {
     pub volume: f64,
     pub open_interest: f64,
     pub implied_volatility: Option<f64>,
+    /// The contract's delta — the overlay's greek leg (`docs/portfolio-analysis.md`
+    /// §The per-holding pipeline Step 1); the activity signal never reads it.
+    /// `None` on the −999 sentinel, an out-of-range value, and legacy snapshots
+    /// (`#[serde(default)]`).
+    #[serde(default)]
+    pub delta: Option<f64>,
+}
+
+/// A held option contract's identity, decoded from its OCC symbol
+/// (`ROOT[padding]YYMMDDC|P########`, strike in thousandths) — the deterministic
+/// symbol link the same-underlying option overlay is built on
+/// (`docs/portfolio-workflow.md §Step 6a`). A symbol that does not decode leaves
+/// the leg unrecognized (the overlay's `other` posture), never a guessed identity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OccContract {
+    /// The underlying root, uppercased (a non-standard adjusted root — "AAPL1" —
+    /// decodes as itself and simply fails the symbol link).
+    pub underlying: String,
+    /// Expiry as an ISO date (`YYYY-MM-DD`).
+    pub expiry: String,
+    pub kind: OptionKind,
+    pub strike: f64,
+}
+
+/// Decode an OCC option symbol. `None` unless the trailing 15 characters are a
+/// calendar-valid `YYMMDD`, a `C`/`P`, and an 8-digit strike, with a non-empty
+/// root before them.
+pub fn parse_occ_symbol(symbol: &str) -> Option<OccContract> {
+    let s = symbol.trim();
+    if s.len() < 16 || !s.is_ascii() {
+        return None;
+    }
+    let (root, tail) = s.split_at(s.len() - 15);
+    let root = root.trim_end();
+    let (date, rest) = tail.split_at(6);
+    let (kind, strike_digits) = rest.split_at(1);
+    if root.is_empty()
+        || !date.bytes().all(|b| b.is_ascii_digit())
+        || !strike_digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let kind = match kind {
+        "C" => OptionKind::Call,
+        "P" => OptionKind::Put,
+        _ => return None,
+    };
+    // OCC dates are two-digit years in the 2000s.
+    let expiry = format!("20{}-{}-{}", &date[..2], &date[2..4], &date[4..6]);
+    chrono::NaiveDate::parse_from_str(&expiry, "%Y-%m-%d").ok()?;
+    let strike = strike_digits.parse::<f64>().ok()? / 1000.0;
+    if strike <= 0.0 {
+        return None;
+    }
+    Some(OccContract {
+        underlying: root.to_ascii_uppercase(),
+        expiry,
+        kind,
+        strike,
+    })
 }
 
 /// A symbol's option chain — the raw rows the deterministic options-activity signal
@@ -150,6 +211,29 @@ pub trait HoldingsSource {
     /// Pull the option chain for one underlying, or `None` when the source has none
     /// (a symbol with no listed options, or a not-yet-implemented live path).
     fn option_chain(&self, symbol: &str) -> Result<Option<OptionChain>>;
+    /// Pull the chain rows at one strike across a date window — the
+    /// same-underlying option overlay's **targeted delta fetch**, scoped to the
+    /// held contracts so the options-activity signal's bounded NTM query stays
+    /// untouched (`docs/data-sources.md` — the chains row). The default (`None`)
+    /// means the source has no targeted path — the overlay's delta reads as a
+    /// typed gap, never a fabricated greek.
+    fn option_chain_at_strike(
+        &self,
+        _symbol: &str,
+        _strike: f64,
+        _from: &str,
+        _to: &str,
+    ) -> Result<Option<OptionChain>> {
+        Ok(None)
+    }
+    /// Whether this source actually issues targeted-strike requests. The
+    /// default `option_chain_at_strike` answers `Ok(None)` without any wire
+    /// call, which is indistinguishable from a live empty answer — this probe
+    /// is what lets the audit label a consulted-but-empty targeted fetch
+    /// without claiming a request the stub never made.
+    fn supports_targeted_chain(&self) -> bool {
+        false
+    }
 }
 
 /// An offline fixture holdings source for the single-equity slice: one stock
@@ -192,6 +276,7 @@ impl Default for FixtureHoldingsSource {
                     volume: 4_000.0,
                     open_interest: 12_000.0,
                     implied_volatility: Some(0.27),
+                    delta: Some(0.52),
                 },
                 OptionQuote {
                     kind: OptionKind::Call,
@@ -200,6 +285,7 @@ impl Default for FixtureHoldingsSource {
                     volume: 2_500.0,
                     open_interest: 8_000.0,
                     implied_volatility: Some(0.29),
+                    delta: Some(0.30),
                 },
                 OptionQuote {
                     kind: OptionKind::Put,
@@ -208,6 +294,7 @@ impl Default for FixtureHoldingsSource {
                     volume: 5_200.0,
                     open_interest: 15_000.0,
                     implied_volatility: Some(0.31),
+                    delta: Some(-0.48),
                 },
                 OptionQuote {
                     kind: OptionKind::Put,
@@ -216,6 +303,7 @@ impl Default for FixtureHoldingsSource {
                     volume: 3_100.0,
                     open_interest: 9_500.0,
                     implied_volatility: Some(0.34),
+                    delta: Some(-0.30),
                 },
             ],
         };
@@ -360,6 +448,33 @@ mod tests {
         assert_eq!(once, twice, "re-normalizing an already-normalized snapshot is a no-op");
         assert_eq!(once.positions.len(), 2);
         assert_eq!(once.account_total, 23_700.0);
+    }
+
+    #[test]
+    fn occ_symbols_decode_and_malformed_ones_stay_unrecognized() {
+        // The standard padded form (root space-padded to six characters).
+        let c = parse_occ_symbol("AAPL  270115C00210000").expect("decodes");
+        assert_eq!(c.underlying, "AAPL");
+        assert_eq!(c.expiry, "2027-01-15");
+        assert_eq!(c.kind, OptionKind::Call);
+        assert_eq!(c.strike, 210.0);
+        // An unpadded root and a fractional strike decode too.
+        let c = parse_occ_symbol("F260918P00011500").expect("decodes");
+        assert_eq!(c.underlying, "F");
+        assert_eq!(c.kind, OptionKind::Put);
+        assert_eq!(c.strike, 11.5);
+        // Malformed shapes stay unrecognized — never a guessed identity: a plain
+        // equity ticker, a calendar-impossible date, a bad side letter, a
+        // non-digit strike, and an empty root.
+        for bad in [
+            "AAPL",
+            "AAPL  279915C00210000",
+            "AAPL  270115X00210000",
+            "AAPL  270115C0021000O",
+            "      270115C00210000",
+        ] {
+            assert!(parse_occ_symbol(bad).is_none(), "{bad}");
+        }
     }
 
     #[test]

@@ -825,6 +825,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
             dispersion_floor: floor,
             consensus_eps_mid: None,
         }),
+        // The fund stopgap prices a flat synthetic driver over the exposure
+        // composite — no driver trajectory exists to invert.
+        implied_expectations: None,
     }))
 }
 

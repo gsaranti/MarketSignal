@@ -1745,10 +1745,11 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                                 .and_then(|a| a.quick_basis.as_ref())
                                 .map(|b| b.spot),
                             // The cap signals in force: the pre-profit overlay's
-                            // matched rules plus a tripped hard-forensic rule —
-                            // each an engine-arm annotation the counterfactual
-                            // re-test needs (`docs/portfolio-analysis.md`
-                            // §Outcome learning).
+                            // matched rules, a tripped hard-forensic rule, and a
+                            // tripped narrative-vs-reality soft rule — each an
+                            // engine-arm annotation the counterfactual re-test
+                            // needs (`docs/portfolio-analysis.md` §Outcome
+                            // learning).
                             cap_signals: audit
                                 .and_then(|a| a.pre_profit.as_ref())
                                 .filter(|pp| pp.is_eligible())
@@ -1759,6 +1760,11 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                                     audit
                                         .and_then(|a| a.forensic.as_ref())
                                         .and_then(|f| f.matched_rule.clone()),
+                                )
+                                .chain(
+                                    audit
+                                        .and_then(|a| a.narrative.as_ref())
+                                        .and_then(|n| n.matched_rule.clone()),
                                 )
                                 .collect(),
                             grade_parameter_version: audit
@@ -2925,6 +2931,10 @@ mod tests {
             hurdle: None,
             forensic: None,
             tech_event_pre_flag: None,
+            short_interest: None,
+            implied_expectations: None,
+            narrative: None,
+            option_overlay: None,
         };
         let audits = vec![audit];
         let mut input = plan_input("run-3", c3, &trim_again, Some(&trim), &sector);
@@ -2987,6 +2997,10 @@ mod tests {
             hurdle: None,
             forensic: None,
             tech_event_pre_flag: None,
+            short_interest: None,
+            implied_expectations: None,
+            narrative: None,
+            option_overlay: None,
         };
         let audits = vec![audit];
         let mut episodes = Vec::new();
@@ -3035,6 +3049,10 @@ mod tests {
             hurdle: None,
             forensic: None,
             tech_event_pre_flag: None,
+            short_interest: None,
+            implied_expectations: None,
+            narrative: None,
+            option_overlay: None,
         };
         let audits = vec![audit];
         let mut input = plan_input("run-1", c1, &verdicts, None, &sector);
@@ -3089,6 +3107,10 @@ mod tests {
             hurdle: None,
             forensic: None,
             tech_event_pre_flag: None,
+            short_interest: None,
+            implied_expectations: None,
+            narrative: None,
+            option_overlay: None,
         }
     }
 
@@ -3181,6 +3203,10 @@ mod tests {
             hurdle: None,
             forensic: None,
             tech_event_pre_flag: None,
+            short_interest: None,
+            implied_expectations: None,
+            narrative: None,
+            option_overlay: None,
         };
         let audits = vec![audit];
         let mut input = plan_input("run-1", c1, &verdicts, None, &sector);

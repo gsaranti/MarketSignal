@@ -10,6 +10,7 @@ pub mod cot;
 pub mod data_sources;
 pub mod document_parser;
 pub mod embedding;
+pub mod finra;
 pub mod fmp;
 pub mod fmp_news;
 pub mod fred;
@@ -810,11 +811,15 @@ async fn generate_portfolio_manual(
         let market_cboe = crate::cboe::CboeDataSource::new()
             .ok()
             .map(|c| c.with_context(ctx.clone()));
+        let market_finra = crate::finra::FinraDataSource::new()
+            .ok()
+            .map(|f| f.with_context(ctx.clone()));
         let market = portfolio::job::LiveMarketContext {
             fred,
             fmp: Some(market_fmp),
             cot: market_cot,
             cboe: market_cboe,
+            finra: market_finra,
         };
 
         // Source selection: the shared seam (`build_holdings_source`) — fixture escape
