@@ -23,10 +23,11 @@ clippy clean, npm build + test clean, live CBOE smoke passing.
 
 ## Current state
 
-Nothing in flight. `main` is clean and pushed through `ea50759`; this handoff
-is the only uncommitted change. BUILD.md still shows item-1's first bullet
-(run evidence) as queued — it is now built and committed; fold the BUILD
-update into a user-authorized edit or the next session-end.
+Nothing in flight. `main` is clean and pushed through `ea50759`. BUILD.md was
+updated this session (user-authorized): the run-evidence slice moved to
+§Built — carrying the CBOE scan design and the 2026-08-21 scope ruling — and
+the engine invariant's CBOE/FINRA parenthetical now reads venue-backdrop
+built / per-holding leg queued.
 
 ## Open questions
 

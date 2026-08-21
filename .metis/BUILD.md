@@ -399,8 +399,9 @@ this section carries only the decisions a plan must not work against.
 - **Invariants governing the suite** (full specs in the docs; a plan must not
   work against these; each states its own reach):
   - **Deterministic finance, primary-source evidence** — a shared Rust engine
-    over FMP + keyless SEC EDGAR / FINRA / CBOE (the last two queued in the
-    Portfolio completion block;
+    over FMP + keyless SEC EDGAR / FINRA / CBOE (FINRA and the CBOE
+    per-holding leg queued in the Portfolio completion block; the CBOE
+    venue-level backdrop is built;
     Stooq removed 2026-08-12 — FMP dated-EOD is the only price rung)
     computes the engine arm for both jobs. Both are **two-arm**: the
     engine's values are the incorruptible baseline beside an **unrestricted
@@ -634,6 +635,24 @@ every stacked runtime confirmation at once.
   data-health's fallback counter is retired — any deep-history failure now
   trips attention — and the benchmark / sector / commodity identity table is
   re-homed to `docs/data-sources.md §Financial Modeling Prep` as FMP symbols.
+- **The run-evidence slice** (`portfolio-v10`) — the Step-5 run-level context
+  loads with their consumers in one slice: FRED energy + IMF metals + FMP
+  gold commodity context into sector/industry-matched dossier evidence, CFTC
+  positioning into the commodity/macro fund read via a keyword contract
+  mapping, the sector-benchmark legs, the **CBOE venue-level put/call
+  backdrop**, the **technology-event pre-flag** (2σ × √-time on the input
+  delta), and the **hard-forensic producer** (item-classified 8-K Items
+  4.01/4.02; absent `items` reads `Unknown`, never `Clear`) with its consumer
+  seam — engine action-set narrowing to {sell all, trim, hold}, an engine-arm
+  conviction hard cap at Low, and audit + prompt evidence (the research
+  `forensic_event` channel — and with it the producer-less `Fraud` kind —
+  joins when the research loop lands). CBOE serves no machine-readable
+  current-day feed, so the adapter is a bounded scan of the JSON embedded in
+  the served page — quote-form-locked off the mandatory date key,
+  candidate-unanimous over first-match — whose gap-over-fabrication guarantee
+  is scoped to locally detectable drift by ruling 2026-08-21 (a sole
+  same-form impostor is accepted residual; the canonical statement is
+  `docs/data-sources.md §CBOE`).
 
 ### Remaining, in order
 
@@ -642,16 +661,8 @@ every stacked runtime confirmation at once.
    conformance walk that gated the block's first slice ran 2026-08-15** —
    31 verified findings, zero code fixes, every diff ruled and the doc side
    fixed (`docs/verification/2026-08-15-tunnel-vision-conformance-walk.md`) —
-   so the block's slices plan against verified contracts. In build order:
-   - **Run evidence first** — the Step-5 run-level context loads with their
-     consumers (FRED energy + IMF metals + FMP gold into commodity-linked
-     holding evidence; CFTC positioning into the commodity/macro fund read;
-     the CBOE venue-level put/call backdrop; the sector/market benchmark
-     series), the **technology-event pre-flag** those benchmarks feed, and
-     the **hard-forensic producer** (filing-classified restatement / auditor
-     change) with its consumer seam — the engine's per-holding action-set
-     narrowing and the action call's evidence — wired in the same slice (the
-     research `forensic_event` channel joins when the loop lands).
+   so the block's slices plan against verified contracts. The block's first
+   slice — **run evidence** — is built (§Built). Remaining, in build order:
    - **Evidence legs** — the **FINRA short-interest** and **CBOE** evidence
      legs (previously deferred by decision, un-deferred by this one), the
      **implied-expectations range** and **narrative-vs-reality** producers,
