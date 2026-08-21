@@ -399,9 +399,9 @@ this section carries only the decisions a plan must not work against.
 - **Invariants governing the suite** (full specs in the docs; a plan must not
   work against these; each states its own reach):
   - **Deterministic finance, primary-source evidence** — a shared Rust engine
-    over FMP + keyless SEC EDGAR / FINRA / CBOE (FINRA and the CBOE
-    per-holding leg queued in the Portfolio completion block; the CBOE
-    venue-level backdrop is built;
+    over FMP + keyless SEC EDGAR / FINRA / CBOE (the FINRA short-interest
+    leg and the CBOE venue-level backdrop are both built — CBOE serves
+    venue-level data only, the per-stock options read being Schwab chains;
     Stooq removed 2026-08-12 — FMP dated-EOD is the only price rung)
     computes the engine arm for both jobs. Both are **two-arm**: the
     engine's values are the incorruptible baseline beside an **unrestricted
@@ -459,6 +459,10 @@ rather than re-deriving:
 - `quick_check::sweep_tail` — the subset-capable sweep, built so later slices
   reuse the quick-check core instead of forking it.
 - `pre_profit::clamp_conviction` — the overlay's engine-arm ceiling.
+- `engine::implied_expectations` and `engine::narrative_vs_reality` — the
+  conviction-layer reads over the one shared `scenario_multiples` derivation
+  and the stored prior-run comparator; Trade Opportunities' Step-5c forms
+  reuse them when built, never a second implementation.
 - `store::load_episodes` / `prune_matured_episodes` — episode identity and
   lifecycle.
 
@@ -635,6 +639,26 @@ every stacked runtime confirmation at once.
   data-health's fallback counter is retired — any deep-history failure now
   trips attention — and the benchmark / sector / commodity identity table is
   re-homed to `docs/data-sources.md §Financial Modeling Prep` as FMP symbols.
+- **The evidence-legs slice** — the four remaining dossier evidence legs in
+  one slice (reviewed to approval; two Codex rounds): the **FINRA
+  short-interest leg** (keyless discovery + the biweekly consolidated file,
+  semantically validated, fetched once per run at Step 5 and looked up per
+  stock as positioning evidence); the **implied-expectations range** (the
+  scenario multiples factored to one shared derivation and inverted at the
+  live price — absent on the current-multiple carry and the fund stopgap);
+  the **narrative-vs-reality read** (a cadence-honest pace pair against the
+  prior run's stored comparator with the operating-reality fallback on
+  absent estimates, its hype cap the soft Medium ceiling on the **engine
+  arm's conviction only** — firing on the ratio alone by ruling 2026-08-21,
+  the anchor exception joining with the research loop); and the
+  **same-underlying option overlay** (OCC-decode identity, covered-call /
+  protective-put / collar / other classification, per-leg delta via a
+  targeted per-strike chain fetch that never widens the activity signal's
+  bounded NTM query; a standalone option's delta is absence, never a
+  recorded gap — ruled 2026-08-21, the `data-sources.md` chains row
+  canonical). The CBOE evidence leg was found already satisfied by the
+  run-evidence slice's venue backdrop; the quick check's FINRA sweep leg
+  stays dormant (no short-interest series in the closed engine surface).
 - **The run-evidence slice** (`portfolio-v10`) — the Step-5 run-level context
   loads with their consumers in one slice: FRED energy + IMF metals + FMP
   gold commodity context into sector/industry-matched dossier evidence, CFTC
@@ -662,11 +686,8 @@ every stacked runtime confirmation at once.
    31 verified findings, zero code fixes, every diff ruled and the doc side
    fixed (`docs/verification/2026-08-15-tunnel-vision-conformance-walk.md`) —
    so the block's slices plan against verified contracts. The block's first
-   slice — **run evidence** — is built (§Built). Remaining, in build order:
-   - **Evidence legs** — the **FINRA short-interest** and **CBOE** evidence
-     legs (previously deferred by decision, un-deferred by this one), the
-     **implied-expectations range** and **narrative-vs-reality** producers,
-     and the **same-stock option overlay** dossier leg.
+   two slices — **run evidence** and the **evidence legs** — are built
+   (§Built). Remaining, in build order:
    - **Infrastructure** — Step-6a semantic retrieval + per-holding summary
      embeddings, per-holding **checkpoint/resume** (mid-run checkpointing
      proper; only a cancel checkpoint exists today), and the **metric-level
@@ -819,7 +840,9 @@ Recorded rather than absorbed, each needing a decision before it becomes work:
   read is Portfolio-only. Extending either to sub-scores and
   conviction is a calibration-tier question neither job has settled. TO's
   authored tier / horizon / runway reads ride the same recorded-unscored
-  treatment since the placement ruling (2026-08-19).
+  treatment since the placement ruling (2026-08-19); a pooled
+  placement-divergence rate was declined 2026-08-21 — per-pick recording is
+  the read (stamped at `trade-opportunities.md` §Starting parameters).
 
 ### Deferred by decision
 

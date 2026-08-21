@@ -192,6 +192,9 @@ build status lives in `BUILD.md`.*
 - Portfolio pre-profit execution / financing overlay — portfolio-analysis.md §The per-holding pipeline, §Starting parameters; portfolio-workflow.md §Step 6b–6g; data-sources.md §Portfolio Analysis — endpoint surface; storage.md §Local Analysis Suite Storage
 - Portfolio outcome learning — portfolio-analysis.md §Outcome learning, §Starting parameters; portfolio-workflow.md §Step 7; storage.md §Local Analysis Suite Storage
 - Portfolio hard-forensic outcome — portfolio-analysis.md §Portfolio action, §Starting parameters; portfolio-workflow.md §Step 6g; trade-opportunities.md §Starting parameters; storage.md §Local Analysis Suite Storage
+- Narrative-vs-reality read — Portfolio form (the §Starting parameters statement is canonical) — portfolio-analysis.md §Starting parameters, §The per-holding pipeline; portfolio-workflow.md §Step 6b, §Step 6f, §Step 6g; trade-opportunities.md §The two non-negotiables; storage.md §Local Analysis Suite Storage
+- Implied-expectations read — Portfolio form — portfolio-analysis.md §Starting parameters, §The per-holding pipeline, §Intrinsic verdict; portfolio-workflow.md §Step 6b, §Step 6f; storage.md §Local Analysis Suite Storage
+- Same-underlying option overlay (the data-sources chains row is canonical for the standalone-option stance) — portfolio-analysis.md §The per-holding pipeline, §Asset eligibility; portfolio-workflow.md §Step 6a, §Step 6f; data-sources.md §Portfolio Analysis — endpoint surface; schwab-integration.md §What is pulled
 - What-changed audit — portfolio-analysis.md §What changed; portfolio-workflow.md §Step 6g
 - Run audit record provenance (source labels, model ids) — storage.md §Local Analysis Suite Storage; portfolio-workflow.md §Step 7
 - Degraded-run persistence + constructed marker (removed by the fresh-start slice) — verification/2026-08-17-fresh-start-legacy-removal.md; BUILD.md §Runtime, observability & failure posture
@@ -252,6 +255,7 @@ build status lives in `BUILD.md`.*
 - Archived opportunities — trade-opportunities.md §Archived opportunities; trade-opportunities-workflow.md §Step 7, §Step 9, §Step 10; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
 - Trade Opportunities outcome learning / calibration — trade-opportunities.md §Outcome learning, §Storage and display; trade-opportunities-workflow.md §Step 5c, §Step 5g, §Step 7, §Step 9; storage.md §Local Analysis Suite Storage; data-sources.md §Trade Opportunities — endpoint surface
 - Shadow outcome ledger / picked-vs-rejected calibration — trade-opportunities.md §Outcome learning, §Starting parameters; trade-opportunities-workflow.md §Step 3c, §Step 5h, §Step 6, §Step 7, §Step 9; storage.md §Local Analysis Suite Storage; configuration.md §Local Analysis Suite Configuration
+- Run-level arm divergence rates (the §Starting parameters row is canonical) — trade-opportunities.md §Starting parameters, §The opportunity; storage.md §Local Analysis Suite Storage
 - Turn-away decision-class precedence (the §Step 5h statement is canonical) — trade-opportunities-workflow.md §Step 5h; trade-opportunities.md §Outcome learning
 - Shadow-episode Step-5g record digest — trade-opportunities.md §Outcome learning; trade-opportunities-workflow.md §Step 5h; storage.md §Local Analysis Suite Storage
 - Outcome measurement contract — trade-opportunities.md §Outcome learning; storage.md §Local Analysis Suite Storage
@@ -286,7 +290,7 @@ build status lives in `BUILD.md`.*
 - SEC EDGAR role for Trade Opportunities — data-sources.md §SEC EDGAR
 - FMP paid-tier suite signals — data-sources.md §Local analysis suite — shared sourcing, §FMP — current paid-plan tier audit
 - FMP paid-plan tier audit — data-sources.md §FMP — current paid-plan tier audit
-- FINRA short interest — data-sources.md §FINRA
+- FINRA short interest — data-sources.md §FINRA (canonical, retrieval mechanics included); data-sources.md §Portfolio Analysis — endpoint surface; portfolio-workflow.md §Step 5, §Step 6a; portfolio-analysis.md §The quick check (the dormant sweep leg)
 - Benchmark / sector / commodity identities + adjustment convention — data-sources.md §Financial Modeling Prep
 - Suite data dispersal — data-sources.md §Local analysis suite — shared sourcing
 - Local analysis suite configuration — configuration.md §Local Analysis Suite Configuration, §Research Context Management
