@@ -459,6 +459,71 @@ pub struct FundContext {
     /// Keyed by lowercase sector label.
     pub sector_pe_history: HashMap<String, Vec<SectorPe>>,
     pub as_of: NaiveDate,
+    /// The CFTC underlying-positioning read for a commodity / macro fund — the
+    /// run-level COT pull mapped onto this fund's underlying by
+    /// [`cot_contract_for_fund`] (`docs/data-sources.md §CFTC`; positioning is
+    /// layer-(c) evidence, held out of every sub-score). `None` = no mapping,
+    /// or the mapped contract's row didn't land this run (fail-soft).
+    pub positioning: Option<crate::data_sources::CotPositioning>,
+}
+
+/// Map a commodity / macro fund onto one of the run-level COT bellwether
+/// contracts (by CFTC contract code) for the underlying-positioning read — a
+/// deterministic keyword match over the fund's `etf/info` name + asset-class
+/// strings (drafted, calibratable). A fund whose underlying isn't among the
+/// tracked contracts returns `None` — the doc-sanctioned fail-soft
+/// (`docs/data-sources.md §CFTC`: "A fund whose underlying isn't among these
+/// contracts fail-softs to no positioning read").
+pub fn cot_contract_for_fund(fund: &FundData) -> Option<&'static str> {
+    let hay = format!(
+        "{} {}",
+        fund.name.as_deref().unwrap_or(""),
+        fund.asset_class.as_deref().unwrap_or("")
+    )
+    .to_ascii_lowercase();
+    if hay.trim().is_empty() {
+        return None;
+    }
+    // Commodity underlyings (disaggregated managed-money contracts).
+    if hay.contains("gold") {
+        return Some("088691");
+    }
+    if hay.contains("crude") || hay.contains("oil") {
+        return Some("067651");
+    }
+    if hay.contains("copper") {
+        return Some("085692");
+    }
+    // Macro underlyings (Traders in Financial Futures contracts).
+    if hay.contains("s&p 500") || hay.contains("s&p500") || hay.contains("500 index") {
+        return Some("13874A");
+    }
+    if hay.contains("nasdaq") {
+        return Some("209742");
+    }
+    if hay.contains("dollar") {
+        return Some("098662");
+    }
+    if hay.contains("treasury") {
+        // Two real name shapes collide on the word "short": a duration name
+        // ("iShares Short Treasury Bond", "Short-Term US Treasury") and an
+        // inverse fund's direction ("ProShares Short 20+ Year Treasury"). A
+        // long-maturity phrase settles it — it overrides a directional
+        // "short", since an inverse long-duration fund's underlying is still
+        // the long end; otherwise any short / 1-3 signal reads short-duration.
+        // The 10-Year note is the bellwether default.
+        let long_maturity = ["20+", "10-year", "10 year", "7-10", "long-term", "long term", "long duration", "extended duration"]
+            .iter()
+            .any(|k| hay.contains(k));
+        let short_signal =
+            hay.contains("short") || hay.contains("1-3") || hay.contains("0-3");
+        return if short_signal && !long_maturity {
+            Some("042601")
+        } else {
+            Some("043602")
+        };
+    }
+    None
 }
 
 // ---- The fund engine ---------------------------------------------------------------
@@ -979,6 +1044,44 @@ mod tests {
 
     fn as_of() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 7, 16).unwrap()
+    }
+
+    #[test]
+    fn cot_mapping_matches_bellwether_underlyings_and_fail_softs_the_rest() {
+        let fund = |name: &str, class: &str| FundData {
+            symbol: "X".into(),
+            name: (!name.is_empty()).then(|| name.to_string()),
+            asset_class: (!class.is_empty()).then(|| class.to_string()),
+            ..Default::default()
+        };
+        let code = |name: &str, class: &str| cot_contract_for_fund(&fund(name, class));
+        // Commodity underlyings → the disaggregated contracts.
+        assert_eq!(code("SPDR Gold Shares", "Commodity"), Some("088691"));
+        assert_eq!(code("United States Oil Fund", "Commodity"), Some("067651"));
+        assert_eq!(code("US Copper Index Fund", "Commodity"), Some("085692"));
+        // Macro underlyings → the TFF contracts.
+        assert_eq!(code("SPDR S&P 500 ETF Trust", "Equity"), Some("13874A"));
+        assert_eq!(code("Invesco Nasdaq-100 ETF", "Equity"), Some("209742"));
+        assert_eq!(code("Invesco DB US Dollar Index Bullish", "Currency"), Some("098662"));
+        assert_eq!(code("iShares 20+ Year Treasury Bond", "Fixed Income"), Some("043602"));
+        assert_eq!(code("Schwab Short-Term US Treasury", "Fixed Income"), Some("042601"));
+        assert_eq!(code("SPDR 1-3 Month Treasury Bill? 1-3", "Fixed Income"), Some("042601"));
+        // An inverse long-duration fund: "Short" is direction, not maturity —
+        // the long-maturity phrase overrides it and the underlying stays the
+        // long-end note (Codex 2026-08-20, finding 3).
+        assert_eq!(
+            code("ProShares Short 20+ Year Treasury", "Fixed Income"),
+            Some("043602")
+        );
+        // A bare-"short" duration name with no long-maturity phrase reads
+        // short-duration (Codex round 2: the SHV-style shape).
+        assert_eq!(
+            code("iShares Short Treasury Bond", "Fixed Income"),
+            Some("042601")
+        );
+        // No tracked underlying — or no identity at all — fail-softs to no read.
+        assert_eq!(code("Vanguard Total Stock Market", "Equity"), None);
+        assert_eq!(code("", ""), None);
     }
 
     /// A fund's `TrailingReturn` / `ReturnVolatility` ledger conditions are authored

@@ -612,6 +612,14 @@ export interface DataHealth {
   // The house view was omitted for staleness (latest report older than the pinned
   // window — docs/portfolio-workflow.md §Step 5); informational, rides `summary`.
   house_view_omitted: boolean;
+  // Run-level enriching-feed gaps (commodity context / CFTC positioning / the
+  // CBOE backdrop / sector-benchmark series) — counted and named in `summary`,
+  // never attention triggers (the feeds are fail-soft and additive). Absent on
+  // runs persisted before the fields existed.
+  commodity_gaps?: number;
+  positioning_gaps?: number;
+  cboe_gap?: boolean;
+  benchmark_gaps?: number;
   // Local chat calls under context pressure (the digest-compression covenant's
   // detection leg) — near-full (≥ 90% of num_ctx) or likely front-truncated (a
   // reported count too small to cover the chars actually sent; Ollama's count

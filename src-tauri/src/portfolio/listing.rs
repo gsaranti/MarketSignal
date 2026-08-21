@@ -16,6 +16,11 @@ pub struct ProfileIdentity {
     pub company_name: Option<String>,
     pub exchange: Option<String>,
     pub sector: Option<String>,
+    /// The FMP industry label — the commodity context's gold-linkage key
+    /// (an industry naming gold / precious metals, not the whole Basic
+    /// Materials sector — `docs/data-sources.md §Portfolio Analysis —
+    /// endpoint surface`, the `GCUSD` row).
+    pub industry: Option<String>,
 }
 
 /// One `/profile` lookup outcome. `Unresolved` is only the definitive 2xx
@@ -269,6 +274,7 @@ mod tests {
             company_name: Some(name.to_string()),
             exchange: Some(exchange.to_string()),
             sector: Some("Technology".to_string()),
+            industry: None,
         })
     }
 
@@ -388,6 +394,7 @@ mod tests {
             company_name: Some("Apple Inc.".to_string()),
             exchange: None,
             sector: None,
+            industry: None,
         });
         assert!(matches!(
             resolve_listing("AAPL", "APPLE INC", &no_exchange),
@@ -397,6 +404,7 @@ mod tests {
             company_name: None,
             exchange: Some("NASDAQ".to_string()),
             sector: None,
+            industry: None,
         });
         assert!(matches!(
             resolve_listing("AAPL", "APPLE INC", &no_name),

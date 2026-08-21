@@ -1744,11 +1744,23 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                             authoring_spot: audit
                                 .and_then(|a| a.quick_basis.as_ref())
                                 .map(|b| b.spot),
+                            // The cap signals in force: the pre-profit overlay's
+                            // matched rules plus a tripped hard-forensic rule —
+                            // each an engine-arm annotation the counterfactual
+                            // re-test needs (`docs/portfolio-analysis.md`
+                            // §Outcome learning).
                             cap_signals: audit
                                 .and_then(|a| a.pre_profit.as_ref())
                                 .filter(|pp| pp.is_eligible())
                                 .map(|pp| pp.consequences.matched_rules.clone())
-                                .unwrap_or_default(),
+                                .unwrap_or_default()
+                                .into_iter()
+                                .chain(
+                                    audit
+                                        .and_then(|a| a.forensic.as_ref())
+                                        .and_then(|f| f.matched_rule.clone()),
+                                )
+                                .collect(),
                             grade_parameter_version: audit
                                 .and_then(|a| a.grade_parameter_version.clone()),
                             target_parameter_version: audit
@@ -2911,6 +2923,8 @@ mod tests {
             fund_exposure: None,
             pre_profit: None,
             hurdle: None,
+            forensic: None,
+            tech_event_pre_flag: None,
         };
         let audits = vec![audit];
         let mut input = plan_input("run-3", c3, &trim_again, Some(&trim), &sector);
@@ -2971,6 +2985,8 @@ mod tests {
             fund_exposure: None,
             pre_profit: None,
             hurdle: None,
+            forensic: None,
+            tech_event_pre_flag: None,
         };
         let audits = vec![audit];
         let mut episodes = Vec::new();
@@ -3017,6 +3033,8 @@ mod tests {
             fund_exposure: None,
             pre_profit: None,
             hurdle: None,
+            forensic: None,
+            tech_event_pre_flag: None,
         };
         let audits = vec![audit];
         let mut input = plan_input("run-1", c1, &verdicts, None, &sector);
@@ -3069,6 +3087,8 @@ mod tests {
             fund_exposure: None,
             pre_profit: None,
             hurdle: None,
+            forensic: None,
+            tech_event_pre_flag: None,
         }
     }
 
@@ -3159,6 +3179,8 @@ mod tests {
             fund_exposure: None,
             pre_profit: None,
             hurdle: None,
+            forensic: None,
+            tech_event_pre_flag: None,
         };
         let audits = vec![audit];
         let mut input = plan_input("run-1", c1, &verdicts, None, &sector);

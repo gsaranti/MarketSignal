@@ -200,7 +200,7 @@
   - Financial statements; the ratio endpoints are designed, not yet pulled.
   - Estimates, earnings, dividends, and live quotes; the revision signal is designed.
   - Deep historical stock prices.
-  - Sector and market benchmark prices — designed, not yet loaded.
+  - Sector benchmark prices — loaded run-level per carried holding's sector, memoized.
   - Outcome-label price history.
   - Insider and congressional activity — designed, not yet pulled.
   - Peers, segments, and ratings — designed, not yet pulled; company news is pulled by the quick check.
@@ -209,22 +209,23 @@
 
 - **SEC EDGAR**
   - Official filings and XBRL company facts.
-  - Restatements and auditor changes — the designed hard-forensic producer.
+  - Restatements and auditor changes — the item-classified 8-K sweep (the hard-forensic filing kinds' producer).
   - Optional fund holdings through N-PORT — designed.
 
 - **FRED**
   - Two-year and ten-year Treasury yields.
   - Historical ten-year yields for target calculations.
-  - Energy and commodity prices — designed, not yet loaded.
+  - Energy and metals commodity prices — level-basis windows, loaded run-level.
 
 - **FINRA (designed, not yet wired)**
   - Short-interest level, trend, and days-to-cover.
 
-- **CFTC (designed, not yet loaded)**
+- **CFTC**
   - Futures positioning for commodity, index, rate, and currency funds.
 
-- **CBOE (designed, not yet loaded)**
+- **CBOE**
   - Broad put/call market sentiment.
+  - A bounded HTML extraction of the daily statistics page — no machine-readable current-day endpoint exists; locally detectable structure drift degrades to a typed gap (the guarantee's scope lives at data-sources.md §CBOE).
 
 - **SearXNG (designed — research slice)**
   - Primary web search for holding research.
@@ -371,12 +372,12 @@
   - Current `DGS2` two-year Treasury yield.
   - Historical `DGS10` observations for valuation anchors.
 
-- **Designed run-level context (not yet loaded; each lands with its consumer)**
-  - Energy and other commodity prices from FRED.
+- **Enriching run-level context (each fail-soft to a typed gap counted on data health)**
+  - Energy and metals commodity prices from FRED (level basis, never the rate normalization).
   - Gold quote from FMP.
   - Futures positioning from CFTC.
   - Broad put/call statistics from CBOE.
-  - Sector and market benchmark histories from FMP.
+  - Sector benchmark histories from FMP (fetched per carried holding's sector, memoized).
 
 - **Logic**
   - Omit the house view when older than one week.
@@ -388,10 +389,10 @@
   - Investor profile → the Step 6f action decision only — never intrinsic analysis.
   - `DGS10` → valuation multiples at Step 6b.
   - `DGS2` → return hurdles at Step 6b.
-  - Commodity prices and the gold quote → commodity-linked holding evidence (designed).
-  - CFTC positioning → a commodity / macro fund's underlying-positioning read (designed).
-  - CBOE put/call → a venue-level options-sentiment backdrop: broad-market context, never a per-name signal (designed).
-  - Sector and market benchmarks → the input delta's technology-event pre-flag at Step 6b (designed).
+  - Commodity prices → commodity-linked holding evidence, matched by profile sector; the gold quote attaches on a gold / precious-metals industry label only.
+  - CFTC positioning → a commodity / macro fund's underlying-positioning read, mapped by fund identity keywords.
+  - CBOE put/call → a venue-level options-sentiment backdrop: broad-market context, never a per-name signal.
+  - Sector benchmarks → the input delta's technology-event pre-flag at Step 6b.
 
 - **Failure rule**
   - `DGS2` or `DGS10` still unavailable after retries → fail the run.
@@ -480,7 +481,7 @@ Once the stock guard clears — and for every fund — the remaining legs are pu
   - Deep dated price history (~1,600-day lookback).
 
 - **Stock data retrieved elsewhere**
-  - SEC XBRL company facts (revenue, gross profit, net income, total assets, equity) — filings themselves are read only by the quick check and the designed forensic producer, not this pass.
+  - SEC XBRL company facts (revenue, gross profit, net income, total assets, equity) — the filings index is read by the quick check's material sweep and this pass's item-classified forensic sweep.
   - FINRA short interest (level, trend, days-to-cover) — designed.
 
 - **Option chains**
@@ -564,7 +565,8 @@ The designed embedding-based recall of this holding’s prior analysis; as-built
   - **Risk tier** (High / Medium / Low) → sets the return-hurdle rate.
   - **Return hurdle** (capital efficiency) — risk tier + scenario returns → the dead-money read.
   - **Continuity and ledger checks** — the prior ledger's conditions evaluated against the new engine values.
-  - **Designed reads (not computed yet)** — narrative-vs-reality, implied expectations, forensic checks, and the technology-event pre-flag would ride as evidence once built; they are not part of the live order.
+  - **The hard forensic state and the technology-event pre-flag** — computed here as input-delta / conviction-layer evidence.
+  - **Designed reads (not computed yet)** — narrative-vs-reality, implied expectations, and the soft forensic checks would ride as evidence once built; they are not part of the live order.
 
 - **The through-line**
   - The load-bearing dependencies: **sub-scores → letter**, **risk tier → hurdle**, **targets → hurdle**, **overlay → conviction cap + action-set narrowing**.
@@ -819,7 +821,7 @@ After the branch's engine values are set, the prior ledger's conditions are eval
   - Advance streaks only on a new observation.
   - Preserve condition state by app-controlled condition ID.
 
-- **Technology-event pre-flag (designed, not built)**
+- **Technology-event pre-flag**
   - Compare the stock’s move with its sector.
   - Adjust the threshold for the stock’s volatility and elapsed time.
   - Large unexplained relative move adds a research topic.
@@ -845,12 +847,14 @@ Additional stock reads that ride into the interpretation call as evidence; none 
   - Estimate the growth or margin range already priced in.
   - Used as context, not a gate.
 
-- **Forensic checks (designed, not built)**
+- **Hard forensic state (live)**
+  - Restatement or auditor change from the item-classified SEC filings sweep — the hard-forensic filing kinds' producer.
+  - Fraud may arrive later from validated primary-source research (research lane).
+
+- **Soft forensic checks (designed, not built)**
   - Altman Z and Piotroski weakness.
   - Profit not supported by operating cash flow.
   - Receivables or inventory outrunning revenue.
-  - Restatement or auditor change from SEC filings — the hard-forensic producer.
-  - Fraud may arrive later from validated primary-source research (research lane).
 
 #### Evidence floor
 
@@ -894,7 +898,8 @@ The inline gates referenced above, gathered — with each branch's requirements 
     - **Momentum / market setup**; for a priced fund, the **expense ratio**, **US share**, and **composite coverage** reach the prompt (the computed NAV premium and the full exposure tilt do not).
     - The **ledger evaluation** — the prior ledger's conditions' tripped / fired state.
     - The **input delta** — position change, house-view age, and prior-run values carried for comparison.
-    - Designed, not yet emitted: forensic flags, narrative-vs-reality, implied expectations, and the designed conviction-context signals.
+    - The **hard forensic state** (the filings sweep, with its engine-matched rule when tripped) and a **fired technology-event pre-flag**.
+    - Designed, not yet emitted: the soft forensic flags, narrative-vs-reality, implied expectations, and the designed conviction-context signals.
   - **Control result**: the **data-gap manifest** and the **evidence-floor outcome** — pass, or `insufficient-evidence` with named reasons (which short-circuits 6c–6f).
   - **Persisted working reads (not scratch)**: the engine keeps its intermediates too — the overlay's statement inputs (liquid resources, burn, runway, capex intensity, dilution, margin direction) ride the audit row, and the settled per-share drivers, spread / raw-multiple percentiles, spot, and forward-dividend leg persist as the **quick-check basis** the between-run engine paths re-anchor against.
   - **Assembled later, not here**: the engine arm's mechanical **stand-in outlook / conviction / action** are built at verdict time (after interpretation) from these 6b values — they are not part of the Step-6b output.
@@ -1326,7 +1331,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Matched cap rules record as audit annotations that bind the **engine stand-in arm only** (the overlay-derived caps are computed at Step 6b, their mechanics detailed at Step 6e §Pre-profit rule consequences). Their as-built status:
     - **Severe deterioration** (→ Low ceiling, engine set limited to Trim or Sell all) is **live** — its legs are statement-derived (economics, financing/runway, dilution), so it can trip without research.
     - **Repeated execution miss** (→ Medium ceiling) is built but **dormant** — its execution read needs the stubbed research observations.
-    - **Hard forensic trip** (→ Low ceiling, Add rungs leave the set) is **designed, unbuilt** — it has a separate producer (a filing-classified restatement/auditor change, or a validated `forensic_event` research claim) that does not exist yet, so the overlay carries no such rule today (its ceiling is Medium or Low, both from the deterioration legs above).
+    - **Hard forensic trip** (→ Low ceiling, Add rungs leave the set) is **live for the filing kinds** — the item-classified restatement / auditor-change sweep runs at dossier assembly; the validated `forensic_event` research claim (the fraud kind) joins with the research loop.
   - The strictest matched ceiling wins on the engine arm.
   - A model value past a ceiling renders beside the recorded rule.
   - Model prose cannot create an overlay warning state — the overlay is computed deterministically from statements and (dormant) observations.

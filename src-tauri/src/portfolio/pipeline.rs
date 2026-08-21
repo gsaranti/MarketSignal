@@ -80,6 +80,10 @@ pub struct InterpretationInput<'a> {
     /// the stock actually entered it (`docs/portfolio-workflow.md` §Step 6f: the
     /// overlay renders with its rule-bounded conviction ceiling).
     pub pre_profit: Option<&'a PreProfitOverlay>,
+    /// The input delta's technology-event pre-flag, where it was evaluable
+    /// (`docs/portfolio-analysis.md` §Starting parameters) — rendered only when
+    /// fired; it asserts nothing about the cause.
+    pub tech_pre_flag: Option<&'a engine::TechEventPreFlag>,
 }
 
 /// What the `role_risk_only` interpretation reads: the dossier plus the engine's
@@ -271,6 +275,15 @@ pub fn analyze_holding(
     // role/risk branch computes nothing from them, so their audits must not name
     // them (M3 of the 2026-08-18 doc/code audit).
     let rates_consulted = std::cell::Cell::new(false);
+    // The Step-5 enriching feeds, each recorded only where a prompt actually
+    // rendered it (the same actually-consulted discipline as the house view):
+    // the CBOE backdrop and the fund's COT positioning render whenever present
+    // on the dossier at an interpretation call; the sector-benchmark series is
+    // consulted exactly where the technology-event pre-flag evaluation read it.
+    let backdrop_consulted = std::cell::Cell::new(false);
+    let positioning_consulted = std::cell::Cell::new(false);
+    let benchmark_consulted = std::cell::Cell::new(false);
+    let commodity_consulted = std::cell::Cell::new(false);
     // The model ids this holding's verdict was **actually** authored with, in
     // first-call order — recorded beside each call that ran, never read off the
     // analyst's configuration: a no-model exit persists none, the role/risk branch
@@ -294,6 +307,22 @@ pub fn analyze_holding(
         if house_view_consulted.get() {
             sources.push(crate::portfolio::dossier::HOUSE_VIEW_SOURCE.to_string());
         }
+        if backdrop_consulted.get() {
+            sources.push("CBOE daily put/call (venue backdrop)".to_string());
+        }
+        if commodity_consulted.get() {
+            sources.push(
+                "Run-level commodity context (FRED energy / IMF metals / FMP gold)".to_string(),
+            );
+        }
+        if positioning_consulted.get() {
+            sources.push("CFTC COT positioning (fund underlying)".to_string());
+        }
+        if benchmark_consulted.get() {
+            sources.push(
+                "FMP sector benchmark series (technology-event pre-flag)".to_string(),
+            );
+        }
         sources
     };
     let audit = |metrics, target_meta, ledger_audit, pre_profit| HoldingAudit {
@@ -311,6 +340,19 @@ pub fn analyze_holding(
         fund_exposure: fund_exposure.clone(),
         pre_profit,
         hurdle: None,
+        // Every exit records the sweep state where the gather ran it; the
+        // matched hard rule is stamped only on the priced path, where the
+        // engine consequences it names were actually computed.
+        forensic: dossier
+            .filing_events
+            .clone()
+            .map(|state| crate::portfolio::ForensicRead {
+                matched_rule: None,
+                state,
+            }),
+        // The pre-flag is evaluated on the priced path only (it reads the
+        // engine's volatility); an early exit records none.
+        tech_event_pre_flag: None,
     };
     let abstain = |reason: String, metrics, meta, pre_profit| {
         let verdict = HoldingVerdict {
@@ -504,6 +546,9 @@ pub fn analyze_holding(
                 // annotated evidence (`docs/portfolio-analysis.md` §Portfolio
                 // action).
                 house_view_consulted.set(role_risk_prompt_renders_house_view(dossier));
+                backdrop_consulted.set(dossier.put_call_backdrop.is_some());
+                positioning_consulted
+                    .set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
                 let interpretation = analyst
                     .interpret_role_risk(&RoleRiskInput {
                         dossier,
@@ -608,6 +653,68 @@ pub fn analyze_holding(
         .filter(|o| o.is_eligible())
         .map(|o| &o.consequences);
 
+    // The hard-forensic trip — resolved only from the typed filings-sweep
+    // producer (`docs/portfolio-analysis.md` §Starting parameters: the
+    // conviction-layer caps' hard triggers); an `Unknown` sweep never trips.
+    let hard_forensic = dossier
+        .filing_events
+        .as_ref()
+        .map(crate::portfolio::ForensicFilingState::hard_tripped)
+        .unwrap_or(false);
+
+    // The input delta's technology-event pre-flag (`docs/portfolio-analysis.md`
+    // §Starting parameters) — an equity read, evaluable only for a carried
+    // stock with a sector-benchmark series; an unevaluable read records its
+    // typed reason on the audit, never a fired or clear flag. A debut has
+    // nothing to diff, so it is neither a flag nor a gap.
+    let (tech_pre_flag, tech_pre_flag_gap) = if is_fund {
+        (None, None)
+    } else {
+        match (&dossier.prior_vintage, &dossier.sector_benchmark) {
+            (None, _) => (None, None),
+            (Some(_), None) => (
+                None,
+                Some(
+                    "technology-event pre-flag unevaluable: no sector benchmark \
+                     series this run"
+                        .to_string(),
+                ),
+            ),
+            (Some(vintage), Some(bench)) => {
+                match crate::market_clock::et_date_of(vintage) {
+                    None => (
+                        None,
+                        Some(format!(
+                            "technology-event pre-flag unevaluable: unreadable prior \
+                             vintage {vintage:?}"
+                        )),
+                    ),
+                    Some(session) => {
+                        // The label's warrant: only here is the series actually
+                        // handed to the evaluation (an unreadable vintage never
+                        // reads it — Codex 2026-08-20 round 2, finding 4).
+                        benchmark_consulted.set(true);
+                        match engine::tech_event_pre_flag(
+                        &dossier.financials.daily_closes,
+                        &bench.closes,
+                        &bench.symbol,
+                        &session.format("%Y-%m-%d").to_string(),
+                        engine_output.metrics.return_volatility,
+                    ) {
+                            Ok(flag) => (Some(flag), None),
+                            Err(reason) => (
+                                None,
+                                Some(format!(
+                                    "technology-event pre-flag unevaluable: {reason}"
+                                )),
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+    };
+
     // Evaluate the prior ledger's quantitative falsifiers and triggers against this
     // run's computed surface — the crossings interpretation reads
     // (`docs/portfolio-analysis.md` §The position thesis ledger).
@@ -622,6 +729,9 @@ pub fn analyze_holding(
 
     // Research (stubbed) → distill → interpret.
     house_view_consulted.set(priced_prompt_renders_house_view(dossier));
+    backdrop_consulted.set(dossier.put_call_backdrop.is_some());
+    positioning_consulted.set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
+    commodity_consulted.set(!dossier.commodity_context.is_empty());
     let findings = research(dossier);
     let distilled = analyst
         .distill(dossier, &findings)
@@ -634,6 +744,7 @@ pub fn analyze_holding(
             distilled: &distilled,
             ledger_eval: ledger_eval.as_ref(),
             pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
+            tech_pre_flag: tech_pre_flag.as_ref(),
         })
         .context("interpreting the holding")?;
     used_model(analyst.reasoner_id());
@@ -659,7 +770,8 @@ pub fn analyze_holding(
 
     // The engine stand-in arm — mechanical outlook / conviction / action baselines
     // beside the model's (`docs/portfolio-analysis.md` §The holding verdict).
-    let engine_view = engine::engine_view(&engine_output, &dossier.financials, &degraded, overlay_rules);
+    let engine_view =
+        engine::engine_view(&engine_output, &dossier.financials, &degraded, overlay_rules, hard_forensic);
     let mut graded = GradedVerdict {
         grade: engine_output.grade,
         sub_scores: engine_output.sub_scores,
@@ -696,7 +808,8 @@ pub fn analyze_holding(
     // design (`docs/portfolio-analysis.md` §Portfolio action). The engine's
     // per-holding set rides as evidence; an outside-the-set choice persists as
     // authored with the departure annotated on the audit.
-    let engine_set = engine::feasible_actions(engine_output.grade, &engine_output.hurdle, overlay_rules);
+    let engine_set =
+        engine::feasible_actions(engine_output.grade, &engine_output.hurdle, overlay_rules, hard_forensic);
     let decision = analyst
         .decide_action(&ActionInput {
             dossier,
@@ -728,6 +841,7 @@ pub fn analyze_holding(
     // recorded, never silently dropped.
     let mut degraded_inputs = degraded.clone();
     degraded_inputs.extend(engine_output.tier_gaps.iter().cloned());
+    degraded_inputs.extend(tech_pre_flag_gap.clone());
     let audit_record = HoldingAudit {
         symbol: symbol.clone(),
         metrics: engine_output.metrics.clone(),
@@ -748,6 +862,18 @@ pub fn analyze_holding(
         // snapshot can freeze the hurdle inputs (`docs/portfolio-analysis.md`
         // §Outcome learning).
         hurdle: Some(engine_output.hurdle.clone()),
+        forensic: dossier
+            .filing_events
+            .clone()
+            .map(|state| crate::portfolio::ForensicRead {
+                matched_rule: hard_forensic.then(|| {
+                    "hard forensic trigger: engine conviction capped Low; \
+                     add family barred from the engine action set"
+                        .to_string()
+                }),
+                state,
+            }),
+        tech_event_pre_flag: tech_pre_flag,
     };
     Ok((verdict, audit_record))
 }
@@ -1577,6 +1703,12 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     if !r.evidence_gaps.is_empty() {
         p.push_str(&format!("EVIDENCE GAPS: {}\n", r.evidence_gaps.join("; ")));
     }
+    // The commodity / macro classes this branch types are exactly where the
+    // underlying-positioning read carries signal (`docs/data-sources.md §CFTC`).
+    if let Some(f) = &d.fund {
+        p.push_str(&positioning_prompt_section(f));
+    }
+    p.push_str(&put_call_backdrop_prompt_section(d));
     if let Some(sections) = &d.house_view.latest_sections {
         p.push_str(&format!(
             "\nMARKET SIGNAL HOUSE VIEW (latest report — scope: market-setup context \
@@ -1790,6 +1922,135 @@ pub(crate) fn priced_prompt_renders_house_view(d: &HoldingDossier) -> bool {
     d.house_view.latest_sections.is_some() || !d.house_view.recent_summaries.is_empty()
 }
 
+/// The COT underlying-positioning line for a commodity / macro fund
+/// (`docs/portfolio-workflow.md` §Step 5; `docs/data-sources.md §CFTC`):
+/// weekly, as-of positioning **context** — layer (c), held out of every
+/// sub-score. Empty where no contract mapped.
+fn positioning_prompt_section(f: &crate::portfolio::fund::FundContext) -> String {
+    let Some(p) = &f.positioning else {
+        return String::new();
+    };
+    let mut s = format!(
+        "\nUNDERLYING POSITIONING (CFTC COT, weekly — snapshot as of {}; \
+         positioning context, never a score input): {} — speculator net {:+.0} \
+         contracts",
+        p.report_date, p.contract, p.spec_net
+    );
+    if let Some(pct) = p.spec_pct_oi_long {
+        s.push_str(&format!(" ({pct:.1}% of OI long)"));
+    }
+    if let Some(chg) = p.spec_net_weekly_change {
+        s.push_str(&format!(", w/w {chg:+.0}"));
+    }
+    if let Some(rm) = p.real_money_net {
+        s.push_str(&format!("; asset-manager net {rm:+.0}"));
+        if let Some(c) = p.real_money_net_weekly_change {
+            s.push_str(&format!(" (w/w {c:+.0})"));
+        }
+    }
+    s.push('\n');
+    s
+}
+
+/// The CBOE venue-level put/call backdrop (`docs/data-sources.md §CBOE`):
+/// broad-market options sentiment from Cboe's own venue flow — macro context,
+/// never a per-name signal (the per-stock read is the Schwab-chain options
+/// signal). Empty where the leg failed or never ran.
+fn put_call_backdrop_prompt_section(d: &HoldingDossier) -> String {
+    let Some(b) = &d.put_call_backdrop else {
+        return String::new();
+    };
+    let fmt =
+        |v: Option<f64>| v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "(gap)".to_string());
+    format!(
+        "MARKET OPTIONS SENTIMENT (CBOE venue-level daily put/call, as of {} — \
+         broad-market backdrop, never a per-name signal): total {}, index {}, \
+         equity {}\n",
+        b.as_of,
+        fmt(b.total),
+        fmt(b.index),
+        fmt(b.equity)
+    )
+}
+
+/// The run-level commodity context, rendered for a commodity-linked holding
+/// (`docs/portfolio-workflow.md` §Step 5): published levels with their print
+/// dates — as-of evidence for the conviction and narrative reads, never a score
+/// input. Empty for a holding with no sector-matched prints.
+fn commodity_prompt_section(d: &HoldingDossier) -> String {
+    if d.commodity_context.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "\nCOMMODITY CONTEXT (run-level, matched to this holding's sector / \
+         industry identity; published levels, each as of its print date — a \
+         monthly series lags by design):\n",
+    );
+    for p in &d.commodity_context {
+        s.push_str(&format!(
+            "- {}: {:.2} {} (as of {}",
+            p.label, p.latest.value, p.unit, p.latest.date
+        ));
+        if let Some(t) = &p.trailing {
+            if t.value != 0.0 {
+                s.push_str(&format!(
+                    "; {:+.1}% vs {:.2} on {}",
+                    (p.latest.value / t.value - 1.0) * 100.0,
+                    t.value,
+                    t.date
+                ));
+            }
+        }
+        s.push_str(")\n");
+    }
+    s
+}
+
+/// The hard-forensic filings section shared by the interpretation and action
+/// prompts: the item-classified 8-K sweep state rendered as typed evidence
+/// (`docs/portfolio-analysis.md` §Starting parameters). A tripped hard trigger
+/// names the engine-matched rule — evidence and an engine-arm bound, never a
+/// clamp on the model's own values. Empty where the sweep never ran (the audit's
+/// gap manifest carries the reason there).
+fn forensic_prompt_section(d: &HoldingDossier) -> String {
+    use crate::portfolio::ForensicFilingState;
+    match &d.filing_events {
+        None => String::new(),
+        Some(ForensicFilingState::Clear) => {
+            "\nFORENSIC FILINGS (item-classified 8-K sweep): clean — no restatement \
+             (Item 4.02) or auditor-change (Item 4.01) filing inside the lookback.\n"
+                .to_string()
+        }
+        Some(ForensicFilingState::Unknown { reason, .. }) => format!(
+            "\nFORENSIC FILINGS (item-classified 8-K sweep): UNKNOWN — {reason}. \
+             Not a clean check; weigh accordingly.\n"
+        ),
+        Some(ForensicFilingState::Events { events }) => {
+            let mut s = String::from(
+                "\nFORENSIC FILINGS — HARD TRIGGER TRIPPED (typed, filing-classified \
+                 events; never a model assertion):\n",
+            );
+            for ev in events {
+                s.push_str(&format!(
+                    "- {} — filed {} ({}; {})\n",
+                    ev.kind.label(),
+                    ev.filing_date,
+                    ev.source,
+                    ev.confidence
+                ));
+            }
+            s.push_str(
+                "Engine-matched hard rule (binds the ENGINE arm; your own values stay \
+                 yours, departures annotated): engine conviction capped Low; the add \
+                 family is barred from the engine action set. Weigh the event's \
+                 severity and recency in your own conviction and risk read; the \
+                 letter grade is untouched by rule.\n",
+            );
+            s
+        }
+    }
+}
+
 pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     let d = input.dossier;
     let e = input.engine;
@@ -1852,6 +2113,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
                 (1.0 - cov) * 100.0
             ));
         }
+        p.push_str(&positioning_prompt_section(f));
     }
 
     p.push_str("\nCOMPUTED METRICS:\n");
@@ -1955,10 +2217,14 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         opt(s.implied_volatility),
         opt(s.iv_skew),
     ));
+    p.push_str(&put_call_backdrop_prompt_section(d));
 
     if !d.financials.gaps.is_empty() {
         p.push_str(&format!("\nDATA GAPS: {}\n", d.financials.gaps.join("; ")));
     }
+
+    p.push_str(&forensic_prompt_section(d));
+    p.push_str(&commodity_prompt_section(d));
 
     p.push_str(&format!("\nDISTILLED RESEARCH:\n{}\n", input.distilled));
 
@@ -1988,6 +2254,25 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
 
     p.push_str("\nHORIZONS for the outlook: ");
     p.push_str(&format!("{HORIZON_SHORT}, {HORIZON_MID}, {HORIZON_LONG}.\n"));
+
+    // The input delta's technology-event pre-flag — rendered only when fired
+    // (`docs/portfolio-analysis.md` §Starting parameters: the flag asserts
+    // nothing about the cause; its research-topic consumer lands with the
+    // research loop).
+    if let Some(f) = input.tech_pre_flag.filter(|f| f.fired) {
+        p.push_str(&format!(
+            "\nTECHNOLOGY-EVENT PRE-FLAG (input delta): the sector-relative move \
+             since the prior read ({:+.1}% vs {} over {} sessions) exceeds the \
+             ±{:.1}% threshold (2× interval-scaled realized volatility). This \
+             flags a POSSIBLE third-party repricing event; it asserts nothing \
+             about the cause — weigh whether a real technology event explains \
+             the move before treating it as impairment or opportunity.\n",
+            f.relative_move * 100.0,
+            f.benchmark,
+            f.sessions,
+            f.threshold * 100.0,
+        ));
+    }
 
     match &d.prior_verdict {
         Some(_) => {
@@ -2209,6 +2494,9 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
             }
         }
     }
+
+    p.push_str(&forensic_prompt_section(input.dossier));
+    p.push_str(&commodity_prompt_section(input.dossier));
 
     p.push_str(
         "\nENGINE SET (the engine arm's own restriction — evidence, not a bound; \
@@ -3445,6 +3733,10 @@ mod tests {
             sources: vec!["FMP".into()],
             prior_pre_profit: None,
             listing: None,
+            filing_events: None,
+            put_call_backdrop: None,
+            commodity_context: Vec::new(),
+            sector_benchmark: None,
         }
     }
 
@@ -3517,6 +3809,7 @@ mod tests {
             sector_pe: snapshot,
             sector_pe_history: history,
             as_of: chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap(),
+            positioning: None,
         });
         d
     }
@@ -4339,6 +4632,7 @@ mod tests {
             distilled: "distilled findings",
             ledger_eval: None,
             pre_profit: None,
+            tech_pre_flag: None,
         };
         let user = interpretation_user_prompt(&input);
         assert!(user.contains("ENGINE GRADE (the baseline arm"), "{user}");
@@ -4374,6 +4668,374 @@ mod tests {
     }
 
     #[test]
+    fn commodity_context_renders_as_dated_levels_in_both_prompts() {
+        use crate::portfolio::dossier::{CommodityGroup, CommodityPrint};
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.commodity_context = vec![CommodityPrint {
+            label: "WTI Crude Oil".into(),
+            unit: "USD per barrel".into(),
+            group: CommodityGroup::Energy,
+            latest: crate::portfolio::engine::DatedValue {
+                date: "2026-08-18".into(),
+                value: 78.4,
+            },
+            trailing: Some(crate::portfolio::engine::DatedValue {
+                date: "2025-08-20".into(),
+                value: 82.1,
+            }),
+        }];
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let interp = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "findings",
+            ledger_eval: None,
+            pre_profit: None,
+            tech_pre_flag: None,
+        });
+        assert!(interp.contains("COMMODITY CONTEXT"), "{interp}");
+        assert!(interp.contains("78.40 USD per barrel (as of 2026-08-18"), "{interp}");
+        assert!(interp.contains("-4.5% vs 82.10 on 2025-08-20"), "{interp}");
+        // A holding with no sector-matched prints renders no section.
+        let bare = dossier(AssetClass::Stock, strong_financials());
+        let interp = interpretation_user_prompt(&InterpretationInput {
+            dossier: &bare,
+            engine: &engine_output,
+            distilled: "findings",
+            ledger_eval: None,
+            pre_profit: None,
+            tech_pre_flag: None,
+        });
+        assert!(!interp.contains("COMMODITY CONTEXT"), "{interp}");
+    }
+
+    #[test]
+    fn a_fired_pre_flag_renders_and_an_unfired_one_stays_silent() {
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let flag = |fired| engine::TechEventPreFlag {
+            fired,
+            relative_move: -0.12,
+            threshold: 0.08,
+            sessions: 4,
+            benchmark: "XLK".into(),
+        };
+        let prompt = |f: Option<&engine::TechEventPreFlag>| {
+            interpretation_user_prompt(&InterpretationInput {
+                dossier: &d,
+                engine: &engine_output,
+                distilled: "findings",
+                ledger_eval: None,
+                pre_profit: None,
+                tech_pre_flag: f,
+            })
+        };
+        let fired = flag(true);
+        let user = prompt(Some(&fired));
+        assert!(user.contains("TECHNOLOGY-EVENT PRE-FLAG"), "{user}");
+        assert!(user.contains("-12.0% vs XLK over 4 sessions"), "{user}");
+        assert!(user.contains("asserts nothing about the cause"), "{user}");
+        let unfired = flag(false);
+        assert!(!prompt(Some(&unfired)).contains("TECHNOLOGY-EVENT PRE-FLAG"));
+        assert!(!prompt(None).contains("TECHNOLOGY-EVENT PRE-FLAG"));
+    }
+
+    #[test]
+    fn the_pre_flag_wires_through_analyze_holding_onto_the_audit() {
+        use crate::portfolio::dossier::BenchmarkSeries;
+        // A carried stock with a benchmark series records an evaluated flag (or
+        // its typed gap); a debut records neither.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.prior_vintage = Some("2026-07-20T14:00:00Z".to_string());
+        d.sector_benchmark = Some(BenchmarkSeries {
+            symbol: "XLK".into(),
+            closes: d.financials.daily_closes.clone(),
+        });
+        let (_, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        assert!(
+            audit.tech_event_pre_flag.is_some()
+                || audit
+                    .degraded_inputs
+                    .iter()
+                    .any(|g| g.contains("technology-event pre-flag unevaluable")),
+            "an evaluable carried stock records the flag or its typed gap: {audit:?}"
+        );
+        // A carried stock with NO benchmark series records the typed gap.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.prior_vintage = Some("2026-07-20T14:00:00Z".to_string());
+        let (_, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        assert!(audit.tech_event_pre_flag.is_none());
+        assert!(
+            audit
+                .degraded_inputs
+                .iter()
+                .any(|g| g.contains("no sector benchmark series")),
+            "{:?}",
+            audit.degraded_inputs
+        );
+        // A debut records neither a flag nor a gap.
+        let d = dossier(AssetClass::Stock, strong_financials());
+        let (_, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        assert!(audit.tech_event_pre_flag.is_none());
+        assert!(!audit
+            .degraded_inputs
+            .iter()
+            .any(|g| g.contains("technology-event pre-flag")));
+    }
+
+    #[test]
+    fn newly_consulted_feeds_land_on_the_audit_source_labels() {
+        // The actually-consulted discipline extends to the Step-5 feeds: the
+        // backdrop and a fund's positioning label where a prompt rendered
+        // them, the benchmark where the pre-flag evaluation read it — and none
+        // of them label where absent (Codex 2026-08-20, finding 5).
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.put_call_backdrop = Some(crate::cboe::PutCallBackdrop {
+            as_of: "2026-08-19".into(),
+            total: Some(0.8),
+            index: None,
+            equity: None,
+        });
+        d.prior_vintage = Some("2026-07-20T14:00:00Z".to_string());
+        d.sector_benchmark = Some(crate::portfolio::dossier::BenchmarkSeries {
+            symbol: "XLK".into(),
+            closes: d.financials.daily_closes.clone(),
+        });
+        let (_, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        assert!(
+            audit.sources.iter().any(|s| s.contains("CBOE daily put/call")),
+            "{:?}",
+            audit.sources
+        );
+        assert!(
+            audit.sources.iter().any(|s| s.contains("sector benchmark series")),
+            "{:?}",
+            audit.sources
+        );
+
+        let mut fd = fund_dossier(us_equity_fund());
+        if let Some(f) = fd.fund.as_mut() {
+            f.positioning = Some(crate::data_sources::CotPositioning {
+                contract: "E-Mini S&P 500".into(),
+                contract_code: "13874A".into(),
+                asset_class: "equity-index".into(),
+                report_date: "2026-08-11".into(),
+                open_interest: 2_579_920.0,
+                spec_net: -515_520.0,
+                spec_net_weekly_change: None,
+                spec_pct_oi_long: None,
+                real_money_net: Some(984_009.0),
+                real_money_net_weekly_change: None,
+            });
+        }
+        let (_, audit) = analyze_holding(&StubAnalyst, &fd, &rates(), "2026-08-03").unwrap();
+        assert!(
+            audit.sources.iter().any(|s| s.contains("CFTC COT positioning")),
+            "{:?}",
+            audit.sources
+        );
+
+        // Absent feeds claim nothing.
+        let bare = dossier(AssetClass::Stock, strong_financials());
+        let (_, audit) = analyze_holding(&StubAnalyst, &bare, &rates(), "2026-08-03").unwrap();
+        assert!(!audit.sources.iter().any(|s| {
+            s.contains("CBOE") || s.contains("CFTC") || s.contains("benchmark")
+        }));
+
+        // The commodity context labels only where a prompt rendered it: on the
+        // interpreted path, never on an early exit that consumed no prompt
+        // (Codex 2026-08-20 round 2, finding 4).
+        let commodity_print = crate::portfolio::dossier::CommodityPrint {
+            label: "WTI Crude Oil".into(),
+            unit: "USD per barrel".into(),
+            group: crate::portfolio::dossier::CommodityGroup::Energy,
+            latest: crate::portfolio::engine::DatedValue {
+                date: "2026-08-18".into(),
+                value: 78.4,
+            },
+            trailing: None,
+        };
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.commodity_context = vec![commodity_print.clone()];
+        let (_, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        assert!(
+            audit.sources.iter().any(|s| s.contains("commodity context")),
+            "{:?}",
+            audit.sources
+        );
+        let mut floored = dossier(AssetClass::Stock, strong_financials());
+        floored.commodity_context = vec![commodity_print];
+        floored.financials.current_price = None;
+        let (_, audit) = analyze_holding(&StubAnalyst, &floored, &rates(), "2026-08-03").unwrap();
+        assert!(
+            !audit.sources.iter().any(|s| s.contains("commodity context")),
+            "an evidence-floor exit renders no prompt, so it claims no commodity \
+             source: {:?}",
+            audit.sources
+        );
+
+        // An unreadable prior vintage never hands the benchmark series to the
+        // evaluation, so it must not label it.
+        let mut unreadable = dossier(AssetClass::Stock, strong_financials());
+        unreadable.prior_vintage = Some("soon".to_string());
+        unreadable.sector_benchmark = Some(crate::portfolio::dossier::BenchmarkSeries {
+            symbol: "XLK".into(),
+            closes: unreadable.financials.daily_closes.clone(),
+        });
+        let (_, audit) =
+            analyze_holding(&StubAnalyst, &unreadable, &rates(), "2026-08-03").unwrap();
+        assert!(
+            !audit.sources.iter().any(|s| s.contains("benchmark")),
+            "{:?}",
+            audit.sources
+        );
+        assert!(audit
+            .degraded_inputs
+            .iter()
+            .any(|g| g.contains("unreadable prior vintage")));
+    }
+
+    #[test]
+    fn put_call_backdrop_renders_as_broad_market_context_on_both_read_prompts() {
+        let backdrop = crate::cboe::PutCallBackdrop {
+            as_of: "August 19, 2026".into(),
+            total: Some(0.80),
+            index: Some(0.97),
+            equity: None,
+        };
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.put_call_backdrop = Some(backdrop.clone());
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let interp = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "findings",
+            ledger_eval: None,
+            pre_profit: None,
+            tech_pre_flag: None,
+        });
+        assert!(interp.contains("MARKET OPTIONS SENTIMENT"), "{interp}");
+        assert!(interp.contains("as of August 19, 2026"), "{interp}");
+        assert!(interp.contains("total 0.80, index 0.97, equity (gap)"), "{interp}");
+
+        let mut fd = fund_dossier(us_equity_fund());
+        fd.put_call_backdrop = Some(backdrop);
+        let role = role_risk_user_prompt(&RoleRiskInput {
+            dossier: &fd,
+            readout: &RoleRiskReadout::default(),
+            ledger_eval: None,
+        });
+        assert!(role.contains("MARKET OPTIONS SENTIMENT"), "{role}");
+        // Absent, neither prompt claims it.
+        let bare = dossier(AssetClass::Stock, strong_financials());
+        let interp = interpretation_user_prompt(&InterpretationInput {
+            dossier: &bare,
+            engine: &engine_output,
+            distilled: "findings",
+            ledger_eval: None,
+            pre_profit: None,
+            tech_pre_flag: None,
+        });
+        assert!(!interp.contains("MARKET OPTIONS SENTIMENT"), "{interp}");
+    }
+
+    #[test]
+    fn a_tripped_hard_forensic_binds_the_engine_arm_and_annotates_the_audit() {
+        use crate::portfolio::{Conviction, ForensicFilingState};
+        let event = crate::sec::ForensicEvent {
+            kind: crate::sec::ForensicEventKind::Restatement,
+            issuer: "AAPL".into(),
+            filing_date: "2026-07-20".into(),
+            source: "8-K accession 0000320193-26-000042".into(),
+            confidence: "filing-declared item code".into(),
+        };
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.filing_events = Some(ForensicFilingState::Events { events: vec![event] });
+        let (v, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+
+        // The audit records the sweep state with the engine-matched hard rule.
+        let forensic = audit.forensic.expect("the sweep state persists on the audit");
+        assert!(forensic.state.hard_tripped());
+        assert!(
+            forensic.matched_rule.as_deref().unwrap_or("").contains("capped Low"),
+            "{forensic:?}"
+        );
+        // The engine arm is bound: stand-in conviction hard-capped Low; the
+        // model arm persists as authored (the stub's own conviction survives).
+        let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
+            panic!("expected a priced verdict");
+        };
+        assert_eq!(graded.engine_view.conviction, Conviction::Low);
+        // Both prompts render the typed section; the sweep is a consulted source.
+        let engine_output = match engine::analyze(&d.financials, &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let interp = interpretation_user_prompt(&InterpretationInput {
+            dossier: &d,
+            engine: &engine_output,
+            distilled: "findings",
+            ledger_eval: None,
+            pre_profit: None,
+            tech_pre_flag: None,
+        });
+        assert!(interp.contains("HARD TRIGGER TRIPPED"), "{interp}");
+        assert!(interp.contains("restatement (Item 4.02 non-reliance)"), "{interp}");
+        let engine_set = engine::feasible_actions(
+            engine_output.grade,
+            &engine_output.hurdle,
+            None,
+            true,
+        );
+        assert!(!engine_set.contains(&Action::Add));
+        let action = action_user_prompt(&ActionInput {
+            dossier: &d,
+            subject: ActionSubject::Priced {
+                graded,
+                engine: &engine_output,
+                pre_profit: None,
+            },
+            engine_set: &engine_set,
+            profile: &d.profile,
+        });
+        assert!(action.contains("HARD TRIGGER TRIPPED"), "{action}");
+
+        // An `Unknown` sweep renders as unknown and never trips the rule.
+        let mut unknown = dossier(AssetClass::Stock, strong_financials());
+        unknown.filing_events = Some(ForensicFilingState::Unknown {
+            reason: "no CIK mapping for AAPL".into(),
+            queried: false,
+        });
+        let (v, audit) =
+            analyze_holding(&StubAnalyst, &unknown, &rates(), "2026-08-03").unwrap();
+        let forensic = audit.forensic.expect("unknown persists too");
+        assert!(!forensic.state.hard_tripped());
+        assert!(forensic.matched_rule.is_none());
+        let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
+            panic!("expected a priced verdict");
+        };
+        assert_ne!(graded.engine_view.conviction, Conviction::Low);
+        let interp = interpretation_user_prompt(&InterpretationInput {
+            dossier: &unknown,
+            engine: &engine_output,
+            distilled: "findings",
+            ledger_eval: None,
+            pre_profit: None,
+            tech_pre_flag: None,
+        });
+        assert!(interp.contains("UNKNOWN — no CIK mapping"), "{interp}");
+    }
+
+    #[test]
     fn action_prompt_carries_the_profile_the_engine_set_and_the_verdict_digest() {
         // The action call is the profile's ONE entry point (tunnel vision): the
         // prompt renders the finished verdict digest, the engine's per-holding
@@ -4388,7 +5050,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let engine_set =
-            engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None);
+            engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
         let input = ActionInput {
             dossier: &d,
             subject: ActionSubject::Priced {
@@ -4433,7 +5095,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let engine_set =
-            engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None);
+            engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
         let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
             panic!("expected a priced verdict");
@@ -4502,7 +5164,7 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        let set = engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None);
+        let set = engine::feasible_actions(engine_output.grade, &engine_output.hurdle, None, false);
         if set.contains(&Action::AddAggressively) {
             assert!(audit.action_annotations.is_empty(), "{:?}", audit.action_annotations);
         } else {
@@ -4541,6 +5203,7 @@ mod tests {
             distilled: "distilled findings",
             ledger_eval: None,
             pre_profit: None,
+            tech_pre_flag: None,
         });
         assert!(user.contains("RETROSPECTIVE (prior read 2026-07-29T12:00:00Z)"), "{user}");
         assert!(user.contains("prior ENGINE arm: grade"), "{user}");
@@ -4577,6 +5240,7 @@ mod tests {
             distilled: "distilled findings",
             ledger_eval: None,
             pre_profit: None,
+            tech_pre_flag: None,
         });
         assert!(!debut_user.contains("RETROSPECTIVE"), "{debut_user}");
         assert!(debut_user.contains("new holding (no prior verdict)"), "{debut_user}");
@@ -4613,6 +5277,7 @@ mod tests {
             distilled: "distilled findings",
             ledger_eval: None,
             pre_profit: None,
+            tech_pre_flag: None,
         });
         assert!(user.contains("anchor close 180.00"), "{user}");
     }
@@ -4646,6 +5311,7 @@ mod tests {
             distilled: "",
             ledger_eval: None,
             pre_profit: None,
+            tech_pre_flag: None,
         });
         assert!(
             user.contains(
@@ -4683,6 +5349,7 @@ mod tests {
             distilled: "",
             ledger_eval: None,
             pre_profit: None,
+            tech_pre_flag: None,
         });
         assert!(user.contains("RETROSPECTIVE (prior read"), "{user}");
         assert!(
@@ -4710,6 +5377,7 @@ mod tests {
             distilled: "",
             ledger_eval: None,
             pre_profit: None,
+            tech_pre_flag: None,
         });
         assert!(anchored.contains("spread-anchored on 40 rate observations"), "{anchored}");
         // The weighing sentence's signal grammar (two Codex rounds): flat_driver is
@@ -4740,6 +5408,7 @@ mod tests {
             distilled: "",
             ledger_eval: None,
             pre_profit: None,
+            tech_pre_flag: None,
         });
         assert!(carried.contains("current multiple was carried"), "{carried}");
         assert!(carried.contains("driver held FLAT"), "{carried}");
@@ -4753,6 +5422,7 @@ mod tests {
             distilled: "",
             ledger_eval: None,
             pre_profit: None,
+            tech_pre_flag: None,
         });
         assert!(fallback.contains("raw-percentile fallback"), "{fallback}");
     }
@@ -4783,6 +5453,7 @@ mod tests {
                 distilled: "",
                 ledger_eval: None,
                 pre_profit: None,
+                tech_pre_flag: None,
             })
         };
 
@@ -4816,6 +5487,7 @@ mod tests {
             distilled: "",
             ledger_eval: None,
             pre_profit: None,
+            tech_pre_flag: None,
         });
         // The scope rides the house-view block header itself, not a floating line.
         let hv_block = user
@@ -4842,6 +5514,49 @@ mod tests {
             ledger_eval: None,
         });
         assert!(role.contains("never by itself a reason to exit"), "{role}");
+    }
+
+    #[test]
+    fn cot_positioning_renders_as_of_in_the_fund_prompts() {
+        // A commodity / macro fund's mapped COT row renders as dated positioning
+        // context in the role-risk prompt (where commodity funds land); an
+        // unmapped fund renders no section.
+        let mut d = fund_dossier(us_equity_fund());
+        if let Some(f) = d.fund.as_mut() {
+            f.positioning = Some(crate::data_sources::CotPositioning {
+                contract: "Gold".into(),
+                contract_code: "088691".into(),
+                asset_class: "commodity".into(),
+                report_date: "2026-08-11".into(),
+                open_interest: 500_000.0,
+                spec_net: 200_000.0,
+                spec_net_weekly_change: Some(4_000.0),
+                spec_pct_oi_long: Some(50.0),
+                real_money_net: None,
+                real_money_net_weekly_change: None,
+            });
+        }
+        let readout = RoleRiskReadout {
+            class_label: "commodity fund".into(),
+            ..Default::default()
+        };
+        let role = role_risk_user_prompt(&RoleRiskInput {
+            dossier: &d,
+            readout: &readout,
+            ledger_eval: None,
+        });
+        assert!(role.contains("UNDERLYING POSITIONING"), "{role}");
+        assert!(role.contains("snapshot as of 2026-08-11"), "{role}");
+        assert!(role.contains("Gold — speculator net +200000"), "{role}");
+        assert!(role.contains("never a score input"), "{role}");
+
+        let bare = fund_dossier(us_equity_fund());
+        let role = role_risk_user_prompt(&RoleRiskInput {
+            dossier: &bare,
+            readout: &readout,
+            ledger_eval: None,
+        });
+        assert!(!role.contains("UNDERLYING POSITIONING"), "{role}");
     }
 
     #[test]
@@ -4875,6 +5590,7 @@ mod tests {
                 distilled: "distilled findings",
                 ledger_eval: None,
                 pre_profit: None,
+                tech_pre_flag: None,
             },
         );
         assert_eq!(interpret.think, Some(true));
@@ -5910,6 +6626,7 @@ mod tests {
             distilled: "",
             ledger_eval: None,
             pre_profit: None,
+            tech_pre_flag: None,
         });
         assert!(user.contains("REWRITE THE THESIS LEDGER"), "{user}");
         assert!(interpretation_system_prompt().contains("THESIS LEDGER"));
@@ -5994,6 +6711,7 @@ mod tests {
             sector_pe: vec![],
             sector_pe_history: Default::default(),
             as_of: chrono::NaiveDate::from_ymd_opt(2026, 7, 16).unwrap(),
+            positioning: None,
         });
         let h = holding_header(&d);
         assert!(h.contains("Total US Market ETF"), "{h}");
@@ -6363,6 +7081,7 @@ mod tests {
             distilled: "none",
             ledger_eval: None,
             pre_profit: Some(&overlay),
+            tech_pre_flag: None,
         });
         assert!(user.contains("PRE-PROFIT EXECUTION / FINANCING OVERLAY"), "{user}");
         // The ceiling renders as the ENGINE arm's own rule with the model arm
@@ -6460,6 +7179,7 @@ mod tests {
             distilled: "none",
             ledger_eval: None,
             pre_profit: Some(&overlay),
+            tech_pre_flag: None,
         });
         assert!(interp.contains("Your conviction is UNRESTRICTED"), "{interp}");
         assert!(
@@ -6473,6 +7193,7 @@ mod tests {
             engine_output.grade,
             &engine_output.hurdle,
             Some(&overlay.consequences),
+            false,
         );
         let action = action_user_prompt(&ActionInput {
             dossier: &d,

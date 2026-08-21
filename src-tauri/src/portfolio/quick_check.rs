@@ -1848,6 +1848,8 @@ mod tests {
             fund_exposure: None,
             pre_profit: None,
             hurdle: None,
+            forensic: None,
+            tech_event_pre_flag: None,
         }
     }
 
@@ -2045,6 +2047,7 @@ mod tests {
         data.filings = FilingSweep::Filings(vec![RecentFiling {
             form: "8-K".into(),
             filing_date: "2026-08-04".into(),
+            ..Default::default()
         }]);
         data.earnings = Ok(vec![SymbolEarningsRow {
             date: "2026-08-04".into(),
@@ -2308,8 +2311,8 @@ mod tests {
             revenue_actual: Some(96.0e9),
         }]);
         stub.filings = FilingSweep::Filings(vec![
-            RecentFiling { form: "4".into(), filing_date: "2026-07-31".into() },
-            RecentFiling { form: "10-Q".into(), filing_date: "2026-07-30".into() },
+            RecentFiling { form: "4".into(), filing_date: "2026-07-31".into(), ..Default::default() },
+            RecentFiling { form: "10-Q".into(), filing_date: "2026-07-30".into(), ..Default::default() },
         ]);
         stub.consensus = Ok(Some(ConsensusEstimate {
             eps_mid: Some(7.2), // vs stored 6.5 → > 5% move
@@ -2346,6 +2349,7 @@ mod tests {
         stub.filings = FilingSweep::Filings(vec![RecentFiling {
             form: "10-Q".into(),
             filing_date: "2026-07-30".into(),
+            ..Default::default()
         }]);
         // Fresh statements: 10% net margin — breaches the 20% floor; filing
         // cadence confirms on the first qualifying print.
@@ -2817,6 +2821,7 @@ mod tests {
         stub.filings = FilingSweep::Filings(vec![RecentFiling {
             form: "10-Q".into(),
             filing_date: "2026-07-30".into(),
+            ..Default::default()
         }]);
         stub.statements = CompanyFinancials {
             symbol: "AAPL".into(),
@@ -2896,6 +2901,7 @@ mod tests {
             stub.filings = FilingSweep::Filings(vec![RecentFiling {
                 form: "10-Q".into(),
                 filing_date: "2026-07-30".into(),
+                ..Default::default()
             }]);
             stub.statements = CompanyFinancials {
                 symbol: "AAPL".into(),

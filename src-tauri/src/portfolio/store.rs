@@ -644,6 +644,8 @@ mod tests {
                 fund_exposure: None,
                 pre_profit: None,
                 hurdle: None,
+                forensic: None,
+                tech_event_pre_flag: None,
             }],
             rate_prints: None,
             outcome: None,

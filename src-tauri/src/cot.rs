@@ -433,6 +433,31 @@ impl CotDataSource {
     }
 }
 
+impl CotDataSource {
+    /// The suite-facing positioning read (`docs/data-sources.md §CFTC` — the
+    /// same keyless weekly pull the report makes, read per job): the bellwether
+    /// rows plus flattened gap notes, wholly fail-soft. `today` is the caller's
+    /// pinned ET session (the freshness guard's anchor). Portfolio Analysis maps
+    /// a commodity / macro fund onto one of these already-gathered contracts
+    /// (`crate::portfolio::fund::cot_contract_for_fund`).
+    pub fn positioning(
+        &self,
+        today: NaiveDate,
+    ) -> (Vec<crate::data_sources::CotPositioning>, Vec<String>) {
+        match self.scan(today) {
+            Ok(data) => {
+                let gaps = data
+                    .gaps
+                    .iter()
+                    .map(|g| format!("{} ({}): {}", g.series_name, g.series_id, g.reason.as_str()))
+                    .collect();
+                (data.cot_positioning, gaps)
+            }
+            Err(e) => (Vec::new(), vec![format!("CFTC positioning unavailable: {e}")]),
+        }
+    }
+}
+
 impl MarketDataSource for CotDataSource {
     fn baseline_scan(&self, _cadence: ReportCadence) -> Result<BaselineMarketData> {
         // One clock sample anchors the freshness guard so a stalled feed can't pass an old

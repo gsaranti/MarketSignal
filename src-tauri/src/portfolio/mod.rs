@@ -1214,11 +1214,29 @@ pub struct DataHealth {
     /// pre-field runs.
     #[serde(default)]
     pub peak_prompt: Option<crate::local_model::PromptUsage>,
+    /// Run-level commodity-context series gaps (FRED energy / IMF metals / FMP
+    /// gold — `docs/portfolio-workflow.md` §Step 5). Counted, never attention:
+    /// the feed is enriching and fail-soft. `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub commodity_gaps: usize,
+    /// Run-level CFTC positioning contract gaps — same enriching-feed posture.
+    /// `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub positioning_gaps: usize,
+    /// The CBOE put/call backdrop was unavailable this run — same posture.
+    /// `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub cboe_gap: bool,
+    /// Sector-benchmark series that failed to fetch (each starves the
+    /// technology-event pre-flag for its holdings) — same counted-only posture.
+    /// `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub benchmark_gaps: usize,
     /// Infrastructure degradation worth surfacing prominently: deep-history
     /// failures, any current-multiple carry, a run-wide DGS10 history gap,
     /// context pressure on any local call, or a length-stopped generation — a
     /// raw-percentile fallback from genuinely thin issuer history is counted
-    /// but not flagged.
+    /// but not flagged (as are the enriching-feed gaps above).
     pub attention: bool,
     /// The one-line deterministic summary the roll-up card renders.
     pub summary: String,
@@ -1273,6 +1291,52 @@ pub struct PortfolioRollUp {
     pub data_health: Option<DataHealth>,
     /// A short deterministic synthesis line.
     pub overview: String,
+}
+
+/// How far back a filing-classified hard-forensic event binds the hard rule, in
+/// days before the run's session date (drafted, calibratable — the submissions
+/// feed's `filings.recent` window covers at least a year, so the sweep fully
+/// serves this bound). An older event remains visible history in the filings
+/// sweep but no longer trips the hard consequences.
+pub const FORENSIC_EVENT_LOOKBACK_DAYS: i64 = 365;
+
+/// The per-holding outcome of the item-classified 8-K filings sweep — the
+/// hard-forensic **filing kinds'** producer state (`docs/portfolio-analysis.md`
+/// §Starting parameters — the conviction-layer caps; the shared producer
+/// contract is `docs/trade-opportunities-workflow.md §Step 5c`). `Unknown` is a
+/// logged degraded input, never a fabricated clear and never a silent no-event —
+/// and it never trips the hard rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "state")]
+pub enum ForensicFilingState {
+    /// The sweep ran and classified these events inside the lookback.
+    Events { events: Vec<crate::sec::ForensicEvent> },
+    /// The sweep ran clean — no qualifying item inside the lookback.
+    Clear,
+    /// The sweep could not run or could not be read: no CIK mapping
+    /// (`queried: false`) or a failed / malformed fetch (`queried: true`).
+    Unknown { reason: String, queried: bool },
+}
+
+impl ForensicFilingState {
+    /// Whether the hard rule trips — only a classified event does; `Clear` and
+    /// `Unknown` never do.
+    pub fn hard_tripped(&self) -> bool {
+        matches!(self, ForensicFilingState::Events { events } if !events.is_empty())
+    }
+}
+
+/// The audit's hard-forensic record: the sweep state plus, when tripped, the
+/// engine-matched rule — persisted as an annotation binding the **engine arm**
+/// exactly as a pre-profit ceiling does (`docs/portfolio-workflow.md §Step 6g`);
+/// the model's conviction and action persist as authored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ForensicRead {
+    pub state: ForensicFilingState,
+    /// The matched hard rule, recorded when tripped (engine conviction capped
+    /// Low; the add family barred from the engine action set).
+    #[serde(default)]
+    pub matched_rule: Option<String>,
 }
 
 /// One holding's audit record (`docs/storage.md §Local Analysis Suite Storage`):
@@ -1360,6 +1424,19 @@ pub struct HoldingAudit {
     /// (`#[serde(default)]`).
     #[serde(default)]
     pub hurdle: Option<engine::HurdleRead>,
+    /// The hard-forensic filings-sweep record ([`ForensicRead`]) — present on a
+    /// priced stock whose gather ran the item-classified 8-K sweep (state
+    /// `Unknown` where it couldn't); `None` on funds, skipped retrievals, and
+    /// runs persisted before the field existed (`#[serde(default)]`).
+    #[serde(default)]
+    pub forensic: Option<ForensicRead>,
+    /// The input delta's technology-event pre-flag record
+    /// ([`engine::TechEventPreFlag`]) — present where the flag was evaluable
+    /// (a carried stock with a benchmark series and a volatility read); an
+    /// unevaluable flag records its reason in `degraded_inputs` instead.
+    /// `None` on debuts, funds, and pre-field runs (`#[serde(default)]`).
+    #[serde(default)]
+    pub tech_event_pre_flag: Option<engine::TechEventPreFlag>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the
@@ -1429,7 +1506,17 @@ pub struct HoldingAudit {
 /// (target-weight ranges, share/dollar deltas) is retired wholesale, and the
 /// thesis ledger drops its pre-committed target-weight range. The whole-book
 /// reconciliation is deferred to the future portfolio-planner job.
-pub const PROMPT_VERSION: &str = "portfolio-v9";
+///
+/// `portfolio-v10`: the run-evidence slice — the prompts gain the Step-5
+/// run-level context evidence (the commodity price context for
+/// commodity-linked holdings, the CFTC underlying-positioning read for
+/// commodity / macro funds, and the CBOE venue-level put/call backdrop) and
+/// the **hard-forensic filings read**: an item-classified restatement /
+/// auditor-change 8-K renders as typed evidence with the engine-matched hard
+/// rule (engine conviction capped Low, the add family barred from the engine
+/// set), binding the engine arm and annotating — never clamping — the model's
+/// (`docs/portfolio-analysis.md` §Starting parameters).
+pub const PROMPT_VERSION: &str = "portfolio-v10";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

@@ -434,15 +434,35 @@ pub struct RecentFiling {
     pub form: String,
     /// The filing date, ISO.
     pub filing_date: String,
+    /// The filer-declared item codes for an 8-K (`["4.01", "9.01"]` — the
+    /// submissions feed's `items` column, split on commas), empty on other forms.
+    /// Filer-declared structured metadata, mandatory in the 8-K submission types,
+    /// so an 8-K row filed after 2004 reliably carries its items — what lets the
+    /// hard-forensic producer classify an Item 4.01 / 4.02 filing without
+    /// fetching the document (`docs/data-sources.md §SEC EDGAR`).
+    /// `None` = the column was absent or this row's entry unreadable — the row is
+    /// **unclassifiable**, which the forensic sweep must surface as `unknown`,
+    /// never fold into a clean result (the fabricated-clear failure mode);
+    /// `Some(vec![])` = the column served an honestly empty entry (a non-8-K).
+    pub items: Option<Vec<String>>,
+    /// The filing's accession number — the event record's source lineage.
+    pub accession: String,
 }
 
 /// Shape the submissions body's `filings.recent` parallel arrays (`form[i]` ↔
-/// `filingDate[i]`) into rows, newest first as EDGAR serves them. Rows whose legs
-/// don't pair are skipped, never fabricated. A body without the `filings.recent`
+/// `filingDate[i]`) into rows, newest first as EDGAR serves them. A body without the `filings.recent`
 /// arrays is malformed or drifted (the submissions schema always carries them,
 /// empty arrays included, for every filer) — `Err`, never an empty success, so
 /// the sweep types the filing family `unknown` instead of reading
-/// "no new filings" off a body it couldn't interpret.
+/// "no new filings" off a body it couldn't interpret. The form + date legs are
+/// **strict**: unpaired arrays, a non-string leg, or an undatable
+/// `filingDate` all `Err` rather than dropping the row — a silently dropped
+/// 8-K would fold into a clean forensic sweep, and a garbage date compares
+/// lexically against the classifier's lookback bound (the fabricated-clear
+/// rule, `crate::portfolio::ForensicFilingState`). The `accessionNumber`
+/// column stays lenient per row (absent → empty lineage); the `items` column
+/// is honest per row — an absent column or an unreadable entry yields `None`
+/// (unclassifiable), never an empty list.
 fn recent_filings_from_value(value: &Value) -> Result<Vec<RecentFiling>> {
     let recent = &value["filings"]["recent"];
     let (Some(forms), Some(dates)) = (recent["form"].as_array(), recent["filingDate"].as_array())
@@ -451,16 +471,153 @@ fn recent_filings_from_value(value: &Value) -> Result<Vec<RecentFiling>> {
             "SEC submissions body lacked the filings.recent arrays — malformed or drifted response"
         );
     };
-    Ok(forms
+    if forms.len() != dates.len() {
+        anyhow::bail!(
+            "SEC submissions form/filingDate arrays are unpaired ({} vs {}) — malformed or \
+             drifted response",
+            forms.len(),
+            dates.len()
+        );
+    }
+    let items = recent["items"].as_array();
+    let accessions = recent["accessionNumber"].as_array();
+    forms
         .iter()
         .zip(dates.iter())
-        .filter_map(|(form, date)| {
-            Some(RecentFiling {
-                form: form.as_str()?.to_string(),
-                filing_date: date.as_str()?.to_string(),
+        .enumerate()
+        .map(|(i, (form, date))| {
+            let form = form
+                .as_str()
+                .with_context(|| format!("SEC submissions row {i}: non-string form leg"))?;
+            let filing_date = date
+                .as_str()
+                .with_context(|| format!("SEC submissions row {i}: non-string filingDate leg"))?;
+            // Store the CANONICAL fixed-width render, never the source text:
+            // chrono accepts unpadded fields, and a datable-but-noncanonical
+            // "2026-9-30" sorts lexically after "2026-10-01" — exactly the
+            // comparison the forensic lookback bound makes (the same hazard
+            // `fmp::canonical_date` guards; Codex 2026-08-20 round 3).
+            let filing_date = chrono::NaiveDate::parse_from_str(filing_date, "%Y-%m-%d")
+                .with_context(|| {
+                    format!("SEC submissions row {i}: undatable filingDate {filing_date:?}")
+                })?
+                .format("%Y-%m-%d")
+                .to_string();
+            Ok(RecentFiling {
+                form: form.to_string(),
+                filing_date,
+                items: items
+                    .and_then(|a| a.get(i))
+                    .and_then(Value::as_str)
+                    .map(|s| {
+                        s.split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                            .collect()
+                    }),
+                accession: accessions
+                    .and_then(|a| a.get(i))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
             })
         })
-        .collect())
+        .collect()
+}
+
+// ---- Hard-forensic filing kinds (the item-classified producer) -----------------
+
+/// The typed hard-forensic event kinds — the shared producer contract
+/// (`docs/trade-opportunities-workflow.md §Step 5c`; Portfolio's engine and
+/// continuity seams consume the same records).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ForensicEventKind {
+    /// An Item 4.02 non-reliance 8-K.
+    Restatement,
+    /// An Item 4.01 auditor-change 8-K.
+    AuditorChange,
+    /// The research-fed kind — no structured enumeration exists, so it enters
+    /// only as a validated `forensic_event` research claim once the research
+    /// loop lands. This producer never emits it.
+    Fraud,
+}
+
+impl ForensicEventKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            ForensicEventKind::Restatement => "restatement (Item 4.02 non-reliance)",
+            ForensicEventKind::AuditorChange => "auditor change (Item 4.01)",
+            ForensicEventKind::Fraud => "fraud (research-fed)",
+        }
+    }
+}
+
+/// One typed hard-forensic event — `{ event kind, issuer, event / filing date,
+/// source lineage, confidence }`, the producer contract's record. The filing
+/// kinds are engine-detected and model-free; a bare model assertion is never one
+/// of these.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ForensicEvent {
+    pub kind: ForensicEventKind,
+    /// The issuer, as the consuming job identifies it (the holding's symbol).
+    pub issuer: String,
+    /// The filing date, ISO — the event date the hard rule's lookback reads.
+    pub filing_date: String,
+    /// Source lineage — the form type plus accession number of the classifying
+    /// filing.
+    pub source: String,
+    /// How the event was established. Filing kinds are filer-declared item
+    /// codes, structural rather than judged.
+    pub confidence: String,
+}
+
+/// Classify the hard-forensic **filing kinds** from an already-fetched
+/// submissions sweep: an 8-K (or 8-K/A) whose filer-declared items carry `4.02`
+/// (non-reliance restatement) or `4.01` (auditor change), filed on or after
+/// `since` (ISO date, inclusive — the consumer's lookback bound). Model-free and
+/// pure. `Err` when any in-lookback 8-K row is **unclassifiable** (its `items`
+/// read `None` — the column absent or the entry unreadable): the caller must
+/// type the sweep `unknown`, because "couldn't read the items" folded into a
+/// clean result is exactly the fabricated clear the contract forbids. The fraud
+/// kind never comes from here (research-fed only).
+pub fn forensic_events_from_filings(
+    issuer: &str,
+    filings: &[RecentFiling],
+    since: &str,
+) -> std::result::Result<Vec<ForensicEvent>, String> {
+    let in_scope = filings.iter().filter(|f| {
+        (f.form == "8-K" || f.form == "8-K/A") && f.filing_date.as_str() >= since
+    });
+    let mut events = Vec::new();
+    for f in in_scope {
+        let Some(items) = &f.items else {
+            return Err(format!(
+                "8-K filed {} carries no readable items column — cannot classify",
+                f.filing_date
+            ));
+        };
+        for item in items {
+            let kind = match item.as_str() {
+                "4.02" => ForensicEventKind::Restatement,
+                "4.01" => ForensicEventKind::AuditorChange,
+                _ => continue,
+            };
+            events.push(ForensicEvent {
+                kind,
+                issuer: issuer.to_string(),
+                filing_date: f.filing_date.clone(),
+                source: if f.accession.is_empty() {
+                    format!("{} filing", f.form)
+                } else {
+                    format!("{} accession {}", f.form, f.accession)
+                },
+                confidence: "filing-declared item code".to_string(),
+            });
+        }
+    }
+    Ok(events)
 }
 
 /// Candidate GAAP concept names for revenue — the tag changed across taxonomy
@@ -733,6 +890,138 @@ mod tests {
             server.request_paths(),
             vec!["/submissions/CIK0000320193.json".to_string()]
         );
+    }
+
+    #[test]
+    fn recent_filings_parse_items_honestly_per_row() {
+        // The items column is the 8-K classification surface (comma-separated,
+        // filer-declared): a served entry parses (an empty entry is an honest
+        // `Some(vec![])`), while an absent column reads `None` — unclassifiable,
+        // for the forensic sweep to surface as unknown, never fold into clean.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"cik":"320193","filings":{"recent":{
+                "form":["8-K","10-Q"],
+                "filingDate":["2026-08-01","2026-07-31"],
+                "items":["4.02,9.01",""],
+                "accessionNumber":["0000320193-26-000042","0000320193-26-000041"]
+            }}}"#,
+        }]);
+        let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
+        let filings = sec.fetch_recent_filings("0000320193").unwrap();
+        assert_eq!(
+            filings[0].items,
+            Some(vec!["4.02".to_string(), "9.01".to_string()])
+        );
+        assert_eq!(filings[0].accession, "0000320193-26-000042");
+        assert_eq!(filings[1].items, Some(vec![]));
+
+        // No items / accession arrays at all: rows still parse (the form + date
+        // hard floor holds), but every row's items read `None`.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"cik":"320193","filings":{"recent":{
+                "form":["8-K"],
+                "filingDate":["2026-08-01"]
+            }}}"#,
+        }]);
+        let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
+        let filings = sec.fetch_recent_filings("0000320193").unwrap();
+        assert_eq!(filings.len(), 1);
+        assert_eq!(filings[0].items, None);
+        assert!(filings[0].accession.is_empty());
+    }
+
+    #[test]
+    fn malformed_form_or_date_legs_error_never_drop_the_row() {
+        // A null date leg on an in-scope 8-K must not vanish into a clean
+        // sweep, and a garbage date must not survive to compare lexically
+        // against the classifier's lookback bound — the whole fetch errors
+        // onto the callers' unknown postures (Codex 2026-08-20 round 2,
+        // finding 1).
+        let bodies = [
+            // Null date leg.
+            r#"{"filings":{"recent":{"form":["8-K"],"filingDate":[null]}}}"#,
+            // Non-date date leg (lexically above any ISO lookback bound).
+            r#"{"filings":{"recent":{"form":["8-K"],"filingDate":["not-a-date"]}}}"#,
+            // Null form leg.
+            r#"{"filings":{"recent":{"form":[null],"filingDate":["2026-08-01"]}}}"#,
+            // Unpaired arrays.
+            r#"{"filings":{"recent":{"form":["8-K","10-Q"],"filingDate":["2026-08-01"]}}}"#,
+        ];
+        for body in bodies {
+            let server = MockHttp::serve(vec![Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: Box::leak(body.to_string().into_boxed_str()),
+            }]);
+            let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
+            assert!(sec.fetch_recent_filings("0000320193").is_err(), "{body}");
+        }
+
+        // A datable-but-noncanonical date is stored in its canonical render —
+        // "2026-9-30" would otherwise sort lexically after "2026-10-01",
+        // exactly the classifier's lookback comparison.
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"filings":{"recent":{"form":["8-K"],"filingDate":["2026-9-30"]}}}"#,
+        }]);
+        let sec = SecEdgarSource::new().unwrap().with_base_url(&server.base_url);
+        let filings = sec.fetch_recent_filings("0000320193").unwrap();
+        assert_eq!(filings[0].filing_date, "2026-09-30");
+    }
+
+    #[test]
+    fn forensic_classifier_types_401_402_inside_the_lookback_only() {
+        let filing = |form: &str, date: &str, items: &[&str]| RecentFiling {
+            form: form.into(),
+            filing_date: date.into(),
+            items: Some(items.iter().map(|s| s.to_string()).collect()),
+            accession: "acc-1".into(),
+        };
+        let filings = vec![
+            // Item 4.02 → restatement; the companion 9.01 produces nothing.
+            filing("8-K", "2026-08-01", &["4.02", "9.01"]),
+            // An amended 8-K classifies too.
+            filing("8-K/A", "2026-07-15", &["4.01"]),
+            // A non-forensic 8-K item → no event.
+            filing("8-K", "2026-07-10", &["2.02"]),
+            // Outside the lookback → filtered.
+            filing("8-K", "2024-01-05", &["4.02"]),
+            // A 10-Q never classifies, whatever its items column carries.
+            filing("10-Q", "2026-07-31", &["4.02"]),
+        ];
+        let events = forensic_events_from_filings("ACME", &filings, "2025-08-20").unwrap();
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].kind, ForensicEventKind::Restatement);
+        assert_eq!(events[0].issuer, "ACME");
+        assert_eq!(events[0].filing_date, "2026-08-01");
+        assert!(events[0].source.contains("acc-1"), "{}", events[0].source);
+        assert_eq!(events[1].kind, ForensicEventKind::AuditorChange);
+        // Tightening the lookback drops the older auditor change, keeping only
+        // the newer restatement — the bound is inclusive on `since`.
+        assert_eq!(
+            forensic_events_from_filings("ACME", &filings, "2026-07-20")
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // An in-lookback 8-K whose items column is unreadable makes the whole
+        // sweep unclassifiable — `Err`, never a clean or partial result (the
+        // fabricated-clear rule). Outside the lookback it is ignorable.
+        let mut with_unreadable = filings.clone();
+        with_unreadable.push(RecentFiling {
+            form: "8-K".into(),
+            filing_date: "2026-08-10".into(),
+            items: None,
+            accession: String::new(),
+        });
+        assert!(forensic_events_from_filings("ACME", &with_unreadable, "2025-08-20").is_err());
+        assert!(forensic_events_from_filings("ACME", &with_unreadable, "2026-08-11").is_ok());
     }
 
     #[test]

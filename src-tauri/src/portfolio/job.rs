@@ -117,6 +117,20 @@ pub trait CompanyDataSource {
             "profile source not wired".to_string(),
         )
     }
+    /// The item-classified 8-K filings sweep for a stock — the hard-forensic
+    /// filing kinds' producer (`docs/portfolio-analysis.md` §Starting parameters;
+    /// the shared contract is `docs/trade-opportunities-workflow.md §Step 5c`).
+    /// `since` bounds the classification lookback (ISO date, inclusive). The
+    /// `None` default means the leg is not wired (a stub) — the dossier records
+    /// no sweep; the live impl always returns `Some`, typing an unrunnable sweep
+    /// `Unknown` rather than a fabricated clear.
+    fn filing_events(
+        &self,
+        _symbol: &str,
+        _since: &str,
+    ) -> Option<crate::portfolio::ForensicFilingState> {
+        None
+    }
 }
 
 /// The run-level market-context source (`docs/portfolio-workflow.md` §Step 5): the
@@ -132,16 +146,74 @@ pub trait MarketContextSource {
     /// their documented raw-percentile / carry fallback) and records the reason on
     /// the anchors' `history_gap`, never a new failure state (§Starting parameters).
     fn rates(&self) -> Result<crate::portfolio::engine::RateAnchors>;
+
+    /// The run-level commodity context (`docs/portfolio-workflow.md` §Step 5):
+    /// FRED daily energy + the suite-shared monthly IMF metals + FMP gold, each
+    /// series fail-soft to a typed gap on the returned context. `session` is the
+    /// run's pinned ET session (dates the gold quote). The default (empty
+    /// context, no gaps) means the leg is not wired — an offline stub.
+    fn commodities(
+        &self,
+        _session: chrono::NaiveDate,
+    ) -> crate::portfolio::dossier::CommodityContext {
+        crate::portfolio::dossier::CommodityContext::default()
+    }
+
+    /// The run-level CFTC Commitments-of-Traders positioning on the bellwether
+    /// contracts (`docs/portfolio-workflow.md` §Step 5) — rows + gap notes,
+    /// wholly fail-soft; a commodity / macro **fund** holding maps onto one of
+    /// these rows for its underlying-positioning read. The default (empty,
+    /// no gaps) means the leg is not wired — an offline stub.
+    fn positioning(
+        &self,
+        _session: chrono::NaiveDate,
+    ) -> (Vec<crate::data_sources::CotPositioning>, Vec<String>) {
+        (Vec::new(), Vec::new())
+    }
+
+    /// The optional CBOE venue-level put/call backdrop (`docs/data-sources.md
+    /// §CBOE`) — broad-market sentiment context, never a per-name signal,
+    /// wholly fail-soft. `(None, None)` = the leg is not wired (a stub);
+    /// the live impl returns the backdrop or its typed gap.
+    fn put_call_backdrop(&self) -> (Option<crate::cboe::PutCallBackdrop>, Option<String>) {
+        (None, None)
+    }
 }
 
 /// How many days of DGS10 history the anchor-window request covers: the ~12-quarter
 /// window plus the four TTM quarters behind its oldest anchor, plus alignment slack.
 const RATE_HISTORY_LOOKBACK_DAYS: i64 = 1_600;
 
-/// The live market context: FRED rate anchors.
+/// The live market context: FRED rate anchors, plus the run-level commodity
+/// context (FRED level windows + the FMP gold quote) and the CFTC positioning
+/// pull.
 pub struct LiveMarketContext {
     pub fred: crate::fred::FredDataSource,
+    /// The FMP half of the commodity context (the `GCUSD` gold quote). `None`
+    /// keeps a rates-only construction valid (the commodity leg then records
+    /// gold as a gap).
+    pub fmp: Option<crate::fmp::FmpDataSource>,
+    /// The keyless CFTC COT adapter — the same pull the report makes, read
+    /// per job. `None` records the positioning leg as a gap.
+    pub cot: Option<crate::cot::CotDataSource>,
+    /// The keyless Cboe daily-statistics adapter (the venue-level put/call
+    /// backdrop). `None` records the sentiment leg as a gap.
+    pub cboe: Option<crate::cboe::CboeDataSource>,
 }
+
+/// The FRED commodity catalog the live commodity load walks: series id, display
+/// label, published unit, and sleeve (`docs/data-sources.md §Portfolio Analysis —
+/// endpoint surface`; the five monthly IMF series are the suite-shared commodity
+/// feed catalogued under the Trade Opportunities surface).
+const FRED_COMMODITY_SERIES: &[(&str, &str, &str, crate::portfolio::dossier::CommodityGroup)] = &[
+    ("DCOILWTICO", "WTI Crude Oil", "USD per barrel", crate::portfolio::dossier::CommodityGroup::Energy),
+    ("DHHNGSP", "Henry Hub Natural Gas", "USD per million BTU", crate::portfolio::dossier::CommodityGroup::Energy),
+    ("PCOPPUSDM", "Copper (IMF, monthly)", "USD per metric ton", crate::portfolio::dossier::CommodityGroup::Metals),
+    ("PALUMUSDM", "Aluminum (IMF, monthly)", "USD per metric ton", crate::portfolio::dossier::CommodityGroup::Metals),
+    ("PNICKUSDM", "Nickel (IMF, monthly)", "USD per metric ton", crate::portfolio::dossier::CommodityGroup::Metals),
+    ("PIORECRUSDM", "Iron Ore (IMF, monthly)", "USD per metric ton", crate::portfolio::dossier::CommodityGroup::Metals),
+    ("PURANUSDM", "Uranium (IMF, monthly)", "USD per pound", crate::portfolio::dossier::CommodityGroup::Metals),
+];
 
 impl MarketContextSource for LiveMarketContext {
     fn rates(&self) -> Result<crate::portfolio::engine::RateAnchors> {
@@ -178,6 +250,80 @@ impl MarketContextSource for LiveMarketContext {
             dgs10_history,
             history_gap,
         })
+    }
+
+    fn commodities(
+        &self,
+        session: chrono::NaiveDate,
+    ) -> crate::portfolio::dossier::CommodityContext {
+        use crate::portfolio::dossier::{CommodityContext, CommodityGroup, CommodityPrint};
+        let mut ctx = CommodityContext::default();
+        // Fetch-range upper bound: deliberately the UTC date, not the ET session
+        // (the cross-cutting range-bound convention — a forward-rolled bound asks
+        // for an unpublished day and serves nothing).
+        let to = chrono::Utc::now().date_naive();
+        let from = to - chrono::Duration::days(crate::portfolio::dossier::COMMODITY_WINDOW_DAYS);
+        for (series_id, label, unit, group) in FRED_COMMODITY_SERIES {
+            match self.fred.level_window(series_id, from, to) {
+                Ok(window) if !window.is_empty() => {
+                    let latest = window.last().cloned().expect("non-empty window");
+                    let trailing = (window.len() > 1).then(|| window[0].clone());
+                    ctx.prints.push(CommodityPrint {
+                        label: label.to_string(),
+                        unit: unit.to_string(),
+                        group: *group,
+                        latest,
+                        trailing,
+                    });
+                }
+                Ok(_) => ctx
+                    .gaps
+                    .push(format!("{label} ({series_id}): window served no print")),
+                Err(e) => ctx
+                    .gaps
+                    .push(format!("{label} ({series_id}): unavailable — {e}")),
+            }
+        }
+        // Gold — the one FMP commodity quote (`GCUSD`), dated on the run session.
+        match self
+            .fmp
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no FMP source wired"))
+            .and_then(|fmp| fmp.fetch_commodity_quote("GCUSD", session))
+        {
+            Ok(latest) => ctx.prints.push(CommodityPrint {
+                label: "Gold".to_string(),
+                unit: "USD per troy ounce".to_string(),
+                group: CommodityGroup::Gold,
+                latest,
+                trailing: None,
+            }),
+            Err(e) => ctx.gaps.push(format!("Gold (GCUSD): unavailable — {e}")),
+        }
+        ctx
+    }
+
+    fn positioning(
+        &self,
+        session: chrono::NaiveDate,
+    ) -> (Vec<crate::data_sources::CotPositioning>, Vec<String>) {
+        match &self.cot {
+            Some(cot) => cot.positioning(session),
+            None => (
+                Vec::new(),
+                vec!["CFTC positioning source not wired".to_string()],
+            ),
+        }
+    }
+
+    fn put_call_backdrop(&self) -> (Option<crate::cboe::PutCallBackdrop>, Option<String>) {
+        match &self.cboe {
+            Some(cboe) => match cboe.put_call_backdrop() {
+                Ok(b) => (Some(b), None),
+                Err(e) => (None, Some(format!("CBOE put/call backdrop unavailable: {e}"))),
+            },
+            None => (None, Some("CBOE source not wired".to_string())),
+        }
     }
 }
 
@@ -375,6 +521,41 @@ impl CompanyDataSource for LiveCompanyData {
 
     fn facts(&self, symbol: &str) -> SecData {
         sec_company_facts(&self.cik, &self.sec, symbol)
+    }
+
+    fn filing_events(
+        &self,
+        symbol: &str,
+        since: &str,
+    ) -> Option<crate::portfolio::ForensicFilingState> {
+        use crate::portfolio::ForensicFilingState;
+        Some(match self.cik.resolve(&self.sec, symbol) {
+            // No EDGAR mapping: the submissions endpoint was never queried —
+            // a typed unknown, never a clean no-event.
+            None => ForensicFilingState::Unknown {
+                reason: format!("no CIK mapping for {symbol}"),
+                queried: false,
+            },
+            Some(cik) => match self.sec.fetch_recent_filings(cik) {
+                Ok(filings) => {
+                    match crate::sec::forensic_events_from_filings(symbol, &filings, since) {
+                        Ok(events) if events.is_empty() => ForensicFilingState::Clear,
+                        Ok(events) => ForensicFilingState::Events { events },
+                        // An in-lookback 8-K with no readable items column: the
+                        // sweep ran but cannot classify — unknown, never a
+                        // fabricated clear.
+                        Err(reason) => ForensicFilingState::Unknown {
+                            reason,
+                            queried: true,
+                        },
+                    }
+                }
+                Err(e) => ForensicFilingState::Unknown {
+                    reason: format!("SEC filings sweep unavailable: {e}"),
+                    queried: true,
+                },
+            },
+        })
     }
 }
 
@@ -637,6 +818,36 @@ fn run_analysis(
         }
     };
 
+    // The run-level commodity context — fetched **once per run and shared across
+    // every holding** (`docs/portfolio-workflow.md` §Step 5), wholly fail-soft:
+    // every gap is typed onto the context, never a run failure. The step reads
+    // "ok" whenever the leg ran; per-series gaps ride the roll-up's data health.
+    ctx.step_started("commodities", "Load commodity context (FRED / FMP)");
+    let commodities = market.commodities(today);
+    ctx.step_finished(
+        "commodities",
+        "ok",
+        (!commodities.gaps.is_empty())
+            .then(|| format!("{} series gap(s)", commodities.gaps.len())),
+    );
+
+    // The run-level CFTC positioning pull — one bellwether-contract sweep shared
+    // across every holding; a commodity / macro fund maps onto a row at dossier
+    // time. Fail-soft like the commodity leg.
+    ctx.step_started("positioning", "Load CFTC positioning");
+    let (cot_rows, cot_gaps) = market.positioning(today);
+    ctx.step_finished(
+        "positioning",
+        "ok",
+        (!cot_gaps.is_empty()).then(|| format!("{} contract gap(s)", cot_gaps.len())),
+    );
+
+    // The optional CBOE venue-level put/call backdrop — one fail-soft fetch,
+    // shared across every holding's dossier as broad-market sentiment context.
+    ctx.step_started("sentiment", "Load CBOE put/call backdrop");
+    let (put_call_backdrop, cboe_gap) = market.put_call_backdrop();
+    ctx.step_finished("sentiment", "ok", cboe_gap.clone());
+
     // ---- Selective work-list (`docs/portfolio-analysis.md` §Triggering) ------
     // A selective run analyzes **strictly the user's selection** (ruled
     // 2026-08-16, `docs/verification/2026-08-16-selective-badges-ruling.md`). The
@@ -749,6 +960,20 @@ fn run_analysis(
     // prompt header can name the company when Schwab's description is blank.
     let mut profile_name_by_symbol: std::collections::HashMap<String, Option<String>> =
         std::collections::HashMap::new();
+    // The same lookup's industry label — the commodity context's gold-linkage
+    // key (an industry naming gold / precious metals, never the whole sector).
+    let mut industry_by_symbol: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    // The run-level sector-benchmark series (FMP dated EOD, memoized per SPDR
+    // symbol across holdings — `docs/portfolio-workflow.md` §Step 5): fetched on
+    // first need by a carried stock whose pre-flag will read it; `None` caches a
+    // failed or empty fetch so a broken benchmark costs one request, not one per
+    // holding. Failures collect run-level for data health.
+    let mut benchmark_closes: std::collections::HashMap<
+        String,
+        Option<Vec<crate::portfolio::engine::DatedValue>>,
+    > = std::collections::HashMap::new();
+    let mut benchmark_gaps: Vec<String> = Vec::new();
 
     for position in &holdings.positions {
         // A selective run analyzes only the work-list; everything else carries
@@ -780,13 +1005,14 @@ fn run_analysis(
         // construction, typed `sector-unscorable` without a profile call.
         let listing = if is_stock {
             let lookup = company_data.profile_identity(&position.symbol);
-            let (sector, name) = match &lookup {
+            let (sector, name, industry) = match &lookup {
                 crate::portfolio::listing::ProfileLookup::Resolved(p) => {
-                    (p.sector.clone(), p.company_name.clone())
+                    (p.sector.clone(), p.company_name.clone(), p.industry.clone())
                 }
-                _ => (None, None),
+                _ => (None, None, None),
             };
             profile_name_by_symbol.insert(position.symbol.to_ascii_uppercase(), name);
+            industry_by_symbol.insert(position.symbol.to_ascii_uppercase(), industry);
             sector_by_symbol.insert(
                 position.symbol.to_ascii_uppercase(),
                 crate::portfolio::outcome::SectorIdentity::resolve(sector.as_deref()),
@@ -857,6 +1083,26 @@ fn run_analysis(
             Some(facts) => dossier::LegOutcome::Got(facts),
             None => dossier::LegOutcome::NotRun,
         };
+        // The item-classified 8-K filings sweep — the hard-forensic filing kinds'
+        // producer, stocks only (a fund wrapper has no issuer-level filing to
+        // classify). An `Unknown` sweep rides the gap manifest as a degraded
+        // input; it never trips the hard rule.
+        let filing_events = if is_fund || skip_retrieval {
+            None
+        } else {
+            let since = (today
+                - chrono::Duration::days(crate::portfolio::FORENSIC_EVENT_LOOKBACK_DAYS))
+            .format("%Y-%m-%d")
+            .to_string();
+            company_data.filing_events(&position.symbol, &since)
+        };
+        if let Some(crate::portfolio::ForensicFilingState::Unknown { reason, .. }) =
+            &filing_events
+        {
+            fmp_financials
+                .gaps
+                .push(format!("SEC filings sweep degraded: {reason}"));
+        }
         // Deep dated history (FMP dated EOD) for the anchor join and drawdown reads.
         let (deep_closes, deep_gaps) = if skip_retrieval {
             (vec![], vec![])
@@ -909,6 +1155,18 @@ fn run_analysis(
                     entry.insert(rows);
                 }
             }
+            // The underlying-positioning read: map this fund onto one of the
+            // run-level COT rows (`docs/data-sources.md §CFTC`); an unmapped
+            // fund — or a mapped contract whose row didn't land — fail-softs
+            // to no read.
+            let positioning = crate::portfolio::fund::cot_contract_for_fund(&fund).and_then(
+                |code| {
+                    cot_rows
+                        .iter()
+                        .find(|r| r.contract_code == code)
+                        .cloned()
+                },
+            );
             Some(crate::portfolio::fund::FundContext {
                 fund,
                 sector_pe: sector_pe_cache.clone().unwrap_or_default(),
@@ -919,6 +1177,7 @@ fn run_analysis(
                 // has just ended as already complete and sample a snapshot
                 // window the feed cannot serve yet.
                 as_of: today,
+                positioning,
             })
         } else {
             None
@@ -973,6 +1232,34 @@ fn run_analysis(
                 crate::portfolio::quick_check::overlay_condition_states(verdict, h);
             }
         }
+        // This holding's sector-benchmark series — the pre-flag's read-against
+        // leg, fetched only where the flag is evaluable at all (a carried stock
+        // whose sector resolved to a SPDR benchmark).
+        let sector_benchmark = if is_stock && prior.is_some() {
+            sector_by_symbol
+                .get(&position.symbol.to_ascii_uppercase())
+                .and_then(|s| s.benchmark.clone())
+                .and_then(|bench| {
+                    benchmark_closes
+                        .entry(bench.clone())
+                        .or_insert_with(|| {
+                            let (closes, gaps) = company_data.deep_price_history(&bench);
+                            if !gaps.is_empty() || closes.is_empty() {
+                                benchmark_gaps.push(format!(
+                                    "sector benchmark {bench} unavailable this run"
+                                ));
+                            }
+                            (!closes.is_empty()).then_some(closes)
+                        })
+                        .clone()
+                        .map(|closes| dossier::BenchmarkSeries {
+                            symbol: bench,
+                            closes,
+                        })
+                })
+        } else {
+            None
+        };
         let dossier: HoldingDossier = dossier::assemble(
             position.clone(),
             holdings_diff.delta_for(&position.symbol),
@@ -991,6 +1278,25 @@ fn run_analysis(
                 .get(&position.symbol.to_ascii_uppercase())
                 .cloned()
                 .flatten(),
+            filing_events,
+            put_call_backdrop.clone(),
+            // The run-level commodity prints matched to this holding's profile
+            // sector (stocks only — a fund's commodity read is the designed
+            // CFTC underlying-positioning leg, not a price block).
+            if is_stock {
+                dossier::commodity_prints_for_holding(
+                    &commodities,
+                    sector_by_symbol
+                        .get(&position.symbol.to_ascii_uppercase())
+                        .and_then(|s| s.sector.as_deref()),
+                    industry_by_symbol
+                        .get(&position.symbol.to_ascii_uppercase())
+                        .and_then(|i| i.as_deref()),
+                )
+            } else {
+                Vec::new()
+            },
+            sector_benchmark,
         );
 
         // Cancellation checkpoint between the (now-complete) data gather and the model
@@ -1168,6 +1474,12 @@ fn run_analysis(
         deep_history_failures,
         rates.history_gap.is_some(),
         house_view_omitted,
+        FeedGaps {
+            commodity: commodities.gaps.len(),
+            positioning: cot_gaps.len(),
+            cboe: cboe_gap.is_some(),
+            benchmark: benchmark_gaps.len(),
+        },
         analyst.take_prompt_usage(),
     );
     // The deterministic outcome half: tag active episodes' net alignment from this
@@ -1362,6 +1674,18 @@ fn run_analysis(
     Ok(run)
 }
 
+/// Run-level enriching-feed gap counts feeding data health — counted, never
+/// attention: every feed here is fail-soft and additive
+/// (`docs/portfolio-analysis.md` §Failure posture), so a gap is surfaced on the
+/// roll-up line without tripping the infrastructure flag.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FeedGaps {
+    pub commodity: usize,
+    pub positioning: usize,
+    pub cboe: bool,
+    pub benchmark: usize,
+}
+
 /// Build the deterministic portfolio roll-up (`docs/portfolio-analysis.md` §Portfolio
 /// roll-up): verdict counts, the concentration read (largest position weight), the cash
 /// stance, the positions closed since the last run (the Step-4 diff's exited
@@ -1378,6 +1702,7 @@ fn build_roll_up(
     deep_history_failures: usize,
     dgs10_history_gap: bool,
     house_view_omitted: bool,
+    feed_gaps: FeedGaps,
     prompt_usage: Vec<crate::local_model::PromptUsage>,
 ) -> PortfolioRollUp {
     use crate::portfolio::VerdictDisposition;
@@ -1431,6 +1756,7 @@ fn build_roll_up(
             deep_history_failures,
             dgs10_history_gap,
             house_view_omitted,
+            feed_gaps,
             prompt_usage,
         )),
         overview: format!(
@@ -1453,6 +1779,7 @@ fn build_data_health(
     deep_history_failures: usize,
     dgs10_history_gap: bool,
     house_view_omitted: bool,
+    feed_gaps: FeedGaps,
     prompt_usage: Vec<crate::local_model::PromptUsage>,
 ) -> crate::portfolio::DataHealth {
     let metas: Vec<&crate::portfolio::engine::TargetMeta> =
@@ -1485,6 +1812,24 @@ fn build_data_health(
         parts.push(format!(
             "house view omitted (latest report older than {} days)",
             crate::portfolio::dossier::HOUSE_VIEW_MAX_AGE_DAYS
+        ));
+    }
+    if feed_gaps.commodity > 0 {
+        parts.push(format!("commodity context: {} series gap(s)", feed_gaps.commodity));
+    }
+    if feed_gaps.positioning > 0 {
+        parts.push(format!(
+            "CFTC positioning: {} contract gap(s)",
+            feed_gaps.positioning
+        ));
+    }
+    if feed_gaps.cboe {
+        parts.push("CBOE put/call backdrop unavailable".to_string());
+    }
+    if feed_gaps.benchmark > 0 {
+        parts.push(format!(
+            "sector benchmark series failed on {} symbol(s)",
+            feed_gaps.benchmark
         ));
     }
 
@@ -1627,6 +1972,10 @@ fn build_data_health(
         deep_history_failures,
         dgs10_history_gap,
         house_view_omitted,
+        commodity_gaps: feed_gaps.commodity,
+        positioning_gaps: feed_gaps.positioning,
+        cboe_gap: feed_gaps.cboe,
+        benchmark_gaps: feed_gaps.benchmark,
         context_pressure,
         peak_prompt,
         attention,
@@ -1723,6 +2072,38 @@ mod tests {
         assert!(over_age("soon", today));
     }
 
+    /// The enriching-feed gaps are counted and named on the summary line but
+    /// never trip attention — every feed is fail-soft and additive
+    /// (`docs/portfolio-analysis.md` §Failure posture).
+    #[test]
+    fn data_health_counts_feed_gaps_without_raising_attention() {
+        let dh = build_data_health(
+            &[],
+            0,
+            false,
+            false,
+            FeedGaps {
+                commodity: 2,
+                positioning: 1,
+                cboe: true,
+                benchmark: 1,
+            },
+            vec![],
+        );
+        assert_eq!(dh.commodity_gaps, 2);
+        assert_eq!(dh.positioning_gaps, 1);
+        assert!(dh.cboe_gap);
+        assert_eq!(dh.benchmark_gaps, 1);
+        assert!(!dh.attention, "enriching-feed gaps never trip attention");
+        assert!(dh.summary.contains("commodity context: 2 series gap(s)"), "{}", dh.summary);
+        assert!(dh.summary.contains("CFTC positioning: 1 contract gap(s)"), "{}", dh.summary);
+        assert!(dh.summary.contains("CBOE put/call backdrop unavailable"), "{}", dh.summary);
+        assert!(dh.summary.contains("sector benchmark series failed on 1 symbol(s)"), "{}", dh.summary);
+        // Clean feeds leave the line untouched.
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![]);
+        assert!(!dh.summary.contains("commodity"), "{}", dh.summary);
+    }
+
     /// The context-fit fold: a call at or past the pressure fraction of its
     /// `num_ctx` is named in the summary and trips attention; the peak fill is
     /// recorded either way — the big-run prompt-fit watch's measurement.
@@ -1748,7 +2129,7 @@ mod tests {
                 output_limited: false,
             },
         ];
-        let dh = build_data_health(&[], 0, false, false, usage);
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage);
         assert_eq!(dh.context_pressure.len(), 1);
         assert_eq!(dh.context_pressure[0].stage, "construction");
         assert_eq!(dh.peak_prompt.as_ref().unwrap().stage, "construction");
@@ -1769,7 +2150,7 @@ mod tests {
             num_predict: None,
             output_limited: false,
         }];
-        let dh = build_data_health(&[], 0, false, false, usage);
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage);
         assert!(dh.context_pressure.is_empty());
         let peak = dh.peak_prompt.expect("peak recorded regardless of pressure");
         assert_eq!(peak.prompt_tokens, Some(90_000));
@@ -1791,7 +2172,7 @@ mod tests {
             num_predict: Some(65_536),
             output_limited: true,
         }];
-        let dh = build_data_health(&[], 0, false, false, usage);
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage);
         assert!(dh.attention, "{}", dh.summary);
         let expected =
             "generation length-stopped on 1 local call (worst: construction generated 65536 of \
@@ -1814,7 +2195,7 @@ mod tests {
             num_predict: Some(65_536),
             output_limited: true,
         }];
-        let dh = build_data_health(&[], 0, false, false, usage);
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage);
         assert!(dh.attention, "{}", dh.summary);
         let expected = "generation length-stopped on 1 local call (worst: construction \
                         generated unreported of 65536 reserved — counts incomplete; stop \
@@ -1842,7 +2223,7 @@ mod tests {
             num_predict: None,
             output_limited: false,
         }];
-        let dh = build_data_health(&[], 0, false, false, usage);
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage);
         assert_eq!(dh.context_pressure.len(), 1);
         assert!(dh.attention, "{}", dh.summary);
         let expected = "likely front-truncation on 1 local call (worst: interpret NVDA reported \
@@ -2176,6 +2557,7 @@ mod tests {
                     company_name: Some("Nintendo Co., Ltd.".into()),
                     exchange: Some("PNK".into()),
                     sector: Some("Communication Services".into()),
+                    industry: None,
                 })
             } else {
                 ProfileLookup::Unverified("profile source not wired".into())
@@ -2318,6 +2700,7 @@ mod tests {
                         company_name: Some("Zenith Mining Corp".into()),
                         exchange: Some("NYSE".into()),
                         sector: None,
+                        industry: None,
                     })
                 } else {
                     ProfileLookup::Unverified("profile source not wired".into())
@@ -3032,6 +3415,9 @@ mod tests {
         let start = std::time::Instant::now();
         let market = LiveMarketContext {
             fred: crate::fred::FredDataSource::from_env().expect("FRED_API_KEY set"),
+            fmp: None,
+            cot: None,
+            cboe: None,
         };
         let outcome = run_portfolio_job(
             &FixtureHoldingsSource::new(),

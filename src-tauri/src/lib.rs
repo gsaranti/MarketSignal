@@ -3,6 +3,7 @@ pub mod analyst_agent;
 pub mod baseline_delta;
 pub mod bls;
 pub mod cadence;
+pub mod cboe;
 pub mod config;
 pub mod connection_test;
 pub mod cot;
@@ -793,7 +794,28 @@ async fn generate_portfolio_manual(
         let fred = crate::fred::FredDataSource::new(cfg.fred_api_key.clone().unwrap_or_default())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        let market = portfolio::job::LiveMarketContext { fred };
+        // A second FMP handle for the market context's gold quote — the
+        // commodity leg is wholly fail-soft, so a construction failure would
+        // still not warrant blocking the run; the shared key and context match
+        // the per-company handle above.
+        let market_fmp = FmpDataSource::new(fmp_key.clone())
+            .map_err(|e| e.to_string())?
+            .with_context(ctx.clone());
+        // The keyless CFTC COT pull for the fund positioning read — like the
+        // commodity leg, wholly fail-soft (a failed construction records the
+        // leg's gap rather than blocking the run).
+        let market_cot = crate::cot::CotDataSource::new()
+            .ok()
+            .map(|c| c.with_context(ctx.clone()));
+        let market_cboe = crate::cboe::CboeDataSource::new()
+            .ok()
+            .map(|c| c.with_context(ctx.clone()));
+        let market = portfolio::job::LiveMarketContext {
+            fred,
+            fmp: Some(market_fmp),
+            cot: market_cot,
+            cboe: market_cboe,
+        };
 
         // Source selection: the shared seam (`build_holdings_source`) — fixture escape
         // hatch, else live Schwab once connected, else a blocked run with a re-auth

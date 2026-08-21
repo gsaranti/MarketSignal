@@ -2368,20 +2368,24 @@ pub fn hurdle_read(
 /// (`docs/portfolio-analysis.md` §Starting parameters — the feasible-set rule;
 /// conviction is model-authored, so it can't pre-gate). The add family is offered
 /// only when the new-money admission point test passes, the hurdle isn't `fails`
-/// (dead money drops the family a fortiori at any grade), the grade isn't F, and
-/// no pre-profit overlay rule bars it (constrained runway / severe deterioration);
-/// *add aggressively* additionally needs an A/B grade. Severe deterioration
-/// restricts the whole set to the exit family `{trim, sell all}`. Since
-/// `portfolio-v9` the set carries **no book-level term** — the retired
-/// concentration-headroom gate was whole-book context, which is the future
-/// portfolio planner's domain. Rendered into the action call's prompt as the
-/// ENGINE SET — the engine arm's own action stand-in walks its rung into it,
-/// while an outside-the-set model choice persists with an annotation on the
-/// audit, never a schema bar. Every grade test reads the momentum-free letter.
+/// (dead money drops the family a fortiori at any grade), the grade isn't F, no
+/// pre-profit overlay rule bars it (constrained runway / severe deterioration),
+/// and no hard forensic trigger is tripped (a filing-classified restatement /
+/// auditor change — the trip resolving only from the typed producer, never a
+/// bare model assertion); *add aggressively* additionally needs an A/B grade.
+/// Severe deterioration restricts the whole set to the exit family
+/// `{trim, sell all}`. Since `portfolio-v9` the set carries **no book-level
+/// term** — the retired concentration-headroom gate was whole-book context,
+/// which is the future portfolio planner's domain. Rendered into the action
+/// call's prompt as the ENGINE SET — the engine arm's own action stand-in walks
+/// its rung into it, while an outside-the-set model choice persists with an
+/// annotation on the audit, never a schema bar. Every grade test reads the
+/// momentum-free letter.
 pub fn feasible_actions(
     grade: Grade,
     hurdle: &HurdleRead,
     overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
+    hard_forensic: bool,
 ) -> Vec<Action> {
     use crate::portfolio::HurdleState;
     if overlay_rules.map(|r| r.exit_family_only).unwrap_or(false) {
@@ -2390,7 +2394,11 @@ pub fn feasible_actions(
     let mut set = vec![Action::SellAll, Action::Trim, Action::Hold];
     let dead_money = hurdle.state == HurdleState::Fails;
     let overlay_bar = overlay_rules.map(|r| r.bar_add_family).unwrap_or(false);
-    let add_ok = hurdle.admits_new_money && !dead_money && grade != Grade::F && !overlay_bar;
+    let add_ok = hurdle.admits_new_money
+        && !dead_money
+        && grade != Grade::F
+        && !overlay_bar
+        && !hard_forensic;
     if add_ok {
         set.push(Action::Add);
         if matches!(grade, Grade::A | Grade::B) {
@@ -2502,6 +2510,7 @@ pub fn engine_action(
     grade: Grade,
     hurdle: &HurdleRead,
     overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
+    hard_forensic: bool,
 ) -> Action {
     use crate::portfolio::HurdleState;
     let dead_money = hurdle.state == HurdleState::Fails;
@@ -2517,7 +2526,7 @@ pub fn engine_action(
     } else {
         Action::Hold
     };
-    let feasible = feasible_actions(grade, hurdle, overlay_rules);
+    let feasible = feasible_actions(grade, hurdle, overlay_rules, hard_forensic);
     if feasible.contains(&rule) {
         return rule;
     }
@@ -2548,21 +2557,102 @@ pub fn engine_view(
     fin: &CompanyFinancials,
     input_gaps: &[String],
     overlay_rules: Option<&crate::portfolio::pre_profit::OverlayConsequences>,
+    hard_forensic: bool,
 ) -> EngineView {
-    let action = engine_action(out.grade, &out.hurdle, overlay_rules);
+    let action = engine_action(out.grade, &out.hurdle, overlay_rules, hard_forensic);
     // The engine arm observes its own cap rules: a matched pre-profit conviction
     // ceiling binds the stand-in conviction exactly as the feasible-set bars bind
     // the stand-in action (`docs/portfolio-analysis.md` §The holding verdict —
-    // caps bind the engine arm, annotate the model's).
+    // caps bind the engine arm, annotate the model's). A tripped hard forensic
+    // trigger is the strict Low ceiling, dominating any soft Medium ceiling
+    // (hard > soft — `docs/portfolio-analysis.md` §Starting parameters).
+    let ceiling = if hard_forensic {
+        Some(crate::portfolio::pre_profit::ConvictionCeiling::Low)
+    } else {
+        overlay_rules.and_then(|r| r.conviction_ceiling)
+    };
     let (conviction, _) = crate::portfolio::pre_profit::clamp_conviction(
         engine_conviction(out, input_gaps),
-        overlay_rules.and_then(|r| r.conviction_ceiling),
+        ceiling,
     );
     EngineView {
         outlook: engine_outlook(&fin.daily_closes),
         conviction,
         action,
     }
+}
+
+// ---- Technology-event pre-flag (the input delta's repricing screen) -----------
+
+/// The pre-flag's threshold multiple over interval-scaled realized volatility
+/// (drafted, calibratable — `docs/portfolio-analysis.md` §Starting parameters).
+pub const TECH_EVENT_SIGMA: f64 = 2.0;
+
+/// The input delta's **technology-event pre-flag** record — an equity-holding
+/// read flagging a possible third-party repricing event when the holding's
+/// sector-relative move since the prior read exceeds
+/// [`TECH_EVENT_SIGMA`] × its interval-scaled realized volatility (√-of-time
+/// scaling, the suite's cadence-honest convention). The flag only adds the
+/// conditional research topic once the research loop lands; it asserts nothing
+/// about the cause (`docs/portfolio-analysis.md` §Starting parameters).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TechEventPreFlag {
+    pub fired: bool,
+    /// The holding's sector-relative move since the prior read (decimal).
+    pub relative_move: f64,
+    /// The firing threshold (decimal): sigma × daily vol × √sessions.
+    pub threshold: f64,
+    /// Elapsed sessions between the prior read's session and the latest close,
+    /// counted on the holding's own dated series.
+    pub sessions: usize,
+    /// The sector benchmark the move was read against (SPDR symbol).
+    pub benchmark: String,
+}
+
+/// Evaluate the pre-flag from the holding's dated closes, its sector
+/// benchmark's, and the engine's realized-volatility read (one vol basis per
+/// holding — never a second definition). `prior_session` is the prior read's
+/// **ET session date** (ISO). `Err` carries the typed unevaluable reason — a
+/// gap, never a fired or clear flag.
+pub fn tech_event_pre_flag(
+    holding_closes: &[DatedValue],
+    benchmark_closes: &[DatedValue],
+    benchmark_symbol: &str,
+    prior_session: &str,
+    daily_return_volatility: Option<f64>,
+) -> std::result::Result<TechEventPreFlag, String> {
+    let vol = daily_return_volatility.ok_or("no realized-volatility read")?;
+    if vol <= 0.0 {
+        return Err("non-positive realized volatility".to_string());
+    }
+    let latest = holding_closes
+        .last()
+        .ok_or("no holding price history")?;
+    let sessions = holding_closes
+        .iter()
+        .filter(|d| d.date.as_str() > prior_session && d.date <= latest.date)
+        .count();
+    if sessions == 0 {
+        return Err("no elapsed sessions since the prior read".to_string());
+    }
+    let h0 = latest_on_or_before(holding_closes, prior_session)
+        .ok_or("no holding close on or before the prior read")?;
+    let b0 = latest_on_or_before(benchmark_closes, prior_session)
+        .ok_or("no benchmark close on or before the prior read")?;
+    let b1 = latest_on_or_before(benchmark_closes, &latest.date)
+        .ok_or("no benchmark close for the current window")?;
+    if h0 <= 0.0 || b0 <= 0.0 || b1 <= 0.0 || latest.value <= 0.0 {
+        return Err("non-positive close in the window".to_string());
+    }
+    let relative_move = (latest.value / h0 - 1.0) - (b1 / b0 - 1.0);
+    let threshold = TECH_EVENT_SIGMA * vol * (sessions as f64).sqrt();
+    Ok(TechEventPreFlag {
+        fired: relative_move.abs() > threshold,
+        relative_move,
+        threshold,
+        sessions,
+        benchmark: benchmark_symbol.to_string(),
+    })
 }
 
 // ---- Options-activity signal (kept out of the grade) -------------------------
@@ -3595,11 +3685,11 @@ mod tests {
         clean.tier_gaps.clear();
         clean.hurdle.state = crate::portfolio::HurdleState::Clears;
         let fin = strong();
-        let view = engine_view(&clean, &fin, &[], None);
+        let view = engine_view(&clean, &fin, &[], None, false);
         assert_eq!(view.conviction, Conviction::High, "no assembled gap → High");
         let degraded =
             ["listing-resolution guard unverified — FMP profile unavailable".to_string()];
-        let view = engine_view(&clean, &fin, &degraded, None);
+        let view = engine_view(&clean, &fin, &degraded, None, false);
         assert_eq!(
             view.conviction,
             Conviction::Medium,
@@ -3617,21 +3707,21 @@ mod tests {
         };
         // A/B + clears + admits → add.
         assert_eq!(
-            engine_action(Grade::B, &hurdle(HurdleState::Clears, true), None),
+            engine_action(Grade::B, &hurdle(HurdleState::Clears, true), None, false),
             Action::Add
         );
         // F + dead money → sell all; dead money alone → trim.
         assert_eq!(
-            engine_action(Grade::F, &hurdle(HurdleState::Fails, false), None),
+            engine_action(Grade::F, &hurdle(HurdleState::Fails, false), None, false),
             Action::SellAll
         );
         assert_eq!(
-            engine_action(Grade::C, &hurdle(HurdleState::Fails, false), None),
+            engine_action(Grade::C, &hurdle(HurdleState::Fails, false), None, false),
             Action::Trim
         );
         // The default read is hold.
         assert_eq!(
-            engine_action(Grade::C, &hurdle(HurdleState::Indeterminate, false), None),
+            engine_action(Grade::C, &hurdle(HurdleState::Indeterminate, false), None, false),
             Action::Hold
         );
         // Severe deterioration (exit family only): hold is off the set → trim.
@@ -3642,7 +3732,7 @@ mod tests {
             matched_rules: vec!["severe".into()],
         };
         assert_eq!(
-            engine_action(Grade::B, &hurdle(HurdleState::Clears, true), Some(&severe)),
+            engine_action(Grade::B, &hurdle(HurdleState::Clears, true), Some(&severe), false),
             Action::Trim
         );
     }
@@ -3769,17 +3859,17 @@ mod tests {
             admits_new_money: admits,
         };
         // A clean A-grade offers the full ladder.
-        let full = feasible_actions(Grade::A, &read(HurdleState::Clears, true), None);
+        let full = feasible_actions(Grade::A, &read(HurdleState::Clears, true), None, false);
         assert!(full.contains(&Action::Add) && full.contains(&Action::AddAggressively));
         // Dead money drops the add family at any grade; hold stays (hysteresis).
-        let dead = feasible_actions(Grade::A, &read(HurdleState::Fails, false), None);
+        let dead = feasible_actions(Grade::A, &read(HurdleState::Fails, false), None, false);
         assert!(!dead.contains(&Action::Add));
         assert!(dead.contains(&Action::Hold));
         // Grade F bars the family; a C-grade passing admission gets add but never
         // add-aggressively (A/B only).
-        assert!(!feasible_actions(Grade::F, &read(HurdleState::Clears, true), None)
+        assert!(!feasible_actions(Grade::F, &read(HurdleState::Clears, true), None, false)
             .contains(&Action::Add));
-        let c = feasible_actions(Grade::C, &read(HurdleState::Indeterminate, true), None);
+        let c = feasible_actions(Grade::C, &read(HurdleState::Indeterminate, true), None, false);
         assert!(c.contains(&Action::Add) && !c.contains(&Action::AddAggressively));
     }
 
@@ -3798,7 +3888,7 @@ mod tests {
             bar_add_family: true,
             ..Default::default()
         };
-        let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), Some(&barred));
+        let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), Some(&barred), false);
         assert!(!set.contains(&Action::Add));
         assert!(set.contains(&Action::Hold));
         // Severe deterioration restricts the whole set to the exit family.
@@ -3807,8 +3897,84 @@ mod tests {
             exit_family_only: true,
             ..Default::default()
         };
-        let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), Some(&severe));
+        let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), Some(&severe), false);
         assert_eq!(set, vec![Action::SellAll, Action::Trim]);
+    }
+
+    #[test]
+    fn hard_forensic_bars_the_add_family_and_hard_caps_the_stand_in_conviction() {
+        let read = |state, admits| HurdleRead {
+            state,
+            hurdle_rate: Some(0.09),
+            tr_bear: None, tr_base: None, tr_bull: None,
+            admits_new_money: admits,
+        };
+        // A tripped hard trigger strips the add family from an otherwise-clean
+        // A-grade at any hurdle state; hold survives (the strongest disposition
+        // an owned name admits keeps hold available —
+        // `docs/portfolio-analysis.md` §Starting parameters).
+        let set = feasible_actions(Grade::A, &read(HurdleState::Clears, true), None, true);
+        assert_eq!(set, vec![Action::SellAll, Action::Trim, Action::Hold]);
+        // The stand-in action obeys the bar: the A-grade add walks to hold.
+        assert_eq!(
+            engine_action(Grade::A, &read(HurdleState::Clears, true), None, true),
+            Action::Hold
+        );
+        // The engine arm's conviction is hard-capped at Low — strictly dominating
+        // the soft Medium ceiling — while a clean view stays unclamped.
+        let out = match analyze(&strong(), &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let mut clean = (*out).clone();
+        clean.low_confidence_grade = false;
+        clean.target_meta = TargetMeta { rate_anchored: true, ..Default::default() };
+        clean.tier_gaps.clear();
+        clean.hurdle.state = crate::portfolio::HurdleState::Clears;
+        let fin = strong();
+        let view = engine_view(&clean, &fin, &[], None, true);
+        assert_eq!(view.conviction, Conviction::Low);
+        let view = engine_view(&clean, &fin, &[], None, false);
+        assert_eq!(view.conviction, Conviction::High);
+    }
+
+    #[test]
+    fn tech_event_pre_flag_scales_by_sqrt_time_and_types_its_gaps() {
+        let series = |rows: &[(&str, f64)]| -> Vec<DatedValue> {
+            rows.iter()
+                .map(|(d, v)| DatedValue { date: d.to_string(), value: *v })
+                .collect()
+        };
+        // Holding: 100 at the prior read, four sessions later at 90 (−10%);
+        // benchmark flat → sector-relative −10%.
+        let holding = series(&[
+            ("2026-08-01", 100.0),
+            ("2026-08-04", 97.0),
+            ("2026-08-05", 95.0),
+            ("2026-08-06", 93.0),
+            ("2026-08-07", 90.0),
+        ]);
+        let bench = series(&[("2026-08-01", 500.0), ("2026-08-07", 500.0)]);
+        // vol 0.02 → threshold 2 × 0.02 × √4 = 8% < 10% → fires.
+        let f = tech_event_pre_flag(&holding, &bench, "XLK", "2026-08-01", Some(0.02)).unwrap();
+        assert!(f.fired, "{f:?}");
+        assert_eq!(f.sessions, 4);
+        assert_eq!(f.benchmark, "XLK");
+        assert!((f.relative_move + 0.10).abs() < 1e-12, "{f:?}");
+        assert!((f.threshold - 0.08).abs() < 1e-12, "{f:?}");
+        // vol 0.03 → threshold 12% > 10% → present but not fired.
+        let f = tech_event_pre_flag(&holding, &bench, "XLK", "2026-08-01", Some(0.03)).unwrap();
+        assert!(!f.fired, "{f:?}");
+        // A benchmark move absorbs the holding's: both −10% → relative ~0.
+        let bench_down = series(&[("2026-08-01", 500.0), ("2026-08-07", 450.0)]);
+        let f =
+            tech_event_pre_flag(&holding, &bench_down, "XLK", "2026-08-01", Some(0.02)).unwrap();
+        assert!(!f.fired, "{f:?}");
+        // Typed gaps, never a flag: no vol; no benchmark cover; no elapsed
+        // sessions (prior read on the latest close).
+        assert!(tech_event_pre_flag(&holding, &bench, "XLK", "2026-08-01", None).is_err());
+        assert!(tech_event_pre_flag(&holding, &[], "XLK", "2026-08-01", Some(0.02)).is_err());
+        assert!(tech_event_pre_flag(&holding, &bench, "XLK", "2026-08-07", Some(0.02)).is_err());
     }
 
     #[test]

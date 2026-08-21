@@ -861,11 +861,45 @@ impl FredDataSource {
         from: NaiveDate,
         to: NaiveDate,
     ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+        // Rates normalize to decimal ratios at the adapter seam (the suite's
+        // shared rate representation — `docs/portfolio-analysis.md` §Starting
+        // parameters).
+        self.dated_window(series_id, "suite-rate-history", "Rate history", 100.0, from, to)
+    }
+
+    /// One date-ranged **level-basis** window for a commodity series — dated
+    /// observations, oldest first, on the series' own published units. This is
+    /// deliberately NOT [`Self::rate_history_decimal`]: the rate normalization
+    /// (`/100`) applied to a price level would fabricate the value, so price
+    /// series take this path (the run-level commodity context,
+    /// `docs/data-sources.md §Portfolio Analysis — endpoint surface`).
+    pub fn level_window(
+        &self,
+        series_id: &str,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
+        self.dated_window(series_id, "suite-commodity", "Commodity series", 1.0, from, to)
+    }
+
+    /// The shared date-ranged observation fetch behind the rate-history and
+    /// commodity-level windows: dated observations, oldest first, each value
+    /// divided by `divisor` (100.0 for the rate normalization — the exact
+    /// division the seam has always used, bit-identical for pinned round-trips —
+    /// 1.0 for levels, which divides exactly to the raw value).
+    fn dated_window(
+        &self,
+        series_id: &str,
+        kind: &str,
+        label: &str,
+        divisor: f64,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
         if self.progress.is_cancelled() {
-            anyhow::bail!("rate-history fetch skipped (run cancelled)");
+            anyhow::bail!("{label} fetch skipped (run cancelled)");
         }
-        self.progress
-            .request_started("FRED", "suite-rate-history", series_id, "Rate history");
+        self.progress.request_started("FRED", kind, series_id, label);
         let result = (|| -> Result<Vec<crate::portfolio::engine::DatedValue>> {
             let url = format!("{}{FRED_OBSERVATIONS_PATH}", self.base_url);
             let (status, body) = crate::http_retry::send_with_retry("FRED", || {
@@ -894,9 +928,9 @@ impl FredDataSource {
                         // non-finite anchor point would panic the percentile sort
                         // (the baseline path rejects the same input explicitly).
                         .filter(|v| v.is_finite())
-                        .map(|percent| crate::portfolio::engine::DatedValue {
+                        .map(|raw| crate::portfolio::engine::DatedValue {
                             date: o.date,
-                            value: percent / 100.0,
+                            value: raw / divisor,
                         })
                 })
                 .collect();
@@ -904,19 +938,14 @@ impl FredDataSource {
             Ok(out)
         })();
         match &result {
-            Ok(_) => self.progress.request_finished(
-                "FRED",
-                "suite-rate-history",
-                series_id,
-                "Rate history",
-                "ok",
-                None,
-            ),
+            Ok(_) => self
+                .progress
+                .request_finished("FRED", kind, series_id, label, "ok", None),
             Err(e) => self.progress.request_finished(
                 "FRED",
-                "suite-rate-history",
+                kind,
                 series_id,
-                "Rate history",
+                label,
                 "failed",
                 Some(e.to_string()),
             ),
@@ -2064,6 +2093,43 @@ mod tests {
             .latest_rate_dated("DGS10")
             .unwrap_err();
         assert!(err.to_string().contains("stale"), "{err}");
+    }
+
+    #[test]
+    fn level_window_preserves_published_levels_and_sorts_oldest_first() {
+        // The level basis is the point: a WTI print of 78.4 must arrive as 78.4,
+        // never through the rate normalization (/100) — while the rate-history
+        // path keeps normalizing on the shared windowed fetch.
+        let body = r#"{"observations":[
+            {"date":"2026-08-18","value":"78.40"},
+            {"date":"2025-08-20","value":"82.10"},
+            {"date":"2026-01-05","value":"."}
+        ]}"#;
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body,
+        }]);
+        let from = NaiveDate::from_ymd_opt(2025, 8, 1).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 8, 20).unwrap();
+        let window = test_source(&server.base_url)
+            .level_window("DCOILWTICO", from, to)
+            .unwrap();
+        assert_eq!(window.len(), 2, "the '.' marker row drops: {window:?}");
+        assert_eq!(window[0].date, "2025-08-20");
+        assert!((window[0].value - 82.10).abs() < 1e-12, "level, not /100");
+        assert_eq!(window[1].date, "2026-08-18");
+        assert!((window[1].value - 78.40).abs() < 1e-12);
+
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body: r#"{"observations":[{"date":"2026-08-18","value":"4.30"}]}"#,
+        }]);
+        let rates = test_source(&server.base_url)
+            .rate_history_decimal("DGS10", from, to)
+            .unwrap();
+        assert!((rates[0].value - 0.043).abs() < 1e-12, "rates still normalize");
     }
 
     #[test]

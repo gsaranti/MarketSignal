@@ -5265,6 +5265,44 @@ impl FmpDataSource {
         }
     }
 
+    /// The one FMP commodity quote — gold `GCUSD` for the run-level commodity
+    /// context (`docs/data-sources.md §Portfolio Analysis — endpoint surface`:
+    /// FRED's free gold series were discontinued, so gold is the one commodity
+    /// priced through FMP `quote`). Level basis, dated on the run's pinned ET
+    /// `session` — the quote is live at fetch time, not a dated close. `Err` is
+    /// the caller's typed gap; never a run failure.
+    pub fn fetch_commodity_quote(
+        &self,
+        symbol: &str,
+        session: chrono::NaiveDate,
+    ) -> Result<crate::portfolio::engine::DatedValue> {
+        match self.suite_get_shaped(
+            "commodity-quote",
+            symbol,
+            "Commodity quote",
+            FMP_QUOTE_PATH,
+            &[("symbol", symbol)],
+            |value| match company_quote_from_value(value).and_then(|q| q.price) {
+                Some(price) => Shaped::ok(Some(price)),
+                None if value.as_array().is_some_and(|a| a.is_empty()) => {
+                    Shaped::empty(None).with_detail("quote array was empty")
+                }
+                None => Shaped::malformed(None)
+                    .with_detail("no readable price — malformed or drifted response"),
+            },
+        ) {
+            Ok(Some(price)) => Ok(crate::portfolio::engine::DatedValue {
+                date: session.format("%Y-%m-%d").to_string(),
+                value: price,
+            }),
+            Ok(None) => anyhow::bail!("FMP commodity quote for {symbol} carried no price"),
+            Err(reason) => anyhow::bail!(
+                "FMP commodity quote for {symbol} unavailable ({})",
+                reason.as_str()
+            ),
+        }
+    }
+
     /// The bare per-symbol live price — the quick check's per-holding price refresh
     /// (`docs/portfolio-analysis.md` §The quick check). `Err` on a gate, transport
     /// failure, or a body carrying no price, so the caller types the family
@@ -5999,6 +6037,7 @@ fn profile_identity_from_value(value: &Value) -> crate::portfolio::listing::Prof
         company_name: field("companyName"),
         exchange: field("exchange"),
         sector: field("sector"),
+        industry: field("industry"),
     })
 }
 

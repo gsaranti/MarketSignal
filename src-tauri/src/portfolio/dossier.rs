@@ -42,6 +42,97 @@ pub struct HouseView {
     pub latest_sections: Option<String>,
 }
 
+/// How many days each run-level commodity window covers (drafted): wide enough
+/// for ~13 monthly IMF prints and a ~1-year daily trend base, one date-ranged
+/// request per series.
+pub const COMMODITY_WINDOW_DAYS: i64 = 400;
+
+/// Which commodity sleeve a print belongs to — the deterministic key the
+/// per-holding selection reads (`docs/data-sources.md §Portfolio Analysis —
+/// endpoint surface`: energy series for energy-linked holdings, the IMF metals
+/// plus gold for materials-linked ones).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommodityGroup {
+    Energy,
+    Metals,
+    Gold,
+}
+
+/// One run-level commodity price read: the latest print on the series' own
+/// published level basis (never the rate normalization), plus the window's
+/// earliest print as a trend base. Each carries its observation date so the
+/// model reads it as-of — a monthly IMF series lags by design, and data honesty
+/// shows the lag rather than presenting the print as current.
+#[derive(Debug, Clone)]
+pub struct CommodityPrint {
+    /// Display label ("WTI Crude Oil").
+    pub label: String,
+    /// The published unit ("USD per barrel").
+    pub unit: String,
+    pub group: CommodityGroup,
+    pub latest: crate::portfolio::engine::DatedValue,
+    /// The window's earliest print — the trailing trend base; `None` when the
+    /// window returned a single print.
+    pub trailing: Option<crate::portfolio::engine::DatedValue>,
+}
+
+/// The run-level commodity context (`docs/portfolio-workflow.md` §Step 5):
+/// fetched **once per run and shared across every holding** — FRED daily energy
+/// plus the suite-shared monthly IMF metals, and gold via FMP `quote` `GCUSD` —
+/// each series fail-soft to a typed gap. Empty prints + empty gaps = the leg
+/// never ran (an offline stub).
+#[derive(Debug, Clone, Default)]
+pub struct CommodityContext {
+    pub prints: Vec<CommodityPrint>,
+    pub gaps: Vec<String>,
+}
+
+/// Select the prints that ride one holding's dossier, by the holding's FMP
+/// profile identity: sector Energy → the energy sleeve; sector Basic
+/// Materials → the metals sleeve; and **gold on the industry label alone** (a
+/// gold / precious-metals industry) — never the whole Basic Materials sector,
+/// so a steel or chemicals holding carries no gold evidence. Any other
+/// identity — or none — carries no commodity block; the context is
+/// commodity-linked evidence, not a universal macro feed.
+pub fn commodity_prints_for_holding(
+    ctx: &CommodityContext,
+    sector: Option<&str>,
+    industry: Option<&str>,
+) -> Vec<CommodityPrint> {
+    let mut groups: Vec<CommodityGroup> = Vec::new();
+    match sector {
+        Some("Energy") => groups.push(CommodityGroup::Energy),
+        Some("Basic Materials") => groups.push(CommodityGroup::Metals),
+        _ => {}
+    }
+    if industry
+        .map(|i| {
+            let l = i.to_ascii_lowercase();
+            l.contains("gold") || l.contains("precious metals")
+        })
+        .unwrap_or(false)
+    {
+        groups.push(CommodityGroup::Gold);
+    }
+    if groups.is_empty() {
+        return Vec::new();
+    }
+    ctx.prints
+        .iter()
+        .filter(|p| groups.contains(&p.group))
+        .cloned()
+        .collect()
+}
+
+/// One sector benchmark's dated closes (FMP dated EOD — the identity table in
+/// `docs/data-sources.md §Financial Modeling Prep`), fetched run-level and
+/// memoized per symbol; the input delta's technology-event pre-flag reads it.
+#[derive(Debug, Clone)]
+pub struct BenchmarkSeries {
+    pub symbol: String,
+    pub closes: Vec<crate::portfolio::engine::DatedValue>,
+}
+
 /// A holding's complete evidence packet, assembled deterministically. The pipeline's
 /// model stages read only this (plus the engine's computed numbers), so interpretation
 /// reasons over evidence, not over a gathering transcript.
@@ -102,6 +193,24 @@ pub struct HoldingDossier {
     /// ride the trait default's `Unverified`, which proceeds with a recorded
     /// degraded input, never a terminal outcome.
     pub listing: Option<crate::portfolio::listing::ListingResolution>,
+    /// The item-classified 8-K filings sweep's outcome — the hard-forensic
+    /// filing kinds' producer state (`docs/portfolio-analysis.md` §Starting
+    /// parameters). `None` when the leg never ran (a fund, a skipped retrieval,
+    /// or a stub without the source wired); a live stock gather always carries
+    /// `Some` — `Unknown` where the sweep couldn't run, never a fabricated clear.
+    pub filing_events: Option<crate::portfolio::ForensicFilingState>,
+    /// The run-level commodity prints matched to this holding's sector
+    /// ([`commodity_prints_for_holding`]) — empty for a non-commodity-linked
+    /// holding, a fund, or a run whose commodity leg never ran.
+    pub commodity_context: Vec<CommodityPrint>,
+    /// The run-level CBOE venue-level put/call backdrop — the same value on
+    /// every dossier (broad-market sentiment context, never a per-name signal);
+    /// `None` when the leg failed or never ran (its gap rides data health).
+    pub put_call_backdrop: Option<crate::cboe::PutCallBackdrop>,
+    /// This holding's sector benchmark series ([`BenchmarkSeries`]) — present
+    /// on a stock whose sector resolved to a SPDR benchmark and whose run
+    /// fetched it; the technology-event pre-flag's read-against leg.
+    pub sector_benchmark: Option<BenchmarkSeries>,
     /// The data sources that contributed, for the run's audit record.
     pub sources: Vec<String>,
 }
@@ -385,6 +494,10 @@ pub fn assemble(
     prior: Option<PriorHolding>,
     listing: Option<crate::portfolio::listing::ListingResolution>,
     company_name: Option<String>,
+    filing_events: Option<crate::portfolio::ForensicFilingState>,
+    put_call_backdrop: Option<crate::cboe::PutCallBackdrop>,
+    commodity_context: Vec<CommodityPrint>,
+    sector_benchmark: Option<BenchmarkSeries>,
 ) -> HoldingDossier {
     let (
         prior_verdict,
@@ -501,6 +614,24 @@ pub fn assemble(
         LegOutcome::Empty => sources.push("Schwab option chain (none returned)".to_string()),
         LegOutcome::NotRun => {}
     }
+    // The filings sweep labels only where its endpoint was actually queried: a
+    // classified or clean sweep, or a queried-but-failed one ("unavailable").
+    // An unqueried `Unknown` (no CIK mapping) and a leg that never ran leave no
+    // label — the gap manifest carries the reason.
+    match &filing_events {
+        Some(
+            crate::portfolio::ForensicFilingState::Events { .. }
+            | crate::portfolio::ForensicFilingState::Clear,
+        ) => sources.push("SEC EDGAR filings (item-classified 8-K sweep)".to_string()),
+        Some(crate::portfolio::ForensicFilingState::Unknown { queried: true, .. }) => {
+            sources.push("SEC EDGAR filings (unavailable)".to_string())
+        }
+        Some(crate::portfolio::ForensicFilingState::Unknown { queried: false, .. }) | None => {}
+    }
+    // The run-level commodity context deliberately does NOT label here: like
+    // the house view, whether a verdict actually consulted it is unknowable at
+    // assembly (the early exits never render a prompt), so the interpretation
+    // paths — the only readers — add the label themselves in `pipeline`.
     if fund.is_some() {
         sources.push("FMP fund metadata (etf/info + weightings + sector P/E)".to_string());
     }
@@ -533,6 +664,10 @@ pub fn assemble(
         prior_grade_parameter_version,
         prior_pre_profit,
         listing,
+        filing_events,
+        put_call_backdrop,
+        commodity_context,
+        sector_benchmark,
         sources,
     }
 }
@@ -776,6 +911,54 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn commodity_prints_select_by_the_profile_sector_identity() {
+        let print = |label: &str, group| CommodityPrint {
+            label: label.into(),
+            unit: "USD".into(),
+            group,
+            latest: crate::portfolio::engine::DatedValue {
+                date: "2026-08-18".into(),
+                value: 78.4,
+            },
+            trailing: None,
+        };
+        let ctx = CommodityContext {
+            prints: vec![
+                print("WTI Crude Oil", CommodityGroup::Energy),
+                print("Copper (IMF, monthly)", CommodityGroup::Metals),
+                print("Gold", CommodityGroup::Gold),
+            ],
+            gaps: vec![],
+        };
+        let labels = |sector: Option<&str>, industry: Option<&str>| -> Vec<String> {
+            commodity_prints_for_holding(&ctx, sector, industry)
+                .into_iter()
+                .map(|p| p.label)
+                .collect()
+        };
+        // Energy → the energy sleeve alone.
+        assert_eq!(labels(Some("Energy"), None), vec!["WTI Crude Oil".to_string()]);
+        // Basic Materials → the metals sleeve; gold only on a gold-linked
+        // industry — a steel or chemicals holding carries no gold evidence
+        // (Codex 2026-08-20, finding 4).
+        assert_eq!(
+            labels(Some("Basic Materials"), Some("Steel")),
+            vec!["Copper (IMF, monthly)".to_string()]
+        );
+        assert_eq!(
+            labels(Some("Basic Materials"), Some("Gold")),
+            vec!["Copper (IMF, monthly)".to_string(), "Gold".to_string()]
+        );
+        assert_eq!(
+            labels(Some("Basic Materials"), Some("Other Precious Metals & Mining")),
+            vec!["Copper (IMF, monthly)".to_string(), "Gold".to_string()]
+        );
+        // Any other sector — or none — carries no commodity block.
+        assert!(labels(Some("Technology"), None).is_empty());
+        assert!(labels(None, None).is_empty());
     }
 
     #[test]
@@ -1222,6 +1405,10 @@ Sources and footnotes.
             None,
             None,
             None,
+            None,
+            None,
+            Vec::new(),
+            None,
         );
         assert!(dossier.sources.iter().any(|s| s.contains("FMP")));
         assert!(dossier.sources.iter().any(|s| s.contains("SEC")));
@@ -1297,6 +1484,10 @@ Sources and footnotes.
             None,
             None,
             None,
+            None,
+            None,
+            Vec::new(),
+            None,
         )
         .sources;
         assert_eq!(
@@ -1342,6 +1533,10 @@ Sources and footnotes.
                 None,
                 None,
                 None,
+                None,
+                None,
+                None,
+                Vec::new(),
                 None,
             )
             .sources
@@ -1392,6 +1587,10 @@ Sources and footnotes.
             None,
             None,
             listing,
+            None,
+            None,
+            None,
+            Vec::new(),
             None,
         )
         .sources
@@ -1669,6 +1868,8 @@ Sources and footnotes.
                 fund_exposure: None,
                 pre_profit: None,
                 hurdle: None,
+                forensic: None,
+                tech_event_pre_flag: None,
             }],
             rate_prints: None,
             outcome: None,
