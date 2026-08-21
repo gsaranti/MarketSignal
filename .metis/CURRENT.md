@@ -2,46 +2,41 @@
 
 ## What happened
 
-The paused review loop on the run-evidence slice resumed and closed: **Codex
-rounds 7–12 (all CBOE-scanner findings) were verified, fixed, and approved,
-and the slice is COMMITTED and pushed** (`ea50759`, 22 files, new
-`src-tauri/src/cboe.rs`). The scanner's final design, each step
-regression-tested: brace-free anchoring head (depth counting retired — a `}`
-inside a string faked a row close), strict closing delimiters (quoted scalars
-must close; no bare backslash, no window-edge termination), per-document
-**quote-form lock** (the mandatory `selectedDate` key classifies plain vs
-escaped payload; every anchor must agree with that form), and **candidate
-unanimity** (all same-form anchored candidates must agree; first-match order
-preference retired). Rounds 11–12 ended in a scope push-back the user
-ratified as a **formal ruling 2026-08-21**, stamped in `cboe.rs` +
-`data-sources.md §CBOE`: the gap-over-fabrication guarantee is scoped to
-*locally detectable* drift; a well-formed sole same-form impostor is accepted
-residual risk, and the heavier flight-stream-reassembly parser was declined
-for this optional backdrop (fallback ladder if the extraction ever dies: OCC
-probe → paid Cboe data → live with the gap). Final gates: cargo test 1,095/0,
-clippy clean, npm build + test clean, live CBOE smoke passing.
+A short decision session. The placement-divergence open question — whether
+the model-authored tier / horizon / runway divergence should join the
+run-level pooled divergence rates (band + conviction today) — was put to a
+ruling and **declined 2026-08-21: placement divergence joins no pooled
+rate; per-pick recording is the read.** Two facts carried it: the pooled
+rates exist to detect anchoring, and placement is authored unanchored (the
+Step-5g prompt never carries the engine pair), so the rationale does not
+transfer; and both arms' placement values persist on every pick, so a
+pooled read stays retroactively computable should realized-outcome
+evidence ever argue for one. Stamped at `docs/trade-opportunities.md`
+§Starting parameters (canonical — the Arm divergence rates row) with a
+pointer sentence in §The opportunity (`8bb4e65`). The dated 2026-08-19
+audit record stays verbatim (point-in-time), and the logic-flow doc needed
+nothing — the decline changes no behavior. Docs-only; no verification
+gates applied.
 
 ## Current state
 
-Nothing in flight. `main` is clean and pushed through `ea50759`. BUILD.md was
-updated this session (user-authorized): the run-evidence slice moved to
-§Built — carrying the CBOE scan design and the 2026-08-21 scope ruling — and
-the engine invariant's CBOE/FINRA parenthetical now reads venue-backdrop
-built / per-holding leg queued.
+Nothing in flight. `main` is clean and pushed through `8bb4e65` plus this
+handoff. Optional absorption left to the user: an INDEX row for the arm
+divergence rates citing the §Starting parameters home, and BUILD's
+§Awaiting a ruling recorded-unscored clause could cite the new ruling.
 
 ## Open questions
 
-- Placement divergence joining the run-level pooled divergence *rates* (band +
-  conviction today) — offered twice, still unruled; classed optional policy,
-  not a conflict.
-- Big-run watch set still needs research-loop + pre-profit-activation watches,
-  a `portfolio-v10` prompt-stamp note, and (new this session) a CBOE-backdrop
+- Big-run watch set still needs research-loop + pre-profit-activation
+  watches, a `portfolio-v10` prompt-stamp note, and a CBOE-backdrop
   presence/gap watch line.
 
 ## Where to start
 
 Continue the Portfolio completion block (BUILD item 1), next bullet: the
 **evidence legs** — FINRA short interest, the CBOE per-holding leg, the
-implied-expectations and narrative-vs-reality producers, and the same-stock
-option overlay. Start with `/metis-plan-task` against the verified contracts;
-name clippy alongside cargo test in the plan's verification command.
+implied-expectations and narrative-vs-reality producers, and the
+same-stock option overlay. Start with `/metis-plan-task` against the
+verified contracts; name clippy alongside cargo test in the plan's
+verification command. (The watch-set additions above are a small
+standalone alternative for a short session.)
