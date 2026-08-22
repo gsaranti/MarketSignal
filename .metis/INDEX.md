@@ -195,7 +195,8 @@ build status lives in `BUILD.md`.*
 - Narrative-vs-reality read — Portfolio form (the §Starting parameters statement is canonical) — portfolio-analysis.md §Starting parameters, §The per-holding pipeline; portfolio-workflow.md §Step 6b, §Step 6f, §Step 6g; trade-opportunities.md §The two non-negotiables; storage.md §Local Analysis Suite Storage
 - Implied-expectations read — Portfolio form — portfolio-analysis.md §Starting parameters, §The per-holding pipeline, §Intrinsic verdict; portfolio-workflow.md §Step 6b, §Step 6f; storage.md §Local Analysis Suite Storage
 - Same-underlying option overlay (the data-sources chains row is canonical for the standalone-option stance) — portfolio-analysis.md §The per-holding pipeline, §Asset eligibility; portfolio-workflow.md §Step 6a, §Step 6f; data-sources.md §Portfolio Analysis — endpoint surface; schwab-integration.md §What is pulled
-- What-changed audit — portfolio-analysis.md §What changed; portfolio-workflow.md §Step 6g
+- What-changed audit — portfolio-analysis.md §What changed; portfolio-workflow.md §Step 6g; storage.md §Local Analysis Suite Storage
+- Step-6a semantic continuity retrieval + per-holding summary embeddings — portfolio-workflow.md §Step 6a, §Step 7; storage.md §Local Vector Memory
 - Run audit record provenance (source labels, model ids) — storage.md §Local Analysis Suite Storage; portfolio-workflow.md §Step 7
 - Degraded-run persistence + constructed marker (removed by the fresh-start slice) — verification/2026-08-17-fresh-start-legacy-removal.md; BUILD.md §Runtime, observability & failure posture
 - Holdings normalization / book-level netting — schwab-integration.md §What is pulled, §Manual import (supplement); portfolio-workflow.md §Step 2; portfolio-analysis.md §Holdings change tracking
@@ -279,7 +280,7 @@ build status lives in `BUILD.md`.*
 - ET session dating — data-sources.md (intro session-dating rule); portfolio-analysis.md §The quick check, §Triggering, §Outcome learning; portfolio-workflow.md §The quick check
 - Run data-health roll-up — portfolio-analysis.md §Portfolio roll-up, §Starting parameters; interface.md §Main Layout
 - Re-check class resolution contract — trade-opportunities-workflow.md §Step 3c, §Step 5h; portfolio-workflow.md §Step 6g
-- Per-item checkpoint/resume + research caching, both jobs — portfolio-analysis.md §Failure posture; portfolio-workflow.md §Step 6; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §Step 5
+- Per-item checkpoint/resume + research caching, both jobs — portfolio-analysis.md §Failure posture (the Portfolio contract is canonical), §Starting parameters; portfolio-workflow.md §Step 2, §Step 6, §Step 6g; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §Step 5; run-tracking.md §Cancellation; storage.md §Local Analysis Suite Storage; data-portability.md §What moves, and what deliberately does not
 - Research loop & context management — web-research.md §The research loop and context management
 - Research agenda — portfolio-analysis.md; trade-opportunities.md
 - Seed lineage — web-research.md §The research loop and context management; trade-opportunities-workflow.md §Step 3b; configuration.md §Research Context Management; storage.md §Local Analysis Suite Storage; trade-opportunities.md §The opportunity, §Signal inputs, §Discovery memory

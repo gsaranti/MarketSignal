@@ -521,15 +521,18 @@ price-bar cache), no cash-flow re-pull, no breadth-flip sub-leg, material
 filings are the 10-K/10-Q/8-K prefix, and the FINRA leg is structurally
 unreachable from the closed ledger series surface.
 
-**Portfolio Analysis — built**, less two depth slices. Built: the per-holding
-spine and fund path, the persisted **thesis ledger** with machine-evaluable
-falsifiers over a closed engine series surface, the engine-only **quick check**
-between runs, **selective re-analysis** with vintage-stamped carries, the
-deterministic **pre-profit execution/financing overlay** (producer-dormant;
-§Standing constraints carries what activating it requires), **outcome
-learning** over branch-typed decision episodes, the per-holding **action
-call** setting each holding's final action, and the **two-arm verdict** across
-all of it. The job is **tunnel-vision by contract** (`portfolio-v9`, user
+**Portfolio Analysis — built**, less the fund-depth slice. Built: the
+per-holding spine and fund path, the persisted **thesis ledger** with
+machine-evaluable falsifiers over a closed engine series surface, the
+engine-only **quick check** between runs, **selective re-analysis** with
+vintage-stamped carries, the deterministic **pre-profit execution/financing
+overlay** (producer-dormant; §Standing constraints carries what activating it
+requires), **outcome learning** over branch-typed decision episodes, the
+**metric-level 6g what-changed validator** (waking outcome's standing-thesis
+and self-correction legs), **Step-6a semantic recall** with per-holding
+summary embeddings, **per-holding checkpoint/resume**, the per-holding
+**action call** setting each holding's final action, and the **two-arm
+verdict** across all of it. The job is **tunnel-vision by contract** (`portfolio-v9`, user
 ruling 2026-08-14; the record is
 `docs/verification/2026-08-14-tunnel-vision-slice.md`): it never compares
 holdings — the whole-book construction stage (7a aggregates + 7b synthesis)
@@ -614,7 +617,9 @@ every stacked runtime confirmation at once.
 - **Portfolio Analysis** — the per-holding spine, the fund path, the thesis
   ledger, the quick check, selective re-analysis, the pre-profit overlay,
   outcome learning, the per-holding action call (tunnel vision — the
-  construction stage is removed), and the two-arm verdict.
+  construction stage is removed), the metric-level 6g validator, Step-6a
+  semantic recall + per-holding summary embeddings, per-holding
+  checkpoint/resume, and the two-arm verdict.
 - **The calibration tier** — adapter options wiring, the target function, the
   grade bands, and the interpretation-prompt contract, each tuned against the
   first live run's persisted dataset.
@@ -677,6 +682,28 @@ every stacked runtime confirmation at once.
   is scoped to locally detectable drift by ruling 2026-08-21 (a sole
   same-form impostor is accepted residual; the canonical statement is
   `docs/data-sources.md §CBOE`).
+- **The Infrastructure slice** (`portfolio-v11`) — the completion block's
+  third slice, three legs, reviewed to approval (three Codex rounds): the
+  **metric-level 6g validator** (typed `what_changed_entries` rows resolved
+  against the engine-rendered bracketed-id input delta — an unresolvable
+  external attribution downgrades to self-correction with a logged reason, a
+  no-move or exact-duplicate row is dropped — waking outcome's standing-thesis
+  episode leg and self-correction counters); **Step-6a semantic retrieval +
+  per-holding summary embeddings** (`{run_id}:{SYMBOL}` rows under the
+  unchanged unique index, run-pruned, top-3 recall, fresh-vintage verdicts
+  only, the guard counting summary rows alone); and **per-holding
+  checkpoint/resume** (pinned header plus transactionally written per-holding
+  rows, the 48-hour window, `resume_eligibility` refusals, the `resume` run
+  flag, the `portfolio_resume_status` probe, and the tracker's Resume
+  affordance — the offered trail identified by its own pinned as-of, never
+  rebound to the run shown). Rulings 2026-08-21: checkpoints excluded from
+  the portability archive; the composite summary id, index unchanged; the
+  tracker-terminal-state-only resume surface; the fast-tier fallback
+  single-homed at `pipeline::effective_fast_model`. Accepted residue:
+  per-holding retrieval (option chains included) stays live on resume — the
+  pin covers the book and run-level context; a carried verdict outliving its
+  authoring run's retention loses its recall row; a resumed run's context-fit
+  diagnostics cover only the resumed holdings.
 
 ### Remaining, in order
 
@@ -686,14 +713,9 @@ every stacked runtime confirmation at once.
    31 verified findings, zero code fixes, every diff ruled and the doc side
    fixed (`docs/verification/2026-08-15-tunnel-vision-conformance-walk.md`) —
    so the block's slices plan against verified contracts. The block's first
-   two slices — **run evidence** and the **evidence legs** — are built
-   (§Built). Remaining, in build order:
-   - **Infrastructure** — Step-6a semantic retrieval + per-holding summary
-     embeddings, per-holding **checkpoint/resume** (mid-run checkpointing
-     proper; only a cancel checkpoint exists today), and the **metric-level
-     6g validator** (which also wakes the outcome slice's dormant
-     standing-thesis and self-correction legs).
-   - **Fund depth last, behind its own design ruling** — the
+   three slices — **run evidence**, the **evidence legs**, and
+   **Infrastructure** — are built (§Built). Remaining:
+   - **Fund depth, behind its own design ruling** — the
      scenario-differentiated priced-fund target formula (undesigned; the
      shipped flat-driver v2-over-composite form is the settled stopgap,
      ruled 2026-08-15), the CEF price-vs-NAV leg, and optionally N-PORT
