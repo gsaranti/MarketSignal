@@ -205,6 +205,7 @@ build status lives in `BUILD.md`.*
 - Not-rated positions in roll-up — portfolio-analysis.md §Asset eligibility, §Portfolio roll-up; schwab-integration.md §What is pulled
 - Fund path — portfolio-analysis.md §Asset eligibility
 - Fund strategy classification & routing — portfolio-analysis.md §Asset eligibility; portfolio-workflow.md §Step 3, §Step 6b
+- Closed-end fund leg — detection and the price-vs-NAV read (the §Asset eligibility statement is canonical) — portfolio-analysis.md §Asset eligibility, §Evidence floor; portfolio-workflow.md §Step 3, §Step 6a; data-sources.md §Portfolio Analysis — endpoint surface
 - Listing-resolution guard — portfolio-analysis.md §Asset eligibility, §Starting parameters; portfolio-workflow.md §Step 3, §Step 6a
 - House-view freshness gate — portfolio-workflow.md §Step 5
 - Post-research target refinement — portfolio-analysis.md §The per-holding pipeline; portfolio-workflow.md §Step 6d, §Step 6e
@@ -324,3 +325,4 @@ the run's own dated record follows it.*
 - Fresh-start legacy removal — the ruling, the full pre-`v9` removal inventory, and the kept-vs-removed boundary — verification/2026-08-17-fresh-start-legacy-removal.md; BUILD.md §Runtime, observability & failure posture
 - Portfolio Analysis doc/code audit — the 21 findings, their re-verification and dispositions, four rulings, and two Codex rounds — verification/2026-08-18-portfolio-analysis-doc-code-audit.md; BUILD.md §What remains (Built)
 - Trade Opportunities documentation audit — the 28 findings, their verification verdicts, seven rulings, dispositions, and two review rounds — verification/2026-08-19-trade-opportunities-documentation-audit.md; BUILD.md §What remains
+- Fund depth — the four rulings, the CEF probe findings, the built leg, and six review rounds — verification/2026-08-21-fund-depth-rulings.md; BUILD.md §What remains (Built)

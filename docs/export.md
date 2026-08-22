@@ -28,6 +28,8 @@ Markdown exports preserve:
 
 PDF export is generated from the HTML report version using the Tauri webview's built-in print-to-PDF capability.
 Because the same webview engine renders both the in-app HTML and the exported PDF, presentation fidelity is preserved.
+The page margin comes from the report article's **padding**, not `@page`: a non-zero `@page` margin makes WebKit silently drop content that spills onto an added page, so `@page` stays 0.
+The cost — interior pages get no top/bottom margin — is a WebKit limitation, not a choice.
 
 PDF exports preserve:
 - rendered report styling

@@ -117,38 +117,26 @@ deletion**, guaranteed by the row's `kind` rather than its `report_id`. Baseline
 snapshots keep their own cap (14), decoupled from report retention.
 
 The on-disk home for all stores is resolved from the Tauri app-data dir keyed by
-the **bundle identifier**, so it is stable across versions. Debug builds nest
-under a `dev/` subdir so a development session never touches production data;
-`MARKET_SIGNAL_DATA_DIR` overrides both. The **macOS Keychain rail sits outside
-this split** — the keyring service (`market-signal-schwab`) is app-scoped, not
-data-dir-scoped, so debug and release builds read the same Schwab entries. The
-startup Keychain reads are synchronous main-thread calls and macOS re-prompts
-its ACL for every ad-hoc-signed rebuild, so a fresh binary's first launch can
-stack prompts that **block the webview's first paint**; a denied read errors the
-whole local-config report, which the frontend fail-safes to locked triggers with
-no local warning categories for that session (fail-softing a failed token read
-to not-connected is a named, unbuilt candidate). One deliberate exception to
-*persisted config lives in SQLite*: the Light/Dark appearance preference lives
-in webview `localStorage` — pure presentation with no backend consumer, read
-synchronously pre-mount to avoid a first-paint flash.
+the **bundle identifier**, so it is stable across versions; debug builds nest
+under a `dev/` subdir, `MARKET_SIGNAL_DATA_DIR` overrides both. The **macOS
+Keychain rail sits outside this split** — app-scoped, not data-dir-scoped, so
+debug and release builds read the same Schwab entries; its ACL re-prompts on
+ad-hoc rebuilds can block first paint, and a denied read errors the whole
+local-config report (fail-softing that to not-connected is a named, unbuilt
+candidate). One deliberate exception to *persisted config lives in SQLite*:
+the Light/Dark appearance preference lives in webview `localStorage` — pure
+presentation, read pre-mount to avoid a first-paint flash.
 
 **Data portability (built — `portability.rs`).** A whole-corpus
-backup/restore — distinct from per-report export — that carries a machine's
-accumulated analytical history to new hardware as one archive
-(`docs/data-portability.md`). The load-bearing line: **durable analytical data
-moves; secrets and machine-local operational state stay behind** —
-`app_settings` and the Keychain are never serialized, so the archive cannot leak
-a credential. It is a structured, versioned, checksummed zip — deliberately
-**not** a raw DB-file copy (WAL sidecars; secrets can't be stripped from a
-binary copy; no DB schema-version marker) — and import **validates everything
-before its destructive phase**, so a bad archive can only abort while the store
-is untouched. Optional encryption is AES-256-GCM over an Argon2id key with the
-**KDF cost parameters frozen in code, never the crate's defaults** (an inherited
-default shift on a dependency bump would strand every archive as "wrong
-passphrase"; raising costs means a new `ENC_MAGIC`). Both directions hold the
-single run slot. Accepted residue: a mid-import I/O failure can leave partial
-*files* (the row transaction holds; the intact archive is the retry path) —
-stage-and-swap is a named, unscheduled hardening.
+backup/restore — distinct from per-report export — carrying the accumulated
+analytical history as one structured, versioned, checksummed archive
+(`docs/data-portability.md` owns the format, encryption, and flow details).
+The load-bearing lines: **durable analytical data moves; secrets and
+machine-local operational state stay behind** (the archive cannot leak a
+credential); it is deliberately **not** a raw DB-file copy; and import
+**validates everything before its destructive phase**. Both directions hold
+the single run slot. Accepted residue: a mid-import I/O failure can leave
+partial *files* — stage-and-swap is a named, unscheduled hardening.
 
 ## Module boundaries
 
@@ -169,14 +157,11 @@ stage-and-swap is a named, unscheduled hardening.
   adds Commitments-of-Traders positioning — the one signal the price /
   valuation / macro / credit groups can't give (how crowded the speculative
   cohort is) — as a fail-soft, additive group. Gated adapters share a bounded,
-  `Retry-After`-aware retry/backoff, parameterized per provider:
-  **FMP rides a minute-crossing 429 ladder** (63 s cumulative
-  over seven attempts — probe-verified that the paid plan's per-minute limit
-  arrives as an HTTP 429 with a burst bucket tripping well under the headline
-  200/min; 5xx keeps the short schedule so a down provider fails fast, and
-  backoff sleeps poll the run's cancel flag in ~250 ms slices) while every
-  other adapter keeps the short default; GDELT is excluded — its escalating
-  IP lockout makes retrying harmful, so it stays single-shot fail-soft. **Fixed
+  `Retry-After`-aware retry/backoff, parameterized per provider — FMP rides a
+  minute-crossing 429 ladder, every other adapter keeps the short default,
+  and GDELT stays single-shot fail-soft (its IP lockout makes retrying
+  harmful); the schedules live in `docs/data-sources.md` (intro retry
+  paragraph). **Fixed
   internal models** are non-configurable and distinct from the four
   user-selectable agent models: GPT-5 mini (headline filtering), Claude Sonnet
   (research routing), `text-embedding-3-large` (embeddings). Inbox document
@@ -196,30 +181,21 @@ stage-and-swap is a named, unscheduled hardening.
   materially changed (`docs/thesis-continuity.md`) — the conviction and the
   rare-pivot doctrine are the same stance, not opposites.
 - **`frontend` (Vue 3)** — Latest Report View, the **Run Tracker**, the
-  **shared-history sidebar** (recent reports; on the Portfolio view its list
-  swaps to the Portfolio-runs history, an older run opening **read-only** —
-  `docs/interface.md §Main Layout`), Research Documents, the Persistent
-  Warning Area, Settings, and the **Portfolio page** (the first
-  analytical-register surface) (`docs/interface.md`). Markdown→HTML rendering uses **markdown-it** on the
-  webview side, on demand for display and PDF export, **never persisted** —
-  agents never see HTML. PDF export uses the webview's native print-to-PDF,
-  where the page margin comes from the report article's **padding**, not
-  `@page`: a non-zero `@page` margin makes WebKit silently drop content that
-  spills onto an added page, so `@page` stays 0 (the cost — interior pages get
-  no top/bottom margin — is a WebKit limitation, not a choice). Embedded charts
-  ride the same seam: the agent emits a fenced `chart` JSON block in its
-  Markdown and `src/renderChart.ts` is the authoritative validator rendering it
-  to restrained inline SVG, falling back to the raw code block on anything
-  malformed — the *only* way a chart enters a report. All UI is built against
-  `market-signal-design-system/`, which defines **two registers** — the report's
-  **reading register** (serif, monochrome, unchanged) and a denser,
-  instrument-grade **analytical register** the local-suite surfaces adopt as
-  they are built — bridged by shared chrome, which now includes the package's
-  confirmation dialog and the keyboard-operable sort-bar / sortable-grid-head /
-  view-toggle controls (the first two are built into the Portfolio page; the
-  view toggle ships with Trade Opportunities). All suite sorting/view controls
-  are **display-only**, reordering already-computed fields; specifics live in
-  the design package and `docs/interface.md`.
+  **shared-history sidebar**, Research Documents, the Persistent Warning
+  Area, Settings, and the **Portfolio page** (`docs/interface.md`).
+  Markdown→HTML rendering uses **markdown-it** on the webview side, on
+  demand for display and PDF export, **never persisted** — agents never see
+  HTML; PDF export is the webview's native print-to-PDF (the `@page`-margin
+  constraint is canonical at `docs/export.md §PDF Export`). Embedded charts
+  enter a report exactly one way: a fenced `chart` JSON block validated and
+  rendered by `src/renderChart.ts`, falling back to the raw code block on
+  anything malformed. All UI is built against
+  `market-signal-design-system/`, which defines **two registers** — the
+  report's reading register (serif, monochrome, unchanged) and the denser
+  instrument-grade analytical register the local-suite surfaces adopt —
+  bridged by shared chrome; all suite sorting/view controls are
+  **display-only**, reordering already-computed fields (specifics in the
+  design package and `docs/interface.md`).
 
 ## Runtime, observability & failure posture
 
@@ -246,60 +222,40 @@ stale click can't silently hide a newer, unseen failure.
 
 Run observability rides a **Tauri-free `progress` seam** so the deterministic
 spine stays unit-testable: a `ProgressReporter` trait plus a per-run
-`RunContext` (reporter, shared cancel flag, sequence) are threaded into
-`generate_report` and the real adapters/agents via `with_context` builders, so
-**no trait signature changes** for the seam. While a job runs the app streams to
-an open window: per-step progress, one **request row per actual HTTP call**, the
-main agent's report **token-by-token**, and the agent models' **extended-thinking
-reasoning** — the main agent on its own channel, each analyst per-posture, and
-a local job's per-holding interpretation **step-scoped** onto that holding's
-own step (thoughts-only in each case; a review body or structured verdict
-never streams). The streamed
-report tokens are a side-channel that can't corrupt the report — the full
-envelope is accumulated and parsed exactly as the non-streaming path. A
-**debug-gated thought-log sink** decorates the live reporter and captures
-every thinking stream to per-run text files under the data dir
-(`thought-logs/`, newest ten kept, pruned only after a run's first delta
-lands) — the deliberate, bounded exception to reasoning staying ephemeral:
-release builds stay silent unless `MARKET_SIGNAL_THOUGHT_LOG` opts in, and
-the files are best-effort diagnostics outside SQLite, portability, and every
-store retention rule (`docs/run-tracking.md §Thought-log capture`). The
-frontend renders this as the run tracker — one shared component placed on the
-**running job's own page** (a report run replaces the report pane, a portfolio
-run the Portfolio page; latest-run-only), the report's fixed /8 progress
-fraction applying to report runs only. Cancellation is cooperative — a shared flag
-polled at step/request boundaries and mid-stream, never interrupting an in-flight
-request. Two load-bearing UI invariants: a **run is never a report** (a cancel/fail
-removes nothing that was shown), and the terminal `run-finished` event is
-emitted **before** any job-history write error can propagate, so a DB failure
-can't strand the UI mid-run. The first invariant now holds without
-exception on the Portfolio-runs history: since `portfolio-v9` removed the
-construction stage, no run can fail into a persisted **degraded run**, so the
-fresh-start legacy slice (2026-08-17) deleted the `constructed` marker, its
-store column, the `latest_run` degraded-exclusion, and the UI's "no book"
-surface whole (`docs/verification/2026-08-17-fresh-start-legacy-removal.md`).
-The one read-time posture that stays is the corrupt-run loud-skip: an
-unparseable blob costs its own surface (skipped with a logged warning), never
+`RunContext` threaded via `with_context` builders — **no trait signature
+changes** for the seam. While a job runs the app streams per-step progress,
+one **request row per actual HTTP call**, the main agent's report
+token-by-token, and the models' extended-thinking reasoning (thoughts-only —
+a review body or structured verdict never streams); the streamed tokens are a
+side-channel that can't corrupt the report. A **debug-gated thought-log
+sink** is the deliberate, bounded exception to reasoning staying ephemeral —
+opt-in, best-effort, outside every store retention rule
+(`docs/run-tracking.md §Thought-log capture`). The frontend renders this as
+the run tracker on the **running job's own page** (latest-run-only).
+Cancellation is cooperative — a shared flag polled at step/request boundaries
+and mid-stream, never interrupting an in-flight request. Two load-bearing UI
+invariants: a **run is never a report** (a cancel/fail removes nothing that
+was shown — exception-free since the fresh-start slice removed the
+degraded-run legacy;
+`docs/verification/2026-08-17-fresh-start-legacy-removal.md`), and the
+terminal `run-finished` event is emitted **before** any job-history write
+error can propagate, so a DB failure can't strand the UI mid-run. The
+read-time posture: a corrupt run is a loud skip — its own surface only, never
 the history listing or the next run's baseline.
 The full runtime contract is in `docs/run-tracking.md`.
 
 ## Testing approach
 
-The spine makes the pipeline testable offline: agents and adapters are traits, so
-the orchestrator runs end-to-end against deterministic stubs and fixture packets
-with no live keys. Coverage spans the executor's three limits, the 30-report
-retention cascade + durable-learning survival, learning dedup, the validation-gate
-and Step-3 coverage-floor matrices, the failed/skipped/cancelled transitions,
-fail-soft inbox parsing, the cadence-honest baseline delta engine, and the analyst
-layer's fail-hard contract. The `progress` seam stays out of other tests via a
-no-op `RunContext`; its own logic (the resumable streamed-token decoder + SSE
-reconstruction for both provider dialects and stream roles) is fixture-tested. Each
-gated adapter has a test-only base-URL seam so a localhost mock exercises the full
-URL-build → retry → parse → output path offline; live smokes are `#[ignore]`d. The
-**frontend gate is two runners under `npm test`**: pure modules (`tests/**/*.test.ts`)
-on Node's runner via type-stripping, and Vue **SFC tests** (`tests/**/*.spec.ts`) on
-**Vitest** (happy-dom + `@vue/test-utils`), mounting real components for behavior +
-accessibility.
+The spine makes the pipeline testable offline: agents and adapters are traits,
+so the orchestrator runs end-to-end against deterministic stubs and fixture
+packets with no live keys, coverage spanning every limit, retention, gating,
+and failure-posture contract. The `progress` seam stays out of other tests via
+a no-op `RunContext`; its own streaming logic is fixture-tested. Each gated
+adapter has a test-only base-URL seam so a localhost mock exercises the full
+URL-build → retry → parse → output path offline; live smokes are `#[ignore]`d.
+The **frontend gate is two runners under `npm test`**: pure modules on Node's
+runner and Vue SFC tests on Vitest mounting real components (the split is
+specified in `CLAUDE.md`).
 
 The same trait spine powers a **dev-only demo-run mode** (`src-tauri/src/demo.rs`,
 behind a `demo-run` Cargo feature, out of `default`/`tauri build`): "Generate now"
@@ -363,25 +319,21 @@ this section carries only the decisions a plan must not work against.
   session, on the Schwab credential rails) enrich fetching and are **never part
   of the execution gate**.
 - **Holdings & options ingestion (built).** Schwab Trader API via an OAuth
-  loopback (30-min access / 7-day refresh → a weekly re-login), supplying
-  holdings *and* live option chains, from which a deterministic put/call +
-  IV/skew signal is computed — an activity proxy, not positioning truth, kept
-  out of grade sub-scores until calibrated. **A connected Schwab account is
-  required to run either local job**; manual CSV/paste import (designed, not
-  built) only supplements holdings. Same-symbol rows across granted accounts
-  **net at snapshot assembly** into one signed book-level position per symbol
-  (`docs/schwab-integration.md §What is pulled`); per-source rows survive for
-  display and audit, and a net-short book-level equity takes the not-rated
-  treatment. The surface is **read-only by construction** — the adapter
-  implements only holdings/positions/option-chain `GET`s and never an
-  order/trading endpoint. This is a code-enforced guarantee, not a token scope:
-  the Trader API bundles trading into the same product with **no read-only
-  scope**, so the boundary lives in our code while the worst-case blast radius
-  of a leaked credential stays bounded to in-account trades the app never
-  issues. Tokens and the app secret ride the Keychain and **never enter logs or
-  the run tracker**. The loopback's HTTPS server is an in-house one-shot rustls
-  acceptor on the same stack outbound HTTP already uses — no maintained minimal
-  blocking-HTTPS crate exists that isn't pinned to an EOL stack.
+  loopback (a weekly re-login cadence), supplying holdings *and* live option
+  chains, from which a deterministic put/call + IV/skew signal is computed —
+  an activity proxy, not positioning truth, kept out of grade sub-scores
+  until calibrated. **A connected Schwab account is required to run either
+  local job**; manual CSV/paste import (designed, not built) only supplements
+  holdings. Same-symbol rows across granted accounts **net at snapshot
+  assembly** into one signed book-level position per symbol
+  (`docs/schwab-integration.md §What is pulled`), and a net-short book-level
+  equity takes the not-rated treatment. The surface is **read-only by
+  construction** — the adapter implements only holdings / positions /
+  option-chain `GET`s, a code-enforced guarantee rather than a token scope
+  (the Trader API has no read-only scope), bounding a leaked credential's
+  blast radius to in-account trades the app never issues. Tokens ride the
+  Keychain and **never enter logs or the run tracker**; the loopback's
+  one-shot rustls acceptor rides the stack outbound HTTP already uses.
 - **Reuses the spine.** Each feature is a new Tauri command + job under the
   **single global run slot** (report + both local jobs are mutually exclusive,
   matching the latest-run-only tracker), reusing the `progress`/run-tracker seam
@@ -511,9 +463,7 @@ bands, and the acknowledgment transition. Selective re-analysis adds the seams
 later slices consume: per-holding vintages (`effective_vintage`), the persisted
 `action_source` vocabulary, and the subset sweep. Outcome learning adds the
 episode store and the `HoldingAudit.hurdle` snapshot the calibration-proposal
-slice will consume; its episode `lean` / `lean_divergence` pair was
-construction-era legacy that the fresh-start slice removed — since
-`portfolio-v9` the action is the lean and no divergence exists.
+slice will consume.
 
 Deliberate reductions in the quick check, surfaced rather than latent so they
 are not mistaken for defects: FMP quote plus dated-EOD only (never the shared
@@ -521,79 +471,48 @@ price-bar cache), no cash-flow re-pull, no breadth-flip sub-leg, material
 filings are the 10-K/10-Q/8-K prefix, and the FINRA leg is structurally
 unreachable from the closed ledger series surface.
 
-**Portfolio Analysis — built**, less the fund-depth slice. Built: the
-per-holding spine and fund path, the persisted **thesis ledger** with
-machine-evaluable falsifiers over a closed engine series surface, the
-engine-only **quick check** between runs, **selective re-analysis** with
-vintage-stamped carries, the deterministic **pre-profit execution/financing
-overlay** (producer-dormant; §Standing constraints carries what activating it
-requires), **outcome learning** over branch-typed decision episodes, the
-**metric-level 6g what-changed validator** (waking outcome's standing-thesis
-and self-correction legs), **Step-6a semantic recall** with per-holding
-summary embeddings, **per-holding checkpoint/resume**, the per-holding
-**action call** setting each holding's final action, and the **two-arm
-verdict** across all of it. The job is **tunnel-vision by contract** (`portfolio-v9`, user
-ruling 2026-08-14; the record is
-`docs/verification/2026-08-14-tunnel-vision-slice.md`): it never compares
-holdings — the whole-book construction stage (7a aggregates + 7b synthesis)
-was removed whole, and each action is a rung + one-line rationale decided from
-the finished verdict, the holding's own evidence, and the investor profile
-(the profile's only entry point; 6f interpretation stays profile-blind).
-Whole-book questions — concentration, overlap, funding, sizing, the deployment
-stance — are the future portfolio planner's. The ledger's target-weight range
-and the `portfolio-weight` series retired with the stage, and the fresh-start
-slice removed the series variant outright (no pre-`v9` conditions exist to
-decode); any future action numeric must be holding-based (share counts — ruled,
-unbuilt). Under the **2026-08-16 badge
-ruling** (`docs/verification/2026-08-16-selective-badges-ruling.md`) a selective
-run analyzes **strictly the selection** — the former automatic safety additions
-surface as non-blocking card badges rather than force-includes, an unselected
-holding with no prior verdict is left not analyzed, and the one-time pre-`v9`
-migration gate was removed (pre-`v9` verdicts carry like any other; a first v9
-run is full only because a full run re-grades the whole book). A selective
-request with **no readable prior run** runs the whole book — nothing to carry,
-and the page cannot offer a selection without a rendered run (as-built, ruled
-2026-08-18). The intrinsic
-verdict is a discriminated
-union — a `priced` branch (grade, forward outlook, bidirectional conviction,
-portfolio action) and a `role_risk_only` branch for structurally unpriceable
-vehicle classes (no letter, targets, lean or conviction; a reduced {sell all,
-trim, hold} spine), so no fabricated number rides an unpriceable fund — and it
-stays separated from the portfolio action, which the action call may move off
-the intrinsic read on holding evidence + profile. Designed and unbuilt: the
-**live research loop** (the held-name research refresh lane, once slated to ride
-with it, was retired by the 2026-08-16 badge ruling — it existed only to
-force-include a carried holding on a material update, which selective runs no
-longer do).
+**Portfolio Analysis — built**, less the live research loop. Built: the
+per-holding spine and fund path (the closed-end leg included), the persisted
+**thesis ledger** with machine-evaluable falsifiers over a closed engine
+series surface, the engine-only **quick check**, **selective re-analysis**
+with vintage-stamped carries, the **pre-profit overlay** (producer-dormant;
+§Standing constraints), **outcome learning**, the **metric-level 6g
+validator**, **Step-6a semantic recall**, **per-holding checkpoint/resume**,
+the per-holding **action call**, and the **two-arm verdict** across all of
+it. The job is **tunnel-vision by contract** (`portfolio-v9`, ruled
+2026-08-14; `docs/verification/2026-08-14-tunnel-vision-slice.md`): it never
+compares holdings — the construction stage is removed whole, each action a
+rung + one-line rationale from the finished verdict, the holding's own
+evidence, and the investor profile (the profile's only entry point; 6f
+interpretation stays profile-blind) — and whole-book questions are the
+future portfolio planner's. Under the **2026-08-16 badge ruling** a
+selective run analyzes **strictly the selection** — safety triggers surface
+as non-blocking card badges, never force-includes — while a selective
+request with no readable prior run runs the whole book (ruled 2026-08-18;
+`docs/verification/2026-08-16-selective-badges-ruling.md`). The intrinsic
+verdict is a **discriminated union** — `priced`, and `role_risk_only` for
+structurally unpriceable vehicle classes, so no fabricated number rides an
+unpriceable fund — and stays separated from the portfolio action
+(`docs/portfolio-analysis.md §Intrinsic verdict`). Designed and unbuilt: the
+**live research loop** (the held-name refresh lane retired by the badge
+ruling).
 
 **Trade Opportunities — designed, not built** (`docs/trade-opportunities.md`,
 `trade-opportunities-workflow.md`). Discovery runs through three feeders —
-**model-led hypothesis research** (the edge: hypothesis cards + a score gating
-promotion *before any ticker*) under an app-owned coverage rotation, stratified
-structured feeders (the screener stratifies — stratification IS the breadth
-mechanism, no bulk pre-scoring), and a persisted **opportunity-graph watchlist**
-refreshing at class cadence. Per-candidate validation runs under an archetype
-lens, a mandatory bear case and a leading-metric hard gate. It runs as two jobs
-sharing one page (**Discover** / **Audit**, the latter forking Quick/Deep) under
-**one `trade_opportunities` job identity** — each run record mode-labeled
-(`discover` / `audit-quick` / `audit-deep`), history / retention / footer stamps
-reading one pool (ruled 2026-08-19).
-Judgment fields carry in the same **two arms** as Portfolio, and **admission is
-either-arm** — both arms run the same entry-asymmetry gate and a name clearing
-either enters, with both gate vectors persisted — the grant scoped to that gate
-alone: the evidence floor, the forensic hard triggers and anchorless `hype` bind
-absolutely on both arms. Two classes stay single-valued: facts and their
-arithmetic, and the outcome machinery — placement moved to the model arm by the
-placement ruling (2026-08-19): the model authors its own tier / horizon /
-runway, its tier × horizon places the matrix card (frozen between deep passes),
-and the engine's rule-derived pair persists beside it as the baseline while the
-gate's tier-scaled hurdle, haircut, and H stay engine-shared, so the model
-never sets its own admission bar. Deterministic
-outcome labels on prior picks **and a shadow scorecard over every name the
-funnel turned away** feed a **propose-only, never auto-applied** calibration.
-Persistence separates six structures: matrix, opportunity graph,
-discovery-coverage ledger, price-tracked departed-pick archive, shadow ledger
-and picked-episode store.
+model-led hypothesis research (the edge: hypothesis cards scored *before any
+ticker*), stratified structured feeders (stratification IS the breadth
+mechanism), and a persisted opportunity-graph watchlist — with per-candidate
+validation under an archetype lens, a mandatory bear case, and a
+leading-metric hard gate. It runs as two jobs sharing one page (Discover /
+Audit) under **one `trade_opportunities` job identity**, every run record
+mode-labeled. Judgment fields carry in the same **two arms** as Portfolio;
+**admission is either-arm** (both gate vectors persisted), the evidence floor
+and forensic hard triggers binding absolutely on both arms; placement is
+**model-authored** (the placement ruling — the engine's derivations stay the
+baseline and the gate's shared legs, so the model never sets its own
+admission bar). Deterministic outcome labels on prior picks plus a shadow
+scorecard over every turned-away name feed a **propose-only, never
+auto-applied** calibration; persistence separates six structures.
 
 ## What remains
 
@@ -614,96 +533,54 @@ every stacked runtime confirmation at once.
   Settings section, Schwab OAuth with holdings and options ingestion, the
   deterministic holdings-snapshot diff, the Portfolio page, and the
   Portfolio-runs history.
-- **Portfolio Analysis** — the per-holding spine, the fund path, the thesis
-  ledger, the quick check, selective re-analysis, the pre-profit overlay,
-  outcome learning, the per-holding action call (tunnel vision — the
-  construction stage is removed), the metric-level 6g validator, Step-6a
-  semantic recall + per-holding summary embeddings, per-holding
-  checkpoint/resume, and the two-arm verdict.
+- **Portfolio Analysis** — the per-holding spine, the fund path (the CEF
+  closed-end leg included), the thesis ledger, the quick check, selective
+  re-analysis, the pre-profit overlay, outcome learning, the per-holding
+  action call (tunnel vision — the construction stage is removed), the
+  metric-level 6g validator, Step-6a semantic recall + per-holding summary
+  embeddings, per-holding checkpoint/resume, and the two-arm verdict.
 - **The calibration tier** — adapter options wiring, the target function, the
   grade bands, and the interpretation-prompt contract, each tuned against the
   first live run's persisted dataset.
-- **The pre-run correctness program** — the conformance walks and their ruling
-  rounds, the per-doc sweeps, the long-doc-line cleanup, the logic-flow
-  as-built walk, and the closing 2026-08-18 doc/code audit (21 findings, all
-  addressed — in-slot CIK, pinned sector-P/E dating, honest audit provenance,
-  logged fail-soft prior-state reads, the empty-rationale guard;
+- **The pre-run correctness program** — the conformance walks and ruling
+  rounds, the per-doc sweeps, the logic-flow as-built walk, and the closing
+  doc/code audit (21 findings, all addressed;
   `docs/verification/2026-08-18-portfolio-analysis-doc-code-audit.md`).
-- **The progress step-ownership contract** — request events are stamped with
-  their owning step at the progress seam's single choke point, and the tracker
-  attaches rows by the stamp (the bracket-inference and synthesized-step
-  fallbacks are retired; an unowned row renders unattributed, never as a
-  failed step). Every FMP suite row carries the shaped ok / empty / malformed
-  outcome with its cause on the row.
-- **The Stooq-removal slice** — Stooq deleted everywhere (user decision
-  2026-08-12; the record, with evidence and inventory, is
-  `docs/verification/2026-08-12-stooq-removal-decision.md`): FMP dated-EOD is
-  the only deep-price rung for the per-holding history and the outcome pass
-  alike, the market benchmark is `^GSPC` (episodes never persisted the old
-  `^spx`; the dead `^SPX` cache key is cleaned idempotently at store init),
-  data-health's fallback counter is retired — any deep-history failure now
-  trips attention — and the benchmark / sector / commodity identity table is
-  re-homed to `docs/data-sources.md §Financial Modeling Prep` as FMP symbols.
-- **The evidence-legs slice** — the four remaining dossier evidence legs in
-  one slice (reviewed to approval; two Codex rounds): the **FINRA
-  short-interest leg** (keyless discovery + the biweekly consolidated file,
-  semantically validated, fetched once per run at Step 5 and looked up per
-  stock as positioning evidence); the **implied-expectations range** (the
-  scenario multiples factored to one shared derivation and inverted at the
-  live price — absent on the current-multiple carry and the fund stopgap);
-  the **narrative-vs-reality read** (a cadence-honest pace pair against the
-  prior run's stored comparator with the operating-reality fallback on
-  absent estimates, its hype cap the soft Medium ceiling on the **engine
-  arm's conviction only** — firing on the ratio alone by ruling 2026-08-21,
-  the anchor exception joining with the research loop); and the
-  **same-underlying option overlay** (OCC-decode identity, covered-call /
-  protective-put / collar / other classification, per-leg delta via a
-  targeted per-strike chain fetch that never widens the activity signal's
-  bounded NTM query; a standalone option's delta is absence, never a
-  recorded gap — ruled 2026-08-21, the `data-sources.md` chains row
-  canonical). The CBOE evidence leg was found already satisfied by the
-  run-evidence slice's venue backdrop; the quick check's FINRA sweep leg
-  stays dormant (no short-interest series in the closed engine surface).
-- **The run-evidence slice** (`portfolio-v10`) — the Step-5 run-level context
-  loads with their consumers in one slice: FRED energy + IMF metals + FMP
-  gold commodity context into sector/industry-matched dossier evidence, CFTC
-  positioning into the commodity/macro fund read via a keyword contract
-  mapping, the sector-benchmark legs, the **CBOE venue-level put/call
-  backdrop**, the **technology-event pre-flag** (2σ × √-time on the input
-  delta), and the **hard-forensic producer** (item-classified 8-K Items
-  4.01/4.02; absent `items` reads `Unknown`, never `Clear`) with its consumer
-  seam — engine action-set narrowing to {sell all, trim, hold}, an engine-arm
-  conviction hard cap at Low, and audit + prompt evidence (the research
-  `forensic_event` channel — and with it the producer-less `Fraud` kind —
-  joins when the research loop lands). CBOE serves no machine-readable
-  current-day feed, so the adapter is a bounded scan of the JSON embedded in
-  the served page — quote-form-locked off the mandatory date key,
-  candidate-unanimous over first-match — whose gap-over-fabrication guarantee
-  is scoped to locally detectable drift by ruling 2026-08-21 (a sole
-  same-form impostor is accepted residual; the canonical statement is
-  `docs/data-sources.md §CBOE`).
-- **The Infrastructure slice** (`portfolio-v11`) — the completion block's
-  third slice, three legs, reviewed to approval (three Codex rounds): the
-  **metric-level 6g validator** (typed `what_changed_entries` rows resolved
-  against the engine-rendered bracketed-id input delta — an unresolvable
-  external attribution downgrades to self-correction with a logged reason, a
-  no-move or exact-duplicate row is dropped — waking outcome's standing-thesis
-  episode leg and self-correction counters); **Step-6a semantic retrieval +
-  per-holding summary embeddings** (`{run_id}:{SYMBOL}` rows under the
-  unchanged unique index, run-pruned, top-3 recall, fresh-vintage verdicts
-  only, the guard counting summary rows alone); and **per-holding
-  checkpoint/resume** (pinned header plus transactionally written per-holding
-  rows, the 48-hour window, `resume_eligibility` refusals, the `resume` run
-  flag, the `portfolio_resume_status` probe, and the tracker's Resume
-  affordance — the offered trail identified by its own pinned as-of, never
-  rebound to the run shown). Rulings 2026-08-21: checkpoints excluded from
-  the portability archive; the composite summary id, index unchanged; the
-  tracker-terminal-state-only resume surface; the fast-tier fallback
-  single-homed at `pipeline::effective_fast_model`. Accepted residue:
-  per-holding retrieval (option chains included) stays live on resume — the
-  pin covers the book and run-level context; a carried verdict outliving its
-  authoring run's retention loses its recall row; a resumed run's context-fit
-  diagnostics cover only the resumed holdings.
+- **The progress step-ownership contract** — request events stamped with
+  their owning step at the seam's single choke point, the tracker attaching
+  rows by the stamp; every FMP suite row carries its shaped
+  ok / empty / malformed outcome with the cause (`docs/run-tracking.md`).
+- **The Stooq-removal slice** — FMP dated-EOD is the suite's only deep-price
+  rung and `^GSPC` the market benchmark; the decision, evidence, and removal
+  inventory are `docs/verification/2026-08-12-stooq-removal-decision.md`, the
+  identity table at `docs/data-sources.md §Financial Modeling Prep`.
+- **The evidence-legs slice** — the four remaining dossier evidence legs:
+  the FINRA short-interest leg, the implied-expectations range, the
+  narrative-vs-reality read (its hype cap the engine arm's soft Medium
+  ceiling), and the same-underlying option overlay; each contract is
+  single-homed in the docs (`data-sources.md` §FINRA and the chains row,
+  `portfolio-analysis.md` §Starting parameters), and the quick check's
+  FINRA sweep leg stays dormant.
+- **The run-evidence slice** (`portfolio-v10`) — the Step-5 run-level
+  context loads with their consumers: commodity / metals / gold context into
+  dossier evidence, CFTC positioning into the fund read, the
+  sector-benchmark legs, the CBOE venue-level put/call backdrop
+  (`docs/data-sources.md §CBOE` is canonical), the technology-event
+  pre-flag, and the hard-forensic producer with its consumer seam (the
+  research `forensic_event` channel joins with the research loop).
+- **The Infrastructure slice** (`portfolio-v11`) — the metric-level 6g
+  validator, Step-6a semantic retrieval + per-holding summary embeddings,
+  and per-holding checkpoint/resume; the contracts, 2026-08-21 rulings, and
+  accepted residue are single-homed at `docs/portfolio-workflow.md` §Step 6a
+  / §Step 6g, `docs/portfolio-analysis.md` §Failure posture, and
+  `docs/storage.md §Local Vector Memory`.
+- **The fund-depth slice** — the flat-driver fund target form ruled the
+  settled design (closing conformance-walk R27; a scenario-differentiated
+  formula returns only on realized-outcome evidence), N-PORT still
+  deferred, and the CEF leg built as detection + the gap-honest
+  price-vs-NAV seam; the rulings, probe findings, and six review rounds are
+  `docs/verification/2026-08-21-fund-depth-rulings.md`, the contract
+  canonical at `portfolio-analysis.md §Asset eligibility`.
 
 ### Remaining, in order
 
@@ -712,14 +589,10 @@ every stacked runtime confirmation at once.
    conformance walk that gated the block's first slice ran 2026-08-15** —
    31 verified findings, zero code fixes, every diff ruled and the doc side
    fixed (`docs/verification/2026-08-15-tunnel-vision-conformance-walk.md`) —
-   so the block's slices plan against verified contracts. The block's first
-   three slices — **run evidence**, the **evidence legs**, and
-   **Infrastructure** — are built (§Built). Remaining:
-   - **Fund depth, behind its own design ruling** — the
-     scenario-differentiated priced-fund target formula (undesigned; the
-     shipped flat-driver v2-over-composite form is the settled stopgap,
-     ruled 2026-08-15), the CEF price-vs-NAV leg, and optionally N-PORT
-     look-through.
+   so the block's slices plan against verified contracts.
+   The block is **complete**: its four slices — **run evidence**, the
+   **evidence legs**, **Infrastructure**, and **fund depth** — are built
+   (§Built).
    Excluded by the same decision: only work gated on realized-outcome evidence
    (grade normalization, the calibration proposals, the derive-reads strata),
    which can come only from a run. The live research loop is no longer
@@ -746,67 +619,33 @@ every stacked runtime confirmation at once.
    shape 2026-08-18** (construction / lean / sizing watches removed, the
    prompt-fit watch re-homed to the per-holding prompts) and still needs
    research-loop and pre-profit-activation watches added under the 2026-08-20
-   bar widening; read `data-health` early, since several items resolve off
-   that surface alone. Attempts 1 and 2
-   both failed in the
-   construction stage that no longer exists (evidence in
-   `docs/verification/2026-08-10-big-run-attempt-1.md` and
-   `docs/verification/2026-08-13-big-run-attempt-2.md`); attempt 3 exercises
-   the v9 shape, and its first run is structurally full because it is a full run
-   (the pre-`v9` migration gate was removed by the 2026-08-16 ruling; pre-`v9`
-   verdicts otherwise carry like any other). What stays open behind the run
-   (digest compression, `NUM_PREDICT_*` calibration) is owned by the attempt
-   records' §Disposition, not this brief.
-4. **Trade Opportunities** — designed, not built, and waiting behind the
-   entire Portfolio job and its confirmation run. The design is settled and
-   the paid FMP shapes are live-verified, so implementation planning codes
-   against verified shapes. A doc-grounding pass
-   ran 2026-08-19: `logic-flow-docs/trade-opportunities-logic-flow.md` was
-   rewritten end-to-end against the workflow contracts (the Portfolio walk's
-   treatment — shared research-loop/distillation sections written once, exact
-   inputs/returns per model call, named endpoints throughout), three Codex
-   rounds to approval. Four contract rulings landed with it: the
-   disconfirming-fetch pass sits once per candidate after its Step-5d topics;
-   the Step-3b planning call proposes each route's topics, app-validated (the
-   suite's one model-proposed agenda); the engine conviction stand-in is
-   computed at Step 5h only and never enters the 5g prompt (its gate-distance
-   leg needs the horizon derived there — a causal loop otherwise); and a
-   per-candidate FMP `dividends` producer joins the endpoint surface
-   (zero-with-gap failure semantics, the gap on the stand-in's flag leg). A
-   second same-day pass landed the **placement ruling** (2026-08-19): tier,
-   horizon, and `business_runway` went two-arm — the model's authored
-   tier × horizon places the card, the engine's derivations stay the baseline
-   and the gate's shared legs — retiring the advisory-view mechanism, the
-   cheap-pass re-placement leg, and the provisional-collapse machinery
-   (collapses final at Step 6), swept through the logic-flow doc and the
-   canonical docs, five Codex rounds to approval. A **full-corpus
-   documentation audit** closed the grounding program (Codex, 2026-08-19;
-   28 findings — one refuted, several overstated, every finding verified
-   before acceptance; the record is
-   `docs/verification/2026-08-19-trade-opportunities-documentation-audit.md`):
-   seven rulings landed with its correction sweep, two Codex review rounds
-   to approval. Beyond the job identity above: the Step-5g status enum is
-   **origin-constrained** (a debut app-stamps `new`; a carry offers only
-   `still-valid` / `invalidated`); turn-away shadow episodes class by fixed
-   **hard-trigger → floor → gate-reject** precedence, the Step-5g digest
-   scoped to post-5g classes; the rotation's max-age backstop drains through
-   a **reserved overdue sub-slot** (structural liveness, warnings-first
-   otherwise); the archive row carries `admitted_by` alone (gate vectors on
-   the episode); the tier rule adopts Portfolio's missing-input stance; and
-   the target bands score on the **built Winkler interval scorer** — now
-   documented exactly at its `portfolio-analysis.md §Outcome learning`
-   single home — at the matured 12-month window only. The
-   remaining not-yet-drafted constants (screener floors, archetype weight
-   vectors, per-sector factor bands, the commodity-turn threshold, and the
-   like — joined by the audit's diversity-allocation mechanics and the
-   `illiquid` / event-exposure tier predicates) are marked inline in the
-   logic-flow doc for the implementation plan
-   to sweep. Five hard-trigger
-   acceptance cases are parked for this slice and have no other home: a carried
-   pick with a deep hard trigger archives with no shadow entry; a name arriving
-   identically through all three deep-pass routes; a cheap-pass hard signal
-   raises a warning only; a debut hard trigger becomes a shadow rejection; and a
-   soft trigger caps the stand-in while preserving conviction, with no forced
+   bar widening, plus the fund-depth slice's Schwab-CEF-typing watch (whether
+   a held CEF arrives `COLLECTIVE_INVESTMENT` or `EQUITY`); read
+   `data-health` early, since several items resolve off that surface alone. Attempts 1 and 2 failed in the
+   since-removed construction stage (their dated records live under
+   `docs/verification/`); attempt 3 exercises the v9 shape as a full run.
+   What stays open behind the run is owned by the attempt records'
+   §Disposition, not this brief.
+4. **Trade Opportunities** — designed, not built, waiting behind the entire
+   Portfolio job and its confirmation run. The design is settled against
+   live-verified paid FMP shapes and grounded end-to-end by the 2026-08-19
+   program — the rewritten
+   `logic-flow-docs/trade-opportunities-logic-flow.md`, the placement ruling
+   (tier / horizon / runway two-arm; the model's authored tier × horizon
+   places the card), and the full-corpus documentation audit with its seven
+   rulings — every contract single-homed in the TO docs and indexed; the
+   record is
+   `docs/verification/2026-08-19-trade-opportunities-documentation-audit.md`.
+   The not-yet-drafted constants (screener floors, archetype weight vectors,
+   per-sector factor bands, the commodity-turn threshold, the
+   diversity-allocation mechanics, the `illiquid` / event-exposure tier
+   predicates) are marked inline in the logic-flow doc for the
+   implementation plan to sweep. Five hard-trigger acceptance cases are
+   parked for this slice and have no other home: a carried pick with a deep
+   hard trigger archives with no shadow entry; a name arriving identically
+   through all three deep-pass routes; a cheap-pass hard signal raises a
+   warning only; a debut hard trigger becomes a shadow rejection; and a soft
+   trigger caps the stand-in while preserving conviction, with no forced
    archival.
 
 ### Owned by no slice
@@ -853,18 +692,13 @@ Recorded rather than absorbed, each needing a decision before it becomes work:
 - **`rate_prints.fetched_at`** — stamped with the run's `created_at` though the
   FRED fetch precedes the per-holding loop; consumed only by a last-resort
   fallback.
-- **A reliability rule for model sub-scores and conviction** — both arms record
-  them on the episode snapshot, but neither arm's are scored, because
-  sub-scores have no per-episode ground truth. Portfolio's scoreboard, the only
-  one built, scores the target bands (an interval scorer over each arm's
-  entry-vintage values) and the outlook-direction hit-rate; Trade Opportunities
-  is designed to the same target-band contract, unbuilt — the outlook-direction
-  read is Portfolio-only. Extending either to sub-scores and
-  conviction is a calibration-tier question neither job has settled. TO's
-  authored tier / horizon / runway reads ride the same recorded-unscored
-  treatment since the placement ruling (2026-08-19); a pooled
-  placement-divergence rate was declined 2026-08-21 — per-pick recording is
-  the read (stamped at `trade-opportunities.md` §Starting parameters).
+- **A reliability rule for model sub-scores and conviction** — recorded on
+  the episode snapshot but unscored (no per-episode ground truth exists);
+  extending the built target-band / outlook scoreboard to them is a
+  calibration-tier question neither job has settled. TO's authored placement
+  reads ride the same recorded-unscored treatment; a pooled
+  placement-divergence rate was declined 2026-08-21
+  (`trade-opportunities.md §Starting parameters`).
 
 ### Deferred by decision
 

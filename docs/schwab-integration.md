@@ -16,6 +16,7 @@ The latest snapshot from each path persists — the run's with the run, the stan
 Access uses Schwab's three-legged **OAuth 2.0 authorization-code** flow.
 The user authenticates in the system browser with their Schwab **brokerage** credentials (not developer-portal credentials) and selects which linked accounts to grant.
 The app captures the redirect on a short-lived **self-signed HTTPS loopback server at `https://127.0.0.1:8182`** — Schwab requires HTTPS and an exact callback match, and only the loopback host is permitted, so no hosted backend is needed.
+The server is an in-house one-shot rustls acceptor on the same stack outbound HTTP already uses, because no maintained minimal blocking-HTTPS crate exists that isn't pinned to an EOL stack.
 Because no certificate authority signs a `127.0.0.1` certificate, the browser shows a one-time self-signed-cert warning the user clicks through.
 
 ## Token lifecycle
