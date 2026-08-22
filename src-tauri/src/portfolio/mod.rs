@@ -727,6 +727,17 @@ pub struct RoleRiskVerdict {
     /// The deterministic structurally-path-dependent flag (leveraged / inverse and
     /// option-overlay vehicles).
     pub structural_flag: bool,
+    /// The closed-end structure marker (the CEF leg, ruled 2026-08-21) — detection
+    /// is the profile's `isFund` flag plus the closed-end description fragment;
+    /// `false` on rows persisted before the leg (`#[serde(default)]`).
+    #[serde(default)]
+    pub is_cef: bool,
+    /// Price vs NAV (market price ÷ NAV − 1; positive = premium), rendered only on
+    /// the closed-end form — `None` is the named gap (no NAV on the current data
+    /// surface), carried in `evidence_gaps` rather than fabricated
+    /// (`#[serde(default)]` on pre-leg rows).
+    #[serde(default)]
+    pub nav_premium: Option<f64>,
     /// The typed evidence gaps — this branch's confidence surface (never a fabricated
     /// High / Medium / Low conviction).
     pub evidence_gaps: Vec<String>,
@@ -2539,6 +2550,8 @@ mod tests {
             expense_drag: Some(0.0003),
             observable_risk: Some(0.06),
             structural_flag: false,
+            is_cef: false,
+            nav_premium: None,
             evidence_gaps: vec!["valuation: no on-plan duration/credit surface".into()],
             action: Action::Hold,
             action_rationale: String::new(),
@@ -2553,5 +2566,26 @@ mod tests {
         assert!(s.get("conviction").is_none());
         let round: VerdictDisposition = serde_json::from_value(s).unwrap();
         assert_eq!(round, v);
+    }
+
+    #[test]
+    fn pre_cef_role_risk_rows_deserialize_with_defaults() {
+        // Rows persisted before the CEF leg carry neither `is_cef` nor
+        // `nav_premium` — the serde defaults must read them (false / None),
+        // never an error, so old runs keep rendering.
+        let old = r#"{
+            "class_label": "bond fund",
+            "role_summary": "core fixed-income sleeve",
+            "exposure_tilt": [],
+            "expense_drag": null,
+            "observable_risk": null,
+            "structural_flag": false,
+            "evidence_gaps": [],
+            "action": "hold",
+            "what_changed": "new holding"
+        }"#;
+        let v: RoleRiskVerdict = serde_json::from_str(old).unwrap();
+        assert!(!v.is_cef);
+        assert_eq!(v.nav_premium, None);
     }
 }

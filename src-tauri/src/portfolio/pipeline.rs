@@ -553,6 +553,13 @@ pub fn analyze_holding(
                 let price_legs = engine::compute_metrics(&dossier.financials);
                 let fund_metrics = engine::ComputedMetrics {
                     expense_ratio: readout.expense_ratio,
+                    // The closed-end read joins the branch's computed surface
+                    // (populated only on the CEF form), so once a NAV is served
+                    // a premium move seeds its own input-delta row instead of
+                    // being invisible to continuity (Codex 2026-08-21 round 3,
+                    // finding 3). No ledger series reads it — the engine series
+                    // surface is closed.
+                    nav_premium: readout.nav_premium,
                     return_volatility: price_legs.return_volatility,
                     trailing_return: price_legs.trailing_return,
                     ..Default::default()
@@ -626,6 +633,8 @@ pub fn analyze_holding(
                     expense_drag: readout.expense_ratio,
                     observable_risk: readout.observable_risk,
                     structural_flag: readout.structural_flag,
+                    is_cef: readout.is_cef,
+                    nav_premium: readout.nav_premium,
                     evidence_gaps: readout.evidence_gaps.clone(),
                     action: Action::Hold,
                     action_rationale: String::new(),
@@ -645,7 +654,8 @@ pub fn analyze_holding(
                 rr.action_rationale = decision.rationale;
                 // The branch's computed surface persists as the audit's metrics — the
                 // same expense-ratio + price-derived legs the ledger evaluation above
-                // read, never the empty default (M3 of the 2026-08-18 audit).
+                // read (plus the CEF-only closed-end read), never the empty default
+                // (M3 of the 2026-08-18 audit).
                 let mut audit_record = audit(fund_metrics, None, Some(ledger_audit), None);
                 audit_record.what_changed_audit = what_changed_audit;
                 audit_record
@@ -1771,7 +1781,17 @@ fn priced_input_delta(
         }
     }
     if let Some(prior_metrics) = dossier.prior_metrics.as_ref() {
+        // The NAV-premium row carries signal only on the closed-end form
+        // (`docs/portfolio-analysis.md` §Asset eligibility) — an open-end ETF's
+        // transient premium flicker would otherwise seed a delta row every run.
+        let cef = dossier
+            .fund
+            .as_ref()
+            .is_some_and(|f| crate::portfolio::fund::is_closed_end(&f.fund));
         for c in engine::metric_delta(prior_metrics, &engine_output.metrics) {
+            if c.name == "NAV premium" && !cef {
+                continue;
+            }
             push_delta(
                 &mut entries,
                 format!("metric {}: {} -> {}", c.name, delta_val(c.old), delta_val(c.new)),
@@ -2116,9 +2136,10 @@ fn holding_header(d: &HoldingDossier) -> String {
         // ticker-token-only LEGAL name ("ASML Holding N.V.", "eBay Inc.") is
         // real identity from a canonical source, and holding it to the
         // description's stricter rule starved ticker-named issuers of any name
-        // at all (combined-range review). Funds have no profile call, so their
-        // identity rides the fund data's own name — the role-risk branch's only
-        // naming source.
+        // at all (combined-range review). A fund's profile read is
+        // structure-only (closed-end detection — no identity mapping), so its
+        // identity rides the fund data's own name — the role-risk branch's
+        // only naming source.
         d.company_name
             .as_deref()
             .or_else(|| d.fund.as_ref().and_then(|f| f.fund.name.as_deref()))
@@ -2165,6 +2186,14 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         opt(r.expense_ratio),
         opt(r.observable_risk),
     ));
+    // The closed-end read renders only where the vehicle makes it meaningful
+    // (`docs/portfolio-analysis.md` §Asset eligibility); its absence is a named
+    // gap already in the evidence-gap manifest, never a fabricated number.
+    if r.is_cef {
+        if let Some(prem) = r.nav_premium {
+            p.push_str(&nav_premium_line(prem));
+        }
+    }
     if !r.evidence_gaps.is_empty() {
         p.push_str(&format!("EVIDENCE GAPS: {}\n", r.evidence_gaps.join("; ")));
     }
@@ -2769,6 +2798,18 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
                 (1.0 - cov) * 100.0
             ));
         }
+        // The closed-end read on the priced branch (structurally reachable only
+        // once the surface serves a CEF weightings + NAV; gated so an open-end
+        // ETF's transient premium never renders as signal).
+        if crate::portfolio::fund::is_closed_end(&f.fund) {
+            match e.metrics.nav_premium {
+                Some(prem) => p.push_str(&nav_premium_line(prem)),
+                None => p.push_str(
+                    "PRICE VS NAV: (gap) — closed-end fund with no NAV on the \
+                     current data surface.\n",
+                ),
+            }
+        }
         p.push_str(&positioning_prompt_section(f));
     }
 
@@ -2984,6 +3025,28 @@ fn opt(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.3}")).unwrap_or_else(|| "(gap)".to_string())
 }
 
+/// The closed-end price-vs-NAV prompt line — one shared render so the
+/// interpretation, action, and priced-fund prompts state the read identically
+/// (`docs/portfolio-analysis.md` §Asset eligibility: signal on the closed-end
+/// form only; callers gate on the CEF marker). The label follows the RENDERED
+/// tenth-of-a-percent, so a value displaying as 0.0% reads "at par" — never
+/// "+0.0% premium" or "-0.0% discount" (Codex 2026-08-21 round 3, finding 2).
+fn nav_premium_line(premium: f64) -> String {
+    let rounded = (premium * 1000.0).round() / 1000.0;
+    let (value, word) = if rounded == 0.0 {
+        ("0.0%".to_string(), "at par")
+    } else {
+        (
+            format!("{:+.1}%", rounded * 100.0),
+            if rounded > 0.0 { "premium" } else { "discount" },
+        )
+    };
+    format!(
+        "PRICE VS NAV: {value} ({word}) — the closed-end read; a structural \
+         discount or premium, not a transient ETF spread.\n",
+    )
+}
+
 /// The system prompt for the **per-holding action call** — the profile's one
 /// entry point into the job (`docs/portfolio-analysis.md` §Portfolio action).
 /// Tunnel vision is stated as the contract: the decision weighs this holding
@@ -3154,6 +3217,13 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 opt(verdict.observable_risk),
                 if verdict.structural_flag { "yes" } else { "no" },
             ));
+            // The closed-end read, where present — its absence is a named gap in
+            // the evidence-gap list below, never a fabricated number.
+            if verdict.is_cef {
+                if let Some(prem) = verdict.nav_premium {
+                    p.push_str(&nav_premium_line(prem));
+                }
+            }
             if !verdict.evidence_gaps.is_empty() {
                 p.push_str(&format!(
                     "EVIDENCE GAPS: {}\n",
@@ -4639,6 +4709,8 @@ mod tests {
                 ("Financial Services".into(), 0.4),
             ],
             country_weights: vec![("United States".into(), 0.99)],
+            profile_is_fund: None,
+            profile_description: None,
             gaps: vec![],
         }
     }
@@ -4926,9 +4998,28 @@ mod tests {
         assert_eq!(audit.metrics.expense_ratio, Some(0.0003));
         assert!(audit.metrics.trailing_return.is_some(), "{:?}", audit.metrics);
         assert!(audit.metrics.return_volatility.is_some(), "{:?}", audit.metrics);
-        // The reduced surface only — no statement-derived stock legs.
+        // The reduced surface only — no statement-derived stock legs, and the
+        // closed-end read stays None off the CEF form.
         assert!(audit.metrics.pe_ratio.is_none());
         assert!(audit.metrics.revenue_growth.is_none());
+        assert_eq!(audit.metrics.nav_premium, None);
+
+        // The CEF variant threads the closed-end read into the audit metrics,
+        // so a premium move can seed its own input-delta row across runs
+        // (Codex 2026-08-21 round 3, finding 3).
+        let mut cef = bond_fund();
+        cef.profile_is_fund = Some(true);
+        cef.profile_description = Some("a closed-end fixed income fund".into());
+        let (verdict, audit) =
+            analyze_holding(&StubAnalyst, &fund_dossier(cef), &rates(), "2026-08-03").unwrap();
+        assert!(matches!(verdict.disposition, VerdictDisposition::RoleRiskOnly(_)));
+        let expected = 195.0 / 194.0 - 1.0;
+        assert!(
+            (audit.metrics.nav_premium.expect("CEF premium on the audit") - expected).abs()
+                < 1e-12,
+            "{:?}",
+            audit.metrics.nav_premium
+        );
     }
 
     #[test]
@@ -6453,6 +6544,8 @@ mod tests {
             exposure_tilt: vec![],
             expense_ratio: None,
             observable_risk: None,
+            is_cef: false,
+            nav_premium: None,
             evidence_gaps: vec![],
         };
         let role = role_risk_user_prompt(&RoleRiskInput {
@@ -6462,6 +6555,170 @@ mod tests {
             ledger_eval: None,
         });
         assert!(role.contains("never by itself a reason to exit"), "{role}");
+    }
+
+    #[test]
+    fn the_price_vs_nav_line_renders_only_on_the_closed_end_form() {
+        // The CEF read (ruled 2026-08-21): prompt evidence + card only, rendered
+        // where the vehicle makes it meaningful — a present premium on a CEF
+        // renders, an absent one stays a named gap, a non-CEF never renders even
+        // with a computed premium (an open-end ETF's transient spread).
+        let d = fund_dossier(us_equity_fund());
+        let readout = |is_cef: bool, nav_premium: Option<f64>| RoleRiskReadout {
+            class_label: "closed-end fund".into(),
+            structural_flag: false,
+            exposure_tilt: vec![],
+            expense_ratio: None,
+            observable_risk: None,
+            is_cef,
+            nav_premium,
+            evidence_gaps: vec!["price-vs-NAV unavailable — no NAV".into()],
+        };
+        let prompt = |r: &RoleRiskReadout| {
+            role_risk_user_prompt(&RoleRiskInput {
+                input_delta: &[],
+                dossier: &d,
+                readout: r,
+                ledger_eval: None,
+            })
+        };
+        let discount = prompt(&readout(true, Some(-0.072)));
+        assert!(discount.contains("PRICE VS NAV: -7.2% (discount)"), "{discount}");
+        let premium = prompt(&readout(true, Some(0.031)));
+        assert!(premium.contains("PRICE VS NAV: +3.1% (premium)"), "{premium}");
+        // Boundary: a value that renders as 0.0% reads "at par" — never a
+        // signed-zero "+0.0% premium" or "-0.0% discount" (Codex round 3).
+        let par = prompt(&readout(true, Some(0.0)));
+        assert!(par.contains("PRICE VS NAV: 0.0% (at par)"), "{par}");
+        let tiny = prompt(&readout(true, Some(-0.0004)));
+        assert!(tiny.contains("PRICE VS NAV: 0.0% (at par)"), "{tiny}");
+        // The exact negative half rounds away from zero (f64::round) — the Vue
+        // helper mirrors this deliberately, since bare Math.round would take
+        // -0.05% to "at par" instead (Codex round 4).
+        let half = prompt(&readout(true, Some(-0.0005)));
+        assert!(half.contains("PRICE VS NAV: -0.1% (discount)"), "{half}");
+        let gap = prompt(&readout(true, None));
+        assert!(!gap.contains("PRICE VS NAV:"), "{gap}");
+        assert!(gap.contains("price-vs-NAV unavailable"), "the named gap: {gap}");
+        let open_end = prompt(&readout(false, Some(0.002)));
+        assert!(!open_end.contains("PRICE VS NAV:"), "{open_end}");
+
+        // The action prompt's role-risk arm holds the same gate.
+        let mut rr = crate::portfolio::RoleRiskVerdict {
+            class_label: "closed-end fund".into(),
+            role_summary: "income sleeve".into(),
+            exposure_tilt: vec![],
+            expense_drag: None,
+            observable_risk: None,
+            structural_flag: false,
+            is_cef: true,
+            nav_premium: Some(-0.072),
+            evidence_gaps: vec![],
+            action: crate::portfolio::Action::Hold,
+            action_rationale: String::new(),
+            what_changed: "new holding".into(),
+        };
+        let action = action_user_prompt(&ActionInput {
+            dossier: &d,
+            subject: ActionSubject::RoleRisk { verdict: &rr },
+            engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
+            profile: &d.profile,
+        });
+        assert!(action.contains("PRICE VS NAV: -7.2% (discount)"), "{action}");
+        rr.nav_premium = None;
+        let action_gap = action_user_prompt(&ActionInput {
+            dossier: &d,
+            subject: ActionSubject::RoleRisk { verdict: &rr },
+            engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
+            profile: &d.profile,
+        });
+        assert!(!action_gap.contains("PRICE VS NAV:"), "{action_gap}");
+    }
+
+    #[test]
+    fn the_nav_premium_delta_row_is_gated_to_the_closed_end_form() {
+        // An open-end ETF's transient premium flicker must not seed a 6g input
+        // delta row every run; on the closed-end form the move IS the read.
+        let mut d = fund_dossier(us_equity_fund());
+        d.prior_verdict = Some(HoldingVerdict {
+            symbol: d.position.symbol.clone(),
+            asset_class: AssetClass::Etf,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
+            thesis_ledger: None,
+            analyzed_at: None,
+            action_source: Default::default(),
+            side_reversed: false,
+        });
+        d.prior_metrics = Some(engine::ComputedMetrics {
+            nav_premium: Some(0.001),
+            ..Default::default()
+        });
+        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
+            EngineVerdict::Analyzed(mut o) => {
+                o.metrics = engine::ComputedMetrics {
+                    nav_premium: Some(0.004),
+                    ..Default::default()
+                };
+                o
+            }
+            other => panic!("{other:?}"),
+        };
+        let entries =
+            priced_input_delta(&d, &engine_output, PositionChange::Unchanged, None, None, None, false);
+        assert!(
+            !entries.iter().any(|e| e.label.contains("NAV premium")),
+            "open-end: {entries:?}"
+        );
+        // The same move on a closed-end fund is a delta row.
+        if let Some(f) = d.fund.as_mut() {
+            f.fund.profile_is_fund = Some(true);
+            f.fund.profile_description = Some("a closed-end equity fund".into());
+        }
+        let entries =
+            priced_input_delta(&d, &engine_output, PositionChange::Unchanged, None, None, None, false);
+        assert!(
+            entries.iter().any(|e| e.label.contains("NAV premium")),
+            "closed-end: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn the_priced_fund_prompt_renders_the_closed_end_arm() {
+        // The priced branch's FUND CONTEXT arm — structurally unreachable for a
+        // real CEF today (pricing needs weightings the surface never serves one),
+        // but shipped code: open-end never renders, a closed-end premium renders
+        // the shared line, an absent NAV renders the explicit gap line.
+        let mut d = fund_dossier(us_equity_fund());
+        let mut engine_output = match engine::analyze(&strong_financials(), &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let prompt = |d: &HoldingDossier, e: &EngineOutput| {
+            interpretation_user_prompt(&InterpretationInput {
+                input_delta: &[],
+                dossier: d,
+                engine: e,
+                distilled: "",
+                ledger_eval: None,
+                pre_profit: None,
+                tech_pre_flag: None,
+                narrative: None,
+            })
+        };
+        engine_output.metrics.nav_premium = Some(0.002);
+        let open_end = prompt(&d, &engine_output);
+        assert!(!open_end.contains("PRICE VS NAV"), "{open_end}");
+        if let Some(f) = d.fund.as_mut() {
+            f.fund.profile_is_fund = Some(true);
+            f.fund.profile_description = Some("a closed-end equity fund".into());
+        }
+        engine_output.metrics.nav_premium = Some(-0.072);
+        let cef = prompt(&d, &engine_output);
+        assert!(cef.contains("PRICE VS NAV: -7.2% (discount)"), "{cef}");
+        engine_output.metrics.nav_premium = None;
+        let gap = prompt(&d, &engine_output);
+        assert!(gap.contains("PRICE VS NAV: (gap)"), "{gap}");
     }
 
     #[test]
@@ -6559,6 +6816,8 @@ mod tests {
             expense_ratio: Some(0.4),
             observable_risk: None,
             structural_flag: false,
+            is_cef: false,
+            nav_premium: None,
             evidence_gaps: vec![],
         };
         let role_risk = role_risk_request(
@@ -7652,10 +7911,11 @@ mod tests {
         assert!(h.contains("name unavailable"), "{h}");
     }
 
-    /// The fund half of Finding 4's fallback: funds get no /profile call, so
-    /// `company_name` is structurally `None` on the role-risk branch — the
-    /// fetched fund data's own name is that branch's only naming source, and a
-    /// blank Schwab description must reach it rather than "name unavailable".
+    /// The fund half of Finding 4's fallback: a fund's profile read is
+    /// structure-only (no identity mapping), so `company_name` is structurally
+    /// `None` on the role-risk branch — the fetched fund data's own name is
+    /// that branch's only naming source, and a blank Schwab description must
+    /// reach it rather than "name unavailable".
     #[test]
     fn the_holding_header_falls_back_to_the_fund_name_for_funds() {
         let mut d = dossier(AssetClass::Etf, strong_financials());

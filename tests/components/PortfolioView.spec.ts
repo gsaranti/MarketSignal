@@ -429,6 +429,8 @@ describe("PortfolioView setup tile and thesis monitor", () => {
             expense_drag: null,
             observable_risk: null,
             structural_flag: false,
+            is_cef: false,
+            nav_premium: null,
             evidence_gaps: [],
             action: "hold",
             what_changed: "new holding",
@@ -641,6 +643,8 @@ describe("PortfolioView verdict cards", () => {
             expense_drag: 0.0003,
             observable_risk: 0.06,
             structural_flag: false,
+            is_cef: false,
+            nav_premium: null,
             evidence_gaps: ["no on-plan duration/credit surface"],
             action: "hold",
             what_changed: "new holding",
@@ -662,6 +666,70 @@ describe("PortfolioView verdict cards", () => {
     expect(wrapper.text()).not.toContain("12-mo target");
     // The key-figure strip counts the branch in its own tile.
     expect(wrapper.text()).toContain("Role/risk");
+  });
+
+  test("the closed-end price-vs-NAV row renders only when the read exists", () => {
+    // The CEF card line (ruled 2026-08-21): a present read renders signed with
+    // its premium/discount word, a rendered zero reads "at par" (rounding is
+    // half-away-from-zero to match the backend prompt line), and the row is
+    // absent on the gap case and on any non-CEF fund.
+    const cefRun = (nav_premium: number | null, is_cef = true): PortfolioRun => ({
+      ...run,
+      holdings: {
+        positions: [
+          position("PDI", {
+            asset_class: "etf",
+            cost_basis: 9_000,
+            market_value: 10_000,
+          }),
+        ],
+        cash: 0,
+        account_total: 10_000,
+      },
+      verdicts: [
+        verdict(
+          "PDI",
+          {
+            status: "role-risk-only",
+            class_label: "closed-end fund",
+            role_summary: "Income sleeve.",
+            exposure_tilt: [],
+            expense_drag: null,
+            observable_risk: null,
+            structural_flag: false,
+            is_cef,
+            nav_premium,
+            evidence_gaps: [],
+            action: "hold",
+            what_changed: "new holding",
+          },
+          { asset_class: "etf" }
+        ),
+      ],
+      roll_up: { ...run.roll_up, graded_count: 0, role_risk_only_count: 1 },
+    });
+
+    let wrapper = mountView({ run: cefRun(-0.072) });
+    expect(wrapper.text()).toContain("Price vs NAV");
+    expect(wrapper.text()).toContain("-7.2%");
+    expect(wrapper.text()).toContain("discount");
+    wrapper = mountView({ run: cefRun(0.031) });
+    expect(wrapper.text()).toContain("+3.1%");
+    expect(wrapper.text()).toContain("premium");
+    // The exact negative half rounds away from zero — bare Math.round would
+    // read "at par" here and split from the backend's label (Codex round 5).
+    wrapper = mountView({ run: cefRun(-0.0005) });
+    expect(wrapper.text()).toContain("-0.1%");
+    expect(wrapper.text()).toContain("discount");
+    // A value rendering as 0.0% reads at par, never a signed zero.
+    wrapper = mountView({ run: cefRun(-0.0004) });
+    expect(wrapper.text()).toContain("0.0%");
+    expect(wrapper.text()).toContain("at par");
+    // The gap case renders no row at all, and a non-CEF never renders one.
+    wrapper = mountView({ run: cefRun(null) });
+    expect(wrapper.text()).not.toContain("Price vs NAV");
+    wrapper = mountView({ run: cefRun(0.002, false) });
+    expect(wrapper.text()).not.toContain("Price vs NAV");
   });
 
   test("the header position block carries price, avg cost, and cost basis beside the gain", () => {
@@ -1320,6 +1388,8 @@ describe("PortfolioView selective re-analysis", () => {
             expense_drag: null,
             observable_risk: null,
             structural_flag: false,
+            is_cef: false,
+            nav_premium: null,
             evidence_gaps: [],
             action: "hold",
             what_changed: "carried",

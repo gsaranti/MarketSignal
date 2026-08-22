@@ -660,7 +660,7 @@ pub struct EngineOutput {
     /// (`docs/portfolio-analysis.md` §The quick check) — persisted on the audit.
     pub quick_basis: Option<QuickCheckBasis>,
     /// The implied-expectations range ([`ImpliedExpectations`]) — computed on
-    /// the stock path; `None` on the fund path (its flat-driver stopgap prices
+    /// the stock path; `None` on the fund path (its settled flat driver prices
     /// no driver trajectory to invert), the current-multiple carry, and
     /// pre-field runs (`#[serde(default)]`).
     #[serde(default)]

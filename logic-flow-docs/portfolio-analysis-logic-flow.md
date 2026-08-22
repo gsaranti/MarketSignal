@@ -499,6 +499,10 @@ Once the stock guard clears — and for every fund — the remaining legs are pu
 - **Fund data retrieved from FMP**
   - `etf/info`.
     - Expense ratio, AUM, NAV, and asset class (the mandate label — one field, not two).
+    - Serves closed-end funds an empty body (probe 2026-08-21) — a CEF gets none of these fields.
+  - `profile` (one per fund).
+    - The `isFund` flag and the description text — the closed-end detection's two conjunctive legs.
+    - A failed read records the "closed-end detection cannot run" gap; detection then honestly reads not-a-CEF.
   - Sector and country weights.
   - Sector P/E snapshots, current and historical.
 
@@ -525,7 +529,7 @@ A fund’s route — read from the `etf/info` and weights gathered above — is 
   - Leveraged or inverse fund → role-risk-only path.
   - Option-overlay fund → structural path-dependence flag; other priceability rules decide the route.
   - Mutual fund without usable weights → role-risk-only path.
-  - Closed-end fund → the price-versus-NAV leg is designed; as-built it routes as a generic fund.
+  - Closed-end fund (built) → a structure marker orthogonal to the class, detected from the profile's `isFund` flag plus a closed-end description fragment (both required — never guessed). A bond CEF still routes bond; on today's empty `etf/info` surface a CEF resolves no class and takes the role-risk path labeled "closed-end fund", never `insufficient-evidence`.
 
 #### Semantic recall (built)
 
@@ -792,12 +796,12 @@ The alternative branch to the stock spine above; the fund engine makes the final
   - **Expense ratio** — a decimal ratio; rendered to the interpretation prompt (no return figure is expense-adjusted deterministically).
   - **US share** — the fund's US country-weight share; rendered to the prompt.
   - **Composite coverage** — the covered valuation weight from above; rendered to the prompt beside the valuation read.
-  - **NAV premium / discount** — `spot ÷ NAV − 1`, only when NAV > 0 (positive is a premium). Computed but currently consumed by no prompt, score, or rule (it lands with the designed CEF price-vs-NAV leg).
+  - **NAV premium / discount** — `market price ÷ NAV − 1`, only when both are positive (positive result is a premium; the NAV-fallback spot never substitutes for the price — that would fabricate an exact 0%). Consumed on the closed-end form only: a prompt line and a card line, never a score or rule; a CEF missing either usable leg — a positive market quote or a positive NAV — records the named price-vs-NAV gap, its text naming which leg is missing. Its metric-delta row is likewise CEF-gated, so an open-end ETF's transient premium flicker never seeds an input-delta row.
   - **Exposure tilt** — the sector and country weights. On the priced path only the US share above reaches the prompt; a top-five tilt (sector weights, else country when sector is absent) is rendered only on the role-risk path. The house-view comparison happens at the interpretation call.
 
-- **Fund scenario target** (flat-driver stopgap)
+- **Fund scenario target** (settled flat-driver form)
   - Equation: driver = `spot × composite earnings yield`, held **flat across bear / base / bull**; scenario spread comes only from the multiple axis (and, on the carry path, the volatility-scaled dispersion floor), not the driver.
-  - Open design item: a scenario-differentiated priced-fund target formula is not yet designed; it must be settled before the fund-depth slice is implemented.
+  - The flat-driver form is the settled design, not a stopgap (ruled 2026-08-21, closing the former open item): a scenario-differentiated priced-fund formula returns only on realized-outcome evidence ([portfolio-analysis.md §Starting parameters](../docs/portfolio-analysis.md) is canonical).
 
 - **Fund risk tier** (priced fund)
   - High — annualized volatility > 40%, or max drawdown > 50%. (The function also flags leveraged/inverse structure, but those funds route to role-risk and never reach the priced tier.)
@@ -812,6 +816,7 @@ The alternative branch to the stock spine above; the fund engine makes the final
   - Expense ratio.
   - Observable risk — annualized realized volatility (the only numeric risk; no tier).
   - Structural flag, and the evidence-gap manifest (the classification’s own reason appended).
+  - On a closed-end fund: the price-vs-NAV read where both a usable market quote and NAV exist, else its named gap in the manifest (the text names the missing leg); the closed-end marker rides the class label.
 
 #### Continuity and ledger checks
 
@@ -899,11 +904,11 @@ The inline gates referenced above, gathered — with each branch's requirements 
     - The **scenario price targets** — bear / base / bull, one-month and twelve-month, each with its exposed **methodology** — plus their **provenance** (anchor form, driver rung, flat / clamp / dispersion flags), or a `no-admissible-driver` abstention.
     - The **risk tier**, and the **hurdle read**: state (clears / fails / indeterminate), rate, the twelve-month scenario **total returns** it tested, and the new-money admission flag.
     - For a pre-profit stock, the complete **pre-profit overlay** (statement inputs, financing / execution states, and the rule consequences binding the arm).
-    - For a fund, the **fund grade** and **fund risk tier** (priced); or, for a role-risk-only fund, the engine-computed **role-risk readout** — class label, exposure tilt, expense ratio, numeric observable risk (annualized volatility), structural flag, and evidence gaps (the model authors the role prose on top).
+    - For a fund, the **fund grade** and **fund risk tier** (priced); or, for a role-risk-only fund, the engine-computed **role-risk readout** — class label, exposure tilt, expense ratio, numeric observable risk (annualized volatility), structural flag, the closed-end marker with its price-vs-NAV read (or that read's named gap), and evidence gaps (the model authors the role prose on top).
     - Of these, the two-arm **engine arm** — the fields **carried in both arms** (authored deterministically here and by the model at 6f) — is just the **sub-scores / letter** and the **scenario targets** (plus the outlook / conviction / action stand-ins assembled later); of those, only the **targets and outlook** are scored against realized outcomes today — and only the target bands additionally get an engine-vs-model head-to-head — while sub-scores, conviction, and action are carried but unscored. The risk tier, hurdle read, and overlay are shared deterministic evidence, and a **role-risk-only** fund is a separate, non-two-arm branch.
   - **Supporting reads emitted as 6f evidence** (none changes the letter):
     - The **computed metrics** — net / gross margin, revenue growth, debt-to-equity, volatility, trailing return, P/E, P/S, P/B.
-    - **Momentum / market setup**; for a priced fund, the **expense ratio**, **US share**, and **composite coverage** reach the prompt (the computed NAV premium and the full exposure tilt do not).
+    - **Momentum / market setup**; for a priced fund, the **expense ratio**, **US share**, and **composite coverage** reach the prompt (the full exposure tilt does not; the computed NAV premium reaches it only on the closed-end form — the premium line, or its explicit gap line).
     - The **ledger evaluation** — the prior ledger's conditions' tripped / fired state.
     - The **input delta** — position change, house-view age, and prior-run values carried for comparison.
     - The **hard forensic state** (the filings sweep, with its engine-matched rule when tripped) and a **fired technology-event pre-flag**.
@@ -1553,6 +1558,7 @@ Display is a **pure read**: the frontend invokes read-only commands that return 
 - **Fund data refreshed**
   - `etf/info` plus **both** the sector and country weight sets — fetched unconditionally for every fund (bond and commodity funds included).
   - The equity / condition gating is evaluation-side, not fetch-side.
+  - The `profile` read is full-pass only — the sweep never re-runs closed-end detection.
 
 - **Calculations**
   - Evaluate every machine-checkable falsifier and trigger — **quantitative conditions only** (qualitative falsifiers are research-checkable, so they stay a full pass's job).

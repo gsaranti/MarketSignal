@@ -523,6 +523,12 @@ export interface RoleRiskVerdict {
   expense_drag: number | null;
   observable_risk: number | null;
   structural_flag: boolean;
+  // The closed-end structure marker (the CEF leg) — false on rows persisted
+  // before the leg (serde default).
+  is_cef: boolean;
+  // Price vs NAV (market price ÷ NAV − 1; positive = premium), rendered only on
+  // the closed-end form; null is the named gap, carried in evidence_gaps.
+  nav_premium: number | null;
   evidence_gaps: string[];
   // Authored by the dedicated action call from the branch's own attributes plus
   // the profile — the full ladder open; the engine set stays the reduced

@@ -2972,6 +2972,8 @@ mod tests {
                     ("Financial Services".into(), 0.4),
                 ],
                 country_weights: vec![("United States".into(), 0.99)],
+                profile_is_fund: None,
+                profile_description: None,
                 gaps: vec![],
             }
         }
@@ -5488,6 +5490,8 @@ mod tests {
                     expense_drag: None,
                     observable_risk: None,
                     structural_flag: false,
+                    is_cef: false,
+                    nav_premium: None,
                     evidence_gaps: Vec::new(),
                     action: crate::portfolio::Action::Add,
                     action_rationale: String::new(),

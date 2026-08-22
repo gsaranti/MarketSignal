@@ -300,7 +300,10 @@ impl QuickCheckDataSource for LiveQuickCheckData {
     }
 
     fn fund_data(&self, symbol: &str) -> FundData {
-        self.fmp.fetch_fund_data(symbol)
+        // The sweep's variant: no `profile` leg — the quick check never re-runs
+        // closed-end detection (`docs/data-sources.md` §Portfolio Analysis —
+        // endpoint surface: the profile row is full-pass only).
+        self.fmp.fetch_fund_refresh_data(symbol)
     }
 
     fn rates(&self) -> Result<(DatedValue, DatedValue)> {
@@ -2430,6 +2433,8 @@ mod tests {
                     expense_drag: Some(0.001),
                     observable_risk: None,
                     structural_flag: false,
+                    is_cef: false,
+                    nav_premium: None,
                     evidence_gaps: vec![],
                     action: crate::portfolio::Action::Hold,
                     action_rationale: String::new(),
@@ -2463,6 +2468,8 @@ mod tests {
             nav: None,
             sector_weights: vec![("Technology".into(), 0.45)], // +15 pts
             country_weights: vec![("United States".into(), 0.60)], // crossed below 70%
+            profile_is_fund: None,
+            profile_description: None,
             gaps: vec![],
         };
         let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
@@ -2503,6 +2510,8 @@ mod tests {
                     expense_drag: Some(0.001),
                     observable_risk: None,
                     structural_flag: false,
+                    is_cef: false,
+                    nav_premium: None,
                     evidence_gaps: vec![],
                     action: crate::portfolio::Action::Hold,
                     action_rationale: String::new(),
@@ -2549,6 +2558,8 @@ mod tests {
             nav: None,
             sector_weights: vec![],
             country_weights: vec![],
+            profile_is_fund: None,
+            profile_description: None,
             gaps: vec!["FMP weightings unavailable (transport)".into()],
         };
         let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
@@ -2591,6 +2602,8 @@ mod tests {
             nav: None,
             sector_weights: vec![],
             country_weights: vec![],
+            profile_is_fund: None,
+            profile_description: None,
             gaps: vec![
                 format!("{} were empty", crate::fmp::FUND_SECTOR_WEIGHTS_GAP_PREFIX),
                 format!("{} were empty", crate::fmp::FUND_COUNTRY_WEIGHTS_GAP_PREFIX),
@@ -2635,6 +2648,8 @@ mod tests {
             nav: None,
             sector_weights: vec![],
             country_weights: vec![],
+            profile_is_fund: None,
+            profile_description: None,
             gaps: vec![
                 format!("{} were empty", crate::fmp::FUND_SECTOR_WEIGHTS_GAP_PREFIX),
                 format!("{} were empty", crate::fmp::FUND_COUNTRY_WEIGHTS_GAP_PREFIX),
@@ -2682,6 +2697,8 @@ mod tests {
             nav: None,
             sector_weights: vec![("Technology".into(), 0.30)],
             country_weights: vec![("United States".into(), 0.75)],
+            profile_is_fund: None,
+            profile_description: None,
             gaps: vec![],
         };
         let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
@@ -2729,6 +2746,8 @@ mod tests {
             nav: None,
             sector_weights: vec![("Technology".into(), 0.30)],
             country_weights: vec![("United States".into(), 0.75)],
+            profile_is_fund: None,
+            profile_description: None,
             gaps: vec![],
         };
         let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
@@ -2783,6 +2802,8 @@ mod tests {
             nav: None,
             sector_weights: vec![("Technology".into(), 0.30)],
             country_weights: vec![("United States".into(), 0.75)],
+            profile_is_fund: None,
+            profile_description: None,
             gaps: vec![],
         };
         let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
@@ -2874,6 +2895,8 @@ mod tests {
             nav: None,
             sector_weights: vec![("Technology".into(), 0.30)],
             country_weights: vec![("United States".into(), 0.75)],
+            profile_is_fund: None,
+            profile_description: None,
             gaps: vec![],
         };
         let s = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();

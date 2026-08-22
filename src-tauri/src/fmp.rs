@@ -2377,14 +2377,16 @@ mod tests {
             Canned::Reply { status: 200, headers: vec![], body: r#"{"unexpected":"shape"}"# },
             // 2) fetch_balance_sheet: a parsed row with no usable lines.
             Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
-            // 3-5) fetch_fund_data: fieldless info, drifted sectors, empty countries.
+            // 3-6) fetch_fund_data: fieldless info, drifted profile, drifted
+            // sectors, empty countries.
             Canned::Reply { status: 200, headers: vec![], body: "{}" },
+            Canned::Reply { status: 200, headers: vec![], body: "5" },
             Canned::Reply { status: 200, headers: vec![], body: r#"{"x":1}"# },
             Canned::Reply { status: 200, headers: vec![], body: "[]" },
-            // 6-7) fetch_quote_and_eod: both drifted.
+            // 7-8) fetch_quote_and_eod: both drifted.
             Canned::Reply { status: 200, headers: vec![], body: "{}" },
             Canned::Reply { status: 200, headers: vec![], body: r#"{"y":2}"# },
-            // 8) fetch_sector_pe_snapshot: drifted, return contract unchanged.
+            // 9) fetch_sector_pe_snapshot: drifted, return contract unchanged.
             Canned::Reply { status: 200, headers: vec![], body: r#"{"z":3}"# },
         ]);
         let source = test_source(&server.base_url).with_context(ctx);
@@ -2400,6 +2402,17 @@ mod tests {
         let fund = source.fetch_fund_data("SPY");
         assert!(
             fund.gaps.iter().any(|g| g.contains("were malformed")),
+            "{:?}",
+            fund.gaps
+        );
+        // The drifted profile body must land its detection gap on the record
+        // itself, not only the tracker row — `suite_get_shaped` folds malformed
+        // into Ok, so the shaper pushes it (Codex 2026-08-21 round 3).
+        assert!(
+            fund.gaps
+                .iter()
+                .any(|g| g.starts_with(FUND_PROFILE_GAP_PREFIX)
+                    && g.contains("closed-end detection cannot run")),
             "{:?}",
             fund.gaps
         );
@@ -2434,6 +2447,7 @@ mod tests {
         );
         expect_status("company-balance", "empty");
         expect_status("fund-info", "empty");
+        expect_status("fund-profile", "malformed");
         let sectors = expect_status("fund-sectors", "malformed");
         assert!(sectors.2.is_some(), "{sectors:?}");
         expect_status("fund-countries", "empty");
@@ -2475,7 +2489,9 @@ mod tests {
             Canned::Reply { status: 200, headers: vec![], body: "[]" },
             // 6) quick-quote: served empty.
             Canned::Reply { status: 200, headers: vec![], body: "[]" },
-            // 7-9) fund: info served empty; sectors unreadable; countries readable.
+            // 7-10) fund: info + profile served empty; sectors unreadable;
+            // countries readable.
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
             Canned::Reply { status: 200, headers: vec![], body: "[]" },
             Canned::Reply { status: 200, headers: vec![], body: "[{}]" },
             Canned::Reply {
@@ -2538,6 +2554,7 @@ mod tests {
                 ("company-eod", "empty"),
                 ("quick-quote", "empty"),
                 ("fund-info", "empty"),
+                ("fund-profile", "empty"),
                 ("fund-sectors", "malformed"),
                 ("fund-countries", "ok"),
             ],
@@ -4600,6 +4617,58 @@ mod tests {
             &[("page", "0"), ("limit", "5")],
         );
     }
+
+    /// CEF-detection probe for the fund-depth slice: what do `/profile` and
+    /// `/etf/info` return for a closed-end fund? Decides the detection signal —
+    /// the profile's `isEtf` / `isFund` flags, the `etf/info` surface, or name
+    /// fragments — and whether `etf/info` serves CEFs at all. Three known CEFs
+    /// (PDI bond CEF, GAB / BST equity CEFs) plus SPY as the open-end control.
+    /// Same conventions as `fmp_freetier_probe`. Hits the live API (8 one-shot
+    /// calls); run once:
+    ///   source ~/.config/market-signal/keys.env && cargo test --manifest-path \
+    ///     src-tauri/Cargo.toml fmp_cef_probe -- --ignored --nocapture
+    #[test]
+    #[ignore = "hits the live FMP API; set FMP_API_KEY. Probes CEF profile/etf-info shapes."]
+    fn fmp_cef_probe() {
+        let key = crate::config::AppConfig::from_env()
+            .fmp_key()
+            .expect("FMP_API_KEY set");
+        let http = reqwest::blocking::Client::builder()
+            .timeout(FMP_TIMEOUT)
+            .build()
+            .expect("http client");
+
+        let probe = |label: &str, url: &str, extra: &[(&str, &str)]| {
+            let mut q: Vec<(&str, &str)> = vec![("apikey", key.as_str())];
+            q.extend_from_slice(extra);
+            match http.get(url).query(&q).send() {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().unwrap_or_default();
+                    let mut shown: String = body.chars().take(1500).collect();
+                    if body.chars().count() > 1500 {
+                        shown.push_str(" …(truncated)");
+                    }
+                    eprintln!("\n=== {label} [{status}] ===\n{shown}");
+                }
+                Err(e) => eprintln!("\n=== {label} [transport error] ===\n{e}"),
+            }
+        };
+
+        let base = "https://financialmodelingprep.com/stable";
+        for symbol in ["PDI", "GAB", "BST", "SPY"] {
+            probe(
+                &format!("profile {symbol}"),
+                &format!("{base}{FMP_PROFILE_PATH}"),
+                &[("symbol", symbol)],
+            );
+            probe(
+                &format!("etf/info {symbol}"),
+                &format!("{base}{FMP_ETF_INFO_PATH}"),
+                &[("symbol", symbol)],
+            );
+        }
+    }
 }
 
 // ---- Local-suite per-holding surface (`docs/data-sources.md §Portfolio Analysis
@@ -4659,6 +4728,9 @@ pub const DIVIDENDS_GAP_PREFIX: &str = "FMP dividends unavailable";
 pub const FUND_SECTOR_WEIGHTS_GAP_PREFIX: &str = "FMP sector weightings";
 pub const FUND_COUNTRY_WEIGHTS_GAP_PREFIX: &str = "FMP country weightings";
 
+/// The fund-structure profile gap's stable prefix
+/// ([`FmpDataSource::fetch_fund_data`] — the closed-end detection's source leg).
+pub const FUND_PROFILE_GAP_PREFIX: &str = "FMP profile (fund structure)";
 /// The `etf/info` gap's stable prefix ([`FmpDataSource::fetch_fund_data`]): the
 /// quick check's coarse mandate comparison runs only when this leg is healthy —
 /// an unreadable mandate could fake an asset-class transition.
@@ -5427,10 +5499,29 @@ impl FmpDataSource {
         }
     }
 
-    /// The per-fund metadata surface: `etf/info` plus the sector / country
+    /// The full pass's per-fund metadata surface: `etf/info`, the one-per-fund
+    /// `profile` read the closed-end detection consumes, and the sector / country
     /// weightings (`docs/portfolio-analysis.md` §Asset eligibility). Each endpoint
     /// fail-softs to a tagged gap on the returned record.
     pub fn fetch_fund_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
+        self.fetch_fund_data_inner(symbol, true)
+    }
+
+    /// The quick check's fund refresh: the same surface **without the `profile`
+    /// leg** — the sweep never re-runs closed-end detection, so fetching it would
+    /// spend one unconsumed request per fund per sweep and, on failure, push a
+    /// detection gap into a sweep that runs no detection
+    /// (`docs/data-sources.md` §Portfolio Analysis — endpoint surface: the
+    /// profile row is full-pass only).
+    pub fn fetch_fund_refresh_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
+        self.fetch_fund_data_inner(symbol, false)
+    }
+
+    fn fetch_fund_data_inner(
+        &self,
+        symbol: &str,
+        with_profile: bool,
+    ) -> crate::portfolio::fund::FundData {
         let mut fund = crate::portfolio::fund::FundData {
             symbol: symbol.to_string(),
             ..Default::default()
@@ -5466,6 +5557,89 @@ impl FmpDataSource {
         ) {
             fund.gaps
                 .push(format!("{FUND_INFO_GAP_PREFIX} unavailable ({})", reason.as_str()));
+        }
+        // The one-per-fund `/profile` read the closed-end detection consumes
+        // (`isFund` + the description's closed-end fragment — the CEF leg, ruled
+        // 2026-08-21). CEFs are exactly where `etf/info` serves `[]`
+        // (probe-verified 2026-08-21), so the structure signal must come from the
+        // profile; a failed read records the gap and detection honestly reads
+        // not-a-CEF rather than guessing. Full pass only — the sweep's variant
+        // skips this leg.
+        if with_profile {
+            if let Err(reason) = self.suite_get_shaped(
+                "fund-profile",
+                symbol,
+                "Fund structure profile",
+                FMP_PROFILE_PATH,
+                &[("symbol", symbol)],
+                |value| {
+                    // Every answer that leaves detection unable to run says so
+                    // on the record (Codex rounds 3–4): the gaps are pushed
+                    // here, not on the outer Err arm, because `suite_get_shaped`
+                    // folds served bodies — malformed included — into
+                    // `Ok(shaped.value)` (only transport / HTTP-level gaps
+                    // reach Err). An empty array is FMP's honest "no profile
+                    // for this symbol" — still recorded, since on the fund path
+                    // this is the one read closed-end detection keys on.
+                    if value.as_array().is_some_and(|a| a.is_empty()) {
+                        fund.gaps.push(format!(
+                            "{FUND_PROFILE_GAP_PREFIX} was empty — closed-end \
+                             detection cannot run"
+                        ));
+                        return Shaped::empty(());
+                    }
+                    let Some(obj) = value
+                        .as_array()
+                        .and_then(|a| a.first())
+                        .or(Some(value))
+                        .filter(|o| o.is_object())
+                    else {
+                        fund.gaps.push(format!(
+                            "{FUND_PROFILE_GAP_PREFIX} was malformed — closed-end \
+                             detection cannot run"
+                        ));
+                        return Shaped::malformed(())
+                            .with_detail("FMP profile body unreadable (drifted response shape)");
+                    };
+                    // Every real profile carries the boolean `isFund` (probe
+                    // 2026-08-21; `references/fmp-api.md`), so a served object
+                    // without a readable flag is drift on the one field the
+                    // detection keys on — never an ok-on-parse.
+                    let Some(is_fund) = obj.get("isFund").and_then(Value::as_bool) else {
+                        fund.gaps.push(format!(
+                            "{FUND_PROFILE_GAP_PREFIX} was malformed — closed-end \
+                             detection cannot run"
+                        ));
+                        return Shaped::malformed(())
+                            .with_detail("profile served without a readable isFund flag");
+                    };
+                    fund.profile_is_fund = Some(is_fund);
+                    fund.profile_description = obj
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from);
+                    // A fund-flagged profile with no description leaves the
+                    // detection conjunction unanswerable — recorded, never
+                    // guessed. A definitive `isFund: false` is the one silent
+                    // answer: not a fund structure, nothing to detect.
+                    if is_fund && fund.profile_description.is_none() {
+                        fund.gaps.push(format!(
+                            "{FUND_PROFILE_GAP_PREFIX} carried no description — \
+                             closed-end detection cannot distinguish a CEF from an \
+                             open-end fund"
+                        ));
+                    }
+                    Shaped::ok(())
+                },
+            ) {
+                fund.gaps.push(format!(
+                    "{FUND_PROFILE_GAP_PREFIX} unavailable ({}) — closed-end detection \
+                     cannot run",
+                    reason.as_str()
+                ));
+            }
         }
         match self.suite_get_shaped(
             "fund-sectors",
@@ -6688,8 +6862,11 @@ mod suite_tests {
             {"sector":"Financial Services","weightPercentage":"13.2%"}
         ]"#;
         let countries = r#"[{"country":"United States","weightPercentage":"99.4%"}]"#;
+        let profile = r#"[{"symbol":"VTI","isFund":false,
+            "description":"Tracks the total US equity market."}]"#;
         let server = MockHttp::serve(vec![
             Canned::Reply { status: 200, headers: vec![], body: info },
+            Canned::Reply { status: 200, headers: vec![], body: profile },
             Canned::Reply { status: 200, headers: vec![], body: sectors },
             Canned::Reply { status: 200, headers: vec![], body: countries },
         ]);
@@ -6698,6 +6875,12 @@ mod suite_tests {
         // Percent-unit expense ratio normalizes to a decimal ratio at the seam.
         assert!((fund.expense_ratio.unwrap() - 0.0003).abs() < 1e-12);
         assert_eq!(fund.nav, Some(280.5));
+        // The profile's fund-structure fields fill for the closed-end detection.
+        assert_eq!(fund.profile_is_fund, Some(false));
+        assert!(fund
+            .profile_description
+            .as_deref()
+            .is_some_and(|d| d.contains("total US equity")));
         // Percent-string weights normalize to fractions.
         assert!((fund.sector_weights[0].1 - 0.325).abs() < 1e-9);
         assert!((fund.country_weights[0].1 - 0.994).abs() < 1e-9);
@@ -6743,6 +6926,7 @@ mod suite_tests {
             Canned::Reply { status: 200, headers: vec![], body: info },
             Canned::Reply { status: 200, headers: vec![], body: "[]" },
             Canned::Reply { status: 200, headers: vec![], body: "[]" },
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
         ]);
         let fund = source(&server.base_url).fetch_fund_data("VTI");
         assert_eq!(fund.name, None);
@@ -6753,12 +6937,95 @@ mod suite_tests {
     fn fund_data_records_gaps_per_failed_endpoint() {
         let server = MockHttp::serve(vec![
             Canned::Reply { status: 402, headers: vec![], body: "premium" },
+            Canned::Reply { status: 402, headers: vec![], body: "premium" },
             Canned::Reply { status: 200, headers: vec![], body: "[]" },
             Canned::Reply { status: 500, headers: vec![], body: "oops" },
         ]);
         let fund = source(&server.base_url).fetch_fund_data("VTI");
         assert!(fund.asset_class.is_none());
-        assert_eq!(fund.gaps.len(), 3, "{:?}", fund.gaps);
+        assert_eq!(fund.gaps.len(), 4, "{:?}", fund.gaps);
+        // The failed profile leg names what it cost: closed-end detection.
+        assert!(
+            fund.gaps
+                .iter()
+                .any(|g| g.starts_with(FUND_PROFILE_GAP_PREFIX)
+                    && g.contains("closed-end detection cannot run")),
+            "{:?}",
+            fund.gaps
+        );
+    }
+
+    #[test]
+    fn fund_profile_shapes_all_leave_a_detection_trail() {
+        // Codex 2026-08-21 round 4, finding 1: every profile answer that leaves
+        // closed-end detection unable to run must say so on the record — a
+        // served empty, an unreadable body, a fieldless or flag-drifted object,
+        // and a fund-flagged profile with no description to screen. The one
+        // silent answer is a definitive `isFund: false` (not a fund structure —
+        // nothing to detect).
+        let case = |profile_body: &'static str| {
+            let server = MockHttp::serve(vec![
+                Canned::Reply { status: 200, headers: vec![], body: "[]" },
+                Canned::Reply { status: 200, headers: vec![], body: profile_body },
+                Canned::Reply { status: 200, headers: vec![], body: "[]" },
+                Canned::Reply { status: 200, headers: vec![], body: "[]" },
+            ]);
+            source(&server.base_url).fetch_fund_data("PDI")
+        };
+        let profile_gap_containing = |fund: &crate::portfolio::fund::FundData, needle: &str| {
+            fund.gaps
+                .iter()
+                .any(|g| g.starts_with(FUND_PROFILE_GAP_PREFIX) && g.contains(needle))
+        };
+
+        let empty = case("[]");
+        assert!(profile_gap_containing(&empty, "was empty"), "{:?}", empty.gaps);
+        let fieldless = case("[{}]");
+        assert!(profile_gap_containing(&fieldless, "was malformed"), "{:?}", fieldless.gaps);
+        let flag_drift = case(r#"[{"isFund":"yes","description":"a closed-end fund"}]"#);
+        assert!(profile_gap_containing(&flag_drift, "was malformed"), "{:?}", flag_drift.gaps);
+        assert_eq!(flag_drift.profile_is_fund, None, "a drifted flag never fills");
+        let flagged_no_text = case(r#"[{"isFund":true}]"#);
+        assert!(
+            profile_gap_containing(&flagged_no_text, "carried no description"),
+            "{:?}",
+            flagged_no_text.gaps
+        );
+        assert_eq!(flagged_no_text.profile_is_fund, Some(true));
+        let definitive_not_fund = case(r#"[{"isFund":false}]"#);
+        assert!(
+            !definitive_not_fund.gaps.iter().any(|g| g.starts_with(FUND_PROFILE_GAP_PREFIX)),
+            "isFund:false is a definitive answer, not a gap: {:?}",
+            definitive_not_fund.gaps
+        );
+        assert_eq!(definitive_not_fund.profile_is_fund, Some(false));
+    }
+
+    #[test]
+    fn the_sweep_fund_refresh_never_fetches_the_profile() {
+        // The quick check's variant skips the `profile` leg (full-pass only —
+        // the sweep never re-runs closed-end detection): exactly three requests
+        // land — info, sectors, countries. Were a fourth made, the served
+        // bodies would shift one leg late and the countries call would fail on
+        // the exhausted mock, so the two clean "were empty" weighting gaps pin
+        // the request count.
+        let info = r#"[{"symbol":"VTI","name":"Vanguard Total Stock Market ETF",
+            "assetClass":"Equity","expenseRatio":0.03}]"#;
+        let server = MockHttp::serve(vec![
+            Canned::Reply { status: 200, headers: vec![], body: info },
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+            Canned::Reply { status: 200, headers: vec![], body: "[]" },
+        ]);
+        let fund = source(&server.base_url).fetch_fund_refresh_data("VTI");
+        assert_eq!(fund.asset_class.as_deref(), Some("Equity"));
+        assert_eq!(fund.profile_is_fund, None);
+        assert_eq!(fund.profile_description, None);
+        assert_eq!(fund.gaps.len(), 2, "{:?}", fund.gaps);
+        assert!(
+            fund.gaps.iter().all(|g| g.contains("were empty")),
+            "only the served-empty weighting gaps — no profile or transport gap: {:?}",
+            fund.gaps
+        );
     }
 
     #[test]

@@ -106,6 +106,12 @@ pub struct FundData {
     pub sector_weights: Vec<(String, f64)>,
     /// Country weights as fractions (0–1), from `etf/country-weightings`.
     pub country_weights: Vec<(String, f64)>,
+    /// The FMP `/profile` `isFund` flag — one leg of the closed-end detection
+    /// (`None` = no profile resolved, which never guesses a CEF).
+    pub profile_is_fund: Option<bool>,
+    /// The FMP `/profile` description, kept verbatim for the closed-end fragment
+    /// screen (`None` = no profile or no description served).
+    pub profile_description: Option<String>,
     pub gaps: Vec<String>,
 }
 
@@ -146,12 +152,63 @@ pub struct FundClassification {
     /// `None` when the exposure-priced path applies; `Some(reason)` when the class
     /// routes to `role_risk_only`.
     pub role_reason: Option<String>,
+    /// The closed-end structure marker (the CEF leg) — orthogonal to the strategy
+    /// class the way the overlay flag is: a bond CEF still routes bond. Detection
+    /// is [`is_closed_end`]; the marker gates the price-vs-NAV read's rendering
+    /// (`docs/portfolio-analysis.md` §Asset eligibility).
+    pub is_cef: bool,
+}
+
+/// The closed-end fragments the detection screens the profile description for.
+/// Substring matching covers the served variants — "closed-end", "closed-ended",
+/// "closed end", "closed ended" (probe-verified 2026-08-21 on PDI / GAB / BST).
+const CLOSED_END_FRAGMENTS: &[&str] = &["closed-end", "closed end"];
+
+/// Deterministic closed-end detection: the profile's `isFund` flag AND a
+/// closed-end fragment in its description — both legs required, so a missing or
+/// ambiguous profile never guesses a CEF. `isFund` alone is FMP's flag for
+/// mutual funds and CEFs alike, and the description fragment alone could ride a
+/// manager's boilerplate; the conjunction is the drafted rule (probe-verified
+/// 2026-08-21: PDI / GAB / BST carry both, `etf/info` serves them `[]`).
+pub fn is_closed_end(fund: &FundData) -> bool {
+    fund.profile_is_fund == Some(true)
+        && fund
+            .profile_description
+            .as_deref()
+            .map(|d| {
+                let hay = d.to_ascii_lowercase();
+                CLOSED_END_FRAGMENTS.iter().any(|f| hay.contains(f))
+            })
+            .unwrap_or(false)
+}
+
+/// The price-vs-NAV read: the **market price** against the reported NAV — never
+/// the engine's NAV-fallback spot, which would fabricate an exact 0% premium
+/// precisely when no market quote exists. Positive is a premium
+/// (`docs/portfolio-analysis.md` §Asset eligibility — signal on the closed-end
+/// form only; the caller gates rendering on [`is_closed_end`]).
+pub fn nav_premium_read(current_price: Option<f64>, nav: Option<f64>) -> Option<f64> {
+    match (current_price, nav) {
+        (Some(price), Some(nav)) if nav > 0.0 && price > 0.0 => Some(price / nav - 1.0),
+        _ => None,
+    }
 }
 
 /// Classify a fund's strategy deterministically from its `etf/info` metadata and
 /// weightings. Made at loop time — Step 3's eligibility used only Schwab instrument
 /// identity (`docs/portfolio-workflow.md` §Step 3).
 pub fn classify(fund: &FundData) -> FundClassification {
+    let is_cef = is_closed_end(fund);
+    // The marker rides the label so the card states the structure wherever the
+    // class routes; the Unknown branch below replaces its label outright — for a
+    // real CEF (empty `etf/info`) the structure is the one thing that IS known.
+    let cef_suffix = |label: &str| -> String {
+        if is_cef {
+            format!("{label} (closed-end)")
+        } else {
+            label.to_string()
+        }
+    };
     let name_blob = format!(
         "{} {}",
         fund.name.as_deref().unwrap_or_default(),
@@ -172,12 +229,13 @@ pub fn classify(fund: &FundData) -> FundClassification {
             class: FundStrategyClass::LeveragedInverse,
             structural_flag: true,
             us_share: us_share(fund),
-            class_label: "leveraged / inverse vehicle".to_string(),
+            class_label: cef_suffix("leveraged / inverse vehicle"),
             role_reason: Some(
                 "structurally path-dependent (leveraged / inverse daily reset) — a \
                  buy-and-hold read is structurally unsound"
                     .to_string(),
             ),
+            is_cef,
         };
     }
 
@@ -209,23 +267,42 @@ pub fn classify(fund: &FundData) -> FundClassification {
             class,
             structural_flag: overlay_flag,
             us_share: us,
-            class_label: "bond fund".to_string(),
+            class_label: cef_suffix("bond fund"),
             role_reason: Some(
                 "bond fund — the on-plan surface carries no duration / credit / curve \
                  data to price it honestly (valuation recorded as a gap)"
                     .to_string(),
             ),
+            is_cef,
         },
         FundStrategyClass::Commodity => FundClassification {
             class,
             structural_flag: overlay_flag,
             us_share: us,
-            class_label: "commodity fund".to_string(),
+            class_label: cef_suffix("commodity fund"),
             role_reason: Some(
                 "commodity fund — no honest exposure-priced valuation on the on-plan \
                  surface (valuation recorded as a gap)"
                     .to_string(),
             ),
+            is_cef,
+        },
+        // The one branch a real CEF reaches today: `etf/info` serves closed-end
+        // funds an empty body (probe 2026-08-21), so no class string or weighting
+        // exists — but the profile-detected structure is known, and the card
+        // should say "closed-end fund", not "unresolved strategy class".
+        FundStrategyClass::Unknown if is_cef => FundClassification {
+            class,
+            structural_flag: overlay_flag,
+            us_share: us,
+            class_label: "closed-end fund".to_string(),
+            role_reason: Some(
+                "closed-end fund — the current data surface serves no fund metadata \
+                 for CEFs (`etf/info` is empty), so the exposure-priced valuation \
+                 has no input"
+                    .to_string(),
+            ),
+            is_cef,
         },
         FundStrategyClass::Unknown => FundClassification {
             class,
@@ -237,6 +314,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
                  exposure-priced valuation has no input"
                     .to_string(),
             ),
+            is_cef,
         },
         FundStrategyClass::Equity => {
             if fund.sector_weights.is_empty() {
@@ -244,12 +322,13 @@ pub fn classify(fund: &FundData) -> FundClassification {
                     class,
                     structural_flag: overlay_flag,
                     us_share: us,
-                    class_label: "equity fund without usable weightings".to_string(),
+                    class_label: cef_suffix("equity fund without usable weightings"),
                     role_reason: Some(
                         "no usable sector weighting set — the exposure-priced \
                          valuation has no input (the mutual-fund degrade)"
                             .to_string(),
                     ),
+                    is_cef,
                 }
             } else if us.map(|s| s < US_EXPOSURE_GUARD).unwrap_or(false) {
                 FundClassification {
@@ -260,7 +339,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
                     // a 67%-US fund is not "ex-US", and attempt 2's model flagged
                     // exactly that (ruled 2026-08-13 — relabel, guard pinned;
                     // `docs/verification/2026-08-13-big-run-attempt-2.md`).
-                    class_label: "equity fund below the US-exposure guard".to_string(),
+                    class_label: cef_suffix("equity fund below the US-exposure guard"),
                     role_reason: Some(format!(
                         "US exposure {:.0}% below the ≥ {:.0}% guard — an \
                          exchange-tagged US sector P/E is not an honest read on an \
@@ -268,14 +347,16 @@ pub fn classify(fund: &FundData) -> FundClassification {
                         us.unwrap_or(0.0) * 100.0,
                         US_EXPOSURE_GUARD * 100.0
                     )),
+                    is_cef,
                 }
             } else {
                 FundClassification {
                     class,
                     structural_flag: overlay_flag,
                     us_share: us,
-                    class_label: "US equity fund".to_string(),
+                    class_label: cef_suffix("US equity fund"),
                     role_reason: None,
+                    is_cef,
                 }
             }
         }
@@ -539,6 +620,14 @@ pub struct RoleRiskReadout {
     /// Annualized realized volatility, where computable.
     pub observable_risk: Option<f64>,
     pub structural_flag: bool,
+    /// The closed-end structure marker ([`is_closed_end`]) — gates the
+    /// price-vs-NAV rendering to the closed-end form.
+    pub is_cef: bool,
+    /// Price vs NAV ([`nav_premium_read`]), populated on the closed-end form
+    /// only — `None` on a CEF is the named gap (a missing NAV, or a missing
+    /// market quote against a present NAV — the gap text names which), pushed
+    /// into `evidence_gaps` rather than rendered as a number.
+    pub nav_premium: Option<f64>,
     pub evidence_gaps: Vec<String>,
 }
 
@@ -582,11 +671,16 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
             "no current quote or NAV for the fund — nothing to value against".to_string(),
         );
     };
+    // Classification runs before the metadata floor: a detected closed-end fund
+    // with an empty `etf/info` (the surface serves CEFs `[]` — probe 2026-08-21)
+    // is a *structural* thin-surface class, not deficient evidence, so it takes
+    // the typed role / risk readout below instead of abstaining every run.
+    let classification = classify(fund);
     let info_present = fund.asset_class.is_some()
         || fund.expense_ratio.is_some()
         || fund.name.is_some()
         || !fund.sector_weights.is_empty();
-    if !info_present {
+    if !info_present && !classification.is_cef {
         return FundEngineVerdict::InsufficientEvidence(
             "fund metadata (etf/info) unavailable — the fund analog's floor-bearing \
              input is missing"
@@ -594,7 +688,6 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         );
     }
 
-    let classification = classify(fund);
     let vol = per_period_volatility(fin);
     let annual_vol = vol.map(|v| v * 15.87);
     let drawdown = engine::max_drawdown(&fin.daily_closes, &fin.price_history);
@@ -607,7 +700,39 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         } else {
             top_weights(&fund.country_weights)
         };
+        // The closed-end read (`docs/portfolio-analysis.md` §Asset eligibility):
+        // computed from the market price only, absent reads as the named gap —
+        // and populated only on the closed-end form, so a non-CEF fund's
+        // transient premium never rides the verdict, prompts, or audit metrics.
+        let nav_premium = if classification.is_cef {
+            nav_premium_read(fin.current_price, fund.nav)
+        } else {
+            None
+        };
         let mut gaps = fund.gaps.clone();
+        if classification.is_cef {
+            if !info_present {
+                gaps.push(
+                    "fund metadata (etf/info) is empty for closed-end funds on the \
+                     current data surface — expense ratio and exposure unavailable"
+                        .to_string(),
+                );
+            }
+            if nav_premium.is_none() {
+                // The gap names what is actually absent, keyed on USABILITY,
+                // not presence: the spot floor accepts NAV as the price
+                // fallback, and the quote parser passes a zero or negative
+                // price through, so a presence test would misstate both the
+                // quote-missing and the quote-unusable cases (Codex 2026-08-21
+                // rounds 3–4, finding 2).
+                let cause = if fund.nav.is_some_and(|n| n > 0.0) {
+                    "no usable market quote to read against the reported NAV"
+                } else {
+                    "no usable NAV for closed-end funds on the current data surface"
+                };
+                gaps.push(format!("price-vs-NAV unavailable — {cause}"));
+            }
+        }
         gaps.push(reason.clone());
         return FundEngineVerdict::RoleRiskOnly(Box::new(RoleRiskReadout {
             class_label: classification.class_label,
@@ -615,6 +740,8 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
             expense_ratio: fund.expense_ratio,
             observable_risk: annual_vol,
             structural_flag: classification.structural_flag,
+            is_cef: classification.is_cef,
+            nav_premium,
             evidence_gaps: gaps,
         }));
     }
@@ -737,9 +864,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
 
     let mut metrics = base_metrics(fin);
     metrics.expense_ratio = fund.expense_ratio;
-    metrics.nav_premium = fund.nav.and_then(|nav| {
-        (nav > 0.0).then(|| spot / nav - 1.0)
-    });
+    // Market price only — the NAV-fallback `spot` would fabricate an exact 0%
+    // premium precisely when no quote exists ([`nav_premium_read`]).
+    metrics.nav_premium = nav_premium_read(fin.current_price, fund.nav);
     metrics.composite_coverage = Some(composite.covered_share);
 
     // The uncovered slice is reported beside the read, never averaged in
@@ -825,8 +952,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
             dispersion_floor: floor,
             consensus_eps_mid: None,
         }),
-        // The fund stopgap prices a flat synthetic driver over the exposure
-        // composite — no driver trajectory exists to invert.
+        // The fund form prices a deliberately flat synthetic driver over the
+        // exposure composite (the settled design, ruled 2026-08-21) — no driver
+        // trajectory exists to invert.
         implied_expectations: None,
     }))
 }
@@ -1008,6 +1136,8 @@ mod tests {
             nav: Some(280.0),
             sector_weights: weights(),
             country_weights: vec![("United States".to_string(), 0.99)],
+            profile_is_fund: None,
+            profile_description: None,
             gaps: vec![],
         }
     }
@@ -1535,5 +1665,175 @@ mod tests {
         assert_eq!(quarter_end_before(d, 5).to_string(), "2025-06-30");
         let jan = NaiveDate::from_ymd_opt(2026, 2, 1).unwrap();
         assert_eq!(quarter_end_before(jan, 1).to_string(), "2025-12-31");
+    }
+
+    /// The real closed-end arrival shape (probe 2026-08-21): `etf/info` serves
+    /// `[]`, so every fund-metadata field is `None` and only the profile carries
+    /// the structure signal.
+    fn cef_fund() -> FundData {
+        FundData {
+            symbol: "PDI".to_string(),
+            profile_is_fund: Some(true),
+            profile_description: Some(
+                "The PIMCO Dynamic Income Fund (PDI) is a closed-end mutual fund \
+                 specializing in fixed-income investments."
+                    .to_string(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn closed_end_detection_requires_both_profile_legs() {
+        assert!(is_closed_end(&cef_fund()));
+        // GAB's wire form ("closed ended") matches through the spaced fragment.
+        let mut gab = cef_fund();
+        gab.profile_description =
+            Some("a closed ended equity mutual fund launched by GAMCO".to_string());
+        assert!(is_closed_end(&gab));
+        // The flag without the text never guesses a CEF — `isFund` is FMP's flag
+        // for open-end mutual funds too.
+        let mut open_end = cef_fund();
+        open_end.profile_description = Some("an open-end index mutual fund".to_string());
+        assert!(!is_closed_end(&open_end));
+        // The text without the flag never guesses either (manager boilerplate).
+        let mut unflagged = cef_fund();
+        unflagged.profile_is_fund = Some(false);
+        assert!(!is_closed_end(&unflagged));
+        // No profile at all reads not-a-CEF, never a guess.
+        assert!(!is_closed_end(&FundData::default()));
+    }
+
+    #[test]
+    fn nav_premium_reads_the_market_price_only() {
+        let prem = nav_premium_read(Some(282.0), Some(280.0)).unwrap();
+        assert!((prem - (282.0 / 280.0 - 1.0)).abs() < 1e-12);
+        // No market quote is a gap — never a fabricated 0% off the NAV-fallback
+        // spot the engine floor otherwise substitutes.
+        assert_eq!(nav_premium_read(None, Some(280.0)), None);
+        assert_eq!(nav_premium_read(Some(282.0), None), None);
+        assert_eq!(nav_premium_read(Some(282.0), Some(0.0)), None);
+    }
+
+    #[test]
+    fn classify_marks_the_closed_end_structure_orthogonally() {
+        // Empty `etf/info` + the profile signal: the one branch a real CEF
+        // reaches — the card says what IS known, not "unresolved strategy class".
+        let c = classify(&cef_fund());
+        assert!(c.is_cef);
+        assert_eq!(c.class, FundStrategyClass::Unknown);
+        assert_eq!(c.class_label, "closed-end fund");
+        assert!(c.role_reason.as_deref().is_some_and(|r| r.contains("closed-end")));
+        // A CEF whose surface someday serves a class string keeps its routing —
+        // the structure rides the label, orthogonal like the overlay flag.
+        let mut bond_cef = cef_fund();
+        bond_cef.asset_class = Some("Fixed Income".to_string());
+        let c = classify(&bond_cef);
+        assert_eq!(c.class, FundStrategyClass::Bond);
+        assert!(c.is_cef);
+        assert_eq!(c.class_label, "bond fund (closed-end)");
+    }
+
+    #[test]
+    fn a_cef_with_empty_etf_info_takes_the_role_risk_readout_not_abstention() {
+        let cef = cef_fund();
+        let fin = financials(15.12);
+        let inputs = FundEngineInputs {
+            fund: &cef,
+            financials: &fin,
+            sector_pe: &snapshot(),
+            sector_pe_history: &history(),
+            rates: &rates(),
+            as_of: as_of(),
+        };
+        match analyze_fund(&inputs) {
+            FundEngineVerdict::RoleRiskOnly(r) => {
+                assert_eq!(r.class_label, "closed-end fund");
+                assert!(r.is_cef);
+                // No NAV on the surface: the read is the named gap, never 0%.
+                assert_eq!(r.nav_premium, None);
+                assert!(
+                    r.evidence_gaps.iter().any(|g| g.contains("etf/info) is empty")),
+                    "{:?}",
+                    r.evidence_gaps
+                );
+                assert!(
+                    r.evidence_gaps.iter().any(|g| g.contains("price-vs-NAV unavailable")),
+                    "{:?}",
+                    r.evidence_gaps
+                );
+            }
+            other => panic!("expected the role/risk readout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cef_missing_or_unusable_quote_names_the_quote_not_the_nav() {
+        // The spot floor accepts the NAV as the price fallback and the quote
+        // parser passes a zero price through, so the run proceeds — but the
+        // premium is honestly absent, and the gap must name the unusable
+        // market quote rather than claim the present NAV is absent
+        // (Codex 2026-08-21 rounds 3–4, finding 2).
+        let run = |current_price: Option<f64>| {
+            let mut cef = cef_fund();
+            cef.name = Some("PIMCO Dynamic Income Fund".to_string());
+            cef.nav = Some(14.0);
+            let mut fin = financials(15.12);
+            fin.current_price = current_price;
+            let inputs = FundEngineInputs {
+                fund: &cef,
+                financials: &fin,
+                sector_pe: &snapshot(),
+                sector_pe_history: &history(),
+                rates: &rates(),
+                as_of: as_of(),
+            };
+            match analyze_fund(&inputs) {
+                FundEngineVerdict::RoleRiskOnly(r) => *r,
+                other => panic!("expected the role/risk readout, got {other:?}"),
+            }
+        };
+        for price in [None, Some(0.0)] {
+            let r = run(price);
+            assert_eq!(r.nav_premium, None);
+            assert!(
+                r.evidence_gaps.iter().any(
+                    |g| g.contains("no usable market quote to read against the reported NAV")
+                ),
+                "price {price:?}: {:?}",
+                r.evidence_gaps
+            );
+        }
+    }
+
+    #[test]
+    fn a_cef_with_a_served_nav_carries_the_premium_and_drops_the_gap() {
+        // The seam's live shape if the surface ever serves a CEF NAV: the read
+        // renders, and neither CEF gap is pushed.
+        let mut cef = cef_fund();
+        cef.name = Some("PIMCO Dynamic Income Fund".to_string());
+        cef.nav = Some(14.0);
+        let fin = financials(15.12);
+        let inputs = FundEngineInputs {
+            fund: &cef,
+            financials: &fin,
+            sector_pe: &snapshot(),
+            sector_pe_history: &history(),
+            rates: &rates(),
+            as_of: as_of(),
+        };
+        match analyze_fund(&inputs) {
+            FundEngineVerdict::RoleRiskOnly(r) => {
+                assert!(r.is_cef);
+                let prem = r.nav_premium.expect("premium from market price vs NAV");
+                assert!((prem - (15.12 / 14.0 - 1.0)).abs() < 1e-12);
+                assert!(
+                    !r.evidence_gaps.iter().any(|g| g.contains("price-vs-NAV unavailable")),
+                    "{:?}",
+                    r.evidence_gaps
+                );
+            }
+            other => panic!("expected the role/risk readout, got {other:?}"),
+        }
     }
 }

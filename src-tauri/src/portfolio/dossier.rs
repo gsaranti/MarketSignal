@@ -333,7 +333,9 @@ pub struct HoldingDossier {
     /// guard reads — kept because Schwab's `description` is often blank, which renders
     /// the prompt header as `HOLDING: PSX ()` and leaves the model guessing at the
     /// issuer (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 4).
-    /// `None` for a fund (no profile call) or an unresolved / unverified lookup.
+    /// `None` for a fund (its one profile read is the fund-structure leg —
+    /// `isFund` + description for closed-end detection, never an identity
+    /// lookup) or an unresolved / unverified lookup.
     pub company_name: Option<String>,
     /// How this position changed since the prior run (the Step-4 holdings diff), so the
     /// verdict reasons over what the user did with it (`docs/portfolio-analysis.md`
@@ -886,7 +888,10 @@ pub fn assemble(
     // assembly (the early exits never render a prompt), so the interpretation
     // paths — the only readers — add the label themselves in `pipeline`.
     if fund.is_some() {
-        sources.push("FMP fund metadata (etf/info + weightings + sector P/E)".to_string());
+        sources.push(
+            "FMP fund metadata (etf/info + profile structure read + weightings + sector P/E)"
+                .to_string(),
+        );
     }
     // The house view is deliberately **not** listed here, even though it is loaded once
     // per run and rides every dossier: whether a holding's verdict actually consulted

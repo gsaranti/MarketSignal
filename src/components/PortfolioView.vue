@@ -693,6 +693,27 @@ const CLASS_LABELS: Record<string, string> = {
   cash: "Cash",
   other: "Unsupported",
 };
+// The closed-end price-vs-NAV display: label by the rendered tenth of a
+// percent, so a value that displays as 0.0% reads "at par" — never a
+// signed-zero "+0.0% premium" or "-0.0% discount" (mirrors the backend's
+// shared prompt line). Rounding is half-away-from-zero to match Rust's
+// f64::round — bare Math.round takes negative halves toward +∞, splitting
+// the two labels at exactly -0.05%.
+function roundedNavPremium(p: number): number {
+  return (Math.sign(p) * Math.round(Math.abs(p) * 1000)) / 1000;
+}
+function navPremiumNum(p: number | null): string {
+  if (p === null) return "";
+  const rounded = roundedNavPremium(p);
+  if (rounded === 0) return "0.0%";
+  return (rounded > 0 ? "+" : "") + (rounded * 100).toFixed(1) + "%";
+}
+function navPremiumWord(p: number | null): string {
+  if (p === null) return "";
+  const rounded = roundedNavPremium(p);
+  return rounded === 0 ? "at par" : rounded > 0 ? "premium" : "discount";
+}
+
 function classLabel(v: HoldingVerdict): string {
   const base = CLASS_LABELS[v.asset_class] ?? v.asset_class;
   if (v.disposition.status === "priced") {
@@ -1576,6 +1597,20 @@ const keyFigures = computed(() => {
                           <span class="ana-num">{{
                             fmtPct(v.disposition.observable_risk)
                           }}</span>
+                        </dd>
+                      </template>
+                      <!-- The closed-end read — rendered only where the vehicle
+                           makes it meaningful; its absence is a named gap in the
+                           evidence-gap line below, never a fabricated number. -->
+                      <template
+                        v-if="v.disposition.is_cef && v.disposition.nav_premium !== null"
+                      >
+                        <dt>Price vs NAV</dt>
+                        <dd>
+                          <span class="ana-num">{{
+                            navPremiumNum(v.disposition.nav_premium)
+                          }}</span>
+                          {{ navPremiumWord(v.disposition.nav_premium) }}
                         </dd>
                       </template>
                     </dl>
