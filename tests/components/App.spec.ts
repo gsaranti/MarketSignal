@@ -1224,13 +1224,16 @@ describe("App.vue portfolio wiring", () => {
     await flushPromises();
     expect(tauri.invoke).toHaveBeenCalledWith("generate_portfolio_manual", {
       selected: ["AAPL", "MSFT"],
+      resume: null,
     });
 
-    // No selection: the whole-book run, selected explicitly null.
+    // No selection: the whole-book run, selected explicitly null (and no
+    // resume — the Run-analysis triggers always start a new run).
     wrapper.findComponent(PortfolioView).vm.$emit("run");
     await flushPromises();
     expect(tauri.invoke).toHaveBeenCalledWith("generate_portfolio_manual", {
       selected: null,
+      resume: null,
     });
     wrapper.unmount();
   });

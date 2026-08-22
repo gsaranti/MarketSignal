@@ -325,6 +325,20 @@ export interface SchwabCredentialUpdate {
 // `latest_holdings_pull` commands (docs/portfolio-analysis.md §Storage and
 // display, §Triggering). Enum wire shapes are kebab-case (pinned backend-side).
 
+// The tracker's resumability read for a failed / cancelled Portfolio run
+// (`portfolio_resume_status` — docs/portfolio-analysis.md §Failure posture:
+// resume is offered from the tracker's terminal state only while the
+// interrupted run's checkpoints exist and its pinned pull is inside the
+// resume window). camelCase wire shape (pinned backend-side).
+export interface PortfolioResumeStatus {
+  available: boolean;
+  runId: string | null;
+  createdAt: string | null;
+  completed: number;
+  total: number;
+  reason: string | null;
+}
+
 export type AssetClass =
   | "stock"
   | "etf"

@@ -87,6 +87,219 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+    // The interrupted-run checkpoint store (`docs/portfolio-analysis.md §Failure
+    // posture` — per-holding checkpoint/resume): one header row — the pinned run
+    // identity, holdings pull, Step-5 shared context, version stamps, and the
+    // run-level accumulators — plus one row per completed holding. At most one
+    // interrupted run exists (the single global run slot); a new run discards
+    // the lot as it opens its own trail (a new run failing before that point —
+    // holdings pull, rate anchors — leaves the prior trail intact and still
+    // resumable) and a successful persist clears its own. Deliberately
+    // **excluded from the data-portability archive** (ruled 2026-08-21):
+    // transient machine-local operational state that expires at the resume
+    // window, not durable analytical data — so no import pre-check mirrors it.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS portfolio_checkpoints (
+            run_id            TEXT PRIMARY KEY,
+            created_at        TEXT NOT NULL,
+            header_json       TEXT NOT NULL,
+            accumulators_json TEXT NOT NULL
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS portfolio_checkpoint_holdings (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id   TEXT NOT NULL,
+            symbol   TEXT NOT NULL,
+            row_json TEXT NOT NULL,
+            UNIQUE (run_id, symbol)
+        )",
+        [],
+    )?;
+    Ok(())
+}
+
+// ---- Interrupted-run checkpoints (`docs/portfolio-analysis.md §Failure posture`) --
+
+/// The pinned header a resume reopens (`docs/portfolio-analysis.md §Failure
+/// posture`): the interrupted run's identity, its original normalized holdings
+/// pull (held option positions included), the Step-5 shared context, the
+/// selective work-list and tail sweep, and the version stamps a resume must
+/// match — so completed and resumed holdings alike compute against one book and
+/// one run-level context, and the finished run is honestly stamped with the
+/// pinned pull's as-of time. Per-holding retrieval — the option-chain fetches
+/// included — is deliberately not pinned: it runs live at each holding's own
+/// analysis inside any run (`docs/portfolio-workflow.md` §Step 2), so a resumed
+/// holding's evidence is fresher than the pinned as-of by up to the resume
+/// window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointHeader {
+    pub run_id: String,
+    /// The interrupted run's `created_at` — the pinned as-of the resume window
+    /// ages against.
+    pub created_at: String,
+    /// The diff / carry baseline at run start (`latest_run`'s id then). Resume
+    /// refuses when the store's latest run has moved — any run that persisted
+    /// discarded prior checkpoints on its way, so a mismatch means stale state.
+    pub prior_run_id: Option<String>,
+    pub holdings: Holdings,
+    pub rates: crate::portfolio::engine::RateAnchors,
+    pub house_view: crate::portfolio::dossier::HouseView,
+    pub house_view_omitted: bool,
+    pub commodities: crate::portfolio::dossier::CommodityContext,
+    pub cot_rows: Vec<crate::data_sources::CotPositioning>,
+    pub cot_gaps: Vec<String>,
+    pub put_call_backdrop: Option<crate::cboe::PutCallBackdrop>,
+    pub cboe_gap: Option<String>,
+    pub short_interest_file: Option<crate::finra::ShortInterestFile>,
+    pub finra_gap: Option<String>,
+    /// A selective run's work-list (uppercased); `None` = the whole book. A
+    /// selective re-analysis checkpoints identically.
+    pub work_list: Option<Vec<String>>,
+    /// The selective tail sweep's states, pinned with the run.
+    pub swept_tail: Vec<crate::portfolio::quick_check::HoldingQuickState>,
+    /// Version stamps at run start — a resume refuses on any mismatch with the
+    /// current binary / roster rather than mixing verdicts across contracts.
+    pub prompt_version: String,
+    pub grade_parameter_version: String,
+    pub target_parameter_version: String,
+    pub pre_profit_parameter_version: String,
+    pub model_ids: Vec<String>,
+}
+
+/// The run-level accumulators the post-loop consumers read (data health, episode
+/// sector identities, prompt-header names) — re-written beside each holding
+/// checkpoint so completed holdings' contributions survive a failure.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointAccumulators {
+    pub deep_history_failures: usize,
+    pub benchmark_gaps: Vec<String>,
+    pub sector_by_symbol:
+        std::collections::HashMap<String, crate::portfolio::outcome::SectorIdentity>,
+    pub industry_by_symbol: std::collections::HashMap<String, Option<String>>,
+    pub profile_name_by_symbol: std::collections::HashMap<String, Option<String>>,
+}
+
+/// One completed holding's checkpoint — exactly what the loop pushed for it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointHolding {
+    pub verdict: crate::portfolio::HoldingVerdict,
+    pub audit: crate::portfolio::HoldingAudit,
+}
+
+/// A loaded checkpoint: header, accumulators, and the completed-holding rows.
+#[derive(Debug, Clone)]
+pub struct Checkpoint {
+    pub header: CheckpointHeader,
+    pub accumulators: CheckpointAccumulators,
+    pub holdings: Vec<CheckpointHolding>,
+}
+
+/// Open (or reopen) the checkpoint header for a starting run. Fresh accumulators.
+pub fn save_checkpoint_header(conn: &Connection, header: &CheckpointHeader) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO portfolio_checkpoints
+         (run_id, created_at, header_json, accumulators_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            header.run_id,
+            header.created_at,
+            serde_json::to_string(header)?,
+            serde_json::to_string(&CheckpointAccumulators::default())?,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Persist one completed holding's checkpoint row (idempotent per symbol — a
+/// resumed run re-checkpointing a symbol replaces its row) together with the
+/// refreshed run-level accumulators, in **one transaction**: a crash between
+/// the two writes could otherwise restore the verdict without its accumulator
+/// contribution, or the contribution without its row.
+pub fn save_checkpoint_progress(
+    conn: &Connection,
+    run_id: &str,
+    symbol: &str,
+    row: &CheckpointHolding,
+    acc: &CheckpointAccumulators,
+) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT OR REPLACE INTO portfolio_checkpoint_holdings (run_id, symbol, row_json)
+         VALUES (?1, ?2, ?3)",
+        params![run_id, symbol.to_ascii_uppercase(), serde_json::to_string(row)?],
+    )?;
+    tx.execute(
+        "UPDATE portfolio_checkpoints SET accumulators_json = ?2 WHERE run_id = ?1",
+        params![run_id, serde_json::to_string(acc)?],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Load the interrupted run's checkpoint, if one exists. At most one header row
+/// exists (a new run discards before opening its own); an unreadable header or
+/// row is loud-skipped — a corrupt checkpoint costs the resume offer, never an
+/// error surface (the intact new-run path is always available).
+pub fn load_checkpoint(conn: &Connection) -> Result<Option<Checkpoint>> {
+    let row: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT run_id, header_json, accumulators_json FROM portfolio_checkpoints
+             ORDER BY created_at DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((run_id, header_json, acc_json)) = row else {
+        return Ok(None);
+    };
+    let header: CheckpointHeader = match serde_json::from_str(&header_json) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("portfolio checkpoint: unreadable header for {run_id} ({e}) — skipped");
+            return Ok(None);
+        }
+    };
+    let accumulators: CheckpointAccumulators = match serde_json::from_str(&acc_json) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!(
+                "portfolio checkpoint: unreadable accumulators for {run_id} ({e}) — skipped"
+            );
+            return Ok(None);
+        }
+    };
+    let mut stmt = conn.prepare(
+        "SELECT symbol, row_json FROM portfolio_checkpoint_holdings
+         WHERE run_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt.query_map(params![run_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut holdings = Vec::new();
+    for row in rows {
+        let (symbol, json) = row?;
+        match serde_json::from_str::<CheckpointHolding>(&json) {
+            Ok(h) => holdings.push(h),
+            Err(e) => eprintln!(
+                "portfolio checkpoint: unreadable holding row {symbol} ({e}) — it will re-analyze"
+            ),
+        }
+    }
+    Ok(Some(Checkpoint {
+        header,
+        accumulators,
+        holdings,
+    }))
+}
+
+/// Discard every checkpoint — a new run's entry path, and a completed resume's
+/// cleanup (`docs/portfolio-analysis.md §Failure posture`: a new run discards
+/// any interrupted run's checkpoints; its partial verdicts never became a run).
+pub fn clear_checkpoints(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM portfolio_checkpoint_holdings", [])?;
+    conn.execute("DELETE FROM portfolio_checkpoints", [])?;
     Ok(())
 }
 
@@ -561,6 +774,19 @@ pub fn prune_runs(conn: &Connection, keep: u32) -> Result<()> {
          )",
         [keep],
     )?;
+    // The evicted runs' per-holding continuity summaries go with them: a
+    // Portfolio-namespace `summary` row is keyed `{run_id}:{SYMBOL}`, and
+    // run-summary vector rows follow run retention (`docs/storage.md §Local
+    // Vector Memory`) — durable `learning` rows are untouched. Matching on the
+    // id prefix against the *surviving* runs also sweeps any orphan row whose
+    // run never persisted.
+    conn.execute(
+        "DELETE FROM vector_memory
+         WHERE kind = 'summary' AND namespace = 'portfolio'
+           AND substr(report_id, 1, instr(report_id, ':') - 1)
+               NOT IN (SELECT run_id FROM portfolio_runs)",
+        [],
+    )?;
     Ok(())
 }
 
@@ -630,6 +856,7 @@ mod tests {
                 overview: "single fixture holding".into(),
             },
             audit: vec![HoldingAudit {
+                what_changed_audit: None,
                 target_meta: None,
                 symbol: "AAPL".into(),
                 metrics: ComputedMetrics::default(),

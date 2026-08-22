@@ -733,7 +733,17 @@ async fn generate_portfolio_manual(
     guard: tauri::State<'_, RunGuard>,
     cancel: tauri::State<'_, CancelFlag>,
     selected: Option<Vec<String>>,
+    resume: Option<bool>,
 ) -> Result<portfolio::PortfolioRun, String> {
+    // A resume reopens the interrupted run's pinned checkpoints instead of
+    // pulling fresh (`docs/portfolio-analysis.md` §Failure posture) — validated
+    // below, inside the blocking task, right before the job.
+    let resume_requested = resume.unwrap_or(false);
+    if resume_requested && selected.as_ref().is_some_and(|s| !s.is_empty()) {
+        return Err("a resume reopens the interrupted run's own work-list — \
+                    it cannot take a new selection"
+            .to_string());
+    }
     // Read config on a short-lived connection dropped before the await (a
     // `rusqlite::Connection` is not `Send`).
     let cfg = {
@@ -878,6 +888,23 @@ async fn generate_portfolio_manual(
                 .map(|e| e as &dyn embedding::Embedder),
         };
 
+        // A requested resume loads and validates the checkpoint trail here —
+        // fast refusal with the reason, before the slot is claimed. The roster
+        // check uses the ids the analyst will actually run under.
+        let resume_checkpoint = if resume_requested {
+            let conn = storage::open(&paths.db_path).map_err(|e| e.to_string())?;
+            let cp = portfolio::store::load_checkpoint(&conn)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "no interrupted run to resume".to_string())?;
+            use portfolio::pipeline::HoldingAnalyst as _;
+            let ids = vec![analyst.reasoner_id(), analyst.fast_id()];
+            portfolio::job::resume_eligibility(&conn, &cp, &ids, chrono::Utc::now())
+                .map_err(|reason| format!("cannot resume the interrupted run: {reason}"))?;
+            Some(cp)
+        } else {
+            None
+        };
+
         portfolio::job::run_portfolio_job(
             holdings.as_ref(),
             &company,
@@ -886,6 +913,7 @@ async fn generate_portfolio_manual(
             &profile,
             selective,
             Some(&outcome_sources),
+            resume_checkpoint,
             &paths,
             &guard,
             &ctx,
@@ -901,6 +929,71 @@ async fn generate_portfolio_manual(
         portfolio::job::PortfolioJobOutcome::Skipped(reason) => Err(reason),
         portfolio::job::PortfolioJobOutcome::Cancelled(reason) => Err(reason),
     }
+}
+
+/// What the tracker's terminal state renders about a resumable interrupted run
+/// (`docs/portfolio-analysis.md` §Failure posture: resume is offered from a
+/// failed / cancelled run's tracker state, only while an eligible checkpoint
+/// trail exists and its pinned pull is younger than the resume window). The
+/// trail is not necessarily the shown run's own — a run failing before it opens
+/// its own trail leaves an earlier one standing — which is why `run_id` and
+/// `created_at` identify it to the frontend.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PortfolioResumeStatus {
+    /// Whether Resume can be offered right now.
+    available: bool,
+    /// The interrupted run's id, when a checkpoint trail exists at all.
+    run_id: Option<String>,
+    /// The pinned pull's as-of (the interrupted run's `created_at`).
+    created_at: Option<String>,
+    /// Completed holdings restored on resume.
+    completed: usize,
+    /// The holdings the interrupted run set out to analyze (its work-list size,
+    /// or the whole book).
+    total: usize,
+    /// Why resume is unavailable, when a trail exists but cannot resume.
+    reason: Option<String>,
+}
+
+/// Read-only resumability probe for the tracker's failed / cancelled state.
+/// Never claims the run slot and fetches nothing.
+#[tauri::command]
+fn portfolio_resume_status(app: tauri::AppHandle) -> Result<PortfolioResumeStatus, String> {
+    let conn = open_app_db(&app)?;
+    let cfg = AppConfig::load(&conn);
+    let none = PortfolioResumeStatus {
+        available: false,
+        run_id: None,
+        created_at: None,
+        completed: 0,
+        total: 0,
+        reason: None,
+    };
+    let Some(cp) = portfolio::store::load_checkpoint(&conn).map_err(|e| e.to_string())? else {
+        return Ok(none);
+    };
+    // The ids a resume's analyst would run under — the roster check's basis
+    // (`resume_eligibility`), through the fallback rule's single home.
+    let roster = local_model::roster_from_config(&cfg);
+    let fast = portfolio::pipeline::effective_fast_model(&roster.reasoner, &roster.fast);
+    let ids = vec![roster.reasoner.clone(), fast];
+    let eligibility =
+        portfolio::job::resume_eligibility(&conn, &cp, &ids, chrono::Utc::now());
+    let total = cp
+        .header
+        .work_list
+        .as_ref()
+        .map(|w| w.len())
+        .unwrap_or(cp.header.holdings.positions.len());
+    Ok(PortfolioResumeStatus {
+        available: eligibility.is_ok(),
+        run_id: Some(cp.header.run_id.clone()),
+        created_at: Some(cp.header.created_at.clone()),
+        completed: cp.holdings.len(),
+        total,
+        reason: eligibility.err(),
+    })
 }
 
 /// Run the engine-only Portfolio **quick check** (`docs/portfolio-analysis.md §The
@@ -1624,6 +1717,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_report_manual,
             generate_portfolio_manual,
+            portfolio_resume_status,
             run_portfolio_quick_check,
             latest_quick_check,
             latest_portfolio_run,

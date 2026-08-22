@@ -89,6 +89,10 @@ pub struct InterpretationInput<'a> {
     /// conviction evidence; a tripped hype cap renders with its engine-matched
     /// rule.
     pub narrative: Option<&'a engine::NarrativeRead>,
+    /// The rendered input delta (`docs/portfolio-workflow.md` §Step 6g) — the
+    /// bracketed-id entries the what-changed rows cite as evidence. Empty on a
+    /// debut.
+    pub input_delta: &'a [crate::portfolio::DeltaEntry],
 }
 
 /// What the `role_risk_only` interpretation reads: the dossier plus the engine's
@@ -98,6 +102,9 @@ pub struct RoleRiskInput<'a> {
     pub readout: &'a RoleRiskReadout,
     /// The engine's evaluation of the prior fund ledger's quantitative conditions.
     pub ledger_eval: Option<&'a LedgerEvaluation>,
+    /// The rendered input delta — the branch's reduced entry set. Empty on a
+    /// debut.
+    pub input_delta: &'a [crate::portfolio::DeltaEntry],
 }
 
 /// The branch-shaped verdict evidence the per-holding action call reads — the
@@ -369,6 +376,9 @@ pub fn analyze_holding(
         implied_expectations: None,
         narrative: None,
         option_overlay: dossier.option_overlay.clone(),
+        // Validated only where an interpretation ran; every early exit records
+        // none.
+        what_changed_audit: None,
     };
     let abstain = |reason: String, metrics, meta, pre_profit| {
         let verdict = HoldingVerdict {
@@ -565,14 +575,29 @@ pub fn analyze_holding(
                 backdrop_consulted.set(dossier.put_call_backdrop.is_some());
                 positioning_consulted
                     .set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
+                // The branch's rendered input delta — the what-changed rows'
+                // evidence vocabulary (`docs/portfolio-workflow.md` §Step 6g).
+                let input_delta = role_risk_input_delta(
+                    dossier,
+                    &fund_metrics,
+                    position_change,
+                    ledger_eval.as_ref(),
+                );
                 let interpretation = analyst
                     .interpret_role_risk(&RoleRiskInput {
                         dossier,
                         readout: &readout,
                         ledger_eval: ledger_eval.as_ref(),
+                        input_delta: &input_delta,
                     })
                     .context("interpreting the role/risk holding")?;
                 used_model(analyst.reasoner_id());
+                // The 6g what-changed attribution validator — external claims
+                // resolve against the rendered delta or downgrade to
+                // self-correction; a debut records no audit.
+                let what_changed_audit = dossier.prior_verdict.is_some().then(|| {
+                    validate_what_changed(&interpretation.what_changed_entries, input_delta)
+                });
                 // The 6g ledger seam: validate the rewrite — executability,
                 // condition identity / carry, tripped / fired claims, the branch's
                 // reductions (condition-only monitor, trim / sell triggers).
@@ -622,6 +647,10 @@ pub fn analyze_holding(
                 // same expense-ratio + price-derived legs the ledger evaluation above
                 // read, never the empty default (M3 of the 2026-08-18 audit).
                 let mut audit_record = audit(fund_metrics, None, Some(ledger_audit), None);
+                audit_record.what_changed_audit = what_changed_audit;
+                audit_record
+                    .degraded_inputs
+                    .extend(dossier.semantic_recall.gap.clone());
                 audit_record.action_annotations.extend(outside_set_annotation(
                     decision.action,
                     &crate::portfolio::ROLE_RISK_ACTIONS,
@@ -793,6 +822,17 @@ pub fn analyze_holding(
         .distill(dossier, &findings)
         .context("distilling research findings")?;
     used_model(analyst.fast_id());
+    // The rendered input delta — the what-changed rows' evidence vocabulary
+    // (`docs/portfolio-workflow.md` §Step 6g); empty on a debut.
+    let input_delta = priced_input_delta(
+        dossier,
+        &engine_output,
+        position_change,
+        ledger_eval.as_ref(),
+        tech_pre_flag.as_ref(),
+        narrative.as_ref(),
+        hard_forensic,
+    );
     let interpretation = analyst
         .interpret(&InterpretationInput {
             dossier,
@@ -802,9 +842,17 @@ pub fn analyze_holding(
             pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
             tech_pre_flag: tech_pre_flag.as_ref(),
             narrative: narrative.as_ref(),
+            input_delta: &input_delta,
         })
         .context("interpreting the holding")?;
     used_model(analyst.reasoner_id());
+    // The 6g what-changed attribution validator — every external row resolves
+    // against the rendered delta or downgrades to self-correction with a logged
+    // reason; a debut records no audit.
+    let what_changed_audit = dossier
+        .prior_verdict
+        .is_some()
+        .then(|| validate_what_changed(&interpretation.what_changed_entries, input_delta));
     // The v7 unrestricted contract: the model's conviction persists exactly as
     // authored — no bail, no clamp (`docs/portfolio-analysis.md` §The holding
     // verdict). Any matched pre-profit ceiling stays recorded on the overlay /
@@ -900,6 +948,7 @@ pub fn analyze_holding(
     degraded_inputs.extend(engine_output.tier_gaps.iter().cloned());
     degraded_inputs.extend(tech_pre_flag_gap.clone());
     degraded_inputs.extend(narrative_gap.clone());
+    degraded_inputs.extend(dossier.semantic_recall.gap.clone());
     let audit_record = HoldingAudit {
         symbol: symbol.clone(),
         metrics: engine_output.metrics.clone(),
@@ -936,6 +985,7 @@ pub fn analyze_holding(
         implied_expectations: engine_output.implied_expectations.clone(),
         narrative,
         option_overlay: dossier.option_overlay.clone(),
+        what_changed_audit,
     };
     Ok((verdict, audit_record))
 }
@@ -1618,6 +1668,359 @@ pub fn validate_ledger_rewrite(
     (ledger, audit)
 }
 
+/// Render the Step-6a semantic continuity recall — prompt fragments from this
+/// job's own memory partition (`docs/portfolio-workflow.md` §Step 6a). Nothing
+/// renders when no hit came back (a debut-empty partition, a failed lane — the
+/// gap rides the audit's degraded inputs instead).
+fn semantic_recall_prompt_section(d: &HoldingDossier) -> String {
+    if d.semantic_recall.hits.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "\nPRIOR ANALYSIS RECALL (semantic, from this job's own memory — \
+         continuity context, not fresh evidence):\n",
+    );
+    for h in &d.semantic_recall.hits {
+        s.push_str(&format!("- {h}\n"));
+    }
+    s
+}
+
+// ---- The what-changed attribution (the metric-level 6g validator) ----------------
+
+/// Format one optional value for an input-delta label — `(absent)` where that run
+/// could not compute the metric, never a fabricated zero.
+fn delta_val(v: Option<f64>) -> String {
+    v.map(|x| format!("{x:.4}"))
+        .unwrap_or_else(|| "(absent)".to_string())
+}
+
+/// Append one input-delta entry, assigning the next bracketed id.
+fn push_delta(entries: &mut Vec<crate::portfolio::DeltaEntry>, label: String) {
+    let id = format!("D{}", entries.len() + 1);
+    entries.push(crate::portfolio::DeltaEntry { id, label });
+}
+
+/// The delta entries both branches share: the position delta, this run's ledger
+/// crossings, and the house view where the prompt renders one.
+fn append_shared_delta(
+    entries: &mut Vec<crate::portfolio::DeltaEntry>,
+    dossier: &HoldingDossier,
+    position_change: PositionChange,
+    ledger_eval: Option<&LedgerEvaluation>,
+) {
+    if position_change != PositionChange::Unchanged {
+        let move_word = match position_change {
+            PositionChange::New => "new",
+            PositionChange::Increased => "increased",
+            PositionChange::Decreased => "decreased",
+            PositionChange::Unchanged => unreachable!("guarded above"),
+        };
+        push_delta(entries, format!("position {move_word} since the prior run"));
+    }
+    if let Some(eval) = ledger_eval {
+        for c in &eval.crossings {
+            let role = match c.role {
+                crate::portfolio::ConditionRole::Falsifier => "falsifier",
+                crate::portfolio::ConditionRole::Trigger => "trigger",
+            };
+            let outcome = match c.outcome {
+                CrossingOutcome::Confirmed => "confirmed",
+                CrossingOutcome::FirstBreach => "first breach",
+            };
+            push_delta(
+                entries,
+                format!(
+                    "ledger {role} '{}' {outcome}: observed {:.4} vs threshold {:.4}",
+                    c.statement, c.observed_value, c.threshold
+                ),
+            );
+        }
+    }
+    if dossier.house_view.latest_sections.is_some() {
+        push_delta(
+            entries,
+            "house view: the latest Market Signal report rendered this run".to_string(),
+        );
+    }
+}
+
+/// Assemble the priced holding's rendered **input delta**
+/// (`docs/portfolio-workflow.md` §Step 6g): the concrete, engine-computed changes
+/// since the prior read, each with a stable bracketed id the what-changed rows
+/// cite as evidence. Empty on a debut — nothing to attribute against. Resolution
+/// downstream is exact `old ≠ new` (ruled 2026-08-21): stored numerics round-trip
+/// bit-exact, so any difference is a real entry.
+#[allow(clippy::too_many_arguments)]
+fn priced_input_delta(
+    dossier: &HoldingDossier,
+    engine_output: &EngineOutput,
+    position_change: PositionChange,
+    ledger_eval: Option<&LedgerEvaluation>,
+    tech_pre_flag: Option<&engine::TechEventPreFlag>,
+    narrative: Option<&engine::NarrativeRead>,
+    hard_forensic: bool,
+) -> Vec<crate::portfolio::DeltaEntry> {
+    let Some(prior) = dossier.prior_verdict.as_ref() else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    if let (Some(old), Some(new)) = (dossier.prior_spot, dossier.financials.current_price) {
+        if old != new {
+            push_delta(&mut entries, format!("spot: {old:.2} -> {new:.2}"));
+        }
+    }
+    if let Some(prior_metrics) = dossier.prior_metrics.as_ref() {
+        for c in engine::metric_delta(prior_metrics, &engine_output.metrics) {
+            push_delta(
+                &mut entries,
+                format!("metric {}: {} -> {}", c.name, delta_val(c.old), delta_val(c.new)),
+            );
+        }
+    }
+    if let VerdictDisposition::Priced(pg) = &prior.disposition {
+        let axes = [
+            ("quality", pg.sub_scores.quality, engine_output.sub_scores.quality),
+            ("valuation", pg.sub_scores.valuation, engine_output.sub_scores.valuation),
+            ("momentum", pg.sub_scores.momentum, engine_output.sub_scores.momentum),
+            ("risk", pg.sub_scores.risk, engine_output.sub_scores.risk),
+        ];
+        for (name, old, new) in axes {
+            if old != new {
+                push_delta(
+                    &mut entries,
+                    format!("engine sub-score {name}: {old:.0} -> {new:.0}"),
+                );
+            }
+        }
+        if pg.grade != engine_output.grade {
+            push_delta(
+                &mut entries,
+                format!(
+                    "engine grade: {} -> {}",
+                    pg.grade.as_str(),
+                    engine_output.grade.as_str()
+                ),
+            );
+        }
+        let old_base = pg.price_targets.twelve_month.as_ref().map(|t| t.base);
+        let new_base = engine_output.price_targets.twelve_month.as_ref().map(|t| t.base);
+        if old_base != new_base {
+            push_delta(
+                &mut entries,
+                format!(
+                    "engine twelve-month base target: {} -> {}",
+                    delta_val(old_base),
+                    delta_val(new_base)
+                ),
+            );
+        }
+        if pg.risk_tier != Some(engine_output.risk_tier) {
+            push_delta(
+                &mut entries,
+                format!(
+                    "risk tier: {} -> {}",
+                    pg.risk_tier.map(|t| t.as_str()).unwrap_or("(absent)"),
+                    engine_output.risk_tier.as_str()
+                ),
+            );
+        }
+        if pg.dead_money != Some(engine_output.hurdle.state) {
+            push_delta(
+                &mut entries,
+                format!(
+                    "capital-efficiency read: {:?} -> {:?}",
+                    pg.dead_money, engine_output.hurdle.state
+                ),
+            );
+        }
+    }
+    if dossier.prior_grade_parameter_version.as_deref() != Some(engine::GRADE_PARAMETER_VERSION) {
+        push_delta(
+            &mut entries,
+            format!(
+                "grade bands recalibrated ({} -> {}) — letters can move with no input change",
+                dossier
+                    .prior_grade_parameter_version
+                    .as_deref()
+                    .unwrap_or("pre-stamp"),
+                engine::GRADE_PARAMETER_VERSION
+            ),
+        );
+    }
+    append_shared_delta(&mut entries, dossier, position_change, ledger_eval);
+    if let Some(f) = tech_pre_flag.filter(|f| f.fired) {
+        push_delta(
+            &mut entries,
+            format!(
+                "technology-event pre-flag fired ({:+.1}% vs {} over {} sessions)",
+                f.relative_move * 100.0,
+                f.benchmark,
+                f.sessions
+            ),
+        );
+    }
+    if let Some(n) = narrative {
+        push_delta(
+            &mut entries,
+            format!(
+                "narrative-vs-reality read: ratio {}{}",
+                n.ratio.map(|r| format!("{r:.2}")).unwrap_or_else(|| "(unbounded)".to_string()),
+                if n.hype_capped() { " (hype cap tripped)" } else { "" }
+            ),
+        );
+    }
+    if hard_forensic {
+        push_delta(
+            &mut entries,
+            "hard forensic filing event (item-classified restatement / auditor change)"
+                .to_string(),
+        );
+    }
+    entries
+}
+
+/// The `role_risk_only` branch's reduced input delta: the position delta, the
+/// branch's computed-surface metric moves, ledger crossings, and the house view.
+fn role_risk_input_delta(
+    dossier: &HoldingDossier,
+    fund_metrics: &engine::ComputedMetrics,
+    position_change: PositionChange,
+    ledger_eval: Option<&LedgerEvaluation>,
+) -> Vec<crate::portfolio::DeltaEntry> {
+    if dossier.prior_verdict.is_none() {
+        return Vec::new();
+    }
+    let mut entries = Vec::new();
+    if let Some(prior_metrics) = dossier.prior_metrics.as_ref() {
+        for c in engine::metric_delta(prior_metrics, fund_metrics) {
+            push_delta(
+                &mut entries,
+                format!("metric {}: {} -> {}", c.name, delta_val(c.old), delta_val(c.new)),
+            );
+        }
+    }
+    append_shared_delta(&mut entries, dossier, position_change, ledger_eval);
+    entries
+}
+
+/// Render the input delta and the attribution rules into the user prompt — the
+/// bracketed ids are the `what_changed_entries` evidence vocabulary.
+fn input_delta_prompt_section(entries: &[crate::portfolio::DeltaEntry]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "\nINPUT DELTA (the concrete changes since the prior read — the evidence \
+         ids for what_changed_entries):\n",
+    );
+    for e in entries {
+        s.push_str(&format!("[{}] {}\n", e.id, e.label));
+    }
+    s.push_str(
+        "WHAT_CHANGED_ENTRIES: author one typed row per moved intrinsic value \
+         (old -> new). Every external attribution (market-data / \
+         company-information / research-narrative) must cite one id above (e.g. \
+         \"D2\") — or the entry's label verbatim — in `evidence`; a row whose \
+         evidence resolves to no entry is downgraded to self-correction with a \
+         logged reason. A row whose old and new are identical, or a duplicate \
+         of another row, is dropped. Use attribution `self-correction` \
+         (evidence empty) when you are revising your own prior read without new \
+         facts. Author a `thesis` or `scenario-weights` row ONLY when the \
+         standing thesis itself materially changed — never for a rephrasing.\n",
+    );
+    s
+}
+
+/// The 6g **what-changed attribution validator**
+/// (`docs/portfolio-workflow.md` §Step 6g): every row the model labels external
+/// must resolve to a concrete entry in the rendered input delta — by bracketed id
+/// or label verbatim — or it is **downgraded to self-correction with a logged
+/// reason** (ruled 2026-08-21; the research-finding and
+/// `research_forward_assumption` legs join when the research loop lands, so today
+/// the delta entries are the whole evidence surface). Two structural drops run
+/// first — deterministic string comparisons, no appraisal of the model's prose:
+/// a row whose `old` and `new` agree claims no movement, and an exact duplicate
+/// of an already-kept row restates a move already counted; either is dropped
+/// with a logged reason, so neither can open a thesis-change episode or inflate
+/// the self-correction count. The returned audit carries the two signals
+/// outcome learning consumes: the post-validation self-correction count and the
+/// standing-thesis flag (a resolved external thesis / scenario-weights row, or
+/// any self-correction).
+pub(crate) fn validate_what_changed(
+    authored: &[crate::portfolio::WhatChangedEntry],
+    input_delta: Vec<crate::portfolio::DeltaEntry>,
+) -> crate::portfolio::WhatChangedAudit {
+    use crate::portfolio::{ChangeAttribution, ChangedValueKind};
+    let resolves = |evidence: &str| {
+        let e = evidence.trim();
+        if e.is_empty() {
+            return false;
+        }
+        let head = e
+            .trim_start_matches('[')
+            .split(|c: char| c.is_whitespace() || c == ':' || c == ',' || c == ']')
+            .next()
+            .unwrap_or("");
+        input_delta
+            .iter()
+            .any(|d| d.id.eq_ignore_ascii_case(head) || d.label.eq_ignore_ascii_case(e))
+    };
+    let mut entries = Vec::with_capacity(authored.len());
+    let mut downgrades = Vec::new();
+    let mut self_correction_count = 0u32;
+    let mut thesis_changed = false;
+    let mut kept: Vec<&crate::portfolio::WhatChangedEntry> = Vec::new();
+    for row in authored {
+        if row.old.trim() == row.new.trim() {
+            downgrades.push(format!(
+                "{:?} '{}': old and new agree ({:?}) — dropped, no movement claimed",
+                row.kind, row.detail, row.old
+            ));
+            continue;
+        }
+        if kept.contains(&row) {
+            downgrades.push(format!(
+                "{:?} '{}' ({} -> {}): exact duplicate row — dropped",
+                row.kind, row.detail, row.old, row.new
+            ));
+            continue;
+        }
+        kept.push(row);
+        let mut row = row.clone();
+        if row.attribution != ChangeAttribution::SelfCorrection && !resolves(&row.evidence) {
+            downgrades.push(format!(
+                "{:?} '{}' ({} -> {}): claimed {} evidence {:?} resolves to no \
+                 input-delta entry — downgraded to self-correction",
+                row.kind,
+                row.detail,
+                row.old,
+                row.new,
+                row.attribution.as_str(),
+                row.evidence
+            ));
+            row.attribution = ChangeAttribution::SelfCorrection;
+        }
+        if row.attribution == ChangeAttribution::SelfCorrection {
+            self_correction_count += 1;
+            thesis_changed = true;
+        } else if matches!(
+            row.kind,
+            ChangedValueKind::Thesis | ChangedValueKind::ScenarioWeights
+        ) {
+            thesis_changed = true;
+        }
+        entries.push(row);
+    }
+    crate::portfolio::WhatChangedAudit {
+        entries,
+        input_delta,
+        downgrades,
+        self_correction_count,
+        thesis_changed,
+    }
+}
+
 // ---- Prompt construction (pure, testable) ------------------------------------
 
 /// The system prompt for the interpretation stage — the role and the two-arm
@@ -1784,11 +2187,20 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
          open, a departure recorded as an audit annotation.\n",
     );
     match &d.prior_verdict {
-        Some(_) => p.push_str(
-            "\nCONTINUITY: a prior verdict for this holding exists. Keep the read firm; \
-             say what changed.\n",
+        Some(_) => {
+            p.push_str(
+                "\nCONTINUITY: a prior verdict for this holding exists. Keep the read firm; \
+                 say what changed.\n",
+            );
+            p.push_str(&semantic_recall_prompt_section(d));
+            // The rendered input delta — the what_changed_entries evidence ids
+            // the 6g attribution validator resolves against.
+            p.push_str(&input_delta_prompt_section(input.input_delta));
+        }
+        None => p.push_str(
+            "\nCONTINUITY: new holding (no prior verdict). what_changed_entries \
+             must be [].\n",
         ),
-        None => p.push_str("\nCONTINUITY: new holding (no prior verdict).\n"),
     }
     p.push_str(&ledger_prompt_section(
         d.prior_ledger(),
@@ -2548,8 +2960,15 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
             // because self-assessment against the baseline is the point of the
             // model arm (`docs/portfolio-analysis.md` §The holding verdict).
             p.push_str(&retrospective_prompt_section(d));
+            p.push_str(&semantic_recall_prompt_section(d));
+            // The rendered input delta — the what_changed_entries evidence ids
+            // the 6g attribution validator resolves against.
+            p.push_str(&input_delta_prompt_section(input.input_delta));
         }
-        None => p.push_str("\nCONTINUITY: new holding (no prior verdict).\n"),
+        None => p.push_str(
+            "\nCONTINUITY: new holding (no prior verdict). what_changed_entries \
+             must be [].\n",
+        ),
     }
 
     p.push_str(&ledger_prompt_section(
@@ -3321,6 +3740,9 @@ impl HoldingAnalyst for StubAnalyst {
             ),
             price_target_rationale: "Base case follows the engine's scenario midpoint.".to_string(),
             what_changed,
+            // The stub re-affirms — no typed rows, matching the empty-audit
+            // re-affirmation contract.
+            what_changed_entries: Vec::new(),
             ledger: stub_ledger_draft(
                 input.dossier.prior_ledger(),
                 &input.dossier.position.symbol,
@@ -3372,6 +3794,7 @@ impl HoldingAnalyst for StubAnalyst {
             } else {
                 "new holding".to_string()
             },
+            what_changed_entries: Vec::new(),
             ledger: stub_ledger_draft(
                 input.dossier.prior_ledger(),
                 &input.dossier.position.symbol,
@@ -3436,18 +3859,26 @@ pub struct LocalAnalyst {
     prompt_usage: std::sync::Mutex<Vec<crate::local_model::PromptUsage>>,
 }
 
+/// The fast tier's effective model id: a blank `fast_model` falls back to the
+/// reasoner — the fast tier is **optional** and never gates
+/// (`docs/configuration.md §Local Analysis Suite Configuration`), and the
+/// documented roster default runs distillation on the resident reasoner anyway
+/// (`docs/local-models.md §The model roster and per-task routing`) — so a
+/// reasoner+embedder-only setup runs rather than failing mid-run on an empty id.
+/// The single home for the rule: [`LocalAnalyst::new`] and the resume-status
+/// roster check both read it, so the two cannot drift.
+pub fn effective_fast_model(reasoner_model: &str, fast_model: &str) -> String {
+    if fast_model.trim().is_empty() {
+        reasoner_model.to_string()
+    } else {
+        fast_model.to_string()
+    }
+}
+
 impl LocalAnalyst {
-    /// A blank `fast_model` falls back to the reasoner: the fast tier is **optional**
-    /// and never gates (`docs/configuration.md §Local Analysis Suite Configuration`),
-    /// and the documented roster default runs distillation on the resident reasoner
-    /// anyway (`docs/local-models.md §The model roster and per-task routing`) — so a
-    /// reasoner+embedder-only setup runs rather than failing mid-run on an empty id.
+    /// See [`effective_fast_model`] for the blank-fast-tier fallback this applies.
     pub fn new(client: LocalModelClient, reasoner_model: String, fast_model: String) -> Self {
-        let fast_model = if fast_model.trim().is_empty() {
-            reasoner_model.clone()
-        } else {
-            fast_model
-        };
+        let fast_model = effective_fast_model(&reasoner_model, &fast_model);
         Self {
             client,
             reasoner_model,
@@ -3812,6 +4243,132 @@ mod tests {
     use crate::schwab::Position;
     use std::collections::HashMap;
 
+    // ---- The 6g what-changed attribution validator ----
+
+    fn wc_entry(
+        kind: crate::portfolio::ChangedValueKind,
+        attribution: crate::portfolio::ChangeAttribution,
+        evidence: &str,
+    ) -> crate::portfolio::WhatChangedEntry {
+        crate::portfolio::WhatChangedEntry {
+            kind,
+            detail: "conviction".into(),
+            old: "high".into(),
+            new: "medium".into(),
+            attribution,
+            evidence: evidence.into(),
+        }
+    }
+
+    fn delta_fixture() -> Vec<crate::portfolio::DeltaEntry> {
+        vec![
+            crate::portfolio::DeltaEntry {
+                id: "D1".into(),
+                label: "spot: 100.00 -> 92.00".into(),
+            },
+            crate::portfolio::DeltaEntry {
+                id: "D2".into(),
+                label: "metric gross margin: 0.4200 -> 0.3800".into(),
+            },
+        ]
+    }
+
+    /// A resolvable external attribution survives as authored — by bracketed id,
+    /// by id with trailing prose, or by the entry's label verbatim.
+    #[test]
+    fn a_resolvable_external_attribution_is_kept() {
+        use crate::portfolio::{ChangeAttribution as CA, ChangedValueKind as CK};
+        for evidence in ["D2", "[D2]", "d2 — gross margin fell", "metric gross margin: 0.4200 -> 0.3800"] {
+            let audit = validate_what_changed(
+                &[wc_entry(CK::Conviction, CA::CompanyInformation, evidence)],
+                delta_fixture(),
+            );
+            assert_eq!(audit.entries[0].attribution, CA::CompanyInformation, "{evidence}");
+            assert!(audit.downgrades.is_empty(), "{evidence}");
+            assert_eq!(audit.self_correction_count, 0);
+            assert!(!audit.thesis_changed, "a value-level external move is input movement");
+        }
+    }
+
+    /// The laundering guard: an external claim resolving to no input-delta entry
+    /// is downgraded to self-correction with a logged reason — never kept, never
+    /// dropped.
+    #[test]
+    fn an_unresolvable_external_attribution_downgrades_to_self_correction() {
+        use crate::portfolio::{ChangeAttribution as CA, ChangedValueKind as CK};
+        let audit = validate_what_changed(
+            &[wc_entry(CK::Conviction, CA::MarketData, "the market repriced growth")],
+            delta_fixture(),
+        );
+        assert_eq!(audit.entries[0].attribution, CA::SelfCorrection);
+        assert_eq!(audit.downgrades.len(), 1);
+        assert!(audit.downgrades[0].contains("downgraded to self-correction"));
+        assert_eq!(audit.self_correction_count, 1);
+        assert!(audit.thesis_changed, "a self-correction counts as a thesis change");
+    }
+
+    /// The rendered section carries every bracketed id plus the attribution rules;
+    /// with no entries (a debut) it renders nothing at all.
+    #[test]
+    fn input_delta_section_renders_ids_and_rules_or_nothing() {
+        let s = input_delta_prompt_section(&delta_fixture());
+        assert!(s.contains("[D1] spot: 100.00 -> 92.00"), "{s}");
+        assert!(s.contains("[D2] metric gross margin"), "{s}");
+        assert!(s.contains("downgraded to self-correction"), "{s}");
+        assert!(s.contains("never for a rephrasing"), "{s}");
+        assert_eq!(input_delta_prompt_section(&[]), "");
+    }
+
+    /// The standing-thesis signal: a resolved external thesis-level row trips it;
+    /// an authored self-correction needs no evidence and counts.
+    #[test]
+    fn thesis_scoped_rows_and_self_corrections_set_the_thesis_flag() {
+        use crate::portfolio::{ChangeAttribution as CA, ChangedValueKind as CK};
+        let audit = validate_what_changed(
+            &[wc_entry(CK::Thesis, CA::CompanyInformation, "D2")],
+            delta_fixture(),
+        );
+        assert!(audit.thesis_changed);
+        assert_eq!(audit.self_correction_count, 0);
+
+        let audit = validate_what_changed(
+            &[wc_entry(CK::SubScore, CA::SelfCorrection, "")],
+            delta_fixture(),
+        );
+        assert!(audit.thesis_changed);
+        assert_eq!(audit.self_correction_count, 1);
+        assert!(audit.downgrades.is_empty(), "an authored self-correction is no downgrade");
+    }
+
+    /// The structural drops — deterministic string checks, no appraisal of the
+    /// model's prose: a row claiming no movement (old == new after trim) and an
+    /// exact duplicate of a kept row are dropped with logged reasons, so
+    /// neither opens a thesis-change episode nor inflates the self-correction
+    /// count.
+    #[test]
+    fn no_move_and_duplicate_rows_are_dropped() {
+        use crate::portfolio::{ChangeAttribution as CA, ChangedValueKind as CK};
+        // An A -> A thesis row with valid evidence: dropped, no thesis change.
+        let mut same = wc_entry(CK::Thesis, CA::CompanyInformation, "D2");
+        same.old = "expansion thesis".into();
+        same.new = " expansion thesis ".into();
+        let audit = validate_what_changed(&[same], delta_fixture());
+        assert!(audit.entries.is_empty());
+        assert_eq!(audit.downgrades.len(), 1);
+        assert!(audit.downgrades[0].contains("no movement"), "{}", audit.downgrades[0]);
+        assert!(!audit.thesis_changed);
+        assert_eq!(audit.self_correction_count, 0);
+
+        // Two identical self-correction rows: one counted, one dropped.
+        let row = wc_entry(CK::SubScore, CA::SelfCorrection, "");
+        let audit = validate_what_changed(&[row.clone(), row], delta_fixture());
+        assert_eq!(audit.entries.len(), 1);
+        assert_eq!(audit.self_correction_count, 1);
+        assert_eq!(audit.downgrades.len(), 1);
+        assert!(audit.downgrades[0].contains("duplicate"), "{}", audit.downgrades[0]);
+        assert!(audit.thesis_changed, "the surviving self-correction still counts");
+    }
+
     /// The prompt-usage collector: a counted response records against the request's
     /// `num_ctx`; a count-less one (an older daemon) still records — with a `None`
     /// prompt count, so its output-side observation (a length stop above all)
@@ -3962,6 +4519,8 @@ mod tests {
 
     fn dossier(asset_class: AssetClass, financials: CompanyFinancials) -> HoldingDossier {
         HoldingDossier {
+            prior_metrics: None,
+            semantic_recall: Default::default(),
             company_name: None,
             position: position(asset_class),
             position_delta: PositionDelta::new_position(),
@@ -4880,6 +5439,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let input = InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "distilled findings",
@@ -4943,6 +5503,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let interp = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "findings",
@@ -4957,6 +5518,7 @@ mod tests {
         // A holding with no sector-matched prints renders no section.
         let bare = dossier(AssetClass::Stock, strong_financials());
         let interp = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &bare,
             engine: &engine_output,
             distilled: "findings",
@@ -4984,6 +5546,7 @@ mod tests {
         };
         let prompt = |f: Option<&engine::TechEventPreFlag>| {
             interpretation_user_prompt(&InterpretationInput {
+                input_delta: &[],
                 dossier: &d,
                 engine: &engine_output,
                 distilled: "findings",
@@ -5173,6 +5736,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let interp = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "findings",
@@ -5188,6 +5752,7 @@ mod tests {
         let mut fd = fund_dossier(us_equity_fund());
         fd.put_call_backdrop = Some(backdrop);
         let role = role_risk_user_prompt(&RoleRiskInput {
+            input_delta: &[],
             dossier: &fd,
             readout: &RoleRiskReadout::default(),
             ledger_eval: None,
@@ -5196,6 +5761,7 @@ mod tests {
         // Absent, neither prompt claims it.
         let bare = dossier(AssetClass::Stock, strong_financials());
         let interp = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &bare,
             engine: &engine_output,
             distilled: "findings",
@@ -5240,6 +5806,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let interp = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "findings",
@@ -5285,6 +5852,7 @@ mod tests {
         };
         assert_ne!(graded.engine_view.conviction, Conviction::Low);
         let interp = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &unknown,
             engine: &engine_output,
             distilled: "findings",
@@ -5354,6 +5922,7 @@ mod tests {
         };
         let interp = |d: &HoldingDossier, narrative: Option<&engine::NarrativeRead>| {
             interpretation_user_prompt(&InterpretationInput {
+                input_delta: &[],
                 dossier: d,
                 engine: &engine_output,
                 distilled: "findings",
@@ -5556,6 +6125,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let user = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "distilled findings",
@@ -5594,6 +6164,7 @@ mod tests {
         // A debut renders no retrospective and says so in the model-arm brief.
         let debut = dossier(AssetClass::Stock, strong_financials());
         let debut_user = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &debut,
             engine: &engine_output,
             distilled: "distilled findings",
@@ -5632,6 +6203,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let user = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "distilled findings",
@@ -5667,6 +6239,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let user = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "",
@@ -5706,6 +6279,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let user = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "",
@@ -5735,6 +6309,7 @@ mod tests {
         engine_output.target_meta.anchor_observations = 40;
         engine_output.target_meta.current_multiple_carry = false;
         let anchored = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "",
@@ -5767,6 +6342,7 @@ mod tests {
         engine_output.target_meta.flat_driver = true;
         engine_output.target_meta.dispersion_floor_applied = true;
         let carried = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "",
@@ -5782,6 +6358,7 @@ mod tests {
         // Neither anchored nor carried: the raw-percentile fallback branch.
         engine_output.target_meta.current_multiple_carry = false;
         let fallback = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "",
@@ -5814,6 +6391,7 @@ mod tests {
         };
         let prompt = |d: &HoldingDossier| {
             interpretation_user_prompt(&InterpretationInput {
+                input_delta: &[],
                 dossier: d,
                 engine: &engine_output,
                 distilled: "",
@@ -5849,6 +6427,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let user = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "",
@@ -5877,6 +6456,7 @@ mod tests {
             evidence_gaps: vec![],
         };
         let role = role_risk_user_prompt(&RoleRiskInput {
+            input_delta: &[],
             dossier: &d,
             readout: &readout,
             ledger_eval: None,
@@ -5909,6 +6489,7 @@ mod tests {
             ..Default::default()
         };
         let role = role_risk_user_prompt(&RoleRiskInput {
+            input_delta: &[],
             dossier: &d,
             readout: &readout,
             ledger_eval: None,
@@ -5920,6 +6501,7 @@ mod tests {
 
         let bare = fund_dossier(us_equity_fund());
         let role = role_risk_user_prompt(&RoleRiskInput {
+            input_delta: &[],
             dossier: &bare,
             readout: &readout,
             ledger_eval: None,
@@ -5953,6 +6535,7 @@ mod tests {
         let interpret = interpret_request(
             "reasoner-model",
             &InterpretationInput {
+                input_delta: &[],
                 dossier: &d,
                 engine: &engine_output,
                 distilled: "distilled findings",
@@ -5981,6 +6564,7 @@ mod tests {
         let role_risk = role_risk_request(
             "reasoner-model",
             &RoleRiskInput {
+                input_delta: &[],
                 dossier: &d,
                 readout: &readout,
                 ledger_eval: None,
@@ -6990,6 +7574,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let user = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "",
@@ -7446,6 +8031,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let user = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "none",
@@ -7545,6 +8131,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let interp = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
             dossier: &d,
             engine: &engine_output,
             distilled: "none",

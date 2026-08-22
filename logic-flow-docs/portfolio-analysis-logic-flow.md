@@ -411,7 +411,7 @@
 
 The following sequence runs once for every holding in the work list.
 
-Each completed holding is designed to checkpoint separately; as-built only the between-holdings cancellation check exists.
+Each completed holding checkpoints separately as it lands — verdict, audit, and the refreshed run-level accumulators — so a failure or cancellation resumes the unfinished holdings (Resume behavior, below); the between-holdings cancellation check runs beside it.
 
 ### Work-list logic
 
@@ -441,10 +441,11 @@ Each completed holding is designed to checkpoint separately; as-built only the b
     - Stale vintage — the carried verdict is older than the ~4-week window.
     - Each is a non-blocking badge on the card; the user acts on it by selecting the holding or running a full analysis, so an urgent single-holding run is never blocked by the rest of the book.
 
-- **Resume behavior (designed, not built)**
+- **Resume behavior (built)**
   - Resume uses the interrupted run’s pinned holdings and context.
-  - No fresh Schwab pull occurs.
-  - Starting resume window: about 48 hours.
+  - No fresh holdings pull occurs; per-holding retrieval (option chains included) still runs live at each resumed holding’s own Step 6a.
+  - Starting resume window: 48 hours.
+  - A version, roster, or baseline change since the interrupted run refuses the resume with its reason.
 
 ---
 
@@ -511,7 +512,7 @@ Once the stock guard clears — and for every fund — the remaining legs are pu
   - Prior thesis ledger.
   - Position delta.
   - Shared market context.
-  - Portfolio Analysis memory for this holding — semantic recall designed, not built.
+  - Portfolio Analysis memory for this holding — semantic recall over the job's own summary rows (top-k, fail-soft; empty on the first run after the lane landed).
 
 #### Fund routing
 
@@ -526,20 +527,21 @@ A fund’s route — read from the `etf/info` and weights gathered above — is 
   - Mutual fund without usable weights → role-risk-only path.
   - Closed-end fund → the price-versus-NAV leg is designed; as-built it routes as a generic fund.
 
-#### Semantic recall (designed)
+#### Semantic recall (built)
 
-The designed embedding-based recall of this holding’s prior analysis; as-built this section does not run.
+The embedding-based recall of this holding’s prior analysis, rendered into the dossier beside the deterministically loaded prior verdict and ledger.
 
-- **Embedding model (designed — no 6a semantic recall runs as-built)**
-  - Converts a holding-specific query into a vector.
-  - Searches only Portfolio Analysis memory.
-  - Retrieves relevant prior analysis.
+- **Embedding model**
+  - Converts a holding-specific query (symbol, sector/industry, standing thesis, key drivers) into a vector via the fixed local embedder.
+  - Searches only Portfolio Analysis memory, and only its per-holding summary rows (durable learnings never participate).
+  - Retrieves the top-3 prior per-holding summaries.
   - Performs no investment reasoning.
+  - An unconfigured embedder or an empty summary shelf (the first post-slice run, by design) is silent absence — no query embedding is spent and no gap is recorded.
 
-- **Embedding failure (designed)**
-  - Skip semantic recall.
+- **Embedding failure**
+  - Skip semantic recall for this holding only.
   - Keep the directly loaded prior verdict and ledger.
-  - Record a degraded-input flag.
+  - Record a typed degraded-input gap.
 
 #### Output
 
@@ -813,12 +815,12 @@ The alternative branch to the stock spine above; the fund engine makes the final
 
 #### Continuity and ledger checks
 
-After the branch's engine values are set, the prior ledger's conditions are evaluated against them (the ledger checks). The input delta's pieces — position change, prior values, house-view age — already arrived from Steps 4–5 and the dossier; its engine-computed metric comparison is designed, not built.
+After the branch's engine values are set, the prior ledger's conditions are evaluated against them (the ledger checks). The input delta's pieces — position change, prior values, house-view age — already arrived from Steps 4–5 and the dossier; the engine-computed metric comparison renders them as bracketed-id entries the what-changed rows cite.
 
 - **Input delta**
   - Position change and house-view age.
   - Prior-run values carried for the interpretation call to compare.
-  - An engine-computed metric comparison is designed, not built.
+  - The engine-computed metric comparison resolves at exact old ≠ new; its positioning leg still waits on its data legs.
 
 - **Ledger checks**
   - Evaluate quantitative falsifiers and action triggers.
@@ -1315,7 +1317,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 ### Step 6g — Validate continuity and checkpoint
 
 - **As-built**
-  - The validators here run every run, but the legs that depend on the stubbed research producer or its unbuilt downstream validator are dormant: the what-changed **attribution** check, the repeated-execution-miss cap's trigger, and the ledger's qualitative-trip → sourced-research leg. What runs today: the two-arm stamping, the engine-series ledger validation, the live severe-deterioration cap, and the attention clear-and-acknowledge; the per-holding checkpoint is designed, not built.
+  - The validators here run every run; only the legs that depend on the stubbed research producer are dormant: the repeated-execution-miss cap's trigger and the ledger's qualitative-trip → sourced-research leg. What runs today: the what-changed **attribution** check (external rows resolve against the rendered input delta or downgrade to self-correction with a logged reason), the two-arm stamping, the engine-series ledger validation, the live severe-deterioration cap, the attention clear-and-acknowledge, and the per-holding checkpoint write.
 
 - **Data retrieved**
   - No new data.
@@ -1325,14 +1327,13 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Nothing the model returns can alter an engine grade, target, overlay value, or monitor stamp.
   - The model arm's own numbers are structurally validated only, never compared against the engine's.
 
-- **What-changed validation (designed — the attribution validator is unbuilt)**
-  - As-built the what-changed audit is model-authored prose, persisted as returned; only the interpretation prompt disciplines it, and the self-correction counters stay structurally zero. No app code checks the attribution today.
-  - Designed, every claimed external change must map to one of:
-    - An input-delta entry.
+- **What-changed validation (built)**
+  - The what-changed audit is typed rows beside the prose (kind, old → new, attribution, evidence), and every claimed external change must map to one of:
+    - An input-delta entry (by bracketed id or label verbatim).
     - A sourced research finding.
     - An accepted forward assumption.
-  - Then an unsupported change becomes a labeled self-correction, or the response fails validation.
-  - [note: the forward-assumption leg has no wire at all — there is no `research_forward_assumption` type in the code (the same gap Step 6e records); the input-delta and research legs await the validator, and the research leg additionally awaits the stubbed research producer.]
+  - An unsupported external change is downgraded to a labeled self-correction with a logged reason; hard schema failure is reserved for structurally malformed rows.
+  - [note: the forward-assumption leg has no wire at all — there is no `research_forward_assumption` type in the code (the same gap Step 6e records) — and the research leg awaits the stubbed research producer, so the rendered input delta is today's whole evidence surface.]
 
 - **Conviction and cap handling**
   - The model's conviction is its own; no app recalculation, ceiling, or clamp touches it.
@@ -1361,7 +1362,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 
 - **Output**
   - Validated intrinsic verdict and thesis ledger.
-  - Completed per-holding checkpoint (designed, not built).
+  - Completed per-holding checkpoint (verdict + audit row, plus the refreshed run-level accumulators).
 
 ---
 
@@ -1395,7 +1396,7 @@ Outcome learning has two halves that share one unit, the **decision episode** �
   - A failed price refresh leaves the label pending while inside the coverage grace; past the grace it closes as a typed unscorable label rather than staying pending. A failed dividend pull instead degrades to a price-only label, never blocking maturation.
   - Append or extend this run's decision episodes — the run's episode-creation step: open a new episode when a holding's recommendation state changed since the prior run (a verdict-branch flip or an action change), otherwise extend the still-active episode.
   - A holding's first analysis opens a debut episode; an abstention extends the standing episode without opening one; a reaffirmation after the episode has matured records nothing.
-  - A thesis-change trigger is designed but dormant until the attribution validator lands; wording-only thesis edits never open an episode.
+  - A thesis-change trigger is live off the attribution validator's audit — a resolved thesis-level external row or any labeled self-correction on a fresh pass; wording-only thesis edits never open an episode.
   - Derive the scorecard reads over the updated episode set — the reads below.
 
 - **Scorecard reads** (derived deterministically over the updated episode set — engine-computed, never model-judged; of them the roll-up surfaces only the head-to-head and outlook-direction reads, as the model-vs-engine scoreboard, and each holding's own matured window lines ride back into its next interpretation — they decide nothing on their own, the calibration loop they feed only ever proposes)
@@ -1406,7 +1407,7 @@ Outcome learning has two halves that share one unit, the **decision episode** �
   - **Action cohorts** — mean total and price return plus vs-market / vs-sector spreads, grouped by the action rung recorded at episode creation, across all four windows: the cohort spreads the action ranking is read from (do the add cohorts out-return the hold cohort, and hold the trim / sell cohorts). Computed over model-chosen priced episodes — a vintage-fresh intrinsic-layer set reported beside the all-model-chosen final-action set; role-risk-only and rule-demoted episodes are counted in their own classes, out of the pooled read.
   - **Falsifier lead times** — the 12-month bear-line crossings above, surfaced per episode.
   - **Proposal eligibility** — a gate counting the unique holdings with a scored matured window against a bar (drafted 30). **As-built the gate is built but the proposals are not**: below the bar the pass records the typed below-bar note and proposes nothing, and above it the proposal statistics still land with a later slice once enough matured data exists — and even then the loop only proposes, never auto-applies.
-  - [note: the self-correction accumulation is a scorecard field but reads structurally zero — its producer is the dormant 6g what-changed attribution validator, the same one gating the standing-thesis episode-open leg above.]
+  - **Self-correction accumulation** — the 6g validator's post-validation labels (authored plus downgraded), seeded onto the episode a fresh pass opens and accumulated across extensions; a thesis-level external row or any labeled self-correction also opens an episode with the action unchanged (the standing-thesis leg, live).
 
 ---
 
@@ -1448,7 +1449,7 @@ Outcome learning has two halves that share one unit, the **decision episode** �
 
 - **Embedding model**
   - Embed a calibration learning only when this run records newly matured outcome-window labels — keyed to window-label maturation, not to an episode freezing into the archive, and not fired every run.
-  - Per-holding thesis, read, and action embeddings are designed, not built.
+  - Per-holding thesis, read, and action summaries embed as run-pruned summary rows — fresh-vintage analyzed verdicts only.
   - Store vectors only in Portfolio Analysis memory.
   - Failed embedding drops only that memory row.
   - Persisted run still succeeds.

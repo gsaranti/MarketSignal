@@ -43,7 +43,7 @@ const CBOE_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 /// trading day. `as_of` is the date label the extraction reads, verbatim —
 /// the page decides which session it shows, never a local clock — carried
 /// under the module-level guarantee scope and its sole-impostor residual.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PutCallBackdrop {
     pub as_of: String,
     pub total: Option<f64>,

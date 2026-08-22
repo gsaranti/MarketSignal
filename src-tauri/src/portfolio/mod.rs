@@ -61,6 +61,12 @@ pub fn holding_step_key(symbol: &str) -> String {
 /// `list_run_summaries` blob parse as well as disk.
 pub const PORTFOLIO_RUN_RETENTION: u32 = 30;
 
+/// The Step-6a semantic continuity retrieval's depth — the top-k cosine hits a
+/// holding's dossier recalls from the Portfolio memory partition's `summary`
+/// rows (`docs/portfolio-workflow.md` §Step 6a). Drafted, calibratable
+/// (`docs/portfolio-analysis.md` §Starting parameters).
+pub const SEMANTIC_RECALL_TOP_K: usize = 3;
+
 /// How many recent Market Signal reports load as the house-view context for a
 /// holding's dossier (`docs/portfolio-analysis.md` — the report is a read-only shared
 /// input, loaded deterministically, never vector-searched). Pinned at X=3, matching
@@ -1471,6 +1477,13 @@ pub struct HoldingAudit {
     /// pre-field runs (`#[serde(default)]`).
     #[serde(default)]
     pub option_overlay: Option<dossier::OptionOverlay>,
+    /// The validated what-changed attribution ([`WhatChangedAudit`]) — the typed
+    /// rows resolved against the rendered input delta at the 6g seam, with the
+    /// standing-thesis and self-correction signals outcome learning consumes.
+    /// `None` on debuts, every early exit, and pre-field runs
+    /// (`#[serde(default)]`).
+    #[serde(default)]
+    pub what_changed_audit: Option<WhatChangedAudit>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the
@@ -1550,7 +1563,22 @@ pub struct HoldingAudit {
 /// rule (engine conviction capped Low, the add family barred from the engine
 /// set), binding the engine arm and annotating — never clamping — the model's
 /// (`docs/portfolio-analysis.md` §Starting parameters).
-pub const PROMPT_VERSION: &str = "portfolio-v10";
+///
+/// `portfolio-v11`: the typed what-changed attribution (the metric-level 6g
+/// validator — `docs/portfolio-workflow.md` §Step 6g). The prompt renders the
+/// engine's **input delta** as bracketed-id entries (position delta, the
+/// metric / sub-score / grade / target moves against the prior audit's stored
+/// values, ledger crossings, the technology pre-flag, the narrative read, a
+/// band recalibration, the house view), and the 6f response adds
+/// `what_changed_entries` — one typed row per moved intrinsic value (kind,
+/// old → new, an external attribution or self-correction, the evidence id).
+/// The 6g seam validates every external attribution against the rendered
+/// delta; an unresolvable one is **downgraded to self-correction with a
+/// logged reason** (exact old ≠ new resolution, ruled 2026-08-21 — no
+/// materiality margin). The validated audit wakes the outcome layer's
+/// standing-thesis episode leg and self-correction counters
+/// (`docs/portfolio-analysis.md` §Outcome learning).
+pub const PROMPT_VERSION: &str = "portfolio-v11";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -1684,6 +1712,146 @@ pub struct KeyDriverDraft {
     pub series: Option<String>,
 }
 
+// ---- The what-changed attribution (the metric-level 6g validator) ---------------
+//
+// The typed half of the what-changed audit (`docs/portfolio-analysis.md` §What
+// changed): the model authors one row per moved intrinsic value, attributing it to
+// an external change or a self-correction; the 6g seam resolves every external
+// attribution against the engine's rendered input delta and downgrades an
+// unresolvable one to self-correction with a logged reason — so a no-new-facts
+// swing cannot be laundered as "the market changed" (`docs/portfolio-workflow.md`
+// §Step 6g).
+
+/// Which intrinsic value a what-changed row claims moved. The thesis-scoped kinds
+/// (`Thesis`, `ScenarioWeights`) are the standing-thesis episode leg's key
+/// (`docs/portfolio-analysis.md` §Outcome learning): value-level moves are input
+/// movement — observations on the active episode, never an open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChangedValueKind {
+    Grade,
+    SubScore,
+    Conviction,
+    Target,
+    Horizon,
+    ScenarioWeights,
+    Thesis,
+    Condition,
+    /// The `role_risk_only` branch's role / exposure / risk reads.
+    RoleRead,
+}
+
+/// How a moved value is attributed (`docs/portfolio-analysis.md` §What changed):
+/// one of the three external categories, tied to evidence — or the flagged
+/// self-correction, where the inputs did not materially change and the model is
+/// revising its own prior read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChangeAttribution {
+    MarketData,
+    CompanyInformation,
+    ResearchNarrative,
+    SelfCorrection,
+}
+
+impl ChangeAttribution {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MarketData => "market-data",
+            Self::CompanyInformation => "company-information",
+            Self::ResearchNarrative => "research-narrative",
+            Self::SelfCorrection => "self-correction",
+        }
+    }
+}
+
+/// One typed row of the what-changed audit, authored at 6f beside the prose line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WhatChangedEntry {
+    pub kind: ChangedValueKind,
+    /// Which value moved (e.g. "quality sub-score", "twelve-month base target").
+    pub detail: String,
+    pub old: String,
+    pub new: String,
+    pub attribution: ChangeAttribution,
+    /// The input-delta entry backing an external attribution — the bracketed id
+    /// (e.g. "D2") or the entry's label verbatim; empty on a self-correction.
+    pub evidence: String,
+}
+
+/// One concrete entry of the run's input delta, rendered into the interpretation
+/// prompt with a stable id the what-changed rows cite as evidence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeltaEntry {
+    pub id: String,
+    pub label: String,
+}
+
+/// The validated what-changed attribution, persisted with the holding's audit
+/// (`docs/portfolio-workflow.md` §Step 6g): the post-validation rows (an
+/// unresolvable external attribution downgraded to self-correction), the input
+/// delta they resolved against, and the two signals outcome learning consumes.
+/// `None` on debuts (nothing to attribute), every early exit, and runs persisted
+/// before the validator existed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WhatChangedAudit {
+    pub entries: Vec<WhatChangedEntry>,
+    /// The rendered input-delta entries the external attributions resolved against.
+    pub input_delta: Vec<DeltaEntry>,
+    /// One line per validator adjustment (the logged reason): a downgraded
+    /// external row, a dropped no-move row (`old` == `new`), or a dropped
+    /// exact-duplicate row.
+    pub downgrades: Vec<String>,
+    /// Post-validation self-corrections this run (authored plus downgraded).
+    pub self_correction_count: u32,
+    /// The standing-thesis signal (`docs/portfolio-analysis.md` §Outcome
+    /// learning): a resolved external thesis / scenario-weights row, or any
+    /// self-correction.
+    pub thesis_changed: bool,
+}
+
+/// The `what_changed_entries` array schema, per branch: the priced kinds cover the
+/// intrinsic values; the role-risk branch swaps them for its role read.
+fn what_changed_entries_schema(role_risk: bool) -> Value {
+    let kinds: Vec<&str> = if role_risk {
+        vec!["role-read", "scenario-weights", "thesis", "condition"]
+    } else {
+        vec![
+            "grade",
+            "sub-score",
+            "conviction",
+            "target",
+            "horizon",
+            "scenario-weights",
+            "thesis",
+            "condition",
+        ]
+    };
+    json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "kind": { "type": "string", "enum": kinds },
+                "detail": { "type": "string" },
+                "old": { "type": "string" },
+                "new": { "type": "string" },
+                "attribution": {
+                    "type": "string",
+                    "enum": [
+                        "market-data",
+                        "company-information",
+                        "research-narrative",
+                        "self-correction"
+                    ]
+                },
+                "evidence": { "type": "string" }
+            },
+            "required": ["kind", "detail", "old", "new", "attribution", "evidence"]
+        }
+    })
+}
+
 /// The model's grammar-constrained output (Ollama native `format`) — the only thing
 /// the 122B authors at interpretation. The engine arm's numbers come from the
 /// engine; since `portfolio-v7` this also carries the model arm's own numbers
@@ -1703,6 +1871,11 @@ pub struct Interpretation {
     /// and explains; the engine computed the figure).
     pub price_target_rationale: String,
     pub what_changed: String,
+    /// The typed what-changed rows beside the prose line ([`WhatChangedEntry`]) —
+    /// one per moved intrinsic value, validated at the 6g seam against the
+    /// rendered input delta. Empty on a debut ("new holding").
+    #[serde(default)]
+    pub what_changed_entries: Vec<WhatChangedEntry>,
     /// The rewritten thesis ledger — required; validated at the 6g seam.
     pub ledger: LedgerDraft,
     /// The model arm's four sub-scores (0–100, higher better) — its own read
@@ -1808,12 +1981,13 @@ pub fn ledger_schema(role_risk: bool) -> Value {
 /// `ledger`, `self_assessment` — also appear in the instructional prose above the
 /// declaration, where a containment test cannot tell a real declaration from an
 /// incidental mention (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 2).
-pub const INTERPRETATION_KEYS: [&str; 9] = [
+pub const INTERPRETATION_KEYS: [&str; 10] = [
     "conviction",
     "horizon_outlook",
     "financial_summary",
     "price_target_rationale",
     "what_changed",
+    "what_changed_entries",
     "ledger",
     "model_sub_scores",
     "model_price_targets",
@@ -1822,7 +1996,8 @@ pub const INTERPRETATION_KEYS: [&str; 9] = [
 
 /// The `role_risk_only` branch's fields, on the same shared-constant footing —
 /// `ledger` is shadowed by that prompt's prose too.
-pub const ROLE_RISK_KEYS: [&str; 3] = ["role_summary", "what_changed", "ledger"];
+pub const ROLE_RISK_KEYS: [&str; 4] =
+    ["role_summary", "what_changed", "what_changed_entries", "ledger"];
 
 /// The priced branch's response-contract sentence, generated from
 /// [`INTERPRETATION_KEYS`]. The nested shapes are stated after the key list because
@@ -1837,7 +2012,9 @@ pub fn interpretation_response_contract() -> String {
         "Respond with a single JSON object carrying exactly these keys: {}. \
          Within them: horizon_outlook is short / mid / long; model_sub_scores is \
          quality / valuation / momentum / risk; model_price_targets is one_month and \
-         twelve_month, each base / bear / bull. The decoder's grammar enforces the \
+         twelve_month, each base / bear / bull; what_changed_entries is a list of \
+         typed rows (kind, detail, old, new, attribution, evidence), empty on a new \
+         holding. The decoder's grammar enforces the \
          required keys and value shapes, and any key outside this set is dropped on \
          decode — so spend no reasoning on shape; put it into the read.",
         INTERPRETATION_KEYS.join(", ")
@@ -1893,6 +2070,7 @@ pub fn interpretation_schema() -> Value {
             "financial_summary": { "type": "string" },
             "price_target_rationale": { "type": "string" },
             "what_changed": { "type": "string" },
+            "what_changed_entries": what_changed_entries_schema(false),
             "ledger": ledger_schema(false),
             "model_sub_scores": {
                 "type": "object",
@@ -1928,6 +2106,11 @@ pub struct RoleRiskInterpretation {
     /// The vehicle's mandate and the exposure it exists to supply (prose).
     pub role_summary: String,
     pub what_changed: String,
+    /// The typed what-changed rows beside the prose line ([`WhatChangedEntry`],
+    /// the branch's reduced kind set) — validated at the 6g seam. Empty on a
+    /// debut.
+    #[serde(default)]
+    pub what_changed_entries: Vec<WhatChangedEntry>,
     /// The rewritten fund ledger — same sections, the branch's two reductions
     /// enforced at validation (condition-only monitor, trim / sell triggers).
     pub ledger: LedgerDraft,
@@ -1950,6 +2133,7 @@ pub fn role_risk_interpretation_schema() -> Value {
         "properties": {
             "role_summary": { "type": "string" },
             "what_changed": { "type": "string" },
+            "what_changed_entries": what_changed_entries_schema(true),
             "ledger": ledger_schema(true)
         },
         "required": ROLE_RISK_KEYS

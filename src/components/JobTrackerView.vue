@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import Icon from "./Icon.vue";
-import type { RunTrace, StepStatus } from "../types";
+import type { PortfolioResumeStatus, RunTrace, StepStatus } from "../types";
 
 // Live job run tracker — shown in place of the report pane while a run is in
 // flight (and reopenable as a terminal "run log" afterward, latest run only).
@@ -33,13 +33,22 @@ const props = withDefaults(
     // the running job's own page), keying the surface labels: the back control,
     // the scroll region's accessible name, and the idle headline.
     kind?: "report" | "portfolio" | "portfolio-quick-check";
+    // The interrupted-run resumability read, supplied only for a Portfolio
+    // run's terminal state (docs/portfolio-analysis.md §Failure posture: resume
+    // is offered from the failed / cancelled tracker state). `null` = no
+    // checkpoint trail (or not a portfolio run) — nothing renders.
+    resume?: PortfolioResumeStatus | null;
+    // A resume is already being requested — disables the button so a double
+    // press cannot race the single run slot.
+    resumeRequested?: boolean;
   }>(),
-  { kind: "report" }
+  { kind: "report", resume: null, resumeRequested: false }
 );
 
 const emit = defineEmits<{
   (e: "cancel"): void;
   (e: "close"): void;
+  (e: "resume"): void;
 }>();
 
 // The owning-page label set (docs/run-tracking.md): a Portfolio run's tracker
@@ -96,6 +105,49 @@ const terminalLabel = computed(() => {
 const terminalIsAlert = computed(
   () => terminal.value?.status === "failed" || terminal.value?.status === "cancelled"
 );
+
+// Resume is offered only on a Portfolio run's failed / cancelled terminal state
+// with a currently-eligible checkpoint trail (docs/portfolio-analysis.md
+// §Failure posture); a trail that exists but cannot resume states why instead.
+// The probe returns whichever trail exists — not necessarily this run's (a run
+// failing before it opens its own trail leaves an earlier one standing) — so
+// the note identifies the trail by its own pinned as-of, never by claiming it
+// belongs to the run shown.
+const resumeContext = computed(
+  () =>
+    !props.active &&
+    props.kind === "portfolio" &&
+    terminalIsAlert.value &&
+    props.resume != null
+);
+const resumeOffered = computed(
+  () => resumeContext.value && props.resume?.available === true
+);
+// The pinned pull's as-of in the viewer's local time (backend persists UTC);
+// falls back to the raw string if unparseable.
+function formatLocal(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+const resumeNote = computed(() => {
+  if (!resumeContext.value || !props.resume) return "";
+  if (props.resume.available) {
+    const { completed, total, createdAt } = props.resume;
+    const asOf = createdAt ? ` from ${formatLocal(createdAt)}` : "";
+    return (
+      `An interrupted run${asOf} can resume: ${completed} of ${total} holdings completed. ` +
+      "Resume keeps them and its pinned holdings pull and run-level context, and analyzes the rest."
+    );
+  }
+  return props.resume.reason ? `Resume unavailable: ${props.resume.reason}.` : "";
+});
 
 function stepStatusText(status: StepStatus): string {
   switch (status) {
@@ -208,16 +260,28 @@ watch(contentSignature, async () => {
         >
           {{ cancelRequested ? "Cancelling…" : "Cancel run" }}
         </button>
-        <button
-          v-else
-          type="button"
-          class="btn btn-secondary"
-          @click="emit('close')"
-        >
-          {{ backLabel }}
-        </button>
+        <template v-else>
+          <button
+            v-if="resumeOffered"
+            type="button"
+            class="btn btn-secondary"
+            :disabled="resumeRequested"
+            @click="emit('resume')"
+          >
+            {{ resumeRequested ? "Resuming…" : "Resume run" }}
+          </button>
+          <button type="button" class="btn btn-secondary" @click="emit('close')">
+            {{ backLabel }}
+          </button>
+        </template>
       </div>
     </div>
+    <!-- The resumability read for a stopped Portfolio run: what resume keeps,
+         or why it is unavailable — announced politely, since it appears with
+         the terminal state. -->
+    <p v-if="resumeNote" class="resume-note" aria-live="polite">
+      {{ resumeNote }}
+    </p>
 
     <!-- Keyboard-scrollable region; the live agent text and request rows stream
          in here. role+label+tabindex make it reachable and operable by keyboard. -->
@@ -406,6 +470,17 @@ watch(contentSignature, async () => {
   padding: var(--s-3) var(--s-8);
   border-bottom: var(--border);
   gap: var(--s-4);
+}
+
+/* The stopped-run resumability line: quiet ui-sm ink-2 prose under the toolbar,
+   aligned to its padding — the same register as the request rows' detail text,
+   no new tokens. */
+.resume-note {
+  margin: 0;
+  padding: var(--s-3) var(--s-8);
+  border-bottom: var(--border);
+  font-size: var(--t-ui-sm);
+  color: var(--ink-2);
 }
 
 .toolbar-heading {

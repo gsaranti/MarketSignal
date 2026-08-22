@@ -628,6 +628,63 @@ fn over_age(vintage: &str, today: chrono::NaiveDate) -> bool {
     }
 }
 
+/// The resume window (`docs/portfolio-analysis.md` §Starting parameters,
+/// drafted ~48 hours): an interrupted run offers resume only while its pinned
+/// holdings pull is younger than this — past it the checkpoints are stale
+/// against a book that may have moved, so Run analysis starts a new run.
+pub const RESUME_WINDOW_HOURS: i64 = 48;
+
+/// Whether an interrupted run's checkpoints can resume — `Ok(())` = offerable
+/// (`docs/portfolio-analysis.md` §Failure posture: offered only while the
+/// checkpoints exist and the pinned pull is younger than the resume window).
+/// The version stamps must match the current binary and roster: the pinned
+/// contract cannot be re-created from an updated app, so a mismatch refuses
+/// rather than mixing verdicts across contracts. The Err carries the reason the
+/// UI shows.
+pub fn resume_eligibility(
+    conn: &Connection,
+    cp: &store::Checkpoint,
+    current_model_ids: &[String],
+    now: chrono::DateTime<chrono::Utc>,
+) -> std::result::Result<(), String> {
+    let created = chrono::DateTime::parse_from_rfc3339(&cp.header.created_at)
+        .map_err(|e| format!("unreadable checkpoint timestamp: {e}"))?;
+    let age = now.signed_duration_since(created.with_timezone(&chrono::Utc));
+    if age > chrono::Duration::hours(RESUME_WINDOW_HOURS) {
+        return Err(format!(
+            "the pinned holdings pull is older than the {RESUME_WINDOW_HOURS}-hour resume window"
+        ));
+    }
+    if cp.header.prompt_version != crate::portfolio::PROMPT_VERSION {
+        return Err("the prompt/schema version changed since the interrupted run".into());
+    }
+    if cp.header.grade_parameter_version != crate::portfolio::engine::GRADE_PARAMETER_VERSION {
+        return Err("the grade parameters changed since the interrupted run".into());
+    }
+    if cp.header.target_parameter_version
+        != crate::portfolio::engine::SCENARIO_TARGET_PARAMETER_VERSION
+    {
+        return Err("the scenario-target parameters changed since the interrupted run".into());
+    }
+    if cp.header.pre_profit_parameter_version
+        != crate::portfolio::pre_profit::PRE_PROFIT_PARAMETER_VERSION
+    {
+        return Err("the pre-profit parameters changed since the interrupted run".into());
+    }
+    if cp.header.model_ids != current_model_ids {
+        return Err("the configured model roster changed since the interrupted run".into());
+    }
+    // The diff / carry baseline must not have moved: a newer persisted run means
+    // these checkpoints describe a superseded book state (any run that persisted
+    // discarded prior trails as it opened its own, so a mismatch is stale state,
+    // never a live trail).
+    let latest = store::latest_run(conn).ok().flatten().map(|r| r.run_id);
+    if latest != cp.header.prior_run_id {
+        return Err("a newer run has persisted since the interrupted run".into());
+    }
+    Ok(())
+}
+
 /// Run one Portfolio Analysis job end to end with the lifecycle contract. Returns
 /// `Err` only on an infrastructure failure (the database); a failed analysis is a
 /// normal `Ok(Failed)`. The model/persistence half is **fail-hard** (a model error
@@ -648,6 +705,7 @@ pub fn run_portfolio_job(
     profile: &InvestorProfile,
     selective: Option<SelectiveRun<'_>>,
     outcome_sources: Option<&crate::portfolio::outcome::OutcomeSources<'_>>,
+    resume: Option<store::Checkpoint>,
     paths: &ReportPaths,
     guard: &RunGuard,
     ctx: &RunContext,
@@ -688,6 +746,7 @@ pub fn run_portfolio_job(
         profile,
         selective,
         outcome_sources,
+        resume,
         paths,
         &conn,
         ctx,
@@ -755,9 +814,150 @@ pub fn run_portfolio_job(
     }
 }
 
+/// The Step-6a semantic-recall query, built deterministically from the holding's
+/// identity and the prior verdict's themes (`docs/portfolio-workflow.md`
+/// §Step 6a) — the embedding request builder byte-caps it before the call.
+fn semantic_query_text(
+    symbol: &str,
+    sector: Option<&str>,
+    industry: Option<&str>,
+    prior: Option<&dossier::PriorHolding>,
+) -> String {
+    let mut q = format!("holding {symbol}");
+    if let Some(s) = sector {
+        q.push_str(&format!(", sector {s}"));
+    }
+    if let Some(i) = industry {
+        q.push_str(&format!(", industry {i}"));
+    }
+    if let Some(ledger) = prior.and_then(|p| p.verdict.thesis_ledger.as_ref()) {
+        q.push_str(&format!(". Standing thesis: {}", ledger.current_thesis));
+        if !ledger.key_drivers.is_empty() {
+            let drivers: Vec<&str> =
+                ledger.key_drivers.iter().map(|d| d.name.as_str()).collect();
+            q.push_str(&format!(" Key drivers: {}", drivers.join(", ")));
+        }
+    }
+    q
+}
+
+/// Run the Step-6a semantic continuity retrieval — fail-soft
+/// (`docs/portfolio-workflow.md` §Step 6a): an unconfigured embedder or an
+/// empty partition (the first post-slice run, by design) is silent absence,
+/// while a failed embed, count, or search records the typed gap and skips
+/// recall for this holding only.
+fn semantic_recall_for(
+    conn: &Connection,
+    embedder: Option<&dyn crate::embedding::Embedder>,
+    query: &str,
+) -> dossier::SemanticRecall {
+    use crate::vector_memory::{self, MemoryKind, MemoryNamespace};
+    let Some(embedder) = embedder else {
+        return dossier::SemanticRecall::default();
+    };
+    let gap = |reason: String| dossier::SemanticRecall {
+        hits: Vec::new(),
+        gap: Some(format!("semantic recall skipped: {reason}")),
+    };
+    // The cheap guard: an empty summary shelf needs no query embedding at all.
+    // Kind-scoped deliberately — the partition's durable-learning rows never
+    // participate in this recall, so they must not make it look searchable.
+    match vector_memory::count_memory_kind(conn, MemoryKind::Summary, MemoryNamespace::Portfolio)
+    {
+        Ok(0) => return dossier::SemanticRecall::default(),
+        Ok(_) => {}
+        Err(e) => return gap(format!("memory count failed: {e}")),
+    }
+    let vector = match embedder.embed(query) {
+        Ok(v) => v,
+        Err(e) => return gap(format!("query embedding failed: {e}")),
+    };
+    match vector_memory::search_memory(
+        conn,
+        &vector,
+        Some(MemoryKind::Summary),
+        MemoryNamespace::Portfolio,
+        crate::portfolio::SEMANTIC_RECALL_TOP_K,
+    ) {
+        Ok(hits) => dossier::SemanticRecall {
+            hits: hits.iter().map(|h| h.prompt_fragment()).collect(),
+            gap: None,
+        },
+        Err(e) => gap(format!("memory search failed: {e}")),
+    }
+}
+
+/// The per-holding continuity summary text the Step-7 embedding vectorizes
+/// (`docs/portfolio-workflow.md` §Step 7's run-result embeddings): the standing
+/// thesis (ledger thesis, key drivers, scenario lean), the intrinsic read —
+/// grade and conviction, or the role read and structural flag on the
+/// `role_risk_only` branch — and the portfolio action, so cross-run recall
+/// surfaces the substance of prior analysis rather than a bare grade. `None` on
+/// a not-rated or insufficient-evidence verdict — nothing analyzed to recall.
+fn holding_summary_text(v: &crate::portfolio::HoldingVerdict) -> Option<String> {
+    let ledger = v.thesis_ledger.as_ref();
+    let thesis = ledger
+        .map(|l| l.current_thesis.as_str())
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or("(none recorded)");
+    let drivers = ledger
+        .map(|l| {
+            l.key_drivers
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| "(none recorded)".to_string());
+    let lean = ledger
+        .map(|l| {
+            l.monitor
+                .iter()
+                .map(|m| format!("{:?} {:.0}%", m.scenario, m.probability_pct))
+                .collect::<Vec<_>>()
+                .join(" / ")
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "(none recorded)".to_string());
+    match &v.disposition {
+        crate::portfolio::VerdictDisposition::Priced(g) => Some(format!(
+            "{}: grade {}, conviction {:?}, action {} — {}. Standing thesis: {} \
+             Key drivers: {}. Scenario lean: {}.",
+            v.symbol,
+            g.grade.as_str(),
+            g.conviction,
+            g.action.as_kebab(),
+            g.action_rationale,
+            thesis,
+            drivers,
+            lean,
+        )),
+        crate::portfolio::VerdictDisposition::RoleRiskOnly(r) => Some(format!(
+            "{}: role/risk-only ({}{}), action {} — {}. Role: {} Standing \
+             thesis: {} Key drivers: {}. Scenario lean: {}.",
+            v.symbol,
+            r.class_label,
+            if r.structural_flag {
+                ", structurally path-dependent"
+            } else {
+                ""
+            },
+            r.action.as_kebab(),
+            r.action_rationale,
+            r.role_summary,
+            thesis,
+            drivers,
+            lean,
+        )),
+        _ => None,
+    }
+}
+
 /// The analysis half: pull holdings, load the house view, run each holding through the
 /// pipeline, build the roll-up, and persist the run. Returns the persisted
-/// [`PortfolioRun`]. A cancel checkpoint sits between holdings.
+/// [`PortfolioRun`]. A cancellation check and the per-holding checkpoint write
+/// sit between holdings.
 #[allow(clippy::too_many_arguments)]
 fn run_analysis(
     holdings_source: &dyn HoldingsSource,
@@ -767,17 +967,35 @@ fn run_analysis(
     profile: &InvestorProfile,
     selective: Option<SelectiveRun<'_>>,
     outcome_sources: Option<&crate::portfolio::outcome::OutcomeSources<'_>>,
+    resume: Option<store::Checkpoint>,
     paths: &ReportPaths,
     conn: &Connection,
     ctx: &RunContext,
 ) -> Result<PortfolioRun> {
-    ctx.step_started("holdings", "Pull holdings");
-    // Snapshot assembly runs the holdings-normalization step: same-symbol rows across
-    // granted accounts net into one book-level position per symbol, and every later
-    // step consumes only the normalized rows (`docs/schwab-integration.md` §What is
-    // pulled; `docs/portfolio-workflow.md` §Step 2).
-    let holdings = holdings_source.holdings()?.normalized();
-    ctx.step_finished("holdings", "ok", None);
+    // A resume reopens the interrupted run's pinned pull — the one exception to
+    // Run-analysis-always-pulls-fresh (`docs/portfolio-analysis.md` §Triggering,
+    // §Failure posture): the checkpoint contract is only coherent against one
+    // holdings snapshot, so completed and resumed holdings compute against the
+    // same book and the finished run is stamped with that pull's as-of time.
+    let holdings = match &resume {
+        Some(cp) => {
+            ctx.step_started("holdings", "Reopen pinned holdings pull (resume)");
+            let h = cp.header.holdings.clone();
+            ctx.step_finished("holdings", "ok", None);
+            h
+        }
+        None => {
+            ctx.step_started("holdings", "Pull holdings");
+            // Snapshot assembly runs the holdings-normalization step: same-symbol
+            // rows across granted accounts net into one book-level position per
+            // symbol, and every later step consumes only the normalized rows
+            // (`docs/schwab-integration.md` §What is pulled;
+            // `docs/portfolio-workflow.md` §Step 2).
+            let h = holdings_source.holdings()?.normalized();
+            ctx.step_finished("holdings", "ok", None);
+            h
+        }
+    };
 
     // Deterministic holdings-change diff against the prior run's persisted snapshot
     // (Step 4), computed in the app layer before any model stage — the
@@ -808,7 +1026,17 @@ fn run_analysis(
     // order (`id`); `created_at` is display and vintage data, so stamping at run
     // start is a display choice — and the one that matches the session the run's
     // data belongs to.
-    let created_at = now_rfc3339();
+    // A resume pins the interrupted run's instant, so every dated decision —
+    // the vintages, the session stamps, the resume-window aging — stays the
+    // original run's; its identity (`run_id`) is likewise reopened.
+    let created_at = match &resume {
+        Some(cp) => cp.header.created_at.clone(),
+        None => now_rfc3339(),
+    };
+    let run_id = match &resume {
+        Some(cp) => cp.header.run_id.clone(),
+        None => uuid::Uuid::new_v4().to_string(),
+    };
     // ET, pairing with the ET-dated vintages `over_age` and the house-view gate
     // compare against.
     let today = crate::market_clock::et_date_of(&created_at)
@@ -821,24 +1049,36 @@ fn run_analysis(
     // Freshness-gated (`docs/portfolio-workflow.md` §Step 5): a stale latest
     // report drops the whole view; the omission rides the run's data health.
     // Dated on the run's own ET session, against the report's ET-dated
-    // `created_at` — both legs convert together (see `load_house_view`).
-    let (house_view, house_view_omitted) =
-        dossier::load_house_view(conn, &paths.reports_dir, today);
+    // `created_at` — both legs convert together (see `load_house_view`). A
+    // resume reads the pinned Step-5 context instead of reloading.
+    let (house_view, house_view_omitted) = match &resume {
+        Some(cp) => (cp.header.house_view.clone(), cp.header.house_view_omitted),
+        None => dossier::load_house_view(conn, &paths.reports_dir, today),
+    };
 
     // The run-level rate anchors — **hard-fail before any per-holding work** (the
     // suite's canonical rate-anchor rule: the engine consumes the rates numerically
     // in every target and hurdle, so the run fails here rather than computing off a
     // stale or guessed print; `docs/portfolio-analysis.md` §Failure posture).
     ctx.step_started("rates", "Load rate anchors (FRED)");
-    let rates = match market.rates() {
-        Ok(r) => {
-            ctx.step_finished("rates", "ok", None);
+    let rates = match &resume {
+        // Pinned with the run: resumed holdings must compute against the same
+        // anchors the completed ones did (one coherent snapshot).
+        Some(cp) => {
+            let r = cp.header.rates.clone();
+            ctx.step_finished("rates", "ok", Some("pinned (resume)".to_string()));
             r
         }
-        Err(e) => {
-            ctx.step_finished("rates", "failed", Some(e.to_string()));
-            return Err(e.context("run-level rate-anchor load failed (DGS2/DGS10)"));
-        }
+        None => match market.rates() {
+            Ok(r) => {
+                ctx.step_finished("rates", "ok", None);
+                r
+            }
+            Err(e) => {
+                ctx.step_finished("rates", "failed", Some(e.to_string()));
+                return Err(e.context("run-level rate-anchor load failed (DGS2/DGS10)"));
+            }
+        },
     };
 
     // The run-level commodity context — fetched **once per run and shared across
@@ -846,7 +1086,10 @@ fn run_analysis(
     // every gap is typed onto the context, never a run failure. The step reads
     // "ok" whenever the leg ran; per-series gaps ride the roll-up's data health.
     ctx.step_started("commodities", "Load commodity context (FRED / FMP)");
-    let commodities = market.commodities(today);
+    let commodities = match &resume {
+        Some(cp) => cp.header.commodities.clone(),
+        None => market.commodities(today),
+    };
     ctx.step_finished(
         "commodities",
         "ok",
@@ -858,7 +1101,10 @@ fn run_analysis(
     // across every holding; a commodity / macro fund maps onto a row at dossier
     // time. Fail-soft like the commodity leg.
     ctx.step_started("positioning", "Load CFTC positioning");
-    let (cot_rows, cot_gaps) = market.positioning(today);
+    let (cot_rows, cot_gaps) = match &resume {
+        Some(cp) => (cp.header.cot_rows.clone(), cp.header.cot_gaps.clone()),
+        None => market.positioning(today),
+    };
     ctx.step_finished(
         "positioning",
         "ok",
@@ -868,7 +1114,10 @@ fn run_analysis(
     // The optional CBOE venue-level put/call backdrop — one fail-soft fetch,
     // shared across every holding's dossier as broad-market sentiment context.
     ctx.step_started("sentiment", "Load CBOE put/call backdrop");
-    let (put_call_backdrop, cboe_gap) = market.put_call_backdrop();
+    let (put_call_backdrop, cboe_gap) = match &resume {
+        Some(cp) => (cp.header.put_call_backdrop.clone(), cp.header.cboe_gap.clone()),
+        None => market.put_call_backdrop(),
+    };
     ctx.step_finished("sentiment", "ok", cboe_gap.clone());
 
     // The FINRA consolidated short-interest file — one fail-soft fetch per
@@ -876,7 +1125,13 @@ fn run_analysis(
     // (risk / squeeze-context positioning evidence — `docs/data-sources.md
     // §FINRA`).
     ctx.step_started("short-interest", "Load FINRA short interest");
-    let (short_interest_file, finra_gap) = market.short_interest();
+    let (short_interest_file, finra_gap) = match &resume {
+        Some(cp) => (
+            cp.header.short_interest_file.clone(),
+            cp.header.finra_gap.clone(),
+        ),
+        None => market.short_interest(),
+    };
     ctx.step_finished("short-interest", "ok", finra_gap.clone());
 
     // ---- Selective work-list (`docs/portfolio-analysis.md` §Triggering) ------
@@ -898,7 +1153,21 @@ fn run_analysis(
         String,
         crate::portfolio::quick_check::HoldingQuickState,
     > = std::collections::HashMap::new();
-    let work_list: Option<std::collections::HashSet<String>> = match (&selective, &prior_run) {
+    let work_list: Option<std::collections::HashSet<String>> = if let Some(cp) = &resume {
+        // The pinned selective work-list and tail sweep: a resumed selective run
+        // keeps its exact selection, and the tail sweep's states ride the header
+        // rather than re-spending its retrievals (a selective re-analysis
+        // checkpoints identically — `docs/portfolio-analysis.md` §Failure
+        // posture).
+        for h in cp.header.swept_tail.clone() {
+            swept_tail.insert(h.symbol.to_ascii_uppercase(), h);
+        }
+        cp.header
+            .work_list
+            .as_ref()
+            .map(|w| w.iter().cloned().collect())
+    } else {
+        match (&selective, &prior_run) {
         (Some(sel), Some(prior)) if !sel.selected.is_empty() => {
             let book: std::collections::HashSet<String> = holdings
                 .positions
@@ -952,15 +1221,78 @@ fn run_analysis(
             Some(work)
         }
         _ => None,
+        }
     };
+
+    // Open this run's checkpoint trail (`docs/portfolio-analysis.md` §Failure
+    // posture): a fresh run **discards any interrupted run's checkpoints** (its
+    // partial verdicts never became a persisted run) and writes its own pinned
+    // header; a resume keeps writing under the reopened header. Fail-soft — a
+    // checkpoint write must never fail a run that can succeed (a stale trail is
+    // caught by resume validation, never trusted).
+    if resume.is_none() {
+        let header = store::CheckpointHeader {
+            run_id: run_id.clone(),
+            created_at: created_at.clone(),
+            prior_run_id: prior_run_id.clone(),
+            holdings: holdings.clone(),
+            rates: rates.clone(),
+            house_view: house_view.clone(),
+            house_view_omitted,
+            commodities: commodities.clone(),
+            cot_rows: cot_rows.clone(),
+            cot_gaps: cot_gaps.clone(),
+            put_call_backdrop: put_call_backdrop.clone(),
+            cboe_gap: cboe_gap.clone(),
+            short_interest_file: short_interest_file.clone(),
+            finra_gap: finra_gap.clone(),
+            work_list: work_list
+                .as_ref()
+                .map(|w| w.iter().cloned().collect()),
+            swept_tail: swept_tail.values().cloned().collect(),
+            prompt_version: crate::portfolio::PROMPT_VERSION.to_string(),
+            grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
+            target_parameter_version:
+                crate::portfolio::engine::SCENARIO_TARGET_PARAMETER_VERSION.to_string(),
+            pre_profit_parameter_version:
+                crate::portfolio::pre_profit::PRE_PROFIT_PARAMETER_VERSION.to_string(),
+            model_ids: vec![analyst.reasoner_id(), analyst.fast_id()],
+        };
+        if let Err(e) =
+            store::clear_checkpoints(conn).and_then(|()| store::save_checkpoint_header(conn, &header))
+        {
+            eprintln!("portfolio checkpoint: header write failed ({e}) — run continues unprotected");
+        }
+    }
 
     let mut verdicts: Vec<HoldingVerdict> = Vec::with_capacity(holdings.positions.len());
     let mut audits: Vec<HoldingAudit> = Vec::with_capacity(holdings.positions.len());
+    // The completed holdings a resume restores — their symbols skip the loop.
+    let mut checkpointed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(cp) = &resume {
+        ctx.step_started(
+            "resume",
+            format!("Resume: restore {} completed holding(s)", cp.holdings.len()),
+        );
+        for row in &cp.holdings {
+            checkpointed.insert(row.verdict.symbol.to_ascii_uppercase());
+            verdicts.push(row.verdict.clone());
+            audits.push(row.audit.clone());
+        }
+        ctx.step_finished("resume", "ok", None);
+    }
 
     // Deep-history health counter for the run-level data-health roll-up: a
     // non-empty gap list from `deep_price_history` means the FMP fetch degraded
     // and the holding's anchor window starved to its documented fallback.
-    let mut deep_history_failures = 0usize;
+    // A resume seeds every run-level accumulator from the checkpoint trail so
+    // the completed holdings' contributions survive into the finished run's
+    // data health and episode identities.
+    let seeded = resume
+        .as_ref()
+        .map(|cp| cp.accumulators.clone())
+        .unwrap_or_default();
+    let mut deep_history_failures = seeded.deep_history_failures;
 
     // The run-level sector-P/E surface, fetched on first need and memoized across
     // funds (`docs/portfolio-workflow.md` §Step 6a): the snapshot once per exchange
@@ -986,15 +1318,15 @@ fn run_analysis(
     let mut sector_by_symbol: std::collections::HashMap<
         String,
         crate::portfolio::outcome::SectorIdentity,
-    > = std::collections::HashMap::new();
+    > = seeded.sector_by_symbol;
     // The same profile lookup's issuer name, keyed alongside the sector so the
     // prompt header can name the company when Schwab's description is blank.
     let mut profile_name_by_symbol: std::collections::HashMap<String, Option<String>> =
-        std::collections::HashMap::new();
+        seeded.profile_name_by_symbol;
     // The same lookup's industry label — the commodity context's gold-linkage
     // key (an industry naming gold / precious metals, never the whole sector).
     let mut industry_by_symbol: std::collections::HashMap<String, Option<String>> =
-        std::collections::HashMap::new();
+        seeded.industry_by_symbol;
     // The run-level sector-benchmark series (FMP dated EOD, memoized per SPDR
     // symbol across holdings — `docs/portfolio-workflow.md` §Step 5): fetched on
     // first need by a carried stock whose pre-flag will read it; `None` caches a
@@ -1004,7 +1336,7 @@ fn run_analysis(
         String,
         Option<Vec<crate::portfolio::engine::DatedValue>>,
     > = std::collections::HashMap::new();
-    let mut benchmark_gaps: Vec<String> = Vec::new();
+    let mut benchmark_gaps: Vec<String> = seeded.benchmark_gaps;
 
     for position in &holdings.positions {
         // A selective run analyzes only the work-list; everything else carries
@@ -1013,6 +1345,10 @@ fn run_analysis(
             .as_ref()
             .is_some_and(|w| !w.contains(&position.symbol.to_ascii_uppercase()))
         {
+            continue;
+        }
+        // A resumed run skips the holdings its checkpoints restored.
+        if checkpointed.contains(&position.symbol.to_ascii_uppercase()) {
             continue;
         }
         if ctx.is_cancelled() {
@@ -1389,6 +1725,28 @@ fn run_analysis(
         } else {
             None
         };
+        // Step-6a semantic continuity retrieval (`docs/portfolio-workflow.md`
+        // §Step 6a): a deterministic query over the holding's identity and the
+        // prior verdict's themes, embedded and cosine-searched against this
+        // job's own `summary` partition — fail-soft: a failed lane records a
+        // degraded input; the deterministically loaded prior verdict and ledger
+        // are unaffected. Skipped whole for a holding the loop never grades.
+        let semantic_recall = if !skip_retrieval {
+            let symbol_key = position.symbol.to_ascii_uppercase();
+            let query = semantic_query_text(
+                &position.symbol,
+                sector_by_symbol.get(&symbol_key).and_then(|s| s.sector.as_deref()),
+                industry_by_symbol.get(&symbol_key).and_then(|i| i.as_deref()),
+                prior.as_ref(),
+            );
+            semantic_recall_for(
+                conn,
+                outcome_sources.and_then(|s| s.embedder),
+                &query,
+            )
+        } else {
+            dossier::SemanticRecall::default()
+        };
         let dossier: HoldingDossier = dossier::assemble(
             position.clone(),
             holdings_diff.delta_for(&position.symbol),
@@ -1428,6 +1786,7 @@ fn run_analysis(
                 Vec::new()
             },
             sector_benchmark,
+            semantic_recall,
         );
 
         // Cancellation checkpoint between the (now-complete) data gather and the model
@@ -1458,6 +1817,34 @@ fn run_analysis(
         ctx.step_finished(step_key, "ok", None);
         verdicts.push(verdict);
         audits.push(audit);
+
+        // Mid-run checkpoint (`docs/portfolio-analysis.md` §Failure posture):
+        // the completed holding — an insufficient-evidence exit included —
+        // persists so a cancellation or a single model failure resumes the
+        // unfinished holdings rather than restarting the run. Fail-soft: losing
+        // a checkpoint must never fail a run that can succeed.
+        let cp_row = store::CheckpointHolding {
+            verdict: verdicts.last().expect("just pushed").clone(),
+            audit: audits.last().expect("just pushed").clone(),
+        };
+        if let Err(e) = store::save_checkpoint_progress(
+            conn,
+            &run_id,
+            &position.symbol,
+            &cp_row,
+            &store::CheckpointAccumulators {
+                deep_history_failures,
+                benchmark_gaps: benchmark_gaps.clone(),
+                sector_by_symbol: sector_by_symbol.clone(),
+                industry_by_symbol: industry_by_symbol.clone(),
+                profile_name_by_symbol: profile_name_by_symbol.clone(),
+            },
+        ) {
+            eprintln!(
+                "portfolio checkpoint: write failed for {} ({e})",
+                position.symbol
+            );
+        }
     }
 
     // Stamp each fresh pass's analysis vintage with the run's own `created_at`
@@ -1621,7 +2008,8 @@ fn run_analysis(
     // decision episodes and derive the scorecard reads, all landing on the run
     // blob's outcome records.
     ctx.step_started("outcome", "Outcome learning");
-    let run_id = uuid::Uuid::new_v4().to_string();
+    // `run_id` was minted at run start (or reopened by a resume) so the
+    // checkpoint trail could key on it.
     // The run's ET session date, the same string the per-holding ledger
     // evaluation stamped — `mature_labels` takes it beside the ET `today` below,
     // and a UTC prefix here would disagree with that `today` on an evening run.
@@ -1728,6 +2116,47 @@ fn run_analysis(
             }
         }
     }
+    // Per-holding verdict summaries embed as continuity `summary` rows in the
+    // Portfolio partition (`docs/portfolio-workflow.md` §Step 7's run-result
+    // embeddings) — fresh-vintage analyzed verdicts only (a carried verdict's
+    // summary already rode its authoring run), keyed `{run_id}:{SYMBOL}` so the
+    // rows prune with their run (`store::prune_runs`) under the summary-kind
+    // unique index. Best-effort like the learning row above: a failed or
+    // invalid embedding costs that holding's memory row, never the persisted
+    // run.
+    if let Some(embedder) = outcome_sources.and_then(|s| s.embedder) {
+        for v in &run.verdicts {
+            if v.analyzed_at.as_deref() != Some(created_at.as_str()) {
+                continue;
+            }
+            let Some(text) = holding_summary_text(v) else {
+                continue;
+            };
+            let row_id = format!("{}:{}", run.run_id, v.symbol.to_ascii_uppercase());
+            match embedder.embed(&text) {
+                Ok(vector) => {
+                    if let Err(e) = crate::vector_memory::insert_memory(
+                        conn,
+                        crate::vector_memory::MemoryKind::Summary,
+                        crate::vector_memory::MemoryNamespace::Portfolio,
+                        Some(&row_id),
+                        &text,
+                        &vector,
+                        &created_at,
+                    ) {
+                        eprintln!(
+                            "holding summary: memory insert failed for {} (row skipped): {e}",
+                            v.symbol
+                        );
+                    }
+                }
+                Err(e) => eprintln!(
+                    "holding summary: embedding failed for {} (row skipped): {e}",
+                    v.symbol
+                ),
+            }
+        }
+    }
     // The successful full pass consumed each analyzed holding's triggering
     // observations in interpretation / continuity (the acknowledgment stamps ride
     // the 6g seam), so those holdings' quick-check flags, badges, and carried
@@ -1800,6 +2229,12 @@ fn run_analysis(
     })();
     if let Err(e) = retention {
         eprintln!("quick-check retention after run persist failed (run kept): {e}");
+    }
+    // The run persisted whole, so its checkpoint trail has served its purpose —
+    // cleared like the fail-soft bookkeeping above (a leftover trail is caught
+    // by resume validation, never trusted).
+    if let Err(e) = store::clear_checkpoints(conn) {
+        eprintln!("portfolio checkpoint: clear after run persist failed (run kept): {e}");
     }
     ctx.step_finished("persist", "ok", None);
 
@@ -2745,6 +3180,7 @@ mod tests {
             &InvestorProfile::default_fixture(),
             None,
             None,
+            None,
             &paths,
             &RunGuard::default(),
             &ctx(),
@@ -2872,6 +3308,7 @@ mod tests {
             &InvestorProfile::default_fixture(),
             None,
             None,
+            None,
             &paths,
             &RunGuard::default(),
             &ctx(),
@@ -2912,6 +3349,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             None,
             &paths,
@@ -2965,6 +3403,7 @@ mod tests {
             &InvestorProfile::default_fixture(),
             None,
             None,
+            None,
             &paths,
             &RunGuard::default(),
             &ctx(),
@@ -2991,6 +3430,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             None,
             &paths,
@@ -3030,6 +3470,7 @@ mod tests {
             &InvestorProfile::default_fixture(),
             None,
             None,
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -3060,6 +3501,7 @@ mod tests {
             &HistoryGapMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             None,
             &paths,
@@ -3156,6 +3598,7 @@ mod tests {
             &InvestorProfile::default_fixture(),
             None,
             None,
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -3192,6 +3635,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             None,
             &paths,
@@ -3258,6 +3702,7 @@ mod tests {
             &InvestorProfile::default_fixture(),
             None,
             None,
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -3294,6 +3739,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             None,
             &paths,
@@ -3355,6 +3801,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             None,
             &paths,
@@ -3446,6 +3893,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             None,
             &paths,
@@ -3568,6 +4016,7 @@ mod tests {
             &InvestorProfile::default_fixture(),
             None,
             None,
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -3620,6 +4069,7 @@ mod tests {
             &InvestorProfile::default_fixture(),
             None,
             None,
+            None,
             &paths,
             &guard,
             &ctx(),
@@ -3647,6 +4097,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 None,
                 None,
                 &paths,
@@ -3707,6 +4158,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 None,
                 None,
                 &paths,
@@ -3809,6 +4261,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 None,
                 None,
                 &paths,
@@ -3919,6 +4372,7 @@ mod tests {
                 &StubMarket,
                 &StubAnalyst,
                 &InvestorProfile::default_fixture(),
+                None,
                 None,
                 None,
                 &paths,
@@ -4070,6 +4524,216 @@ mod tests {
         holdings_of(vec![stock("AAPL", 20.0, 3_900.0), stock("MSFT", 20.0, 3_900.0)])
     }
 
+    // ---- Checkpoint / resume (`docs/portfolio-analysis.md` §Failure posture) ----
+
+    /// A stub analyst that fails hard on one symbol — the mid-book model failure.
+    struct FailOn {
+        symbol: &'static str,
+    }
+
+    impl crate::portfolio::pipeline::HoldingAnalyst for FailOn {
+        fn distill(
+            &self,
+            dossier: &HoldingDossier,
+            findings: &crate::portfolio::pipeline::ResearchFindings,
+        ) -> Result<String> {
+            if dossier.position.symbol == self.symbol {
+                anyhow::bail!("injected model failure on {}", self.symbol);
+            }
+            crate::portfolio::pipeline::StubAnalyst.distill(dossier, findings)
+        }
+        fn interpret(
+            &self,
+            input: &crate::portfolio::pipeline::InterpretationInput,
+        ) -> Result<crate::portfolio::Interpretation> {
+            crate::portfolio::pipeline::StubAnalyst.interpret(input)
+        }
+        fn interpret_role_risk(
+            &self,
+            input: &crate::portfolio::pipeline::RoleRiskInput,
+        ) -> Result<crate::portfolio::RoleRiskInterpretation> {
+            crate::portfolio::pipeline::StubAnalyst.interpret_role_risk(input)
+        }
+        fn decide_action(
+            &self,
+            input: &crate::portfolio::pipeline::ActionInput,
+        ) -> Result<crate::portfolio::ActionDecision> {
+            crate::portfolio::pipeline::StubAnalyst.decide_action(input)
+        }
+        fn fast_id(&self) -> String {
+            crate::portfolio::pipeline::StubAnalyst.fast_id()
+        }
+        fn reasoner_id(&self) -> String {
+            crate::portfolio::pipeline::StubAnalyst.reasoner_id()
+        }
+    }
+
+    /// A holdings source that refuses to pull — the resume no-new-pull proof.
+    struct NoPullSource;
+
+    impl crate::schwab::HoldingsSource for NoPullSource {
+        fn holdings(&self) -> Result<Holdings> {
+            anyhow::bail!("a resume must reopen the pinned pull, never pull fresh")
+        }
+        // The per-holding chain fetches run live on a resumed holding's gather
+        // — only the Step-2 pull itself is pinned.
+        fn option_chain(&self, _symbol: &str) -> Result<Option<crate::schwab::OptionChain>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn a_mid_run_model_failure_checkpoints_and_resume_completes_without_a_pull() {
+        let (_dir, paths) = paths();
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &FailOn { symbol: "MSFT" },
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        assert!(matches!(outcome, PortfolioJobOutcome::Failed(_)), "{outcome:?}");
+        let conn = storage::open(&paths.db_path).unwrap();
+        assert!(store::latest_run(&conn).unwrap().is_none(), "no partial run persists");
+
+        // The completed holding checkpointed; the failing one did not.
+        let cp = store::load_checkpoint(&conn)
+            .unwrap()
+            .expect("checkpoints survive the failure");
+        assert_eq!(cp.holdings.len(), 1, "AAPL completed before the MSFT failure");
+        assert_eq!(cp.holdings[0].verdict.symbol, "AAPL");
+        assert!(cp.header.work_list.is_none(), "a whole-book run pins no selection");
+        assert!(
+            cp.accumulators.sector_by_symbol.contains_key("AAPL"),
+            "the accumulators carry the completed holding's sector identity"
+        );
+
+        // Offerable right now, under the same roster.
+        let ids = vec!["stub-analyst".to_string(), "stub-analyst".to_string()];
+        resume_eligibility(&conn, &cp, &ids, chrono::Utc::now())
+            .expect("a fresh checkpoint under the same versions is resumable");
+
+        // Resume: reopens the pinned run — a source that refuses to pull proves
+        // no fresh pull happens, and the finished run carries the pinned
+        // identity and as-of stamps.
+        let pinned_run_id = cp.header.run_id.clone();
+        let pinned_created = cp.header.created_at.clone();
+        let outcome = run_portfolio_job(
+            &NoPullSource,
+            &StubCompanyData,
+            &StubMarket,
+            &crate::portfolio::pipeline::StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            Some(cp),
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        let run = match outcome {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected a successful resume, got {other:?}"),
+        };
+        assert_eq!(run.run_id, pinned_run_id, "resume reopens the interrupted run's id");
+        assert_eq!(
+            run.created_at, pinned_created,
+            "the finished run is stamped with the pinned pull's as-of"
+        );
+        assert_eq!(run.verdicts.len(), 2, "restored + resumed holdings");
+        for v in &run.verdicts {
+            assert_eq!(
+                v.analyzed_at.as_deref(),
+                Some(pinned_created.as_str()),
+                "{}: every fresh verdict carries the pinned vintage",
+                v.symbol
+            );
+        }
+        // The trail cleared with the successful persist.
+        assert!(store::load_checkpoint(&conn).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_new_run_discards_the_interrupted_runs_checkpoints() {
+        let (_dir, paths) = paths();
+        run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &FailOn { symbol: "MSFT" },
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        let conn = storage::open(&paths.db_path).unwrap();
+        let stale = store::load_checkpoint(&conn).unwrap().expect("trail exists");
+
+        // A new run (what Run analysis always starts) discards the trail at
+        // entry and clears its own on success.
+        let run = full_run(&paths, two_stocks());
+        assert!(store::load_checkpoint(&conn).unwrap().is_none());
+
+        // The stale trail loaded before the new run cannot resurrect: the
+        // baseline has moved.
+        let ids = vec!["stub-analyst".to_string(), "stub-analyst".to_string()];
+        let err = resume_eligibility(&conn, &stale, &ids, chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("a newer run has persisted"), "{err}");
+        assert!(!run.verdicts.is_empty());
+    }
+
+    #[test]
+    fn resume_eligibility_refuses_expiry_and_version_drift() {
+        let (_dir, paths) = paths();
+        run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &FailOn { symbol: "MSFT" },
+            &InvestorProfile::default_fixture(),
+            None,
+            None,
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        let conn = storage::open(&paths.db_path).unwrap();
+        let cp = store::load_checkpoint(&conn).unwrap().expect("trail exists");
+        let ids = vec!["stub-analyst".to_string(), "stub-analyst".to_string()];
+
+        // Past the resume window: the pinned pull is stale against a book that
+        // may have moved.
+        let later = chrono::Utc::now() + chrono::Duration::hours(RESUME_WINDOW_HOURS + 1);
+        let err = resume_eligibility(&conn, &cp, &ids, later).unwrap_err();
+        assert!(err.contains("resume window"), "{err}");
+
+        // A changed roster refuses rather than mixing models mid-run.
+        let err =
+            resume_eligibility(&conn, &cp, &["other-model".to_string()], chrono::Utc::now())
+                .unwrap_err();
+        assert!(err.contains("roster"), "{err}");
+
+        // A prompt/schema drift refuses rather than mixing contracts.
+        let mut drifted = cp.clone();
+        drifted.header.prompt_version = "portfolio-v0".into();
+        let err = resume_eligibility(&conn, &drifted, &ids, chrono::Utc::now()).unwrap_err();
+        assert!(err.contains("prompt/schema"), "{err}");
+    }
+
     fn full_run(paths: &ReportPaths, holdings: Holdings) -> PortfolioRun {
         match run_portfolio_job(
             &FixtureHoldingsSource::with_holdings(holdings),
@@ -4077,6 +4741,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             None,
             paths,
@@ -4103,6 +4768,7 @@ mod tests {
             &StubMarket,
             &StubAnalyst,
             &InvestorProfile::default_fixture(),
+            None,
             None,
             None,
             paths,
@@ -4132,6 +4798,7 @@ mod tests {
                 selected: selected.iter().map(|s| s.to_string()).collect(),
                 quick_data: quick,
             }),
+            None,
             None,
             paths,
             &RunGuard::default(),
@@ -4282,6 +4949,7 @@ mod tests {
             &InvestorProfile::default_fixture(),
             None,
             Some(&sources),
+            None,
             &paths,
             &RunGuard::default(),
             &ctx(),
@@ -4329,6 +4997,194 @@ mod tests {
             .iter()
             .find(|v| v.symbol.eq_ignore_ascii_case(symbol))
             .unwrap_or_else(|| panic!("{symbol} in run"))
+    }
+
+    // ---- Step-6a semantic recall + per-holding summary embeddings ----
+
+    struct FailingEmbedder;
+
+    impl crate::embedding::Embedder for FailingEmbedder {
+        fn embed(&self, _text: &str) -> Result<Vec<f32>> {
+            anyhow::bail!("daemon unreachable")
+        }
+    }
+
+    #[test]
+    fn holding_summary_text_captures_the_read_and_skips_exits() {
+        let created = "2026-08-21T12:00:00+00:00";
+        let mut v = crate::portfolio::HoldingVerdict {
+            symbol: "AAPL".into(),
+            asset_class: crate::portfolio::AssetClass::Stock,
+            position_change: Default::default(),
+            disposition: crate::portfolio::VerdictDisposition::InsufficientEvidence {
+                reason: "thin".into(),
+            },
+            thesis_ledger: None,
+            analyzed_at: Some(created.into()),
+            action_source: Default::default(),
+            side_reversed: false,
+        };
+        assert!(holding_summary_text(&v).is_none(), "an abstention has nothing to recall");
+
+        // A priced verdict summarizes thesis, read, and action.
+        let run = {
+            // Reuse the demo-run pipeline's stub output for a realistic verdict.
+            let (tempdir, paths) = paths();
+            let outcome = run_portfolio_job(
+                &FixtureHoldingsSource::with_holdings(two_stocks()),
+                &StubCompanyData,
+                &StubMarket,
+                &StubAnalyst,
+                &InvestorProfile::default_fixture(),
+                None,
+                None,
+                None,
+                &paths,
+                &RunGuard::default(),
+                &ctx(),
+            )
+            .unwrap();
+            drop(tempdir);
+            match outcome {
+                PortfolioJobOutcome::Successful(run) => *run,
+                other => panic!("expected success, got {other:?}"),
+            }
+        };
+        let text = holding_summary_text(verdict(&run, "AAPL")).expect("priced summarizes");
+        assert!(text.starts_with("AAPL: grade "), "{text}");
+        assert!(text.contains("action "), "{text}");
+        assert!(text.contains("Standing thesis:"), "{text}");
+
+        v.disposition = crate::portfolio::VerdictDisposition::NotRated {
+            reason: "cash".into(),
+        };
+        assert!(holding_summary_text(&v).is_none(), "not-rated has nothing to recall");
+    }
+
+    #[test]
+    fn a_successful_run_writes_per_holding_summary_rows_that_recall_reads() {
+        let (_tempdir, paths) = paths();
+        let prices = SyntheticOutcomePrices;
+        let embedder = FixedEmbedder;
+        let sources = crate::portfolio::outcome::OutcomeSources {
+            price: &prices,
+            embedder: Some(&embedder),
+        };
+        let outcome = run_portfolio_job(
+            &FixtureHoldingsSource::with_holdings(two_stocks()),
+            &StubCompanyData,
+            &StubMarket,
+            &StubAnalyst,
+            &InvestorProfile::default_fixture(),
+            None,
+            Some(&sources),
+            None,
+            &paths,
+            &RunGuard::default(),
+            &ctx(),
+        )
+        .unwrap();
+        let run = match outcome {
+            PortfolioJobOutcome::Successful(run) => *run,
+            other => panic!("expected success, got {other:?}"),
+        };
+        let conn = storage::open(&paths.db_path).unwrap();
+        // One summary row per fresh analyzed verdict, keyed {run_id}:{SYMBOL}.
+        let mut stmt = conn
+            .prepare(
+                "SELECT report_id FROM vector_memory
+                 WHERE namespace = 'portfolio' AND kind = 'summary' ORDER BY report_id",
+            )
+            .unwrap();
+        let ids: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        let mut expected: Vec<String> = run
+            .verdicts
+            .iter()
+            .filter(|v| holding_summary_text(v).is_some())
+            .map(|v| format!("{}:{}", run.run_id, v.symbol.to_ascii_uppercase()))
+            .collect();
+        expected.sort();
+        assert_eq!(ids, expected, "per-holding rows keyed {{run_id}}:{{SYMBOL}}");
+        assert!(!ids.is_empty(), "the fixture book has analyzed holdings");
+
+        // The Step-6a lane reads them back: hits, no gap.
+        let recall = semantic_recall_for(&conn, Some(&embedder), "holding AAPL, sector Technology");
+        assert!(recall.gap.is_none(), "{:?}", recall.gap);
+        assert!(!recall.hits.is_empty());
+        assert!(recall.hits[0].starts_with("[summary · "), "{}", recall.hits[0]);
+
+        // And pruning to one run keeps these rows (theirs) while a foreign-run id
+        // sweeps.
+        crate::vector_memory::insert_memory(
+            &conn,
+            crate::vector_memory::MemoryKind::Summary,
+            crate::vector_memory::MemoryNamespace::Portfolio,
+            Some("dead-run-id:GONE"),
+            "orphan",
+            &[0.1, 0.2, 0.3, 0.4],
+            "2026-08-01T00:00:00+00:00",
+        )
+        .unwrap();
+        store::prune_runs(&conn, 1).unwrap();
+        let survivors: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM vector_memory
+                 WHERE namespace = 'portfolio' AND kind = 'summary'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(survivors as usize, expected.len(), "orphan swept, own rows kept");
+    }
+
+    #[test]
+    fn semantic_recall_is_silent_when_absent_and_gaps_on_failure() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        storage::init_schema(&conn).unwrap();
+        // No embedder configured: silent absence, matching the learning embed's
+        // guard.
+        let r = semantic_recall_for(&conn, None, "q");
+        assert!(r.hits.is_empty() && r.gap.is_none());
+        // Empty partition: silent absence (the first post-slice run, by design).
+        let r = semantic_recall_for(&conn, Some(&FixedEmbedder), "q");
+        assert!(r.hits.is_empty() && r.gap.is_none());
+        // A learnings-only partition is still silent absence: the guard counts
+        // summary rows, and the failing embedder proves no query embed is spent
+        // on a search that cannot hit.
+        crate::vector_memory::insert_memory(
+            &conn,
+            crate::vector_memory::MemoryKind::Learning,
+            crate::vector_memory::MemoryNamespace::Portfolio,
+            None,
+            "a matured calibration learning",
+            &[0.4, 0.3, 0.2, 0.1],
+            "2026-08-01T00:00:00+00:00",
+        )
+        .unwrap();
+        let r = semantic_recall_for(&conn, Some(&FailingEmbedder), "q");
+        assert!(r.hits.is_empty() && r.gap.is_none());
+        // A populated summary shelf with a failing embedder: the typed gap.
+        crate::vector_memory::insert_memory(
+            &conn,
+            crate::vector_memory::MemoryKind::Summary,
+            crate::vector_memory::MemoryNamespace::Portfolio,
+            Some("run:AAPL"),
+            "AAPL: grade B",
+            &[0.1, 0.2, 0.3, 0.4],
+            "2026-08-01T00:00:00+00:00",
+        )
+        .unwrap();
+        let r = semantic_recall_for(&conn, Some(&FailingEmbedder), "q");
+        assert!(r.hits.is_empty());
+        assert!(
+            r.gap.as_deref().unwrap().contains("query embedding failed"),
+            "{:?}",
+            r.gap
+        );
     }
 
     /// Re-persist the latest run with one verdict doctored — the prior-run shapes

@@ -29,6 +29,7 @@ import type {
   JobStatus,
   LocalDaemonStatus,
   LocalModelSettings,
+  PortfolioResumeStatus,
   PortfolioRun,
   PortfolioRunSummary,
   QuickCheckState,
@@ -422,6 +423,10 @@ const portfolioLoadError = ref<string | null>(null);
 // never a persistent warning.
 const portfolioError = ref<string | null>(null);
 const portfolioRunning = ref(false);
+// The tracker's resumability read after a failed / cancelled portfolio run
+// (docs/portfolio-analysis.md §Failure posture) — probed when such a run ends,
+// cleared when any portfolio run starts. `null` = nothing to offer.
+const portfolioResume = ref<PortfolioResumeStatus | null>(null);
 const pullingHoldings = ref(false);
 // The engine-only quick check (docs/portfolio-analysis.md §The quick check):
 // the latest persisted sweep state (null until one runs; cleared by the next
@@ -1172,10 +1177,15 @@ async function disconnectSchwab() {
 // streams into the shared tracker, which replaces the Portfolio page while it
 // runs; a gate block (no run-started ever arrives) surfaces as the page's
 // inline error, never a persistent warning.
-async function generatePortfolio(selected?: string[]) {
+async function generatePortfolio(selected?: string[], resume = false) {
   if (localBlocked.value || slotBusy.value) return;
   portfolioRunning.value = true;
   portfolioError.value = null;
+  // Any starting run supersedes a standing resume offer: a new run discards the
+  // interrupted run's checkpoints as it opens its own trail, and a resume
+  // consumes them (the post-failure re-probe below re-offers whatever trail
+  // actually survives).
+  portfolioResume.value = null;
   runTraceKind.value = "portfolio";
   portfolioPaneMode.value = "tracker";
   cancelRequested.value = false;
@@ -1183,6 +1193,7 @@ async function generatePortfolio(selected?: string[]) {
   try {
     const run = await invoke<PortfolioRun>("generate_portfolio_manual", {
       selected: selected && selected.length > 0 ? selected : null,
+      resume: resume || null,
     });
     // The inline result is fresher than any read already in flight — invalidate
     // them so a slow pre-run read can't clobber it.
@@ -1204,12 +1215,28 @@ async function generatePortfolio(selected?: string[]) {
       portfolioPaneMode.value = "results";
     }
     // Otherwise the tracker's failed terminal state + failed-job warning carry it.
+    // A stopped run may have left a resumable checkpoint trail — probe it so the
+    // tracker's terminal state can offer Resume (docs/portfolio-analysis.md
+    // §Failure posture; read-only, claims nothing).
+    void refreshPortfolioResume();
   } finally {
     portfolioRunning.value = false;
     void refreshJobStatus();
     void refreshValidation();
     void refreshLocalValidation();
     void refreshPortfolio();
+  }
+}
+
+// Probe the interrupted-run resumability read for the tracker's terminal state.
+// Fail-soft: an unreadable probe just withholds the offer.
+async function refreshPortfolioResume() {
+  try {
+    portfolioResume.value = await invoke<PortfolioResumeStatus>(
+      "portfolio_resume_status"
+    );
+  } catch {
+    portfolioResume.value = null;
   }
 }
 
@@ -1664,8 +1691,11 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
                 ? 'portfolio-quick-check'
                 : 'portfolio'
             "
+            :resume="runTraceKind === 'portfolio' ? portfolioResume : null"
+            :resume-requested="portfolioRunning"
             @cancel="cancelRun"
             @close="portfolioPaneMode = 'results'"
+            @resume="generatePortfolio(undefined, true)"
           />
           <PortfolioView
             v-else

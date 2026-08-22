@@ -62,6 +62,8 @@ A cancelled run:
 - is recorded as a **Cancelled** job, distinct from Failed and Skipped (see [scheduling.md §Job States](scheduling.md#job-states)),
 - does **not** raise a failed-job warning, because it was intentional.
 
+A **Portfolio Analysis** run's failed or cancelled terminal state additionally offers **Resume** while the interrupted run's checkpoints are eligible — with a line stating what resume keeps, or why it is unavailable; the contract is canonical at [portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture).
+
 ## A Run Is Not a Report
 
 A report appears in the Recent Reports sidebar only once it has been generated and saved successfully.

@@ -12,14 +12,15 @@
 //!   refreshes (FMP dated EOD) — and the dividend history for the total-return
 //!   leg.
 //!
-//! Two doc-recorded reductions ship dormant: the standing-thesis episode-creation
-//! leg and the self-correction read both depend on the 6g what-changed attribution
-//! validator (designed, unbuilt), so episodes open only on observable state
-//! changes and the self-correction counters stay structurally zero until that
-//! validator lands. Terminal outcomes are typed conservatively: no corporate-action
-//! feed exists, so a previously covered series that stops resolves
-//! `terminal-unscorable` past the price-coverage grace, never a fabricated
-//! acquisition or bankruptcy read.
+//! The standing-thesis episode-creation leg and the self-correction counters are
+//! **live**: both read the 6g what-changed attribution validator's per-holding
+//! audit ([`crate::portfolio::WhatChangedAudit`]) — an attributed thesis-level
+//! move or a labeled self-correction opens an episode with the action unchanged
+//! ([`OpenReason::ThesisChange`]), and the validated self-correction counts
+//! accumulate per episode. Terminal outcomes are typed conservatively: no
+//! corporate-action feed exists, so a previously covered series that stops
+//! resolves `terminal-unscorable` past the price-coverage grace, never a
+//! fabricated acquisition or bankruptcy read.
 
 use std::collections::{HashMap, HashSet};
 
@@ -181,9 +182,7 @@ pub enum ObservedNetAlignment {
     Reversed,
 }
 
-/// Why an episode opened — the observable recommendation-state change that minted
-/// it. The standing-thesis leg (an attributed intrinsic move with the action
-/// unchanged) is dormant until the 6g what-changed attribution validator lands.
+/// Why an episode opened — the recommendation-state change that minted it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OpenReason {
@@ -195,6 +194,12 @@ pub enum OpenReason {
     ActionChange,
     /// The action change was the over-age rule-demotion, not a model decision.
     RuleDemotion,
+    /// The standing thesis changed with the branch and action unchanged — the
+    /// run's validated what-changed audit recorded an attributed thesis-level
+    /// move or a labeled self-correction
+    /// (`docs/portfolio-analysis.md §Outcome learning`; live since the 6g
+    /// attribution validator landed).
+    ThesisChange,
 }
 
 /// What a non-opening run recorded onto the active episode.
@@ -427,9 +432,11 @@ pub struct DecisionEpisode {
     pub falsifier_events: Vec<FalsifierEvent>,
     pub labels: Vec<WindowLabel>,
     pub state: EpisodeState,
-    /// Per-holding self-correction count — **dormant**: populated only once the 6g
-    /// what-changed attribution validator (designed, unbuilt) labels
-    /// self-corrections; structurally zero until then.
+    /// The validated self-corrections accumulated on this episode — seeded from
+    /// the opening run's what-changed audit and extended by later fresh passes
+    /// (`docs/portfolio-analysis.md §Outcome learning`; the 6g attribution
+    /// validator labels them, downgrades included). Zero on episodes persisted
+    /// before the validator landed (`#[serde(default)]`).
     #[serde(default)]
     pub self_correction_count: u32,
 }
@@ -625,8 +632,9 @@ pub struct FalsifierLeadTimeRead {
     pub no_material_drawdown: bool,
 }
 
-/// The per-holding self-correction accumulation — dormant until the 6g attribution
-/// validator labels self-corrections.
+/// The per-holding self-correction accumulation — the cumulative calibration
+/// signal over the counts the 6g attribution validator labels
+/// (`docs/portfolio-analysis.md §Outcome learning`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SelfCorrectionRead {
     pub total: u32,
@@ -1400,8 +1408,10 @@ pub fn tag_alignment(
 /// The comparable recommendation state of one verdict — the episode-creation key.
 /// Since `portfolio-v9` identity compares the branch and the action alone
 /// (`docs/portfolio-analysis.md §Outcome learning`): the retired ledger
-/// target-weight range no longer exists to compare. The standing-thesis leg is
-/// deliberately absent (dormant until the 6g attribution validator lands).
+/// target-weight range no longer exists to compare. The standing-thesis leg
+/// deliberately stays outside this key — it is a per-run signal from the
+/// validated what-changed audit ([`episode_decision`]'s `thesis_changed`), not a
+/// comparable state.
 #[derive(Debug, Clone, PartialEq)]
 enum RecState {
     Priced { action: Action },
@@ -1454,16 +1464,21 @@ pub enum EpisodeDecision {
 }
 
 /// Decide open / extend / nothing from the prior run's verdict and this run's
-/// (`docs/portfolio-analysis.md §Outcome learning` — the creation rule, narrowed
-/// to observable state changes). An abstention always extends (the standing
-/// recommendation stands); a prior abstention compares its retained ledger's
-/// branch **plus the action its standing episode carries**, since the abstained
-/// verdict itself re-authored neither (`standing`).
+/// (`docs/portfolio-analysis.md §Outcome learning` — the creation rule). An
+/// abstention always extends (the standing recommendation stands); a prior
+/// abstention compares its retained ledger's branch **plus the action its
+/// standing episode carries**, since the abstained verdict itself re-authored
+/// neither (`standing`). `thesis_changed` is the standing-thesis leg's signal —
+/// the run's validated what-changed audit recorded an attributed thesis-level
+/// move or a labeled self-correction for this holding (fresh passes only; a
+/// carried audit's what-changed is its own run's fact) — and opens an episode
+/// even with the branch and action unchanged; input movement alone never does.
 pub fn episode_decision(
     prior: Option<&HoldingVerdict>,
     current: &HoldingVerdict,
     current_is_fresh: bool,
     standing: Option<StandingDecision>,
+    thesis_changed: bool,
 ) -> EpisodeDecision {
     let cur = rec_state(current);
     let extend_kind = if !current_is_fresh {
@@ -1518,6 +1533,9 @@ pub fn episode_decision(
                             }
                         }
                     }
+                    if thesis_changed {
+                        reasons.push(OpenReason::ThesisChange);
+                    }
                     reasons.dedup();
                     if reasons.is_empty() {
                         EpisodeDecision::Extend(extend_kind)
@@ -1547,6 +1565,9 @@ pub fn episode_decision(
                         if current.action_source == ActionSource::RuleDemoted {
                             reasons.push(OpenReason::RuleDemotion);
                         }
+                    }
+                    if thesis_changed {
+                        reasons.push(OpenReason::ThesisChange);
                     }
                     if reasons.is_empty() {
                         EpisodeDecision::Extend(extend_kind)
@@ -1651,7 +1672,21 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                     && e.symbol.eq_ignore_ascii_case(&verdict.symbol)
             })
             .map(StandingDecision::of);
-        let mut decision = episode_decision(prior_v, verdict, is_fresh, standing);
+        let audit = input
+            .audits
+            .iter()
+            .find(|a| a.symbol.eq_ignore_ascii_case(&verdict.symbol));
+        // The standing-thesis and self-correction signals, from this run's
+        // validated what-changed audit — **fresh passes only**: a carried
+        // audit's what-changed is its own run's fact, already consumed there
+        // (the same premise as the carried-crossings skip below).
+        let what_changed = audit
+            .filter(|_| is_fresh)
+            .and_then(|a| a.what_changed_audit.as_ref());
+        let thesis_changed = what_changed.is_some_and(|w| w.thesis_changed);
+        let self_corrections = what_changed.map(|w| w.self_correction_count).unwrap_or(0);
+        let mut decision =
+            episode_decision(prior_v, verdict, is_fresh, standing, thesis_changed);
         // Two seeding seams convert an `Extend` into the debut open
         // ([`OpenReason::Debut`]); an abstention still never opens. **Upgrade**: a
         // prior run that predates the episode machinery yields `Extend` for a
@@ -1696,6 +1731,10 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                         observed_at: input.created_at.to_string(),
                         kind,
                     });
+                    // Defensive: a self-correction opens via `thesis_changed`,
+                    // so an extension normally adds zero — accumulate anyway so
+                    // no labeled count can be dropped.
+                    ep.self_correction_count += self_corrections;
                     summary.extended.push(verdict.symbol.clone());
                     summary.changed.insert(ep.episode_id.clone());
                 }
@@ -1703,10 +1742,6 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                 // nothing — there is no open forecast left to observe against.
             }
             EpisodeDecision::Open(reasons) => {
-                let audit = input
-                    .audits
-                    .iter()
-                    .find(|a| a.symbol.eq_ignore_ascii_case(&verdict.symbol));
                 let sector = input
                     .sector_by_symbol
                     .get(&key)
@@ -1814,7 +1849,9 @@ pub fn plan_episodes(input: &PlanInput<'_>, episodes: &mut Vec<DecisionEpisode>)
                     falsifier_events: Vec::new(),
                     labels: pending_labels(anchor),
                     state: EpisodeState::Active,
-                    self_correction_count: 0,
+                    // Seeded with this run's labeled count — the validated
+                    // what-changed audit's, zero on every other open.
+                    self_correction_count: self_corrections,
                 };
                 summary.opened.push(OpenedEpisodeNote {
                     symbol: verdict.symbol.clone(),
@@ -2595,6 +2632,107 @@ mod tests {
         assert_eq!(episodes[0].observations[0].kind, ObservationKind::Reaffirmed);
     }
 
+    fn audit_with_wc(symbol: &str, thesis_changed: bool, self_corrections: u32) -> HoldingAudit {
+        HoldingAudit {
+            symbol: symbol.into(),
+            metrics: Default::default(),
+            sources: vec![],
+            model_ids: vec![],
+            prompt_version: "test".into(),
+            degraded_inputs: vec![],
+            action_annotations: vec![],
+            target_meta: None,
+            grade_parameter_version: None,
+            ledger_audit: None,
+            quick_basis: None,
+            fund_exposure: None,
+            pre_profit: None,
+            hurdle: None,
+            forensic: None,
+            tech_event_pre_flag: None,
+            short_interest: None,
+            implied_expectations: None,
+            narrative: None,
+            option_overlay: None,
+            what_changed_audit: Some(crate::portfolio::WhatChangedAudit {
+                entries: vec![],
+                input_delta: vec![],
+                downgrades: vec![],
+                self_correction_count: self_corrections,
+                thesis_changed,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_thesis_change_opens_with_the_action_unchanged_and_seeds_the_count() {
+        let c1 = "2026-08-04T12:00:00+00:00";
+        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
+        let sector = HashMap::new();
+        let mut episodes = Vec::new();
+        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].self_correction_count, 0);
+
+        // Same branch, same action — but this run's validated what-changed audit
+        // records a thesis change with two labeled self-corrections: the
+        // standing-thesis leg opens a successor episode carrying the count.
+        let c2 = "2026-08-11T12:00:00+00:00";
+        let verdicts = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c2)];
+        let audits = vec![audit_with_wc("AAPL", true, 2)];
+        let mut input = plan_input("run-2", c2, &verdicts, Some(&prior), &sector);
+        input.audits = &audits;
+        let s = plan_episodes(&input, &mut episodes);
+        assert_eq!(s.opened.len(), 1);
+        assert_eq!(s.opened[0].reasons, vec![OpenReason::ThesisChange]);
+        assert_eq!(episodes.len(), 2);
+        assert_eq!(episodes[1].self_correction_count, 2);
+    }
+
+    #[test]
+    fn a_carried_audits_thesis_flag_never_opens() {
+        // A selective carry re-persists the prior audit — its what-changed flags
+        // are its own run's facts, so the standing-thesis leg must not re-fire
+        // off them (the carried-crossings premise).
+        let c1 = "2026-08-04T12:00:00+00:00";
+        let prior = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
+        let sector = HashMap::new();
+        let mut episodes = Vec::new();
+        plan_episodes(&plan_input("run-1", c1, &prior, None, &sector), &mut episodes);
+
+        let c2 = "2026-08-11T12:00:00+00:00";
+        // Carried: the verdict keeps its prior vintage (analyzed_at != created_at).
+        let verdicts = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
+        let audits = vec![audit_with_wc("AAPL", true, 1)];
+        let mut input = plan_input("run-2", c2, &verdicts, Some(&prior), &sector);
+        input.audits = &audits;
+        let s = plan_episodes(&input, &mut episodes);
+        assert!(s.opened.is_empty());
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].self_correction_count, 0);
+        assert_eq!(episodes[0].observations[0].kind, ObservationKind::Carried);
+    }
+
+    #[test]
+    fn episode_decision_thesis_leg_opens_only_on_the_signal() {
+        let prior = verdict("AAPL", Action::Hold, (0.03, 0.06));
+        let current = verdict("AAPL", Action::Hold, (0.03, 0.06));
+        assert_eq!(
+            episode_decision(Some(&prior), &current, true, None, false),
+            EpisodeDecision::Extend(ObservationKind::Reaffirmed)
+        );
+        assert_eq!(
+            episode_decision(Some(&prior), &current, true, None, true),
+            EpisodeDecision::Open(vec![OpenReason::ThesisChange])
+        );
+        // Beside an action change the thesis signal records as a second reason.
+        let moved = verdict("AAPL", Action::Trim, (0.03, 0.06));
+        assert_eq!(
+            episode_decision(Some(&prior), &moved, true, None, true),
+            EpisodeDecision::Open(vec![OpenReason::ActionChange, OpenReason::ThesisChange])
+        );
+    }
+
     #[test]
     fn a_backwards_clock_step_cannot_shadow_the_newly_opened_episode() {
         // Run 1 opens the episode. Run 2 changes the action, so it opens a
@@ -2901,6 +3039,7 @@ mod tests {
         let c3 = "2026-08-18T12:00:00+00:00";
         let trim_again = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c3)];
         let audit = HoldingAudit {
+            what_changed_audit: None,
             symbol: "AAPL".into(),
             metrics: Default::default(),
             sources: vec![],
@@ -2967,6 +3106,7 @@ mod tests {
         let hold = vec![fresh(verdict("AAPL", Action::Hold, (0.03, 0.06)), c1)];
         let sector = HashMap::new();
         let audit = HoldingAudit {
+            what_changed_audit: None,
             symbol: "AAPL".into(),
             metrics: Default::default(),
             sources: vec![],
@@ -3019,6 +3159,7 @@ mod tests {
         let sector = HashMap::new();
         let mut episodes = Vec::new();
         let audit = HoldingAudit {
+            what_changed_audit: None,
             symbol: "AAPL".into(),
             metrics: Default::default(),
             sources: vec![],
@@ -3079,6 +3220,7 @@ mod tests {
     /// re-raised against, and the confirmation date the engine stamps on it.
     fn confirmed_crossing(observation_id: &str, confirmed_at: &str) -> HoldingAudit {
         HoldingAudit {
+            what_changed_audit: None,
             symbol: "AAPL".into(),
             metrics: Default::default(),
             sources: vec![],
@@ -3173,6 +3315,7 @@ mod tests {
         let sector = HashMap::new();
         let mut episodes = Vec::new();
         let audit = HoldingAudit {
+            what_changed_audit: None,
             symbol: "AAPL".into(),
             metrics: Default::default(),
             sources: vec![],
@@ -3327,7 +3470,7 @@ mod tests {
         abstained.thesis_ledger = None;
         let current = verdict("AAPL", Action::Hold, (0.03, 0.06));
         // No standing episode either — a debut abstention was never seeded.
-        let decision = episode_decision(Some(&abstained), &current, true, None);
+        let decision = episode_decision(Some(&abstained), &current, true, None, false);
         assert_eq!(
             decision,
             EpisodeDecision::Open(vec![OpenReason::Debut]),

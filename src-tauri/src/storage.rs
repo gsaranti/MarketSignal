@@ -131,7 +131,10 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     // was the only writer before the local suite. Same `PRAGMA table_info` idempotency
     // guard as `document_parse_runs.total_original_chars` below (a duplicate `ALTER`
     // errors). The report keeps its one-summary-per-report unique index unchanged: the
-    // local jobs do not write `summary` rows keyed by `report_id`, so it stays correct.
+    // Portfolio job's `summary` rows carry a synthetic `{run_id}:{SYMBOL}` id — a
+    // colon-bearing string no report UUID can equal — so the global index holds
+    // one row per (run, holding) there and one per report here, with no
+    // cross-namespace collision possible.
     if !column_exists(conn, "vector_memory", "namespace")? {
         conn.execute(
             "ALTER TABLE vector_memory ADD COLUMN namespace TEXT NOT NULL DEFAULT 'report'",

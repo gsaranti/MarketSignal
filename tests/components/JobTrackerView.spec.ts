@@ -371,3 +371,102 @@ test("active runs offer Cancel (which emits + reports its busy state); terminal 
   await done.find(".toolbar-actions button").trigger("click");
   expect(done.emitted("close")).toHaveLength(1);
 });
+
+// ---- The interrupted-run Resume offer (docs/portfolio-analysis.md §Failure
+// posture: offered from a Portfolio run's failed / cancelled tracker state,
+// only while an eligible checkpoint trail exists) ----
+
+const resumable = deepFreeze({
+  available: true,
+  runId: "run-9",
+  createdAt: "2026-08-21T12:00:00+00:00",
+  completed: 3,
+  total: 8,
+  reason: null,
+});
+
+test("a stopped portfolio run with an eligible trail offers Resume and states what it keeps", async () => {
+  const wrapper = mount(JobTrackerView, {
+    props: {
+      trace: terminalTrace("failed"),
+      active: false,
+      cancelRequested: false,
+      kind: "portfolio" as const,
+      resume: resumable,
+    },
+  });
+  const buttons = wrapper.findAll(".toolbar-actions button");
+  expect(buttons.map((b) => b.text())).toEqual(["Resume run", "Back to portfolio"]);
+  const note = wrapper.find(".resume-note");
+  expect(note.text()).toContain("3 of 8 holdings completed");
+  // The trail is identified by its own pinned as-of — never claimed as this
+  // run's own work (an earlier run's trail can outlive a run that failed
+  // before opening its own).
+  expect(note.text()).toContain("An interrupted run from");
+  expect(note.text()).toContain("2026");
+  await buttons[0].trigger("click");
+  expect(wrapper.emitted("resume")).toHaveLength(1);
+
+  // A requested resume disables the button (the single run slot cannot race).
+  await wrapper.setProps({ resumeRequested: true });
+  const resume = wrapper.find(".toolbar-actions button");
+  expect(resume.text()).toBe("Resuming…");
+  expect(resume.attributes("disabled")).toBeDefined();
+});
+
+test("an ineligible trail states why instead of offering, and other states offer nothing", () => {
+  // A trail that exists but cannot resume: the reason line, no button.
+  const blocked = mount(JobTrackerView, {
+    props: {
+      trace: terminalTrace("cancelled"),
+      active: false,
+      cancelRequested: false,
+      kind: "portfolio" as const,
+      resume: deepFreeze({ ...resumable, available: false, reason: "a newer run has persisted since the interrupted run" }),
+    },
+  });
+  expect(blocked.findAll(".toolbar-actions button").map((b) => b.text())).toEqual([
+    "Back to portfolio",
+  ]);
+  expect(blocked.find(".resume-note").text()).toContain("Resume unavailable:");
+
+  // No trail at all: nothing renders.
+  const none = mount(JobTrackerView, {
+    props: {
+      trace: terminalTrace("failed"),
+      active: false,
+      cancelRequested: false,
+      kind: "portfolio" as const,
+      resume: null,
+    },
+  });
+  expect(none.find(".resume-note").exists()).toBe(false);
+
+  // A successful run never offers resume, even with a stale status object.
+  const done = mount(JobTrackerView, {
+    props: {
+      trace: terminalTrace("successful"),
+      active: false,
+      cancelRequested: false,
+      kind: "portfolio" as const,
+      resume: resumable,
+    },
+  });
+  expect(done.findAll(".toolbar-actions button").map((b) => b.text())).toEqual([
+    "Back to portfolio",
+  ]);
+  expect(done.find(".resume-note").exists()).toBe(false);
+
+  // A report run's tracker never offers resume.
+  const report = mount(JobTrackerView, {
+    props: {
+      trace: terminalTrace("failed"),
+      active: false,
+      cancelRequested: false,
+      resume: resumable,
+    },
+  });
+  expect(report.findAll(".toolbar-actions button").map((b) => b.text())).toEqual([
+    "Back to report",
+  ]);
+});

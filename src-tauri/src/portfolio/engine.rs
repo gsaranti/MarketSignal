@@ -517,6 +517,47 @@ pub struct ComputedMetrics {
     pub composite_coverage: Option<f64>,
 }
 
+/// One moved metric of the engine-computed input delta
+/// (`docs/portfolio-workflow.md` §Step 6b — the metric-level diff): the prior
+/// audit's stored value beside this run's. Either side is `None` where that run
+/// could not compute the metric — an appearing or disappearing value is a change,
+/// never a fabricated zero-delta.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetricChange {
+    pub name: &'static str,
+    pub old: Option<f64>,
+    pub new: Option<f64>,
+}
+
+/// The engine-computed metric delta: every [`ComputedMetrics`] field whose stored
+/// prior value differs from this run's. Resolution is **exact `old ≠ new`**
+/// (ruled 2026-08-21 — no materiality margin): persisted numerics round-trip
+/// bit-exact (`docs/storage.md` — the `float_roundtrip` guarantee), so equality
+/// is a real no-change and any difference is a concrete delta entry. A metric
+/// absent on both sides is no entry. The positioning leg of the designed delta
+/// stays excluded — its data legs are unbuilt.
+pub fn metric_delta(prior: &ComputedMetrics, current: &ComputedMetrics) -> Vec<MetricChange> {
+    let pairs: [(&'static str, Option<f64>, Option<f64>); 12] = [
+        ("net margin", prior.net_margin, current.net_margin),
+        ("gross margin", prior.gross_margin, current.gross_margin),
+        ("revenue growth", prior.revenue_growth, current.revenue_growth),
+        ("debt/equity", prior.debt_to_equity, current.debt_to_equity),
+        ("return volatility", prior.return_volatility, current.return_volatility),
+        ("trailing return", prior.trailing_return, current.trailing_return),
+        ("P/E", prior.pe_ratio, current.pe_ratio),
+        ("P/S", prior.ps_ratio, current.ps_ratio),
+        ("P/B", prior.pb_ratio, current.pb_ratio),
+        ("expense ratio", prior.expense_ratio, current.expense_ratio),
+        ("NAV premium", prior.nav_premium, current.nav_premium),
+        ("composite coverage", prior.composite_coverage, current.composite_coverage),
+    ];
+    pairs
+        .into_iter()
+        .filter(|(_, old, new)| old != new)
+        .map(|(name, old, new)| MetricChange { name, old, new })
+        .collect()
+}
+
 /// The three-state hurdle read plus the scenario total returns it tested
 /// (`docs/portfolio-analysis.md` §Starting parameters — the dead-money hurdle).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -3013,6 +3054,40 @@ mod tests {
     use super::*;
     use crate::portfolio::{HurdleState, RiskTier};
     use crate::schwab::{OptionQuote, OptionKind};
+
+    #[test]
+    fn metric_delta_is_exact_and_types_appearances() {
+        let prior = ComputedMetrics {
+            gross_margin: Some(0.42),
+            net_margin: Some(0.10),
+            pe_ratio: Some(21.5),
+            ..Default::default()
+        };
+        let current = ComputedMetrics {
+            gross_margin: Some(0.38), // moved
+            net_margin: Some(0.10),   // unchanged — no entry
+            pe_ratio: None,           // disappeared
+            revenue_growth: Some(0.07), // appeared
+            ..Default::default()
+        };
+        let delta = metric_delta(&prior, &current);
+        let names: Vec<&str> = delta.iter().map(|c| c.name).collect();
+        assert_eq!(names, vec!["gross margin", "revenue growth", "P/E"]);
+        let gm = &delta[0];
+        assert_eq!((gm.old, gm.new), (Some(0.42), Some(0.38)));
+        let pe = delta.iter().find(|c| c.name == "P/E").unwrap();
+        assert_eq!((pe.old, pe.new), (Some(21.5), None));
+    }
+
+    #[test]
+    fn metric_delta_of_identical_metrics_is_empty() {
+        let m = ComputedMetrics {
+            gross_margin: Some(0.42),
+            debt_to_equity: Some(1.1),
+            ..Default::default()
+        };
+        assert!(metric_delta(&m, &m.clone()).is_empty());
+    }
 
     /// Quarterly dates walking back from mid-2026, newest first.
     fn quarter_ends(n: usize) -> Vec<String> {

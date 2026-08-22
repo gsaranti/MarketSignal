@@ -34,7 +34,7 @@ pub const HOUSE_VIEW_SOURCE: &str = "Market Signal Report (house view)";
 /// summaries plus the latest report's relevant prose sections — never via the
 /// report's vector memory (which a local job cannot read anyway: different namespace
 /// and embedder, see `crate::vector_memory::MemoryNamespace`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct HouseView {
     pub recent_summaries: Vec<ReportSummary>,
     /// The latest report's Thesis / Investment Strategy / Forward Outlook prose,
@@ -51,7 +51,7 @@ pub const COMMODITY_WINDOW_DAYS: i64 = 400;
 /// per-holding selection reads (`docs/data-sources.md §Portfolio Analysis —
 /// endpoint surface`: energy series for energy-linked holdings, the IMF metals
 /// plus gold for materials-linked ones).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CommodityGroup {
     Energy,
     Metals,
@@ -63,7 +63,7 @@ pub enum CommodityGroup {
 /// earliest print as a trend base. Each carries its observation date so the
 /// model reads it as-of — a monthly IMF series lags by design, and data honesty
 /// shows the lag rather than presenting the print as current.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommodityPrint {
     /// Display label ("WTI Crude Oil").
     pub label: String,
@@ -81,7 +81,7 @@ pub struct CommodityPrint {
 /// plus the suite-shared monthly IMF metals, and gold via FMP `quote` `GCUSD` —
 /// each series fail-soft to a typed gap. Empty prints + empty gaps = the leg
 /// never ran (an offline stub).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CommodityContext {
     pub prints: Vec<CommodityPrint>,
     pub gaps: Vec<String>,
@@ -370,6 +370,10 @@ pub struct HoldingDossier {
     /// engine-computed) — the scored ground the retrospective reads against, where
     /// any windows have matured. Empty on a debut or before any window matures.
     pub prior_matured_notes: Vec<String>,
+    /// The prior run's stored engine metrics (from the audit row) — the
+    /// metric-level input delta's prior side ([`crate::portfolio::engine::metric_delta`]).
+    /// `None` on a debut or a prior run without an audit row.
+    pub prior_metrics: Option<crate::portfolio::engine::ComputedMetrics>,
     /// The grade-band parameter version the prior verdict's letter was computed under
     /// (from the prior run's audit row; `None` = a pre-stamp run, i.e. the v1 bands).
     /// Meaningful only beside `prior_verdict` — the interpretation prompt compares it
@@ -418,8 +422,27 @@ pub struct HoldingDossier {
     /// on a stock whose sector resolved to a SPDR benchmark and whose run
     /// fetched it; the technology-event pre-flag's read-against leg.
     pub sector_benchmark: Option<BenchmarkSeries>,
+    /// The Step-6a semantic continuity recall ([`SemanticRecall`]) — prompt
+    /// fragments retrieved from the Portfolio memory partition's `summary` rows,
+    /// with the fail-soft gap where the lane failed. Empty-and-gapless on a
+    /// debut-empty partition (the first post-slice run, by design), a
+    /// not-gradeable holding, or an unconfigured embedder.
+    pub semantic_recall: SemanticRecall,
     /// The data sources that contributed, for the run's audit record.
     pub sources: Vec<String>,
+}
+
+/// The Step-6a semantic continuity retrieval's outcome
+/// (`docs/portfolio-workflow.md` §Step 6a): the recalled prompt fragments from
+/// this job's own memory partition, or the typed fail-soft gap. A failure skips
+/// recall for this holding only — the deterministically loaded prior verdict and
+/// ledger are unaffected. The gap is recorded on the audit's degraded inputs at
+/// the interpretation paths (never fed to the engine stand-in's degradation
+/// count, matching the narrative / pre-flag gap treatment).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SemanticRecall {
+    pub hits: Vec<String>,
+    pub gap: Option<String>,
 }
 
 /// The prior run's carry-over for one holding, read off the latest persisted run:
@@ -447,6 +470,9 @@ pub struct PriorHolding {
     pub consensus_eps_mid: Option<f64>,
     /// The prior run's matured outcome-window lines for this symbol.
     pub matured_notes: Vec<String>,
+    /// The prior run's stored engine metrics (its audit row's `metrics`) — the
+    /// metric-level input delta's prior side. `None` without an audit row.
+    pub metrics: Option<crate::portfolio::engine::ComputedMetrics>,
 }
 
 impl HoldingDossier {
@@ -711,6 +737,7 @@ pub fn assemble(
     put_call_backdrop: Option<crate::cboe::PutCallBackdrop>,
     commodity_context: Vec<CommodityPrint>,
     sector_benchmark: Option<BenchmarkSeries>,
+    semantic_recall: SemanticRecall,
 ) -> HoldingDossier {
     let (
         prior_verdict,
@@ -720,6 +747,7 @@ pub fn assemble(
         prior_spot,
         prior_consensus_eps_mid,
         prior_matured_notes,
+        prior_metrics,
     ) = match prior {
         Some(p) => (
             Some(p.verdict),
@@ -729,8 +757,9 @@ pub fn assemble(
             p.spot,
             p.consensus_eps_mid,
             p.matured_notes,
+            p.metrics,
         ),
-        None => (None, None, None, None, None, None, Vec::new()),
+        None => (None, None, None, None, None, None, Vec::new(), None),
     };
     let mut fmp_financials = fmp_financials;
     let ttm_basis = apply_ttm_statement_basis(&mut fmp_financials);
@@ -886,6 +915,7 @@ pub fn assemble(
         prior_spot,
         prior_consensus_eps_mid,
         prior_matured_notes,
+        prior_metrics,
         prior_grade_parameter_version,
         prior_pre_profit,
         listing,
@@ -895,6 +925,7 @@ pub fn assemble(
         put_call_backdrop,
         commodity_context,
         sector_benchmark,
+        semantic_recall,
         sources,
     }
 }
@@ -1068,13 +1099,19 @@ pub fn prior_verdict_for(
         .audit
         .iter()
         .find(|a| a.symbol.eq_ignore_ascii_case(symbol));
-    let (grade_parameter_version, pre_profit, spot, consensus_eps_mid) = match audit_row {
+    let (grade_parameter_version, pre_profit, spot, consensus_eps_mid, metrics) = match audit_row {
         Some(a) => {
             let spot = a.quick_basis.as_ref().map(|b| b.spot);
             let mid = a.quick_basis.as_ref().and_then(|b| b.consensus_eps_mid);
-            (a.grade_parameter_version.clone(), a.pre_profit.clone(), spot, mid)
+            (
+                a.grade_parameter_version.clone(),
+                a.pre_profit.clone(),
+                spot,
+                mid,
+                Some(a.metrics.clone()),
+            )
         }
-        None => (None, None, None, None),
+        None => (None, None, None, None, None),
     };
     // The prior run's matured outcome lines for this symbol — the deterministic
     // scored ground the retrospective block renders (empty until windows mature).
@@ -1104,6 +1141,7 @@ pub fn prior_verdict_for(
         spot,
         consensus_eps_mid,
         matured_notes,
+        metrics,
     })
 }
 
@@ -1642,6 +1680,7 @@ Sources and footnotes.
             None,
             Vec::new(),
             None,
+            SemanticRecall::default(),
         );
         assert!(dossier.sources.iter().any(|s| s.contains("FMP")));
         assert!(dossier.sources.iter().any(|s| s.contains("SEC")));
@@ -1723,6 +1762,7 @@ Sources and footnotes.
             None,
             Vec::new(),
             None,
+            SemanticRecall::default(),
         )
         .sources;
         assert_eq!(
@@ -1775,6 +1815,7 @@ Sources and footnotes.
                 None,
                 Vec::new(),
                 None,
+                SemanticRecall::default(),
             )
             .sources
         };
@@ -1831,6 +1872,7 @@ Sources and footnotes.
             None,
             Vec::new(),
             None,
+            SemanticRecall::default(),
         )
         .sources
     }
@@ -2093,6 +2135,7 @@ Sources and footnotes.
                 overview: String::new(),
             },
             audit: vec![crate::portfolio::HoldingAudit {
+                what_changed_audit: None,
                 symbol: "AAPL".into(),
                 metrics: Default::default(),
                 sources: vec![],

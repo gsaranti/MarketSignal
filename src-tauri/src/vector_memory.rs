@@ -115,9 +115,12 @@ impl MemoryHit {
 /// error: it would poison cosine scores downstream, and the one legitimate
 /// writer (a model embedding) never produces one — so it marks a bad response,
 /// not data to keep. A `summary` row without a `report_id` is likewise a typed
-/// error: a summary is definitionally a report's summary, and both the
-/// one-per-report unique index and `delete_report_summary`'s cascade key on the
-/// id — an orphan row would be invisible to both.
+/// error: a summary is definitionally *some* record's summary — the report
+/// namespace keys one per report, and the Portfolio namespace keys its
+/// per-holding continuity rows `{run_id}:{SYMBOL}` — and the summary-kind
+/// unique index, `delete_report_summary`'s cascade, and the portfolio
+/// run-retention prune all key on the id, so an orphan row would be invisible
+/// to every one of them.
 pub fn insert_memory(
     conn: &Connection,
     kind: MemoryKind,
@@ -268,6 +271,22 @@ pub fn count_memory(conn: &Connection, namespace: MemoryNamespace) -> Result<i64
     Ok(conn.query_row(
         "SELECT COUNT(*) FROM vector_memory WHERE namespace = ?1",
         [namespace.as_str()],
+        |r| r.get(0),
+    )?)
+}
+
+/// [`count_memory`] restricted to one `kind` — the guard for a retrieval that
+/// searches a single kind (the Step-6a semantic recall reads only `summary`
+/// rows), so a partition holding nothing but the *other* kind still skips the
+/// query embedding rather than spending it on a search that cannot hit.
+pub fn count_memory_kind(
+    conn: &Connection,
+    kind: MemoryKind,
+    namespace: MemoryNamespace,
+) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM vector_memory WHERE kind = ?1 AND namespace = ?2",
+        [kind.as_str(), namespace.as_str()],
         |r| r.get(0),
     )?)
 }

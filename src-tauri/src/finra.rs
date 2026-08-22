@@ -47,7 +47,7 @@ pub struct ShortInterestRead {
 
 /// The parsed consolidated file: the discovered settlement date plus a
 /// symbol-keyed map (uppercased) for the per-holding local lookup.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ShortInterestFile {
     /// The discovered settlement date, `YYYY-MM-DD`.
     pub settlement_date: String,

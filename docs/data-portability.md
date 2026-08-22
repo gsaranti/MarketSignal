@@ -28,7 +28,7 @@ Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 |---|---|
 | `reports` | The report records — id, regime metadata, summary JSON, the pointer to the Markdown body. |
 | `baseline_snapshots` | Past market-scan states (retention 14). **Irreproducible** — they capture a market moment; they anchor the cadence-honest change view on the next report. |
-| `vector_memory` | Report summaries **and durable learnings** — the long-term semantic memory. Durable learnings are the point: they survive report deletion and are the accumulated edge. |
+| `vector_memory` | Report summaries, the local jobs' per-record continuity summaries, **and durable learnings** — the long-term semantic memory. Durable learnings are the point: they survive report deletion and are the accumulated edge. |
 | `portfolio_runs` | Local-suite run history (retention 30). Nascent today, but durable once the suite runs live. |
 | `holdings_pulls` | The single latest view-only holdings snapshot. |
 | `portfolio_quick_checks` | The quick check's between-run state (format v2) — attention flags, unexamined evidence events, condition evaluation streaks. Durable analytical state: flags and breach streaks do not regenerate on the next sweep. |
@@ -52,6 +52,7 @@ Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 | Schwab app secret + OAuth tokens | macOS Keychain | Never portable; the token lifecycle is a weekly re-login on any machine ([schwab-integration.md](schwab-integration.md)). |
 | Light/Dark preference | webview `localStorage` | Pure presentation, no backend consumer. |
 | `job_runs` | SQLite | Machine-local operational history — run outcomes, not analytical product. |
+| `portfolio_checkpoints`, `portfolio_checkpoint_holdings` | SQLite | An interrupted run's checkpoint trail (ruled 2026-08-21) — transient operational state that expires at the resume window and is discarded by any new run ([portfolio-analysis.md §Failure posture](portfolio-analysis.md#failure-posture)). |
 | `research_parse_failures`, `document_truncations`, `document_parse_runs` | SQLite | Regenerable per-report telemetry, not primary data. |
 | HTML | (nothing — rendered on demand) | Never stored anywhere ([storage.md §SQLite](storage.md#sqlite)). |
 
