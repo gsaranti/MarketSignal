@@ -520,7 +520,8 @@ The queue is governed by the **pre-run completion bar** (standing user
 decision; widened 2026-08-14 from the original locked pre-test block, which was
 fully built, and again 2026-08-20 to fold the live research loop inside it):
 no further live runs until **the entire Portfolio Analysis job is built** —
-every designed leg except work gated on realized-outcome evidence, which can
+every designed leg except work gated on realized-outcome evidence (grade
+normalization, the calibration proposals, the derive-reads strata), which can
 only come from a run — after which one **single big confirmation run** banks
 every stacked runtime confirmation at once.
 
@@ -543,8 +544,10 @@ every stacked runtime confirmation at once.
   grade bands, and the interpretation-prompt contract, each tuned against the
   first live run's persisted dataset.
 - **The pre-run correctness program** — the conformance walks and ruling
-  rounds, the per-doc sweeps, the logic-flow as-built walk, and the closing
-  doc/code audit (21 findings, all addressed;
+  rounds (the tunnel-vision doc↔code walk is
+  `docs/verification/2026-08-15-tunnel-vision-conformance-walk.md`), the
+  per-doc sweeps, the logic-flow as-built walk, and the closing doc/code
+  audit (21 findings, all addressed;
   `docs/verification/2026-08-18-portfolio-analysis-doc-code-audit.md`).
 - **The progress step-ownership contract** — request events stamped with
   their owning step at the seam's single choke point, the tracker attaching
@@ -584,21 +587,7 @@ every stacked runtime confirmation at once.
 
 ### Remaining, in order
 
-1. **The Portfolio completion block** (user decision 2026-08-14; the FINRA /
-   CBOE deferral is reversed and folded in). The **tunnel-vision doc↔code
-   conformance walk that gated the block's first slice ran 2026-08-15** —
-   31 verified findings, zero code fixes, every diff ruled and the doc side
-   fixed (`docs/verification/2026-08-15-tunnel-vision-conformance-walk.md`) —
-   so the block's slices plan against verified contracts.
-   The block is **complete**: its four slices — **run evidence**, the
-   **evidence legs**, **Infrastructure**, and **fund depth** — are built
-   (§Built).
-   Excluded by the same decision: only work gated on realized-outcome evidence
-   (grade normalization, the calibration proposals, the derive-reads strata),
-   which can come only from a run. The live research loop is no longer
-   excluded — the 2026-08-20 widening folds it in as the final pre-run
-   Portfolio slice (item 2 below), its activation obligations discharged there.
-2. **The live research loop** — the final Portfolio Analysis slice, folded
+1. **The live research loop** — the final Portfolio Analysis slice, folded
    inside the pre-run bar by the 2026-08-20 widening (the held-name research
    refresh lane, once slated to ride with it, was retired by the 2026-08-16
    badge ruling). The shipped schemas don't preclude it, but the research loop
@@ -611,8 +600,8 @@ every stacked runtime confirmation at once.
    disconfirming-fetch pass's placement is likewise ruled (2026-08-18): once
    per holding after its topics, spent from the holding's budget and outside
    any topic's three-pass depth (`docs/portfolio-workflow.md §Step 6c`).
-3. **The single big confirmation run** — now waiting on the completion block
-   and the live research loop above (the entire Portfolio Analysis job). Its
+2. **The single big confirmation run** — now waiting on the live research
+   loop above, the last unbuilt piece of the Portfolio Analysis job. Its
    checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
@@ -626,7 +615,7 @@ every stacked runtime confirmation at once.
    `docs/verification/`); attempt 3 exercises the v9 shape as a full run.
    What stays open behind the run is owned by the attempt records'
    §Disposition, not this brief.
-4. **Trade Opportunities** — designed, not built, waiting behind the entire
+3. **Trade Opportunities** — designed, not built, waiting behind the entire
    Portfolio job and its confirmation run. The design is settled against
    live-verified paid FMP shapes and grounded end-to-end by the 2026-08-19
    program — the rewritten
@@ -708,8 +697,8 @@ off attempt 2's letters): the no-A distribution is honest — quality and
 valuation sub-scores anticorrelate structurally — so normalization returns
 only on realized-outcome evidence, never on a letter distribution. An
 **allocation optimizer** is deferred, not adopted — sizing and the optimizer
-question are the portfolio planner's domain since the tunnel-vision ruling. The FINRA and CBOE evidence legs' deferral was reversed 2026-08-14 — they are
-queued in the Portfolio completion block. Trade Opportunities' blind-first
+question are the portfolio planner's domain since the tunnel-vision ruling. The FINRA and CBOE evidence legs' deferral was reversed 2026-08-14 — they
+landed with the Portfolio completion block (§Built). Trade Opportunities' blind-first
 diagnostic is reserved diagnostic-only, its execution deliberately unspecified
 until built. The fund slice's remaining drafted constants — the coverage and US
 guards, tier premiums, add floors, and CIK-cache staleness — stay pinned until

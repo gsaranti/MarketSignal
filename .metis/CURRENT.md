@@ -2,30 +2,24 @@
 
 ## What happened
 
-The **fund-depth slice shipped** (`39c281e`) — the Portfolio completion
-block's last bullet, and the block is now **complete**. Four rulings
-2026-08-21: the flat-driver fund target form is the **settled design**
-(closing conformance-walk R27; a scenario-differentiated formula returns only
-on realized-outcome evidence); N-PORT stays deferred; the CEF price-vs-NAV
-read is prompt evidence + card only; and the CEF leg was re-scoped to
-**detection + gap-honest seam** after a live probe found FMP `etf/info`
-serves closed-end funds an empty body — detection reads the one-per-fund
-`profile` (isFund AND a closed-end description fragment; full-pass only), a
-real CEF now takes `role_risk_only` labeled "closed-end fund". One metis
-round + five Codex rounds to approval; every round's dispositions are in
-`docs/verification/2026-08-21-fund-depth-rulings.md`. **BUILD was then
-compacted** (8,343 → 6,310 words) under a new standing ruling: a landed slice
-enters §Built as ONE bullet + record pointer, never a paragraph; body carries
-decision + why, mechanics live in docs; size stays roughly stationary. Two
-formerly BUILD-only facts were re-homed (`export.md §PDF Export` gained the
-`@page` gotcha, `schwab-integration.md` the rustls-acceptor rationale).
+A housekeeping session: **BUILD.md's queue was cleaned up** to reflect that
+the Portfolio completion block is complete. The finished block was removed
+from §Remaining (queue renumbered: research loop 1, big run 2, Trade
+Opportunities 3), and the two facts only it carried were re-homed — the
+realized-outcome exclusion list (grade normalization, the calibration
+proposals, the derive-reads strata) now sits in the §What remains intro
+parenthetical, and the 2026-08-15 tunnel-vision conformance-walk record is
+cited from §Built's pre-run correctness program bullet. Two stale
+cross-references fixed: the big-run item now waits only on the research
+loop, and §Deferred by decision says the FINRA/CBOE legs *landed with* the
+block. Net shrink 6,310 → 6,192 words, holding the stationary-size ruling.
+No code touched; gates unchanged from the fund-depth commit (cargo test
+1141/0, clippy clean, npm build clean, npm test 46 + 239).
 
 ## Current state
 
-Nothing in flight. The slice's gates at commit: cargo test 1141/0, clippy
-clean, npm build clean, npm test 46 + 239 (the PortfolioView spec exists —
-CLAUDE.md's spec list was stale and is fixed). The BUILD + INDEX absorption
-and compaction committed with this handoff.
+Nothing in flight. BUILD's remaining queue reads: 1 live research loop,
+2 big confirmation run, 3 Trade Opportunities.
 
 ## Open questions
 
@@ -39,7 +33,7 @@ and compaction committed with this handoff.
 
 ## Where to start
 
-BUILD item 2: **the live research loop** — the final Portfolio Analysis
+BUILD item 1: **the live research loop** — the final Portfolio Analysis
 slice, inside the pre-run bar per the 2026-08-20 widening. It must discharge
 the pre-profit producer's activation obligations (§Standing constraints)
 before connecting the producer; the cache model (always-run seed-and-merge)
