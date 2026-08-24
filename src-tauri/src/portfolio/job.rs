@@ -131,6 +131,13 @@ pub trait CompanyDataSource {
     ) -> Option<crate::portfolio::ForensicFilingState> {
         None
     }
+    /// Symbol-scoped `news/stock` items since `from` (ISO date) — the research
+    /// loop's structured seeds (leads, never evidence — `docs/web-research.md`).
+    /// Fail-soft: the empty default (stubs, and any failed live fetch) just
+    /// runs the loop unseeded.
+    fn news_items(&self, _symbol: &str, _from: &str) -> Vec<crate::fmp::SymbolNewsItem> {
+        Vec::new()
+    }
 }
 
 /// The run-level market-context source (`docs/portfolio-workflow.md` §Step 5): the
@@ -414,6 +421,14 @@ const DEEP_HISTORY_LOOKBACK_DAYS: i64 = 1_600;
 impl CompanyDataSource for LiveCompanyData {
     fn financials(&self, symbol: &str) -> CompanyFinancials {
         self.fmp.fetch_company_financials(symbol)
+    }
+
+    fn news_items(&self, symbol: &str, from: &str) -> Vec<crate::fmp::SymbolNewsItem> {
+        // Fail-soft: a failed news fetch runs the research loop unseeded — a
+        // seed is a lead, never load-bearing evidence.
+        self.fmp
+            .fetch_symbol_news_since(symbol, from)
+            .unwrap_or_default()
     }
 
     fn fund_financials(&self, symbol: &str) -> CompanyFinancials {
@@ -1747,6 +1762,42 @@ fn run_analysis(
         } else {
             dossier::SemanticRecall::default()
         };
+        // The dossier's research-loop seed leg (`docs/portfolio-workflow.md`
+        // §Step 6a): symbol-scoped news since the shared research-freshness
+        // window, as typed seeds with stable app-assigned IDs — leads, never
+        // evidence. Stocks only (the endpoint is company-scoped); a row the
+        // wire served without a URL cannot be deep-read and is dropped.
+        let news_seeds: Vec<crate::portfolio::research::ResearchSeed> =
+            if is_stock && !skip_retrieval {
+                let from = (today
+                    - chrono::Duration::days(crate::portfolio::research::RESEARCH_FRESHNESS_DAYS))
+                .format("%Y-%m-%d")
+                .to_string();
+                company_data
+                    .news_items(&position.symbol, &from)
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, n)| {
+                        let url = n.url?;
+                        Some(crate::portfolio::research::ResearchSeed {
+                            id: format!("seed-{}", i + 1),
+                            headline: n.title,
+                            url,
+                            source: n.site.unwrap_or_else(|| "fmp-news".to_string()),
+                            published: Some(n.published_date),
+                        })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        // The persisted per-topic layer (the research-reuse priors). A read
+        // failure degrades to a cold loop, never a failed run.
+        let research_priors = if !skip_retrieval {
+            store::load_topic_distillates(conn, &position.symbol).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let dossier: HoldingDossier = dossier::assemble(
             position.clone(),
             holdings_diff.delta_for(&position.symbol),
@@ -1787,6 +1838,8 @@ fn run_analysis(
             },
             sector_benchmark,
             semantic_recall,
+            news_seeds,
+            research_priors,
         );
 
         // Cancellation checkpoint between the (now-complete) data gather and the model
@@ -1815,6 +1868,37 @@ fn run_analysis(
             verdict.analyzed_at = prior_vintage;
         }
         ctx.step_finished(step_key, "ok", None);
+        // Persist the holding's fresh per-topic distilled-findings layer — the
+        // next run's research seeds, surviving independently of run retention
+        // (`docs/portfolio-analysis.md` §Starting parameters). Fail-soft: a
+        // lost write costs the next run's warm seeds, never this run.
+        if let Some(research) = &audit.research {
+            if !research.seed_layer.is_empty() {
+                if let Err(e) =
+                    store::save_topic_distillates(conn, &position.symbol, &research.seed_layer)
+                {
+                    eprintln!(
+                        "research seed layer: write failed for {} ({e})",
+                        position.symbol
+                    );
+                }
+            }
+            // A topic the distillation failed to re-emit reconciled loses its
+            // stored row — a stale seed must not survive the run that should
+            // have rewritten it (each is also a recorded gap).
+            if !research.unreconciled_topics.is_empty() {
+                if let Err(e) = store::delete_topic_distillates(
+                    conn,
+                    &position.symbol,
+                    &research.unreconciled_topics,
+                ) {
+                    eprintln!(
+                        "research seed layer: stale-row delete failed for {} ({e})",
+                        position.symbol
+                    );
+                }
+            }
+        }
         verdicts.push(verdict);
         audits.push(audit);
 
@@ -4534,15 +4618,14 @@ mod tests {
     }
 
     impl crate::portfolio::pipeline::HoldingAnalyst for FailOn {
-        fn distill(
+        fn distill_research(
             &self,
-            dossier: &HoldingDossier,
-            findings: &crate::portfolio::pipeline::ResearchFindings,
-        ) -> Result<String> {
-            if dossier.position.symbol == self.symbol {
+            inputs: &crate::portfolio::distill::DistillInputs,
+        ) -> Result<crate::portfolio::distill::DistilledResearch> {
+            if inputs.symbol == self.symbol {
                 anyhow::bail!("injected model failure on {}", self.symbol);
             }
-            crate::portfolio::pipeline::StubAnalyst.distill(dossier, findings)
+            Ok(crate::portfolio::distill::offline_consolidate(inputs))
         }
         fn interpret(
             &self,

@@ -229,6 +229,10 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     // the portfolio schema travels with the module that owns it. Idempotent like the
     // rest of `init_schema`, so any run path can call it.
     crate::portfolio::store::init_schema(conn)?;
+    // The web tool's shared stores (document cache + source state), likewise
+    // kept beside the module that owns them (`docs/storage.md §Local Analysis
+    // Suite Storage`).
+    crate::web_research::store::init_schema(conn)?;
     Ok(())
 }
 

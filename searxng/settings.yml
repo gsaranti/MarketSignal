@@ -1,0 +1,33 @@
+# Market Signal — SearXNG instance settings (docs/web-research.md §Search
+# backend: SearXNG). Mounted read-only by the shipped docker-compose.yml.
+#
+# Two settings here are load-bearing and are the reason this file ships at all:
+#   1. JSON output is ENABLED — SearXNG's JSON format is disabled by default,
+#      and an unset format returns HTTP 403 to the app's `format=json` queries.
+#   2. The bot limiter is DISABLED — it exists to protect a *public* instance
+#      from bots, which a private single-user loopback instance doesn't need,
+#      and it would rate-limit the research loop's automated queries.
+use_default_settings: true
+
+server:
+  limiter: false
+  # The secret rides in from the compose file's SEARXNG_SECRET.
+
+search:
+  formats:
+    - html
+    - json
+
+engines:
+  # Pin the general engines that don't aggressively CAPTCHA automated queries.
+  - name: brave
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: mojeek
+    disabled: false
+  # Google CAPTCHA-walls hardest against automated queries: deprioritized.
+  - name: google
+    disabled: true

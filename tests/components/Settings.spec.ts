@@ -19,6 +19,7 @@ import type {
   SettingsView,
   SchwabStatus,
   TruncationStats,
+  WebResearchPreflight,
 } from "../../src/types";
 
 const settingsView: SettingsView = {
@@ -33,6 +34,7 @@ const settingsView: SettingsView = {
     fast_model: "",
     embedder_model: "",
   },
+  web_research: { searxng_endpoint: "" },
   available_models: [
     { slug: "gpt-main", label: "GPT Main", provider: "OpenAI" },
     { slug: "gpt-bull", label: "GPT Bull", provider: "OpenAI" },
@@ -57,6 +59,10 @@ const baseProps = {
   localError: null as string | null,
   localTesting: false,
   localDaemon: null as LocalDaemonStatus | null,
+  savingWebResearch: false,
+  webResearchError: null as string | null,
+  searxngTesting: false,
+  searxngStatus: null as WebResearchPreflight | null,
   truncationStats: null as TruncationStats | null,
   // The read-only investor-profile preset: unavailable by default (the section
   // is omitted); the profile tests override.
@@ -302,6 +308,66 @@ test("a reachable daemon over an empty roster never claims full setup", () => {
   expect(status.text()).toContain("add the reasoner and embedder");
   expect(status.text()).not.toContain("all rostered models available");
   expect(status.classes()).toContain("cred-status--pending");
+});
+
+// --- Web research (independent, ungated submission) ---------------------------
+
+test("the web-research form round-trips the saved endpoint and emits save-web-research", async () => {
+  const wrapper = makeWrapper({
+    settings: {
+      ...settingsView,
+      web_research: { searxng_endpoint: "http://127.0.0.1:8888" },
+    },
+  });
+  const endpoint = wrapper.find("#searxng-endpoint").element as HTMLInputElement;
+  expect(endpoint.value).toBe("http://127.0.0.1:8888");
+  // An unedited form does not emit.
+  const form = wrapper.findAll("form.settings-form")[3];
+  await form.trigger("submit");
+  expect(wrapper.emitted("save-web-research")).toBeUndefined();
+  // An edit makes it dirty; the submission carries the value verbatim.
+  await wrapper.find("#searxng-endpoint").setValue("http://127.0.0.1:9999");
+  await form.trigger("submit");
+  expect(wrapper.emitted("save-web-research")).toEqual([
+    [{ searxng_endpoint: "http://127.0.0.1:9999" }],
+  ]);
+});
+
+test("the searxng row distinguishes untested / ok / unreachable, and gates on a saved endpoint", () => {
+  // No endpoint saved: the test control is disabled with the reason as title.
+  const bare = makeWrapper();
+  const bareBtn = bare.findAll(".local-test .cred-test-btn")[1];
+  expect(bareBtn.attributes("disabled")).toBeDefined();
+  expect(bareBtn.attributes("title")).toContain("Save a SearXNG endpoint");
+
+  const saved = {
+    ...settingsView,
+    web_research: { searxng_endpoint: "http://127.0.0.1:8888" },
+  };
+  const statusOf = (searxngStatus: WebResearchPreflight | null) =>
+    makeWrapper({ settings: saved, searxngStatus }).findAll(
+      ".local-test .cred-status"
+    )[1];
+
+  // Untested reads untested — never probed at startup.
+  expect(statusOf(null).text()).toContain("Untested");
+
+  const ok = statusOf({ status: "ok", detail: null, tavily_fallback: false, degraded: false });
+  expect(ok.text()).toContain("serving search results");
+  expect(ok.classes()).toContain("cred-status--ok");
+
+  // Unreachable names the diagnosis, the setup command, and the fallback
+  // consequence (metered Tavily vs research skipped).
+  const down = statusOf({
+    status: "unreachable",
+    detail: "SearXNG rejected the JSON request (HTTP 403)",
+    tavily_fallback: false,
+    degraded: true,
+  });
+  expect(down.text()).toContain("HTTP 403");
+  expect(down.text()).toContain("docker compose up -d");
+  expect(down.text()).toContain("No Tavily credential");
+  expect(down.classes()).toContain("cred-status--err");
 });
 
 test("the appearance toggle (in the toolbar) emits set-dark with the flipped value", async () => {

@@ -310,14 +310,16 @@ this section carries only the decisions a plan must not work against.
   isn't bundled: the app *ships configuration, not the server*. Thin extraction
   trips a **selective rendered-retrieval tier reusing the already-embedded Tauri
   webview** — not a bundled browser or Python sidecar — gated on telemetry so
-  rendering stays **measured, never blanket**. SearXNG sits **off the execution
+  rendering stays **measured, never blanket** (the tier is **deferred to its
+  own slice** — ruled 2026-08-23 with the research loop; its gating telemetry
+  landed). SearXNG sits **off the execution
   gate**: unreachable means a degraded run behind a pre-run notice, never a
   block. The per-item research loop is bounded and SSRF-guarded, every finding
   keeping its source URL + timestamp, and consolidation is one shared
   **distillation primitive** whose mode is chosen deterministically by the
   full consolidation input's size. Optional **Connected Sources** (in-app login → Keychain
   session, on the Schwab credential rails) enrich fetching and are **never part
-  of the execution gate**.
+  of the execution gate** (likewise deferred to their own slice).
 - **Holdings & options ingestion (built).** Schwab Trader API via an OAuth
   loopback (a weekly re-login cadence), supplying holdings *and* live option
   chains, from which a deterministic put/call + IV/skew signal is computed —
@@ -442,15 +444,19 @@ Each is easy to break by accident, so a plan should say how it honors them:
 - **One `num_ctx` per model.** Changing it reloads the resident Ollama runner
   despite `keep_alive`, so context pressure is answered by compressing digests,
   never by raising `num_ctx`.
-- **The pre-profit producer stays dormant** until the research-loop slice adds
-  holding-identity and source-text observation validation, and normalizes
-  reported periods to one convention per issuer. Both obligations are recorded
-  in `pre_profit.rs` — the validation pair on the validator's doc comment, the
-  normalization rule on the `period` field's.
+- **Pre-profit observation rows enter only through the research loop's
+  fetched-page lineage.** The producer is active — the loop discharged both
+  recorded obligations (holding-identity + source-text validation, ISO period
+  normalization) — and an unevidenced call rejects every candidate.
 - **Model-arm values never bind the engine baseline.** The typed validated
-  channels are the only model→engine inputs: ledger conditions today, with the
-  dormant pre-profit observations and the research loop's forward assumption
-  joining them when those slices land.
+  channels are the only model→engine inputs: the ledger's conditions and the
+  pre-profit observations, both live. The 2026-08-24 rulings bound the rest —
+  the research forward assumption is **shadow-only** (a would-have audit line,
+  never a write-back; `engine_output` is immutable past Step 6b), the
+  research-fed fraud claim is **advisory** (the hard-forensic state reads the
+  item-classified filing kinds alone), and a leading indicator suppresses the
+  narrative cap only through an app-verified ledger `driver_id`
+  (`docs/verification/2026-08-24-research-loop-rulings.md`).
 - **The Schwab adapter implements no order or trading endpoint.** The read-only
   boundary is code-enforced, not scope-enforced, so it survives a token scope
   change.
@@ -471,15 +477,15 @@ price-bar cache), no cash-flow re-pull, no breadth-flip sub-leg, material
 filings are the 10-K/10-Q/8-K prefix, and the FINRA leg is structurally
 unreachable from the closed ledger series surface.
 
-**Portfolio Analysis — built**, less the live research loop. Built: the
+**Portfolio Analysis — built in full.** Built: the
 per-holding spine and fund path (the closed-end leg included), the persisted
 **thesis ledger** with machine-evaluable falsifiers over a closed engine
 series surface, the engine-only **quick check**, **selective re-analysis**
-with vintage-stamped carries, the **pre-profit overlay** (producer-dormant;
+with vintage-stamped carries, the **pre-profit overlay** (producer active;
 §Standing constraints), **outcome learning**, the **metric-level 6g
 validator**, **Step-6a semantic recall**, **per-holding checkpoint/resume**,
-the per-holding **action call**, and the **two-arm verdict** across all of
-it. The job is **tunnel-vision by contract** (`portfolio-v9`, ruled
+the per-holding **action call**, the **live research loop**, and the
+**two-arm verdict** across all of it. The job is **tunnel-vision by contract** (`portfolio-v9`, ruled
 2026-08-14; `docs/verification/2026-08-14-tunnel-vision-slice.md`): it never
 compares holdings — the construction stage is removed whole, each action a
 rung + one-line rationale from the finished verdict, the holding's own
@@ -493,9 +499,10 @@ request with no readable prior run runs the whole book (ruled 2026-08-18;
 verdict is a **discriminated union** — `priced`, and `role_risk_only` for
 structurally unpriceable vehicle classes, so no fabricated number rides an
 unpriceable fund — and stays separated from the portfolio action
-(`docs/portfolio-analysis.md §Intrinsic verdict`). Designed and unbuilt: the
-**live research loop** (the held-name refresh lane retired by the badge
-ruling).
+(`docs/portfolio-analysis.md §Intrinsic verdict`). The **live research loop**
+landed as the job's final slice
+(`docs/verification/2026-08-24-research-loop-rulings.md`; the held-name
+refresh lane was retired by the badge ruling).
 
 **Trade Opportunities — designed, not built** (`docs/trade-opportunities.md`,
 `trade-opportunities-workflow.md`). Discovery runs through three feeders —
@@ -584,38 +591,39 @@ every stacked runtime confirmation at once.
   price-vs-NAV seam; the rulings, probe findings, and six review rounds are
   `docs/verification/2026-08-21-fund-depth-rulings.md`, the contract
   canonical at `portfolio-analysis.md §Asset eligibility`.
+- **The research-loop slice** (`portfolio-v12`) — the live per-holding web
+  research: the SSRF-guarded web tool (SearXNG-primary, Tavily fallback,
+  source registry + tiers), the 6c per-topic pass loop with always-run
+  seed-and-merge caching, schema-constrained 6d with the typed side-channels,
+  the 6e overlay finalization (the pre-profit producer activated), Settings
+  §Web Research + the pre-run notice, and portability format v4. The
+  2026-08-24 rulings bound the channels — forward assumption shadow-only,
+  research-fed fraud advisory, the indicator anchor driver-id-gated
+  (§Standing constraints); rendered retrieval and Connected Sources are
+  deferred to their own slices (gating telemetry landed); the record and
+  eight review rounds are
+  `docs/verification/2026-08-24-research-loop-rulings.md`.
 
 ### Remaining, in order
 
-1. **The live research loop** — the final Portfolio Analysis slice, folded
-   inside the pre-run bar by the 2026-08-20 widening (the held-name research
-   refresh lane, once slated to ride with it, was retired by the 2026-08-16
-   badge ruling). The shipped schemas don't preclude it, but the research loop
-   carries the pre-profit producer's activation obligation (§Standing
-   constraints) and must discharge it before connecting the producer. The
-   loop's cache model is settled — **always-run seed-and-merge, never a skip**:
-   recent distilled findings seed each topic and merge (fresh superseding
-   cached) at distillation (`docs/portfolio-analysis.md §Starting parameters`);
-   extending it to Trade Opportunities is **wanted but deferred**. The
-   disconfirming-fetch pass's placement is likewise ruled (2026-08-18): once
-   per holding after its topics, spent from the holding's budget and outside
-   any topic's three-pass depth (`docs/portfolio-workflow.md §Step 6c`).
-2. **The single big confirmation run** — now waiting on the live research
-   loop above, the last unbuilt piece of the Portfolio Analysis job. Its
+1. **The single big confirmation run** — the queue's next item now the
+   Portfolio Analysis job is built in full (the pre-run bar is met). Its
    checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
    shape 2026-08-18** (construction / lean / sizing watches removed, the
    prompt-fit watch re-homed to the per-holding prompts) and still needs
    research-loop and pre-profit-activation watches added under the 2026-08-20
-   bar widening, plus the fund-depth slice's Schwab-CEF-typing watch (whether
-   a held CEF arrives `COLLECTIVE_INVESTMENT` or `EQUITY`); read
+   bar widening, the fund-depth slice's Schwab-CEF-typing watch (whether
+   a held CEF arrives `COLLECTIVE_INVESTMENT` or `EQUITY`), and the
+   2026-08-24 ruling watches (shadow-assumption resolutions,
+   unverified-driver indicator gaps, advisory fraud claims); read
    `data-health` early, since several items resolve off that surface alone. Attempts 1 and 2 failed in the
    since-removed construction stage (their dated records live under
    `docs/verification/`); attempt 3 exercises the v9 shape as a full run.
    What stays open behind the run is owned by the attempt records'
    §Disposition, not this brief.
-3. **Trade Opportunities** — designed, not built, waiting behind the entire
+2. **Trade Opportunities** — designed, not built, waiting behind the entire
    Portfolio job and its confirmation run. The design is settled against
    live-verified paid FMP shapes and grounded end-to-end by the 2026-08-19
    program — the rewritten

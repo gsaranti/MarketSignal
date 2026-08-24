@@ -40,6 +40,7 @@ pub mod settings;
 pub mod skills;
 pub mod storage;
 pub mod tavily;
+pub mod web_research;
 #[cfg(test)]
 mod test_http;
 pub mod thought_log;
@@ -784,6 +785,24 @@ async fn generate_portfolio_manual(
             roster.reasoner.clone(),
             roster.fast.clone(),
         );
+        // The live web tool for the 6c research loop (SearXNG-primary, Tavily
+        // fallback, document cache + telemetry). Fail-soft: a stack that can't
+        // construct runs research offline (a recorded gap), never a blocked run
+        // — SearXNG sits off the execution gate (`docs/web-research.md`).
+        let analyst = match portfolio::research::LiveResearchWeb::new(
+            cfg.searxng_endpoint.as_deref(),
+            cfg.tavily_api_key.as_deref(),
+            &paths.db_path,
+        ) {
+            Ok(web) => analyst.with_research(portfolio::pipeline::LiveResearchCtx {
+                web: std::sync::Arc::new(web),
+                progress: ctx.clone(),
+            }),
+            Err(e) => {
+                eprintln!("web-research stack unavailable ({e}); research runs offline");
+                analyst
+            }
+        };
         let fmp = FmpDataSource::new(fmp_key.clone())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
@@ -1550,6 +1569,47 @@ async fn test_connection(
         .map_err(|e| format!("connection test task failed: {e}"))
 }
 
+/// Persist the web-research config — the SearXNG endpoint
+/// (`docs/configuration.md §Web Research`) — **ungated**: SearXNG is off every
+/// gate, so the save never depends on a token or on reachability. Sync: one
+/// SQLite write, no probe.
+#[tauri::command]
+fn save_web_research_settings(
+    app: tauri::AppHandle,
+    values: settings::WebResearchSettings,
+) -> Result<(), String> {
+    let conn = open_app_db(&app)?;
+    settings::save_web_research(&conn, &values).map_err(|e| e.to_string())
+}
+
+/// Probe the configured SearXNG instance — the Settings connection row's test
+/// and the pre-run web-research notice share this one read
+/// (`docs/web-research.md §Tavily fallback`; `docs/interface.md §Pre-run
+/// web-research notice`). Never a gate: the result carries a degraded flag the
+/// frontend renders as a confirm-and-proceed notice, *not recommended* when no
+/// Tavily fallback is configured either. The blocking probe goes through
+/// `spawn_blocking`, the same seam as the other connection tests.
+#[tauri::command]
+async fn test_searxng(
+    app: tauri::AppHandle,
+) -> Result<web_research::search::WebResearchPreflight, String> {
+    // Read the saved config on a short-lived connection dropped before the
+    // await — a `rusqlite::Connection` is not `Send`.
+    let (endpoint, tavily) = {
+        let conn = open_app_db(&app)?;
+        let cfg = AppConfig::load(&conn);
+        (
+            cfg.searxng_endpoint.clone(),
+            config::present(&cfg.tavily_api_key).is_some(),
+        )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        web_research::search::preflight(endpoint.as_deref(), tavily)
+    })
+    .await
+    .map_err(|e| format!("SearXNG probe task failed: {e}"))
+}
+
 /// Probe the local-model daemon for the Settings "Test connection" control (the local
 /// analysis suite's parallel to `test_connection`). Reads the *saved* local config
 /// (endpoint + roster, env fallback per field); an unconfigured endpoint returns a
@@ -1744,6 +1804,8 @@ pub fn run() {
             save_settings,
             save_provider_credentials,
             save_local_model_settings,
+            save_web_research_settings,
+            test_searxng,
             test_connection,
             test_local_daemon,
             list_research_inbox,

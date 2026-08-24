@@ -430,6 +430,16 @@ pub struct HoldingDossier {
     /// debut-empty partition (the first post-slice run, by design), a
     /// not-gradeable holding, or an unconfigured embedder.
     pub semantic_recall: SemanticRecall,
+    /// The symbol-scoped `news/stock` headlines fetched at dossier assembly as
+    /// research-loop **seeds** — leads, never evidence (`docs/web-research.md`
+    /// §The research loop and context management). Empty on a fund, a failed
+    /// or skipped fetch (fail-soft), and every offline stub.
+    pub news_seeds: Vec<crate::portfolio::research::ResearchSeed>,
+    /// The holding's persisted per-topic distilled-findings layer — the
+    /// research-reuse priors the loop seeds from and the distillation merges
+    /// (`docs/portfolio-analysis.md` §Starting parameters). Empty on a debut
+    /// or while no layer exists; expiry is filtered at consumption.
+    pub research_priors: Vec<crate::portfolio::research::TopicDistillate>,
     /// The data sources that contributed, for the run's audit record.
     pub sources: Vec<String>,
 }
@@ -740,6 +750,8 @@ pub fn assemble(
     commodity_context: Vec<CommodityPrint>,
     sector_benchmark: Option<BenchmarkSeries>,
     semantic_recall: SemanticRecall,
+    news_seeds: Vec<crate::portfolio::research::ResearchSeed>,
+    research_priors: Vec<crate::portfolio::research::TopicDistillate>,
 ) -> HoldingDossier {
     let (
         prior_verdict,
@@ -931,6 +943,8 @@ pub fn assemble(
         commodity_context,
         sector_benchmark,
         semantic_recall,
+        news_seeds,
+        research_priors,
         sources,
     }
 }
@@ -1686,6 +1700,8 @@ Sources and footnotes.
             Vec::new(),
             None,
             SemanticRecall::default(),
+            Vec::new(),
+            Vec::new(),
         );
         assert!(dossier.sources.iter().any(|s| s.contains("FMP")));
         assert!(dossier.sources.iter().any(|s| s.contains("SEC")));
@@ -1768,6 +1784,8 @@ Sources and footnotes.
             Vec::new(),
             None,
             SemanticRecall::default(),
+            Vec::new(),
+            Vec::new(),
         )
         .sources;
         assert_eq!(
@@ -1821,6 +1839,8 @@ Sources and footnotes.
                 Vec::new(),
                 None,
                 SemanticRecall::default(),
+                Vec::new(),
+                Vec::new(),
             )
             .sources
         };
@@ -1878,6 +1898,8 @@ Sources and footnotes.
             Vec::new(),
             None,
             SemanticRecall::default(),
+            Vec::new(),
+            Vec::new(),
         )
         .sources
     }
@@ -2141,6 +2163,7 @@ Sources and footnotes.
             },
             audit: vec![crate::portfolio::HoldingAudit {
                 what_changed_audit: None,
+                research: None,
                 symbol: "AAPL".into(),
                 metrics: Default::default(),
                 sources: vec![],
