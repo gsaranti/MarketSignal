@@ -5,6 +5,8 @@ This file is the checklist it reads against: what to look for, grouped by the su
 It is forward-looking, unlike the dated records beside it — those are written after the fact, this one is written before.
 Findings go into a dated record once the run completes; this file is then the index of what that record has to answer.
 Revised 2026-08-18 to the `portfolio-v9` shape: the construction-stage, lean / divergence, and sizing watches are removed, since that machinery no longer exists.
+Revised again 2026-08-24, the pre-run bar now met: the research-loop, ruling-watch, pre-profit-activation, CBOE-backdrop, narrative-comparator, and Schwab-CEF-typing additions are folded in, with the prompt-stamp and Step-6a notes.
+Records this run persists stamp `portfolio-v12`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, and research-loop slices all landed since the 2026-08-18 revision with no live run between.
 
 Nothing here is a defect report.
 Each item is a behavior that has only ever been exercised against fixtures, a small live run, or a single symbol, and needs a read at real scale (a 47-position book) before it can be called confirmed.
@@ -60,9 +62,30 @@ The transition-only `PriceOutsideBand` flag's live behavior: leave, re-enter and
 The authoring-time-outside design question was settled in code — a standing outside state no longer flags.
 Pre-sweep ledgers carry no stamp and read authored-inside until re-analyzed, so early rates will understate.
 
+## The research loop
+
+The first live per-holding research loop at 47-position scale: SearXNG search availability against the Tavily fallback rate, and the per-topic pass loop's depth against real pages.
+
+The per-holding budgets, calibrating on this evidence: the 40-attempt fetch ceiling (`MAX_FETCHES_PER_HOLDING`; failed live attempts spend it), the 30-minute wall clock (`MAX_WALL_PER_HOLDING`), and the 4,000-char per-topic seed budget (`SEED_BUDGET_CHARS`).
+What the run measures is how often each binds, and what the seed's fixed drop order actually drops when it does.
+
+Typed-channel validation yield against real fetched pages: how often the page-grounding checks — stated numbers, forward-fact language, the structural identity matcher, monetary unit typing — accept vs reject each of the three channels.
+
+Seed-and-merge cache behavior at scale: hit rates, and the distillation-reconciliation gap recordings where the model fails to re-emit a topic.
+
+Extraction telemetry — the deferred rendered-retrieval tier's scheduling evidence.
+Per-domain thin-stub and `extraction_quality` rates decide whether and where a render tier earns its slice, so the run record's disposition reads them deliberately, not incidentally.
+
+The three 2026-08-24 ruling watches — the shadow evidence the promotion decisions read.
+Shadow-assumption resolutions: inspect each would-have audit line against its cited pages.
+Unverified-driver indicator gaps: how often an indicator arrives without a resolvable `confirms_driver_id` and stays gap-noted evidence rather than suppressing the hype ceiling.
+Advisory fraud claims: any validated claim's render as labeled attention evidence, never a hard-forensic trip.
+
 ## Pre-profit overlay
 
 The first live overlay read at 47-position scale: eligibility rates, financing-state distribution, and unscorable-gap rates.
+
+The producer's first live activation: observation rows entering through the research loop's fetched-page lineage — validated-row volume, the rejection split across the activation legs (value corroboration, ISO period normalization, holding identity), and the Step-6e recompute of the observation-dependent legs.
 
 Two conventions need a live read specifically.
 The STI-absent-reads-zero liquid-resources convention, and the YoY share-change quarter-contiguity assumption.
@@ -82,12 +105,18 @@ The settled response to pressure is to compress digests, never to raise `num_ctx
 
 The first two-arm vintage: the retrospective and model-arm brief's prompt fit under the same instrumentation, feasibility-annotation rates, model-vs-engine divergence rates, and the paired two-arm card render at 47-position scale.
 
+The narrative-vs-reality comparator debut.
+No prior run has persisted the audit-basis comparator, so every holding should carry no pace read this run — a missing comparator must record as a debut or typed unreadable-pace reason, never a fabricated neutral — and the run must persist the comparator the next run's read needs.
+
 ## Listing and identity shapes
 
 The listing guard against real Schwab identity shapes.
 Slash-notation class-share symbols read unsupported under the verbatim FMP lookup, and ticker-noise descriptions carry a false-conflict risk.
 
 Exchange codes, including B3, and OCC slash notation.
+
+The Schwab CEF typing: whether a held CEF arrives `COLLECTIVE_INVESTMENT` (routing to the fund path, where the CEF leg lives) or `EQUITY` (the stock path, which floor-abstains it before detection ever runs).
+Unverifiable without holding one, so this reads only if the book holds a CEF.
 
 The Schwab `averagePrice` multiplier.
 The option and bond cost-derived render suppression stays in force until this settles — the derived basis leaves the contract or par multiplier unapplied, understating an option's and overstating a bond's.
@@ -108,6 +137,8 @@ FMP quota consumption under the full run's price load.
 Dated-EOD is the only price rung (the 2026-08-12 Stooq removal), so the per-holding bulk load rides the paid key for the first time.
 429-ladder behavior under that load: whether the minute-crossing ladder engages at all, and whether it recovers without failing a holding.
 
+The CBOE venue-level put/call backdrop's first live read: the extraction against the live payload shape, the `selectedDate` as-of, and the fail-soft render where the backdrop applies.
+
 ## Model serving and runtime
 
 128 K runner stability.
@@ -120,3 +151,6 @@ The data-health render and the reasoning panes.
 
 Read `data-health` early.
 It carries the deep-price fetch health, the context-pressure and truncation flags, and the run-level roll-up with its attention state — several items above resolve off that one surface before the per-holding cards are worth reading.
+
+One expected absence: Step-6a semantic recall retrieves nothing this run.
+The per-holding summary partition holds no rows until this run persists them, retrieval going live from the second run — an empty recall is design, not a defect.
