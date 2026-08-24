@@ -5875,6 +5875,11 @@ pub struct SymbolNewsItem {
     pub published_date: String,
     pub title: String,
     pub site: Option<String>,
+    /// The item's article URL — the research loop's seed link (a lead the
+    /// loop may deep-read, never evidence). `None` on rows the wire served
+    /// without one, and on rows persisted before the field existed.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// Shape an FMP `/news/stock?symbols=` array body, keeping items published on or
@@ -5906,6 +5911,7 @@ fn symbol_news_from_value(value: &Value, from: &str) -> Result<Vec<SymbolNewsIte
                     .unwrap_or_default()
                     .to_string(),
                 site: row.get("site").and_then(Value::as_str).map(str::to_string),
+                url: row.get("url").and_then(Value::as_str).map(str::to_string),
             })
         })
         .collect())

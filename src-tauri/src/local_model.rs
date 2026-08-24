@@ -67,11 +67,16 @@ pub(crate) fn normalize_endpoint(endpoint: &str) -> String {
         .to_string()
 }
 
-/// One chat message in the Ollama native `/api/chat` shape.
+/// One chat message in the Ollama native `/api/chat` shape. `tool_calls`
+/// rides only on an assistant turn echoed back into the history (the research
+/// loop's tool protocol — the daemon needs the call it made beside the tool
+/// result that answered it); `None` everywhere else and omitted on the wire.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Value>,
 }
 
 impl ChatMessage {
@@ -79,18 +84,39 @@ impl ChatMessage {
         Self {
             role: "system".to_string(),
             content: content.into(),
+            tool_calls: None,
         }
     }
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: "user".to_string(),
             content: content.into(),
+            tool_calls: None,
         }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: "assistant".to_string(),
             content: content.into(),
+            tool_calls: None,
+        }
+    }
+    /// An assistant turn carrying the tool calls the daemon returned — echoed
+    /// into the history verbatim so the next turn sees what it asked for.
+    pub fn assistant_with_tool_calls(content: impl Into<String>, tool_calls: Value) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+            tool_calls: Some(tool_calls),
+        }
+    }
+    /// A tool-result turn (Ollama role `tool`): the orchestrator's answer to
+    /// one requested call.
+    pub fn tool(content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".to_string(),
+            content: content.into(),
+            tool_calls: None,
         }
     }
 }
@@ -207,6 +233,12 @@ pub struct ChatResponse {
     /// way a truncated body is told apart from a complete one before it fails a
     /// downstream parse. `None` when the daemon omits the field.
     pub done_reason: Option<String>,
+    /// Tool calls the model requested (`message.tool_calls`, raw) — the
+    /// research loop's turn protocol: the orchestrator executes them and feeds
+    /// the results back as `tool` messages. `None` on a turn that requested
+    /// none (the terminal-findings shape). Carried raw; the loop owns the
+    /// typed parse so an unexpected shape degrades that turn, not the adapter.
+    pub tool_calls: Option<Value>,
 }
 
 /// One chat call's prompt-size observation — the stage label, Ollama's reported
@@ -350,6 +382,8 @@ struct ChatReplyMessage {
     content: String,
     #[serde(default)]
     thinking: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Value>,
 }
 
 /// Shape a non-streaming `/api/chat` response body into a [`ChatResponse`]. Pure, so
@@ -364,6 +398,10 @@ fn parse_chat_reply(body: &str) -> Result<ChatResponse> {
         prompt_eval_count: wire.prompt_eval_count,
         eval_count: wire.eval_count,
         done_reason: wire.done_reason,
+        tool_calls: wire
+            .message
+            .tool_calls
+            .filter(|t| !matches!(t, Value::Array(a) if a.is_empty())),
     })
 }
 
@@ -736,6 +774,9 @@ fn stream_chat_response(
         prompt_eval_count,
         eval_count,
         done_reason,
+        // The streaming path serves the prose/schema stages, which pass no
+        // tools; the research loop's tool turns ride the non-streaming call.
+        tool_calls: None,
     })
 }
 
@@ -1337,6 +1378,39 @@ mod tests {
         assert_eq!(resp.prompt_eval_count, Some(131_000));
         assert_eq!(resp.eval_count, Some(9));
         assert_eq!(resp.done_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn tool_calls_parse_from_a_reply_and_empty_arrays_collapse_to_none() {
+        // The research loop's turn protocol: a reply carrying tool_calls
+        // surfaces them raw; an empty array reads as a no-tools turn.
+        let with = parse_chat_reply(
+            r#"{"message":{"content":"","tool_calls":[{"function":{"name":"web_search","arguments":{"q":"x"}}}]}}"#,
+        )
+        .unwrap();
+        let calls = with.tool_calls.expect("tool calls surface");
+        assert_eq!(calls[0]["function"]["name"], "web_search");
+        let empty = parse_chat_reply(r#"{"message":{"content":"done","tool_calls":[]}}"#).unwrap();
+        assert_eq!(empty.tool_calls, None);
+        let none = parse_chat_reply(r#"{"message":{"content":"done"}}"#).unwrap();
+        assert_eq!(none.tool_calls, None);
+
+        // The wire side: a tool-result message serializes with role "tool",
+        // and an echoed assistant turn carries its tool_calls; plain messages
+        // omit the field entirely.
+        let req = ChatRequest::new(
+            "m",
+            vec![
+                ChatMessage::assistant_with_tool_calls("", serde_json::json!([{"f": 1}])),
+                ChatMessage::tool("result body"),
+                ChatMessage::user("next"),
+            ],
+        );
+        let body = build_chat_body(&req, false);
+        assert_eq!(body["messages"][0]["tool_calls"][0]["f"], 1);
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert!(body["messages"][1].get("tool_calls").is_none());
+        assert!(body["messages"][2].get("tool_calls").is_none());
     }
 
     #[test]

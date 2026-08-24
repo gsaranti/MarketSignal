@@ -29,6 +29,8 @@ import type {
   JobStatus,
   LocalDaemonStatus,
   LocalModelSettings,
+  WebResearchPreflight,
+  WebResearchSettings,
   PortfolioResumeStatus,
   PortfolioRun,
   PortfolioRunSummary,
@@ -648,6 +650,8 @@ const providersSaving = ref(false);
 const providersError = ref<string | null>(null);
 const localSaving = ref(false);
 const localSaveError = ref<string | null>(null);
+const webResearchSaving = ref(false);
+const webResearchSaveError = ref<string | null>(null);
 
 // The local-daemon Test Connection state (docs/interface.md §Connection
 // status): the last probe result, null until tested — never probed at startup,
@@ -655,6 +659,22 @@ const localSaveError = ref<string | null>(null);
 // settings reload like the credential test channels.
 const localDaemonTesting = ref(false);
 const localDaemonStatus = ref<LocalDaemonStatus | null>(null);
+
+// The SearXNG connection-row state (docs/configuration.md §Web Research) — the
+// same never-probed-at-startup posture as the daemon row above.
+const searxngTesting = ref(false);
+const searxngStatus = ref<WebResearchPreflight | null>(null);
+
+// The pre-run web-research notice (docs/interface.md §Pre-run web-research
+// notice): a degraded SearXNG probe holds the launch behind a
+// confirm-and-proceed dialog, never a block. Carries the launch arguments so a
+// confirm resumes exactly the run the user asked for; the engine-only quick
+// check never opens it.
+const portfolioNotice = ref<{
+  preflight: WebResearchPreflight;
+  selected?: string[];
+  resume: boolean;
+} | null>(null);
 
 // Aggregate truncation telemetry for the Settings diagnostics section, loaded
 // alongside settings. `null` = not yet loaded / unavailable (the section shows
@@ -1073,12 +1093,24 @@ async function refreshSettings() {
   // this reload may be changing — reset with the credential channels.
   localDaemonTesting.value = false;
   localDaemonStatus.value = null;
+  // The SearXNG probe result describes the saved endpoint too, but it also
+  // carries the job-launch preflight the Settings indicator must keep showing
+  // (docs/interface.md §Connection status) — so clear the in-flight test flag
+  // here, and drop the status below only when the reload actually changed the
+  // saved endpoint (otherwise the OLD endpoint's state would render as the
+  // new one's).
+  searxngTesting.value = false;
+  const priorSearxngEndpoint = settings.value?.web_research.searxng_endpoint ?? null;
   try {
     settings.value = await invoke<SettingsView>("get_settings");
   } catch (e) {
     settingsError.value = String(e);
   } finally {
     settingsLoading.value = false;
+  }
+  const searxngEndpoint = settings.value?.web_research.searxng_endpoint ?? null;
+  if (priorSearxngEndpoint !== null && searxngEndpoint !== priorSearxngEndpoint) {
+    searxngStatus.value = null;
   }
   // Diagnostics telemetry loads on its own channel — the backend command is
   // fail-soft (an empty aggregate on a DB error), so a throw here is only an
@@ -1177,8 +1209,94 @@ async function disconnectSchwab() {
 // streams into the shared tracker, which replaces the Portfolio page while it
 // runs; a gate block (no run-started ever arrives) surfaces as the page's
 // inline error, never a persistent warning.
+// The job-launch probe, epoch-guarded like the manual test: a result that
+// resolves after a settings reload described the OLD saved endpoint — it must
+// neither paint the indicator nor ground the consent decision for the new
+// one, so a raced probe is discarded and re-run (bounded). The in-epoch
+// result updates the Settings indicator per docs/interface.md §Connection
+// status ("a manual Test Connection or the connectivity check run when a job
+// is launched").
+async function probeSearxngForLaunch(): Promise<WebResearchPreflight> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const epoch = settingsEpoch.value;
+    let preflight: WebResearchPreflight;
+    try {
+      preflight = await invoke<WebResearchPreflight>("test_searxng");
+    } catch (e) {
+      preflight = {
+        status: "unreachable",
+        detail: String(e),
+        tavily_fallback: false,
+        degraded: true,
+      };
+    }
+    // Accept only when nothing superseded the probed config: the epoch is
+    // unchanged AND no web-research save is mid-flight (a probe issued while
+    // the backend is between endpoints could describe either one).
+    if (epoch === settingsEpoch.value && !webResearchSaving.value) {
+      searxngStatus.value = preflight;
+      return preflight;
+    }
+  }
+  // Three raced attempts — proceed degraded-unknown rather than spinning; the
+  // notice is a consent step, never a block, so the user still decides.
+  return {
+    status: "unreachable",
+    detail: "settings changed while probing",
+    tavily_fallback: false,
+    degraded: true,
+  };
+}
+
 async function generatePortfolio(selected?: string[], resume = false) {
-  if (localBlocked.value || slotBusy.value) return;
+  if (localBlocked.value || slotBusy.value || webResearchSaving.value) return;
+  // The pre-run web-research notice (docs/web-research.md §Tavily fallback;
+  // docs/interface.md §Pre-run web-research notice): probe SearXNG before
+  // spending the run. Degraded → a confirm-and-proceed dialog with the
+  // Portfolio-specific consequence, flagged not-recommended when no Tavily
+  // fallback exists either — never a block. The engine-only quick check does
+  // no web research and never asks. A failed probe reads degraded-unknown
+  // rather than silently ok.
+  const preflight = await probeSearxngForLaunch();
+  if (preflight.degraded) {
+    portfolioNotice.value = { preflight, selected, resume };
+    return;
+  }
+  await launchPortfolio(selected, resume);
+}
+
+// The notice's confirm relaunches exactly the run the user asked for; cancel
+// just closes — nothing was spent.
+function confirmPortfolioNotice() {
+  const notice = portfolioNotice.value;
+  portfolioNotice.value = null;
+  if (notice) void launchPortfolio(notice.selected, notice.resume);
+}
+function cancelPortfolioNotice() {
+  portfolioNotice.value = null;
+}
+
+// The notice dialog's copy — job-specific consequences per
+// docs/web-research.md §Tavily fallback (Portfolio loses validation depth;
+// with no Tavily either, the run grades on structured evidence alone).
+const portfolioNoticeBody = computed(() => {
+  const p = portfolioNotice.value?.preflight;
+  if (!p) return "";
+  const cause =
+    p.status === "not_configured"
+      ? "No SearXNG endpoint is configured"
+      : "The SearXNG instance can't serve search";
+  return p.tavily_fallback
+    ? `${cause}, so this run's per-holding research falls back to the metered Tavily credential for every search.`
+    : `${cause} and no Tavily credential is saved, so holdings will be analyzed without web research — evidence will be thinner and conviction lower. Running now is not recommended.`;
+});
+
+async function launchPortfolio(selected?: string[], resume = false) {
+  // A mid-flight endpoint save also blocks: the notice's confirm otherwise
+  // launches against a config whose save the probe never described (the
+  // launch probe already refuses acceptance while saving — this closes the
+  // confirm path the same way).
+  if (localBlocked.value || slotBusy.value || webResearchSaving.value) return;
   portfolioRunning.value = true;
   portfolioError.value = null;
   // Any starting run supersedes a standing resume offer: a new run discards the
@@ -1390,6 +1508,54 @@ async function saveLocalModelSettings(payload: LocalModelSettings) {
   localSaving.value = false;
   void refreshSettings();
   void refreshLocalValidation();
+}
+
+// Persist the web-research config (the SearXNG endpoint) — ungated, off every
+// gate, so no validation re-check follows the save.
+async function saveWebResearchSettings(payload: WebResearchSettings) {
+  webResearchSaving.value = true;
+  webResearchSaveError.value = null;
+  // The save supersedes the old endpoint the moment it STARTS: bump the epoch
+  // now so an in-flight probe (manual or launch) that resolves mid-save is
+  // discarded rather than describing config this save is replacing. The
+  // refresh below bumps again when the new value is actually readable. A
+  // standing pre-run notice is superseded too — its preflight described the
+  // old endpoint, so confirming it would consent on a stale basis (the Run
+  // trigger also disables for the save window via the busy prop).
+  settingsEpoch.value += 1;
+  portfolioNotice.value = null;
+  try {
+    await invoke("save_web_research_settings", { values: payload });
+  } catch (e) {
+    webResearchSaveError.value = String(e);
+    webResearchSaving.value = false;
+    return;
+  }
+  webResearchSaving.value = false;
+  void refreshSettings();
+}
+
+// Probe the saved SearXNG endpoint (test_searxng — one bounded JSON query).
+// Same epoch discipline as the daemon probe below.
+async function testSearxng() {
+  const epoch = settingsEpoch.value;
+  searxngTesting.value = true;
+  searxngStatus.value = null;
+  try {
+    const result = await invoke<WebResearchPreflight>("test_searxng");
+    if (epoch !== settingsEpoch.value) return;
+    searxngStatus.value = result;
+  } catch (e) {
+    if (epoch !== settingsEpoch.value) return;
+    searxngStatus.value = {
+      status: "unreachable",
+      detail: String(e),
+      tavily_fallback: false,
+      degraded: true,
+    };
+  } finally {
+    if (epoch === settingsEpoch.value) searxngTesting.value = false;
+  }
 }
 
 // Probe the saved daemon endpoint + roster (test_local_daemon — /api/tags, no
@@ -1708,7 +1874,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
             :run-blocked-reason="localBlockedReason"
             :pull-blocked="pullBlocked"
             :pull-blocked-reason="pullBlockedReason"
-            :busy="slotBusy"
+            :busy="slotBusy || webResearchSaving"
             :running="portfolioRunning"
             :pulling="pullingHoldings"
             :historical="historicalRun !== null"
@@ -1771,6 +1937,10 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           :local-error="localSaveError"
           :local-testing="localDaemonTesting"
           :local-daemon="localDaemonStatus"
+          :saving-web-research="webResearchSaving"
+          :web-research-error="webResearchSaveError"
+          :searxng-testing="searxngTesting"
+          :searxng-status="searxngStatus"
           :truncation-stats="truncationStats"
           :investor-profile="investorProfile"
           :schwab-status="schwabStatus"
@@ -1785,6 +1955,8 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           @save-providers="saveProviderCredentials"
           @save-local="saveLocalModelSettings"
           @test-local="testLocalDaemon"
+          @save-web-research="saveWebResearchSettings"
+          @test-searxng="testSearxng"
           @set-dark="setDark"
           @test="testConnection"
           @save-schwab="saveSchwabCredentials"
@@ -1835,6 +2007,22 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
       busy-status="Replacing all analytical data. This may take a moment."
       @confirm="confirmImport"
       @cancel="cancelImport"
+    />
+    <!-- Pre-run web-research notice (docs/interface.md §Pre-run web-research
+         notice): degraded SearXNG → confirm-and-proceed before the run is
+         spent, never a block. Cancel costs nothing; the quick check (engine-
+         only) never opens this. Placed after the import dialog so specs that
+         findComponent(ConfirmDialog) keep addressing the import flow. -->
+    <ConfirmDialog
+      :open="portfolioNotice !== null"
+      title="Run with degraded web research?"
+      :body="portfolioNoticeBody"
+      :detail="portfolioNotice?.preflight.detail ?? undefined"
+      confirm-label="Run anyway"
+      :busy="false"
+      busy-status=""
+      @confirm="confirmPortfolioNotice"
+      @cancel="cancelPortfolioNotice"
     />
   </div>
 </template>

@@ -60,6 +60,7 @@ export const defaultSettings: SettingsView = {
     fast_model: "",
     embedder_model: "",
   },
+  web_research: { searxng_endpoint: "" },
   available_models: [],
 };
 
@@ -231,6 +232,16 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
       reachable: false,
       detail: "No local daemon endpoint configured",
       missing_models: [],
+    }),
+    save_web_research_settings: () => null,
+    // The pre-run web-research probe (also the Settings connection row). The
+    // default reads healthy so a spec-driven Run analysis launches without the
+    // degraded-mode notice; notice specs override with a degraded read.
+    test_searxng: () => ({
+      status: "ok",
+      detail: null,
+      tavily_fallback: false,
+      degraded: false,
     }),
     get_portfolio_run: () => null,
     save_schwab_credentials: () => null,

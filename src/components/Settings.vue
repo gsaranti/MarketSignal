@@ -16,6 +16,8 @@ import type {
   SchwabStatus,
   SchwabCredentialUpdate,
   TruncationStats,
+  WebResearchPreflight,
+  WebResearchSettings,
 } from "../types";
 
 // Configuration surface — agent models, API tokens, provider credentials, and
@@ -54,6 +56,14 @@ const props = defineProps<{
   localError: string | null;
   localTesting: boolean;
   localDaemon: LocalDaemonStatus | null;
+  // The web-research submission's channels + the SearXNG connection-row state
+  // (docs/configuration.md §Web Research). `searxngStatus` is the last probe
+  // result, null until tested — SearXNG is off every gate, so the row reads
+  // untested rather than warning.
+  savingWebResearch: boolean;
+  webResearchError: string | null;
+  searxngTesting: boolean;
+  searxngStatus: WebResearchPreflight | null;
   // Read-only truncation telemetry for the diagnostics section. `null` =
   // unavailable / not yet loaded (the section is omitted); a populated all-zero
   // aggregate renders the "none recorded" empty state.
@@ -89,6 +99,8 @@ const emit = defineEmits<{
   (e: "save-providers", payload: ProviderCredentialUpdate): void;
   (e: "save-local", payload: LocalModelSettings): void;
   (e: "test-local"): void;
+  (e: "save-web-research", payload: WebResearchSettings): void;
+  (e: "test-searxng"): void;
   (e: "set-dark", value: boolean): void;
   (e: "test", key: CredKey): void;
   (e: "save-schwab", payload: SchwabCredentialUpdate): void;
@@ -136,9 +148,11 @@ const localModels = ref<LocalModelSettings>({
   fast_model: "",
   embedder_model: "",
 });
+const webResearch = ref<WebResearchSettings>({ searxng_endpoint: "" });
 const justSaved = ref(false);
 const providersJustSaved = ref(false);
 const localJustSaved = ref(false);
+const webResearchJustSaved = ref(false);
 
 // Initialise the form when the view FIRST arrives (mount, or a recovery from a
 // failed load). Later reloads — App re-fetches after every save — deliberately
@@ -154,6 +168,7 @@ watch(
     local.value = { ...s.models };
     creds.value = { openai: "", anthropic: "", fmp: "", fred: "", tavily: "" };
     localModels.value = { ...s.local_models };
+    webResearch.value = { ...s.web_research };
   },
   { immediate: true }
 );
@@ -195,6 +210,18 @@ watch(
         reasoner_model: localModels.value.reasoner_model.trim(),
         fast_model: localModels.value.fast_model.trim(),
         embedder_model: localModels.value.embedder_model.trim(),
+      };
+    }
+  }
+);
+watch(
+  () => props.savingWebResearch,
+  (now, was) => {
+    if (now && !was) webResearchJustSaved.value = false;
+    if (was && !now && props.webResearchError === null) {
+      webResearchJustSaved.value = true;
+      webResearch.value = {
+        searxng_endpoint: webResearch.value.searxng_endpoint.trim(),
       };
     }
   }
@@ -364,6 +391,77 @@ const localTestTitle = computed(() => {
     return "Save a daemon endpoint before testing";
   if (localDirty.value) return "Save your changes before testing";
   return "Check the daemon is reachable and the rostered models are pulled";
+});
+
+// --- Web research ------------------------------------------------------------
+// The SearXNG endpoint (docs/configuration.md §Web Research). Off every gate:
+// unreachable means a degraded run behind a pre-run notice, never a lock or a
+// warning-area category, so this section carries a connection row but no
+// warning semantics.
+
+const webResearchDirty = computed(() => {
+  const s = props.settings?.web_research;
+  if (!s) return false;
+  return webResearch.value.searxng_endpoint !== s.searxng_endpoint;
+});
+
+const canSaveWebResearch = computed(
+  () => !!props.settings && !props.savingWebResearch && webResearchDirty.value
+);
+
+const showWebResearchSaved = computed(
+  () =>
+    webResearchJustSaved.value &&
+    !webResearchDirty.value &&
+    !props.savingWebResearch &&
+    props.webResearchError === null
+);
+
+function onSaveWebResearch() {
+  if (!canSaveWebResearch.value) return;
+  emit("save-web-research", { ...webResearch.value });
+}
+
+// Test connection probes the *saved* endpoint (the credential-row idiom), so
+// it is offered only when one is saved and the form has no unsaved edits.
+const searxngConfigured = computed(
+  () => (props.settings?.web_research.searxng_endpoint.trim() ?? "") !== ""
+);
+const canTestSearxng = computed(
+  () => searxngConfigured.value && !webResearchDirty.value && !props.searxngTesting
+);
+const searxngTestTitle = computed(() => {
+  if (props.searxngTesting) return "Testing…";
+  if (!searxngConfigured.value) return "Save a SearXNG endpoint before testing";
+  if (webResearchDirty.value) return "Save your changes before testing";
+  return "Check the SearXNG instance is serving JSON search results";
+});
+
+const searxngStatusLine = computed<{ tone: LocalStatusTone; text: string }>(() => {
+  if (props.searxngTesting) return { tone: "pending", text: "Testing…" };
+  const p = props.searxngStatus;
+  if (webResearchDirty.value || p === null) {
+    return {
+      tone: "pending",
+      text: "Untested — checked here or when a web-research run starts.",
+    };
+  }
+  if (p.status === "ok") {
+    return { tone: "ok", text: "SearXNG is serving search results." };
+  }
+  if (p.status === "not_configured") {
+    return {
+      tone: "pending",
+      text: "Not configured — runs fall back to Tavily where a credential is saved.",
+    };
+  }
+  const fallback = p.tavily_fallback
+    ? "Runs fall back to metered Tavily search until it serves."
+    : "No Tavily credential is saved either — research would be skipped.";
+  return {
+    tone: "err",
+    text: `${p.detail ?? "SearXNG unreachable"} — start it with "docker compose up -d" from the app's searxng/ folder (OrbStack recommended on Apple Silicon), then re-test. ${fallback}`,
+  };
 });
 
 // Whether the *saved* required roster (reasoner + embedder) is filled — a
@@ -979,6 +1077,86 @@ const importDataLabel = computed(() =>
                 {{ savingLocal ? "Saving…" : "Save local models" }}
               </button>
               <span v-if="showLocalSaved" class="save-status" role="status">
+                <Icon name="check" :size="13" color="var(--ink-2)" />
+                Saved
+              </span>
+            </div>
+          </section>
+        </form>
+
+        <!-- Web research (docs/configuration.md §Web Research,
+             docs/web-research.md §Search backend). Off every gate: an
+             unreachable SearXNG degrades a run behind a pre-run notice, never
+             a lock or a warning category — so this section saves ungated and
+             its connection row carries no warning semantics. The Tavily
+             fallback reuses the provider credential above. -->
+        <form v-if="settings" class="settings-form" @submit.prevent="onSaveWebResearch">
+          <section class="settings-section" aria-labelledby="sec-web-research">
+            <h3 id="sec-web-research" class="section-eyebrow">Web research</h3>
+            <p class="section-note">
+              The local jobs research the open web through a self-hosted SearXNG
+              instance — keyless and cost-free. Start it once with
+              <span class="mono">docker compose up -d</span> from the app's
+              <span class="mono">searxng/</span> folder (OrbStack is the
+              recommended runtime on Apple Silicon). When it can't serve, runs
+              fall back to the metered Tavily credential above.
+            </p>
+
+            <div class="field">
+              <label class="label" for="searxng-endpoint">SearXNG endpoint</label>
+              <input
+                id="searxng-endpoint"
+                v-model="webResearch.searxng_endpoint"
+                class="input mono"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                :disabled="savingWebResearch"
+                placeholder="http://127.0.0.1:8888"
+              />
+            </div>
+
+            <!-- The SearXNG connection row — the local-daemon row's idiom. -->
+            <div class="cred-test local-test">
+              <button
+                type="button"
+                class="cred-test-btn"
+                :disabled="!canTestSearxng"
+                :title="searxngTestTitle"
+                @click="emit('test-searxng')"
+              >
+                {{ searxngTesting ? "Testing…" : "Test connection" }}
+              </button>
+              <span
+                class="cred-status"
+                :class="`cred-status--${searxngStatusLine.tone}`"
+                role="status"
+                aria-live="polite"
+              >
+                <Icon
+                  v-if="searxngStatusLine.tone === 'ok'"
+                  name="check"
+                  :size="13"
+                  color="var(--ink-2)"
+                />
+                {{ searxngStatusLine.text }}
+              </span>
+            </div>
+
+            <div v-if="webResearchError" class="settings-error" role="alert">
+              <div class="settings-error-label">Couldn't save</div>
+              <p class="settings-error-detail">{{ webResearchError }}</p>
+            </div>
+
+            <div class="section-actions">
+              <button
+                type="submit"
+                class="btn btn-secondary"
+                :disabled="!canSaveWebResearch"
+              >
+                {{ savingWebResearch ? "Saving…" : "Save web research" }}
+              </button>
+              <span v-if="showWebResearchSaved" class="save-status" role="status">
                 <Icon name="check" :size="13" color="var(--ink-2)" />
                 Saved
               </span>

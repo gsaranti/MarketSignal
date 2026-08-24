@@ -11,12 +11,13 @@
 //! the engine arm (its stand-ins observe the matched ceiling), the model
 //! interpreting the evidence unrestricted, departures annotated.
 //!
-//! **Producer status (as-built):** the research-observation leg is
-//! **producer-dormant** — the web-research stage is stubbed and distillation emits
-//! no typed rows yet, so [`compute_overlay`] runs with an empty candidate list. The
-//! validation / merge / miss-rule machinery below is fully built and fixture-tested
-//! so the persisted shape is stable before the research-loop slice supplies live
-//! rows (the quick check's FINRA-leg precedent: machinery real, producer absent).
+//! **Producer status (as-built): active** — the research-loop slice connected the
+//! producer after discharging both recorded obligations: the holding-identity
+//! cross-check and source-text corroboration run per row over the loop's
+//! fetched-page lineage ([`validate_against_source`]), and reported periods
+//! normalize to one ISO-period-end convention before the dedup key is taken
+//! ([`normalize_period`]). Distillation emits typed observation rows for an
+//! overlay-eligible stock; an unevidenced call still rejects every candidate.
 
 use serde::{Deserialize, Serialize};
 
@@ -183,8 +184,9 @@ pub struct PreProfitObservation {
     pub numeric_value: f64,
     pub units: String,
     /// The reported period the value belongs to. Periods compare **exactly** after
-    /// trimming, and order lexicographically — the live producer slice must
-    /// normalize periods to one convention (ISO period end preferred) per issuer.
+    /// trimming, and order lexicographically — [`normalize_period`] maps every
+    /// producer row to one convention per issuer (ISO period end preferred)
+    /// before validation takes the dedup key.
     pub period: String,
     pub issuer_scope: String,
     pub source_url: String,
@@ -197,7 +199,7 @@ impl PreProfitObservation {
     /// The normalized metric identity misses group under: kind + units + issuer
     /// scope (`docs/portfolio-analysis.md` §Starting parameters — "the same
     /// normalized metric identity, issuer scope / perimeter, and units").
-    fn identity(&self) -> (String, String, String) {
+    pub(crate) fn identity(&self) -> (String, String, String) {
         (
             self.metric_kind.as_str().to_string(),
             self.units.trim().to_ascii_lowercase(),
@@ -220,6 +222,35 @@ impl PreProfitObservation {
     }
 }
 
+/// Whether the research agenda's **backfill obligation** binds
+/// (`docs/portfolio-analysis.md` §Starting parameters): the holding's first
+/// overlay-eligible full pass, or a previously used guidance metric with fewer
+/// than four comparable stored periods for its normalized identity. Read at
+/// agenda-build time over the 6b overlay's carried observation history.
+pub fn backfill_required(current: &PreProfitOverlay, prior: Option<&PreProfitOverlay>) -> bool {
+    let first_eligible_pass = !prior.is_some_and(PreProfitOverlay::is_eligible);
+    if first_eligible_pass {
+        return true;
+    }
+    use std::collections::{HashMap, HashSet};
+    let mut periods: HashMap<(String, String, String), HashSet<&str>> = HashMap::new();
+    for o in &current.observations {
+        periods.entry(o.identity()).or_default().insert(o.period.trim());
+    }
+    current
+        .observations
+        .iter()
+        .filter(|o| {
+            matches!(
+                o.observation_role,
+                ObservationRole::GuidanceLow
+                    | ObservationRole::GuidanceHigh
+                    | ObservationRole::PointGuidance
+            )
+        })
+        .any(|o| periods.get(&o.identity()).map_or(0, HashSet::len) < 4)
+}
+
 /// A rejected candidate row with its validation reason — persisted so the audit
 /// shows what research offered and why it did not enter the history.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -230,8 +261,9 @@ pub struct RejectedObservation {
 
 /// A required cold-start / gap-fill backfill attempt's record — an obligation to
 /// search, not to produce a row (`docs/portfolio-analysis.md` §Starting
-/// parameters). As-built none is required (the research producer is dormant); the
-/// type pins the persisted shape.
+/// parameters). The research loop's agenda requires one on the first
+/// overlay-eligible full pass or a thin stored series; an attempt that never
+/// reported stays a recorded gap.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BackfillAttempt {
     pub metric_kind: MetricKind,
@@ -362,15 +394,29 @@ impl PreProfitOverlay {
 // ---- Computation -----------------------------------------------------------------
 
 /// Compute the overlay for a priced stock: the statement leg, eligibility, the
-/// observation validation / merge (candidates are empty as-built — the research
-/// producer is dormant), and — when eligible — the derived states and rule
-/// consequences. `prior` carries the previous run's overlay so the period-keyed
-/// observation history accumulates across runs (`docs/storage.md` — "continuity
-/// evidence for the holding").
+/// observation validation / merge, and — when eligible — the derived states and
+/// rule consequences. This unevidenced form rejects every candidate row (the
+/// Step-6b pass runs it over the carried history alone; live research rows
+/// enter through [`compute_overlay_with_sources`]). `prior` carries the
+/// previous run's overlay so the period-keyed observation history accumulates
+/// across runs (`docs/storage.md` — "continuity evidence for the holding").
 pub fn compute_overlay(
     fin: &CompanyFinancials,
     prior: Option<&PreProfitOverlay>,
     candidates: Vec<PreProfitObservation>,
+) -> PreProfitOverlay {
+    compute_overlay_with_sources(fin, prior, candidates, None)
+}
+
+/// The evidenced form — the research loop's producer path: candidate rows are
+/// validated with the two activation legs against the loop's fetched pages
+/// (`docs/portfolio-workflow.md` §Step 6e). The unevidenced [`compute_overlay`]
+/// rejects every candidate, so rows enter the history only through this seam.
+pub fn compute_overlay_with_sources(
+    fin: &CompanyFinancials,
+    prior: Option<&PreProfitOverlay>,
+    candidates: Vec<PreProfitObservation>,
+    evidence: Option<&SourceEvidence<'_>>,
 ) -> PreProfitOverlay {
     let mut gaps: Vec<String> = Vec::new();
     let inputs = statement_inputs(fin, &mut gaps);
@@ -382,7 +428,7 @@ pub fn compute_overlay(
     let prior_history: Vec<PreProfitObservation> = prior
         .map(|p| p.observations.clone())
         .unwrap_or_default();
-    let (accepted, rejected) = validate_observations(candidates, &prior_history);
+    let (accepted, rejected) = validate_observations(candidates, &prior_history, evidence);
     let observations = merge_observations(prior_history, accepted);
     let backfill_attempts = prior
         .map(|p| p.backfill_attempts.clone())
@@ -683,21 +729,216 @@ fn material_dilution(inputs: &StatementInputs) -> Option<bool> {
         .map(|change| at_least(change, MATERIAL_DILUTION_YOY))
 }
 
+/// The research loop's source evidence for the two activation legs
+/// (`docs/portfolio-workflow.md` §Step 6e): the loop's fetched page texts
+/// (keyed by normalized URL), the holding's symbol, and its issuer name.
+pub struct SourceEvidence<'a> {
+    pub texts: &'a std::collections::HashMap<String, String>,
+    pub symbol: &'a str,
+    pub company_name: Option<&'a str>,
+}
+
+/// Normalize a reported period to one convention per issuer — ISO period end
+/// preferred (the `period` field's hard rule): `YYYY-MM-DD` stands, `YYYY-MM`
+/// takes its month end, `Qn YYYY` / `YYYY Qn` / `YYYY-Qn` the calendar
+/// quarter end, `H1/H2 YYYY` the half end, and `FYYYYY` / bare `YYYY` the
+/// year end. Anything else trims and stands (comparable only exactly). The
+/// calendar-quarter mapping is a drafted convention — consistent per issuer,
+/// which is what comparability needs.
+pub fn normalize_period(period: &str) -> String {
+    let p = period.trim();
+    let up = p.to_ascii_uppercase();
+    // YYYY-MM-DD stands.
+    if p.len() == 10 && p.as_bytes()[4] == b'-' && p.as_bytes()[7] == b'-' {
+        return p.to_string();
+    }
+    // YYYY-MM → month end.
+    if p.len() == 7 && p.as_bytes()[4] == b'-' {
+        if let (Ok(y), Ok(m)) = (p[..4].parse::<i32>(), p[5..7].parse::<u32>()) {
+            if let Some(d) = month_end(y, m) {
+                return d;
+            }
+        }
+    }
+    // Quarter / half forms in either order.
+    let tokens: Vec<&str> = up
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let year = tokens.iter().find_map(|t| {
+        if t.len() == 4 && t.chars().all(|c| c.is_ascii_digit()) {
+            t.parse::<i32>().ok()
+        } else if t.len() == 6 && t.starts_with("FY") && t[2..].chars().all(|c| c.is_ascii_digit())
+        {
+            t[2..].parse::<i32>().ok()
+        } else {
+            None
+        }
+    });
+    let quarter = tokens.iter().find_map(|t| match *t {
+        "Q1" => Some(1u32),
+        "Q2" => Some(2),
+        "Q3" => Some(3),
+        "Q4" => Some(4),
+        _ => None,
+    });
+    let half = tokens.iter().find_map(|t| match *t {
+        "H1" => Some(1u32),
+        "H2" => Some(2),
+        _ => None,
+    });
+    if let (Some(y), Some(q)) = (year, quarter) {
+        return month_end(y, q * 3).unwrap_or_else(|| p.to_string());
+    }
+    if let (Some(y), Some(h)) = (year, half) {
+        return month_end(y, h * 6).unwrap_or_else(|| p.to_string());
+    }
+    // FY2026 / bare 2026 → year end.
+    if let Some(y) = year {
+        if tokens.len() == 1 || (tokens.len() == 2 && tokens.contains(&"FY")) {
+            return format!("{y}-12-31");
+        }
+    }
+    p.to_string()
+}
+
+fn month_end(year: i32, month: u32) -> Option<String> {
+    let first = chrono::NaiveDate::from_ymd_opt(year, month, 1)?;
+    let next = if month == 12 {
+        chrono::NaiveDate::from_ymd_opt(year + 1, 1, 1)?
+    } else {
+        chrono::NaiveDate::from_ymd_opt(year, month + 1, 1)?
+    };
+    (first < next)
+        .then_some((next - chrono::Duration::days(1)).format("%Y-%m-%d").to_string())
+}
+
+/// The source-text corroboration test: the observation's numeric value must
+/// appear in the fetched page's text (commas stripped; an integer value also
+/// matches its decimal render). Deterministic and deliberately literal — the
+/// model may extract a row only from source text that states the value.
+pub(crate) fn value_in_text(value: f64, text: &str) -> bool {
+    let haystack: String = text.replace(',', "");
+    // An integer value matches either render ("41" or "41.0") — the boundary
+    // rules below would otherwise reject "41" against a printed "41.0".
+    let needles: Vec<String> = if value.fract() == 0.0 && value.abs() < 1e15 {
+        vec![format!("{}", value as i64), format!("{}.0", value as i64)]
+    } else {
+        let s = format!("{value}");
+        vec![s.trim_end_matches('0').trim_end_matches('.').to_string()]
+    };
+    // Number-boundary containment: "41" must not corroborate off "141", "412",
+    // "41.5", or "3.41" — a neighbor may be neither a digit nor a decimal
+    // point that continues a number.
+    let bytes = haystack.as_bytes();
+    let continues_left = |i: usize| {
+        i > 0
+            && (bytes[i - 1].is_ascii_digit()
+                || (bytes[i - 1] == b'.' && i >= 2 && bytes[i - 2].is_ascii_digit()))
+    };
+    let continues_right = |i: usize| {
+        i < bytes.len()
+            && (bytes[i].is_ascii_digit()
+                || (bytes[i] == b'.' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit()))
+    };
+    for needle in needles {
+        if needle.is_empty() {
+            continue;
+        }
+        let mut from = 0;
+        while let Some(pos) = haystack[from..].find(&needle) {
+            let start = from + pos;
+            let end = start + needle.len();
+            if !continues_left(start) && !continues_right(end) {
+                return true;
+            }
+            from = start + 1;
+        }
+    }
+    false
+}
+
+/// The holding-identity cross-check: the fetched page must mention the
+/// holding — its symbol as a standalone word, or a **distinctive** issuer-name
+/// token (generic corporate suffixes like "Holdings" never qualify) — so a
+/// cross-issuer citation cannot enter the observation history. The matcher is
+/// the shared [`crate::portfolio::text_names_holding`].
+fn page_mentions_holding(text: &str, symbol: &str, company_name: Option<&str>) -> bool {
+    crate::portfolio::text_names_holding(text, symbol, company_name)
+}
+
+/// The two activation legs over one row (`docs/portfolio-workflow.md` §Step
+/// 6e — the research-loop slice's recorded obligation, discharged here): the
+/// row's source page must have been fetched by THIS holding's loop, must
+/// mention the holding (identity cross-check), and must state the value
+/// (source-text corroboration).
+fn validate_against_source(
+    o: &PreProfitObservation,
+    evidence: &SourceEvidence<'_>,
+) -> Result<(), String> {
+    let normalized = crate::web_research::store::normalize_url(&o.source_url);
+    let text = evidence
+        .texts
+        .get(&normalized)
+        .or_else(|| evidence.texts.get(o.source_url.trim()))
+        .ok_or_else(|| {
+            "holding-identity cross-check failed: the source URL was not fetched by this \
+             holding's research loop"
+                .to_string()
+        })?;
+    if !page_mentions_holding(text, evidence.symbol, evidence.company_name) {
+        return Err(
+            "holding-identity cross-check failed: the fetched page never mentions the holding"
+                .to_string(),
+        );
+    }
+    if !value_in_text(o.numeric_value, text) {
+        return Err(
+            "source-text corroboration failed: the stated value does not appear in the fetched \
+             page"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Validate candidate rows against the typed contract, rejecting with a reason;
 /// duplicates of stored history (or of an earlier candidate in the same batch) are
-/// rejected rather than silently dropped.
+/// rejected rather than silently dropped. Periods normalize to the one-per-issuer
+/// convention before the dedup key is taken. With `evidence` present the two
+/// activation legs run per row; **without it every candidate is rejected** —
+/// the producer's rows can only enter through the research loop's lineage.
 pub fn validate_observations(
     candidates: Vec<PreProfitObservation>,
     history: &[PreProfitObservation],
+    evidence: Option<&SourceEvidence<'_>>,
 ) -> (Vec<PreProfitObservation>, Vec<RejectedObservation>) {
     let mut seen: std::collections::BTreeSet<_> =
         history.iter().map(|o| o.dedup_key()).collect();
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
-    for candidate in candidates {
+    for mut candidate in candidates {
+        candidate.period = normalize_period(&candidate.period);
         if let Err(reason) = validate_observation(&candidate) {
             rejected.push(RejectedObservation { observation: candidate, reason });
             continue;
+        }
+        match evidence {
+            None => {
+                rejected.push(RejectedObservation {
+                    observation: candidate,
+                    reason: "no source evidence supplied — observation rows enter only through \
+                             the research loop's fetched-page lineage"
+                        .to_string(),
+                });
+                continue;
+            }
+            Some(evidence) => {
+                if let Err(reason) = validate_against_source(&candidate, evidence) {
+                    rejected.push(RejectedObservation { observation: candidate, reason });
+                    continue;
+                }
+            }
         }
         let key = candidate.dedup_key();
         if seen.contains(&key) {
@@ -719,14 +960,13 @@ pub fn validate_observations(
 /// alone: metric kind, polarity, numeric value, units, period, issuer scope,
 /// source URL, publication date, confidence.
 ///
-/// **Two promised legs are NOT implementable until the live research producer
-/// exists** (`docs/portfolio-workflow.md` §Step 6e names them): the **holding
-/// identity cross-check** (the typed row carries no issuer symbol — a
-/// cross-issuer citation is only detectable from the research loop's claim
-/// lineage) and **source-text corroboration** (no source text exists while the
-/// producer is dormant). The research-loop slice MUST land both when it connects
-/// the producer; until then this validator alone must not be treated as the full
-/// §Step 6e contract.
+/// The two once-promised activation legs — the **holding-identity cross-check**
+/// and **source-text corroboration** — are live in
+/// [`validate_against_source`], run by [`validate_observations`] over the
+/// research loop's fetched-page lineage (the research-loop slice discharged
+/// the recorded obligation when it connected the producer); an unevidenced
+/// call rejects every candidate, so this structural pass alone can never
+/// admit a row.
 fn validate_observation(o: &PreProfitObservation) -> Result<(), String> {
     if !o.numeric_value.is_finite() {
         return Err("non-finite numeric value".to_string());
@@ -734,8 +974,15 @@ fn validate_observation(o: &PreProfitObservation) -> Result<(), String> {
     if o.units.trim().is_empty() {
         return Err("missing units".to_string());
     }
-    if o.period.trim().is_empty() {
-        return Err("missing period".to_string());
+    // Validation sees the row AFTER `normalize_period` ran on it — the
+    // documented one-ISO-period-end-per-issuer convention has teeth only if a
+    // period that did not normalize rejects, else two rows sharing a fabricated
+    // prose period could pair into an execution miss.
+    if chrono::NaiveDate::parse_from_str(o.period.trim(), "%Y-%m-%d").is_err() {
+        return Err(format!(
+            "period {:?} did not normalize to an ISO period-end",
+            o.period
+        ));
     }
     if o.issuer_scope.trim().is_empty() {
         return Err("missing issuer scope".to_string());
@@ -743,8 +990,18 @@ fn validate_observation(o: &PreProfitObservation) -> Result<(), String> {
     if !o.source_url.trim().starts_with("http") {
         return Err("missing or non-URL source".to_string());
     }
-    if o.published_at.trim().is_empty() {
-        return Err("missing published-at date".to_string());
+    // An ISO date (or an RFC 3339 timestamp's date prefix) — a bare non-date
+    // string cannot anchor the observation's publication.
+    let published = o.published_at.trim();
+    if published
+        .get(..10)
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        .is_none()
+    {
+        return Err(format!(
+            "published-at {:?} is not an ISO date",
+            o.published_at
+        ));
     }
     if !(0.0..=1.0).contains(&o.confidence) {
         return Err("confidence outside [0, 1]".to_string());
@@ -1267,6 +1524,22 @@ mod tests {
 
     // ---- Observation validation, merge, and the miss rules ----
 
+    /// A source-evidence fixture whose one page mentions the holding and
+    /// states the given values — the activation legs' pass case.
+    fn evidence_texts(values: &[f64]) -> std::collections::HashMap<String, String> {
+        let stated = values
+            .iter()
+            .map(|v| format!("{v}"))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        let mut texts = std::collections::HashMap::new();
+        texts.insert(
+            "https://example.com/report".to_string(),
+            format!("ACME Motors (NASDAQ: ACME) reported deliveries of {stated} units this period."),
+        );
+        texts
+    }
+
     #[test]
     fn validation_rejects_malformed_rows_with_reasons() {
         let good = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
@@ -1282,9 +1555,20 @@ mod tests {
             polarity: ObservationPolarity::LowerIsBetter,
             ..good.clone()
         };
-        let (accepted, rejected) =
-            validate_observations(vec![good, bad_value, bad_source, bad_polarity], &[]);
+        let texts = evidence_texts(&[100.0]);
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: Some("ACME Motors"),
+        };
+        let (accepted, rejected) = validate_observations(
+            vec![good, bad_value, bad_source, bad_polarity],
+            &[],
+            Some(&evidence),
+        );
         assert_eq!(accepted.len(), 1);
+        // The accepted row's period normalized to the ISO quarter end.
+        assert_eq!(accepted[0].period, "2026-06-30");
         assert_eq!(rejected.len(), 3);
         assert!(rejected.iter().any(|r| r.reason.contains("non-finite")));
         assert!(rejected.iter().any(|r| r.reason.contains("source")));
@@ -1293,15 +1577,269 @@ mod tests {
 
     #[test]
     fn duplicate_of_stored_history_is_rejected() {
-        let stored = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
-        let dup = stored.clone();
+        // Stored history holds normalized periods (it came from prior accepted
+        // rows); a re-offered duplicate normalizes to the same key.
+        let stored =
+            observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-06-30");
+        let dup = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
         let fresh = observation(MetricKind::Deliveries, ObservationRole::Actual, 90.0, "2026-Q1");
-        let (accepted, rejected) =
-            validate_observations(vec![dup, fresh], std::slice::from_ref(&stored));
+        let texts = evidence_texts(&[100.0, 90.0]);
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let (accepted, rejected) = validate_observations(
+            vec![dup, fresh],
+            std::slice::from_ref(&stored),
+            Some(&evidence),
+        );
         assert_eq!(accepted.len(), 1);
-        assert_eq!(accepted[0].period, "2026-Q1");
+        assert_eq!(accepted[0].period, "2026-03-31");
         assert_eq!(rejected.len(), 1);
         assert!(rejected[0].reason.contains("duplicate"));
+    }
+
+    #[test]
+    fn the_activation_legs_bind_identity_corroboration_and_lineage() {
+        let good = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
+
+        // No evidence at all: every candidate is rejected — rows enter only
+        // through the research loop's lineage.
+        let (accepted, rejected) = validate_observations(vec![good.clone()], &[], None);
+        assert!(accepted.is_empty());
+        assert!(rejected[0].reason.contains("no source evidence"));
+
+        // A URL the loop never fetched fails the lineage leg.
+        let empty = std::collections::HashMap::new();
+        let evidence = SourceEvidence {
+            texts: &empty,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let (_, rejected) = validate_observations(vec![good.clone()], &[], Some(&evidence));
+        assert!(rejected[0].reason.contains("was not fetched"));
+
+        // A page that never mentions the holding fails the identity leg.
+        let mut texts = std::collections::HashMap::new();
+        texts.insert(
+            "https://example.com/report".to_string(),
+            "Some other issuer reported deliveries of 100 units.".to_string(),
+        );
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: Some("ACME Motors"),
+        };
+        let (_, rejected) = validate_observations(vec![good.clone()], &[], Some(&evidence));
+        assert!(rejected[0].reason.contains("never mentions the holding"));
+
+        // A page that mentions the holding but never states the value fails
+        // corroboration.
+        let mut texts = std::collections::HashMap::new();
+        texts.insert(
+            "https://example.com/report".to_string(),
+            "$ACME reported strong deliveries this period.".to_string(),
+        );
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let (_, rejected) = validate_observations(vec![good.clone()], &[], Some(&evidence));
+        assert!(rejected[0].reason.contains("does not appear"));
+
+        // A digit-substring never corroborates: 41 must not match inside 141.
+        let short = observation(MetricKind::Deliveries, ObservationRole::Actual, 41.0, "2026-Q2");
+        let mut texts = std::collections::HashMap::new();
+        texts.insert(
+            "https://example.com/report".to_string(),
+            "$ACME reported 141 deliveries.".to_string(),
+        );
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let (_, rejected) = validate_observations(vec![short], &[], Some(&evidence));
+        assert!(rejected[0].reason.contains("does not appear"));
+
+        // Comma-separated renderings still corroborate (12,000 states 12000).
+        let big = observation(MetricKind::Deliveries, ObservationRole::Actual, 12000.0, "2026-Q2");
+        let mut texts = std::collections::HashMap::new();
+        texts.insert(
+            "https://example.com/report".to_string(),
+            "$ACME reported 12,000 deliveries.".to_string(),
+        );
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let (accepted, _) = validate_observations(vec![big], &[], Some(&evidence));
+        assert_eq!(accepted.len(), 1);
+    }
+
+    #[test]
+    fn corroboration_respects_decimal_number_boundaries() {
+        // An integer must not corroborate off a decimal it merely prefixes or
+        // trails: 41 is not stated by "41.5" or "3.41".
+        assert!(!value_in_text(41.0, "ACME guided to 41.5 units."));
+        assert!(!value_in_text(41.0, "margin of 3.41 percent"));
+        // The digit-neighbor rules still hold.
+        assert!(!value_in_text(41.0, "some 141 units"));
+        assert!(!value_in_text(41.0, "about 412 units"));
+        // Exact statements corroborate, decimals included — and an integer
+        // matches its decimal render.
+        assert!(value_in_text(41.0, "delivered 41 units"));
+        assert!(value_in_text(41.5, "guided to 41.5 units"));
+        assert!(value_in_text(41.0, "(41)"));
+        assert!(value_in_text(41.0, "delivered 41.0 units"));
+        assert!(!value_in_text(41.0, "delivered 41.05 units"));
+    }
+
+    #[test]
+    fn identity_check_ignores_generic_name_tokens_and_matches_whole_words() {
+        // A generic corporate suffix ("Holdings", "Company") never identifies
+        // the issuer — a cross-issuer page mentioning only those words fails.
+        assert!(!page_mentions_holding(
+            "Rival Holdings Company reported record output of widgets.",
+            "ACME",
+            Some("ACME Holdings Company"),
+        ));
+        // A distinctive name token passes (sentence-initial needs the
+        // proper-noun run — the following word capitalized)…
+        assert!(page_mentions_holding(
+            "Acme Holdings reported record output.",
+            "XYZ",
+            Some("ACME Holdings Company"),
+        ));
+        assert!(page_mentions_holding(
+            "Shares of Acme rallied on the report.",
+            "XYZ",
+            Some("ACME Holdings Company"),
+        ));
+        // …but not as a substring of a longer word (COMPANY / ACCOMPANYING).
+        assert!(!page_mentions_holding(
+            "The accompanying tables cover the sector.",
+            "XYZ",
+            Some("Widget Company"),
+        ));
+        // The symbol leg needs TICKER CONTEXT ($ or an exchange/label colon) —
+        // a bare uppercase word is not identity evidence, so English-word
+        // tickers (ALL, LOW, CAT) can never match prose or page furniture.
+        assert!(page_mentions_holding("$ACME beat estimates.", "ACME", None));
+        assert!(page_mentions_holding(
+            "(NASDAQ: ACME) beat estimates.",
+            "ACME",
+            None,
+        ));
+        assert!(!page_mentions_holding("ACME beat estimates.", "ACME", None));
+        assert!(!page_mentions_holding(
+            "© 2026. ALL RIGHTS RESERVED.",
+            "ALL",
+            None,
+        ));
+        assert!(!page_mentions_holding(
+            "The CAT scan showed LOW readings.",
+            "CAT",
+            None,
+        ));
+        assert!(page_mentions_holding("$CAT rallied.", "CAT", None));
+        // A colon qualifies only under an exchange / ticker label — a generic
+        // label's value never becomes holding identity.
+        assert!(!page_mentions_holding("Risk: LOW across the book.", "LOW", None));
+        assert!(!page_mentions_holding("Rating: ALL clear.", "ALL", None));
+        assert!(!page_mentions_holding("Category: CAT equipment.", "CAT", None));
+        assert!(page_mentions_holding("Listed as NYSE: CAT today.", "CAT", None));
+        assert!(page_mentions_holding("ticker: CAT", "CAT", None));
+        // An ordinary-word issuer name matches only as a capitalized proper
+        // noun, and a sentence-initial match needs the proper-noun run —
+        // "Target price increased…" never identifies Target Corporation.
+        assert!(!page_mentions_holding(
+            "Analysts raised the price target on several retailers.",
+            "TGT",
+            Some("Target Corporation"),
+        ));
+        assert!(!page_mentions_holding(
+            "Target price increased to $200 across the group.",
+            "TGT",
+            Some("Target Corporation"),
+        ));
+        assert!(page_mentions_holding(
+            "Target Corporation reported quarterly results.",
+            "TGT",
+            Some("Target Corporation"),
+        ));
+        assert!(page_mentions_holding(
+            "Comparable sales at Target rose 4%.",
+            "TGT",
+            Some("Target Corporation"),
+        ));
+    }
+
+    #[test]
+    fn published_at_must_be_an_iso_date() {
+        // Structural validation sees post-normalization rows, so use an ISO
+        // period here (the period leg has its own test below).
+        let mut o =
+            observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-06-30");
+        o.published_at = "recently".into();
+        let err = validate_observation(&o).unwrap_err();
+        assert!(err.contains("not an ISO date"), "{err}");
+        o.published_at = "2026-08-20".into();
+        assert!(validate_observation(&o).is_ok());
+        // An RFC 3339 timestamp's date prefix also anchors.
+        o.published_at = "2026-08-20T14:00:00Z".into();
+        assert!(validate_observation(&o).is_ok());
+    }
+
+    #[test]
+    fn a_period_that_does_not_normalize_to_iso_rejects_the_row() {
+        // Two model-authored rows sharing a fabricated prose period must never
+        // pair into an execution miss — the one-ISO-convention rule has teeth.
+        let good = observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q2");
+        let mut texts = std::collections::HashMap::new();
+        texts.insert(
+            "https://example.com/report".to_string(),
+            "$ACME reported 100 deliveries.".to_string(),
+        );
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        // The recognized form normalizes and passes end to end.
+        let (accepted, _) = validate_observations(vec![good.clone()], &[], Some(&evidence));
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].period, "2026-06-30");
+        // Arbitrary prose does not normalize and rejects with the reason.
+        let mut prose = good;
+        prose.period = "thirteen weeks ended".into();
+        let (accepted, rejected) = validate_observations(vec![prose], &[], Some(&evidence));
+        assert!(accepted.is_empty());
+        assert!(
+            rejected[0].reason.contains("did not normalize to an ISO period-end"),
+            "{}",
+            rejected[0].reason
+        );
+    }
+
+    #[test]
+    fn periods_normalize_to_one_iso_convention() {
+        assert_eq!(normalize_period("2026-06-30"), "2026-06-30");
+        assert_eq!(normalize_period("2026-06"), "2026-06-30");
+        assert_eq!(normalize_period("Q2 2026"), "2026-06-30");
+        assert_eq!(normalize_period("2026 Q2"), "2026-06-30");
+        assert_eq!(normalize_period("2026-Q2"), "2026-06-30");
+        assert_eq!(normalize_period("H1 2026"), "2026-06-30");
+        assert_eq!(normalize_period("FY2026"), "2026-12-31");
+        assert_eq!(normalize_period("FY 2026"), "2026-12-31");
+        assert_eq!(normalize_period("2026"), "2026-12-31");
+        assert_eq!(normalize_period("Q4 2025"), "2025-12-31");
+        // An unrecognized form trims and stands here — structural validation
+        // then rejects the non-ISO result, so it can never enter the history.
+        assert_eq!(normalize_period(" thirteen weeks ended "), "thirteen weeks ended");
     }
 
     /// Guidance/actual pairs across four periods for one identity.
@@ -1449,27 +1987,59 @@ mod tests {
     #[test]
     fn history_carries_and_accumulates_across_runs() {
         let fin = burning_stock();
-        let first = compute_overlay(
+        let texts = evidence_texts(&[100.0, 110.0]);
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let first = compute_overlay_with_sources(
             &fin,
             None,
             vec![observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q1")],
+            Some(&evidence),
         );
         assert_eq!(first.observations.len(), 1);
-        let second = compute_overlay(
+        let second = compute_overlay_with_sources(
             &fin,
             Some(&first),
             vec![observation(MetricKind::Deliveries, ObservationRole::Actual, 110.0, "2026-Q2")],
+            Some(&evidence),
         );
         assert_eq!(second.observations.len(), 2);
     }
 
     #[test]
-    fn history_survives_a_not_eligible_run() {
-        let mut fin = burning_stock();
-        let first = compute_overlay(
+    fn the_unevidenced_producer_path_admits_no_row() {
+        // The structural contract behind the discharged activation obligation:
+        // without the research loop's fetched-page lineage, a candidate can
+        // only be rejected — `compute_overlay` (the 6b seam) can never grow
+        // the observation history.
+        let fin = burning_stock();
+        let overlay = compute_overlay(
             &fin,
             None,
             vec![observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q1")],
+        );
+        assert!(overlay.observations.is_empty());
+        assert_eq!(overlay.rejected.len(), 1);
+        assert!(overlay.rejected[0].reason.contains("no source evidence"));
+    }
+
+    #[test]
+    fn history_survives_a_not_eligible_run() {
+        let mut fin = burning_stock();
+        let texts = evidence_texts(&[100.0]);
+        let evidence = SourceEvidence {
+            texts: &texts,
+            symbol: "ACME",
+            company_name: None,
+        };
+        let first = compute_overlay_with_sources(
+            &fin,
+            None,
+            vec![observation(MetricKind::Deliveries, ObservationRole::Actual, 100.0, "2026-Q1")],
+            Some(&evidence),
         );
         // The name turns profitable: not eligible, but the history rides along.
         for row in &mut fin.quarterly_income {

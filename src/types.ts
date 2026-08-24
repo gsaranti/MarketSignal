@@ -201,11 +201,32 @@ export interface LocalModelSettings {
   embedder_model: string;
 }
 
+// The web-research settings (docs/configuration.md §Web Research): the local
+// SearXNG endpoint. Not a secret (a loopback service address), so it
+// round-trips in full ("" when unset) to `save_web_research_settings`. The
+// Tavily fallback reuses the provider credential above — no second field.
+export interface WebResearchSettings {
+  searxng_endpoint: string;
+}
+
+// Returned by `test_searxng` — the Settings connection row and the pre-run
+// web-research notice share this one read (docs/web-research.md §Tavily
+// fallback; docs/interface.md §Pre-run web-research notice). Never a gate:
+// `degraded` is the notice trigger, `tavily_fallback` decides the
+// "not recommended" wording when no fallback exists either.
+export interface WebResearchPreflight {
+  status: "ok" | "unreachable" | "not_configured";
+  detail: string | null;
+  tavily_fallback: boolean;
+  degraded: boolean;
+}
+
 // Returned by `get_settings`.
 export interface SettingsView {
   models: AgentModels;
   credentials: CredentialStatus;
   local_models: LocalModelSettings;
+  web_research: WebResearchSettings;
   available_models: ModelOption[];
 }
 
@@ -566,7 +587,10 @@ export interface ThesisLedger {
   branch: "priced" | "role-risk-only";
   original_thesis: string;
   current_thesis: string;
-  key_drivers: { name: string; series: string | null }[];
+  // driver_id is the app-assigned stable identity (empty on rows written
+  // before it existed) — display ignores it today; it anchors the research
+  // loop's leading-indicator reference backend-side.
+  key_drivers: { driver_id: string; name: string; series: string | null }[];
   monitor: MonitorScenario[];
   what_must_improve: string;
   what_must_not_break: string;

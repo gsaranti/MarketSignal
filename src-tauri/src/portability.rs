@@ -47,7 +47,13 @@ use crate::storage;
 /// episodes outliving run retention) and the shared `price_bars` cache joined —
 /// the cache moves so imported pending episodes can mature offline. A v2 archive
 /// imports complete at six entries.
-pub const FORMAT_VERSION: u32 = 3;
+/// v4 (research-loop slice): the web tool's shared stores joined — the
+/// `web_documents` cache (so an imported corpus's research reuse serves repeat
+/// fetches offline) and the `web_source_state` learned extraction layer —
+/// plus Portfolio's `portfolio_research_seeds` per-topic distilled-findings
+/// layer (the research-reuse seeds, surviving run retention). A v3 archive
+/// imports complete at eight entries.
+pub const FORMAT_VERSION: u32 = 4;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -57,9 +63,9 @@ const ENC_MAGIC: &[u8; 8] = b"MSDPENC1";
 /// machine, which is what makes report vectors portable at all.
 const REPORT_EMBEDDER_ID: &str = "text-embedding-3-large";
 
-/// The eight exported tables, in insert dependency order (reports first, so the
-/// vector summaries and snapshots that join on `report_id` land after them).
-const TABLES: [&str; 8] = [
+/// The eleven exported tables, in insert dependency order (reports first, so
+/// the vector summaries and snapshots that join on `report_id` land after them).
+const TABLES: [&str; 11] = [
     "reports",
     "baseline_snapshots",
     "vector_memory",
@@ -68,11 +74,14 @@ const TABLES: [&str; 8] = [
     "portfolio_quick_checks",
     "portfolio_outcome_episodes",
     "price_bars",
+    "web_documents",
+    "web_source_state",
+    "portfolio_research_seeds",
 ];
 
 /// The tables' zip entry names, same order — what export writes and import
 /// consumes, shared so the two sides can never drift.
-const DB_ENTRY_NAMES: [&str; 8] = [
+const DB_ENTRY_NAMES: [&str; 11] = [
     "db/reports.ndjson",
     "db/baseline_snapshots.ndjson",
     "db/vector_memory.ndjson",
@@ -81,6 +90,9 @@ const DB_ENTRY_NAMES: [&str; 8] = [
     "db/portfolio_quick_checks.ndjson",
     "db/portfolio_outcome_episodes.ndjson",
     "db/price_bars.ndjson",
+    "db/web_documents.ndjson",
+    "db/web_source_state.ndjson",
+    "db/portfolio_research_seeds.ndjson",
 ];
 
 /// The db entries an archive's own format version requires — the versioned
@@ -90,7 +102,8 @@ const DB_ENTRY_NAMES: [&str; 8] = [
 /// format's entries of an older archive would refuse it as truncated.
 fn required_db_entries(format_version: u32) -> &'static [&'static str] {
     match format_version {
-        v if v >= 3 => &DB_ENTRY_NAMES,
+        v if v >= 4 => &DB_ENTRY_NAMES,
+        3 => &DB_ENTRY_NAMES[..8],
         2 => &DB_ENTRY_NAMES[..6],
         _ => &DB_ENTRY_NAMES[..5],
     }
@@ -214,6 +227,43 @@ struct PriceBarRow {
     close: f64,
 }
 
+/// One web-research document-cache row on the wire (`docs/storage.md §Local
+/// Analysis Suite Storage`): a fetched, readability-extracted document under
+/// its normalized URL, its original retrieval timestamp the immutable vintage.
+#[derive(Debug, Serialize, Deserialize)]
+struct WebDocumentRow {
+    url: String,
+    host: String,
+    retrieved_at: String,
+    title: String,
+    text: String,
+    extraction_quality: f64,
+    thin_stub: bool,
+}
+
+/// One web-research source-state row on the wire: a domain's learned
+/// extraction telemetry (full-vs-thin counts, resolved profile, render-first).
+#[derive(Debug, Serialize, Deserialize)]
+struct WebSourceStateRow {
+    host: String,
+    full_count: i64,
+    thin_count: i64,
+    profile: Option<String>,
+    render_first: bool,
+    updated_at: String,
+}
+
+/// One per-topic research-seed row on the wire (`docs/portfolio-analysis.md`
+/// §Starting parameters — Research reuse): a holding's distilled topic object,
+/// durable analytical state that outlives run retention.
+#[derive(Debug, Serialize, Deserialize)]
+struct ResearchSeedRow {
+    symbol: String,
+    topic_key: String,
+    vintage: String,
+    seed_json: String,
+}
+
 // ---------------------------------------------------------------------------
 // Command-facing results
 // ---------------------------------------------------------------------------
@@ -288,6 +338,9 @@ pub fn export_archive(
     let quick_checks = read_quick_check_rows(&conn)?;
     let episodes = read_outcome_episode_rows(&conn)?;
     let price_bars = read_price_bar_rows(&conn)?;
+    let web_documents = read_web_document_rows(&conn)?;
+    let web_source_states = read_web_source_state_rows(&conn)?;
+    let research_seeds = read_research_seed_rows(&conn)?;
     let learnings = vectors.iter().filter(|v| v.kind == "learning").count() as u64;
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -313,6 +366,15 @@ pub fn export_archive(
         episodes.len() as u64,
     );
     row_counts.insert("price_bars".to_string(), price_bars.len() as u64);
+    row_counts.insert("web_documents".to_string(), web_documents.len() as u64);
+    row_counts.insert(
+        "web_source_state".to_string(),
+        web_source_states.len() as u64,
+    );
+    row_counts.insert(
+        "portfolio_research_seeds".to_string(),
+        research_seeds.len() as u64,
+    );
 
     let mut embedders = BTreeMap::new();
     embedders.insert("report".to_string(), REPORT_EMBEDDER_ID.to_string());
@@ -330,7 +392,7 @@ pub fn export_archive(
     // The db/*.ndjson entries join the manifest's checksum inventory alongside
     // the store files, so import can verify every entry — table rows included —
     // before its destructive phase.
-    let db_payloads: [Vec<u8>; 8] = [
+    let db_payloads: [Vec<u8>; 11] = [
         ndjson(&reports)?,
         ndjson(&snapshots)?,
         ndjson(&vectors)?,
@@ -339,6 +401,9 @@ pub fn export_archive(
         ndjson(&quick_checks)?,
         ndjson(&episodes)?,
         ndjson(&price_bars)?,
+        ndjson(&web_documents)?,
+        ndjson(&web_source_states)?,
+        ndjson(&research_seeds)?,
     ];
 
     let manifest = Manifest {
@@ -523,6 +588,11 @@ pub fn import_archive(
     let episode_rows: Vec<OutcomeEpisodeRow> =
         parse_ndjson(&entries, "db/portfolio_outcome_episodes.ndjson")?;
     let price_bar_rows: Vec<PriceBarRow> = parse_ndjson(&entries, "db/price_bars.ndjson")?;
+    let web_document_rows: Vec<WebDocumentRow> = parse_ndjson(&entries, "db/web_documents.ndjson")?;
+    let web_source_state_rows: Vec<WebSourceStateRow> =
+        parse_ndjson(&entries, "db/web_source_state.ndjson")?;
+    let research_seed_rows: Vec<ResearchSeedRow> =
+        parse_ndjson(&entries, "db/portfolio_research_seeds.ndjson")?;
 
     // Everything the load will need is decoded and checked HERE, before the
     // destructive phase, so a malformed row can only ever abort an import while
@@ -586,6 +656,29 @@ pub fn import_archive(
                 "archive carries a duplicate price bar for {} on {}",
                 row.symbol,
                 row.date
+            );
+        }
+    }
+    // The web-research stores' primary keys, mirrored pre-destructively.
+    let mut seen_doc_urls = BTreeSet::new();
+    for row in &web_document_rows {
+        if !seen_doc_urls.insert(row.url.as_str()) {
+            bail!("archive carries a duplicate cached document for {:?}", row.url);
+        }
+    }
+    let mut seen_state_hosts = BTreeSet::new();
+    for row in &web_source_state_rows {
+        if !seen_state_hosts.insert(row.host.as_str()) {
+            bail!("archive carries a duplicate source state for {:?}", row.host);
+        }
+    }
+    let mut seen_seed_keys = BTreeSet::new();
+    for row in &research_seed_rows {
+        if !seen_seed_keys.insert((row.symbol.as_str(), row.topic_key.as_str())) {
+            bail!(
+                "archive carries a duplicate research seed for {} / {}",
+                row.symbol,
+                row.topic_key
             );
         }
     }
@@ -756,6 +849,44 @@ pub fn import_archive(
             params![row.symbol, row.date, row.close],
         )?;
     }
+    for row in &web_document_rows {
+        tx.execute(
+            "INSERT INTO web_documents (url, host, retrieved_at, title, text,
+                                        extraction_quality, thin_stub)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                row.url,
+                row.host,
+                row.retrieved_at,
+                row.title,
+                row.text,
+                row.extraction_quality,
+                row.thin_stub as i64
+            ],
+        )?;
+    }
+    for row in &web_source_state_rows {
+        tx.execute(
+            "INSERT INTO web_source_state (host, full_count, thin_count, profile,
+                                           render_first, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                row.host,
+                row.full_count,
+                row.thin_count,
+                row.profile,
+                row.render_first as i64,
+                row.updated_at
+            ],
+        )?;
+    }
+    for row in &research_seed_rows {
+        tx.execute(
+            "INSERT INTO portfolio_research_seeds (symbol, topic_key, vintage, seed_json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![row.symbol, row.topic_key, row.vintage, row.seed_json],
+        )?;
+    }
     tx.commit()?;
 
     Ok(ImportSummary {
@@ -908,6 +1039,65 @@ fn read_outcome_episode_rows(conn: &Connection) -> Result<Vec<OutcomeEpisodeRow>
                 anchor_at: r.get(2)?,
                 state: r.get(3)?,
                 episode_json: r.get(4)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn read_web_document_rows(conn: &Connection) -> Result<Vec<WebDocumentRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT url, host, retrieved_at, title, text, extraction_quality, thin_stub
+         FROM web_documents ORDER BY url",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(WebDocumentRow {
+                url: r.get(0)?,
+                host: r.get(1)?,
+                retrieved_at: r.get(2)?,
+                title: r.get(3)?,
+                text: r.get(4)?,
+                extraction_quality: r.get(5)?,
+                thin_stub: r.get::<_, i64>(6)? != 0,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn read_web_source_state_rows(conn: &Connection) -> Result<Vec<WebSourceStateRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT host, full_count, thin_count, profile, render_first, updated_at
+         FROM web_source_state ORDER BY host",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(WebSourceStateRow {
+                host: r.get(0)?,
+                full_count: r.get(1)?,
+                thin_count: r.get(2)?,
+                profile: r.get(3)?,
+                render_first: r.get::<_, i64>(4)? != 0,
+                updated_at: r.get(5)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn read_research_seed_rows(conn: &Connection) -> Result<Vec<ResearchSeedRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT symbol, topic_key, vintage, seed_json
+         FROM portfolio_research_seeds ORDER BY symbol, topic_key",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(ResearchSeedRow {
+                symbol: r.get(0)?,
+                topic_key: r.get(1)?,
+                vintage: r.get(2)?,
+                seed_json: r.get(3)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1297,6 +1487,28 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO web_documents (url, host, retrieved_at, title, text,
+                                        extraction_quality, thin_stub)
+             VALUES ('https://reuters.com/widget', 'reuters.com', '2026-07-06T10:00:00+00:00',
+                     'Widget beats', 'Widget Co reported…', 0.9, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO web_source_state (host, full_count, thin_count, profile,
+                                           render_first, updated_at)
+             VALUES ('bloomberg.com', 0, 3, 'js_required', 1, '2026-07-06T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO portfolio_research_seeds (symbol, topic_key, vintage, seed_json)
+             VALUES ('AAPL', 'competitive-position', '2026-07-06T10:00:00+00:00',
+                     '{\"topic_key\":\"competitive-position\",\"vintage\":\"2026-07-06T10:00:00+00:00\",\"summary\":\"s\",\"claims\":[]}')",
+            [],
+        )
+        .unwrap();
         std::fs::write(paths.archive_dir.join("filed-note.md"), "archived research\n").unwrap();
         std::fs::write(paths.inbox_dir.join("pending-note.txt"), "inbox research\n").unwrap();
         conn.execute(
@@ -1437,6 +1649,37 @@ mod tests {
             )
             .unwrap();
         assert_eq!(close.to_bits(), 195.25f64.to_bits());
+        // The web-research stores ride it too (format v4): the cached document
+        // with its original retrieval vintage, and the learned source state.
+        let (retrieved_at, thin): (String, i64) = conn
+            .query_row(
+                "SELECT retrieved_at, thin_stub FROM web_documents
+                 WHERE url = 'https://reuters.com/widget'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(retrieved_at, "2026-07-06T10:00:00+00:00");
+        assert_eq!(thin, 0);
+        let (profile, render_first): (String, i64) = conn
+            .query_row(
+                "SELECT profile, render_first FROM web_source_state
+                 WHERE host = 'bloomberg.com'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(profile, "js_required");
+        assert_eq!(render_first, 1);
+        let seed_vintage: String = conn
+            .query_row(
+                "SELECT vintage FROM portfolio_research_seeds
+                 WHERE symbol = 'AAPL' AND topic_key = 'competitive-position'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(seed_vintage, "2026-07-06T10:00:00+00:00");
         // markdown_path re-derived against the target's own reports dir, and
         // the body readable through it.
         let markdown_path: String = conn
@@ -1935,6 +2178,60 @@ mod tests {
         assert_eq!(table_count(&target, "price_bars"), 0);
         // The quick-check store — v2's own addition — still rides.
         assert_eq!(table_count(&target, "portfolio_quick_checks"), 1);
+    }
+
+    #[test]
+    fn a_v3_archive_without_the_web_entries_imports_complete() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None, None).unwrap();
+
+        // Drop the two v4-only entries and their listings. Under the archive's
+        // own (v4) version that is truncation and must refuse…
+        let mut entries = read_archive_entries(&dest);
+        for name in [
+            "db/web_documents.ndjson",
+            "db/web_source_state.ndjson",
+            "db/portfolio_research_seeds.ndjson",
+        ] {
+            entries.remove(name);
+        }
+        let mut manifest: Manifest = serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        manifest.files.retain(|f| {
+            f.path != "db/web_documents.ndjson"
+                && f.path != "db/web_source_state.ndjson"
+                && f.path != "db/portfolio_research_seeds.ndjson"
+        });
+        manifest.row_counts.remove("web_documents");
+        manifest.row_counts.remove("web_source_state");
+        manifest.row_counts.remove("portfolio_research_seeds");
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let truncated = source.db_path.parent().unwrap().join("truncated-v4.zip");
+        rebuild_zip(&entries, &truncated);
+        let (_b, target) = temp_store();
+        let err = import_archive(&target, &truncated, None, false).unwrap_err();
+        assert!(err.to_string().contains("missing or not listed"), "{err}");
+
+        // …while a v3 archive is complete at eight entries.
+        manifest.format_version = 3;
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let v3_path = source.db_path.parent().unwrap().join("v3.zip");
+        rebuild_zip(&entries, &v3_path);
+        let (_c, target) = temp_store();
+        let loaded = import_archive(&target, &v3_path, None, false).unwrap();
+        assert_eq!(loaded.reports, 2);
+        assert_eq!(table_count(&target, "web_documents"), 0);
+        assert_eq!(table_count(&target, "web_source_state"), 0);
+        // The v3 additions still ride.
+        assert_eq!(table_count(&target, "portfolio_outcome_episodes"), 1);
+        assert_eq!(table_count(&target, "price_bars"), 1);
     }
 
     #[test]

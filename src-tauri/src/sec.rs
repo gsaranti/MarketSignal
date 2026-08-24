@@ -539,8 +539,9 @@ pub enum ForensicEventKind {
     /// An Item 4.01 auditor-change 8-K.
     AuditorChange,
     /// The research-fed kind — no structured enumeration exists, so it enters
-    /// only as a validated `forensic_event` research claim once the research
-    /// loop lands. This producer never emits it.
+    /// only as a validated `forensic_event` research claim (the 6d channel,
+    /// merged by `pipeline::merge_research_forensic_event`). This filings
+    /// classifier never emits it.
     Fraud,
 }
 

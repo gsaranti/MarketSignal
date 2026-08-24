@@ -22,6 +22,7 @@
 //! the model's own sub-scores through the same shared cutoffs.
 
 pub mod diff;
+pub mod distill;
 pub mod dossier;
 pub mod engine;
 pub mod fund;
@@ -31,6 +32,7 @@ pub mod outcome;
 pub mod pipeline;
 pub mod pre_profit;
 pub mod quick_check;
+pub mod research;
 pub mod store;
 
 use serde::{Deserialize, Serialize};
@@ -1016,6 +1018,14 @@ impl BandRelation {
 /// an engine-tracked series so the next run can read whether it moved.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyDriver {
+    /// The app-assigned stable identity (ruled 2026-08-24): assigned at ledger
+    /// validation, preserved across rewrites while the driver's name carries,
+    /// and the referential anchor a validated leading indicator must cite
+    /// before its presence may suppress the narrative cap. Empty on rows
+    /// written before the id existed — an unidentifiable driver simply grants
+    /// no suppression until the next rewrite assigns it one.
+    #[serde(default)]
+    pub driver_id: String,
     pub name: String,
     /// The engine series backing the driver, where one exists.
     #[serde(default)]
@@ -1321,6 +1331,182 @@ pub struct PortfolioRollUp {
 /// sweep but no longer trips the hard consequences.
 pub const FORENSIC_EVENT_LOOKBACK_DAYS: i64 = 365;
 
+/// Generic corporate-suffix tokens that cannot identify an issuer on their own
+/// (drafted): the identity matcher skips them so "Company" or "Holdings" never
+/// corroborates a cross-issuer citation.
+const GENERIC_NAME_TOKENS: &[&str] = &[
+    "COMPANY",
+    "COMPANIES",
+    "HOLDING",
+    "HOLDINGS",
+    "CORPORATION",
+    "CORP",
+    "INCORPORATED",
+    "GROUP",
+    "INTERNATIONAL",
+    "INDUSTRIES",
+    "ENTERPRISES",
+    "ENTERPRISE",
+    "LIMITED",
+    "TECHNOLOGIES",
+    "TECHNOLOGY",
+    "GLOBAL",
+    "PARTNERS",
+    "CAPITAL",
+    "FINANCIAL",
+    "SYSTEMS",
+    "SOLUTIONS",
+    "SERVICES",
+    "BRANDS",
+    "RESOURCES",
+    "TRUST",
+    "FUND",
+    "FUNDS",
+    "SHARES",
+    "CLASS",
+    "COMMON",
+    "STOCK",
+    // Short suffix forms — below the name-token length floor anyway, listed
+    // for the acronym derivation's trailing-suffix strip.
+    "INC",
+    "LTD",
+    "PLC",
+    "CO",
+];
+
+/// Whether a name word is a generic corporate suffix (case-insensitive) —
+/// exposed for the first-party host check's acronym derivation.
+pub(crate) fn is_generic_name_token(word: &str) -> bool {
+    GENERIC_NAME_TOKENS.contains(&word.to_ascii_uppercase().as_str())
+}
+
+/// The distinctive issuer-name tokens (uppercased): ≥4 chars and not a
+/// generic corporate suffix — the identity vocabulary shared by the page
+/// matcher and the first-party host check.
+pub(crate) fn distinctive_name_tokens(company_name: Option<&str>) -> Vec<String> {
+    company_name
+        .map(|name| {
+            name.to_ascii_uppercase()
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|t| t.len() >= 4 && !GENERIC_NAME_TOKENS.contains(t))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The label words that qualify a colon as ticker context (drafted): exchange
+/// and symbol markers only — a generic label (`Risk:`, `Rating:`,
+/// `Category:`) must never turn its value into holding identity.
+const TICKER_LABELS: &[&str] = &[
+    "NYSE", "NASDAQ", "AMEX", "OTC", "OTCMKTS", "ARCA", "BATS", "CBOE", "TICKER", "SYMBOL",
+];
+
+/// Whether a symbol occurrence sits in ticker context: preceded (one optional
+/// space skipped) by `$`, or by a colon whose own label word is an exchange /
+/// ticker marker — `$CAT`, `NYSE: CAT`, `ticker:CAT`, but never `Risk: LOW`.
+fn ticker_context(text: &str, start: usize) -> bool {
+    let bytes = text.as_bytes();
+    if start == 0 {
+        return false;
+    }
+    let mut k = start - 1;
+    if bytes[k] == b' ' {
+        if k == 0 {
+            return false;
+        }
+        k -= 1;
+    }
+    match bytes[k] {
+        b'$' => true,
+        b':' => {
+            // Read the label word ending at the colon (one optional space).
+            let mut end = k;
+            if end > 0 && bytes[end - 1] == b' ' {
+                end -= 1;
+            }
+            let mut label_start = end;
+            while label_start > 0 && bytes[label_start - 1].is_ascii_alphanumeric() {
+                label_start -= 1;
+            }
+            label_start < end
+                && TICKER_LABELS
+                    .iter()
+                    .any(|l| text[label_start..end].eq_ignore_ascii_case(l))
+        }
+        _ => false,
+    }
+}
+
+/// Whether the gap before a word carries a sentence terminator (or the word
+/// opens the text) — the name leg's sentence-initial test.
+fn sentence_initial(bytes: &[u8], start: usize, prev_end: Option<usize>) -> bool {
+    let Some(prev_end) = prev_end else { return true };
+    bytes[prev_end..start]
+        .iter()
+        .any(|b| matches!(b, b'.' | b'!' | b'?' | b'\n'))
+}
+
+/// Whether `text` names the holding. Two legs, both structural rather than
+/// list-driven, because bare uppercase words are not reliable identity
+/// evidence (any English-word ticker — `LOW`, `CAT`, `ALL` — collides with
+/// page prose and furniture):
+///
+/// - **Symbol** — an exact-case word match accepted only in **ticker
+///   context**: preceded by `$`, or by a colon whose label word is an
+///   exchange / ticker marker (`$CAT`, `NYSE: CAT` — never `Risk: LOW`). A
+///   bare uppercase word never satisfies this leg; prose identity is the
+///   name leg's job.
+/// - **Name** — a **distinctive** issuer-name token (≥4 chars, not a generic
+///   corporate suffix) as a capitalized word. A sentence-initial match counts
+///   only when the next word is also capitalized (a proper-noun run: "Target
+///   Corporation reported" yes, "Target price increased" no) — mid-sentence
+///   capitalization is itself the proper-noun signal.
+///
+/// Word-boundary matching throughout — a token inside a longer word (COMPANY
+/// in ACCOMPANYING) never matches. Shared by the pre-profit page cross-check
+/// and the typed-channel issuer validations; rejection is always fail-soft
+/// (a gap-logged dropped row or claim, never a failed run).
+pub(crate) fn text_names_holding(text: &str, symbol: &str, company_name: Option<&str>) -> bool {
+    let sym = symbol.trim();
+    let name_tokens = distinctive_name_tokens(company_name);
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    let mut prev_end: Option<usize> = None;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_alphanumeric() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_alphanumeric() {
+            i += 1;
+        }
+        let word = &text[start..i];
+        if !sym.is_empty() && word == sym && ticker_context(text, start) {
+            return true;
+        }
+        if !name_tokens.is_empty()
+            && word.as_bytes()[0].is_ascii_uppercase()
+            && name_tokens.iter().any(|t| t.eq_ignore_ascii_case(word))
+        {
+            if !sentence_initial(bytes, start, prev_end) {
+                return true;
+            }
+            // Sentence-initial: require a following capitalized word.
+            let mut j = i;
+            while j < bytes.len() && !bytes[j].is_ascii_alphanumeric() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j].is_ascii_uppercase() {
+                return true;
+            }
+        }
+        prev_end = Some(i);
+    }
+    false
+}
+
 /// The per-holding outcome of the item-classified 8-K filings sweep — the
 /// hard-forensic **filing kinds'** producer state (`docs/portfolio-analysis.md`
 /// §Starting parameters — the conviction-layer caps; the shared producer
@@ -1382,9 +1568,11 @@ pub struct HoldingAudit {
     /// The local model ids the verdict was **actually authored with**, in
     /// first-call order — recorded beside each call that ran, never read off the
     /// configured roster: empty on every no-model exit (not-rated, the listing
-    /// guard, an evidence-floor abstention), the reasoner alone on the role/risk
-    /// branch, the fast tier plus the reasoner on the priced path (one entry when
-    /// they are the same model).
+    /// guard, an evidence-floor abstention); the fast tier plus the reasoner on
+    /// both analyzed branches (one entry when they are the same model) — the
+    /// role/risk branch runs the fund agenda's research and a
+    /// pure-consolidation distillation since the research slice retired the
+    /// stub-time bypass.
     pub model_ids: Vec<String>,
     /// The prompt/schema version the interpretation ran under.
     pub prompt_version: String,
@@ -1495,6 +1683,15 @@ pub struct HoldingAudit {
     /// (`#[serde(default)]`).
     #[serde(default)]
     pub what_changed_audit: Option<WhatChangedAudit>,
+    /// The research-loop audit record (`docs/storage.md §Local Analysis Suite
+    /// Storage` — the research-derived artifacts): sources with retrieval
+    /// timestamps, the distilled findings (the combined object and the
+    /// reconciled per-topic seed layer), per-topic seeded-vs-cold decisions,
+    /// budget spend, and the distillation shape. `None` on every no-research
+    /// exit (not-rated, the listing guard, an evidence-floor abstention) and
+    /// on runs persisted before the research loop landed (`#[serde(default)]`).
+    #[serde(default)]
+    pub research: Option<distill::ResearchAuditRecord>,
 }
 
 /// The schema/prompt version stamped on each run's audit, bumped when the
@@ -1589,7 +1786,18 @@ pub struct HoldingAudit {
 /// materiality margin). The validated audit wakes the outcome layer's
 /// standing-thesis episode leg and self-correction counters
 /// (`docs/portfolio-analysis.md` §Outcome learning).
-pub const PROMPT_VERSION: &str = "portfolio-v11";
+///
+/// `portfolio-v12`: the live research loop (`docs/portfolio-workflow.md`
+/// §Step 6c–6e). The 6c prompt surface is new (per-topic pass conversations
+/// with the web tools and the findings grammar), 6d is schema-constrained
+/// with the typed side-channels (`research_forward_assumption`,
+/// `validated_leading_indicator`, `forensic_event`,
+/// `pre_profit_execution_observations`), the interpretation prompt carries
+/// real distilled research (a validated leading indicator rendering as
+/// ledger-driver evidence), the input delta gains addressable
+/// research-finding entries, and the `role_risk_only` branch runs the fund
+/// agenda + pure consolidation (its prompt gains the distilled section).
+pub const PROMPT_VERSION: &str = "portfolio-v12";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2418,6 +2626,7 @@ mod tests {
             original_thesis: "debut thesis".into(),
             current_thesis: "current thesis".into(),
             key_drivers: vec![KeyDriver {
+                driver_id: "kd-margins".into(),
                 name: "margins".into(),
                 series: Some(engine::LedgerSeries::NetMargin),
             }],

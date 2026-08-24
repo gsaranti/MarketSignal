@@ -1833,6 +1833,7 @@ mod tests {
     fn audit_for(symbol: &str, quick_basis: Option<QuickCheckBasis>) -> HoldingAudit {
         HoldingAudit {
             what_changed_audit: None,
+            research: None,
             symbol: symbol.into(),
             metrics: engine::ComputedMetrics {
                 pe_ratio: Some(30.0),

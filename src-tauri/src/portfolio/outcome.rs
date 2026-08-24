@@ -2661,6 +2661,7 @@ mod tests {
                 self_correction_count: self_corrections,
                 thesis_changed,
             }),
+            research: None,
         }
     }
 
@@ -3040,6 +3041,7 @@ mod tests {
         let trim_again = vec![fresh(verdict("AAPL", Action::Trim, (0.03, 0.06)), c3)];
         let audit = HoldingAudit {
             what_changed_audit: None,
+            research: None,
             symbol: "AAPL".into(),
             metrics: Default::default(),
             sources: vec![],
@@ -3107,6 +3109,7 @@ mod tests {
         let sector = HashMap::new();
         let audit = HoldingAudit {
             what_changed_audit: None,
+            research: None,
             symbol: "AAPL".into(),
             metrics: Default::default(),
             sources: vec![],
@@ -3160,6 +3163,7 @@ mod tests {
         let mut episodes = Vec::new();
         let audit = HoldingAudit {
             what_changed_audit: None,
+            research: None,
             symbol: "AAPL".into(),
             metrics: Default::default(),
             sources: vec![],
@@ -3221,6 +3225,7 @@ mod tests {
     fn confirmed_crossing(observation_id: &str, confirmed_at: &str) -> HoldingAudit {
         HoldingAudit {
             what_changed_audit: None,
+            research: None,
             symbol: "AAPL".into(),
             metrics: Default::default(),
             sources: vec![],
@@ -3316,6 +3321,7 @@ mod tests {
         let mut episodes = Vec::new();
         let audit = HoldingAudit {
             what_changed_audit: None,
+            research: None,
             symbol: "AAPL".into(),
             metrics: Default::default(),
             sources: vec![],

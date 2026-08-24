@@ -25,7 +25,7 @@ use crate::config::{
     AppConfig, KEY_ANTHROPIC_API_KEY, KEY_BALANCED_AGENT_MODEL, KEY_BEAR_AGENT_MODEL,
     KEY_BULL_AGENT_MODEL, KEY_FMP_API_KEY, KEY_FRED_API_KEY, KEY_LOCAL_DAEMON_ENDPOINT,
     KEY_LOCAL_EMBEDDER_MODEL, KEY_LOCAL_FAST_MODEL, KEY_LOCAL_REASONER_MODEL,
-    KEY_MAIN_AGENT_MODEL, KEY_OPENAI_API_KEY, KEY_TAVILY_API_KEY,
+    KEY_MAIN_AGENT_MODEL, KEY_OPENAI_API_KEY, KEY_SEARXNG_ENDPOINT, KEY_TAVILY_API_KEY,
 };
 use crate::model_agent::AgentModel;
 use crate::storage;
@@ -75,14 +75,24 @@ pub struct LocalModelSettings {
     pub embedder_model: String,
 }
 
+/// The web-research settings (`docs/configuration.md §Web Research`): the
+/// local SearXNG endpoint. Not a secret (a loopback service address), so it
+/// round-trips in full like the local-model values. The Tavily fallback reuses
+/// the provider credential above — no second field.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebResearchSettings {
+    pub searxng_endpoint: String,
+}
+
 /// What the Settings view renders: the current model selections, the
-/// per-credential configured flags, the local-suite model config, and the model
-/// dropdown's options.
+/// per-credential configured flags, the local-suite model config, the
+/// web-research config, and the model dropdown's options.
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsView {
     pub models: AgentModels,
     pub credentials: CredentialStatus,
     pub local_models: LocalModelSettings,
+    pub web_research: WebResearchSettings,
     pub available_models: Vec<ModelOption>,
 }
 
@@ -151,6 +161,9 @@ pub fn view_from_config(cfg: &AppConfig) -> SettingsView {
             reasoner_model: cfg.local_reasoner_model.clone().unwrap_or_default(),
             fast_model: cfg.local_fast_model.clone().unwrap_or_default(),
             embedder_model: cfg.local_embedder_model.clone().unwrap_or_default(),
+        },
+        web_research: WebResearchSettings {
+            searxng_endpoint: cfg.searxng_endpoint.clone().unwrap_or_default(),
         },
         available_models: available_models(),
     }
@@ -300,6 +313,15 @@ pub fn save_local_models(conn: &Connection, values: &LocalModelSettings) -> Resu
             prior_embedder.unwrap_or_default()
         );
     }
+    Ok(())
+}
+
+/// Persist the web-research config (`docs/configuration.md §Web Research`) —
+/// **ungated**, like the local-model save: SearXNG is off every gate, so
+/// saving its endpoint must never depend on a token or on reachability.
+/// Written verbatim (trimmed; "" persists as cleared — not a secret).
+pub fn save_web_research(conn: &Connection, values: &WebResearchSettings) -> Result<()> {
+    storage::set_setting(conn, KEY_SEARXNG_ENDPOINT, values.searxng_endpoint.trim())?;
     Ok(())
 }
 
@@ -628,6 +650,30 @@ mod tests {
             Some("embed-b")
         );
         assert_eq!(count_memory(&conn, MemoryNamespace::Portfolio).unwrap(), 0);
+    }
+
+    #[test]
+    fn web_research_saves_ungated_and_round_trips_in_the_view() {
+        let conn = mem();
+        // No token anywhere — the web-research setup path must still save.
+        save_web_research(
+            &conn,
+            &WebResearchSettings {
+                searxng_endpoint: " http://127.0.0.1:8888 ".into(),
+            },
+        )
+        .unwrap();
+        let view = load_view(&conn);
+        assert_eq!(view.web_research.searxng_endpoint, "http://127.0.0.1:8888");
+        // Clearing persists as "" (not a secret; no leave-unchanged semantics).
+        save_web_research(
+            &conn,
+            &WebResearchSettings {
+                searxng_endpoint: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(load_view(&conn).web_research.searxng_endpoint, "");
     }
 
     #[test]

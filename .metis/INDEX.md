@@ -163,6 +163,8 @@ build status lives in `BUILD.md`.*
 - Context-memory discipline — local-models.md §Context-memory discipline
 - Per-job isolated vector memory — local-models.md §Run history and continuity; storage.md §Local Vector Memory
 - Web research tool — web-research.md
+- Pre-run web-research notice — interface.md §Pre-run web-research notice; web-research.md §Tavily fallback
+- Local-suite connection indicators (Ollama / SearXNG) — interface.md §Connection status
 - Source registry & evidence tiers — data-sources.md §Source registry and evidence tiers; web-research.md §Source quality and evidence weighting; configuration.md §Web Research
 - Source quality & evidence weighting — web-research.md §Source quality and evidence weighting
 - Connected Sources — web-research.md §Connected sources; configuration.md §Connected Sources (subscriptions)
@@ -185,6 +187,7 @@ build status lives in `BUILD.md`.*
 - Grade bands & parameter versioning — portfolio-analysis.md §Starting parameters; data-sources.md §SEC EDGAR, §Portfolio Analysis — endpoint surface
 - Interpretation-prompt contract — portfolio-analysis.md §The holding verdict; portfolio-workflow.md §Step 6f
 - Position thesis ledger — portfolio-analysis.md §The position thesis ledger, §Storage and display; portfolio-workflow.md §Step 6a, §Step 6f, §Step 6g; storage.md §Local Analysis Suite Storage; interface.md §Main Layout
+- Key-driver identity keys (`driver_id`) — portfolio-analysis.md §The position thesis ledger; portfolio-workflow.md §Step 6d; portfolio-analysis.md §Starting parameters
 - Ledger executability validation — portfolio-workflow.md §Step 6f, §Step 6g; portfolio-analysis.md §The position thesis ledger, §The quick check
 - Portfolio quick check — portfolio-analysis.md §The quick check; portfolio-workflow.md §The quick check; interface.md §Connection status
 - Selective re-analysis + mixed-vintage safety — portfolio-analysis.md §Triggering; portfolio-workflow.md §Step 6, §Step 7
@@ -208,7 +211,8 @@ build status lives in `BUILD.md`.*
 - Closed-end fund leg — detection and the price-vs-NAV read (the §Asset eligibility statement is canonical) — portfolio-analysis.md §Asset eligibility, §Evidence floor; portfolio-workflow.md §Step 3, §Step 6a; data-sources.md §Portfolio Analysis — endpoint surface
 - Listing-resolution guard — portfolio-analysis.md §Asset eligibility, §Starting parameters; portfolio-workflow.md §Step 3, §Step 6a
 - House-view freshness gate — portfolio-workflow.md §Step 5
-- Post-research target refinement — portfolio-analysis.md §The per-holding pipeline; portfolio-workflow.md §Step 6d, §Step 6e
+- Post-research target refinement — shadow mode (the §Step 6e statement is canonical) — portfolio-workflow.md §Step 6e; portfolio-analysis.md §The per-holding pipeline, §The holding verdict; trade-opportunities-workflow.md §Step 5f
+- Research-fed fraud claim — advisory (the §Step 5c statement is canonical) — trade-opportunities-workflow.md §Step 5c; portfolio-workflow.md §Step 6d, §Step 6g; portfolio-analysis.md §Starting parameters; trade-opportunities.md §Starting parameters
 - Portfolio technology-event impact — portfolio-analysis.md §The position thesis ledger, §The per-holding pipeline; portfolio-workflow.md §Step 6c
 - Research reuse (Portfolio) — portfolio-analysis.md §Starting parameters, §The per-holding pipeline; portfolio-workflow.md §Step 6
 - New-money admission test — portfolio-analysis.md §Starting parameters
@@ -326,3 +330,4 @@ the run's own dated record follows it.*
 - Portfolio Analysis doc/code audit — the 21 findings, their re-verification and dispositions, four rulings, and two Codex rounds — verification/2026-08-18-portfolio-analysis-doc-code-audit.md; BUILD.md §What remains (Built)
 - Trade Opportunities documentation audit — the 28 findings, their verification verdicts, seven rulings, dispositions, and two review rounds — verification/2026-08-19-trade-opportunities-documentation-audit.md; BUILD.md §What remains
 - Fund depth — the four rulings, the CEF probe findings, the built leg, and six review rounds — verification/2026-08-21-fund-depth-rulings.md; BUILD.md §What remains (Built)
+- Research-loop slice — the eight review rounds, the fix inventory, and the three 2026-08-24 channel rulings — verification/2026-08-24-research-loop-rulings.md; BUILD.md §What remains (Built)

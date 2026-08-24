@@ -1,0 +1,29 @@
+# Market Signal — self-hosted SearXNG (docs/web-research.md §Search backend).
+#
+# The app ships this configuration; the user runs the server:
+#
+#     cd searxng && docker compose up -d
+#
+# On Apple Silicon, OrbStack is the recommended runtime over Docker Desktop
+# (lighter, no commercial-licensing question). The image tag is PINNED —
+# never `latest` — so the instance the app was verified against is the one
+# that runs; bumping it is a deliberate act, not a side effect of a pull.
+# Tag verified multi-arch (arm64 included) 2026-08-23.
+services:
+  searxng:
+    image: searxng/searxng:2026.8.22-9fea41204
+    container_name: market-signal-searxng
+    ports:
+      # Loopback only: the instance serves this machine's research loop, never
+      # the network. The app's default endpoint is http://127.0.0.1:8888.
+      - "127.0.0.1:8888:8080"
+    volumes:
+      # The load-bearing configuration (JSON output on, bot limiter off) is
+      # baked in — setup is one command, never a manual config step.
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      # A fixed secret is acceptable for a single-user loopback instance: the
+      # key protects server-side state on PUBLIC instances. Override with a
+      # generated value if the instance is ever exposed beyond loopback.
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-market-signal-loopback-only}
+    restart: unless-stopped

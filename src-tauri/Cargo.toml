@@ -42,6 +42,14 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 tokio = { version = "1", features = ["time"] }
 pdf-extract = "0.10"
 html2text = "0.17"
+# Readability-style article extraction for the web-research fetch layer
+# (docs/web-research.md §Fetch and extraction): faithful to Mozilla's
+# Readability.js pipeline, pure Rust (html5ever-family DOM, no JS engine or
+# browser), MIT. Picked over article_scraper (GPL + libxml2 + bundled
+# reqwest/tokio) and the stale arc90-lineage readability crates; readability-js
+# (exact Readability.js via embedded QuickJS) is the named fallback if real
+# IR pages extract poorly.
+dom_smoothie = "0.18"
 # Default features enable the `v1` compat API (`keyring::Entry`) and, on macOS,
 # the native Keychain store (`apple-native-keyring-store/keychain`). The Schwab
 # app secret + OAuth tokens live here, not in the SQLite settings store used for

@@ -15,7 +15,13 @@
 
 import { describe, test, expect, beforeEach, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-import { makeInvokeRouter, unlisten, emitterFor, focusEmitter } from "../helpers/tauri";
+import {
+  makeInvokeRouter,
+  defaultSettings,
+  unlisten,
+  emitterFor,
+  focusEmitter,
+} from "../helpers/tauri";
 import { deepFreeze } from "../helpers/freeze";
 import type {
   GeneratedReport,
@@ -1377,6 +1383,266 @@ describe("App.vue portfolio wiring", () => {
     expect(wrapper.findComponent(PortfolioView).props("runError")).toContain(
       "Daemon unreachable"
     );
+    wrapper.unmount();
+  });
+
+  test("a degraded SearXNG preflight parks the run behind the notice; confirm launches it once", async () => {
+    // The pre-run web-research notice (docs/interface.md §Pre-run web-research
+    // notice): a degraded probe holds the launch behind confirm-and-proceed —
+    // never a silent launch, never a block.
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        test_searxng: () => ({
+          status: "unreachable",
+          detail: "SearXNG rejected the JSON request (HTTP 403)",
+          tavily_fallback: true,
+          degraded: true,
+        }),
+        generate_portfolio_manual: () => samplePortfolioRun,
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+
+    wrapper.findComponent(PortfolioView).vm.$emit("run", ["AAPL"]);
+    await flushPromises();
+    // The run has NOT launched; the notice dialog (the second ConfirmDialog —
+    // the first is the import dialog) is open with the Tavily-fallback copy.
+    expect(invokedCommands()).not.toContain("generate_portfolio_manual");
+    const notice = wrapper.findAllComponents(ConfirmDialog)[1];
+    expect(notice.props("open")).toBe(true);
+    expect(notice.props("body")).toContain("Tavily");
+    expect(notice.props("detail")).toContain("HTTP 403");
+
+    // Confirm relaunches exactly the run that was asked for — the selection
+    // payload survives the detour.
+    notice.vm.$emit("confirm");
+    await flushPromises();
+    expect(tauri.invoke).toHaveBeenCalledWith("generate_portfolio_manual", {
+      selected: ["AAPL"],
+      resume: null,
+    });
+    wrapper.unmount();
+  });
+
+  test("a cancelled notice never launches, and the not-recommended copy names the missing fallback", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        test_searxng: () => ({
+          status: "not_configured",
+          detail: null,
+          tavily_fallback: false,
+          degraded: true,
+        }),
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+
+    wrapper.findComponent(PortfolioView).vm.$emit("run");
+    await flushPromises();
+    const notice = wrapper.findAllComponents(ConfirmDialog)[1];
+    expect(notice.props("open")).toBe(true);
+    // No Tavily either: the copy flags not-recommended per the docs' wording.
+    expect(notice.props("body")).toContain("not recommended");
+
+    notice.vm.$emit("cancel");
+    await flushPromises();
+    expect(invokedCommands()).not.toContain("generate_portfolio_manual");
+    expect(wrapper.findAllComponents(ConfirmDialog)[1].props("open")).toBe(false);
+    wrapper.unmount();
+  });
+
+  test("the engine-only quick check never probes SearXNG or opens the notice", async () => {
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({ run_portfolio_quick_check: () => null })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+
+    tauri.invoke.mockClear();
+    wrapper.findComponent(PortfolioView).vm.$emit("quick-check");
+    await flushPromises();
+    expect(invokedCommands()).toContain("run_portfolio_quick_check");
+    expect(invokedCommands()).not.toContain("test_searxng");
+    wrapper.unmount();
+  });
+
+  test("the launch preflight updates the Settings indicator; an endpoint change clears it", async () => {
+    const preflight = {
+      status: "unreachable",
+      detail: "SearXNG rejected the JSON request (HTTP 403)",
+      tavily_fallback: true,
+      degraded: true,
+    };
+    // Stateful settings: the saved endpoint changes when save-web-research
+    // lands, so the reload can tell "same endpoint" from "changed endpoint".
+    let endpoint = "";
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        test_searxng: () => preflight,
+        save_web_research_settings: (args) => {
+          endpoint = (args?.values as { searxng_endpoint: string })
+            .searxng_endpoint;
+          return null;
+        },
+        get_settings: () => ({
+          ...defaultSettings,
+          web_research: { searxng_endpoint: endpoint },
+        }),
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+    wrapper.findComponent(PortfolioView).vm.$emit("run");
+    await flushPromises();
+
+    // The job-launch probe is a connectivity check like a manual test — its
+    // result reaches the Settings indicator (docs/interface.md §Connection
+    // status: "a manual Test Connection or the connectivity check run when a
+    // job is launched"), and opening Settings (whose reload re-reads the SAME
+    // endpoint) must not discard it.
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
+    await flushPromises();
+    expect(wrapper.findComponent(Settings).props("searxngStatus")).toEqual(
+      preflight
+    );
+
+    // Saving a DIFFERENT endpoint reloads settings, and the old endpoint's
+    // probe result must not render as the new endpoint's state.
+    wrapper
+      .findComponent(Settings)
+      .vm.$emit("save-web-research", { searxng_endpoint: "http://127.0.0.1:9999" });
+    await flushPromises();
+    expect(wrapper.findComponent(Settings).props("searxngStatus")).toBeNull();
+    wrapper.unmount();
+  });
+
+  test("a settings reload during the launch probe discards the raced result and re-probes", async () => {
+    // The concurrent-save race: while the launch probe is in flight, a
+    // settings reload (epoch bump) supersedes the saved config the probe
+    // described. The raced result must neither paint the indicator nor ground
+    // the consent decision — the launch re-probes the current config.
+    const stale = {
+      status: "ok",
+      detail: null,
+      tavily_fallback: true,
+      degraded: false,
+    };
+    const fresh = {
+      status: "unreachable",
+      detail: "new endpoint down",
+      tavily_fallback: true,
+      degraded: true,
+    };
+    const resolvers: Array<(v: unknown) => void> = [];
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        test_searxng: () => new Promise((resolve) => resolvers.push(resolve)),
+        generate_portfolio_manual: () => samplePortfolioRun,
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+
+    wrapper.findComponent(PortfolioView).vm.$emit("run");
+    await flushPromises();
+    expect(resolvers.length).toBe(1);
+
+    // A settings reload lands while the probe is pending (any refresh bumps
+    // the epoch — here, opening Settings).
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
+    await flushPromises();
+
+    // The raced probe resolves "ok" — but it described the pre-reload config:
+    // it must not paint the indicator, and the launch must re-probe.
+    resolvers[0](stale);
+    await flushPromises();
+    expect(wrapper.findComponent(Settings).props("searxngStatus")).toBeNull();
+    expect(resolvers.length).toBe(2);
+    expect(invokedCommands()).not.toContain("generate_portfolio_manual");
+
+    // The fresh probe's degraded read grounds the consent notice.
+    resolvers[1](fresh);
+    await flushPromises();
+    expect(wrapper.findComponent(Settings).props("searxngStatus")).toEqual(fresh);
+    const notice = wrapper.findAllComponents(ConfirmDialog)[1];
+    expect(notice.props("open")).toBe(true);
+    expect(invokedCommands()).not.toContain("generate_portfolio_manual");
+    wrapper.unmount();
+  });
+
+  test("a probe resolving while an endpoint save is mid-flight never grounds the launch", async () => {
+    // The remaining race arm: a save's invoke is still in flight (the backend
+    // is between endpoints), so ANY probe resolving in that window could
+    // describe either config. The save bumps the epoch at its START, and the
+    // launch loop also refuses acceptance while webResearchSaving holds — so
+    // the launch falls through to the degraded-unknown consent notice rather
+    // than silently launching on an ambiguous "ok".
+    const ambiguous = {
+      status: "ok",
+      detail: null,
+      tavily_fallback: true,
+      degraded: false,
+    };
+    const probeResolvers: Array<(v: unknown) => void> = [];
+    const saveResolvers: Array<(v: unknown) => void> = [];
+    tauri.invoke.mockImplementation(
+      makeInvokeRouter({
+        test_searxng: () => new Promise((resolve) => probeResolvers.push(resolve)),
+        save_web_research_settings: () =>
+          new Promise((resolve) => saveResolvers.push(resolve)),
+        generate_portfolio_manual: () => samplePortfolioRun,
+      })
+    );
+    const wrapper = mount(App);
+    await flushPromises();
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
+    await flushPromises();
+    wrapper.findComponent(PortfolioView).vm.$emit("run");
+    await flushPromises();
+    expect(probeResolvers.length).toBe(1);
+
+    // Open Settings and start an endpoint save that stays in flight.
+    wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
+    await flushPromises();
+    wrapper
+      .findComponent(Settings)
+      .vm.$emit("save-web-research", { searxng_endpoint: "http://127.0.0.1:9999" });
+    await flushPromises();
+
+    // Every probe resolving during the save is discarded — bounded retries,
+    // then the degraded-unknown consent notice. Nothing launches, and the
+    // ambiguous "ok" never paints the indicator.
+    for (let i = 0; i < 3; i++) {
+      expect(probeResolvers.length).toBe(i + 1);
+      probeResolvers[i](ambiguous);
+      await flushPromises();
+    }
+    expect(wrapper.findComponent(Settings).props("searxngStatus")).toBeNull();
+    expect(invokedCommands()).not.toContain("generate_portfolio_manual");
+    const notice = wrapper.findAllComponents(ConfirmDialog)[1];
+    expect(notice.props("open")).toBe(true);
+    expect(notice.props("detail")).toContain("settings changed while probing");
+
+    // Even CONFIRMING the notice while the save is still in flight must not
+    // launch — the confirm path holds the same mid-save block as the probe.
+    notice.vm.$emit("confirm");
+    await flushPromises();
+    expect(invokedCommands()).not.toContain("generate_portfolio_manual");
+
+    saveResolvers[0](null);
+    await flushPromises();
     wrapper.unmount();
   });
 });

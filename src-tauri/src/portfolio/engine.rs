@@ -1840,6 +1840,282 @@ pub fn implied_expectations(
     })
 }
 
+// ---- Step-6e forward-assumption refinement ---------------------------------------
+
+/// Which target driver a validated forward assumption addresses — the
+/// pipeline's deterministic mapping of the distilled `affects` field (drafted:
+/// EPS / revenue, the two ladder rungs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssumptionMetric {
+    ForwardEps,
+    ForwardRevenue,
+}
+
+/// The Step-6e forward-assumption input, after the pipeline mapped the
+/// distilled claim's fields (`docs/portfolio-workflow.md` §Step 6e).
+#[derive(Debug, Clone)]
+pub struct ForwardAssumptionInput {
+    pub metric: AssumptionMetric,
+    pub value: f64,
+    /// The claim's stated units — validated and magnitude-normalized before
+    /// the value may fill a driver (a bare `4.5` for "$4.5 billion" must never
+    /// ride into `revenue_mid` unscaled).
+    pub units: String,
+    /// The model's typed `conflict_handling` declaration — a claim this
+    /// policy validates, never a rule the model selects.
+    pub supersede: bool,
+    pub fact_type: String,
+    pub as_of: String,
+    pub source_url: String,
+}
+
+/// The target-side fields a successful refinement replaces on the engine
+/// output — the backward-looking sub-scores are untouched by contract.
+#[derive(Debug, Clone)]
+pub struct RefinedTargets {
+    pub price_targets: crate::portfolio::PriceTargets,
+    pub target_meta: TargetMeta,
+    pub hurdle: HurdleRead,
+    pub implied_expectations: Option<ImpliedExpectations>,
+    pub quick_basis: Option<QuickCheckBasis>,
+    /// The policy rule the engine matched — the audit's resolution log.
+    pub matched_rule: String,
+}
+
+/// The primary-source fact-type whitelist a `supersede` requires (drafted —
+/// issued company guidance, a signed contract, a filed figure). A supplement
+/// holds the same bar: an assumption that moves a target is always a
+/// primary-class fact. Matching is **whole-token**, never substring — an
+/// `"unfiled rumor"` must not satisfy `filed` — and any negating or
+/// hedging token disqualifies the whole label (`"not guidance"`,
+/// `"withdrawn guidance"`, `"rumored contract"` are non-facts by their own
+/// words).
+fn assumption_fact_whitelisted(fact_type: &str) -> bool {
+    let mut whitelisted = false;
+    for t in fact_type
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+    {
+        if matches!(
+            t,
+            "not" | "no" | "non" | "never" | "without" | "rumor" | "rumored" | "unconfirmed"
+                | "speculative" | "withdrawn" | "denied" | "retracted"
+        ) {
+            return false;
+        }
+        if matches!(t, "guidance" | "contract" | "filed" | "filing" | "filings") {
+            whitelisted = true;
+        }
+    }
+    whitelisted
+}
+
+/// Deterministic unit validation + magnitude normalization for the driver fill
+/// (drafted): the units must read **monetary** for either driver — an EPS fact
+/// accepts only per-share / currency vocabulary (so `"vehicles"` can never
+/// fill an EPS driver) and **rejects** any magnitude token (an EPS "in
+/// millions" is malformed), while a revenue fact must carry a currency or
+/// magnitude token, magnitude words scaling the value (trillion / billion /
+/// million / thousand, plus tn / bn / mn / mm) and a bare sub-1e6 value
+/// rejecting as unit-ambiguous. Single-letter suffixes ("B", "M") are
+/// deliberately not recognized — too ambiguous to scale on. Rejection is
+/// fail-soft: the structured targets stand.
+fn normalized_assumption_value(
+    metric: AssumptionMetric,
+    value: f64,
+    units: &str,
+) -> Result<f64, String> {
+    const CURRENCY_TOKENS: &[&str] = &[
+        "usd", "eur", "gbp", "jpy", "cad", "aud", "chf", "dollar", "dollars", "cent", "cents",
+    ];
+    // The extra vocabulary a per-share unit may carry beside currency tokens.
+    const PER_SHARE_TOKENS: &[&str] =
+        &["per", "share", "shares", "eps", "diluted", "basic"];
+    if units.trim().is_empty() {
+        return Err("rejected: the assumption carries no units".to_string());
+    }
+    let lowered = units
+        .replace('$', " usd ")
+        .replace('€', " eur ")
+        .replace('£', " gbp ")
+        .to_ascii_lowercase();
+    let tokens: Vec<&str> = lowered
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let mut magnitude: Option<f64> = None;
+    let mut currency = false;
+    let mut foreign = false;
+    for token in &tokens {
+        let m = match *token {
+            "trillion" | "trillions" | "tn" => Some(1e12),
+            "billion" | "billions" | "bn" => Some(1e9),
+            "million" | "millions" | "mn" | "mm" => Some(1e6),
+            "thousand" | "thousands" => Some(1e3),
+            _ => None,
+        };
+        if let Some(m) = m {
+            if magnitude.is_some_and(|prev| prev != m) {
+                return Err(format!(
+                    "rejected: units {units:?} carry conflicting magnitude tokens"
+                ));
+            }
+            magnitude = Some(m);
+            continue;
+        }
+        if CURRENCY_TOKENS.contains(token) {
+            currency = true;
+        } else if !PER_SHARE_TOKENS.contains(token) {
+            foreign = true;
+        }
+    }
+    match metric {
+        AssumptionMetric::ForwardEps => {
+            if magnitude.is_some() {
+                return Err(format!(
+                    "rejected: a per-share fact cannot carry a magnitude in its units ({units:?})"
+                ));
+            }
+            // Non-monetary vocabulary ("vehicles", "units") is not a
+            // per-share quantity; an empty unit string passes (the value is
+            // already per-share by the metric's contract).
+            if foreign {
+                return Err(format!(
+                    "rejected: units {units:?} name a non-per-share quantity"
+                ));
+            }
+            Ok(value)
+        }
+        AssumptionMetric::ForwardRevenue => {
+            if !currency && magnitude.is_none() {
+                return Err(format!(
+                    "rejected: revenue units {units:?} carry no currency or magnitude token"
+                ));
+            }
+            match magnitude {
+                Some(m) => Ok(value * m),
+                None if value >= 1e6 => Ok(value),
+                None => Err(format!(
+                    "rejected: revenue value {value} with units {units:?} is unit-ambiguous \
+                     (no magnitude token and below the 1e6 absolute-dollar floor — drafted)"
+                )),
+            }
+        }
+    }
+}
+
+/// The **app-owned Step-6e conflict policy** and target recompute
+/// (`docs/portfolio-workflow.md` §Step 6e): a validated forward assumption may
+/// move a scenario target — the engine, never the model, recomputes it as an
+/// explicit, logged assumption. A `supplement` may only fill a driver value
+/// the structured feeds don't carry (it never displaces a present feed value);
+/// a `supersede` is honored only when every check verifies — and the consensus
+/// feed carries **no as-of date** to compare against, so as-built a supersede
+/// always rejects on that named condition (structured-wins is the default).
+/// `Err` carries the failed condition for the audit; the structured targets
+/// stand.
+pub fn refine_targets_with_assumption(
+    fin: &CompanyFinancials,
+    rates: &RateAnchors,
+    input: &ForwardAssumptionInput,
+) -> Result<RefinedTargets, String> {
+    if !input.value.is_finite() || input.value <= 0.0 {
+        return Err("rejected: non-positive or non-finite assumption value".to_string());
+    }
+    if !assumption_fact_whitelisted(&input.fact_type) {
+        return Err(format!(
+            "rejected: fact type {:?} is outside the primary-source whitelist \
+             (issued guidance / signed contract / filed figure)",
+            input.fact_type
+        ));
+    }
+    if chrono::NaiveDate::parse_from_str(input.as_of.trim(), "%Y-%m-%d").is_err() {
+        return Err(format!(
+            "rejected: as-of {:?} is not an ISO date",
+            input.as_of
+        ));
+    }
+    let normalized_value = normalized_assumption_value(input.metric, input.value, &input.units)?;
+    let feed_value = fin.consensus.as_ref().and_then(|c| match input.metric {
+        AssumptionMetric::ForwardEps => c.eps_mid,
+        AssumptionMetric::ForwardRevenue => c.revenue_mid,
+    });
+    let feed_present = feed_value.is_some_and(|v| v > 0.0);
+    if feed_present {
+        if input.supersede {
+            return Err(
+                "rejected: supersede unverifiable — the structured consensus carries no \
+                 as-of date to compare the fact against (structured-wins default)"
+                    .to_string(),
+            );
+        }
+        return Err(
+            "rejected: supplement may not displace a present structured value — the \
+             feed's value stands"
+                .to_string(),
+        );
+    }
+
+    // The supplement applies: fill the absent driver and re-run the analysis,
+    // splicing only the target-side outputs (grade inputs are untouched — the
+    // statements did not change).
+    let mut refined_fin = fin.clone();
+    let consensus = refined_fin.consensus.get_or_insert_with(|| ConsensusEstimate {
+        period_end: input.as_of.trim().to_string(),
+        eps_low: None,
+        eps_mid: None,
+        eps_high: None,
+        revenue_low: None,
+        revenue_mid: None,
+        revenue_high: None,
+        periods_used: 1,
+        near_weight: 1.0,
+        eps_mid_rows: 0,
+        revenue_mid_rows: 0,
+    });
+    match input.metric {
+        AssumptionMetric::ForwardEps => {
+            // A single sourced figure carries no spread: the driver rides flat
+            // (the function records flat-driver on the meta) and never counts
+            // as consensus corroboration (rows stay 0 — a research fact must
+            // not fake a two-row clamp release).
+            consensus.eps_low = Some(normalized_value);
+            consensus.eps_mid = Some(normalized_value);
+            consensus.eps_high = Some(normalized_value);
+        }
+        AssumptionMetric::ForwardRevenue => {
+            consensus.revenue_low = Some(normalized_value);
+            consensus.revenue_mid = Some(normalized_value);
+            consensus.revenue_high = Some(normalized_value);
+        }
+    }
+    match analyze(&refined_fin, rates) {
+        EngineVerdict::Analyzed(out) => Ok(RefinedTargets {
+            price_targets: out.price_targets,
+            target_meta: out.target_meta,
+            hurdle: out.hurdle,
+            implied_expectations: out.implied_expectations,
+            quick_basis: out.quick_basis,
+            matched_rule: format!(
+                "supplement: filled the absent {} driver with {normalized_value} \
+                 (stated {} {}) from {} ({}, as of {})",
+                match input.metric {
+                    AssumptionMetric::ForwardEps => "forward-EPS",
+                    AssumptionMetric::ForwardRevenue => "forward-revenue",
+                },
+                input.value,
+                input.units,
+                input.source_url,
+                input.fact_type,
+                input.as_of
+            ),
+        }),
+        EngineVerdict::InsufficientEvidence(reason) => Err(format!(
+            "rejected: the refined analysis abstained ({reason}) — the structured targets stand"
+        )),
+    }
+}
+
 /// The engine-only quick paths' **closed-form re-anchor**
 /// (`docs/portfolio-analysis.md` §The quick check): the stored spread percentiles
 /// and drivers from the last full pass, re-anchored on the fresh `DGS10`, with the
@@ -2935,7 +3211,7 @@ pub const TECH_EVENT_SIGMA: f64 = 2.0;
 /// sector-relative move since the prior read exceeds
 /// [`TECH_EVENT_SIGMA`] × its interval-scaled realized volatility (√-of-time
 /// scaling, the suite's cadence-honest convention). The flag only adds the
-/// conditional research topic once the research loop lands; it asserts nothing
+/// conditional research topic; it asserts nothing
 /// about the cause (`docs/portfolio-analysis.md` §Starting parameters).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TechEventPreFlag {
@@ -3324,6 +3600,163 @@ mod tests {
         fin.consensus.as_mut().unwrap().eps_mid = Some(1.0);
         let drivers = driver_ladder(&fin).unwrap().drivers;
         assert!((drivers[1] - ttm * (1.0 + DRIVER_GROWTH_MIN)).abs() < 1e-9);
+    }
+
+    // ---- Step-6e forward-assumption refinement ----
+
+    #[test]
+    fn a_supplement_fills_an_absent_driver_and_recomputes_targets() {
+        // The charter case: no positive forward-EPS consensus — the ladder sat
+        // on the revenue rung — and research supplies issued EPS guidance.
+        let mut fin = strong();
+        {
+            let c = fin.consensus.as_mut().unwrap();
+            c.eps_low = None;
+            c.eps_mid = None;
+            c.eps_high = None;
+        }
+        let rates = rates();
+        let before = match analyze(&fin, &rates) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let input = ForwardAssumptionInput {
+            metric: AssumptionMetric::ForwardEps,
+            value: 7.4,
+            units: "USD per share".into(),
+            supersede: false,
+            fact_type: "issued company guidance".into(),
+            as_of: "2026-08-20".into(),
+            source_url: "https://ir.example.com/guidance".into(),
+        };
+        let refined = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
+        assert!(refined.matched_rule.contains("supplement"));
+        assert!(refined.matched_rule.contains("forward-EPS"));
+        // The refined targets price the EPS rung now — a different surface
+        // than the revenue-rung baseline.
+        assert_ne!(
+            refined.price_targets.twelve_month.as_ref().map(|t| t.base),
+            before.price_targets.twelve_month.as_ref().map(|t| t.base),
+            "the affected scenario target moved"
+        );
+    }
+
+    #[test]
+    fn the_conflict_policy_rejects_displacement_supersede_and_off_whitelist_facts() {
+        let fin = strong(); // carries a positive EPS consensus
+        let rates = rates();
+        let mut input = ForwardAssumptionInput {
+            metric: AssumptionMetric::ForwardEps,
+            value: 9.0,
+            units: "USD per share".into(),
+            supersede: false,
+            fact_type: "issued company guidance".into(),
+            as_of: "2026-08-20".into(),
+            source_url: "https://ir.example.com/guidance".into(),
+        };
+        // A supplement may never displace a present feed value.
+        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
+        assert!(err.contains("may not displace"), "{err}");
+        // A supersede rejects on the named unverifiable condition —
+        // structured-wins is the default.
+        input.supersede = true;
+        let err = refine_targets_with_assumption(&fin, &rates, &input).unwrap_err();
+        assert!(err.contains("no as-of date"), "{err}");
+        // An off-whitelist fact type rejects even where the driver is absent.
+        let mut no_eps = strong();
+        {
+            let c = no_eps.consensus.as_mut().unwrap();
+            c.eps_low = None;
+            c.eps_mid = None;
+            c.eps_high = None;
+        }
+        input.supersede = false;
+        input.fact_type = "analyst blog estimate".into();
+        let err = refine_targets_with_assumption(&no_eps, &rates, &input).unwrap_err();
+        assert!(err.contains("whitelist"), "{err}");
+        // A malformed as-of rejects.
+        input.fact_type = "issued company guidance".into();
+        input.as_of = "next quarter".into();
+        let err = refine_targets_with_assumption(&no_eps, &rates, &input).unwrap_err();
+        assert!(err.contains("ISO date"), "{err}");
+    }
+
+    #[test]
+    fn assumption_units_normalize_or_reject_before_the_fill() {
+        // Magnitude words scale a revenue fact deterministically.
+        assert_eq!(
+            normalized_assumption_value(AssumptionMetric::ForwardRevenue, 4.5, "USD billions"),
+            Ok(4.5e9)
+        );
+        assert_eq!(
+            normalized_assumption_value(AssumptionMetric::ForwardRevenue, 850.0, "million USD"),
+            Ok(850.0e6)
+        );
+        // A bare absolute-dollar figure passes unchanged.
+        assert_eq!(
+            normalized_assumption_value(AssumptionMetric::ForwardRevenue, 4.5e9, "USD"),
+            Ok(4.5e9)
+        );
+        // A bare small revenue value is unit-ambiguous — "4.5" for $4.5B must
+        // never ride into the driver unscaled.
+        let err =
+            normalized_assumption_value(AssumptionMetric::ForwardRevenue, 4.5, "USD").unwrap_err();
+        assert!(err.contains("unit-ambiguous"), "{err}");
+        // A per-share fact rejects any magnitude token outright.
+        let err = normalized_assumption_value(AssumptionMetric::ForwardEps, 7.4, "USD millions")
+            .unwrap_err();
+        assert!(err.contains("per-share"), "{err}");
+        assert_eq!(
+            normalized_assumption_value(AssumptionMetric::ForwardEps, 7.4, "USD per share"),
+            Ok(7.4)
+        );
+        // Conflicting magnitudes reject rather than guessing.
+        let err = normalized_assumption_value(
+            AssumptionMetric::ForwardRevenue,
+            4.5,
+            "billion (prior: million)",
+        )
+        .unwrap_err();
+        assert!(err.contains("conflicting"), "{err}");
+        // Empty units reject for either driver, and a non-monetary unit can
+        // never fill EPS or revenue.
+        let err = normalized_assumption_value(AssumptionMetric::ForwardEps, 7.4, "  ").unwrap_err();
+        assert!(err.contains("no units"), "{err}");
+        let err = normalized_assumption_value(AssumptionMetric::ForwardEps, 7.4, "vehicles")
+            .unwrap_err();
+        assert!(err.contains("non-per-share"), "{err}");
+        let err = normalized_assumption_value(AssumptionMetric::ForwardRevenue, 2.0e6, "vehicles")
+            .unwrap_err();
+        assert!(err.contains("no currency or magnitude"), "{err}");
+        // The whitelist matches whole tokens — "unfiled rumor" never satisfies
+        // `filed` — and negating / hedging tokens disqualify outright.
+        assert!(!assumption_fact_whitelisted("unfiled rumor"));
+        assert!(assumption_fact_whitelisted("filed figure (10-Q)"));
+        assert!(assumption_fact_whitelisted("issued company guidance"));
+        assert!(!assumption_fact_whitelisted("not guidance"));
+        assert!(!assumption_fact_whitelisted("withdrawn guidance"));
+        assert!(!assumption_fact_whitelisted("rumored contract"));
+
+        // End to end: the billions-stated supplement fills the driver scaled.
+        let mut fin = strong();
+        {
+            let c = fin.consensus.as_mut().unwrap();
+            c.revenue_low = None;
+            c.revenue_mid = None;
+            c.revenue_high = None;
+        }
+        let rates = rates();
+        let input = ForwardAssumptionInput {
+            metric: AssumptionMetric::ForwardRevenue,
+            value: 4.5,
+            units: "USD billions".into(),
+            supersede: false,
+            fact_type: "issued company guidance".into(),
+            as_of: "2026-08-20".into(),
+            source_url: "https://ir.example.com/guidance".into(),
+        };
+        let refined = refine_targets_with_assumption(&fin, &rates, &input).unwrap();
+        assert!(refined.matched_rule.contains("4500000000"), "{}", refined.matched_rule);
     }
 
     /// The attempt-2 RKT shape: recovered current earnings against a trail of

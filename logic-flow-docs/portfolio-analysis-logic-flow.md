@@ -203,7 +203,7 @@
   - Sector benchmark prices — loaded run-level per carried holding's sector, memoized.
   - Outcome-label price history.
   - Insider and congressional activity — designed, not yet pulled.
-  - Peers, segments, and ratings — designed, not yet pulled; company news is pulled by the quick check.
+  - Peers, segments, and ratings — designed, not yet pulled; company news is pulled by the full-run pass (the per-stock research-seed leg) and by the quick check (the qualifying-news-seed leg).
   - Fund information and sector/country weights.
   - Sector valuation data used for supported funds.
 
@@ -228,11 +228,11 @@
   - Broad put/call market sentiment.
   - A bounded HTML extraction of the daily statistics page — no machine-readable current-day endpoint exists; locally detectable structure drift degrades to a typed gap (the guarantee's scope lives at data-sources.md §CBOE).
 
-- **SearXNG (designed — research slice)**
+- **SearXNG (built)**
   - Primary web search for holding research.
 
-- **Tavily (designed — research slice)**
-  - Backup web search when SearXNG fails.
+- **Tavily (built)**
+  - Backup web search when SearXNG can't serve usable results.
 
 - **Local storage**
   - Prior holdings snapshot.
@@ -479,7 +479,7 @@ Once the stock guard clears — and for every fund — the remaining legs are pu
   - Dividends (the trailing distributions); per-symbol earnings are pulled only by the quick check, not this pass.
   - Insider and congressional activity (Form 4 insider buys/sells, congressional trades) — designed.
   - Peers, float, and revenue segments (comparable tickers, free-float shares, product/geographic revenue mix) — designed.
-  - Live quote; company-news seeds are designed (research lane).
+  - Live quote; company-news seeds for the research lane (symbol-scoped news inside the research-freshness window, typed as leads with stable app-assigned IDs — stocks only).
   - Deep dated price history (~1,600-day lookback).
 
 - **Stock data retrieved elsewhere**
@@ -593,7 +593,7 @@ Three primitives recur in the value formulas that follow, so they are defined on
 
 #### Pre-profit overlay (stocks, computed first)
 
-Computed before the grade for every stock and persisting even when the stock does not enter the overlay or later abstains. As-built the overlay — its statement states and the rule consequences that bind the engine arm — is produced here in one pass; the design's later research-observation merge (Step 6e) is dormant while research is stubbed.
+Computed before the grade for every stock and persisting even when the stock does not enter the overlay or later abstains. The overlay's statement states are produced here in one pass over the carried observation history (research has not yet run at this stage); the research-observation merge at Step 6e then recomputes the observation-dependent legs and rule consequences over the loop's app-validated rows.
 
 - **Who enters** (either arm admits)
   - Priced stock with non-positive TTM operating income.
@@ -636,7 +636,7 @@ Computed before the grade for every stock and persisting even when the stock doe
   - `constrained`: runway < 12 months.
 
 - **Derived states** (computed only for an eligible overlay; each persists)
-  - **Execution read** — guidance-vs-actual misses, over higher-is-better operating metrics only. A guidance row and an actual pair only when their metric identity, units, issuer scope, and reporting period all match; the *bound* is the range's stated low (a range low winning over point guidance when both are present) and must be finite and positive. A paired period *misses* when `(bound − actual) ÷ bound ≥ 5%`; `material_single_miss` when the newest comparable period misses by ≥ 20%; `repeated_miss` when ≥ 2 of one metric's latest four comparable periods miss (different metrics never combine, and two missed metrics in one period never count twice). [note: the research producer is dormant as-built, so this sees only carried prior observations.]
+  - **Execution read** — guidance-vs-actual misses, over higher-is-better operating metrics only. A guidance row and an actual pair only when their metric identity, units, issuer scope, and reporting period all match; the *bound* is the range's stated low (a range low winning over point guidance when both are present) and must be finite and positive. A paired period *misses* when `(bound − actual) ÷ bound ≥ 5%`; `material_single_miss` when the newest comparable period misses by ≥ 20%; `repeated_miss` when ≥ 2 of one metric's latest four comparable periods miss (different metrics never combine, and two missed metrics in one period never count twice). [note: at this stage the read sees only carried prior observations; this run's research rows join at the Step-6e recompute.]
   - **Economics deterioration** — recent two-quarter average gross margin non-positive **and** down ≥ 5 percentage points.
   - **Material dilution** — YoY diluted-share change ≥ +15%.
   - **Severe deterioration** — at least two of {repeated-or-material execution miss, constrained runway, economics deterioration, material dilution} hold, **and** at least one of those is the execution or the economics leg.
@@ -648,9 +648,9 @@ Computed before the grade for every stock and persisting even when the stock doe
   - Unit economics.
 
 - **What the overlay emits** (the whole record persists — none of the calculations above are scratch)
-  - The complete overlay record persists for **every priced stock** — the statement inputs above, the **financing state** (one of the five values), the execution / economics reads, the matched **rule consequences** that bind the engine arm (conviction ceiling and action-set narrowing, detailed at Step 6e), plus its eligibility result, unscorable gaps, and (dormant until research) observation history — carried on the holding's audit row so the period history survives run retention.
+  - The complete overlay record persists for **every priced stock** — the statement inputs above, the **financing state** (one of the five values), the execution / economics reads, the matched **rule consequences** that bind the engine arm (conviction ceiling and action-set narrowing, detailed at Step 6e), plus its eligibility result, unscorable gaps, and the period-keyed observation history (accumulating validated research rows across runs) — carried on the holding's audit row so the period history survives run retention.
   - Only an **eligible** overlay reaches the Step-6f interpretation prompt, and even then the renderer exposes a **selected subset** — the financing / execution states, the matched rules, and the figures behind them (runway, liquid resources, burn) — as engine-arm context, not the entire record.
-  - As-built the overlay is **statement-derived only**; the Step-6e research-observation merge that would finalize the execution legs is dormant, and no research observation is guessed.
+  - Here the overlay is **statement-derived**; the Step-6e research-observation merge finalizes the execution legs over app-validated rows, and no research observation is ever guessed.
 
 #### Sub-scores (stocks)
 
@@ -922,10 +922,9 @@ The inline gates referenced above, gathered — with each branch's requirements 
 
 ### Step 6c — Research the holding
 
-- **As-built: stubbed**
-  - No web research runs today; a single research-deferred note is recorded.
-  - Every run to date has graded on the deterministic financials and the house view.
-  - The loop below is the research slice's design.
+- **As-built: live** (the research-loop slice)
+  - The loop below runs live over the SearXNG-primary web tool (Tavily fallback); a construction without a web stack (the demo, offline tests) degrades to a recorded research-unavailable gap, never a failed run.
+  - Runs before the slice graded on the deterministic financials and the house view alone.
 
 #### How the stage runs
 
@@ -1016,11 +1015,11 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 - **Who owns the context, and what persists**
   - The orchestrator owns the prompt: on every turn it appends the tool results and the model's non-thinking output (a tool request, or the pass's findings), threading the growing context forward — the model only requests tools, it never touches the network. Prior `<think>` blocks are stripped from history, never accumulated across turns (`docs/local-model-operations.md` §Strip thinking from history).
   - Carried across the topic's passes (canonical): the append-only evidence ledger and the accumulated per-pass findings, which the orchestrator assembles for the Step-6d distillation. The framing inputs (dossier facts, questions, seed) anchor the conversation from its start.
-  - Raw fetched page text is the bulky working material: it may roll off the context as a pass proceeds, and the durable record of what a page yielded is its claims in the ledger, not the page text itself. How much raw page text survives across a pass boundary is not pinned by the contract.
+  - Raw fetched page text is the bulky working material, and the durable record of what a page yielded is its claims in the ledger, not the page text itself. As-built the capped tool results stay in the pass's message history (see the context-fitting note below); how much raw page text survives across a pass boundary is not pinned by the contract.
 
 - **Fitting the fixed context window**
   - `num_ctx` is fixed per model and never raised to make room — raising it reloads the runner and starves memory (`docs/local-model-operations.md` §The num_ctx trap); context pressure is answered by dropping content, not by growing the window.
-  - When the prompt approaches the ceiling, older raw page text rolls off the working context — but only after its claims are banked in the ledger, so nothing is silently dropped. The roll-off is pressure-driven within a pass; the contract fixes only what is eligible to roll off (raw page text, never the ledger), not an eviction order or a trigger threshold — this stage is still a stub.
+  - As-built the pressure is bounded at insertion rather than evicted later: each fetch's page text is capped before it enters the context, turns per pass and claims per pass are capped, so a pass's context is bounded by construction. A pressure-driven mid-pass roll-off (evicting older raw page text once its claims are banked) remains unbuilt; the contract fixes only what would be eligible to roll off (raw page text, never the ledger).
   - It never relies on the model server's own truncation, which silently front-drops the prompt's head and leaves the model to hallucinate over the gap.
 
 - **What each model call returns**
@@ -1032,7 +1031,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - A follow-up is the model's **proposal** — a structured field the orchestrator reads and decides whether to spend; the model never recurses on its own.
   - It is granted only while depth remains (≤2 follow-ups) **and** the per-item budget has room; on exhaustion it is simply not spent (fail-soft, no follow-up).
 
-- **Disconfirming-fetch pass (designed — research loop; canonical placement `docs/portfolio-workflow.md` §Step 6c)**
+- **Disconfirming-fetch pass (built; canonical placement `docs/portfolio-workflow.md` §Step 6c)**
   - The disconfirming-fetch pass (`docs/web-research.md` §Source quality and evidence weighting) runs once per holding after its topics, once the thesis has formed.
   - It is spent from the holding's fetch / wall-clock budget, is not counted against any topic's three-pass depth, and fail-softs to a recorded gap when the budget is already exhausted.
 
@@ -1065,16 +1064,14 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 
 ### Step 6d — Distill the research
 
-- **As-built**
-  - One unconstrained non-thinking condense of the stub note.
-  - No evidence-ledger leg, hierarchy, or output schema until research lands.
-  - The contract below is the designed research-loop shape; it binds when research lands.
-  - A role-risk-only holding makes no research or distillation call at all.
+- **As-built** (the research-loop slice)
+  - The call is schema-constrained (the stub-era free-prose condense is retired), consolidates the full findings with the evidence ledger, and routes single-pass vs hierarchical deterministically.
+  - A role-risk-only holding runs the fund agenda and a pure-consolidation distillation like any fund (the stub-time bypass is retired); its distillation emits no typed side-channel fields.
 
 - **Data retrieved**
   - No new external data.
 
-- **The consolidation call — single or hierarchical (designed — research loop)**
+- **The consolidation call — single or hierarchical (built)**
   - The stage's full input is the findings from every worked topic, this run's evidence ledger (claims + sources), and — for a holding with a non-expired cache — each topic's seeded prior object merged into its own topic.
   - The orchestrator, never the model, sizes that full input to choose single-pass vs hierarchical **deterministically** — so growth *across* topics trips the hierarchical path rather than overflowing one call; the thresholds are config knobs.
   - That aggregate is what the orchestrator sizes to route, **not what any one call receives**: only the single-pass call sees every topic's findings whole, while hierarchical routing partitions them across the tier-1 → reduce shape below.
@@ -1082,13 +1079,13 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - **Hierarchical (large input):** distill each topic tree separately (**tier-1**, feeding the reduce, not persisted raw), then one final combining call (**tier-2 reduce**) over the tier-1 objects — it emits the one combined object interpretation reads **and** the per-topic seed layer reconciled to the global winners, that reconciled layer (not the raw tier-1 output) persisting as the next-run seeds.
   - Either path preserves each claim's citations end to end.
 
-- **Merging the seeded prior (Layer 2 cache) (designed — research loop)**
+- **Merging the seeded prior (Layer 2 cache) (built)**
   - **Within a topic** — each topic's prior object merges into that topic's fresh findings where the topic is first reduced (the tier-1 call when the run goes hierarchical, the single call when it is small), fresh superseding cached on conflict.
   - **Across topics** — the reduce (the tier-2 reduce, or that same single call) applies the same *newest-wins-by-claim/metric* rule **globally** and dedups sources, so a metric freshened under one topic supersedes a cached copy another topic carried forward, and nothing is double-counted or left conflicting.
   - **The persisted seeds inherit that reconciliation** — in the same reduce pass, each topic's next-run seed object is written already updated to those global winners, so no seed keeps a value another topic superseded and no later run can resurface it once the fresher topic goes dormant (why the reduce owns this match rather than a later app step: `docs/portfolio-analysis.md` §Starting parameters).
   - **Claim expiry is by claim, not object** — a cached claim past ~4 weeks by its own vintage that this run didn't re-confirm expires rather than riding forward; each surviving claim keeps its vintage and its fresh-vs-carried mark.
 
-- **If a topic's own input overflows one call (designed — research loop)**
+- **If a topic's own input overflows one call (built)**
   - **Trigger** — the fallback fires when the topic's **complete input** *summed* would exceed one distillation call: all its passes' findings, their evidence-ledger entries (claims + sources, which grow with the research, unlike the bounded thesis-ledger conditions seeded at 6c), and its retained prior. The sizing is measured on that whole aggregate, not pass by pass.
   - **Map (one distillation call per pass)** — the topic sub-distills along its ≤3-pass seam: the model condenses each pass on its own into a compact per-pass object (that pass's findings *and* ledger entries together).
   - **Reduce (one more distillation call)** — a tree-level reduce then combines those per-pass objects **with the retained prior** into the topic's single tier-1 object, which joins the outer **tier-2 reduce** across topics like any other (the sub-distillation is invisible above this point). So building that topic's tier-1 object takes one map call per pass plus one reduce — two to four distillation calls (four for a full three-pass topic) — versus the single distillation call a non-overflowing topic uses, separate from the multi-turn calls the topic's research passes already spent at 6c.
@@ -1099,18 +1096,18 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - Does not perform new searches.
   - Does not calculate financial numbers.
 
-- **Typed outputs when supported (designed — research loop)**
+- **Typed outputs when supported (built)**
   - `research_forward_assumption`:
     - Sourced numeric forward fact.
-    - May affect an engine target after validation.
+    - Feeds only the shadow-mode target recompute (ruled 2026-08-24) — no engine target moves.
   - `validated_leading_indicator`:
     - Countable, dated, third-party indicator.
     - Must be absent from engine scoring.
     - Reaches later passes as ledger-driver evidence.
+    - Carries `confirms_driver_id`; only an app-verified reference to a current ledger driver grants the cap-suppression anchor.
     - The old one-level conviction raise is retired.
   - `forensic_event`:
-    - Primary-source hard forensic event.
-    - Fraud can enter only through this validated path.
+    - Primary-source fraud claim, advisory by ruling (2026-08-24) — cited attention evidence, never a hard trigger.
   - `pre_profit_execution_observations`:
     - Numeric operating facts quoted by a source.
     - Metric name and observation role.
@@ -1138,11 +1135,9 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
 
 ### Step 6e — Recalculate targets using validated research
 
-- **As-built**
-  - This step changes nothing today. Everything 6b produced — scenario targets, dead-money hurdle, letter, and pre-profit overlay — passes through unchanged into the verdict, because the two legs that would refine any of it are dormant while research is stubbed: no validated forward fact and no sourced observation reaches this seam.
-  - By design the step *is* a refinement, and it would rewrite a **bounded subset** of 6b's outputs: the **affected scenario targets** and the **dead-money hurdle**, and on the overlay side the **observation history** (with its rejected-row and backfill-attempt audit), the **execution read** derived from it, the **severe-deterioration** state, and the **rule consequences**. A single validated observation can move the history alone without changing the execution read or consequences. It never touches the **letter or grade sub-scores**, nor the overlay's **statement-derived legs** — the statement inputs (runway, burn, margins, share count) and the financing / economics / dilution states built from them — which no research observation moves.
-  - Because both refinement legs are dormant, the 6b overlay pass already ran the observation-merge machinery once, over an empty candidate list, so the overlay is complete *before* this point rather than finished here.
-  - The one piece with genuine as-built content here is the overlay's matched **rule consequences** — computed at 6b, detailed below because 6b defers the detail here — which bind the engine arm at verdict assembly.
+- **As-built** (both legs live with the research-loop slice)
+  - On the overlay side the step rewrites the **observation history** (with its rejected-row and backfill-attempt audit), the **execution read** derived from it, the **severe-deterioration** state, and the **rule consequences**; a single validated observation can move the history alone without changing the execution read or consequences. The **target / hurdle leg runs in shadow** (ruled 2026-08-24): the hypothetical recompute records on the audit and nothing splices into the baseline. The step never touches the **letter or grade sub-scores**, nor the overlay's **statement-derived legs** — the statement inputs (runway, burn, margins, share count) and the financing / economics / dilution states built from them — which no research observation moves.
+  - Absent a validated forward fact and any accepted observation, everything 6b produced passes through unchanged into the verdict.
   - A role-risk-only holding skips the step entirely: it has no priced overlay, targets, or hurdle to refine.
 
 - **Data retrieved**
@@ -1156,20 +1151,18 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - **One metric alone cannot force a sale** — the exit-only narrowing rides severe deterioration, which needs at least two warning legs with at least one from execution or economics; a lone miss or lone dilution is a single leg and never trips it.
   - Where these bind: the conviction ceiling is applied when the engine stand-in arm's conviction is assembled, and the action-set narrowing when the engine's per-holding action set is built for the action call — both at verdict assembly (Step 6f), in deterministic app code, not a model call. [note: the calculations that produce the states — the 5% / 20% miss thresholds, the repeated-miss window, and the economics / dilution / severe rules — are Step 6b's; see §Pre-profit overlay. This step re-feeds them only once research supplies new observations (below).]
 
-- **Target and hurdle refinement (designed — research loop)**
-  - Validate each research claim before it can move a number: reject malformed, unsourced, or nonnumeric claims; a `supplement` may fill only a missing structured value; a `supersede` may replace structured data only when it is newer, comes from an approved primary-source fact type, and matches on metric, units, and period — otherwise the structured value wins. Record every accepted or rejected rule.
-  - Then recalculate only what a validated forward fact touches: the affected scenario targets and the dead-money hurdle result, leaving the backward-looking grade sub-scores unchanged.
-  - [note: no wire for this exists as-built — there is no `research_forward_assumption` type, and the closed-form re-anchor a recompute would call (`reanchor_scenarios`) is today reached only by the between-run quick check, never by this stage.]
+- **Target and hurdle refinement (built — shadow mode, ruled 2026-08-24)**
+  - Validate each research claim before it can move a number: reject malformed, unsourced, or nonnumeric claims; a `supplement` may fill only a missing structured value, its stated units magnitude-normalized deterministically first (a per-share fact rejects any magnitude token, an unscalable ambiguous unit rejects); a `supersede` may replace structured data only when it is newer, comes from an approved primary-source fact type, and matches on metric, units, and period — otherwise the structured value wins (as-built the consensus feed carries no as-of date, so a supersede always rejects on that named condition). Record every accepted or rejected rule.
+  - The recompute is **shadow-only**: the engine computes the hypothetical refined targets and records the would-have outcome on the audit, but nothing splices into the baseline — the Step-6b targets and dead-money read always stand, and write-back promotion waits on manually inspected shadow cases.
 
-- **Pre-profit observation validation (designed — research loop; validator built, producer dormant)**
-  - Each sourced observation a research row supplies is checked **structurally** before it enters the period history — a finite numeric value, units, a reporting period, an issuer scope, a source URL, a publication date, a confidence in [0, 1], and a direction (polarity) consistent with the metric kind (the row also carries its actual-versus-guidance role, read later when pairing). A **malformed** row (any of those legs bad) or a **duplicate** — of a stored observation, or of an earlier accepted row in the same batch — is rejected and logged with its reason; every other row is accepted and merged into the period history (append, sort, dedup). A structurally valid but as-yet-**unpaired** row — an actual with no matching guidance, or the reverse — is kept, not rejected: pairing into misses happens later in the execution read, and an unpaired row simply waits for a future match.
-  - Two legs cannot be built until the research producer exists, and the research-loop slice owes both: **confirm the correct company** (the holding-identity cross-check — the typed row carries no issuer symbol yet) and **confirm the source states the number** (source-text corroboration — no source text exists while the producer is dormant). Until then the structural validator alone is not the whole contract.
-  - As-built the validator runs on an empty candidate list, so the overlay sees only carried prior observations plus the statement-derived legs, and no observation is ever guessed. [note: periods compare exactly after trimming and order lexicographically, so the live producer must normalize each issuer's periods to one convention — ISO period end preferred.]
+- **Pre-profit observation validation (built — producer active)**
+  - Each sourced observation a research row supplies is checked **structurally** before it enters the period history — a finite numeric value, units, a reporting period, an issuer scope, a source URL, an ISO publication date, a confidence in [0, 1], and a direction (polarity) consistent with the metric kind (the row also carries its actual-versus-guidance role, read later when pairing). A **malformed** row (any of those legs bad) or a **duplicate** — of a stored observation, or of an earlier accepted row in the same batch — is rejected and logged with its reason; every other row is accepted and merged into the period history (append, sort, dedup). A structurally valid but as-yet-**unpaired** row — an actual with no matching guidance, or the reverse — is kept, not rejected: pairing into misses happens later in the execution read, and an unpaired row simply waits for a future match.
+  - The two activation legs the slice owed are **built and binding**: **confirm the correct company** (the holding-identity cross-check — the fetched page must name the holding by symbol or a distinctive issuer-name token, generic corporate suffixes never qualifying) and **confirm the source states the number** (source-text corroboration at number boundaries — a value never corroborates off a longer number or a decimal it merely prefixes). Every row's source page must have been fetched by this holding's own loop; an unevidenced call rejects every candidate.
+  - Periods normalize to one ISO-period-end convention per issuer before the dedup key is taken, so period spellings compare exactly.
 
-- **Cold-start and history-gap backfill (designed — research loop; dormant)**
-  - When live, a backfill search is required on the first overlay-eligible full pass, and again whenever a previously used guidance metric has fewer than four comparable stored periods; it searches the latest four reported periods, records every period and source checked, and marks its coverage complete, partial, or unscorable.
-  - Missing history stays a gap — an observation that was not found is never inferred.
-  - As-built no backfill is required (the producer is dormant); the persisted attempt record exists only to pin the shape, and only prior attempts are carried forward.
+- **Cold-start and history-gap backfill (built)**
+  - A backfill search is required on the first overlay-eligible full pass, and again whenever a previously used guidance metric has fewer than four comparable stored periods; it searches the latest four reported periods, records every period and source checked, and marks its coverage complete, partial, or unscorable.
+  - Missing history stays a gap — an observation that was not found is never inferred, and a required attempt that never reported is recorded as a gap.
 
 - **Role-risk-only rule**
   - Skip the step: no price targets or priced-stock overlay exist to refine.
@@ -1178,14 +1171,9 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - None.
 
 - **Output — what leaves the step**
-  - **As-built:**
-    - The **final target set** and **hurdle read** — Step 6b's values, unchanged.
-    - The **final pre-profit overlay** — Step 6b's, whose matched rule consequences are now ready to bind the engine stand-in arm at verdict assembly.
-    - No research assumption is logged — the producer is dormant, so there is nothing to resolve.
-  - **Designed (research loop):**
-    - The refined target set and hurdle after validated forward facts are applied.
-    - The logged research assumption and its resolution — accepted or rejected, with the deciding rule.
-    - The overlay's merged observation history (and its rejected-row / backfill audit) and the execution read, severe-deterioration state, and rule consequences re-derived over it.
+  - The **final target set** and **hurdle read** — always Step 6b's values (the assumption recompute is shadow-only).
+  - The logged research assumption and its resolution — accepted or rejected, with the deciding rule — whenever distillation produced one.
+  - The **final pre-profit overlay** — the merged observation history (and its rejected-row / backfill audit) and the execution read, severe-deterioration state, and rule consequences re-derived over it, ready to bind the engine stand-in arm at verdict assembly.
 
 ---
 
@@ -1227,7 +1215,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
   - Put/call by volume and open interest, IV, and IV skew.
   - Labeled proxy-only, never a grade input.
 - **Data gaps** — the dossier's degraded-input notes naming financial legs the gather could not resolve (e.g. an SEC CIK-mapping miss, an SEC company-facts fetch failure, an unwired fund-metadata source); distinct from the per-metric `(gap)` markers in the computed-metrics block above, which flag one missing computed value.
-- **Distilled research** — as-built the condensed **research-deferred stub note** (research is stubbed at Step 6c, so no sourced findings reach the model); the merged object of this run's fresh findings plus any seeded prior is the *designed* shape.
+- **Distilled research** — the combined distilled findings object: this run's fresh findings merged with any seeded prior (fresh superseding cached), plus the typed leading indicator rendered as ledger-driver evidence where one validated; a run without a web stack carries a recorded research-unavailable gap instead.
 - **House view (loaded only when the latest report is ≤ 7 ET days old; older drops the whole view)**
   - The latest report's Thesis, Investment Strategy, and Forward Outlook sections.
   - Recent report stances — up to three, the most recent by date: date, thesis stance, and risk posture.
@@ -1322,7 +1310,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 ### Step 6g — Validate continuity and checkpoint
 
 - **As-built**
-  - The validators here run every run; only the legs that depend on the stubbed research producer are dormant: the repeated-execution-miss cap's trigger and the ledger's qualitative-trip → sourced-research leg. What runs today: the what-changed **attribution** check (external rows resolve against the rendered input delta or downgrade to self-correction with a logged reason), the two-arm stamping, the engine-series ledger validation, the live severe-deterioration cap, the attention clear-and-acknowledge, and the per-holding checkpoint write.
+  - The validators here run every run, all legs live with the research loop: the what-changed **attribution** check (external rows resolve against the rendered input delta, a sourced research finding, or an accepted forward assumption — or downgrade to self-correction with a logged reason), the two-arm stamping, the engine-series ledger validation, the qualitative-trip → sourced-research leg, the overlay caps, the attention clear-and-acknowledge, and the per-holding checkpoint write.
 
 - **Data retrieved**
   - No new data.
@@ -1338,23 +1326,22 @@ The interpretation call writes the intrinsic verdict; the action decision then p
     - A sourced research finding.
     - An accepted forward assumption.
   - An unsupported external change is downgraded to a labeled self-correction with a logged reason; hard schema failure is reserved for structurally malformed rows.
-  - [note: the forward-assumption leg has no wire at all — there is no `research_forward_assumption` type in the code (the same gap Step 6e records) — and the research leg awaits the stubbed research producer, so the rendered input delta is today's whole evidence surface.]
 
 - **Conviction and cap handling**
   - The model's conviction is its own; no app recalculation, ceiling, or clamp touches it.
   - The old one-level conviction raise and its re-derivation are retired.
   - Matched cap rules record as audit annotations that bind the **engine stand-in arm only** (the overlay-derived caps are computed at Step 6b, their mechanics detailed at Step 6e §Pre-profit rule consequences). Their as-built status:
     - **Severe deterioration** (→ Low ceiling, engine set limited to Trim or Sell all) is **live** — its legs are statement-derived (economics, financing/runway, dilution), so it can trip without research.
-    - **Repeated execution miss** (→ Medium ceiling) is built but **dormant** — its execution read needs the stubbed research observations.
-    - **Hard forensic trip** (→ Low ceiling, Add rungs leave the set) is **live for the filing kinds** — the item-classified restatement / auditor-change sweep runs at dossier assembly; the validated `forensic_event` research claim (the fraud kind) joins with the research loop.
+    - **Repeated execution miss** (→ Medium ceiling) is **live** — its execution read pairs the app-validated research observations at Step 6e.
+    - **Hard forensic trip** (→ Low ceiling, Add rungs leave the set) is **live for the filing kinds** — the item-classified restatement / auditor-change sweep runs at dossier assembly; the validated `forensic_event` research claim (the fraud kind's sole producer) is **advisory by ruling (2026-08-24)** — cited attention evidence and a model-arm input that never trips the hard rule.
   - The strictest matched ceiling wins on the engine arm.
   - A model value past a ceiling renders beside the recorded rule.
-  - Model prose cannot create an overlay warning state — the overlay is computed deterministically from statements and (dormant) observations.
+  - Model prose cannot create an overlay warning state — the overlay is computed deterministically from statements and app-validated observations.
   - Grade remains unchanged by these caps.
 
 - **Ledger validation** (built — the seam runs every run)
   - Tripped quantitative condition must map to a confirmed engine crossing.
-  - Tripped qualitative condition must map to sourced research — as-built this leg always clears the trip and logs it, because research is stubbed and no source-backed finding exists to support one.
+  - Tripped qualitative condition must map to sourced research — a trip with no source-backed finding behind it clears with a logged reason.
   - New quantitative conditions must resolve to an engine series.
   - Unresolvable condition becomes qualitative (downgraded and logged, never dropped).
   - App assigns and preserves condition IDs.
@@ -1418,22 +1405,22 @@ Outcome learning has two halves that share one unit, the **decision episode** �
 
 ## Step 8 — Save the run and learning history
 
-- **Data stored** (the whole run persists as one serialized blob; the *Dormant* and *Designed* groups at the end are not populated on a run today — each states why)
+- **Data stored** (the whole run persists as one serialized blob)
   - Normalized holdings snapshot used by the run.
   - Every intrinsic verdict.
   - Every portfolio action and its rationale.
   - Thesis ledgers and condition evaluation states.
   - Analysis vintages (attention flags live only in the quick-check store).
   - Portfolio roll-up.
-  - Source labels (URLs and per-source retrieval timestamps are designed — they land with the research loop).
+  - Source labels, plus the research audit's source URLs with their retrieval timestamps.
   - Engine calculations, each holding's categorical position-change tag, and the roll-up's exited positions (the full position delta — prior quantity and cost basis — is runtime-only; per-value input-delta attribution is the designed input-delta validator's).
   - Every priced stock's pre-profit overlay record — the runway, economics, dilution, and severe-deterioration states computed live from statements, with the conviction, action, and cap rules they fire.
   - What-changed audits.
   - The outcome-learning records for this run — the opened-episode notes, the symbols whose episode this run extended, the net-alignment tags, the matured window labels, the symbols with a window still pending on a price-coverage gap, and the derived scorecard reads (detailed in Step 7's outcome learning).
   - Model, prompt, schema, and parameter versions.
   - Degraded-input flags.
-  - *Dormant producer — no pre-profit research loop feeds these yet:* the accepted pre-profit observation history (period-keyed) and the backfill legs carry forward from the prior run, and the execution-miss state and its rule recompute from that carried history each run; the rejected-observation list, by contrast, is rebuilt from the current candidate batch, not carried. All are empty on a fresh v9 store today — by carry / recompute over an empty producer, not a forced-empty field.
-  - *Designed — lands with the research loop:* per-topic research-reuse decisions (seeded-from-cache vs cold, each with its seeding vintage) and accepted / rejected research assumptions; the distilled findings themselves persist — the combined cross-topic object on the run audit record, and the reconciled per-topic seed layer as the next run's seeds (`docs/storage.md` §Local Analysis Suite Storage).
+  - The accepted pre-profit observation history (period-keyed, now research-fed) and the backfill legs, carried and extended run to run; the rejected-observation list, by contrast, is rebuilt from the current candidate batch, not carried.
+  - Per-topic research-reuse decisions (seeded-from-cache vs cold, each with its seeding vintage) and accepted / rejected research assumptions with their resolutions; the distilled findings themselves persist — the combined cross-topic object on the run audit record, and the reconciled per-topic seed layer as the next run's seeds (`docs/storage.md` §Local Analysis Suite Storage).
 
 - **Decision-episode logic**
   - Decided in Step 7's outcome learning (the open / extend rule lives there); this step only persists the resulting episodes.

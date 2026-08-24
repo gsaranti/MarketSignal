@@ -106,7 +106,7 @@ function ledger(over: Partial<ThesisLedger> = {}): ThesisLedger {
     branch: "priced",
     original_thesis: "Original thesis.",
     current_thesis: "Compounding platform with durable pricing power.",
-    key_drivers: [{ name: "services growth", series: null }],
+    key_drivers: [{ driver_id: "kd-services", name: "services growth", series: null }],
     monitor: [
       {
         scenario: "bear",

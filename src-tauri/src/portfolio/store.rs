@@ -87,6 +87,23 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+    // The per-topic distilled-findings layer (`docs/portfolio-analysis.md`
+    // §Starting parameters — Research reuse): one distilled object per
+    // (symbol, topic), the rolling per-holding state that seeds the next
+    // run's research loop. Survives independently of run retention (the
+    // ~4-week seed gate filters at read time — a dormant topic's object is
+    // kept, aging by its own vintage). Job-partitioned by construction
+    // (Portfolio's layer only). Exported by data portability (format v4).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS portfolio_research_seeds (
+            symbol    TEXT NOT NULL,
+            topic_key TEXT NOT NULL,
+            vintage   TEXT NOT NULL,
+            seed_json TEXT NOT NULL,
+            PRIMARY KEY (symbol, topic_key)
+        )",
+        [],
+    )?;
     // The interrupted-run checkpoint store (`docs/portfolio-analysis.md §Failure
     // posture` — per-holding checkpoint/resume): one header row — the pinned run
     // identity, holdings pull, Step-5 shared context, version stamps, and the
@@ -536,6 +553,72 @@ pub struct HoldingsPull {
     pub holdings: Holdings,
 }
 
+// ---- The per-topic distilled-findings layer (research reuse) ----------------
+
+/// Persist one holding's fresh per-topic layer — the reduce-reconciled topic
+/// objects that become the next run's seeds. INSERT OR REPLACE per topic: an
+/// analyzed topic's object is rewritten whole; a dormant topic's row is left
+/// untouched only when the layer re-emitted it reconciled — a topic the
+/// distillation failed to re-emit is deleted instead
+/// ([`delete_topic_distillates`]), never left to seed the next run stale.
+pub fn save_topic_distillates(
+    conn: &Connection,
+    symbol: &str,
+    layer: &[crate::portfolio::research::TopicDistillate],
+) -> Result<()> {
+    for t in layer {
+        conn.execute(
+            "INSERT OR REPLACE INTO portfolio_research_seeds (symbol, topic_key, vintage, seed_json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![symbol, t.topic_key, t.vintage, serde_json::to_string(t)?],
+        )?;
+    }
+    Ok(())
+}
+
+/// Delete named topic rows for one holding — the reconciliation contract's
+/// teeth: an analyzed or dormant topic the distillation failed to re-emit
+/// cannot be trusted as reconciled, so its stale row is dropped (the next run
+/// seeds that topic cold) rather than surviving unreconciled.
+pub fn delete_topic_distillates(
+    conn: &Connection,
+    symbol: &str,
+    topic_keys: &[String],
+) -> Result<()> {
+    for key in topic_keys {
+        conn.execute(
+            "DELETE FROM portfolio_research_seeds WHERE symbol = ?1 AND topic_key = ?2",
+            params![symbol, key],
+        )?;
+    }
+    Ok(())
+}
+
+/// Load one holding's whole per-topic layer (every stored topic object; the
+/// seed gate filters expiry at assembly). A corrupt row is skipped with a log
+/// line, never a failed load — the loop just runs that topic cold.
+pub fn load_topic_distillates(
+    conn: &Connection,
+    symbol: &str,
+) -> Result<Vec<crate::portfolio::research::TopicDistillate>> {
+    let mut stmt = conn.prepare(
+        "SELECT seed_json FROM portfolio_research_seeds WHERE symbol = ?1 ORDER BY topic_key",
+    )?;
+    let rows = stmt
+        .query_map(params![symbol], |r| r.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|json| match serde_json::from_str(&json) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("skipping a corrupt research-seed row for {symbol}: {e}");
+                None
+            }
+        })
+        .collect())
+}
+
 /// Persist a standalone pull, replacing any prior one — the store holds only the
 /// most recent snapshot.
 pub fn save_pull(conn: &Connection, pull: &HoldingsPull) -> Result<()> {
@@ -813,6 +896,62 @@ mod tests {
         conn
     }
 
+    #[test]
+    fn topic_distillates_round_trip_replace_per_topic_and_skip_corrupt_rows() {
+        use crate::portfolio::research::TopicDistillate;
+        let conn = mem();
+        let object = |key: &str, vintage: &str| TopicDistillate {
+            topic_key: key.into(),
+            vintage: vintage.into(),
+            summary: format!("{key} summary"),
+            claims: vec![],
+        };
+        save_topic_distillates(
+            &conn,
+            "AAPL",
+            &[object("competitive-position", "2026-08-01T00:00:00+00:00")],
+        )
+        .unwrap();
+        // A re-analyzed topic replaces its row; an untouched topic survives.
+        save_topic_distillates(
+            &conn,
+            "AAPL",
+            &[
+                object("competitive-position", "2026-08-23T00:00:00+00:00"),
+                object("results-revisions", "2026-08-23T00:00:00+00:00"),
+            ],
+        )
+        .unwrap();
+        let loaded = load_topic_distillates(&conn, "AAPL").unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded
+            .iter()
+            .all(|t| t.vintage == "2026-08-23T00:00:00+00:00"));
+        // Another symbol's layer is invisible (job-partitioned per holding).
+        assert!(load_topic_distillates(&conn, "MSFT").unwrap().is_empty());
+        // A corrupt row skips with a log line, never a failed load.
+        conn.execute(
+            "INSERT OR REPLACE INTO portfolio_research_seeds (symbol, topic_key, vintage, seed_json)
+             VALUES ('AAPL', 'broken', 'x', 'not json')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(load_topic_distillates(&conn, "AAPL").unwrap().len(), 2);
+        // An unreconciled topic's row deletes by name — other topics and other
+        // symbols untouched.
+        save_topic_distillates(
+            &conn,
+            "MSFT",
+            &[object("competitive-position", "2026-08-23T00:00:00+00:00")],
+        )
+        .unwrap();
+        delete_topic_distillates(&conn, "AAPL", &["competitive-position".to_string()]).unwrap();
+        let remaining = load_topic_distillates(&conn, "AAPL").unwrap();
+        assert!(remaining.iter().all(|t| t.topic_key != "competitive-position"));
+        assert!(remaining.iter().any(|t| t.topic_key == "results-revisions"));
+        assert_eq!(load_topic_distillates(&conn, "MSFT").unwrap().len(), 1);
+    }
+
     fn sample_run(run_id: &str, created_at: &str) -> PortfolioRun {
         let position = Position {
             symbol: "AAPL".into(),
@@ -857,6 +996,7 @@ mod tests {
             },
             audit: vec![HoldingAudit {
                 what_changed_audit: None,
+                research: None,
                 target_meta: None,
                 symbol: "AAPL".into(),
                 metrics: ComputedMetrics::default(),

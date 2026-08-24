@@ -53,6 +53,12 @@ pub const KEY_LOCAL_REASONER_MODEL: &str = "local_reasoner_model";
 pub const KEY_LOCAL_FAST_MODEL: &str = "local_fast_model";
 pub const KEY_LOCAL_EMBEDDER_MODEL: &str = "local_embedder_model";
 
+/// The local SearXNG instance's endpoint (`docs/configuration.md §Web
+/// Research`). Deliberately absent from every gate — SearXNG sits **off the
+/// execution gate**: unreachable means a degraded run behind a pre-run notice,
+/// never a block (`docs/web-research.md §Search backend`).
+pub const KEY_SEARXNG_ENDPOINT: &str = "searxng_endpoint";
+
 /// The Charles Schwab developer app's client id (`docs/schwab-integration.md`). An
 /// identifier, not a bearer secret, so it rides the SQLite `app_settings` store like
 /// the other non-sensitive config — the *client secret* and OAuth tokens live on the
@@ -148,6 +154,10 @@ pub struct AppConfig {
     pub local_reasoner_model: Option<String>,
     pub local_fast_model: Option<String>,
     pub local_embedder_model: Option<String>,
+    /// The web-research tool's SearXNG endpoint (`docs/configuration.md §Web
+    /// Research`). Off every gate; read by the research loop and the pre-run
+    /// web-research notice.
+    pub searxng_endpoint: Option<String>,
     /// Schwab developer app client id (`docs/schwab-integration.md`). Read by the
     /// `schwab_connect` command; not part of the cloud `validate` gate.
     pub schwab_client_id: Option<String>,
@@ -179,6 +189,7 @@ impl AppConfig {
             local_reasoner_model: get("MARKET_SIGNAL_LOCAL_REASONER_MODEL"),
             local_fast_model: get("MARKET_SIGNAL_LOCAL_FAST_MODEL"),
             local_embedder_model: get("MARKET_SIGNAL_LOCAL_EMBEDDER_MODEL"),
+            searxng_endpoint: get("MARKET_SIGNAL_SEARXNG_ENDPOINT"),
             schwab_client_id: get("MARKET_SIGNAL_SCHWAB_CLIENT_ID"),
         }
     }
@@ -208,6 +219,7 @@ impl AppConfig {
             local_reasoner_model: saved(KEY_LOCAL_REASONER_MODEL, env.local_reasoner_model),
             local_fast_model: saved(KEY_LOCAL_FAST_MODEL, env.local_fast_model),
             local_embedder_model: saved(KEY_LOCAL_EMBEDDER_MODEL, env.local_embedder_model),
+            searxng_endpoint: saved(KEY_SEARXNG_ENDPOINT, env.searxng_endpoint),
             schwab_client_id: saved(KEY_SCHWAB_CLIENT_ID, env.schwab_client_id),
         }
     }
