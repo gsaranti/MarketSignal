@@ -470,17 +470,12 @@ Each is easy to break by accident, so a plan should say how it honors them:
   of their reservation and failed the run. The floors are drafted from the
   pinned serving path's measured throughput and re-verify with it
   (`docs/local-models.md §The local-model adapter seam`).
-- **Stored price values cross a split re-basis only through the bridge, and a
-  bridge factor applies only to values whose basis its anchor certifies.**
-  FMP dated EOD is retroactively split-adjusted, so each full pass stamps an
-  anchor bar on the holding's audit and every stored-basis price comparison —
-  sweep legs and full-pass ingestion alike — converts through the exact
-  same-bar factor or is excluded typed, never run cross-basis. A slice adding
-  a stored price-denominated comparator, or a new consumer of stored prices,
-  must route through this contract, including the unresolvable-pass rules
-  (anchor carry, re-anchored-core downgrade, comparator withholding) —
-  canonical at `docs/portfolio-analysis.md §Starting parameters`
-  (Split-adjustment bridge).
+- **Stored price-denominated values never compare against fresh prices
+  without the split-adjustment bridge.** FMP dated EOD re-bases
+  retroactively, so a slice that stores a price (a threshold, target, entry,
+  or comparator) and later reads it beside a fresh print routes through the
+  bridge contract — canonical at `docs/portfolio-analysis.md §Starting
+  parameters` (Split-adjustment bridge).
 
 ### What each built slice left for the next
 
