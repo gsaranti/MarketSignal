@@ -470,6 +470,17 @@ Each is easy to break by accident, so a plan should say how it honors them:
   of their reservation and failed the run. The floors are drafted from the
   pinned serving path's measured throughput and re-verify with it
   (`docs/local-models.md §The local-model adapter seam`).
+- **Stored price values cross a split re-basis only through the bridge, and a
+  bridge factor applies only to values whose basis its anchor certifies.**
+  FMP dated EOD is retroactively split-adjusted, so each full pass stamps an
+  anchor bar on the holding's audit and every stored-basis price comparison —
+  sweep legs and full-pass ingestion alike — converts through the exact
+  same-bar factor or is excluded typed, never run cross-basis. A slice adding
+  a stored price-denominated comparator, or a new consumer of stored prices,
+  must route through this contract, including the unresolvable-pass rules
+  (anchor carry, re-anchored-core downgrade, comparator withholding) —
+  canonical at `docs/portfolio-analysis.md §Starting parameters`
+  (Split-adjustment bridge).
 
 ### What each built slice left for the next
 
@@ -620,8 +631,8 @@ every stacked runtime confirmation at once.
    Portfolio Analysis job is built in full (the pre-run bar is met). The
    2026-08-24 large-scale review sits ahead of it
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
-   §Disposition owns the list): C1 and F3 are resolved under `portfolio-v13`;
-   F1 and the retry posture remain pre-run items. Its
+   §Disposition owns the list): C1, F3 (`portfolio-v13`), and F1 are
+   resolved; the retry posture is the remaining pre-run item. Its
    checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
