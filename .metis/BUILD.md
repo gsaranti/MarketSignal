@@ -470,6 +470,14 @@ Each is easy to break by accident, so a plan should say how it honors them:
   of their reservation and failed the run. The floors are drafted from the
   pinned serving path's measured throughput and re-verify with it
   (`docs/local-models.md §The local-model adapter seam`).
+- **Local-model failures retry once, whitelisted, never nested.** The hard
+  model-call posture is hard-after-one-bounded-retry: a typed transient class
+  re-attempts exactly once per issued call, while deadline trips, length
+  stops, cancellation, and anything unclassified fail on first occurrence,
+  and each call path wraps exactly one retry layer. Fired retries are
+  evidence — a tracker row plus data-health `model_retries` events — never
+  silent. The contract is canonical at `docs/local-models.md §The
+  local-model adapter seam`.
 - **Stored price-denominated values never compare against fresh prices
   without the split-adjustment bridge.** FMP dated EOD re-bases
   retroactively, so a slice that stores a price (a threshold, target, entry,
@@ -624,21 +632,19 @@ every stacked runtime confirmation at once.
 
 1. **The single big confirmation run** — the queue's next item now the
    Portfolio Analysis job is built in full (the pre-run bar is met). The
-   2026-08-24 large-scale review sits ahead of it
+   2026-08-24 large-scale review's pre-run list is **complete**
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
-   §Disposition owns the list): C1, F3 (`portfolio-v13`), and F1 are
-   resolved; the retry posture is the remaining pre-run item. Its
-   checklist is
+   §Disposition owns the list): C1, F3 (`portfolio-v13`), F1, and the retry
+   posture (hard-after-one-bounded-retry, §Standing constraints) are all
+   resolved, so nothing sits ahead of the run. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
    shape 2026-08-18** (construction / lean / sizing watches removed, the
-   prompt-fit watch re-homed to the per-holding prompts) and still needs
-   research-loop and pre-profit-activation watches added under the 2026-08-20
-   bar widening, the fund-depth slice's Schwab-CEF-typing watch (whether
-   a held CEF arrives `COLLECTIVE_INVESTMENT` or `EQUITY`), and the
-   2026-08-24 ruling watches (shadow-assumption resolutions,
-   unverified-driver indicator gaps, advisory fraud claims); read
-   `data-health` early, since several items resolve off that surface alone. Attempts 1 and 2 failed in the
+   prompt-fit watch re-homed to the per-holding prompts), revised again
+   2026-08-24 with the research-loop, ruling, pre-profit-activation, and
+   Schwab-CEF-typing watches folded in, and 2026-08-27 with the fired-retry
+   watch; read `data-health` early, since several items resolve off that
+   surface alone. Attempts 1 and 2 failed in the
    since-removed construction stage (their dated records live under
    `docs/verification/`); attempt 3 exercises the v9 shape as a full run.
    What stays open behind the run is owned by the attempt records'
