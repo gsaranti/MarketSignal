@@ -2,62 +2,58 @@
 
 ## What happened
 
-A **large-scale review of the Portfolio Analysis job** in the user's priority
-order — financial correctness, mid-run abort risk, logic-flow doc alignment —
-via nine parallel reviews with every finding re-verified against code before
-recording. The record is
-`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`:
-**1 critical, 7 major, 26 minor**, plus the zero-retry posture named as the
-dominant real-world abort risk. Headlines: **C1** the Ollama client's 600s
-*total* deadline vs the 65,536-token thinking reservation kills long chains
-and the run; **F1** no split-adjustment guard on the quick-check / ledger /
-narrative price comparisons (outcome learning has the bridge, nothing else
-does); **F2** outcome-label end bar unbounded by staleness; **F3** the
-research→ledger `related_condition_id` channel is structurally dead (ids never
-rendered) and a stale prompt sentence asserts it closed; **A1–A4** the
-logic-flow doc's failure paragraph, both "exact inputs" lists, and the
-sub-distillation trigger are wrong. The core spine (grading, targets, ledger
-evaluation, outcome scoring, fund path, TTM, netting) recomputed sound and all
-twelve safety rules hold. **Codex ran the same review independently** and
-appended **I1–I9** (six major, three minor: non-positive quote through the
-evidence floor, stale fund P/E print fabricating twelve samples, sign-blind
-pre-profit corroboration, no guidance-vintage policy, action call never sees
-model-arm targets, model-arm numeric domains unenforced, string-NaN weight →
-percentile panic, US-share prompt/engine mismatch, fund sector-P/E adapter
-bypassing guards). No code was changed; everything is committed and pushed
-(`dbb2fb1`).
+The findings program on
+`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md` began,
+one finding at a time through plan → implement → review → Codex rounds →
+commit, every finding verified against code before being taken. **C1
+resolved** (`64ef432`): the local-model transport deadline is derived per
+request from `num_ctx` / `num_predict` against drafted throughput floors
+(`DeadlinePolicy`, `local_model.rs`); re-verification narrowed the mechanism —
+reqwest's blocking timeout is a header wait plus a per-read bound, so only the
+non-streaming 6c research turns and distill faced a true 600 s total. **F3
+resolved** (`1a9fd9c`, `portfolio-v13`): the research→ledger
+`related_condition_id` channel is live — every claim-emitting 6d prompt renders
+the ledger conditions with ids, a tie carries across verbatim re-emission only
+(a prior tie never becomes fresh support), the interpretation prompt marks
+research-supported conditions off tied input-delta entries, and the stale
+"none are available this run" sentence is gone. Both resolutions sit under
+their sections in the record with §Disposition status lines. Five Codex
+rounds in total.
 
 ## Current state
 
-Nothing in flight; `main` at `dbb2fb1`, tree clean, `PROMPT_VERSION` =
-`portfolio-v12`. The queue is now **handle the review findings**, then the
-**big confirmation run attempt 3**, then Trade Opportunities. The record's
-§Disposition names four items to decide before the run: C1, the retry
-posture beside it, F1 (a split in the watch window contaminates the ledger
-evidence), and F3 (the run's typed-channel yield watch reads zero by
-construction). **Codex's I1–I9 are not yet verified by a Claude session** —
-the standing discipline is verify-before-agreeing.
+Nothing in flight; `main` at `1a9fd9c`, tree clean, `PROMPT_VERSION` =
+`portfolio-v13`. Remaining findings in severity order: **F1** (split-adjustment
+guard on the quick-check / ledger / narrative price comparisons — outcome
+learning's `anchor_close / authoring_spot` bridge is the reference, nothing
+else has one), **F2** (outcome-label end bar unbounded by staleness), the
+alignment findings A1–A4 (one logic-flow doc pass), the minors, and Codex's
+I1–I9 (still unverified by a Claude session). Of the record's four pre-run
+items C1 and F3 are done; F1 and the retry posture remain. Carried untouched
+by decision: `/api/tags` probes ride the 600 s backstop; the seed passes the
+whole prior ledger to every topic (doc↔code drift vs `portfolio-workflow.md`
+§Step 6c); 6g honors qualitative trips on fresh claims only, so a trip
+un-trips next run unless re-researched.
 
 ## Open questions
 
-- **Does the big run wait** on the four pre-run items, or run as-is with the
-  known gaps recorded in its watch set?
-- **Retry posture** — a bounded retry-once on local-model calls (the known
-  repo-wide deferred item) vs keeping the hard posture; C1 multiplies it.
-- **One-month band** — unscaled daily vol × 2 is marked "v1 mechanics";
+- **Does the big run wait** on F1 and the retry posture, or run with them
+  recorded in the watch set?
+- **Retry posture** — bounded retry-once on local-model calls vs the hard
+  posture (C1 no longer multiplies it).
+- **One-month band** — unscaled daily vol × 2 marked "v1 mechanics":
   deliberate retention or √t scaling?
-- **Fix grouping** — severity-ordered slices vs one sweep; the alignment
-  findings are a doc pass either way.
-- Carried: runtime auto-start/spin-down (undecided, post-run guided-setup
-  extension); the 6e supersede leg structurally dead (no dated consensus
-  source); channel promotion criteria deliberately open; research budgets
-  calibrate on the run.
+- **Fix grouping** for the rest — keep one-at-a-time, or batch the minors and
+  A1–A4.
+- Carried: runtime auto-start/spin-down; the 6e supersede leg structurally
+  dead; channel promotion criteria open; research budgets calibrate on the run.
 
 ## Where to start
 
-Read the record's §Disposition and §Codex independent review additions. Verify
-I1–I9 against the code before scheduling any of them. Then plan the fix
-slices in severity order — C1 first (a transport budget consistent with the
-thinking reservation, or an idle-based read timeout), then F1 / F3 and the
-verified Codex majors, the alignment findings as one logic-flow doc edit —
-and settle whether attempt 3 waits on the pre-run four.
+`/metis-session-start`, then `/metis-plan-task F1`. Outcome learning's bridge
+is the reference implementation; the plan must cover the quick check
+(`quick_check.rs` has no split handling at all), ledger evaluation,
+`engine::reanchor_scenarios`, and `narrative_vs_reality`'s `prior_spot` leg,
+and settle where the split factor comes from (FMP dated-EOD is retroactively
+adjusted, so stored authoring-time values need the bridge). Keep the loop:
+plan → implement → review → Codex → commit, and mark the finding in the record.
