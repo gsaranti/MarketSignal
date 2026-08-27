@@ -1612,6 +1612,17 @@ pub struct HoldingAudit {
     /// families read `unknown` until a full run re-persists).
     #[serde(default)]
     pub quick_basis: Option<engine::QuickCheckBasis>,
+    /// The split-bridge anchor bar (`docs/portfolio-analysis.md` §Starting
+    /// parameters): the newest settled close strictly before the run's ET session,
+    /// from this run's own fetched dated-EOD series. A later engine-only pass
+    /// re-reads the same bar date from its fresh fetch and the close ratio is
+    /// exactly the cumulative split re-basis between the two fetch times
+    /// ([`engine::split_bridge_factor`]), converting every stored
+    /// price-denominated value onto the fresh basis. Stamped on both analyzed
+    /// branches; `None` on pre-field rows and no-price exits — those rows'
+    /// comparisons run unbridged until their next full pass stamps one.
+    #[serde(default)]
+    pub authoring_close: Option<engine::DatedValue>,
     /// The fund exposure comparators for the quick check's fund evidence-event legs
     /// (`docs/portfolio-analysis.md` §Starting parameters) — present on a fund
     /// holding of either verdict branch; `None` on stocks and pre-field runs.

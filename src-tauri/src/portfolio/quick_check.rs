@@ -222,7 +222,10 @@ pub enum FilingSweep {
 pub trait QuickCheckDataSource {
     /// The fresh price plus dated closes (the market-data observation identity and
     /// the volatility/trailing basis). `Err` types the market family `unknown`.
-    fn price_and_closes(&self, symbol: &str) -> Result<(f64, Vec<DatedValue>)>;
+    /// `lookback_days` is at least [`QUICK_EOD_LOOKBACK_DAYS`], widened per
+    /// holding so the split-bridge anchor bar stays inside the fetched window.
+    fn price_and_closes(&self, symbol: &str, lookback_days: i64)
+        -> Result<(f64, Vec<DatedValue>)>;
     /// The per-stock EDGAR recent-filings sweep.
     fn recent_filings(&self, symbol: &str) -> FilingSweep;
     /// The statement-and-dividends re-pull for a stock whose EDGAR sweep surfaced a
@@ -255,9 +258,13 @@ pub struct LiveQuickCheckData {
 }
 
 impl QuickCheckDataSource for LiveQuickCheckData {
-    fn price_and_closes(&self, symbol: &str) -> Result<(f64, Vec<DatedValue>)> {
+    fn price_and_closes(
+        &self,
+        symbol: &str,
+        lookback_days: i64,
+    ) -> Result<(f64, Vec<DatedValue>)> {
         let price = self.fmp.fetch_live_price(symbol)?;
-        let closes = self.fmp.fetch_dated_eod(symbol, QUICK_EOD_LOOKBACK_DAYS)?;
+        let closes = self.fmp.fetch_dated_eod(symbol, lookback_days)?;
         if closes.is_empty() {
             anyhow::bail!("dated EOD history was empty for {symbol}");
         }
@@ -581,6 +588,27 @@ fn sweep_eligible(verdict: &HoldingVerdict) -> bool {
 /// a UTC-dated boundary would hide the pass's own ET day *and* the entire next
 /// ET day from the date-only filing/earnings feeds
 /// ([`crate::market_clock::et_date_of`]).
+/// Fetch slack past the holding's last-pass boundary so the split-bridge anchor
+/// bar — the newest settled close strictly before that ET session — stays inside
+/// the sweep's dated-EOD window across weekends, holidays, and short halts.
+const ANCHOR_FETCH_SLACK_DAYS: i64 = 14;
+
+/// The sweep's per-holding dated-EOD lookback: the shared 180-day floor
+/// ([`QUICK_EOD_LOOKBACK_DAYS`]), widened to reach the holding's split-bridge
+/// anchor bar when the last full pass is older than the floor. An unparseable
+/// date keeps the floor — the bridge then degrades typed, never a wrong fetch.
+fn eod_lookback_for(last_pass_date: &str, today: &str) -> i64 {
+    use chrono::NaiveDate;
+    let span = match (
+        NaiveDate::parse_from_str(last_pass_date, "%Y-%m-%d"),
+        NaiveDate::parse_from_str(today, "%Y-%m-%d"),
+    ) {
+        (Ok(v), Ok(t)) => (t - v).num_days() + ANCHOR_FETCH_SLACK_DAYS,
+        _ => 0,
+    };
+    QUICK_EOD_LOOKBACK_DAYS.max(span)
+}
+
 fn vintage_date(verdict: &HoldingVerdict, run_created_at: &str) -> String {
     let vintage = crate::portfolio::effective_vintage(verdict, run_created_at);
     match crate::market_clock::et_date_of(vintage) {
@@ -633,7 +661,17 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
         if ctx.is_cancelled() {
             anyhow::bail!("run cancelled");
         }
-        match pass.data.price_and_closes(&target.position.symbol) {
+        // The window must reach the split-bridge anchor's own bar — an
+        // unresolvable full pass carries its prior anchor forward, so the
+        // anchor can sit older than the holding's last-pass boundary.
+        let anchor_date = target
+            .audit
+            .and_then(|a| a.authoring_close.as_ref())
+            .map(|d| d.date.as_str())
+            .filter(|d| *d < target.last_pass_date.as_str());
+        let boundary = anchor_date.unwrap_or(&target.last_pass_date);
+        let lookback = eod_lookback_for(boundary, pass.today);
+        match pass.data.price_and_closes(&target.position.symbol, lookback) {
             Ok(pc) => {
                 prices.insert(target.position.symbol.clone(), pc);
             }
@@ -818,6 +856,16 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     let is_stock = inp.position.asset_class == AssetClass::Stock;
     let priced = matches!(inp.verdict.disposition, VerdictDisposition::Priced(_));
     let basis = inp.audit.and_then(|a| a.quick_basis.as_ref());
+    // The withheld-comparator signature: a priced pass that could not verify
+    // its price basis carries its anchor but withholds the quick basis (and
+    // stamps the monitor target-less). Its band, multiple, and revision legs
+    // don't exist to check — the families read `unknown`, never a silent
+    // `fresh_clear` vouch through legs the basis withheld. (A pre-field or
+    // abstained row lacks the anchor too, so it never matches.)
+    let comparators_withheld = priced
+        && inp
+            .audit
+            .is_some_and(|a| a.authoring_close.is_some() && a.quick_basis.is_none());
 
     let mut families: Vec<FamilySweep> = Vec::new();
     let mut events: Vec<EvidenceEvent> = Vec::new();
@@ -831,6 +879,34 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
         detail,
         observed_at: now.to_string(),
     };
+
+    // The split-adjustment bridge (`docs/portfolio-analysis.md` §Starting
+    // parameters): the stored anchor bar re-read from this sweep's fresh series
+    // gives the exact cumulative re-basis factor since the last full pass —
+    // exactly 1.0 in the unchanged common case. `Some(f)`: stored
+    // price-denominated comparators convert through `f` (1.0 also covers a
+    // pre-field row with no anchor, which runs as stored until a full pass
+    // stamps one). `None`: an anchor exists but its bar is missing from the
+    // fresh window — the basis is unverifiable, so price-denominated
+    // comparisons are excluded this sweep rather than run cross-basis.
+    let bridge: Option<f64> = match inp.audit.and_then(|a| a.authoring_close.as_ref()) {
+        None => Some(1.0),
+        Some(anchor) => inp
+            .price
+            .and_then(|(_, closes)| engine::split_bridge_factor(closes, anchor)),
+    };
+    match bridge {
+        Some(f) if f != 1.0 => notes.push(format!(
+            "price series re-based since the last full pass (split bridge factor \
+             {f:.4}); stored price comparators converted onto the fresh basis"
+        )),
+        None if inp.price.is_some() => notes.push(
+            "split-bridge anchor bar missing from the fresh price window — \
+             price-denominated stored comparisons excluded this sweep"
+                .to_string(),
+        ),
+        _ => {}
+    }
 
     // -- Market-data leg (every holding) --------------------------------------
     let market_ok = inp.price.is_some();
@@ -943,7 +1019,12 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 note: Some(format!("revision preflight failed: {e}")),
             }),
             Ok(fresh) => {
-                let stored = basis.and_then(|b| b.consensus_eps_mid);
+                // The stored per-share comparator converts onto the fresh basis;
+                // an unresolvable bridge excludes the comparison, and the family
+                // must then read `unknown` — a retrieval that succeeded cannot
+                // vouch through a comparison the basis made unrunnable.
+                let stored_raw = basis.and_then(|b| b.consensus_eps_mid);
+                let stored = stored_raw.and_then(|m| bridge.map(|f| m * f));
                 let fresh_mid = fresh.as_ref().and_then(|c| c.eps_mid);
                 if let (Some(stored), Some(fresh_mid)) = (stored, fresh_mid) {
                     if revision_moved(stored, fresh_mid) {
@@ -957,19 +1038,44 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                         ));
                     }
                 }
-                // A successful read that carried no consensus while a stored
-                // comparator exists: the retrieval vouched (no gate, no outage),
-                // but the move test couldn't run — noted rather than silent.
-                let note = (stored.is_some() && fresh_mid.is_none()).then(|| {
-                    "fresh read carried no forward consensus — the revision-move \
-                     comparison could not run this sweep"
-                        .to_string()
-                });
-                families.push(FamilySweep {
-                    family: SweepFamily::Revision,
-                    state: SweepState::FreshClear,
-                    note,
-                });
+                if stored_raw.is_some() && bridge.is_none() {
+                    families.push(FamilySweep {
+                        family: SweepFamily::Revision,
+                        state: SweepState::Unknown,
+                        note: Some(
+                            "price basis unverifiable (split-bridge anchor \
+                             unresolvable) — the revision-move comparison was \
+                             excluded this sweep"
+                                .to_string(),
+                        ),
+                    });
+                } else if comparators_withheld {
+                    families.push(FamilySweep {
+                        family: SweepFamily::Revision,
+                        state: SweepState::Unknown,
+                        note: Some(
+                            "the last full pass could not verify the price basis \
+                             and withheld its comparators — the revision-move \
+                             comparison is unknown until a resolvable full pass"
+                                .to_string(),
+                        ),
+                    });
+                } else {
+                    // A successful read that carried no consensus while a stored
+                    // comparator exists: the retrieval vouched (no gate, no
+                    // outage), but the move test couldn't run — noted rather
+                    // than silent.
+                    let note = (stored.is_some() && fresh_mid.is_none()).then(|| {
+                        "fresh read carried no forward consensus — the \
+                         revision-move comparison could not run this sweep"
+                            .to_string()
+                    });
+                    families.push(FamilySweep {
+                        family: SweepFamily::Revision,
+                        state: SweepState::FreshClear,
+                        note,
+                    });
+                }
             }
         }
 
@@ -1281,6 +1387,21 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 cond.eval_state = Some(st.clone());
             }
         }
+        // Price-denominated thresholds (and their absolute margins, same units)
+        // convert onto the fresh basis before evaluation, so both sides of every
+        // comparison share one basis; the streak semantics are invariant under
+        // the conversion. Transient only — the sweep never rewrites the stored
+        // ledger. An unresolvable bridge excludes these conditions below.
+        if let Some(f) = bridge.filter(|f| *f != 1.0) {
+            for cond in &mut overlaid.conditions {
+                if let Some(q) = &mut cond.quant {
+                    if q.series.price_denominated() {
+                        q.threshold *= f;
+                        q.margin *= f;
+                    }
+                }
+            }
+        }
 
         // The evaluation surface: fresh price + closes; valuation ratios scaled
         // from the stored full-pass metrics by the price move (denominators only
@@ -1308,23 +1429,37 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
         if let (Some((price, _)), Some(b), Some(stored)) =
             (inp.price, basis, inp.audit.map(|a| &a.metrics))
         {
-            if b.spot > 0.0 {
-                let ratio = price / b.spot;
-                metrics.pe_ratio = stored.pe_ratio.map(|v| v * ratio);
-                metrics.ps_ratio = stored.ps_ratio.map(|v| v * ratio);
-                metrics.pb_ratio = stored.pb_ratio.map(|v| v * ratio);
+            // The stored spot converts onto the fresh basis first, so the ratio
+            // is the true price move; an unresolvable bridge leaves the stored
+            // multiples absent rather than mis-scaled (fail closed — the mapped
+            // conditions then type unevaluable).
+            if let Some(f) = bridge.filter(|f| *f > 0.0) {
+                if b.spot > 0.0 {
+                    let ratio = price / (b.spot * f);
+                    metrics.pe_ratio = stored.pe_ratio.map(|v| v * ratio);
+                    metrics.ps_ratio = stored.ps_ratio.map(|v| v * ratio);
+                    metrics.pb_ratio = stored.pb_ratio.map(|v| v * ratio);
+                }
             }
         }
         metrics.expense_ratio = fund_metrics_expense;
 
         let statements_ok = !eval_fin.quarterly_income.is_empty();
-        let allow = |series: engine::LedgerSeries| match series.cadence() {
-            ConditionCadence::MarketData => market_ok,
-            ConditionCadence::Filing => {
-                if is_fund {
-                    fund_info_ok
-                } else {
-                    new_filing && statements_ok
+        let allow = |series: engine::LedgerSeries| {
+            // An unverifiable price basis excludes price-denominated conditions
+            // whole — never a cross-basis comparison (the family downgrade
+            // below keeps the exclusion visible).
+            if series.price_denominated() && bridge.is_none() {
+                return false;
+            }
+            match series.cadence() {
+                ConditionCadence::MarketData => market_ok,
+                ConditionCadence::Filing => {
+                    if is_fund {
+                        fund_info_ok
+                    } else {
+                        new_filing && statements_ok
+                    }
                 }
             }
         };
@@ -1409,6 +1544,60 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 }
             })
             .collect();
+        // Bridge-excluded price legs: the market family cannot vouch for the
+        // carried verdict this sweep, exactly like an unresolvable series. Both
+        // excluded legs count — a price-denominated condition, and the frozen
+        // band read a priced verdict would otherwise run (else a band-only
+        // holding would read `fresh_clear` through a leg the basis skipped).
+        // Downgraded with its own accurate note — the generic
+        // condition-could-not-resolve wording would misdescribe a band-only
+        // holding with no quantitative conditions at all.
+        let band_read_skipped = priced && {
+            let target = |kind: ScenarioKind| {
+                overlaid
+                    .monitor
+                    .iter()
+                    .find(|m| m.scenario == kind)
+                    .and_then(|m| m.engine_target)
+            };
+            target(ScenarioKind::Bear).is_some() && target(ScenarioKind::Bull).is_some()
+        };
+        if comparators_withheld
+            || (bridge.is_none()
+                && (band_read_skipped
+                    || overlaid
+                        .conditions
+                        .iter()
+                        .any(|c| c.quant.as_ref().is_some_and(|q| q.series.price_denominated()))))
+        {
+            let note = if comparators_withheld {
+                "the last full pass could not verify the price basis and withheld \
+                 its comparators — the band and multiple legs are unknown until a \
+                 resolvable full pass"
+            } else {
+                "price basis unverifiable (split-bridge anchor unresolvable) — \
+                 price-denominated legs were excluded this sweep"
+            };
+            match families
+                .iter_mut()
+                .find(|f| f.family == SweepFamily::MarketData)
+            {
+                Some(entry) => {
+                    if entry.state == SweepState::FreshClear {
+                        entry.state = SweepState::Unknown;
+                    }
+                    entry.note = Some(match entry.note.take() {
+                        Some(n) => format!("{n}; {note}"),
+                        None => note.to_string(),
+                    });
+                }
+                None => families.push(FamilySweep {
+                    family: SweepFamily::MarketData,
+                    state: SweepState::Unknown,
+                    note: Some(note.to_string()),
+                }),
+            }
+        }
         for fam in unresolved {
             let note = "a ledger condition on this family could not be resolved this sweep";
             match families.iter_mut().find(|f| f.family == fam) {
@@ -1433,8 +1622,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     // -- Hurdle read (priced only; rate-dependent) -----------------------------
     let mut last_hurdle_state = inp.prior.and_then(|p| p.last_hurdle_state);
     if priced {
-        match (basis, inp.rates, inp.price) {
-            (Some(b), Some(r), Some((price, _))) => {
+        match (basis, inp.rates, inp.price, bridge.filter(|f| *f > 0.0)) {
+            (Some(b), Some(r), Some((price, _)), Some(f)) => {
                 // The payout leg refreshes on filing cadence (`docs/portfolio-analysis.md`
                 // §The quick check): a new filing's dividend re-pull replaces the
                 // stored forward-dividend leg, so a filing-driven payout change can
@@ -1442,9 +1631,16 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 // (no re-estimation). A gapped dividend read keeps the stored leg.
                 let mut hurdle_basis = b.clone();
                 if let Some(d) = filing_dividends {
-                    hurdle_basis.forward_dividends = d;
+                    // A fresh filing's per-share dividend arrives on the FRESH
+                    // basis while the scenario runs on the stored one, so it
+                    // converts like the price (`d ⁄ f`) — else a split plus a
+                    // same-sweep filing mis-scales the payout leg by the factor.
+                    hurdle_basis.forward_dividends = d / f;
                 }
-                let scenario = engine::reanchor_scenarios(&hurdle_basis, *price, r.dgs10);
+                // The fresh price converts INTO the stored basis (`price ⁄ f`), so
+                // the whole scenario set stays on one basis; the total-return
+                // reads are ratios, basis-free either way.
+                let scenario = engine::reanchor_scenarios(&hurdle_basis, *price / f, r.dgs10);
                 let tier = match &inp.verdict.disposition {
                     VerdictDisposition::Priced(g) => g.risk_tier,
                     _ => None,
@@ -1484,39 +1680,59 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                     });
                 }
             }
-            (None, _, _) => families.push(FamilySweep {
+            (None, _, _, _) => families.push(FamilySweep {
                 family: SweepFamily::RateAnchor,
                 state: SweepState::Unknown,
-                note: Some(
+                note: Some(if comparators_withheld {
+                    "the last full pass could not verify the price basis and \
+                     withheld the re-anchor basis — hurdle unknown until a \
+                     resolvable full pass"
+                        .into()
+                } else {
                     "no stored re-anchor basis (run predates the quick-check basis) — \
                      hurdle unknown until the next full run"
-                        .into(),
-                ),
+                        .into()
+                }),
             }),
-            (_, None, _) => families.push(FamilySweep {
+            (_, None, _, _) => families.push(FamilySweep {
                 family: SweepFamily::RateAnchor,
                 state: SweepState::Unknown,
                 note: inp.rate_note.map(str::to_string).or_else(|| {
                     Some("rate prints unavailable — rate-dependent families unknown".into())
                 }),
             }),
-            (_, _, None) => families.push(FamilySweep {
+            (_, _, None, _) => families.push(FamilySweep {
                 family: SweepFamily::RateAnchor,
                 state: SweepState::Unknown,
                 note: Some("no fresh price — hurdle not re-derivable".into()),
+            }),
+            (_, _, _, None) => families.push(FamilySweep {
+                family: SweepFamily::RateAnchor,
+                state: SweepState::Unknown,
+                note: Some(
+                    "price basis unverifiable (split-bridge anchor unresolvable) — \
+                     hurdle not re-derivable this sweep"
+                        .into(),
+                ),
             }),
         }
     }
 
     // -- Scenario-band read (priced only; the stored monitor band, frozen) -----
     if priced {
-        if let (Some((price, _)), Some(ledger)) = (inp.price, &inp.verdict.thesis_ledger) {
+        if let (Some((price, _)), Some(ledger), Some(f)) =
+            (inp.price, &inp.verdict.thesis_ledger, bridge.filter(|f| *f > 0.0))
+        {
+            // The frozen band converts onto the fresh basis (`target × f`), so
+            // the compared — and rendered — pair share one basis; an
+            // unresolvable bridge skips the read (fail closed).
             let target = |kind: ScenarioKind| {
                 ledger
                     .monitor
                     .iter()
                     .find(|m| m.scenario == kind)
                     .and_then(|m| m.engine_target)
+                    .map(|t| t * f)
             };
             if let (Some(bear), Some(bull)) = (target(ScenarioKind::Bear), target(ScenarioKind::Bull))
             {
@@ -1850,6 +2066,7 @@ mod tests {
             grade_parameter_version: Some("grade-v2".into()),
             ledger_audit: None,
             quick_basis,
+            authoring_close: None,
             fund_exposure: None,
             pre_profit: None,
             hurdle: None,
@@ -1938,7 +2155,11 @@ mod tests {
     }
 
     impl QuickCheckDataSource for StubData {
-        fn price_and_closes(&self, _symbol: &str) -> Result<(f64, Vec<DatedValue>)> {
+        fn price_and_closes(
+            &self,
+            _symbol: &str,
+            _lookback_days: i64,
+        ) -> Result<(f64, Vec<DatedValue>)> {
             self.price.clone().map_err(|e| anyhow::anyhow!(e))
         }
         fn recent_filings(&self, _symbol: &str) -> FilingSweep {
@@ -2243,6 +2464,228 @@ mod tests {
         let flag = s.holdings[0].flag.as_ref().expect("side cross flags");
         assert_eq!(flag.trigger, FlagTrigger::PriceOutsideBand);
         assert!(flag.detail.contains("other side"));
+    }
+
+    /// A stub whose fresh series sits on a 4:1-split basis relative to the
+    /// stored audit (spot 195, anchor close 190 @ 2026-07-01): every fresh
+    /// value is the old-basis print ÷ 4, and the fresh consensus is restated
+    /// the way the provider restates it.
+    fn split_stub(price: f64, close_date: &str) -> StubData {
+        let mut data = StubData::quiet(price, close_date);
+        data.price = Ok((
+            price,
+            vec![
+                DatedValue { date: "2026-07-01".into(), value: 47.5 },
+                DatedValue { date: close_date.into(), value: price },
+            ],
+        ));
+        data.consensus = Ok(Some(ConsensusEstimate {
+            eps_mid: Some(1.625),
+            ..Default::default()
+        }));
+        data
+    }
+
+    fn audit_with_anchor(symbol: &str) -> HoldingAudit {
+        let mut audit = audit_for(symbol, Some(basis()));
+        audit.authoring_close =
+            Some(DatedValue { date: "2026-07-01".into(), value: 190.0 });
+        audit
+    }
+
+    #[test]
+    fn a_split_rebasis_never_fabricates_a_breach_or_band_exit() {
+        let conn = mem();
+        // Old-basis falsifiers: price below 180, P/E below 20 (stored P/E 30 at
+        // spot 195). A 4:1 split (bridge 47.5 ⁄ 190 = 0.25) makes every fresh
+        // print read as a breach without the bridge: 48 < 180, and the unbridged
+        // rescale 30 × 48 ⁄ 195 ≈ 7.4 < 20.
+        let mut pe = price_condition("c-pe", ConditionRole::Falsifier, 20.0);
+        pe.quant.as_mut().unwrap().series = LedgerSeries::PeRatio;
+        pe.statement = "P/E below 20".into();
+        let verdict = priced_verdict(
+            "AAPL",
+            vec![price_condition("c-px", ConditionRole::Falsifier, 180.0), pe],
+        );
+        store::insert_run(&conn, &sample_run(verdict, audit_with_anchor("AAPL"))).unwrap();
+
+        // Two sweeps on distinct prints — enough to confirm a market breach if
+        // one were (wrongly) observed.
+        let s1 = run_quick_check(&split_stub(48.0, "2026-08-01"), &conn, &noop_ctx()).unwrap();
+        let h1 = &s1.holdings[0];
+        assert!(h1.flag.is_none(), "no false breach on sweep 1: {:?}", h1.flag);
+        assert!(
+            !h1.notes.iter().any(|n| n.contains("first-breach")),
+            "no first-breach note either: {:?}",
+            h1.notes
+        );
+        assert!(
+            h1.notes.iter().any(|n| n.contains("re-based")),
+            "the re-basis is noted: {:?}",
+            h1.notes
+        );
+        let s2 = run_quick_check(&split_stub(48.2, "2026-08-02"), &conn, &noop_ctx()).unwrap();
+        let h2 = &s2.holdings[0];
+        assert!(h2.flag.is_none(), "no false breach on sweep 2: {:?}", h2.flag);
+        for (id, st) in &h2.condition_states {
+            assert_eq!(st.breach_streak, 0, "clean streak on {id}");
+        }
+        // The revision comparator bridged too: stored 6.5 × 0.25 = 1.625 vs the
+        // restated fresh 1.625 — no fabricated revision-move event.
+        assert!(
+            h2.evidence_events.is_empty(),
+            "no fabricated evidence events: {:?}",
+            h2.evidence_events
+        );
+    }
+
+    #[test]
+    fn a_genuine_post_split_breach_still_confirms() {
+        let conn = mem();
+        let verdict = priced_verdict(
+            "AAPL",
+            vec![price_condition("c-px", ConditionRole::Falsifier, 180.0)],
+        );
+        store::insert_run(&conn, &sample_run(verdict, audit_with_anchor("AAPL"))).unwrap();
+
+        // The bridged threshold is 180 × 0.25 = 45: prints at 44 breach for real.
+        let s1 = run_quick_check(&split_stub(44.0, "2026-08-01"), &conn, &noop_ctx()).unwrap();
+        assert!(s1.holdings[0].flag.is_none(), "first breach is quiet");
+        assert!(s1.holdings[0].notes.iter().any(|n| n.contains("first-breach")));
+        let s2 = run_quick_check(&split_stub(44.5, "2026-08-02"), &conn, &noop_ctx()).unwrap();
+        let flag = s2.holdings[0].flag.as_ref().expect("a real breach still confirms");
+        assert_eq!(flag.trigger, FlagTrigger::ConfirmedFalsifierBreach);
+    }
+
+    #[test]
+    fn an_unresolvable_bridge_excludes_price_comparisons_not_runs_them() {
+        let conn = mem();
+        let verdict = priced_verdict(
+            "AAPL",
+            vec![price_condition("c-px", ConditionRole::Falsifier, 180.0)],
+        );
+        // An anchor whose bar date is absent from the fresh window: the basis is
+        // unverifiable — the comparison must be excluded, never run cross-basis.
+        let mut audit = audit_for("AAPL", Some(basis()));
+        audit.authoring_close =
+            Some(DatedValue { date: "2026-06-15".into(), value: 190.0 });
+        store::insert_run(&conn, &sample_run(verdict, audit)).unwrap();
+
+        let s = run_quick_check(&split_stub(48.0, "2026-08-01"), &conn, &noop_ctx()).unwrap();
+        let h = &s.holdings[0];
+        assert!(h.flag.is_none(), "no cross-basis breach: {:?}", h.flag);
+        assert!(
+            h.notes.iter().any(|n| n.contains("excluded")),
+            "the exclusion is noted: {:?}",
+            h.notes
+        );
+        // The market family cannot vouch this sweep.
+        let market = h
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::MarketData)
+            .expect("market family present");
+        assert_eq!(market.state, SweepState::Unknown, "{market:?}");
+        // Neither can the revision family: its stored comparator was excluded,
+        // so a successful retrieval must not read `fresh_clear` through it.
+        let revision = h
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::Revision)
+            .expect("revision family present");
+        assert_eq!(revision.state, SweepState::Unknown, "{revision:?}");
+    }
+
+    #[test]
+    fn an_unresolvable_bridge_downgrades_a_band_only_market_family() {
+        // No quantitative conditions at all — only the frozen band. The skipped
+        // band read must still downgrade the market family, or a band-only
+        // holding would read `fresh_clear` through a leg the basis excluded.
+        let conn = mem();
+        let verdict = priced_verdict("AAPL", vec![]);
+        let mut audit = audit_for("AAPL", Some(basis()));
+        audit.authoring_close =
+            Some(DatedValue { date: "2026-06-15".into(), value: 190.0 });
+        store::insert_run(&conn, &sample_run(verdict, audit)).unwrap();
+
+        let s = run_quick_check(&split_stub(48.0, "2026-08-01"), &conn, &noop_ctx()).unwrap();
+        let h = &s.holdings[0];
+        assert!(h.flag.is_none(), "no cross-basis band flag: {:?}", h.flag);
+        let market = h
+            .families
+            .iter()
+            .find(|f| f.family == SweepFamily::MarketData)
+            .expect("market family present");
+        assert_eq!(market.state, SweepState::Unknown, "{market:?}");
+        // The note names the actual cause — with zero quantitative conditions,
+        // the generic condition-could-not-resolve wording would misdescribe it.
+        assert!(
+            market
+                .note
+                .as_deref()
+                .is_some_and(|n| n.contains("price basis unverifiable")),
+            "{market:?}"
+        );
+    }
+
+    #[test]
+    fn a_withheld_comparator_row_reads_unknown_not_fresh_clear() {
+        // The full-pass-output → quick-check seam: an unresolvable full pass
+        // carries its anchor, withholds the quick basis, and stamps the monitor
+        // target-less. The next sweep must read the affected families `unknown`
+        // — never a silent `fresh_clear` vouch through legs that don't exist —
+        // while the carried-verbatim price core still evaluates correctly
+        // through the carried anchor.
+        let conn = mem();
+        let mut verdict = priced_verdict(
+            "AAPL",
+            vec![price_condition("c-px", ConditionRole::Falsifier, 180.0)],
+        );
+        if let Some(l) = verdict.thesis_ledger.as_mut() {
+            for m in &mut l.monitor {
+                m.engine_target = None;
+            }
+        }
+        let mut audit = audit_for("AAPL", None);
+        audit.authoring_close =
+            Some(DatedValue { date: "2026-07-01".into(), value: 190.0 });
+        store::insert_run(&conn, &sample_run(verdict, audit)).unwrap();
+
+        let s = run_quick_check(&split_stub(48.0, "2026-08-01"), &conn, &noop_ctx()).unwrap();
+        let h = &s.holdings[0];
+        assert!(h.flag.is_none(), "no false flag: {:?}", h.flag);
+        // The old-basis core converts through the carried anchor (180 × 0.25 =
+        // 45; 48 is clean) — evaluable, not excluded.
+        assert!(
+            !h.notes.iter().any(|n| n.contains("first-breach")),
+            "{:?}",
+            h.notes
+        );
+        for fam in [
+            SweepFamily::Revision,
+            SweepFamily::MarketData,
+            SweepFamily::RateAnchor,
+        ] {
+            let f = h
+                .families
+                .iter()
+                .find(|f| f.family == fam)
+                .unwrap_or_else(|| panic!("{fam:?} family present"));
+            assert_eq!(f.state, SweepState::Unknown, "{f:?}");
+            assert!(
+                f.note.as_deref().is_some_and(|n| n.contains("withheld")),
+                "the note names the withheld cause: {f:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sweep_lookback_widens_to_reach_an_old_anchor() {
+        assert_eq!(eod_lookback_for("2026-07-20", "2026-08-01"), QUICK_EOD_LOOKBACK_DAYS);
+        // A vintage 400 days back needs the window widened past the floor.
+        assert_eq!(eod_lookback_for("2025-06-27", "2026-08-01"), 400 + ANCHOR_FETCH_SLACK_DAYS);
+        // Unparseable dates keep the floor.
+        assert_eq!(eod_lookback_for("soon", "2026-08-01"), QUICK_EOD_LOOKBACK_DAYS);
     }
 
     #[test]

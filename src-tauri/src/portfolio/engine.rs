@@ -816,6 +816,29 @@ impl LedgerSeries {
         )
     }
 
+    /// Whether this series' comparator is denominated in price per share — and so
+    /// moves with a retroactive split re-basis while every ratio-valued series
+    /// (multiples, margins, volatility, trailing return, the expense ratio) is
+    /// basis-free. A price-denominated condition's threshold must cross the
+    /// split-adjustment bridge before an evaluation against fresh marks
+    /// (`docs/portfolio-analysis.md` §Starting parameters). Exhaustive so a new
+    /// series variant forces the classification.
+    pub fn price_denominated(&self) -> bool {
+        match self {
+            LedgerSeries::Price => true,
+            LedgerSeries::NetMargin
+            | LedgerSeries::GrossMargin
+            | LedgerSeries::RevenueGrowth
+            | LedgerSeries::DebtToEquity
+            | LedgerSeries::ReturnVolatility
+            | LedgerSeries::TrailingReturn
+            | LedgerSeries::PeRatio
+            | LedgerSeries::PsRatio
+            | LedgerSeries::PbRatio
+            | LedgerSeries::ExpenseRatio => false,
+        }
+    }
+
     /// The required consecutive distinct breaching observations for this series —
     /// the persistence-semantics count, derived from cadence (drafted constants).
     pub fn required_consecutive(&self) -> u32 {
@@ -1570,6 +1593,44 @@ pub struct QuickCheckBasis {
 pub fn latest_on_or_before(series: &[DatedValue], date: &str) -> Option<f64> {
     let idx = series.partition_point(|d| d.date.as_str() <= date);
     idx.checked_sub(1).map(|i| series[i].value)
+}
+
+/// Split-bridge detection deadband (drafted — `docs/portfolio-analysis.md`
+/// §Starting parameters): a same-session close ratio within this band of 1.0 is
+/// snapped to exactly 1.0. FMP dated EOD is split-adjusted and
+/// dividend-unadjusted (`docs/verification/2026-08-02-fmp-light-eod-adjustment-basis.md`),
+/// so re-fetching the *same* bar yields the *same* close unless the series was
+/// re-based — a real split moves it by ≥ ~20% (5:4) while a retroactive data
+/// revision moves it by a fraction of a percent. The band absorbs revisions so
+/// they never masquerade as a re-basis.
+pub const SPLIT_BRIDGE_DEADBAND: f64 = 0.10;
+
+/// The split-adjustment bridge factor between a stored anchor bar and the same
+/// session in a freshly fetched dated-EOD series: `fresh_close ⁄ stored_close`
+/// for the anchor's own bar date — exactly the cumulative split re-basis between
+/// the two fetch times, because both legs are the same session's close on the
+/// same split-adjusted-only series. Multiplying any stored price-denominated
+/// value (a spot, a per-share driver, an authored absolute threshold) by the
+/// factor converts it onto the fresh series' basis. `1.0` (exactly, via
+/// [`SPLIT_BRIDGE_DEADBAND`]) when the series was not re-based; `None` when the
+/// anchor's bar date is absent from the fresh window or either close is
+/// non-positive — the caller excludes the comparison rather than running it
+/// cross-basis (`docs/portfolio-analysis.md` §Starting parameters).
+pub fn split_bridge_factor(fresh_closes: &[DatedValue], anchor: &DatedValue) -> Option<f64> {
+    if anchor.value <= 0.0 || anchor.value.is_nan() {
+        return None;
+    }
+    let fresh = fresh_closes
+        .iter()
+        .find(|d| d.date == anchor.date)
+        .map(|d| d.value)
+        .filter(|v| *v > 0.0)?;
+    let factor = fresh / anchor.value;
+    if (factor - 1.0).abs() <= SPLIT_BRIDGE_DEADBAND {
+        Some(1.0)
+    } else {
+        Some(factor)
+    }
 }
 
 /// Linear-interpolated percentile (`p` in 0..=1) over an unsorted sample.
@@ -4802,6 +4863,47 @@ mod tests {
         // Max drawdown: peak 100 → trough 60 = 40%.
         let closes = vec![80.0, 100.0, 70.0, 60.0, 90.0];
         assert!((max_drawdown(&[], &closes).unwrap() - 0.40).abs() < 1e-12);
+    }
+
+    #[test]
+    fn split_bridge_factor_detects_a_rebase_and_snaps_the_deadband() {
+        let anchor = DatedValue { date: "2026-06-02".into(), value: 400.0 };
+        // Unchanged series: the same bar re-fetched → exactly 1.0.
+        let same = vec![
+            DatedValue { date: "2026-06-01".into(), value: 398.0 },
+            DatedValue { date: "2026-06-02".into(), value: 400.0 },
+            DatedValue { date: "2026-08-25".into(), value: 430.0 },
+        ];
+        assert_eq!(split_bridge_factor(&same, &anchor), Some(1.0));
+        // A 4:1 split re-based every historical bar: factor = 0.25 exactly.
+        let split = vec![
+            DatedValue { date: "2026-06-02".into(), value: 100.0 },
+            DatedValue { date: "2026-08-25".into(), value: 107.5 },
+        ];
+        assert_eq!(split_bridge_factor(&split, &anchor), Some(0.25));
+        // A retroactive data revision inside the deadband snaps to exactly 1.0.
+        let revised = vec![DatedValue { date: "2026-06-02".into(), value: 401.1 }];
+        assert_eq!(split_bridge_factor(&revised, &anchor), Some(1.0));
+        // The anchor's bar date absent from the fresh window → no bridge, never a
+        // proximate-bar guess.
+        let uncovered = vec![DatedValue { date: "2026-08-25".into(), value: 430.0 }];
+        assert_eq!(split_bridge_factor(&uncovered, &anchor), None);
+        // Non-positive legs never bridge.
+        let bad_anchor = DatedValue { date: "2026-06-02".into(), value: 0.0 };
+        assert_eq!(split_bridge_factor(&same, &bad_anchor), None);
+        let bad_fresh = vec![DatedValue { date: "2026-06-02".into(), value: -1.0 }];
+        assert_eq!(split_bridge_factor(&bad_fresh, &anchor), None);
+    }
+
+    #[test]
+    fn price_is_the_only_price_denominated_ledger_series() {
+        for s in LedgerSeries::ALL {
+            assert_eq!(
+                s.price_denominated(),
+                matches!(s, LedgerSeries::Price),
+                "{s:?}"
+            );
+        }
     }
 
     #[test]

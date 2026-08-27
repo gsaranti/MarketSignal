@@ -382,6 +382,10 @@ pub struct HoldingDossier {
     /// against the current [`crate::portfolio::engine::GRADE_PARAMETER_VERSION`] so a
     /// band recalibration's letter move is attributed to the retune, not to evidence.
     pub prior_grade_parameter_version: Option<String>,
+    /// The prior audit's split-bridge anchor bar — the exact re-basis factor's
+    /// stored leg ([`crate::portfolio::HoldingAudit::authoring_close`]). `None`
+    /// on a debut or a pre-field prior row.
+    pub prior_authoring_close: Option<crate::portfolio::engine::DatedValue>,
     /// The prior run's pre-profit overlay record (from the audit row) — the
     /// period-keyed observation history accumulates through it
     /// (`docs/portfolio-analysis.md` §Starting parameters). `None` on a debut, a
@@ -485,6 +489,11 @@ pub struct PriorHolding {
     /// The prior run's stored engine metrics (its audit row's `metrics`) — the
     /// metric-level input delta's prior side. `None` without an audit row.
     pub metrics: Option<crate::portfolio::engine::ComputedMetrics>,
+    /// The prior audit's split-bridge anchor bar
+    /// ([`crate::portfolio::HoldingAudit::authoring_close`]) — re-read from this
+    /// run's fresh series it yields the exact re-basis factor since the prior
+    /// pass. `None` on pre-field rows (those comparisons run as stored).
+    pub authoring_close: Option<crate::portfolio::engine::DatedValue>,
 }
 
 impl HoldingDossier {
@@ -762,6 +771,7 @@ pub fn assemble(
         prior_consensus_eps_mid,
         prior_matured_notes,
         prior_metrics,
+        prior_authoring_close,
     ) = match prior {
         Some(p) => (
             Some(p.verdict),
@@ -772,8 +782,9 @@ pub fn assemble(
             p.consensus_eps_mid,
             p.matured_notes,
             p.metrics,
+            p.authoring_close,
         ),
-        None => (None, None, None, None, None, None, Vec::new(), None),
+        None => (None, None, None, None, None, None, Vec::new(), None, None),
     };
     let mut fmp_financials = fmp_financials;
     let ttm_basis = apply_ttm_statement_basis(&mut fmp_financials);
@@ -934,6 +945,7 @@ pub fn assemble(
         prior_matured_notes,
         prior_metrics,
         prior_grade_parameter_version,
+        prior_authoring_close,
         prior_pre_profit,
         listing,
         filing_events,
@@ -1118,20 +1130,22 @@ pub fn prior_verdict_for(
         .audit
         .iter()
         .find(|a| a.symbol.eq_ignore_ascii_case(symbol));
-    let (grade_parameter_version, pre_profit, spot, consensus_eps_mid, metrics) = match audit_row {
-        Some(a) => {
-            let spot = a.quick_basis.as_ref().map(|b| b.spot);
-            let mid = a.quick_basis.as_ref().and_then(|b| b.consensus_eps_mid);
-            (
-                a.grade_parameter_version.clone(),
-                a.pre_profit.clone(),
-                spot,
-                mid,
-                Some(a.metrics.clone()),
-            )
-        }
-        None => (None, None, None, None, None),
-    };
+    let (grade_parameter_version, pre_profit, spot, consensus_eps_mid, metrics, authoring_close) =
+        match audit_row {
+            Some(a) => {
+                let spot = a.quick_basis.as_ref().map(|b| b.spot);
+                let mid = a.quick_basis.as_ref().and_then(|b| b.consensus_eps_mid);
+                (
+                    a.grade_parameter_version.clone(),
+                    a.pre_profit.clone(),
+                    spot,
+                    mid,
+                    Some(a.metrics.clone()),
+                    a.authoring_close.clone(),
+                )
+            }
+            None => (None, None, None, None, None, None),
+        };
     // The prior run's matured outcome lines for this symbol — the deterministic
     // scored ground the retrospective block renders (empty until windows mature).
     let matured_notes = run
@@ -1161,6 +1175,7 @@ pub fn prior_verdict_for(
         consensus_eps_mid,
         matured_notes,
         metrics,
+        authoring_close,
     })
 }
 
@@ -2175,6 +2190,7 @@ Sources and footnotes.
                 grade_parameter_version: Some("grade-v2".into()),
                 ledger_audit: None,
                 quick_basis: None,
+                authoring_close: None,
                 fund_exposure: None,
                 pre_profit: None,
                 hurdle: None,

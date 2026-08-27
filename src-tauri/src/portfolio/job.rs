@@ -4528,6 +4528,7 @@ mod tests {
         fn price_and_closes(
             &self,
             symbol: &str,
+            _lookback_days: i64,
         ) -> Result<(f64, Vec<crate::portfolio::engine::DatedValue>)> {
             use crate::portfolio::engine::DatedValue;
             if self
@@ -4544,6 +4545,12 @@ mod tests {
             Ok((
                 price,
                 vec![
+                    // The full-run fixtures' anchor bars, unchanged on re-fetch
+                    // (no re-basis): a real dated-EOD window contains the stamped
+                    // split-bridge anchor, and a stub without it would fail-close
+                    // every price comparison rather than exercise the legs.
+                    DatedValue { date: "2026-06-30".into(), value: 190.0 },
+                    DatedValue { date: "2026-07-15".into(), value: 195.0 },
                     DatedValue {
                         date: (today - chrono::Duration::days(30))
                             .format("%Y-%m-%d")

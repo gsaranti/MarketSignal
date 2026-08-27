@@ -54,6 +54,11 @@ pub struct InterpretationInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub engine: &'a EngineOutput,
     pub distilled: &'a str,
+    /// The prior thesis ledger AS INGESTED by this run — basis-normalized where
+    /// a split re-based the series (`docs/portfolio-analysis.md` §Starting
+    /// parameters), so the render, the evaluation, and the 6g carry all read one
+    /// instance. `None` on a debut. Never re-derived from the dossier.
+    pub prior_ledger: Option<&'a ThesisLedger>,
     /// The engine's evaluation of the prior thesis ledger's quantitative conditions
     /// (`None` on a debut — no prior ledger to evaluate).
     pub ledger_eval: Option<&'a LedgerEvaluation>,
@@ -81,6 +86,10 @@ pub struct InterpretationInput<'a> {
 pub struct RoleRiskInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub readout: &'a RoleRiskReadout,
+    /// The prior thesis ledger as ingested by this run (basis-normalized where a
+    /// split re-based the series) — the render's single instance; never
+    /// re-derived from the dossier.
+    pub prior_ledger: Option<&'a ThesisLedger>,
     /// The engine's evaluation of the prior fund ledger's quantitative conditions.
     pub ledger_eval: Option<&'a LedgerEvaluation>,
     /// The rendered input delta — the branch's reduced entry set. Empty on a
@@ -413,6 +422,69 @@ pub fn analyze_holding(
     {
         degraded.push(format!("listing-resolution guard unverified — {detail}"));
     }
+    // The split-adjustment bridge for this run's stored-basis price comparisons
+    // against the prior read (`docs/portfolio-analysis.md` §Starting
+    // parameters): the prior audit's anchor bar re-read from this run's fresh
+    // series is the exact cumulative re-basis factor since the prior pass.
+    // `Some(1.0)` — the unchanged common case, and every pre-field prior (no
+    // anchor: comparisons run as stored until this run stamps one). `None` — an
+    // anchor exists but its bar is missing from the fresh window: the basis is
+    // unverifiable, so price-denominated prior comparisons are excluded rather
+    // than run cross-basis.
+    let price_bridge: Option<f64> = match &dossier.prior_authoring_close {
+        None => Some(1.0),
+        Some(anchor) => engine::split_bridge_factor(&dossier.financials.daily_closes, anchor),
+    };
+    if price_bridge.is_none() {
+        degraded.push(
+            "prior split-bridge anchor bar missing from the fresh price window — \
+             price-denominated prior comparisons excluded this run"
+                .to_string(),
+        );
+    }
+    // The ingested prior ledger converts onto this run's basis ONCE, here, so
+    // every machine consumer — evaluation, 6g validation and carry,
+    // persistence — sees one basis and the rewrite lands new-basis (the 6c/6d
+    // prompts read this same instance but render statements only — no machine
+    // core reaches them; statement prose is model-authored and never rewritten).
+    // Margins scale with thresholds (absolute, same units), so breach semantics
+    // are invariant under the conversion, and a verbatim re-emission of the
+    // converted number matches the normalized core and keeps its condition id.
+    // The monitor's stamped engine targets convert for render coherence; on a
+    // resolvable pass validation re-stamps them from this run's engine set (an
+    // unresolvable pass withholds the fresh stamp — absent beats wrong).
+    let bridged_ledger: Option<crate::portfolio::ThesisLedger> = match price_bridge {
+        Some(f) if f != 1.0 => prior_ledger.map(|l| {
+            let mut l = l.clone();
+            for cond in &mut l.conditions {
+                if let Some(q) = &mut cond.quant {
+                    if q.series.price_denominated() {
+                        q.threshold *= f;
+                        q.margin *= f;
+                    }
+                }
+            }
+            for m in &mut l.monitor {
+                if let Some(t) = &mut m.engine_target {
+                    *t *= f;
+                }
+            }
+            l
+        }),
+        _ => None,
+    };
+    let prior_ledger = bridged_ledger.as_ref().or(prior_ledger);
+    // The prior read's per-share comparators on this run's basis: the spot and
+    // the consensus-EPS mid scale TOGETHER (their ratio — the prior multiple —
+    // is basis-free and must stay so). `None` factor drops both — excluded,
+    // never cross-basis.
+    let (bridged_prior_spot, bridged_prior_mid) = match price_bridge {
+        Some(f) => (
+            dossier.prior_spot.map(|s| s * f),
+            dossier.prior_consensus_eps_mid.map(|m| m * f),
+        ),
+        None => (None, None),
+    };
     // The fund exposure comparators for the quick check's fund evidence-event legs
     // — computed from the same fresh metadata the pass analyzed, on either verdict
     // branch (`docs/portfolio-analysis.md` §Starting parameters).
@@ -494,6 +566,28 @@ pub fn analyze_holding(
         }
         sources
     };
+    // The split-bridge anchor: the newest settled bar strictly before the run's
+    // ET session, off the run's own fetched series (oldest-first). Strictly
+    // before keeps the anchor off the run day's still-forming bar, so a
+    // re-fetch reads back the identical close unless the series was re-based.
+    // A run whose own bridge was unresolvable CARRIES the prior anchor forward
+    // instead: the carried price values stay on that anchor's basis (the
+    // supersede guard in ledger validation holds the invariant), so provenance
+    // is preserved — later passes stay fail-closed while the bar is missing and
+    // convert correctly the moment it resolves. A fresh stamp would certify the
+    // carried values on a basis this run could not verify (~1.0 next pass, the
+    // mismatch never re-detectable); no stamp would fail open the same way.
+    let authoring_close = if price_bridge.is_some() {
+        dossier
+            .financials
+            .daily_closes
+            .iter()
+            .rev()
+            .find(|d| d.date.as_str() < run_date)
+            .cloned()
+    } else {
+        dossier.prior_authoring_close.clone()
+    };
     let audit = |metrics, target_meta, ledger_audit, pre_profit| HoldingAudit {
         symbol: symbol.clone(),
         metrics,
@@ -506,6 +600,7 @@ pub fn analyze_holding(
         grade_parameter_version: Some(engine::GRADE_PARAMETER_VERSION.to_string()),
         ledger_audit,
         quick_basis: None,
+        authoring_close: authoring_close.clone(),
         fund_exposure: fund_exposure.clone(),
         pre_profit,
         hurdle: None,
@@ -723,11 +818,14 @@ pub fn analyze_holding(
                     ..Default::default()
                 };
                 let ledger_eval = prior_ledger.map(|l| {
-                    engine::evaluate_ledger_conditions(
+                    // The same unverifiable-basis gate as the priced branch:
+                    // price-denominated conditions never compare cross-basis.
+                    engine::evaluate_ledger_conditions_gated(
                         l,
                         &fund_metrics,
                         &dossier.financials,
                         run_date,
+                        |series| price_bridge.is_some() || !series.price_denominated(),
                     )
                 });
                 // The union's other branch: the model authors the role read only —
@@ -747,6 +845,7 @@ pub fn analyze_holding(
                     &fund_metrics,
                     position_change,
                     ledger_eval.as_ref(),
+                    price_bridge,
                 );
                 // The fund agenda runs the same 6c loop and a
                 // pure-consolidation 6d — the stub-time bypass is retired with
@@ -767,6 +866,7 @@ pub fn analyze_holding(
                     .interpret_role_risk(&RoleRiskInput {
                         dossier,
                         readout: &readout,
+                        prior_ledger,
                         ledger_eval: ledger_eval.as_ref(),
                         input_delta: &input_delta,
                         distilled: &rr_distilled.combined,
@@ -799,6 +899,7 @@ pub fn analyze_holding(
                     None,
                     dossier.financials.current_price,
                     &research_supported,
+                    price_bridge.is_some(),
                 );
                 // The action placeholder is overwritten by the decision below and
                 // never rendered into its prompt.
@@ -941,13 +1042,16 @@ pub fn analyze_holding(
 
     // Evaluate the prior ledger's quantitative falsifiers and triggers against this
     // run's computed surface — the crossings interpretation reads
-    // (`docs/portfolio-analysis.md` §The position thesis ledger).
+    // (`docs/portfolio-analysis.md` §The position thesis ledger). An unverifiable
+    // price basis gates price-denominated conditions out whole — never a
+    // cross-basis comparison (the degraded input above records it).
     let ledger_eval = prior_ledger.map(|l| {
-        engine::evaluate_ledger_conditions(
+        engine::evaluate_ledger_conditions_gated(
             l,
             &engine_output.metrics,
             &dossier.financials,
             run_date,
+            |series| price_bridge.is_some() || !series.price_denominated(),
         )
     });
 
@@ -974,8 +1078,8 @@ pub fn analyze_holding(
                 .map(|b| b.spot)
                 .or(dossier.financials.current_price)
                 .unwrap_or(f64::NAN),
-            dossier.prior_spot,
-            dossier.prior_consensus_eps_mid,
+            bridged_prior_spot,
+            bridged_prior_mid,
             elapsed,
         ) {
             Ok(read) => (Some(read), None),
@@ -1202,6 +1306,7 @@ pub fn analyze_holding(
         tech_pre_flag.as_ref(),
         narrative.as_ref(),
         hard_forensic,
+        price_bridge,
     );
     // The research evidence joins the rendered delta surface — the 6g
     // research-finding and forward-assumption legs (`docs/portfolio-workflow.md`
@@ -1224,6 +1329,7 @@ pub fn analyze_holding(
             dossier,
             engine: &engine_output,
             distilled: &distilled,
+            prior_ledger,
             ledger_eval: ledger_eval.as_ref(),
             pre_profit: pre_profit_overlay.as_ref().filter(|o| o.is_eligible()),
             tech_pre_flag: tech_pre_flag.as_ref(),
@@ -1263,9 +1369,17 @@ pub fn analyze_holding(
         ledger_eval.as_ref(),
         LedgerBranch::Priced,
         is_fund,
-        engine_output.price_targets.twelve_month.as_ref(),
+        // Fresh-basis engine targets never stamp beneath a carried anchor: an
+        // unresolvable pass stamps `None` (the band read goes absent, not
+        // wrong) — same absent-beats-wrong rule as the quick basis below.
+        engine_output
+            .price_targets
+            .twelve_month
+            .as_ref()
+            .filter(|_| price_bridge.is_some()),
         dossier.financials.current_price,
         &research_supported,
+        price_bridge.is_some(),
     );
 
     // The engine stand-in arm — mechanical outlook / conviction / action baselines
@@ -1357,7 +1471,18 @@ pub fn analyze_holding(
         target_meta: Some(engine_output.target_meta.clone()),
         grade_parameter_version: Some(engine::GRADE_PARAMETER_VERSION.to_string()),
         ledger_audit: Some(ledger_audit),
-        quick_basis: engine_output.quick_basis.clone(),
+        // An unresolvable pass persists NO quick-check basis: the row's anchor
+        // is the carried prior-basis one, and a fresh-basis spot/consensus
+        // beneath it would double-convert the moment the anchor resolves
+        // (fabricated revision events, mis-scaled multiples and hurdle reads).
+        // Absent beats wrong — the sweep's rate-anchor family reads its typed
+        // no-stored-basis state until a resolvable pass re-persists.
+        quick_basis: if price_bridge.is_some() {
+            engine_output.quick_basis.clone()
+        } else {
+            None
+        },
+        authoring_close: authoring_close.clone(),
         fund_exposure: fund_exposure.clone(),
         pre_profit: pre_profit_overlay,
         // The full hurdle read persists so a decision episode's calibration
@@ -1638,13 +1763,41 @@ fn validate_condition(
     confirmed_ids: &std::collections::HashSet<String>,
     research_supported: &std::collections::HashSet<String>,
     updated_states: &std::collections::HashMap<String, ConditionEvalState>,
+    price_basis_verified: bool,
     audit: &mut LedgerAudit,
 ) -> LedgerCondition {
     let statement = statement.trim().to_string();
     let (quant, downgraded_reason) = match quant_draft {
         None => (None, None),
         Some(qd) => match parse_quant_core(qd, is_fund) {
-            Ok(core) => (Some(core), None),
+            Ok(core) => {
+                // The unverifiable-basis supersede guard: with the split bridge
+                // unresolvable, a NEW or RE-ANCHORED price-denominated core was
+                // authored against fresh prices but would persist under the
+                // carried prior-basis anchor — an untieable mix, so it
+                // downgrades (typed, never dropped). A carried-verbatim core
+                // stays quantitative: it shares the carried anchor's basis.
+                let carried_verbatim = prior_pool.iter().any(|c| {
+                    c.role == role
+                        && c.trigger_family == trigger_family
+                        && c.quant.as_ref() == Some(&core)
+                });
+                if !price_basis_verified
+                    && core.series.price_denominated()
+                    && !carried_verbatim
+                {
+                    let reason = "the price basis is unverifiable this run \
+                                  (split-bridge anchor unresolvable) — a new or \
+                                  re-anchored price-denominated core cannot be \
+                                  tied to the carried anchor; re-author at a \
+                                  resolvable pass"
+                        .to_string();
+                    audit.downgraded.push(format!("'{statement}': {reason}"));
+                    (None, Some(reason))
+                } else {
+                    (Some(core), None)
+                }
+            }
             Err(reason) => {
                 // Downgraded to qualitative, logged, never dropped — and it retains
                 // no machine evaluation state.
@@ -1779,6 +1932,7 @@ pub fn validate_ledger_rewrite(
         engine_targets,
         spot,
         &std::collections::HashSet::new(),
+        true,
     )
 }
 
@@ -1798,6 +1952,7 @@ pub fn validate_ledger_rewrite_with_research(
     engine_targets: Option<&PriceTarget>,
     spot: Option<f64>,
     research_supported: &std::collections::HashSet<String>,
+    price_basis_verified: bool,
 ) -> (ThesisLedger, LedgerAudit) {
     // Structural, not conventional: a `role_risk_only` monitor is condition-only —
     // no engine scenario target exists on that branch — regardless of what the
@@ -1941,6 +2096,7 @@ pub fn validate_ledger_rewrite_with_research(
             &confirmed_ids,
             research_supported,
             &updated_states,
+            price_basis_verified,
             &mut audit,
         ));
     }
@@ -1989,6 +2145,7 @@ pub fn validate_ledger_rewrite_with_research(
             &confirmed_ids,
             research_supported,
             &updated_states,
+            price_basis_verified,
             &mut audit,
         ));
     }
@@ -2199,7 +2356,26 @@ fn append_shared_delta(
     dossier: &HoldingDossier,
     position_change: PositionChange,
     ledger_eval: Option<&LedgerEvaluation>,
+    price_bridge: Option<f64>,
 ) {
+    // A detected re-basis is itself an input change worth attributing against —
+    // without the row, a split's apparent price collapse has no evidence entry.
+    match price_bridge {
+        Some(f) if f != 1.0 => push_delta(
+            entries,
+            format!(
+                "price series re-based since the prior read (split bridge factor \
+                 {f:.4}); prior price-denominated values converted onto the fresh basis"
+            ),
+        ),
+        None => push_delta(
+            entries,
+            "price basis unverifiable (split-bridge anchor unresolvable) — prior \
+             price-denominated comparisons excluded this run"
+                .to_string(),
+        ),
+        _ => {}
+    }
     if position_change != PositionChange::Unchanged {
         let move_word = match position_change {
             PositionChange::New => "new",
@@ -2251,12 +2427,21 @@ fn priced_input_delta(
     tech_pre_flag: Option<&engine::TechEventPreFlag>,
     narrative: Option<&engine::NarrativeRead>,
     hard_forensic: bool,
+    price_bridge: Option<f64>,
 ) -> Vec<crate::portfolio::DeltaEntry> {
     let Some(prior) = dossier.prior_verdict.as_ref() else {
         return Vec::new();
     };
     let mut entries = Vec::new();
-    if let (Some(old), Some(new)) = (dossier.prior_spot, dossier.financials.current_price) {
+    // The prior side converts onto the fresh basis before the row renders — a
+    // split must never read as a spot collapse. An unresolvable bridge skips the
+    // row (the shared delta carries the exclusion entry).
+    if let (Some(old), Some(new), Some(f)) = (
+        dossier.prior_spot,
+        dossier.financials.current_price,
+        price_bridge,
+    ) {
+        let old = old * f;
         if old != new {
             push_delta(&mut entries, format!("spot: {old:.2} -> {new:.2}"));
         }
@@ -2304,9 +2489,21 @@ fn priced_input_delta(
                 ),
             );
         }
-        let old_base = pg.price_targets.twelve_month.as_ref().map(|t| t.base);
+        // The prior target converts like the spot row; skipped when the basis is
+        // unverifiable rather than compared cross-basis. It also requires the
+        // prior pass to have CERTIFIED its basis (`prior_spot` rides the prior
+        // quick basis, withheld by an unresolvable pass): a target persisted
+        // fresh beneath a carried anchor would double-convert here the moment
+        // that anchor resolved — a fabricated target-change row in the 6g
+        // evidence vocabulary. Absent beats wrong.
+        let prior_basis_certified = dossier.prior_spot.is_some();
+        let old_base = pg
+            .price_targets
+            .twelve_month
+            .as_ref()
+            .and_then(|t| price_bridge.map(|f| t.base * f));
         let new_base = engine_output.price_targets.twelve_month.as_ref().map(|t| t.base);
-        if old_base != new_base {
+        if price_bridge.is_some() && prior_basis_certified && old_base != new_base {
             push_delta(
                 &mut entries,
                 format!(
@@ -2349,7 +2546,7 @@ fn priced_input_delta(
             ),
         );
     }
-    append_shared_delta(&mut entries, dossier, position_change, ledger_eval);
+    append_shared_delta(&mut entries, dossier, position_change, ledger_eval, price_bridge);
     if let Some(f) = tech_pre_flag.filter(|f| f.fired) {
         push_delta(
             &mut entries,
@@ -2388,6 +2585,7 @@ fn role_risk_input_delta(
     fund_metrics: &engine::ComputedMetrics,
     position_change: PositionChange,
     ledger_eval: Option<&LedgerEvaluation>,
+    price_bridge: Option<f64>,
 ) -> Vec<crate::portfolio::DeltaEntry> {
     if dossier.prior_verdict.is_none() {
         return Vec::new();
@@ -2401,7 +2599,7 @@ fn role_risk_input_delta(
             );
         }
     }
-    append_shared_delta(&mut entries, dossier, position_change, ledger_eval);
+    append_shared_delta(&mut entries, dossier, position_change, ledger_eval, price_bridge);
     entries
 }
 
@@ -2716,7 +2914,7 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         ),
     }
     p.push_str(&ledger_prompt_section(
-        d.prior_ledger(),
+        input.prior_ledger,
         input.ledger_eval,
         true,
         input.input_delta,
@@ -3498,7 +3696,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
     }
 
     p.push_str(&ledger_prompt_section(
-        d.prior_ledger(),
+        input.prior_ledger,
         input.ledger_eval,
         false,
         input.input_delta,
@@ -4310,7 +4508,7 @@ impl HoldingAnalyst for StubAnalyst {
             // re-affirmation contract.
             what_changed_entries: Vec::new(),
             ledger: stub_ledger_draft(
-                input.dossier.prior_ledger(),
+                input.prior_ledger,
                 &input.dossier.position.symbol,
                 false,
             ),
@@ -4362,7 +4560,7 @@ impl HoldingAnalyst for StubAnalyst {
             },
             what_changed_entries: Vec::new(),
             ledger: stub_ledger_draft(
-                input.dossier.prior_ledger(),
+                input.prior_ledger,
                 &input.dossier.position.symbol,
                 true,
             ),
@@ -5278,6 +5476,7 @@ mod tests {
             prior_consensus_eps_mid: None,
             prior_matured_notes: Vec::new(),
             prior_grade_parameter_version: None,
+            prior_authoring_close: None,
             sources: vec!["FMP".into()],
             prior_pre_profit: None,
             listing: None,
@@ -6123,6 +6322,363 @@ mod tests {
     }
 
     #[test]
+    fn a_split_rebasis_normalizes_the_ingested_ledger_and_bridges_the_prior_reads() {
+        // The prior read was authored pre-4:1-split (values ×4 against today's
+        // retroactively re-based series). Its anchor bar 2026-06-30 closed at
+        // 760 old-basis; today's series carries 190 for the same session, so the
+        // bridge factor is exactly 0.25.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let mut ledger = prior_with_conditions();
+        ledger.conditions = vec![LedgerCondition {
+            condition_id: "px-1".into(),
+            role: ConditionRole::Falsifier,
+            trigger_family: None,
+            statement: "price below 700".into(),
+            quant: Some(QuantCore {
+                series: engine::LedgerSeries::Price,
+                comparator: LedgerComparator::Below,
+                threshold: 700.0,
+                margin: 20.0,
+            }),
+            downgraded_reason: None,
+            technology_class: false,
+            tripped: false,
+            supersedes: None,
+            eval_state: None,
+        }];
+        d.prior_verdict = Some(HoldingVerdict {
+            symbol: "AAPL".into(),
+            asset_class: AssetClass::Stock,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
+            thesis_ledger: Some(ledger),
+            analyzed_at: None,
+            action_source: Default::default(),
+            side_reversed: false,
+        });
+        d.prior_vintage = Some("2026-06-30T20:00:00Z".into());
+        d.prior_spot = Some(780.0);
+        d.prior_consensus_eps_mid = Some(26.0);
+        d.prior_authoring_close =
+            Some(DatedValue { date: "2026-06-30".into(), value: 760.0 });
+
+        let (verdict, audit) =
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        assert!(matches!(verdict.disposition, VerdictDisposition::Priced(_)));
+        // No fabricated crossing: unbridged, spot 195 sits far "below 700".
+        let la = audit.ledger_audit.as_ref().expect("ledger audit");
+        assert!(la.crossings.is_empty(), "no cross-basis crossing: {:?}", la.crossings);
+        // The persisted condition carries its id with the CONVERTED core — the
+        // stub re-emitted the normalized threshold verbatim, so the carry held
+        // (700 × 0.25 = 175; margin 20 × 0.25 = 5).
+        assert!(la.superseded.is_empty(), "conversion must not supersede: {:?}", la.superseded);
+        let persisted = verdict.thesis_ledger.as_ref().expect("ledger persists");
+        let px = persisted
+            .conditions
+            .iter()
+            .find(|c| c.condition_id == "px-1")
+            .expect("carried id survives the conversion");
+        let q = px.quant.as_ref().expect("still quantitative");
+        assert!((q.threshold - 175.0).abs() < 1e-9, "converted threshold: {}", q.threshold);
+        assert!((q.margin - 5.0).abs() < 1e-9, "converted margin: {}", q.margin);
+        // This run stamps its own anchor: the newest settled bar strictly before
+        // the run session.
+        let anchor = audit.authoring_close.as_ref().expect("anchor stamped");
+        assert_eq!(anchor.date, "2026-07-15");
+        assert!((anchor.value - 195.0).abs() < 1e-9);
+
+        // The narrative fallback pace reads off the BRIDGED prior spot (780 ×
+        // 0.25 = 195 vs spot 195 → ~0), not a fabricated −75% collapse.
+        let mut fallback = dossier(AssetClass::Stock, strong_financials());
+        // EPS legs absent, revenue legs kept: the target ladder still prices off
+        // forward revenue per share while the narrative read drops to its
+        // operating-reality fallback — the one form whose pace leg reads
+        // `prior_spot` directly.
+        if let Some(c) = fallback.financials.consensus.as_mut() {
+            c.eps_low = None;
+            c.eps_mid = None;
+            c.eps_high = None;
+        }
+        fallback.prior_verdict = d.prior_verdict.clone();
+        fallback.prior_vintage = d.prior_vintage.clone();
+        fallback.prior_spot = d.prior_spot;
+        fallback.prior_authoring_close = d.prior_authoring_close.clone();
+        let (v2, a2) = analyze_holding(&StubAnalyst, &fallback, &rates(), "2026-08-03").unwrap();
+        let n = a2.narrative.as_ref().unwrap_or_else(|| {
+            panic!(
+                "fallback narrative reads; disposition {:?}; degraded: {:?}",
+                v2.disposition, a2.degraded_inputs
+            )
+        });
+        assert!(
+            n.expansion.abs() < 0.05,
+            "bridged pace is flat, not a split-shaped collapse: {}",
+            n.expansion
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_full_pass_bridge_gates_price_conditions_and_carries_the_anchor() {
+        // The prior anchor's bar date is absent from this run's series: the
+        // basis is unverifiable. The old-basis falsifier ("below 700") would
+        // false-cross at spot 195 if compared — it must be gated out whole, the
+        // degraded input recorded, and the prior anchor carried forward so a
+        // later pass stays fail-closed (and heals) instead of reading ~1.0.
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        let mut ledger = prior_with_conditions();
+        ledger.conditions = vec![LedgerCondition {
+            condition_id: "px-1".into(),
+            role: ConditionRole::Falsifier,
+            trigger_family: None,
+            statement: "price below 700".into(),
+            quant: Some(QuantCore {
+                series: engine::LedgerSeries::Price,
+                comparator: LedgerComparator::Below,
+                threshold: 700.0,
+                margin: 0.0,
+            }),
+            downgraded_reason: None,
+            technology_class: false,
+            tripped: false,
+            supersedes: None,
+            eval_state: None,
+        }];
+        d.prior_verdict = Some(HoldingVerdict {
+            symbol: "AAPL".into(),
+            asset_class: AssetClass::Stock,
+            position_change: PositionChange::Unchanged,
+            disposition: VerdictDisposition::NotRated { reason: "fixture".into() },
+            thesis_ledger: Some(ledger),
+            analyzed_at: None,
+            action_source: Default::default(),
+            side_reversed: false,
+        });
+        d.prior_vintage = Some("2026-06-15T20:00:00Z".into());
+        d.prior_spot = Some(780.0);
+        d.prior_authoring_close =
+            Some(DatedValue { date: "2026-06-15".into(), value: 760.0 });
+
+        let (verdict, audit) =
+            analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
+        assert!(matches!(verdict.disposition, VerdictDisposition::Priced(_)));
+        let la = audit.ledger_audit.as_ref().expect("ledger audit");
+        assert!(la.crossings.is_empty(), "gated, never cross-basis: {:?}", la.crossings);
+        assert!(
+            audit
+                .degraded_inputs
+                .iter()
+                .any(|g| g.contains("split-bridge anchor")),
+            "the exclusion is a recorded degraded input: {:?}",
+            audit.degraded_inputs
+        );
+        // The prior anchor CARRIES — provenance preserved, so the carried
+        // old-basis threshold stays tied to its own basis rather than being
+        // certified fresh (never re-detectable) or dropped (fail-open next pass).
+        assert_eq!(
+            audit.authoring_close,
+            Some(DatedValue { date: "2026-06-15".into(), value: 760.0 }),
+            "the unresolvable pass carries the prior anchor forward"
+        );
+        // The carried-verbatim condition stays quantitative as stored, never
+        // half-converted (the stub re-emits it unchanged).
+        let persisted = verdict.thesis_ledger.as_ref().expect("ledger persists");
+        let px = persisted
+            .conditions
+            .iter()
+            .find(|c| c.condition_id == "px-1")
+            .expect("carried id survives");
+        assert_eq!(px.quant.as_ref().expect("still quantitative").threshold, 700.0);
+        // No fresh anchor-dependent comparator persists beneath the carried
+        // anchor: the quick basis is withheld and the monitor stamps no fresh
+        // engine targets, so nothing on this row can double-convert when the
+        // anchor later resolves.
+        assert!(
+            audit.quick_basis.is_none(),
+            "no fresh quick basis beneath a carried anchor: {:?}",
+            audit.quick_basis
+        );
+        assert!(
+            persisted.monitor.iter().all(|m| m.engine_target.is_none()),
+            "no fresh engine targets beneath a carried anchor: {:?}",
+            persisted.monitor
+        );
+
+        // Pass 2 fed from pass 1's ACTUAL persisted outputs (the prior spot
+        // comes from pass 1's quick basis, which was withheld), the bar still
+        // missing: STILL fail-closed — no crossing, the anchor still carried.
+        // The original F1 hole was exactly this pass reading a dropped anchor
+        // as factor 1.0.
+        let mut d2 = dossier(AssetClass::Stock, strong_financials());
+        d2.prior_verdict = Some(verdict.clone());
+        d2.prior_vintage = Some("2026-06-15T20:00:00Z".into());
+        d2.prior_spot = audit.quick_basis.as_ref().map(|b| b.spot);
+        d2.prior_authoring_close = audit.authoring_close.clone();
+        let (v2, a2) = analyze_holding(&StubAnalyst, &d2, &rates(), "2026-08-04").unwrap();
+        let la2 = a2.ledger_audit.as_ref().expect("ledger audit");
+        assert!(la2.crossings.is_empty(), "still gated: {:?}", la2.crossings);
+        assert_eq!(
+            a2.authoring_close.as_ref().map(|b| b.date.as_str()),
+            Some("2026-06-15"),
+            "the anchor keeps carrying while unresolvable"
+        );
+        let px2 = v2
+            .thesis_ledger
+            .as_ref()
+            .unwrap()
+            .conditions
+            .iter()
+            .find(|c| c.condition_id == "px-1")
+            .expect("carry holds");
+        assert_eq!(px2.quant.as_ref().unwrap().threshold, 700.0);
+
+        // Pass 3, the anchor's bar back in the fresh window (190 = 760 ÷ 4):
+        // the carried anchor resolves, the threshold converts under its carried
+        // id, and a fresh anchor re-stamps. Fail-closed healed into correct.
+        let mut fin3 = strong_financials();
+        fin3.daily_closes
+            .push(DatedValue { date: "2026-06-15".into(), value: 190.0 });
+        fin3.daily_closes.sort_by(|a, b| a.date.cmp(&b.date));
+        let mut d3 = dossier(AssetClass::Stock, fin3);
+        d3.prior_verdict = Some(v2.clone());
+        d3.prior_vintage = Some("2026-06-15T20:00:00Z".into());
+        d3.prior_spot = a2.quick_basis.as_ref().map(|b| b.spot);
+        d3.prior_authoring_close = a2.authoring_close.clone();
+        let (v3, a3) = analyze_holding(&StubAnalyst, &d3, &rates(), "2026-08-05").unwrap();
+        let px3 = v3
+            .thesis_ledger
+            .as_ref()
+            .unwrap()
+            .conditions
+            .iter()
+            .find(|c| c.condition_id == "px-1")
+            .expect("carried id survives the healing conversion");
+        assert!(
+            (px3.quant.as_ref().unwrap().threshold - 175.0).abs() < 1e-9,
+            "healed conversion: {}",
+            px3.quant.as_ref().unwrap().threshold
+        );
+        assert_eq!(
+            a3.authoring_close.as_ref().map(|b| b.date.as_str()),
+            Some("2026-07-15"),
+            "a resolvable pass re-stamps its own fresh anchor"
+        );
+        // The healed pass persists fresh comparators again, coherent with its
+        // fresh anchor.
+        assert!(a3.quick_basis.is_some(), "quick basis returns with a fresh anchor");
+        assert!(
+            v3.thesis_ledger
+                .as_ref()
+                .unwrap()
+                .monitor
+                .iter()
+                .all(|m| m.engine_target.is_some()),
+            "engine targets return with a fresh anchor"
+        );
+    }
+
+    #[test]
+    fn an_unverified_basis_downgrades_a_reanchored_price_core_but_keeps_a_carried_one() {
+        // The supersede guard: with the bridge unresolvable, a RE-ANCHORED
+        // price core (authored against fresh prices) cannot persist under the
+        // carried prior-basis anchor — it downgrades, typed. A carried-verbatim
+        // core shares the carried anchor's basis and stays quantitative.
+        let prior = {
+            let mut l = prior_with_conditions();
+            l.conditions = vec![LedgerCondition {
+                condition_id: "px-1".into(),
+                role: ConditionRole::Falsifier,
+                trigger_family: None,
+                statement: "price below 700".into(),
+                quant: Some(QuantCore {
+                    series: engine::LedgerSeries::Price,
+                    comparator: LedgerComparator::Below,
+                    threshold: 700.0,
+                    margin: 0.0,
+                }),
+                downgraded_reason: None,
+                technology_class: false,
+                tripped: false,
+                supersedes: None,
+                eval_state: None,
+            }];
+            l
+        };
+        let draft = |threshold: f64| LedgerDraft {
+            thesis: "t".into(),
+            key_drivers: vec![],
+            bear: ScenarioDraft { conditions: "b".into(), probability_pct: 30.0 },
+            base: ScenarioDraft { conditions: "m".into(), probability_pct: 40.0 },
+            bull: ScenarioDraft { conditions: "u".into(), probability_pct: 30.0 },
+            what_must_improve: String::new(),
+            what_must_not_break: String::new(),
+            falsifiers: vec![FalsifierDraft {
+                statement: format!("price below {threshold}"),
+                quant: Some(QuantCoreDraft {
+                    series: "price".into(),
+                    comparator: "below".into(),
+                    threshold,
+                    margin: 0.0,
+                }),
+                technology_class: false,
+                tripped: false,
+            }],
+            triggers: vec![],
+        };
+        // Re-anchored core, basis unverified → downgraded with the typed reason.
+        let (ledger, audit) = validate_ledger_rewrite_with_research(
+            &draft(150.0),
+            Some(&prior),
+            None,
+            LedgerBranch::Priced,
+            false,
+            None,
+            None,
+            &std::collections::HashSet::new(),
+            false,
+        );
+        let c = &ledger.conditions[0];
+        assert!(c.quant.is_none(), "re-anchored core must not persist: {c:?}");
+        assert!(
+            c.downgraded_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("unverifiable")),
+            "{c:?}"
+        );
+        assert!(audit.downgraded.iter().any(|d| d.contains("unverifiable")));
+        // Carried-verbatim core, basis unverified → stays quantitative.
+        let (ledger, _) = validate_ledger_rewrite_with_research(
+            &draft(700.0),
+            Some(&prior),
+            None,
+            LedgerBranch::Priced,
+            false,
+            None,
+            None,
+            &std::collections::HashSet::new(),
+            false,
+        );
+        let c = &ledger.conditions[0];
+        assert_eq!(c.condition_id, "px-1", "carried id");
+        assert_eq!(c.quant.as_ref().expect("stays quantitative").threshold, 700.0);
+        // Same re-anchored core with a VERIFIED basis supersedes normally.
+        let (ledger, audit) = validate_ledger_rewrite_with_research(
+            &draft(150.0),
+            Some(&prior),
+            None,
+            LedgerBranch::Priced,
+            false,
+            None,
+            None,
+            &std::collections::HashSet::new(),
+            true,
+        );
+        let c = &ledger.conditions[0];
+        assert_eq!(c.quant.as_ref().expect("quant supersede").threshold, 150.0);
+        assert_eq!(c.supersedes.as_deref(), Some("px-1"));
+        assert!(audit.superseded.len() == 1);
+    }
+
+    #[test]
     fn an_unverified_guard_proceeds_and_records_the_degraded_input() {
         use crate::portfolio::listing::ListingResolution;
         // An FMP outage must never mass-not-rate a book: the holding grades
@@ -6196,6 +6752,7 @@ mod tests {
         let input = InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "distilled findings",
             ledger_eval: None,
@@ -6260,6 +6817,7 @@ mod tests {
         let interp = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "findings",
             ledger_eval: None,
@@ -6275,6 +6833,7 @@ mod tests {
         let interp = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &bare,
+            prior_ledger: bare.prior_ledger(),
             engine: &engine_output,
             distilled: "findings",
             ledger_eval: None,
@@ -6303,6 +6862,7 @@ mod tests {
             interpretation_user_prompt(&InterpretationInput {
                 input_delta: &[],
                 dossier: &d,
+                prior_ledger: d.prior_ledger(),
                 engine: &engine_output,
                 distilled: "findings",
                 ledger_eval: None,
@@ -6493,6 +7053,7 @@ mod tests {
         let interp = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "findings",
             ledger_eval: None,
@@ -6509,6 +7070,7 @@ mod tests {
         let role = role_risk_user_prompt(&RoleRiskInput {
             input_delta: &[],
             dossier: &fd,
+            prior_ledger: fd.prior_ledger(),
             readout: &RoleRiskReadout::default(),
             ledger_eval: None,
             distilled: "No research findings.",
@@ -6519,6 +7081,7 @@ mod tests {
         let interp = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &bare,
+            prior_ledger: bare.prior_ledger(),
             engine: &engine_output,
             distilled: "findings",
             ledger_eval: None,
@@ -6564,6 +7127,7 @@ mod tests {
         let interp = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "findings",
             ledger_eval: None,
@@ -6610,6 +7174,7 @@ mod tests {
         let interp = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &unknown,
+            prior_ledger: unknown.prior_ledger(),
             engine: &engine_output,
             distilled: "findings",
             ledger_eval: None,
@@ -6680,6 +7245,7 @@ mod tests {
             interpretation_user_prompt(&InterpretationInput {
                 input_delta: &[],
                 dossier: d,
+                prior_ledger: d.prior_ledger(),
                 engine: &engine_output,
                 distilled: "findings",
                 ledger_eval: None,
@@ -6880,6 +7446,7 @@ mod tests {
         let user = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "distilled findings",
             ledger_eval: None,
@@ -6919,6 +7486,7 @@ mod tests {
         let debut_user = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &debut,
+            prior_ledger: debut.prior_ledger(),
             engine: &engine_output,
             distilled: "distilled findings",
             ledger_eval: None,
@@ -6958,6 +7526,7 @@ mod tests {
         let user = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "distilled findings",
             ledger_eval: None,
@@ -6994,6 +7563,7 @@ mod tests {
         let user = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "",
             ledger_eval: None,
@@ -7034,6 +7604,7 @@ mod tests {
         let user = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "",
             ledger_eval: None,
@@ -7064,6 +7635,7 @@ mod tests {
         let anchored = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "",
             ledger_eval: None,
@@ -7097,6 +7669,7 @@ mod tests {
         let carried = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "",
             ledger_eval: None,
@@ -7113,6 +7686,7 @@ mod tests {
         let fallback = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "",
             ledger_eval: None,
@@ -7146,6 +7720,7 @@ mod tests {
             interpretation_user_prompt(&InterpretationInput {
                 input_delta: &[],
                 dossier: d,
+                prior_ledger: d.prior_ledger(),
                 engine: &engine_output,
                 distilled: "",
                 ledger_eval: None,
@@ -7182,6 +7757,7 @@ mod tests {
         let user = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "",
             ledger_eval: None,
@@ -7213,6 +7789,7 @@ mod tests {
         let role = role_risk_user_prompt(&RoleRiskInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             readout: &readout,
             ledger_eval: None,
             distilled: "No research findings.",
@@ -7241,6 +7818,7 @@ mod tests {
             role_risk_user_prompt(&RoleRiskInput {
                 input_delta: &[],
                 dossier: &d,
+                prior_ledger: d.prior_ledger(),
                 readout: r,
                 ledger_eval: None,
                 distilled: "No research findings.",
@@ -7300,6 +7878,55 @@ mod tests {
     }
 
     #[test]
+    fn the_target_delta_row_requires_a_certified_prior_basis() {
+        // A prior pass that withheld its basis (unresolvable bridge) persisted
+        // its verdict targets fresh; the next pass's bridge must not convert
+        // them — the row is excluded on an uncertified prior basis, never a
+        // fabricated target-change entry in the 6g evidence vocabulary.
+        let base = dossier(AssetClass::Stock, strong_financials());
+        let (prior_verdict, _) =
+            analyze_holding(&StubAnalyst, &base, &rates(), "2026-08-01").unwrap();
+        let mut d = dossier(AssetClass::Stock, strong_financials());
+        d.prior_verdict = Some(prior_verdict);
+        d.prior_spot = None;
+        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let entries = priced_input_delta(
+            &d,
+            &engine_output,
+            PositionChange::Unchanged,
+            None,
+            None,
+            None,
+            false,
+            Some(0.25),
+        );
+        assert!(
+            !entries.iter().any(|e| e.label.contains("twelve-month base target")),
+            "uncertified prior basis must exclude the row: {entries:?}"
+        );
+        // With a certified prior basis the same comparison renders (the 0.25
+        // conversion moves the old side).
+        d.prior_spot = Some(780.0);
+        let entries = priced_input_delta(
+            &d,
+            &engine_output,
+            PositionChange::Unchanged,
+            None,
+            None,
+            None,
+            false,
+            Some(0.25),
+        );
+        assert!(
+            entries.iter().any(|e| e.label.contains("twelve-month base target")),
+            "certified prior basis renders the bridged row: {entries:?}"
+        );
+    }
+
+    #[test]
     fn the_nav_premium_delta_row_is_gated_to_the_closed_end_form() {
         // An open-end ETF's transient premium flicker must not seed a 6g input
         // delta row every run; on the closed-end form the move IS the read.
@@ -7329,7 +7956,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let entries =
-            priced_input_delta(&d, &engine_output, PositionChange::Unchanged, None, None, None, false);
+            priced_input_delta(&d, &engine_output, PositionChange::Unchanged, None, None, None, false, Some(1.0));
         assert!(
             !entries.iter().any(|e| e.label.contains("NAV premium")),
             "open-end: {entries:?}"
@@ -7340,7 +7967,7 @@ mod tests {
             f.fund.profile_description = Some("a closed-end equity fund".into());
         }
         let entries =
-            priced_input_delta(&d, &engine_output, PositionChange::Unchanged, None, None, None, false);
+            priced_input_delta(&d, &engine_output, PositionChange::Unchanged, None, None, None, false, Some(1.0));
         assert!(
             entries.iter().any(|e| e.label.contains("NAV premium")),
             "closed-end: {entries:?}"
@@ -7362,6 +7989,7 @@ mod tests {
             interpretation_user_prompt(&InterpretationInput {
                 input_delta: &[],
                 dossier: d,
+                prior_ledger: d.prior_ledger(),
                 engine: e,
                 distilled: "",
                 ledger_eval: None,
@@ -7412,6 +8040,7 @@ mod tests {
         let role = role_risk_user_prompt(&RoleRiskInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             readout: &readout,
             ledger_eval: None,
             distilled: "No research findings.",
@@ -7425,6 +8054,7 @@ mod tests {
         let role = role_risk_user_prompt(&RoleRiskInput {
             input_delta: &[],
             dossier: &bare,
+            prior_ledger: bare.prior_ledger(),
             readout: &readout,
             ledger_eval: None,
             distilled: "No research findings.",
@@ -7480,6 +8110,7 @@ mod tests {
             &InterpretationInput {
                 input_delta: &[],
                 dossier: &d,
+                prior_ledger: d.prior_ledger(),
                 engine: &engine_output,
                 distilled: "distilled findings",
                 ledger_eval: None,
@@ -7511,6 +8142,7 @@ mod tests {
             &RoleRiskInput {
                 input_delta: &[],
                 dossier: &d,
+                prior_ledger: d.prior_ledger(),
                 readout: &readout,
                 ledger_eval: None,
                 distilled: "No research findings.",
@@ -8368,6 +9000,7 @@ mod tests {
             None,
             None,
             &supported,
+            true,
         );
         let q = ledger
             .conditions
@@ -8389,6 +9022,7 @@ mod tests {
             None,
             None,
             &unrelated,
+            true,
         );
         assert!(ledger.conditions.iter().all(|c| !c.tripped));
         assert!(audit
@@ -8688,6 +9322,7 @@ mod tests {
         let user = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "",
             ledger_eval: None,
@@ -9146,6 +9781,7 @@ mod tests {
         let user = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "none",
             ledger_eval: None,
@@ -9243,6 +9879,7 @@ mod tests {
         let interp = interpretation_user_prompt(&InterpretationInput {
             input_delta: &[],
             dossier: &d,
+            prior_ledger: d.prior_ledger(),
             engine: &engine_output,
             distilled: "none",
             ledger_eval: None,

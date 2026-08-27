@@ -1008,6 +1008,7 @@ mod tests {
                 grade_parameter_version: None,
                 ledger_audit: None,
                 quick_basis: None,
+                authoring_close: None,
                 fund_exposure: None,
                 pre_profit: None,
                 hurdle: None,
