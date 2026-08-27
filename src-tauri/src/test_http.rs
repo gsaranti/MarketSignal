@@ -32,6 +32,21 @@ pub enum Canned {
         content_length: usize,
         partial: &'static str,
     },
+    /// Sleeps `for_ms` after reading the request, then serves `then` — a daemon
+    /// that accepts the request and goes quiet before answering, so a test can pin
+    /// a client's header-wait deadline. Size the sleep past the deadline under test:
+    /// the worker keeps sleeping after the client has given up, and its late write
+    /// to the closed socket is ignored.
+    Delay { for_ms: u64, then: Box<Canned> },
+    /// Writes a `status` head and `partial` (close-delimited, no `Content-Length`),
+    /// sleeps `for_ms`, then lets the connection close — a body that goes silent
+    /// mid-stream, so a test can pin a client's per-read idle deadline on a
+    /// success stream or on an error body alike.
+    StallMidBody {
+        status: u16,
+        partial: &'static str,
+        for_ms: u64,
+    },
 }
 
 /// A throwaway localhost HTTP server that serves a fixed script of replies — one
@@ -186,6 +201,21 @@ fn write_canned(stream: &mut TcpStream, canned: Canned) -> std::io::Result<()> {
                 "HTTP/1.1 200 STATUS\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n{partial}"
             );
             stream.write_all(resp.as_bytes())
+        }
+        Canned::Delay { for_ms, then } => {
+            std::thread::sleep(Duration::from_millis(for_ms));
+            write_canned(stream, *then)
+        }
+        Canned::StallMidBody {
+            status,
+            partial,
+            for_ms,
+        } => {
+            let head = format!("HTTP/1.1 {status} STATUS\r\nConnection: close\r\n\r\n{partial}");
+            stream.write_all(head.as_bytes())?;
+            stream.flush()?;
+            std::thread::sleep(Duration::from_millis(for_ms));
+            Ok(())
         }
     }
 }

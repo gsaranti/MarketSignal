@@ -41,10 +41,133 @@ use crate::progress::RunContext;
 const CHAT_PATH: &str = "/api/chat";
 const TAGS_PATH: &str = "/api/tags";
 
-/// Backstop per-request timeout. Local reasoning (the 122B in thinking mode) can be
-/// slow, so this is generous; it exists only to cap a stuck daemon, not to bound a
-/// healthy generation. The supervision probes (`/api/tags`) resolve far inside it.
+/// Backstop deadline for a request that declares no generation reservations — the
+/// supervision probes (`/api/tags`) and bare test requests — and the floor no
+/// derived chat deadline goes under ([`DeadlinePolicy`]).
+///
+/// How reqwest's blocking client applies a timeout matters here, because the
+/// naive reading ("a total deadline for the call") is wrong in a way that hid a
+/// run killer. The blocking builder keeps its timeout on the blocking side —
+/// it is never forwarded to the async client — and applies it twice: once as
+/// the wait for the response *headers*, then afresh on every body `read()`. For
+/// a chat call the header wait is where generation happens: with
+/// `stream: false` the daemon answers only once the whole chain has generated,
+/// and with `stream: true` the first bytes are expected only with the first
+/// token (Go's HTTP server sends headers on the first write), so prompt
+/// evaluation sits inside the header wait on both paths. A fixed ten minutes
+/// there capped a thinking chain at roughly a third of its reservation
+/// (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md` §C1),
+/// which is why a chat request never rides this constant alone.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The per-call transport deadline, derived from the request's own reservations
+/// so transport cannot cut a generation that stays inside its reservation while
+/// the daemon holds the drafted floors and its pre-generation overhead — runner
+/// scheduling, a cold model load — fits in the slack the unused reservation
+/// leaves. `num_ctx` over a prompt-evaluation floor covers the prefill that sits
+/// inside the header wait, budgeted over the full context rather than the actual
+/// prompt; on the non-streaming path, where the whole chain generates before
+/// the headers arrive, `num_predict` over a decode floor covers the chain
+/// itself. The slack is the unused part of that budget — unfilled context at
+/// the prefill floor plus, on the non-streaming path, ungenerated output at the
+/// decode floor. Generation shares `num_ctx` with the prompt, so a non-streaming
+/// call can never consume both terms: at the thinking reservation (half the
+/// context) the combined slack is at least `65_536 / prefill_floor` ≈ 11 min,
+/// while a streaming call's slack is only the context its prompt leaves. The
+/// streaming path takes the prefill term alone — its tokens arrive as they
+/// generate — and the same value then bounds each body read as an idle limit,
+/// so a daemon that goes silent mid-stream is still caught. The floors are
+/// drafted just under the pinned serving path's worst measured row (160 K prompt
+/// tokens: 113 tok/s prefill, 13.3 tok/s decode —
+/// `docs/verification/2026-07-28-m5-preflight.md`), calibratable like the
+/// engine's other starting parameters, and a re-verification item on any
+/// serving-path change (`docs/local-model-operations.md §M5 pre-flight
+/// checklist`). The contract is recorded at `docs/local-models.md §The
+/// local-model adapter seam`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeadlinePolicy {
+    /// Prompt-evaluation throughput floor, tokens per second.
+    pub(crate) prefill_floor_tok_s: u32,
+    /// Decode throughput floor, tokens per second.
+    pub(crate) decode_floor_tok_s: u32,
+    /// No derived deadline goes under this; a request declaring no reservation
+    /// gets exactly it.
+    pub(crate) floor: Duration,
+}
+
+impl DeadlinePolicy {
+    /// The production policy: the drafted floors over the ten-minute backstop.
+    pub(crate) const DEFAULT: Self = Self {
+        prefill_floor_tok_s: 100,
+        decode_floor_tok_s: 12,
+        floor: DEFAULT_TIMEOUT,
+    };
+
+    /// The deadline for one request: the prefill term from its `num_ctx`, plus —
+    /// non-streaming only — the decode term from its `num_predict`, never under
+    /// [`Self::floor`]. A term whose reservation is unset contributes nothing, so a
+    /// request with neither rides the floor.
+    pub(crate) fn request_deadline(&self, req: &ChatRequest, streaming: bool) -> Duration {
+        let prefill = request_num_ctx(req)
+            .map(|tokens| Self::span(tokens, self.prefill_floor_tok_s))
+            .unwrap_or(Duration::ZERO);
+        let decode = if streaming {
+            Duration::ZERO
+        } else {
+            request_num_predict(req)
+                .map(|tokens| Self::span(tokens, self.decode_floor_tok_s))
+                .unwrap_or(Duration::ZERO)
+        };
+        (prefill + decode).max(self.floor)
+    }
+
+    /// `tokens / floor` as a duration, computed in milliseconds and rounded up so
+    /// a tiny test floor still yields a sub-second value.
+    fn span(tokens: u32, floor_tok_s: u32) -> Duration {
+        let millis = (u64::from(tokens) * 1_000).div_ceil(u64::from(floor_tok_s.max(1)));
+        Duration::from_millis(millis)
+    }
+}
+
+/// Name a transport timeout for what it is: the derived deadline reached. Read as
+/// a stalled daemon, throughput under the drafted floor, or pre-generation
+/// overhead (runner scheduling, a cold model load) outrunning the reservation's
+/// slack — the three things a healthy generation inside its reservation cannot
+/// be — rather than reqwest's opaque "operation timed out".
+fn deadline_reached(deadline: Duration) -> String {
+    format!(
+        "transport deadline of {} min reached — the daemon stalled, its throughput fell \
+         under the drafted floor, or its pre-generation overhead outran the reservation's \
+         slack (`DeadlinePolicy`)",
+        deadline.as_millis().div_ceil(60_000)
+    )
+}
+
+/// Whether an error chain bottoms out in a reqwest timeout — either the header
+/// wait's own `reqwest::Error`, or a body read's `io::Error` wrapping one (the
+/// streaming path's `BufRead::lines` surfaces the per-read deadline that way).
+fn is_transport_timeout(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        if let Some(e) = cause.downcast_ref::<reqwest::Error>() {
+            return e.is_timeout();
+        }
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
+            .is_some_and(reqwest::Error::is_timeout)
+    })
+}
+
+/// Wrap a chat-call error so a deadline trip carries [`deadline_reached`] as its
+/// outermost message — the one the tracker row and the run's failure detail show.
+fn name_deadline_trip(err: anyhow::Error, deadline: Duration) -> anyhow::Error {
+    if is_transport_timeout(&err) {
+        err.context(deadline_reached(deadline))
+    } else {
+        err
+    }
+}
 
 /// Coalesce streamed fragments into a few-hundred progress events rather than one
 /// per token (mirrors the cloud streaming path's flush cadence).
@@ -506,11 +629,14 @@ pub struct LocalModelClient {
     http: reqwest::blocking::Client,
     base_url: String,
     progress: Arc<RunContext>,
+    deadline: DeadlinePolicy,
 }
 
 impl LocalModelClient {
     /// Build a client for one daemon endpoint (e.g. `http://localhost:11434`). A
     /// trailing slash is trimmed so a joined path's leading slash doesn't double up.
+    /// The builder-level timeout is the backstop the probes ride; every chat call
+    /// sets its own derived deadline per request ([`DeadlinePolicy`]).
     pub fn new(endpoint: impl Into<String>) -> Result<Self> {
         let http = reqwest::blocking::Client::builder()
             .timeout(DEFAULT_TIMEOUT)
@@ -520,6 +646,7 @@ impl LocalModelClient {
             http,
             base_url: normalize_endpoint(&endpoint.into()),
             progress: RunContext::noop(),
+            deadline: DeadlinePolicy::DEFAULT,
         })
     }
 
@@ -527,6 +654,14 @@ impl LocalModelClient {
     /// streaming path, tokens / reasoning). Without it the client stays no-op.
     pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
         self.progress = ctx;
+        self
+    }
+
+    /// Test seam: swap the deadline policy so a wire test can trip a deadline in
+    /// milliseconds rather than the production policy's hours.
+    #[cfg(test)]
+    fn with_deadline_policy(mut self, policy: DeadlinePolicy) -> Self {
+        self.deadline = policy;
         self
     }
 
@@ -545,15 +680,21 @@ impl LocalModelClient {
     }
 
     fn chat_inner(&self, req: &ChatRequest) -> Result<ChatResponse> {
+        let deadline = self.deadline.request_deadline(req, false);
         let body = build_chat_body(req, false);
         let resp = self
             .http
             .post(self.url(CHAT_PATH))
+            .timeout(deadline)
             .json(&body)
             .send()
-            .context("sending local chat request")?;
+            .context("sending local chat request")
+            .map_err(|e| name_deadline_trip(e, deadline))?;
         let status = resp.status();
-        let text = resp.text().context("reading local chat response body")?;
+        let text = resp
+            .text()
+            .context("reading local chat response body")
+            .map_err(|e| name_deadline_trip(e, deadline))?;
         if !status.is_success() {
             bail!("local model returned {status}: {text}");
         }
@@ -572,19 +713,28 @@ impl LocalModelClient {
     /// so a prose stage can't mistake a cut-off stream for a complete answer and
     /// `run_job` classifies a cancelled run off the shared flag (`jobs.rs`).
     pub fn chat_streaming(&self, req: &ChatRequest, role: StreamRole<'_>) -> Result<ChatResponse> {
+        let deadline = self.deadline.request_deadline(req, true);
         let body = build_chat_body(req, true);
         let resp = self
             .http
             .post(self.url(CHAT_PATH))
+            .timeout(deadline)
             .json(&body)
             .send()
-            .context("sending local chat request")?;
+            .context("sending local chat request")
+            .map_err(|e| name_deadline_trip(e, deadline))?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().unwrap_or_default();
+            // The status is the diagnosis; the body is detail. A body that itself
+            // stalls still names the deadline rather than vanishing into a blank.
+            let text = resp.text().unwrap_or_else(|e| {
+                let e = name_deadline_trip(anyhow::Error::from(e), deadline);
+                format!("(error body unreadable: {e})")
+            });
             bail!("local model returned {status}: {text}");
         }
         stream_chat_response(std::io::BufReader::new(resp), &self.progress, role)
+            .map_err(|e| name_deadline_trip(e, deadline))
     }
 
     /// Emit the terminal tracker row for a chat call.
@@ -1194,6 +1344,201 @@ mod tests {
         assert_eq!(resp.content, "graded");
         assert_eq!(server.attempts(), 1);
         assert_eq!(server.request_paths(), vec!["/api/chat".to_string()]);
+    }
+
+    // ---- transport deadline (2026-08-24 review §C1) ----
+
+    /// A thinking-stage request as the pipeline builds it: the interpret context
+    /// and the thinking reservation.
+    fn thinking_request() -> ChatRequest {
+        let mut req = ChatRequest::new("m", vec![ChatMessage::user("think hard")]);
+        req.options = Some(options::thinking_general(131_072, 65_536));
+        req
+    }
+
+    /// A policy whose floors are so high every derived term rounds to a millisecond,
+    /// leaving `floor` as the deadline — milliseconds, so a wire test trips it fast.
+    fn instant_policy(floor_ms: u64) -> DeadlinePolicy {
+        DeadlinePolicy {
+            prefill_floor_tok_s: u32::MAX,
+            decode_floor_tok_s: u32::MAX,
+            floor: Duration::from_millis(floor_ms),
+        }
+    }
+
+    #[test]
+    fn deadline_policy_derives_from_the_request_reservations() {
+        let policy = DeadlinePolicy::DEFAULT;
+        // Non-streaming thinking (the 6c research turn): 131,072 / 100 tok/s of
+        // prefill plus 65,536 / 12 tok/s of decode — ~113 minutes, an order past the
+        // old fixed ten, and past the reservation at the drafted floor by design.
+        let thinking = policy.request_deadline(&thinking_request(), false);
+        assert_eq!(thinking, Duration::from_millis(1_310_720 + 5_461_334));
+        assert!(
+            thinking > Duration::from_secs(110 * 60) && thinking < Duration::from_secs(115 * 60)
+        );
+        // Streaming thinking (interpret / role-risk / action): the prefill term alone —
+        // tokens arrive as they generate — which then also bounds each body read.
+        let streamed = policy.request_deadline(&thinking_request(), true);
+        assert_eq!(streamed, Duration::from_millis(1_310_720));
+        // Distillation on a genuinely distinct fast model, at the distill context:
+        // ~17 minutes.
+        let mut distill = ChatRequest::new("m", vec![ChatMessage::user("condense")]);
+        distill.options = Some(options::non_thinking_general(32_768, 8_192));
+        assert_eq!(
+            policy.request_deadline(&distill, false),
+            Duration::from_millis(327_680 + 682_667)
+        );
+        // Distillation on the default roster — the fast tier fallen back to the
+        // reasoner — shares the interpret context (one `num_ctx` per model), so its
+        // deadline is ~33 minutes, not 17.
+        let mut distill_default = ChatRequest::new("m", vec![ChatMessage::user("condense")]);
+        distill_default.options = Some(options::non_thinking_general(131_072, 8_192));
+        assert_eq!(
+            policy.request_deadline(&distill_default, false),
+            Duration::from_millis(1_310_720 + 682_667)
+        );
+        // No reservations (a probe-shaped request) rides the backstop exactly.
+        let bare = ChatRequest::new("m", vec![ChatMessage::user("x")]);
+        assert_eq!(policy.request_deadline(&bare, false), DEFAULT_TIMEOUT);
+        assert_eq!(policy.request_deadline(&bare, true), DEFAULT_TIMEOUT);
+        // A small reservation never goes under the backstop.
+        let mut small = ChatRequest::new("m", vec![ChatMessage::user("x")]);
+        small.options = Some(options::non_thinking_general(2_048, 256));
+        assert_eq!(policy.request_deadline(&small, false), DEFAULT_TIMEOUT);
+    }
+
+    #[test]
+    fn deadline_policy_floors_never_divide_by_zero() {
+        let zero = DeadlinePolicy {
+            prefill_floor_tok_s: 0,
+            decode_floor_tok_s: 0,
+            floor: Duration::from_secs(1),
+        };
+        // A zero floor reads as one token per second rather than panicking.
+        let d = zero.request_deadline(&thinking_request(), false);
+        assert_eq!(d, Duration::from_secs(131_072 + 65_536));
+    }
+
+    #[test]
+    fn chat_trips_the_derived_deadline_when_the_daemon_never_answers() {
+        // The daemon reads the request and goes quiet for longer than the deadline
+        // — the header wait is where a non-streaming generation lives, so this is
+        // the exact shape a chain past the old fixed ten minutes produced.
+        let server = MockHttp::serve(vec![Canned::Delay {
+            for_ms: 1_500,
+            then: Box::new(Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"message":{"role":"assistant","content":"late"}}"#,
+            }),
+        }]);
+        let client = LocalModelClient::new(&server.base_url)
+            .unwrap()
+            .with_deadline_policy(instant_policy(200));
+        let err = client.chat(&thinking_request()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("transport deadline of 1 min reached"),
+            "deadline trip must be named, got: {msg}"
+        );
+        assert!(msg.contains("daemon stalled"), "{msg}");
+        assert_eq!(
+            server.attempts(),
+            1,
+            "a deadline trip is never retried here"
+        );
+    }
+
+    #[test]
+    fn chat_streaming_trips_the_derived_deadline_before_the_first_chunk() {
+        // With `stream: true` nothing arrives before the first token, so prefill
+        // sits inside the header wait; a daemon silent past the deadline trips it.
+        let server = MockHttp::serve(vec![Canned::Delay {
+            for_ms: 1_500,
+            then: Box::new(Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: "{\"message\":{\"role\":\"assistant\",\"content\":\"late\"},\"done\":true}\n",
+            }),
+        }]);
+        let client = LocalModelClient::new(&server.base_url)
+            .unwrap()
+            .with_deadline_policy(instant_policy(200));
+        let err = client
+            .chat_streaming(&thinking_request(), StreamRole::Main)
+            .unwrap_err();
+        assert!(err.to_string().contains("transport deadline"), "{err:#}");
+    }
+
+    #[test]
+    fn chat_streaming_trips_the_idle_deadline_when_the_stream_goes_silent() {
+        // Headers and a first chunk arrive, then nothing: the per-read bound catches
+        // the stall and the trip is named through the io-error chain, not left as an
+        // opaque read failure. The partial content must not leak out as `Ok`.
+        let server = MockHttp::serve(vec![Canned::StallMidBody {
+            status: 200,
+            partial: "{\"message\":{\"role\":\"assistant\",\"content\":\"par\"}}\n",
+            for_ms: 1_500,
+        }]);
+        let client = LocalModelClient::new(&server.base_url)
+            .unwrap()
+            .with_deadline_policy(instant_policy(200));
+        let err = client
+            .chat_streaming(&thinking_request(), StreamRole::Main)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("transport deadline"),
+            "idle trip must be named, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn chat_streaming_names_the_deadline_when_an_error_body_stalls() {
+        // A non-2xx whose body then goes silent: the status stays the headline and
+        // the stalled body read names the deadline instead of collapsing to blank.
+        let server = MockHttp::serve(vec![Canned::StallMidBody {
+            status: 500,
+            partial: "{\"error\":\"runner ",
+            for_ms: 1_500,
+        }]);
+        let client = LocalModelClient::new(&server.base_url)
+            .unwrap()
+            .with_deadline_policy(instant_policy(200));
+        let err = client
+            .chat_streaming(&thinking_request(), StreamRole::Main)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("local model returned 500"), "{msg}");
+        assert!(msg.contains("transport deadline"), "{msg}");
+    }
+
+    #[test]
+    fn chat_paths_succeed_under_the_production_policy_against_a_prompt_daemon() {
+        // The control: the same requests under `DeadlinePolicy::DEFAULT` complete
+        // when the daemon answers — the derived deadline is a ceiling, never a gate.
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"message":{"role":"assistant","content":"now"}}"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: "{\"message\":{\"role\":\"assistant\",\"content\":\"now\"},\"done\":true}\n",
+            },
+        ]);
+        let client = LocalModelClient::new(&server.base_url).unwrap();
+        assert_eq!(client.chat(&thinking_request()).unwrap().content, "now");
+        assert_eq!(
+            client
+                .chat_streaming(&thinking_request(), StreamRole::Main)
+                .unwrap()
+                .content,
+            "now"
+        );
+        assert_eq!(server.attempts(), 2);
     }
 
     #[test]

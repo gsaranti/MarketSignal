@@ -91,6 +91,19 @@ Every 6c research turn, distill call, and interpret/role-risk/action call rides 
 A side effect: the typed `done_reason: "length"` truncation diagnostics (`ensure_not_output_limited`, `pipeline.rs:4486`) are unreachable for any chain that would take over ten minutes — the transport error preempts exactly the attribution the design built.
 Observed healthy generations already run at 70–80% of the deadline, so this is the review's most realistic multi-hour-run killer.
 
+**Resolved 2026-08-26.**
+Re-verification against the reqwest 0.12.28 source narrowed the mechanism before the fix.
+The blocking client never forwards its timeout to the async client; it applies it as the wait for the response headers, then afresh on every body read.
+The streaming callers — interpretation, role-risk, and the action call — were therefore already idle-bounded and never at risk mid-chain.
+The exposure was the two non-streaming callers, the 6c research turn and distillation, where the daemon answers only once the whole chain has generated.
+The header wait's prompt-evaluation span is exposed on both paths; the pre-flight table shows it passing ten minutes above ~100 K prompt tokens on its own.
+The fix derives every chat call's deadline from the request's own reservations: `num_ctx` over a prompt-evaluation floor, plus `num_predict` over a decode floor on the non-streaming path, never under the ten-minute backstop (`DeadlinePolicy`, `local_model.rs`).
+A trip is named for what it is — a stalled daemon, throughput under the drafted floor, or pre-generation overhead outrunning the reservation's slack — so it is attributable where the length-stop guard cannot reach.
+The contract is recorded at `docs/local-models.md §The local-model adapter seam`, and the floors' re-verification obligation at `docs/local-model-operations.md §M5 pre-flight checklist`.
+The accepted cost is that a daemon which genuinely hangs mid-research-turn is detected within the derived deadline (~2 h at the thinking reservation) rather than ten minutes, on a path already blind to cancel for the call's duration.
+The streaming stages' idle bound rises the same way, from ten minutes to the prefill term (~22 min at the interpret context), so a cancel during a silent daemon waits that long there too.
+Three Codex rounds added the deadline attribution on a stalled non-2xx error body, made the guarantee conditional on the daemon holding the floors and on pre-generation overhead fitting the unused reservation's slack, aligned the trip message with that three-condition contract, and pinned the default roster's distillation deadline (~33 min, since the fallen-back fast tier shares the interpret context).
+
 ### Named design risk — zero retry on hundreds of hard-path model calls (documented posture, not a defect)
 
 Any single local-model failure inside the required 6c–6f path — a transient daemon error, a connection reset, an empty completion body (`serde_json::from_str("")` at `pipeline.rs:4779/4797/4821`, `research.rs:1120`), a schema-parse failure (`distill.rs:633`, `711`, `719`), a length stop, or a whitespace action rationale (`ensure_action_rationale`, `pipeline.rs:150-160`, ruled fail-hard 2026-08-18) — fails the whole run on first occurrence.
@@ -159,6 +172,7 @@ Coverage matters as much as findings for a pre-run record; the following were tr
 Every fix is a separate, undecided piece of work; nothing here was applied.
 Four items bear directly on the queued big confirmation run and are worth deciding before it: C1 (a realistic multi-hour-run killer whose fix shape is a transport budget consistent with the thinking reservation, or an idle-based read timeout), the retry-posture weighing beside it, F1 (a split during the watch window would contaminate the run's ledger evidence), and F3 (the run will exercise the research loop whose ledger channel is silently dead, and its watch-set typed-channel yield line will read zero qualitative support by construction).
 The alignment findings are doc edits; A1 in particular misinforms the user about the cost of the failure mode C1 makes likelier.
+C1 is resolved (2026-08-26; the resolution is recorded under §C1).
 
 ## Codex independent review additions
 

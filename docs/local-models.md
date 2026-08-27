@@ -76,6 +76,12 @@ The **input byte cap** is applied in the request builders, so it binds every cal
 **Dimensionality is deliberately not checked** — the store is dimension-agnostic by design and skips rows whose dimension mismatches a query ([storage.md §Local Vector Memory](storage.md#local-vector-memory)); that skip is the guard, and asserting a configured dimension here would contradict it.
 The failure posture splits by when it happens: at **retrieval** time, an invalid or failed embedding **fail-softs** — semantic recall is skipped for that query and recorded as a degraded-input flag, while deterministically loaded context is unaffected; at **persistence** time, only the invalid row is **dropped and logged** — a completed run's analysis is never failed by its memory write.
 Token and reasoning streaming ride the existing `progress` seam ([run-tracking.md](run-tracking.md)), so a local job streams per-step progress, per-request rows, and model output into the run tracker exactly as a report run does.
+The transport deadline on every chat call is derived from the request's own reservations: `num_ctx` over a prompt-evaluation floor, plus `num_predict` over a decode floor on the non-streaming path, so transport cannot cut a chain that stays inside its reservation while the daemon holds the drafted floors and its pre-generation overhead fits in the slack the unused reservation leaves.
+That slack is the unused part of the budget — the context the prompt does not fill at the prompt-evaluation floor, plus, on the non-streaming path, the output the chain does not generate at the decode floor — and it is what absorbs runner scheduling and a cold model load ahead of the first byte.
+It is never zero on the non-streaming path, since generation shares the context with the prompt, but a streaming call keeps only what its prompt leaves.
+No derived deadline goes under the ten-minute backstop, which a request declaring no reservation rides exactly.
+The streaming path takes the prompt-evaluation term alone, since its tokens arrive as they generate, and that same value bounds each body read as an idle limit.
+The floors are drafted from the pinned serving path's measured throughput and move only with it ([local-model-operations.md §M5 pre-flight checklist](local-model-operations.md#m5-pre-flight-checklist)).
 
 ## Schema-constrained output
 

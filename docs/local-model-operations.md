@@ -192,6 +192,7 @@ It implements the existing `Embedder` trait, so nothing else changes.
   Compute effective tok/s from accumulated output chars ÷ elapsed, never from the reported eval fields (a thinking-heavy call otherwise reads as ~90 s of "missing" time).
 - [x] **Throughput** *(2026-07-28, llama.cpp Metal path)*: measured across the probe — prompt eval 933 tok/s at 6 K falling to ~154 tok/s at 113 K; decode 41 tok/s at 6 K falling to ~16 tok/s at 113 K.
   At realistic packet sizes (≤ 30 K) that is seconds-to-a-minute of prompt eval plus ~25–40 tok/s decode — a thinking-heavy per-holding call (~7 K generated tokens) lands around 4–6 minutes, acceptable for the on-demand, checkpoint/resume job design (the community 65–79 tok/s figure was indeed the MLX-path optimistic case).
+  The adapter's transport-deadline floors (`DeadlinePolicy`, `local_model.rs`) are drafted just under the probe table's worst row (160.6 K: 113 tok/s prefill, 13.3 tok/s decode — [verification/2026-07-28-m5-preflight.md](verification/2026-07-28-m5-preflight.md)), so a serving-path change — an Ollama pin bump, an MLX backend — re-verifies them alongside the throughput itself.
 
 ## Sources
 
