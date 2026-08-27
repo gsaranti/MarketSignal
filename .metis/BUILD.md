@@ -449,8 +449,11 @@ Each is easy to break by accident, so a plan should say how it honors them:
   recorded obligations (holding-identity + source-text validation, ISO period
   normalization) — and an unevidenced call rejects every candidate.
 - **Model-arm values never bind the engine baseline.** The typed validated
-  channels are the only model→engine inputs: the ledger's conditions and the
-  pre-profit observations, both live. The 2026-08-24 rulings bound the rest —
+  channels are the only model→engine inputs: the ledger's conditions, the
+  pre-profit observations, and a distilled claim's `related_condition_id`
+  tie — the source-backed leg a qualitative ledger trip needs, carried only
+  across a verbatim re-emission so a prior tie never becomes fresh support —
+  all live. The 2026-08-24 rulings bound the rest —
   the research forward assumption is **shadow-only** (a would-have audit line,
   never a write-back; `engine_output` is immutable past Step 6b), the
   research-fed fraud claim is **advisory** (the hard-forensic state reads the
@@ -460,6 +463,13 @@ Each is easy to break by accident, so a plan should say how it honors them:
 - **The Schwab adapter implements no order or trading endpoint.** The read-only
   boundary is code-enforced, not scope-enforced, so it survives a token scope
   change.
+- **Local-model transport deadlines derive from the request's reservations.**
+  Every chat call's deadline is `num_ctx` over a prefill floor plus, on the
+  non-streaming path, `num_predict` over a decode floor (`DeadlinePolicy`),
+  never a fixed backstop — a fixed ten minutes cut thinking chains at a third
+  of their reservation and failed the run. The floors are drafted from the
+  pinned serving path's measured throughput and re-verify with it
+  (`docs/local-models.md §The local-model adapter seam`).
 
 ### What each built slice left for the next
 
@@ -607,7 +617,11 @@ every stacked runtime confirmation at once.
 ### Remaining, in order
 
 1. **The single big confirmation run** — the queue's next item now the
-   Portfolio Analysis job is built in full (the pre-run bar is met). Its
+   Portfolio Analysis job is built in full (the pre-run bar is met). The
+   2026-08-24 large-scale review sits ahead of it
+   (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
+   §Disposition owns the list): C1 and F3 are resolved under `portfolio-v13`;
+   F1 and the retry posture remain pre-run items. Its
    checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9

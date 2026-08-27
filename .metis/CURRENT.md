@@ -18,7 +18,10 @@ the ledger conditions with ids, a tie carries across verbatim re-emission only
 research-supported conditions off tied input-delta entries, and the stale
 "none are available this run" sentence is gone. Both resolutions sit under
 their sections in the record with §Disposition status lines. Five Codex
-rounds in total.
+rounds in total. `BUILD.md` was updated with the user's OK: §Standing
+constraints gained the transport-deadline rule and names the research tie as
+the third live typed channel; §What remains item 1 places the review program
+ahead of the big run.
 
 ## Current state
 
