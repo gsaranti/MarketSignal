@@ -74,6 +74,19 @@ These labels enter the cohort means, band calibration, the head-to-head, and the
 Reachability is gated: the production cache writer fetches floor→today contiguously, so it needs a source-side range clamp or a stale cache surviving a failed refresh — but when it fires it is silent.
 The fix-shaped invariant: bound `end_bar.date` to `w_end − COVERAGE_TOLERANCE_DAYS` and require `end_bar.date > entry.date`.
 
+**Resolved 2026-08-27.**
+The named invariant lands at one helper — the scored end bar is the last close at or before the window end, bounded to `w_end − COVERAGE_TOLERANCE_DAYS` and required to sit strictly after the entry bar — applied to the holding leg and both benchmark legs (`window_end_close`, `outcome.rs`).
+A window whose end bar fails the bound reads uncovered and rides the existing pending → grace → typed-unscorable ladder, retiring both the tail-only `covers_through` judgment and the silent per-window skip where no end bar resolved at all.
+The cache-refresh judgment tightened to the same end-bar rule, so a cached series with an internal gap at the window end earns its one heal attempt instead of being served as covered.
+Regressions pin the fabricated flat-return shape held pending then closed terminal, the benchmark analog returning no leg, the end-bar-on-entry-session refusal, and the gapped cache healing through one fetch.
+Three pre-existing fixtures that scored their 12-month window off a months-stale bar — the finding's own shape — gained genuine end-window bars.
+The falsifier lead-time bar-count distortion over mid-window interior gaps sits outside the named invariant and stays open as recorded above.
+A Codex round then closed three follow-ons.
+The heal judgment now weighs every due window end rather than only the furthest, so an interior gap at an earlier due end earns the same one fetch (the multi-end `series` seam, regression-pinned).
+The past-grace discriminator reads disappearance from the series itself: a series still alive past the window end closes `price-coverage-unscorable`, terminal staying reserved for a series that actually stopped — reconciling the closure typing with the `storage.md` discriminator sentence and the TO contract's terminal reservation.
+And the coverage-tolerance constant's comment states the end-bar invariant instead of the retired tail rule.
+The canonical coverage rule is `docs/portfolio-analysis.md §Outcome learning`.
+
 ### F3 — major: the research-supported qualitative-trip channel is structurally dead, and the prompt asserts it closed
 
 The 6g validator honors a qualitative tripped/fired claim when a fresh research claim ties to the condition via `related_condition_id` (`pipeline.rs:1728-1746`; ids collected at `pipeline.rs:1263-1279` priced, `783-798` role-risk).
@@ -224,6 +237,7 @@ C1 is resolved (2026-08-26; the resolution is recorded under §C1).
 F3 is resolved (2026-08-26; the resolution is recorded under §F3).
 F1 is resolved (2026-08-27; the resolution is recorded under §F1).
 The retry posture is resolved (2026-08-27; the resolution is recorded under §Named design risk) — the pre-run list is complete.
+F2 is resolved (2026-08-27; the resolution is recorded under §F2).
 
 ## Codex independent review additions
 

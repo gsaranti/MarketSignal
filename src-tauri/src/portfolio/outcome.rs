@@ -67,9 +67,10 @@ pub const LABEL_WINDOWS_MONTHS: [u32; 4] = [1, 3, 6, 12];
 /// `^spx` touched only the price-bar cache (cleaned at store init).
 pub const MARKET_BENCHMARK: &str = "^GSPC";
 
-/// Coverage tolerance: a series whose latest bar sits within this many calendar
-/// days before a window end still covers it (weekends and short market closures —
-/// the label value is the last close at or before the window end either way).
+/// Coverage tolerance: the scored end bar — the last close at or before a
+/// window end — covers that end only when it sits within this many calendar
+/// days of it (weekends and short market closures). The bound binds the bar
+/// actually scored, never the series' latest bar ([`window_end_close`]).
 const COVERAGE_TOLERANCE_DAYS: i64 = 4;
 
 /// Session-proximity bound around a keyed session, in calendar days (long
@@ -805,10 +806,11 @@ impl<'a> SeriesCtx<'a> {
         }
     }
 
-    /// The symbol's cached-through series covering `[from, through]` where
-    /// possible. Coverage is the caller's judgment ([`covers_through`]); this only
-    /// guarantees the cache is as complete as one refresh could make it.
-    fn series(&mut self, symbol: &str, from: NaiveDate, through: NaiveDate) -> &[DatedValue] {
+    /// The symbol's cached-through series covering `from` through each of
+    /// `ends` where possible. Coverage is the caller's judgment
+    /// ([`window_end_close`]); this only guarantees the cache is as complete
+    /// as one refresh could make it.
+    fn series(&mut self, symbol: &str, from: NaiveDate, ends: &[NaiveDate]) -> &[DatedValue] {
         let key = symbol.to_ascii_uppercase();
         if !self.mem.contains_key(&key) {
             let cached = store::load_price_bars(self.conn, &key).unwrap_or_default();
@@ -821,7 +823,12 @@ impl<'a> SeriesCtx<'a> {
             // years old has a hole at the anchor, and serving it as covered
             // would hand the callers a stale basis bridge.
             let covers_start = anchor_session_close(cached, from).is_some();
-            !(covers_start && covers_through(cached, through))
+            // The end judgment is the same bounded end-bar rule scoring uses,
+            // and it weighs EVERY end the caller will score, not just the
+            // furthest: an internal gap at any due window's end must earn the
+            // one heal fetch, or that window closes unscorable with the
+            // source sitting available.
+            !(covers_start && ends.iter().all(|end| window_end_close(cached, *end).is_some()))
         };
         if needs_fetch && !self.fetch_attempted.contains(&key) {
             if let Some(source) = self.source {
@@ -857,13 +864,16 @@ fn merge_series(cached: Vec<DatedValue>, fresh: Vec<DatedValue>) -> Vec<DatedVal
         .collect()
 }
 
-/// Whether a series' latest bar reaches `through` (within the weekend/holiday
-/// tolerance) — the label-time coverage rule's mechanical half.
-fn covers_through(closes: &[DatedValue], through: NaiveDate) -> bool {
-    closes
-        .last()
-        .and_then(|b| parse_iso_date_prefix(&b.date))
-        .is_some_and(|d| d >= through - chrono::Duration::days(COVERAGE_TOLERANCE_DAYS))
+/// The window's scored end bar: the last close at or before `w_end`, bounded by
+/// [`COVERAGE_TOLERANCE_DAYS`]. The coverage rule binds the bar actually
+/// scored, never the series' latest bar — over an internal gap a tail-only
+/// read certified an arbitrarily stale end bar, degenerately the entry bar
+/// itself, recording a fabricated exact-0% window.
+fn window_end_close(closes: &[DatedValue], w_end: NaiveDate) -> Option<&DatedValue> {
+    close_at_or_before(closes, w_end).filter(|b| {
+        parse_iso_date_prefix(&b.date)
+            .is_some_and(|d| d >= w_end - chrono::Duration::days(COVERAGE_TOLERANCE_DAYS))
+    })
 }
 
 fn close_at_or_before(closes: &[DatedValue], date: NaiveDate) -> Option<&DatedValue> {
@@ -1009,7 +1019,7 @@ pub fn mature_labels(
             continue;
         };
         let closes = ctx
-            .series(&ep.symbol, floor_for(&fetch_floor, &ep.symbol, anchor), furthest)
+            .series(&ep.symbol, floor_for(&fetch_floor, &ep.symbol, anchor), &due_ends)
             .to_vec();
         let entry = entry_close(&closes, anchor).cloned();
         // One dividends pull per episode serves every scoring window (the
@@ -1065,16 +1075,27 @@ pub fn mature_labels(
             if w_end > today {
                 continue;
             }
-            let holding_covered = entry.is_some() && covers_through(&closes, w_end);
+            // Coverage is the scored end bar's own bound plus at least one
+            // post-entry observation — an end bar on the entry session is a
+            // window with no observed post-entry price, not a flat return.
+            let end_bar = window_end_close(&closes, w_end);
+            let holding_covered = entry
+                .as_ref()
+                .zip(end_bar)
+                .is_some_and(|(e, b)| b.date > e.date);
             let past_grace = today > w_end + chrono::Duration::days(PRICE_COVERAGE_GRACE_DAYS);
             if !holding_covered {
                 if past_grace {
                     // The grace doubles as the transient-vs-disappearance
                     // discriminator: a series alive at the entry that stopped
-                    // before the window end is conservatively terminal; one that
-                    // never covered the start (empty, or first bar beyond the
-                    // entry bound) takes the price-coverage state.
-                    let outcome = if entry.is_none() {
+                    // before the window end is conservatively terminal; one
+                    // that never covered the start (empty, or first bar beyond
+                    // the entry bound) — or that is still alive PAST the
+                    // window end, an interior gap the heal fetch could not
+                    // fill — takes the price-coverage state, terminal staying
+                    // reserved for a series that actually stopped.
+                    let outcome = if entry.is_none() || first_close_after(&closes, w_end).is_some()
+                    {
                         LabelOutcome::PriceCoverageUnscorable
                     } else {
                         LabelOutcome::TerminalUnscorable
@@ -1100,9 +1121,7 @@ pub fn mature_labels(
                 continue;
             }
             let entry = entry.as_ref().expect("holding_covered implies entry");
-            let Some(end_bar) = close_at_or_before(&closes, w_end) else {
-                continue;
-            };
+            let end_bar = end_bar.expect("holding_covered implies a bounded end bar");
             // Benchmark legs follow the same coverage rule: an uncovered
             // resolvable leg holds the whole window pending within grace, then
             // scores with the leg typed unavailable past it.
@@ -1110,13 +1129,14 @@ pub fn mature_labels(
                 .series(
                     MARKET_BENCHMARK,
                     floor_for(&fetch_floor, MARKET_BENCHMARK, anchor),
-                    w_end,
+                    std::slice::from_ref(&w_end),
                 )
                 .to_vec();
             let market_ret = bench_return(&market_series, anchor, w_end);
-            let sector_series = sector_bench
-                .as_ref()
-                .map(|b| ctx.series(b, floor_for(&fetch_floor, b, anchor), w_end).to_vec());
+            let sector_series = sector_bench.as_ref().map(|b| {
+                ctx.series(b, floor_for(&fetch_floor, b, anchor), std::slice::from_ref(&w_end))
+                    .to_vec()
+            });
             let sector_ret = sector_series
                 .as_ref()
                 .and_then(|s| bench_return(s, anchor, w_end));
@@ -1228,15 +1248,13 @@ pub fn mature_labels(
 }
 
 /// A benchmark's own price-only window return, on its own next-session entry
-/// anchor (the same [`ENTRY_TOLERANCE_DAYS`] bound as the holding leg). `None`
-/// when the series doesn't cover the window at either end.
+/// anchor (the same [`ENTRY_TOLERANCE_DAYS`] bound as the holding leg) and its
+/// own bounded end bar ([`window_end_close`], strictly after the entry).
+/// `None` when the series doesn't cover the window at either end.
 fn bench_return(closes: &[DatedValue], anchor: NaiveDate, w_end: NaiveDate) -> Option<f64> {
-    if !covers_through(closes, w_end) {
-        return None;
-    }
     let entry = entry_close(closes, anchor)?;
-    let end = close_at_or_before(closes, w_end)?;
-    Some(end.value / entry.value - 1.0)
+    let end = window_end_close(closes, w_end)?;
+    (end.date > entry.date).then(|| end.value / entry.value - 1.0)
 }
 
 /// Maximum drawdown (≤ 0) over the closes from the entry bar through the window
@@ -3870,7 +3888,7 @@ mod tests {
         // proving it keyed at the vintage rather than silently falling back to the
         // anchor, which is what the old exclusion was protecting against.
         let at_anchor = {
-            let series = ctx.series("LONE", holding_from, today).to_vec();
+            let series = ctx.series("LONE", holding_from, &[today]).to_vec();
             anchor_session_close(&series, NaiveDate::from_ymd_opt(2026, 3, 10).unwrap())
                 .map(|b| b.value)
                 .expect("the anchor session is covered")
@@ -4118,9 +4136,179 @@ mod tests {
         let anchor = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
         let w_end = NaiveDate::from_ymd_opt(2026, 12, 20).unwrap();
         assert_eq!(bench_return(&closes, anchor, w_end), None);
-        // The same series with a timely start supplies one.
-        let timely = bars(&[("2026-05-04", 100.0), ("2026-12-31", 110.0)]);
+        // A timely start AND a genuine end-window bar supply one.
+        let timely = bars(&[("2026-05-04", 100.0), ("2026-12-18", 110.0)]);
         assert!(bench_return(&timely, anchor, w_end).is_some());
+        // A tail bar past the window end alone does not: the last bar at or
+        // before the end is the entry bar itself — the fabricated flat-return
+        // shape (F2), which the old tail-only read certified as covered.
+        let gapped = bars(&[("2026-05-04", 100.0), ("2026-12-31", 110.0)]);
+        assert_eq!(bench_return(&gapped, anchor, w_end), None);
+    }
+
+    #[test]
+    fn an_end_bar_on_the_entry_session_never_supplies_a_return() {
+        // A window short enough that its only in-tolerance bar is the entry bar:
+        // a return needs at least one observed post-entry price.
+        let closes = bars(&[("2026-05-04", 100.0)]);
+        let anchor = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+        let w_end = NaiveDate::from_ymd_opt(2026, 5, 6).unwrap();
+        assert_eq!(bench_return(&closes, anchor, w_end), None);
+    }
+
+    #[test]
+    fn an_internal_gap_at_the_window_end_holds_pending_then_closes_price_coverage() {
+        // The series tail reaches past the window end — the old tail-only
+        // coverage read — but the last bar at or before it is the entry bar,
+        // so scoring would record a fabricated exact-0% window. It must hold
+        // pending inside grace, then close typed, never score — and the bar
+        // AFTER the window end proves the series never stopped, so the type
+        // is price-coverage, never the terminal contract reserved for
+        // genuine disappearances.
+        let conn = mem_conn();
+        store::merge_price_bars(
+            &conn,
+            "GAPX",
+            &bars(&[("2026-05-04", 100.0), ("2026-06-05", 120.0)]),
+        )
+        .unwrap();
+        let mut episodes = vec![old_episode("GAPX", "2026-05-01T12:00:00+00:00")];
+        let mut ctx = SeriesCtx::new(&conn, None);
+        // The 1-month window ends 2026-06-01: due, inside grace.
+        let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-06-15");
+        assert!(
+            summary.matured.is_empty(),
+            "a stale end bar must never score: {:?}",
+            summary.matured
+        );
+        assert_eq!(summary.pending_coverage, vec!["GAPX".to_string()]);
+        let mut ctx = SeriesCtx::new(&conn, None);
+        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
+        assert_eq!(summary.matured.len(), 1, "{:?}", summary.matured);
+        assert_eq!(summary.matured[0].window_months, 1);
+        assert_eq!(summary.matured[0].outcome, "price-coverage-unscorable");
+    }
+
+    #[test]
+    fn a_series_that_stops_before_the_window_end_closes_terminal_past_grace() {
+        // Alive at the entry, no bar at or after the window end: the
+        // conservatively terminal contract — the case the discriminator's
+        // terminal arm is reserved for.
+        let conn = mem_conn();
+        store::merge_price_bars(
+            &conn,
+            "STOP",
+            &bars(&[("2026-05-04", 100.0), ("2026-05-10", 90.0)]),
+        )
+        .unwrap();
+        let mut episodes = vec![old_episode("STOP", "2026-05-01T12:00:00+00:00")];
+        let mut ctx = SeriesCtx::new(&conn, None);
+        let today = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-09-15");
+        assert_eq!(summary.matured.len(), 1, "{:?}", summary.matured);
+        assert_eq!(summary.matured[0].window_months, 1);
+        assert_eq!(summary.matured[0].outcome, "terminal-unscorable");
+    }
+
+    #[test]
+    fn an_earlier_due_window_gap_also_earns_the_heal_fetch() {
+        // The cache covers the start and the FURTHEST due end, but gaps at
+        // the 1-month end. The heal judgment must weigh every due end, not
+        // just the furthest, or the earlier window silently loses its one
+        // fetch and closes unscorable with the source sitting available.
+        let conn = mem_conn();
+        store::merge_price_bars(
+            &conn,
+            "TWOG",
+            &bars(&[
+                ("2026-03-02", 99.0),
+                ("2026-03-03", 100.0),
+                ("2026-06-01", 118.0),
+            ]),
+        )
+        .unwrap();
+        struct TwoGapSource;
+        impl OutcomePriceSource for TwoGapSource {
+            fn daily_closes(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
+                Ok(bars(&[
+                    ("2026-03-02", 99.0),
+                    ("2026-03-03", 100.0),
+                    ("2026-04-01", 108.0),
+                    ("2026-05-15", 112.0),
+                    ("2026-06-01", 118.0),
+                ]))
+            }
+            fn dividend_history(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
+                Ok(Vec::new())
+            }
+        }
+        let mut episodes = vec![old_episode("TWOG", "2026-03-02T12:00:00+00:00")];
+        let source = TwoGapSource;
+        let mut ctx = SeriesCtx::new(&conn, Some(&source));
+        // Both the 1-month (2026-04-02) and 3-month (2026-06-02) windows are due.
+        let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-06-15");
+        assert_eq!(summary.matured.len(), 2, "{:?}", summary.pending_coverage);
+        assert!(summary.matured.iter().all(|m| m.outcome == "scored"));
+        let scored = scored_for(&episodes[0], 1).expect("the healed 1-month window scored");
+        assert_eq!(scored.end_date, "2026-04-01");
+        assert!(
+            (scored.price_return - 0.08).abs() < 1e-9,
+            "healed 1-month end bar: {}",
+            scored.price_return
+        );
+    }
+
+    /// Serves one dense series for every symbol — the heal-fetch pin's source.
+    struct HealSource;
+    impl OutcomePriceSource for HealSource {
+        fn daily_closes(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
+            Ok(bars(&[
+                ("2026-04-30", 99.0),
+                ("2026-05-04", 100.0),
+                ("2026-05-18", 110.0),
+                ("2026-05-28", 118.0),
+                ("2026-06-05", 120.0),
+            ]))
+        }
+        fn dividend_history(&self, _: &str, _: NaiveDate, _: NaiveDate) -> Result<Vec<DatedValue>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn a_cached_gap_at_the_window_end_earns_its_heal_fetch() {
+        // The cache covers the start and its tail passes the window end, so
+        // the old tail-only refresh judgment skipped the fetch and scored the
+        // stale bar; the end-bar-bounded judgment fetches, and the window
+        // scores from the healed series.
+        let conn = mem_conn();
+        store::merge_price_bars(
+            &conn,
+            "HEAL",
+            &bars(&[
+                ("2026-04-30", 99.0),
+                ("2026-05-04", 100.0),
+                ("2026-06-05", 120.0),
+            ]),
+        )
+        .unwrap();
+        let mut episodes = vec![old_episode("HEAL", "2026-05-01T12:00:00+00:00")];
+        let source = HealSource;
+        let mut ctx = SeriesCtx::new(&conn, Some(&source));
+        let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let summary = mature_labels(&mut episodes, &mut ctx, today, "2026-06-15");
+        assert_eq!(summary.matured.len(), 1, "{:?}", summary.pending_coverage);
+        assert_eq!(summary.matured[0].outcome, "scored");
+        let scored = scored_for(&episodes[0], 1).expect("the healed window scored");
+        assert_eq!(scored.end_date, "2026-05-28");
+        assert!(
+            (scored.price_return - 0.18).abs() < 1e-9,
+            "healed end bar: {}",
+            scored.price_return
+        );
     }
 
     #[test]
@@ -4172,6 +4360,9 @@ mod tests {
                 ("2025-06-03", 50.0),
                 ("2025-09-01", 48.0),
                 ("2026-01-15", 45.0),
+                // A genuine end-window bar: the 12-month window (2026-06-02)
+                // scores its own bounded end bar, never the stale 01-15 close.
+                ("2026-06-01", 52.0),
                 ("2026-06-05", 52.0),
             ]),
         )
@@ -4208,6 +4399,7 @@ mod tests {
                 ("2025-06-03", 50.0),
                 ("2025-09-01", 48.0),
                 ("2026-01-15", 27.0),
+                ("2026-06-01", 52.0),
                 ("2026-06-05", 52.0),
             ]),
         )
@@ -4246,8 +4438,13 @@ mod tests {
             &bars(&[
                 ("2023-01-10", 80.0),
                 ("2025-06-03", 50.0),
+                // Every window's own end bar, so all four score without the
+                // bridge (the 1/3/6/12-month ends off the 2025-06-02 anchor).
+                ("2025-07-01", 49.0),
                 ("2025-09-01", 48.0),
+                ("2025-12-01", 47.0),
                 ("2026-01-15", 45.0),
+                ("2026-06-01", 52.0),
                 ("2026-06-05", 52.0),
             ]),
         )
@@ -4311,6 +4508,7 @@ mod tests {
                 ("2025-06-03", 40.0),
                 ("2025-09-01", 38.0),
                 ("2026-01-15", 28.0),
+                ("2026-06-01", 41.0),
                 ("2026-06-05", 41.0),
             ]),
         )
@@ -4333,6 +4531,7 @@ mod tests {
                 ("2025-06-03", 60.0),
                 ("2025-09-01", 58.0),
                 ("2026-01-15", 32.0),
+                ("2026-06-01", 55.0),
                 ("2026-06-05", 55.0),
             ]),
         )
