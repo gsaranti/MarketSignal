@@ -1129,6 +1129,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - Two schema-validated artifacts, both emitted by the reduce (or the single-pass call) from one reconciliation, so they stay mutually consistent.
   - The combined distilled findings object interpretation reads — the cross-topic reduction of the per-topic layer.
   - The fresh per-topic seed layer, one object per analyzed topic, persisted as the next run's seed.
+  - Each claim's optional `related_condition_id` — cited from the prompt's rendered ledger conditions, app-validated, and carried across a verbatim re-emission (same URL and claim text) from this run's earlier hops, or from the prior layer onto a cached claim only — the source-backed leg Step 6g honors for a qualitative trip.
   - The audit records seeded-vs-cold **per topic** with each seeding object's vintage — a standing topic can seed while a newly-activated conditional topic runs cold.
 
 ---
@@ -1341,7 +1342,7 @@ The interpretation call writes the intrinsic verdict; the action decision then p
 
 - **Ledger validation** (built — the seam runs every run)
   - Tripped quantitative condition must map to a confirmed engine crossing.
-  - Tripped qualitative condition must map to sourced research — a trip with no source-backed finding behind it clears with a logged reason.
+  - Tripped qualitative condition must map to sourced research — a fresh distilled claim citing the condition (`related_condition_id`), surfaced to the interpretation prompt as a research-supported mark — and a trip with no such finding behind it clears with a logged reason.
   - New quantitative conditions must resolve to an engine series.
   - Unresolvable condition becomes qualitative (downgraded and logged, never dropped).
   - App assigns and preserves condition IDs.

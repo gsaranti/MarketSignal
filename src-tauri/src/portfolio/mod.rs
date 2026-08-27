@@ -1797,7 +1797,15 @@ pub struct HoldingAudit {
 /// ledger-driver evidence), the input delta gains addressable
 /// research-finding entries, and the `role_risk_only` branch runs the fund
 /// agenda + pure consolidation (its prompt gains the distilled section).
-pub const PROMPT_VERSION: &str = "portfolio-v12";
+///
+/// `portfolio-v13`: the research→ledger tie channel closed (the 2026-08-24
+/// review's F3). Every claim-emitting 6d prompt renders the ledger conditions
+/// with their ids and asks for `related_condition_id`; the interpretation
+/// prompt's ledger projection marks research-supported conditions off the
+/// input delta's tied research entries (`DeltaEntry.related_condition_id`,
+/// persisted on the what-changed audit) and its rewrite instruction names
+/// that mark as the qualitative leg.
+pub const PROMPT_VERSION: &str = "portfolio-v13";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2004,6 +2012,13 @@ pub struct WhatChangedEntry {
 pub struct DeltaEntry {
     pub id: String,
     pub label: String,
+    /// For a fresh research-finding entry, the ledger condition the distillation
+    /// tied it to (the validated `related_condition_id`) — the source-backed leg
+    /// a qualitative tripped/fired claim needs, surfaced to the interpretation
+    /// prompt as a research-supported mark on that condition
+    /// (`docs/portfolio-workflow.md` §Step 6d, §Step 6g).
+    #[serde(default)]
+    pub related_condition_id: Option<String>,
 }
 
 /// The validated what-changed attribution, persisted with the holding's audit

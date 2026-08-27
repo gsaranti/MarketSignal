@@ -276,8 +276,8 @@ fn run_research_and_distill(
         .filter(|p| research::topic_object_fresh(p, now))
         .cloned()
         .collect();
-    let ledger_ids: Vec<String> = prior_ledger
-        .map(|l| l.conditions.iter().map(|c| c.condition_id.clone()).collect())
+    let ledger_conditions: Vec<LedgerCondition> = prior_ledger
+        .map(|l| l.conditions.clone())
         .unwrap_or_default();
     let ledger_key_drivers: Vec<crate::portfolio::KeyDriver> = prior_ledger
         .map(|l| l.key_drivers.clone())
@@ -287,7 +287,7 @@ fn run_research_and_distill(
         company_name: dossier.company_name.as_deref(),
         research: &research_out,
         priors: &priors,
-        ledger_condition_ids: &ledger_ids,
+        ledger_conditions: &ledger_conditions,
         ledger_key_drivers: &ledger_key_drivers,
         role_risk,
         overlay_eligible: triggers.overlay_eligible,
@@ -742,7 +742,7 @@ pub fn analyze_holding(
                     .set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
                 // The branch's rendered input delta — the what-changed rows'
                 // evidence vocabulary (`docs/portfolio-workflow.md` §Step 6g).
-                let input_delta = role_risk_input_delta(
+                let mut input_delta = role_risk_input_delta(
                     dossier,
                     &fund_metrics,
                     position_change,
@@ -760,6 +760,9 @@ pub fn analyze_holding(
                     run_date,
                 )?;
                 used_model(analyst.fast_id());
+                // The fund research's fresh claims join the rendered delta with
+                // their ledger ties, as on the priced path.
+                push_research_delta_entries(&mut input_delta, &rr_distilled, prior_ledger);
                 let interpretation = analyst
                     .interpret_role_risk(&RoleRiskInput {
                         dossier,
@@ -1205,29 +1208,16 @@ pub fn analyze_holding(
     // §Step 6g): each fresh distilled claim an addressable entry, the logged
     // assumption its own, so an external what-changed row can cite them
     // exactly like any engine entry.
-    {
-        let mut n = 0usize;
-        for topic in &distilled_research.topic_layer {
-            for claim in topic.claims.iter().filter(|c| !c.cached) {
-                n += 1;
-                input_delta.push(crate::portfolio::DeltaEntry {
-                    id: format!("research-{n}"),
-                    label: format!(
-                        "research finding ({}): {} [{}]",
-                        topic.topic_key, claim.claim, claim.source_url
-                    ),
-                });
-            }
-        }
-        if let Some(a) = &distilled_research.forward_assumption {
-            input_delta.push(crate::portfolio::DeltaEntry {
-                id: "forward-assumption".to_string(),
-                label: format!(
-                    "research forward assumption: {} = {} {} (as of {}) [{}]",
-                    a.affects, a.numeric_value, a.units, a.as_of, a.source_url
-                ),
-            });
-        }
+    push_research_delta_entries(&mut input_delta, &distilled_research, prior_ledger);
+    if let Some(a) = &distilled_research.forward_assumption {
+        input_delta.push(crate::portfolio::DeltaEntry {
+            id: "forward-assumption".to_string(),
+            label: format!(
+                "research forward assumption: {} = {} {} (as of {}) [{}]",
+                a.affects, a.numeric_value, a.units, a.as_of, a.source_url
+            ),
+            related_condition_id: None,
+        });
     }
     let interpretation = analyst
         .interpret(&InterpretationInput {
@@ -2158,7 +2148,48 @@ fn delta_val(v: Option<f64>) -> String {
 /// Append one input-delta entry, assigning the next bracketed id.
 fn push_delta(entries: &mut Vec<crate::portfolio::DeltaEntry>, label: String) {
     let id = format!("D{}", entries.len() + 1);
-    entries.push(crate::portfolio::DeltaEntry { id, label });
+    entries.push(crate::portfolio::DeltaEntry {
+        id,
+        label,
+        related_condition_id: None,
+    });
+}
+
+/// Append this run's fresh distilled claims to the rendered input delta as
+/// addressable entries — the 6g research-finding leg — each carrying the ledger
+/// condition it bears on where the distillation tied one (the validated
+/// `related_condition_id`, rendered by statement so the id stays app-owned).
+/// The interpretation prompt marks that condition research-supported off the
+/// entry, and a what-changed row can cite the finding like any engine entry
+/// (`docs/portfolio-workflow.md` §Step 6d, §Step 6g).
+fn push_research_delta_entries(
+    entries: &mut Vec<crate::portfolio::DeltaEntry>,
+    distilled: &DistilledResearch,
+    prior_ledger: Option<&ThesisLedger>,
+) {
+    let mut n = 0usize;
+    for topic in &distilled.topic_layer {
+        for claim in topic.claims.iter().filter(|c| !c.cached) {
+            n += 1;
+            let bears_on = claim.related_condition_id.as_deref().and_then(|id| {
+                prior_ledger?
+                    .conditions
+                    .iter()
+                    .find(|c| c.condition_id == id)
+            });
+            let tie = bears_on
+                .map(|c| format!(" — bears on ledger condition '{}'", c.statement))
+                .unwrap_or_default();
+            entries.push(crate::portfolio::DeltaEntry {
+                id: format!("research-{n}"),
+                label: format!(
+                    "research finding ({}): {} [{}]{tie}",
+                    topic.topic_key, claim.claim, claim.source_url
+                ),
+                related_condition_id: bears_on.map(|c| c.condition_id.clone()),
+            });
+        }
+    }
 }
 
 /// The delta entries both branches share: the position delta, this run's ledger
@@ -2688,6 +2719,7 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         d.prior_ledger(),
         input.ledger_eval,
         true,
+        input.input_delta,
     ));
     p
 }
@@ -3469,6 +3501,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
         d.prior_ledger(),
         input.ledger_eval,
         false,
+        input.input_delta,
     ));
 
     p
@@ -3869,8 +3902,17 @@ pub fn ledger_prompt_section(
     prior: Option<&ThesisLedger>,
     eval: Option<&LedgerEvaluation>,
     role_risk: bool,
+    input_delta: &[crate::portfolio::DeltaEntry],
 ) -> String {
     let mut p = String::new();
+    // The conditions a fresh research finding bears on this run — the delta's
+    // tied research entries (`push_research_delta_entries`), so the model can see
+    // which qualitative claims the 6g validator will honor; the ids themselves
+    // stay held out of the projection (app-owned bookkeeping).
+    let research_supported: std::collections::HashSet<&str> = input_delta
+        .iter()
+        .filter_map(|e| e.related_condition_id.as_deref())
+        .collect();
 
     p.push_str("\nENGINE SERIES for quantitative ledger conditions (use exactly these labels):\n");
     for s in engine::LedgerSeries::ALL {
@@ -3948,7 +3990,13 @@ pub fn ledger_prompt_section(
                         }
                         None => "qualitative".to_string(),
                     };
-                    p.push_str(&format!("- {family}[{kind}] {}\n", c.statement));
+                    let support = if research_supported.contains(c.condition_id.as_str()) {
+                        " — RESEARCH-SUPPORTED THIS RUN: a fresh source-backed finding in the \
+                         INPUT DELTA bears on this condition"
+                    } else {
+                        ""
+                    };
+                    p.push_str(&format!("- {family}[{kind}] {}{support}\n", c.statement));
                 }
             }
 
@@ -4004,9 +4052,10 @@ pub fn ledger_prompt_section(
          engine series fits is qualitative (quant: null) — state it precisely enough \
          to be researched. \
          Mark tripped/fired ONLY where the ENGINE CONDITION CROSSINGS show a CONFIRMED \
-         crossing for that same condition; a qualitative claim needs a source-backed \
-         research finding, and none are available this run. Unsupported claims are \
-         cleared by the app. \
+         crossing for that same condition, or — for a qualitative condition — where the \
+         ledger above marks it RESEARCH-SUPPORTED THIS RUN and the cited finding actually \
+         evidences the trip; a qualitative claim with no such fresh finding is \
+         unsupported. Unsupported claims are cleared by the app. \
          Keep a condition's series/comparator/threshold/margin unchanged unless the \
          condition itself has genuinely changed — an edit to that core resets its \
          tracked breach history.\n",
@@ -4875,15 +4924,85 @@ mod tests {
         }
     }
 
+    /// The research-finding delta entries carry the distillation's ledger tie —
+    /// rendered by statement (the id app-owned) — for fresh claims only; a
+    /// cached claim never becomes an entry, and a tie to a condition no longer
+    /// on the ledger renders as no tie (2026-08-24 review F3).
+    #[test]
+    fn research_delta_entries_carry_the_ledger_tie_by_statement_for_fresh_claims() {
+        use crate::portfolio::research::{DistilledClaim, TopicDistillate};
+        let claim = |text: &str, cached: bool, tie: Option<&str>| DistilledClaim {
+            claim: text.into(),
+            source_url: format!("https://x.example/{}", text.len()),
+            vintage: "2026-08-26T00:00:00+00:00".into(),
+            cached,
+            related_condition_id: tie.map(str::to_string),
+        };
+        let distilled = DistilledResearch {
+            combined: "c".into(),
+            topic_layer: vec![TopicDistillate {
+                topic_key: "t".into(),
+                vintage: "2026-08-26T00:00:00+00:00".into(),
+                summary: "s".into(),
+                claims: vec![
+                    claim("fresh tied", false, Some("keep-1")),
+                    claim("cached tied", true, Some("keep-1")),
+                    claim("fresh untied", false, None),
+                    claim("fresh stale tie", false, Some("gone")),
+                ],
+            }],
+            unreconciled_topics: vec![],
+            forward_assumption: None,
+            leading_indicator: None,
+            forensic_event: None,
+            pre_profit_observations: vec![],
+            backfill: None,
+            shape: distill::DistillShape::SinglePass,
+            gaps: vec![],
+        };
+        let prior = prior_with_conditions();
+        let mut entries = Vec::new();
+        push_research_delta_entries(&mut entries, &distilled, Some(&prior));
+        assert_eq!(
+            entries.len(),
+            3,
+            "cached claims never become entries: {entries:?}"
+        );
+        assert_eq!(entries[0].id, "research-1");
+        assert!(
+            entries[0]
+                .label
+                .contains("— bears on ledger condition 'Trailing return collapses'"),
+            "{}",
+            entries[0].label
+        );
+        assert!(
+            !entries[0].label.contains("keep-1"),
+            "ids stay out: {}",
+            entries[0].label
+        );
+        assert_eq!(entries[0].related_condition_id.as_deref(), Some("keep-1"));
+        for e in &entries[1..] {
+            assert!(!e.label.contains("bears on"), "{}", e.label);
+            assert_eq!(e.related_condition_id, None, "{e:?}");
+        }
+        // A debut (no prior ledger) renders every finding untied.
+        let mut debut = Vec::new();
+        push_research_delta_entries(&mut debut, &distilled, None);
+        assert!(debut.iter().all(|e| e.related_condition_id.is_none()));
+    }
+
     fn delta_fixture() -> Vec<crate::portfolio::DeltaEntry> {
         vec![
             crate::portfolio::DeltaEntry {
                 id: "D1".into(),
                 label: "spot: 100.00 -> 92.00".into(),
+                related_condition_id: None,
             },
             crate::portfolio::DeltaEntry {
                 id: "D2".into(),
                 label: "metric gross margin: 0.4200 -> 0.3800".into(),
+                related_condition_id: None,
             },
         ]
     }
@@ -8494,7 +8613,7 @@ mod tests {
     #[test]
     fn ledger_section_renders_debut_prior_and_crossings() {
         // Debut: the vocabulary and the authoring instruction.
-        let s = ledger_prompt_section(None, None, false);
+        let s = ledger_prompt_section(None, None, false, &[]);
         assert!(s.contains("ENGINE SERIES"), "{s}");
         assert!(s.contains("net-margin"), "{s}");
         assert!(s.contains("debut"), "{s}");
@@ -8520,7 +8639,7 @@ mod tests {
             unevaluable_series: vec![engine::LedgerSeries::NetMargin],
             updated_states: vec![],
         };
-        let s = ledger_prompt_section(Some(&prior), Some(&eval), false);
+        let s = ledger_prompt_section(Some(&prior), Some(&eval), false, &[]);
         assert!(s.contains("the debut thesis"), "original thesis renders: {s}");
         assert!(s.contains("the standing thesis"), "{s}");
         assert!(s.contains("CONFIRMED BREACH"), "{s}");
@@ -8535,8 +8654,30 @@ mod tests {
         assert!(!s.contains("Target weight range"), "{s}");
 
         // The role_risk variant names the branch reductions.
-        let rr = ledger_prompt_section(Some(&prior), None, true);
+        let rr = ledger_prompt_section(Some(&prior), None, true, &[]);
         assert!(rr.contains("trim/sell only"), "{rr}");
+
+        // The research-supported mark (2026-08-24 review F3): a fresh research
+        // entry tied to a condition marks that row — by statement, the id held
+        // out — and the rewrite instruction names the mark as the qualitative
+        // leg; without a tied entry no row is marked and the retired
+        // "none are available this run" sentence is gone for good.
+        assert!(!s.contains("RESEARCH-SUPPORTED THIS RUN:"), "{s}");
+        assert!(!s.contains("none are available this run"), "{s}");
+        assert!(s.contains("marks it RESEARCH-SUPPORTED THIS RUN"), "{s}");
+        let tied = vec![crate::portfolio::DeltaEntry {
+            id: "research-1".into(),
+            label: "research finding (t): a claim [https://x.example/a]".into(),
+            related_condition_id: Some("keep-1".into()),
+        }];
+        let marked = ledger_prompt_section(Some(&prior), Some(&eval), false, &tied);
+        assert!(
+            marked.contains("RESEARCH-SUPPORTED THIS RUN: a fresh source-backed finding"),
+            "{marked}"
+        );
+        assert!(!marked.contains("keep-1"), "condition ids stay out of the prompt: {marked}");
+        let rr_marked = ledger_prompt_section(Some(&prior), None, true, &tied);
+        assert!(rr_marked.contains("RESEARCH-SUPPORTED THIS RUN"), "{rr_marked}");
 
         // Both interpretation prompts carry the section.
         let d = dossier(AssetClass::Stock, strong_financials());

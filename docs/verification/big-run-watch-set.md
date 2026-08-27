@@ -6,7 +6,7 @@ It is forward-looking, unlike the dated records beside it — those are written 
 Findings go into a dated record once the run completes; this file is then the index of what that record has to answer.
 Revised 2026-08-18 to the `portfolio-v9` shape: the construction-stage, lean / divergence, and sizing watches are removed, since that machinery no longer exists.
 Revised again 2026-08-24, the pre-run bar now met: the research-loop, ruling-watch, pre-profit-activation, CBOE-backdrop, narrative-comparator, and Schwab-CEF-typing additions are folded in, with the prompt-stamp and Step-6a notes.
-Records this run persists stamp `portfolio-v12`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, and research-loop slices all landed since the 2026-08-18 revision with no live run between.
+Records this run persists stamp `portfolio-v13`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, and F3 tie-channel slices all landed since the 2026-08-18 revision with no live run between.
 
 Nothing here is a defect report.
 Each item is a behavior that has only ever been exercised against fixtures, a small live run, or a single symbol, and needs a read at real scale (a 47-position book) before it can be called confirmed.

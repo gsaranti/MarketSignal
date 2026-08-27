@@ -64,6 +64,19 @@ The parallel `confirms_driver_id` channel proves the intended pattern — render
 Compounding it, the ledger-rewrite instruction still carries the pre-v12 sentence "a qualitative claim needs a source-backed research finding, and none are available this run" (`pipeline.rs:4006-4009`) — static text contradicting the same prompt's own rendered DISTILLED RESEARCH block, accurate today only because the channel is broken.
 The net effect is misleading output in the design's own terms: legitimate qualitative falsifier trips — the standing-thesis breaks the ledger exists to surface — are systematically suppressed.
 
+**Resolved 2026-08-26.**
+The channel's back half was built and its front half never was.
+The fix adds the front half on the `confirms_driver_id` pattern.
+Every claim-emitting distillation prompt — tier-1, pass, tree-reduce, and reduce, on both branches — now renders the ledger conditions with their app-assigned ids and asks the model to set `related_condition_id` to the condition a claim bears on.
+A re-rendered claim carries its tie (the cached prior lines, the dormant-topic lines, and the reduce's tier-1 lines), and the app inherits an omitted tie for a verbatim re-emission — the same URL and claim text — across the pass→tree-reduce and tier-1→reduce hops, and from the prior layer onto a claim that resolves as cached, never onto a different claim from the same page, never at an ambiguity, and never substituting for an unknown cited id.
+The known limit of that fallback is that the model cannot clear an inherited tie by omission or null — only rephrasing the claim or citing a different known id moves it — recorded rather than engineered around: a prior tie rides only onto a cached re-emission, which never enters the support set, and a fresh claim's tie is always this run's own assertion validated against the ledger.
+The interpretation prompt sees the support without seeing the ids: each fresh tied research finding in the INPUT DELTA names the condition it bears on by statement, the ledger projection marks that condition RESEARCH-SUPPORTED THIS RUN, and the rewrite instruction names that mark as the qualitative leg, retiring the stale "none are available this run" sentence.
+The fund branch's fresh research claims now join its input delta with their ties, so the role-risk 6g's already-built research leg is reachable too.
+The 6c seed keeps its bare `FALSIFIER:` lines by decision: the tie is made at 6d by the distiller reading the conditions list beside the pass findings, so rendering ids in the seed would spend seed budget for no channel gain.
+The contract is recorded at `docs/portfolio-workflow.md §Step 6d` with the 6g pointer, and in the logic-flow doc's 6d output and 6g validation lists.
+`PROMPT_VERSION` moves to `portfolio-v13`, so a pre-F3 checkpoint cannot resume into the live channel and every run record stamps the contract it was analyzed under.
+Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only carry let an unrelated fresh claim from the same page acquire a prior tie and count as support), then split the tie pools so a prior tie never rides onto a claim that resolves as fresh (freshness resolves by URL, so a prior claim re-emitted verbatim at a page fetched this run for other evidence would otherwise have carried its old tie into the support set), harvested the pass→tree-reduce hop, and required the version bump.
+
 ### Priority-1 minor findings
 
 - **Loss-forecast displacement in the shadow fill** — `feed_present` requires `v > 0.0` (`engine.rs:2043`), so a published negative EPS consensus counts as absent and a whitelisted research fact overwrites all three consensus legs (`engine.rs:2082-2089`), against the supplement-never-displaces contract.
@@ -173,6 +186,7 @@ Every fix is a separate, undecided piece of work; nothing here was applied.
 Four items bear directly on the queued big confirmation run and are worth deciding before it: C1 (a realistic multi-hour-run killer whose fix shape is a transport budget consistent with the thinking reservation, or an idle-based read timeout), the retry-posture weighing beside it, F1 (a split during the watch window would contaminate the run's ledger evidence), and F3 (the run will exercise the research loop whose ledger channel is silently dead, and its watch-set typed-channel yield line will read zero qualitative support by construction).
 The alignment findings are doc edits; A1 in particular misinforms the user about the cost of the failure mode C1 makes likelier.
 C1 is resolved (2026-08-26; the resolution is recorded under §C1).
+F3 is resolved (2026-08-26; the resolution is recorded under §F3).
 
 ## Codex independent review additions
 
