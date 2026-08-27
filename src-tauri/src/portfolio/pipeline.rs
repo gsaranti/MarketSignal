@@ -223,6 +223,13 @@ pub trait HoldingAnalyst {
     fn take_prompt_usage(&self) -> Vec<crate::local_model::PromptUsage> {
         Vec::new()
     }
+    /// Drain the fired bounded-retry records
+    /// ([`crate::local_model::RetryEvent`]) — the data-health model-retry read
+    /// (`docs/local-models.md §The local-model adapter seam`). Defaulted empty
+    /// like the usage drain.
+    fn take_retry_events(&self) -> Vec<crate::local_model::RetryEvent> {
+        Vec::new()
+    }
 }
 
 /// Run Steps 6c–6d for one holding: assemble the deterministic research plan
@@ -4621,6 +4628,10 @@ pub struct LocalAnalyst {
     /// `&self` receivers — the per-holding loop is sequential, so it is never
     /// contended.
     prompt_usage: std::sync::Mutex<Vec<crate::local_model::PromptUsage>>,
+    /// The bounded retry-once gate shared by every model-call site this run
+    /// (`docs/local-models.md §The local-model adapter seam`); its fired
+    /// events drain through [`HoldingAnalyst::take_retry_events`].
+    retry: crate::local_model::RetryOnce,
     /// The live web tool + tracker context for the 6c research loop
     /// ([`LocalAnalyst::with_research`]); `None` runs the trait's offline
     /// research default — the demo path and any construction without a web
@@ -4660,6 +4671,7 @@ impl LocalAnalyst {
             reasoner_model,
             fast_model,
             prompt_usage: std::sync::Mutex::new(Vec::new()),
+            retry: crate::local_model::RetryOnce::new(),
             research_ctx: None,
         }
     }
@@ -4770,6 +4782,27 @@ fn ensure_not_output_limited(
                 show_res(reservation),
             ),
         }
+    }
+    Ok(())
+}
+
+/// Fail a stage whose call completed with no completion at all: a blank
+/// `content` and no tool calls (a research turn's tool request carries its
+/// substance in `tool_calls`, so it passes). Without this check an empty body
+/// dies at the call site's parse as an opaque serde EOF; typed here it carries
+/// the class the bounded retry-once classifies on. Runs after
+/// [`ensure_not_output_limited`], so a length stop keeps its own reading.
+fn ensure_nonempty_completion(
+    stage: &str,
+    resp: &crate::local_model::ChatResponse,
+) -> Result<()> {
+    if resp.content.trim().is_empty() && resp.tool_calls.is_none() {
+        return Err(
+            anyhow::Error::new(crate::local_model::RetryClass::EmptyCompletion).context(format!(
+                "{stage}: the model returned an empty completion body (done_reason: {})",
+                resp.done_reason.as_deref().unwrap_or("unreported")
+            )),
+        );
     }
     Ok(())
 }
@@ -4950,7 +4983,14 @@ impl HoldingAnalyst for LocalAnalyst {
                 let resp = self.analyst.client.chat(&req)?;
                 self.analyst.record_usage(self.stage.to_string(), &req, &resp);
                 ensure_not_output_limited(self.stage, &req, &resp)?;
+                ensure_nonempty_completion(self.stage, &resp)?;
                 Ok(resp)
+            }
+
+            fn retry_permitted(&self, stage: &str, err: &anyhow::Error) -> bool {
+                self.analyst
+                    .retry
+                    .permit(self.analyst.client.progress(), stage, err)
             }
         }
         let clock = crate::research_executor::WallClock::new();
@@ -4995,7 +5035,14 @@ impl HoldingAnalyst for LocalAnalyst {
                 let resp = self.analyst.client.chat(&req)?;
                 self.analyst.record_usage(stage.to_string(), &req, &resp);
                 ensure_not_output_limited(stage, &req, &resp)?;
+                ensure_nonempty_completion(stage, &resp)?;
                 Ok(resp.content)
+            }
+
+            fn retry_permitted(&self, stage: &str, err: &anyhow::Error) -> bool {
+                self.analyst
+                    .retry
+                    .permit(self.analyst.client.progress(), stage, err)
             }
         }
         distill::distill(&ModelAdapter { analyst: self }, inputs)
@@ -5012,40 +5059,41 @@ impl HoldingAnalyst for LocalAnalyst {
         // holding's own "Analyze {SYM}" step, so the tracker shows live thinking
         // instead of a minutes-long quiet stretch (the first live run's F8).
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
-        let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
-        self.record_usage(
-            format!("interpret {}", input.dossier.position.symbol),
-            &req,
-            &resp,
-        );
-        ensure_not_output_limited(
-            &format!("interpret {}", input.dossier.position.symbol),
-            &req,
-            &resp,
-        )?;
-        serde_json::from_str(&resp.content)
-            .with_context(|| format!("parsing interpretation JSON: {}", body_snippet(&resp.content)))
+        let stage = format!("interpret {}", input.dossier.position.symbol);
+        self.retry.run(self.client.progress(), &stage, || {
+            let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
+            self.record_usage(stage.clone(), &req, &resp);
+            ensure_not_output_limited(&stage, &req, &resp)?;
+            ensure_nonempty_completion(&stage, &resp)?;
+            serde_json::from_str(&resp.content)
+                .map_err(|e| {
+                    anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
+                })
+                .with_context(|| {
+                    format!("parsing interpretation JSON: {}", body_snippet(&resp.content))
+                })
+        })
     }
 
     fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<RoleRiskInterpretation> {
         let req = role_risk_request(&self.reasoner_model, input);
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
-        let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
-        self.record_usage(
-            format!("role-risk {}", input.dossier.position.symbol),
-            &req,
-            &resp,
-        );
-        ensure_not_output_limited(
-            &format!("role-risk {}", input.dossier.position.symbol),
-            &req,
-            &resp,
-        )?;
-        serde_json::from_str(&resp.content).with_context(|| {
-            format!(
-                "parsing role/risk interpretation JSON: {}",
-                body_snippet(&resp.content)
-            )
+        let stage = format!("role-risk {}", input.dossier.position.symbol);
+        self.retry.run(self.client.progress(), &stage, || {
+            let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
+            self.record_usage(stage.clone(), &req, &resp);
+            ensure_not_output_limited(&stage, &req, &resp)?;
+            ensure_nonempty_completion(&stage, &resp)?;
+            serde_json::from_str(&resp.content)
+                .map_err(|e| {
+                    anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
+                })
+                .with_context(|| {
+                    format!(
+                        "parsing role/risk interpretation JSON: {}",
+                        body_snippet(&resp.content)
+                    )
+                })
         })
     }
 
@@ -5054,22 +5102,22 @@ impl HoldingAnalyst for LocalAnalyst {
         // Stream step-scoped like interpretation: the decision's reasoning lands
         // on this holding's own "Analyze {SYM}" step.
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
-        let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
-        self.record_usage(
-            format!("action {}", input.dossier.position.symbol),
-            &req,
-            &resp,
-        );
-        ensure_not_output_limited(
-            &format!("action {}", input.dossier.position.symbol),
-            &req,
-            &resp,
-        )?;
-        serde_json::from_str(&resp.content).with_context(|| {
-            format!(
-                "parsing action-decision JSON: {}",
-                body_snippet(&resp.content)
-            )
+        let stage = format!("action {}", input.dossier.position.symbol);
+        self.retry.run(self.client.progress(), &stage, || {
+            let resp = self.client.chat_streaming(&req, StreamRole::Step(&step_key))?;
+            self.record_usage(stage.clone(), &req, &resp);
+            ensure_not_output_limited(&stage, &req, &resp)?;
+            ensure_nonempty_completion(&stage, &resp)?;
+            serde_json::from_str(&resp.content)
+                .map_err(|e| {
+                    anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
+                })
+                .with_context(|| {
+                    format!(
+                        "parsing action-decision JSON: {}",
+                        body_snippet(&resp.content)
+                    )
+                })
         })
     }
 
@@ -5090,6 +5138,10 @@ impl HoldingAnalyst for LocalAnalyst {
                 .lock()
                 .expect("prompt-usage lock is never poisoned"),
         )
+    }
+
+    fn take_retry_events(&self) -> Vec<crate::local_model::RetryEvent> {
+        self.retry.take_events()
     }
 }
 
@@ -8218,6 +8270,40 @@ mod tests {
             tool_calls: None,
         };
         assert!(ensure_not_output_limited("construction", &req, &complete).is_ok());
+    }
+
+    #[test]
+    fn ensure_nonempty_completion_classifies_and_tolerates_tool_calls() {
+        let blank = crate::local_model::ChatResponse {
+            content: "  ".into(),
+            thinking: None,
+            prompt_eval_count: None,
+            eval_count: None,
+            done_reason: Some("stop".into()),
+            tool_calls: None,
+        };
+        let err = ensure_nonempty_completion("interpret TEST", &blank).unwrap_err();
+        assert_eq!(
+            crate::local_model::retry_class(&err),
+            Some(crate::local_model::RetryClass::EmptyCompletion)
+        );
+        assert!(err.to_string().contains("empty completion body"), "{err}");
+
+        // A research turn's tool request legitimately carries no content.
+        let tool_turn = crate::local_model::ChatResponse {
+            content: String::new(),
+            tool_calls: Some(serde_json::json!([
+                {"function": {"name": "web_search", "arguments": {"query": "q"}}}
+            ])),
+            ..blank.clone()
+        };
+        assert!(ensure_nonempty_completion("research TEST", &tool_turn).is_ok());
+
+        let normal = crate::local_model::ChatResponse {
+            content: "{}".into(),
+            ..blank
+        };
+        assert!(ensure_nonempty_completion("interpret TEST", &normal).is_ok());
     }
 
     #[test]

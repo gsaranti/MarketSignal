@@ -147,6 +147,17 @@ Any single local-model failure inside the required 6c–6f path — a transient 
 This is the documented hard posture (`docs/portfolio-analysis.md` §Failure posture), typed, checkpointed, and resumable, and both robustness reviews independently confirmed no bounded retry exists anywhere on the path (retry-once is the known repo-wide deferred item).
 It is recorded here because at ~4+ reasoner calls per holding across dozens of holdings over hours, it is the dominant real-world abort probability for the big confirmation run, and C1 multiplies it.
 
+**Resolved 2026-08-27.**
+The posture is now hard-after-one-bounded-retry, decided against running the confirmation run bare: a transient class re-attempts exactly once — transport-level connection failures, daemon error statuses, empty completion bodies, schema-parse failures of returned content, and broken streams — while deadline trips, length stops, cancellation, and any unclassified failure keep first-occurrence hard failure.
+The retry sits at the call/parse seam, not the transport helper, because every content parse happens above the adapter: the three streaming stages wrap call-through-parse whole (`pipeline.rs`), and the research and distillation loops, which parse above their model traits, re-attempt through a default-closed `retry_permitted` gate method on those traits — one shared gate (`local_model::RetryOnce`) doing the whitelist classification (typed `RetryClass` chain markers, never string-matching), the cancellation refusal, the tracker row, the drafted 2 s abortable pause, and the event record.
+An empty completion body, previously dying as an opaque serde EOF at the parse sites, now fails typed through its own guard (`ensure_nonempty_completion`), which tolerates a research turn's tool request.
+A second failure fails the run annotated with the first attempt's class, and every fired retry lands as a data-health summary line plus structured `model_retries` events (an attention trigger) — the transient-rate measurement the watch set reads after the run.
+The blank-rationale guard keeps its 2026-08-18 fail-hard ruling: it sits at the `analyze_holding` level, outside every retry wrap.
+The contract is canonical at `docs/local-models.md §The local-model adapter seam`; `docs/portfolio-analysis.md §Failure posture` points to it, and the watch set carries the fired-retry watch.
+A Codex round then hardened the classification: a stalled non-2xx error body on the streaming path keeps its live timeout chain rooted, classifying as the deadline trip it is — never retried — while the message still leads with the status and names the deadline.
+The round's other findings were absorbed as scoping rather than machinery: a resumed run's retry read is documented as a floor (checkpoint carriage deliberately stays grouped with the recorded prompt-usage resume minor), the compound call+parse worst case got its bounded regression test, and the logic-flow failure bullet gained the retry pointer.
+A second round tightened the compound-turn claim to its true shape: the retry bound is once per **issued** call, the legs composing only through the parse leg's re-issue, and both the four-call worst case and its hard ceiling (a fourth-call failure dies annotated, no fifth call) are regression-tested.
+
 ### Priority-2 minor findings
 
 - **The hierarchical reduce prompt is never size-checked** — `reduce_prompt` concatenates all tier-1 outputs, dormant priors, and the disconfirming pass with no check against `input_budget_chars` (`distill.rs:715-717`); on a genuinely distinct fast model (`NUM_CTX_DISTILL = 32_768`) an oversized input silently front-truncates (dropped topics, their seed rows deleted as unreconciled) or length-stops into a run failure.
@@ -212,6 +223,7 @@ The alignment findings are doc edits; A1 in particular misinforms the user about
 C1 is resolved (2026-08-26; the resolution is recorded under §C1).
 F3 is resolved (2026-08-26; the resolution is recorded under §F3).
 F1 is resolved (2026-08-27; the resolution is recorded under §F1).
+The retry posture is resolved (2026-08-27; the resolution is recorded under §Named design risk) — the pre-run list is complete.
 
 ## Codex independent review additions
 

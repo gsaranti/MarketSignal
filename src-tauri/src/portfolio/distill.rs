@@ -283,6 +283,16 @@ pub fn offline_consolidate(inputs: &DistillInputs<'_>) -> DistilledResearch {
 /// tests script it.
 pub trait DistillModel {
     fn distill_call(&self, stage: &str, prompt: String, schema: &Value) -> Result<String>;
+
+    /// The bounded retry-once gate (`docs/local-models.md §The local-model
+    /// adapter seam`): whether one re-attempt may fire for this failed call or
+    /// response parse. The live adapter delegates to the shared gate — which
+    /// classifies, refuses when cancelled, notes the retry, and pauses;
+    /// defaulted closed so scripted test models never retry unless a test
+    /// opts in.
+    fn retry_permitted(&self, _stage: &str, _err: &anyhow::Error) -> bool {
+        false
+    }
 }
 
 /// Everything one holding's distillation needs.
@@ -643,6 +653,51 @@ impl Provenance {
 // The primitive
 // ---------------------------------------------------------------------------
 
+/// One distillation call under the bounded retry-once: a transiently failed
+/// call re-attempts exactly once when the model's gate permits
+/// (`docs/local-models.md §The local-model adapter seam`).
+fn call_with_retry(
+    model: &dyn DistillModel,
+    stage: &str,
+    prompt: String,
+    schema: &Value,
+) -> Result<String> {
+    match model.distill_call(stage, prompt.clone(), schema) {
+        Ok(body) => Ok(body),
+        Err(first) if model.retry_permitted(stage, &first) => model
+            .distill_call(stage, prompt, schema)
+            .map_err(|e| e.context(crate::local_model::retried_once_annotation(&first))),
+        Err(first) => Err(first),
+    }
+}
+
+/// [`call_with_retry`] plus the response parse inside the same bounded
+/// re-attempt, so a schema-parse failure of the returned content retries the
+/// call exactly like a transient call failure.
+fn call_parsed_with_retry<T: serde::de::DeserializeOwned>(
+    model: &dyn DistillModel,
+    stage: &str,
+    prompt: String,
+    schema: &Value,
+    parse_context: &'static str,
+) -> Result<T> {
+    let attempt = |prompt: String| -> Result<T> {
+        let body = model.distill_call(stage, prompt, schema)?;
+        serde_json::from_str(&body)
+            .map_err(|e| {
+                anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse)
+            })
+            .context(parse_context)
+    };
+    match attempt(prompt.clone()) {
+        Ok(parsed) => Ok(parsed),
+        Err(first) if model.retry_permitted(stage, &first) => {
+            attempt(prompt).map_err(|e| e.context(crate::local_model::retried_once_annotation(&first)))
+        }
+        Err(first) => Err(first),
+    }
+}
+
 /// Run one holding's Step-6d distillation: deterministic routing, the model
 /// calls, and the app-side reconciliation/validation of everything returned.
 pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<DistilledResearch> {
@@ -706,11 +761,14 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
 
     let (wire, shape, tier1_ties) = if single_pass {
         let prompt = reduce_prompt(inputs, None, &prior_by_key, &dormant_priors);
-        let body = model
-            .distill_call(&format!("distill {}", inputs.symbol), prompt, &schema)
-            .context("single-pass distillation failed")?;
-        let wire: CombinedWire =
-            serde_json::from_str(&body).context("distillation response failed its schema parse")?;
+        let wire: CombinedWire = call_parsed_with_retry(
+            model,
+            &format!("distill {}", inputs.symbol),
+            prompt,
+            &schema,
+            "distillation response failed its schema parse",
+        )
+        .context("single-pass distillation failed")?;
         (wire, DistillShape::SinglePass, HashMap::new())
     } else {
         // Hierarchical: a tier-1 call per topic-tree (the prior merged there),
@@ -736,7 +794,7 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
             }
             let prior = prior_by_key.get(topic.topic_key.as_str()).copied();
             let own = topic_input_chars(topic, prior);
-            let body = if own > inputs.input_budget_chars {
+            let wire: Tier1Wire = if own > inputs.input_budget_chars {
                 // The within-topic fallback: sub-distill along the pass seam
                 // (each pass carrying its findings AND its ledger claims),
                 // then a tree-level reduce with the bounded prior retained.
@@ -765,13 +823,13 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                         pass,
                         inputs.ledger_conditions,
                     );
-                    let body = model
-                        .distill_call(
-                            &format!("distill {} {} pass {}", inputs.symbol, topic.topic_key, i),
-                            prompt,
-                            &t1_schema,
-                        )
-                        .context("pass-level sub-distillation failed")?;
+                    let body = call_with_retry(
+                        model,
+                        &format!("distill {} {} pass {}", inputs.symbol, topic.topic_key, i),
+                        prompt,
+                        &t1_schema,
+                    )
+                    .context("pass-level sub-distillation failed")?;
                     // The pass→tree-reduce hop: harvest the pass's own ties
                     // (leniently — the body is forwarded verbatim either way).
                     if let Ok(pass_wire) = serde_json::from_str::<Tier1Wire>(&body) {
@@ -794,35 +852,38 @@ pub fn distill(model: &dyn DistillModel, inputs: &DistillInputs<'_>) -> Result<D
                     prior,
                     inputs.ledger_conditions,
                 );
-                model
-                    .distill_call(
-                        &format!("distill {} {} reduce", inputs.symbol, topic.topic_key),
-                        prompt,
-                        &t1_schema,
-                    )
-                    .context("topic tree reduce failed")?
+                call_parsed_with_retry(
+                    model,
+                    &format!("distill {} {} reduce", inputs.symbol, topic.topic_key),
+                    prompt,
+                    &t1_schema,
+                    "tier-1 distillation response failed its schema parse",
+                )
+                .context("topic tree reduce failed")?
             } else {
                 tier1_calls += 1;
                 let prompt = tier1_prompt(inputs.symbol, topic, prior, inputs.ledger_conditions);
-                model
-                    .distill_call(
-                        &format!("distill {} {}", inputs.symbol, topic.topic_key),
-                        prompt,
-                        &t1_schema,
-                    )
-                    .context("tier-1 distillation failed")?
+                call_parsed_with_retry(
+                    model,
+                    &format!("distill {} {}", inputs.symbol, topic.topic_key),
+                    prompt,
+                    &t1_schema,
+                    "tier-1 distillation response failed its schema parse",
+                )
+                .context("tier-1 distillation failed")?
             };
-            let wire: Tier1Wire = serde_json::from_str(&body)
-                .context("tier-1 distillation response failed its schema parse")?;
             harvest_ties(&wire, &known, &mut ties);
             tier1_outputs.push((topic.topic_key.clone(), wire));
         }
         let prompt = reduce_prompt(inputs, Some(&tier1_outputs), &prior_by_key, &dormant_priors);
-        let body = model
-            .distill_call(&format!("distill {} reduce", inputs.symbol), prompt, &schema)
-            .context("reduce distillation failed")?;
-        let wire: CombinedWire =
-            serde_json::from_str(&body).context("reduce response failed its schema parse")?;
+        let wire: CombinedWire = call_parsed_with_retry(
+            model,
+            &format!("distill {} reduce", inputs.symbol),
+            prompt,
+            &schema,
+            "reduce response failed its schema parse",
+        )
+        .context("reduce distillation failed")?;
         (
             wire,
             DistillShape::Hierarchical {
@@ -1889,6 +1950,86 @@ mod tests {
         assert!(out.gaps.iter().any(|g| g.contains("dropped")));
         // The new layer stamps this run's vintage on the topic object.
         assert_eq!(layer.vintage, "2026-08-23T00:00:00+00:00");
+    }
+
+    /// [`ScriptDistill`] with the bounded retry-once gate opened: permits any
+    /// classified failure (like the live adapter's shared gate) and records the
+    /// stages it permitted.
+    struct RetryingDistill {
+        inner: ScriptDistill,
+        permitted: Mutex<RefCell<Vec<String>>>,
+    }
+
+    impl RetryingDistill {
+        fn new(bodies: Vec<Value>) -> Self {
+            Self {
+                inner: ScriptDistill::new(bodies),
+                permitted: Mutex::new(RefCell::new(Vec::new())),
+            }
+        }
+    }
+
+    impl DistillModel for RetryingDistill {
+        fn distill_call(&self, stage: &str, prompt: String, schema: &Value) -> Result<String> {
+            self.inner.distill_call(stage, prompt, schema)
+        }
+        fn retry_permitted(&self, stage: &str, err: &anyhow::Error) -> bool {
+            let allowed = crate::local_model::retry_class(err).is_some();
+            if allowed {
+                self.permitted
+                    .lock()
+                    .unwrap()
+                    .borrow_mut()
+                    .push(stage.to_string());
+            }
+            allowed
+        }
+    }
+
+    #[test]
+    fn a_transient_schema_parse_failure_retries_the_distill_call_once() {
+        let research = research_one_topic();
+        // First body malformed (a JSON string, not the combined object); the
+        // re-attempt serves the valid one and the run proceeds.
+        let model = RetryingDistill::new(vec![json!("not json"), combined_body(json!({}))]);
+        let out = distill(&model, &inputs(&research, &[], &[])).unwrap();
+        assert_eq!(out.shape, DistillShape::SinglePass);
+        assert_eq!(model.inner.stages(), vec!["distill WID", "distill WID"]);
+        assert_eq!(
+            model.permitted.lock().unwrap().borrow().clone(),
+            vec!["distill WID"]
+        );
+    }
+
+    #[test]
+    fn a_second_failure_names_the_first_attempts_class() {
+        let research = research_one_topic();
+        // Both attempts malformed: the hard failure must carry the retry
+        // annotation with the first attempt's class, like RetryOnce::run's.
+        let model = RetryingDistill::new(vec![json!("not json"), json!("still not json")]);
+        let err = distill(&model, &inputs(&research, &[], &[])).unwrap_err();
+        assert!(
+            format!("{err:#}")
+                .contains("failed again after one retry (content failed its parse on the first attempt)"),
+            "{err:#}"
+        );
+        assert_eq!(model.inner.stages(), vec!["distill WID", "distill WID"]);
+    }
+
+    #[test]
+    fn the_default_gate_keeps_a_distill_parse_failure_hard() {
+        let research = research_one_topic();
+        let model = ScriptDistill::new(vec![json!("not json")]);
+        let err = distill(&model, &inputs(&research, &[], &[])).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("failed its schema parse"),
+            "{err:#}"
+        );
+        assert_eq!(
+            model.stages(),
+            vec!["distill WID"],
+            "no second call without the gate"
+        );
     }
 
     #[test]

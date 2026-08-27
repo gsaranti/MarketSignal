@@ -1054,6 +1054,7 @@ The orchestrator works the agenda **one topic at a time**. Each topic is its own
   - It may lower conviction.
   - It does not automatically fail the run.
   - A model-call failure inside the required 6c–6f path (the action call included) is hard — it fails the run, and as-built no partial work persists (`docs/portfolio-analysis.md` §Failure posture).
+    A transient failure on those calls first re-attempts once under the bounded retry-once before the hard posture applies (`docs/local-models.md` §The local-model adapter seam).
 
 - **Output**
   - Full findings for every worked topic; any lower-priority topic the budget couldn't reach is a recorded degraded-input gap (lower conviction).

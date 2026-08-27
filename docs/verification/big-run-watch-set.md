@@ -147,10 +147,15 @@ Distill speed.
 
 The data-health render and the reasoning panes.
 
+Fired bounded retries — the transient-failure rate over hundreds of hard-path calls (settled 2026-08-27; the contract is [local-models.md §The local-model adapter seam](../local-models.md#the-local-model-adapter-seam)).
+Each fired retry lands as a data-health summary line plus structured `model_retries` events with stage and class; zero fired retries is the healthy read, and any nonzero count is the first live measurement of the rate the 2026-08-24 review could only bound by construction.
+A resumed run's count covers only the post-resume process (the recorded accumulator resume gap prompt usage shares), so read a resumed run's rate as a floor.
+A run that still fails hard *after* a retry names the first attempt's class in its failure detail — read that class before treating the failure as novel.
+
 ## How to read the run
 
 Read `data-health` early.
-It carries the deep-price fetch health, the context-pressure and truncation flags, and the run-level roll-up with its attention state — several items above resolve off that one surface before the per-holding cards are worth reading.
+It carries the deep-price fetch health, the context-pressure and truncation flags, the fired-retry events, and the run-level roll-up with its attention state — several items above resolve off that one surface before the per-holding cards are worth reading.
 
 One expected absence: Step-6a semantic recall retrieves nothing this run.
 The per-holding summary partition holds no rows until this run persists them, retrieval going live from the second run — an empty recall is design, not a defect.

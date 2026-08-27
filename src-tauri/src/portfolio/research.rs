@@ -612,6 +612,16 @@ pub trait ResearchModel {
         tools: Option<&Value>,
         format: Option<&Value>,
     ) -> Result<ChatResponse>;
+
+    /// The bounded retry-once gate (`docs/local-models.md §The local-model
+    /// adapter seam`): whether one re-attempt may fire for this failed turn or
+    /// findings parse. The live adapter delegates to the shared gate — which
+    /// classifies, refuses when cancelled, notes the retry, and pauses;
+    /// defaulted closed so scripted test models never retry unless a test
+    /// opts in.
+    fn retry_permitted(&self, _stage: &str, _err: &anyhow::Error) -> bool {
+        false
+    }
 }
 
 /// The web seam: search (SearXNG-primary with route reporting) and fetch
@@ -1087,6 +1097,12 @@ impl ResearchRunner<'_> {
             std::collections::HashMap::new();
 
         let mut turns = 0u32;
+        // The forced-terminal instruction is pushed once — a findings-parse
+        // retry re-enters the loop top, and the instruction must not double.
+        let mut terminal_instructed = false;
+        // The findings-parse leg of the bounded retry-once fires at most once
+        // per pass; the turn-call leg is gated per call below.
+        let mut findings_retry_used = false;
         loop {
             if self.progress.is_cancelled() {
                 bail!("research cancelled");
@@ -1095,18 +1111,24 @@ impl ResearchRunner<'_> {
             // net) forces the terminal findings turn — tools withheld.
             let forced_terminal =
                 turns >= MAX_TURNS_PER_PASS || self.budget.exhausted(*fetches_spent);
-            if forced_terminal {
+            if forced_terminal && !terminal_instructed {
+                terminal_instructed = true;
                 messages.push(ChatMessage::user(FINDINGS_INSTRUCTION.to_string()));
             }
             turns += 1;
-            let resp = self
-                .model
-                .research_turn(
-                    &messages,
-                    if forced_terminal { None } else { Some(&tools) },
-                    Some(&schema),
-                )
-                .context("research turn failed")?;
+            let turn_tools = if forced_terminal { None } else { Some(&tools) };
+            // One bounded re-attempt on a transient turn failure — the messages
+            // are unchanged, so the re-issued request is the same turn
+            // (`docs/local-models.md §The local-model adapter seam`).
+            let resp = match self.model.research_turn(&messages, turn_tools, Some(&schema)) {
+                Ok(resp) => resp,
+                Err(first) if self.model.retry_permitted(&self.step_label, &first) => self
+                    .model
+                    .research_turn(&messages, turn_tools, Some(&schema))
+                    .map_err(|e| e.context(crate::local_model::retried_once_annotation(&first)))
+                    .context("research turn failed")?,
+                Err(first) => return Err(first.context("research turn failed")),
+            };
             if let Some(thinking) = &resp.thinking {
                 self.progress.step_thinking(&self.step_label, thinking);
             }
@@ -1116,10 +1138,41 @@ impl ResearchRunner<'_> {
                 resp.tool_calls.clone()
             };
             let Some(raw_calls) = raw_calls else {
-                // No tools requested: this content is the pass's findings.
-                let wire: FindingsWire = serde_json::from_str(&resp.content)
-                    .context("research findings response failed its schema parse")?;
-                return Ok(self.validate_findings(wire, ctx, &fetched, &url_aliases, gaps));
+                // No tools requested: this content is the pass's findings. A
+                // parse failure re-attempts the turn once when the gate permits,
+                // by re-entering the loop under its normal gates — so the
+                // re-issued turn usually repeats the same messages, but a turn
+                // cap or wall clock crossed in the meantime forces it terminal
+                // (instruction appended, tools withheld) like any other turn.
+                // Each leg fires at most once: this parse leg once per pass,
+                // the call-level leg once per issued call.
+                let parsed = serde_json::from_str::<FindingsWire>(&resp.content).map_err(|e| {
+                    anyhow::Error::new(e)
+                        .context(crate::local_model::RetryClass::SchemaParse)
+                        .context("research findings response failed its schema parse")
+                });
+                match parsed {
+                    Ok(wire) => {
+                        return Ok(self.validate_findings(wire, ctx, &fetched, &url_aliases, gaps))
+                    }
+                    Err(err) => {
+                        if !findings_retry_used
+                            && self.model.retry_permitted(&self.step_label, &err)
+                        {
+                            findings_retry_used = true;
+                            continue;
+                        }
+                        // After a fired parse retry the hard failure names the
+                        // class, like every other leg's second failure.
+                        if findings_retry_used {
+                            return Err(err.context(format!(
+                                "failed again after one retry ({} on the first attempt)",
+                                crate::local_model::RetryClass::SchemaParse
+                            )));
+                        }
+                        return Err(err);
+                    }
+                }
             };
             messages.push(ChatMessage::assistant_with_tool_calls(
                 resp.content,
@@ -1910,6 +1963,240 @@ mod tests {
             .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
             .unwrap();
         assert_eq!(out.fetches_spent, 2, "both failed attempts spend budget");
+    }
+
+    /// [`ScriptModel`] with the bounded retry-once gate opened — permits any
+    /// classified failure, like the live adapter's shared gate.
+    struct RetryingModel {
+        inner: ScriptModel,
+    }
+
+    impl ResearchModel for RetryingModel {
+        fn research_turn(
+            &self,
+            messages: &[ChatMessage],
+            tools: Option<&Value>,
+            format: Option<&Value>,
+        ) -> Result<ChatResponse> {
+            self.inner.research_turn(messages, tools, format)
+        }
+        fn retry_permitted(&self, _stage: &str, err: &anyhow::Error) -> bool {
+            crate::local_model::retry_class(err).is_some()
+        }
+    }
+
+    fn disconfirm_findings() -> ChatResponse {
+        findings_turn(json!({
+            "findings": "No disconfirming evidence retrievable.",
+            "claims": [],
+            "topic_answered": true
+        }))
+    }
+
+    #[test]
+    fn a_transient_findings_parse_failure_retries_the_turn_once() {
+        // The first terminal turn's content is not a findings object; the
+        // re-issued turn (same messages) serves the valid one, so the pass
+        // completes instead of failing the run.
+        let model = RetryingModel {
+            inner: ScriptModel::new(vec![
+                findings_turn(json!("not a findings object")),
+                findings_turn(simple_findings("https://reuters.com/widget")),
+                disconfirm_findings(),
+            ]),
+        };
+        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let clock = FrozenClock(Duration::from_secs(10));
+        let ctx = RunContext::noop();
+        let r = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 10,
+                max_wall: Duration::from_secs(3600),
+                clock: &clock,
+            },
+            progress: &ctx,
+            step_label: "research TEST".into(),
+        };
+        let out = r
+            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+            .unwrap();
+        assert_eq!(out.topics.len(), 1);
+        assert_eq!(out.topics[0].passes.len(), 1);
+    }
+
+    #[test]
+    fn a_transient_turn_failure_retries_the_call_once() {
+        struct FlakyModel {
+            inner: ScriptModel,
+            fail_first: Mutex<RefCell<bool>>,
+        }
+        impl ResearchModel for FlakyModel {
+            fn research_turn(
+                &self,
+                messages: &[ChatMessage],
+                tools: Option<&Value>,
+                format: Option<&Value>,
+            ) -> Result<ChatResponse> {
+                {
+                    let guard = self.fail_first.lock().unwrap();
+                    let mut flag = guard.borrow_mut();
+                    if *flag {
+                        *flag = false;
+                        return Err(anyhow::Error::new(
+                            crate::local_model::RetryClass::DaemonStatus,
+                        )
+                        .context("local model returned 502"));
+                    }
+                }
+                self.inner.research_turn(messages, tools, format)
+            }
+            fn retry_permitted(&self, _stage: &str, err: &anyhow::Error) -> bool {
+                crate::local_model::retry_class(err).is_some()
+            }
+        }
+        let model = FlakyModel {
+            inner: ScriptModel::new(vec![
+                findings_turn(simple_findings("https://reuters.com/widget")),
+                disconfirm_findings(),
+            ]),
+            fail_first: Mutex::new(RefCell::new(true)),
+        };
+        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let clock = FrozenClock(Duration::from_secs(10));
+        let ctx = RunContext::noop();
+        let r = ResearchRunner {
+            model: &model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 10,
+                max_wall: Duration::from_secs(3600),
+                clock: &clock,
+            },
+            progress: &ctx,
+            step_label: "research TEST".into(),
+        };
+        let out = r
+            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+            .unwrap();
+        assert_eq!(out.topics.len(), 1, "the retried turn completed the pass");
+    }
+
+    /// A model that fails (marked transient) on scripted issued-call indices,
+    /// serving the inner script otherwise — retry gate open, like the live
+    /// adapter's.
+    struct FlakyModel {
+        inner: ScriptModel,
+        fail_on: Vec<u32>,
+        calls: Mutex<RefCell<u32>>,
+    }
+
+    impl ResearchModel for FlakyModel {
+        fn research_turn(
+            &self,
+            messages: &[ChatMessage],
+            tools: Option<&Value>,
+            format: Option<&Value>,
+        ) -> Result<ChatResponse> {
+            let n = {
+                let guard = self.calls.lock().unwrap();
+                let mut c = guard.borrow_mut();
+                *c += 1;
+                *c
+            };
+            if self.fail_on.contains(&n) {
+                return Err(
+                    anyhow::Error::new(crate::local_model::RetryClass::DaemonStatus)
+                        .context("local model returned 502"),
+                );
+            }
+            self.inner.research_turn(messages, tools, format)
+        }
+        fn retry_permitted(&self, _stage: &str, err: &anyhow::Error) -> bool {
+            crate::local_model::retry_class(err).is_some()
+        }
+    }
+
+    fn flaky_runner_out(model: &FlakyModel) -> Result<HoldingResearch> {
+        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let clock = FrozenClock(Duration::from_secs(10));
+        let ctx = RunContext::noop();
+        let r = ResearchRunner {
+            model,
+            web: &web,
+            budget: ResearchBudget {
+                max_fetches: 10,
+                max_wall: Duration::from_secs(3600),
+                clock: &clock,
+            },
+            progress: &ctx,
+            step_label: "research TEST".into(),
+        };
+        r.run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+    }
+
+    #[test]
+    fn combined_call_and_parse_failures_stay_bounded_within_one_pass() {
+        // The full compound worst case one logical terminal turn allows: call 1
+        // fails (call-leg retry), call 2 returns an unparseable findings turn
+        // (parse-leg retry re-issues the turn), call 3 fails (the re-issued
+        // call's own call-leg retry), call 4 succeeds — the documented
+        // four-call hard bound, exercised end to end. Call 5 is the
+        // disconfirming pass's own turn.
+        let model = FlakyModel {
+            inner: ScriptModel::new(vec![
+                findings_turn(json!("not a findings object")),
+                findings_turn(simple_findings("https://reuters.com/widget")),
+                disconfirm_findings(),
+            ]),
+            fail_on: vec![1, 3],
+            calls: Mutex::new(RefCell::new(0)),
+        };
+        let out = flaky_runner_out(&model).unwrap();
+        assert_eq!(out.topics.len(), 1);
+        assert_eq!(out.topics[0].passes.len(), 1);
+        assert_eq!(*model.calls.lock().unwrap().borrow(), 5);
+    }
+
+    #[test]
+    fn the_four_call_turn_bound_is_a_hard_ceiling() {
+        // One failure past the compound worst case: the re-issued call's
+        // re-attempt (call 4) also fails, and the pass dies hard with the
+        // retry annotation — no fifth call exists.
+        let model = FlakyModel {
+            inner: ScriptModel::new(vec![findings_turn(json!("not a findings object"))]),
+            fail_on: vec![1, 3, 4],
+            calls: Mutex::new(RefCell::new(0)),
+        };
+        let err = flaky_runner_out(&model).unwrap_err();
+        assert_eq!(
+            *model.calls.lock().unwrap().borrow(),
+            4,
+            "the bound is hard: no fifth call"
+        );
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("failed again after one retry (daemon error status on the first attempt)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("research turn failed"), "{rendered}");
+    }
+
+    #[test]
+    fn the_default_gate_keeps_a_findings_parse_failure_hard() {
+        let model = ScriptModel::new(vec![findings_turn(json!("not a findings object"))]);
+        let web = ScriptWeb::new(SearchRoute::Searxng);
+        let clock = FrozenClock(Duration::from_secs(10));
+        let ctx = RunContext::noop();
+        let r = runner(&model, &web, &clock, &ctx, 10);
+        let err = r
+            .run_holding("HOLDING: WID", &one_topic_agenda(), &[], &|_| None)
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("failed its schema parse"),
+            "{err:#}"
+        );
     }
 
     #[test]

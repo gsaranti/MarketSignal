@@ -169,6 +169,197 @@ fn name_deadline_trip(err: anyhow::Error, deadline: Duration) -> anyhow::Error {
     }
 }
 
+/// A transient failure class the bounded retry-once re-attempts
+/// (`docs/local-models.md §The local-model adapter seam`). Doubles as a typed
+/// chain marker: the producing site roots or contexts its error with the class,
+/// and [`retry_class`] downcasts rather than string-matching. Deadline trips,
+/// length stops, cancellation, and any unclassified failure deliberately carry
+/// no marker — each is attributable, deterministic, or intentional, so a retry
+/// would spend hours reproducing a known outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryClass {
+    /// A transport-level connection failure (refused, reset, dropped body) —
+    /// never a deadline trip, which [`retry_class`] excludes first.
+    Transport,
+    /// The daemon answered a non-2xx status.
+    DaemonStatus,
+    /// HTTP 200 whose completion content is blank with no tool calls.
+    EmptyCompletion,
+    /// The returned body or content failed its JSON/schema parse.
+    SchemaParse,
+    /// The stream carried an error chunk or ended before its done chunk.
+    Stream,
+}
+
+impl std::fmt::Display for RetryClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Transport => "transport error",
+            Self::DaemonStatus => "daemon error status",
+            Self::EmptyCompletion => "empty completion body",
+            Self::SchemaParse => "content failed its parse",
+            Self::Stream => "stream broke before completion",
+        })
+    }
+}
+
+impl std::error::Error for RetryClass {}
+
+/// One fired retry, recorded for the run's data-health read
+/// (`build_data_health`): which stage re-attempted and for which
+/// [`RetryClass`]. In a persisted run every recorded event's re-attempt
+/// succeeded — a second failure fails the run before any row persists.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetryEvent {
+    pub stage: String,
+    /// The [`RetryClass`] display form — a string so persisted rows outlive
+    /// enum changes.
+    pub cause: String,
+}
+
+/// Classify whether one failed chat call may re-attempt: `None` for a deadline
+/// trip (attributable — a retry doubles a multi-hour wait), then the typed
+/// marker anywhere in the chain, then bare transport errors (a reqwest or IO
+/// failure that is not a timeout). Everything else — length stops,
+/// cancellation, unclassified failures — stays `None`: the whitelist is the
+/// contract.
+pub(crate) fn retry_class(err: &anyhow::Error) -> Option<RetryClass> {
+    if is_transport_timeout(err) {
+        return None;
+    }
+    if let Some(class) = err.downcast_ref::<RetryClass>() {
+        return Some(*class);
+    }
+    err.chain()
+        .any(|cause| {
+            cause.downcast_ref::<reqwest::Error>().is_some()
+                || cause.downcast_ref::<std::io::Error>().is_some()
+        })
+        .then_some(RetryClass::Transport)
+}
+
+/// The pause before the single re-attempt — long enough to ride out a daemon
+/// hiccup (a dropped socket, a restarting runner), negligible beside any real
+/// generation. Drafted, calibratable like the deadline floors.
+const RETRY_ONCE_DELAY: Duration = Duration::from_secs(2);
+
+/// The annotation a second failure carries after one fired retry — shared by
+/// [`RetryOnce::run`] and the trait-gate legs (research / distill), so every
+/// path's hard failure names the first attempt's class.
+pub(crate) fn retried_once_annotation(first: &anyhow::Error) -> String {
+    match retry_class(first) {
+        Some(class) => format!("failed again after one retry ({class} on the first attempt)"),
+        None => "failed again after one retry".to_string(),
+    }
+}
+
+/// The bounded retry-once gate (`docs/local-models.md §The local-model adapter
+/// seam`): at most one re-attempt per **issued** call, only for a
+/// [`RetryClass`] failure, never into a cancelled run. One instance rides the
+/// per-run analyst; the streaming stages wrap through [`RetryOnce::run`],
+/// while the research / distill loops — which own their parse above their
+/// model traits — ask [`RetryOnce::permit`] through those traits' gate
+/// methods. The layers must not nest: each call path wraps exactly once. They
+/// compose only through re-issue — the research loop's findings-parse leg
+/// issues a fresh call that carries its own single re-attempt, so one logical
+/// terminal turn is hard-bounded at four calls. Every fired retry emits a
+/// tracker row and records a [`RetryEvent`] for the run's data-health read.
+pub(crate) struct RetryOnce {
+    events: std::sync::Mutex<Vec<RetryEvent>>,
+    delay: Duration,
+}
+
+impl RetryOnce {
+    pub(crate) fn new() -> Self {
+        Self {
+            events: std::sync::Mutex::new(Vec::new()),
+            delay: RETRY_ONCE_DELAY,
+        }
+    }
+
+    /// Test seam: no pause, so retry tests don't sleep.
+    #[cfg(test)]
+    pub(crate) fn without_delay() -> Self {
+        Self {
+            delay: Duration::ZERO,
+            ..Self::new()
+        }
+    }
+
+    /// Drain the fired-retry records (the data-health read).
+    pub(crate) fn take_events(&self) -> Vec<RetryEvent> {
+        std::mem::take(
+            &mut *self
+                .events
+                .lock()
+                .expect("retry-event lock is never poisoned"),
+        )
+    }
+
+    /// Whether one re-attempt may fire for this failure: classify, refuse when
+    /// cancelled, then note it on the tracker, record the event, and pause
+    /// (abortably). `true` means the caller runs the attempt exactly once more.
+    pub(crate) fn permit(&self, progress: &RunContext, stage: &str, err: &anyhow::Error) -> bool {
+        let Some(class) = retry_class(err) else {
+            return false;
+        };
+        if progress.is_cancelled() {
+            return false;
+        }
+        // The retry's own row pair: the streaming stages emit no per-request
+        // rows, so this is a fired retry's only tracker surface — status
+        // "failed" (attempt one did fail), the detail naming the class and the
+        // single re-attempt.
+        progress.request_started("Local", "local", stage, "Local model retry");
+        progress.request_finished(
+            "Local",
+            "local",
+            stage,
+            "Local model retry",
+            "failed",
+            Some(format!("{class}; retrying once: {err}")),
+        );
+        self.events
+            .lock()
+            .expect("retry-event lock is never poisoned")
+            .push(RetryEvent {
+                stage: stage.to_string(),
+                cause: class.to_string(),
+            });
+        // Abortable pause: poll the cancel flag rather than sleeping blind.
+        const POLL: Duration = Duration::from_millis(100);
+        let mut waited = Duration::ZERO;
+        while waited < self.delay {
+            if progress.is_cancelled() {
+                return false;
+            }
+            std::thread::sleep(POLL.min(self.delay - waited));
+            waited += POLL;
+        }
+        !progress.is_cancelled()
+    }
+
+    /// Run `attempt`, re-running it once when [`Self::permit`] allows. The
+    /// second failure is the hard posture, annotated with the first attempt's
+    /// class so the run's failure detail stays attributable.
+    pub(crate) fn run<T>(
+        &self,
+        progress: &RunContext,
+        stage: &str,
+        mut attempt: impl FnMut() -> Result<T>,
+    ) -> Result<T> {
+        match attempt() {
+            Ok(v) => Ok(v),
+            Err(first) => {
+                if !self.permit(progress, stage, &first) {
+                    return Err(first);
+                }
+                attempt().map_err(|second| second.context(retried_once_annotation(&first)))
+            }
+        }
+    }
+}
+
 /// Coalesce streamed fragments into a few-hundred progress events rather than one
 /// per token (mirrors the cloud streaming path's flush cadence).
 const TOKEN_FLUSH_CHARS: usize = 24;
@@ -513,8 +704,9 @@ struct ChatReplyMessage {
 /// the envelope contract is testable without a live call. An empty `thinking` string
 /// collapses to `None` so callers don't distinguish "" from absent.
 fn parse_chat_reply(body: &str) -> Result<ChatResponse> {
-    let wire: ChatReplyWire =
-        serde_json::from_str(body).context("parsing local chat response JSON")?;
+    let wire: ChatReplyWire = serde_json::from_str(body)
+        .map_err(|e| anyhow::Error::new(e).context(RetryClass::SchemaParse))
+        .context("parsing local chat response JSON")?;
     Ok(ChatResponse {
         content: wire.message.content,
         thinking: wire.message.thinking.filter(|t| !t.is_empty()),
@@ -657,6 +849,13 @@ impl LocalModelClient {
         self
     }
 
+    /// The attached run context (no-op by default) — the bounded retry-once
+    /// gate's cancellation checks and tracker rows ride the same seam as the
+    /// calls themselves.
+    pub(crate) fn progress(&self) -> &RunContext {
+        &self.progress
+    }
+
     /// Test seam: swap the deadline policy so a wire test can trip a deadline in
     /// milliseconds rather than the production policy's hours.
     #[cfg(test)]
@@ -696,7 +895,10 @@ impl LocalModelClient {
             .context("reading local chat response body")
             .map_err(|e| name_deadline_trip(e, deadline))?;
         if !status.is_success() {
-            bail!("local model returned {status}: {text}");
+            // Rooted in the class marker so the bounded retry-once classifies
+            // without string-matching; the message stays the display.
+            return Err(anyhow::Error::new(RetryClass::DaemonStatus)
+                .context(format!("local model returned {status}: {text}")));
         }
         parse_chat_reply(&text)
     }
@@ -725,13 +927,27 @@ impl LocalModelClient {
             .map_err(|e| name_deadline_trip(e, deadline))?;
         let status = resp.status();
         if !status.is_success() {
-            // The status is the diagnosis; the body is detail. A body that itself
-            // stalls still names the deadline rather than vanishing into a blank.
-            let text = resp.text().unwrap_or_else(|e| {
-                let e = name_deadline_trip(anyhow::Error::from(e), deadline);
-                format!("(error body unreadable: {e})")
-            });
-            bail!("local model returned {status}: {text}");
+            // The status is the diagnosis; the body is detail. A body read that
+            // itself fails keeps its live error chain rooted — a stalled error
+            // body is a deadline trip and must classify as one (never retried),
+            // not as a retryable daemon status — while the message still leads
+            // with the status and names the deadline.
+            let text = match resp.text() {
+                Ok(text) => text,
+                Err(e) => {
+                    let e = anyhow::Error::from(e);
+                    let named = if is_transport_timeout(&e) {
+                        deadline_reached(deadline)
+                    } else {
+                        e.to_string()
+                    };
+                    return Err(e.context(format!(
+                        "local model returned {status}: (error body unreadable: {named})"
+                    )));
+                }
+            };
+            return Err(anyhow::Error::new(RetryClass::DaemonStatus)
+                .context(format!("local model returned {status}: {text}")));
         }
         stream_chat_response(std::io::BufReader::new(resp), &self.progress, role)
             .map_err(|e| name_deadline_trip(e, deadline))
@@ -864,7 +1080,8 @@ fn stream_chat_response(
         };
         // An explicit error chunk fails the stream with its reason.
         if let Some(err) = event.get("error").and_then(Value::as_str) {
-            bail!("local model stream error: {err}");
+            return Err(anyhow::Error::new(RetryClass::Stream)
+                .context(format!("local model stream error: {err}")));
         }
         if let Some(c) = event.pointer("/message/content").and_then(Value::as_str) {
             if !c.is_empty() {
@@ -916,7 +1133,10 @@ fn stream_chat_response(
         bail!("local model stream cancelled");
     }
     if !saw_done {
-        bail!("local model stream ended before completion");
+        // Marked for the bounded retry-once; the cancel bail above deliberately
+        // is not — a cancelled stream must never re-attempt.
+        return Err(anyhow::Error::new(RetryClass::Stream)
+            .context("local model stream ended before completion"));
     }
     Ok(ChatResponse {
         content,
@@ -1511,6 +1731,12 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("local model returned 500"), "{msg}");
         assert!(msg.contains("transport deadline"), "{msg}");
+        // The stalled error body is a deadline trip: it must never classify for
+        // the bounded retry-once, whatever status headline it carries (a
+        // DaemonStatus marker here would spend another idle span on a stalled
+        // daemon — external review finding, 2026-08-27).
+        assert!(is_transport_timeout(&err));
+        assert_eq!(retry_class(&err), None);
     }
 
     #[test]
@@ -1588,6 +1814,211 @@ mod tests {
             .chat(&ChatRequest::new("m", vec![ChatMessage::user("x")]))
             .unwrap_err();
         assert!(err.to_string().contains("500"), "{err}");
+        // The non-2xx carries the retry class for the bounded retry-once.
+        assert_eq!(retry_class(&err), Some(RetryClass::DaemonStatus));
+    }
+
+    // ---- the bounded retry-once (classification + gate) ----
+
+    #[test]
+    fn retry_class_finds_the_marker_through_context_layers() {
+        // Rooted marker (the daemon-status / stream sites), re-wrapped the way
+        // call sites wrap.
+        let rooted = anyhow::Error::new(RetryClass::DaemonStatus)
+            .context("local model returned 500")
+            .context("research turn failed");
+        assert_eq!(retry_class(&rooted), Some(RetryClass::DaemonStatus));
+        // Context marker over a source error (the schema-parse sites).
+        let serde_err = serde_json::from_str::<ChatReplyWire>("not json").unwrap_err();
+        let marked = anyhow::Error::new(serde_err)
+            .context(RetryClass::SchemaParse)
+            .context("parsing interpretation JSON: not json");
+        assert_eq!(retry_class(&marked), Some(RetryClass::SchemaParse));
+    }
+
+    #[test]
+    fn retry_class_refuses_unmarked_failures() {
+        // The whitelist is the contract: a refusal-shaped or unknown failure and
+        // a length-stop bail (both unmarked) never classify.
+        assert_eq!(retry_class(&anyhow::anyhow!("model declined the task")), None);
+        assert_eq!(
+            retry_class(&anyhow::anyhow!(
+                "stage: response truncated at the output reservation"
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn retry_class_names_a_connect_failure_transport_but_a_deadline_trip_none() {
+        // A freshly freed port: the connect is refused — a reqwest error that is
+        // not a timeout, so it classifies as transport.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let client = LocalModelClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+        let err = client
+            .chat(&ChatRequest::new("m", vec![ChatMessage::user("x")]))
+            .unwrap_err();
+        assert_eq!(retry_class(&err), Some(RetryClass::Transport));
+
+        // A deadline trip also bottoms out in reqwest, but must classify None —
+        // it is attributable, and a retry would double a multi-hour wait.
+        let server = MockHttp::serve(vec![Canned::Delay {
+            for_ms: 1_500,
+            then: Box::new(Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"message":{"role":"assistant","content":"late"}}"#,
+            }),
+        }]);
+        let client = LocalModelClient::new(&server.base_url)
+            .unwrap()
+            .with_deadline_policy(instant_policy(200));
+        let err = client.chat(&thinking_request()).unwrap_err();
+        assert!(is_transport_timeout(&err));
+        assert_eq!(retry_class(&err), None);
+    }
+
+    #[test]
+    fn stream_failures_classify_but_a_cancelled_stream_does_not() {
+        let (_rec, ctx) = recording_ctx();
+        // Ends without a done chunk: truncation.
+        let err = stream_chat_response(
+            std::io::Cursor::new(b"{\"message\":{\"content\":\"par\"}}\n".to_vec()),
+            &ctx,
+            StreamRole::Silent,
+        )
+        .unwrap_err();
+        assert_eq!(retry_class(&err), Some(RetryClass::Stream));
+        // An explicit error chunk.
+        let err = stream_chat_response(
+            std::io::Cursor::new(b"{\"error\":\"runner crashed\"}\n".to_vec()),
+            &ctx,
+            StreamRole::Silent,
+        )
+        .unwrap_err();
+        assert_eq!(retry_class(&err), Some(RetryClass::Stream));
+        // A cancelled stream must never classify: cancellation is intentional.
+        let cancel = Arc::new(AtomicBool::new(true));
+        let rec = Arc::new(RecordingReporter::default());
+        let cancelled = RunContext::new("run", rec, cancel);
+        let err = stream_chat_response(
+            std::io::Cursor::new(b"{\"message\":{\"content\":\"x\"}}\n".to_vec()),
+            &cancelled,
+            StreamRole::Silent,
+        )
+        .unwrap_err();
+        assert_eq!(retry_class(&err), None);
+    }
+
+    #[test]
+    fn retry_once_reruns_a_marked_failure_and_records_the_event() {
+        let (rec, ctx) = recording_ctx();
+        let retry = RetryOnce::without_delay();
+        let calls = std::cell::Cell::new(0u32);
+        let out = retry.run(&ctx, "interpret TEST", || {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                Err(anyhow::Error::new(RetryClass::DaemonStatus)
+                    .context("local model returned 500: boom"))
+            } else {
+                Ok("ok")
+            }
+        });
+        assert_eq!(out.unwrap(), "ok");
+        assert_eq!(calls.get(), 2);
+        let events = retry.take_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].stage, "interpret TEST");
+        assert_eq!(events[0].cause, RetryClass::DaemonStatus.to_string());
+        assert!(retry.take_events().is_empty(), "the drain empties the record");
+        // The fired retry left its own tracker row naming the re-attempt.
+        let noted = rec.messages().iter().any(|m| {
+            matches!(
+                &m.event,
+                ProgressEvent::RequestFinished { name, detail, .. }
+                    if name == "Local model retry"
+                        && detail.as_deref().is_some_and(|d| d.contains("retrying once"))
+            )
+        });
+        assert!(noted, "a fired retry must be visible on the tracker");
+    }
+
+    #[test]
+    fn retry_once_passes_an_unmarked_failure_straight_through() {
+        let (_rec, ctx) = recording_ctx();
+        let retry = RetryOnce::without_delay();
+        let calls = std::cell::Cell::new(0u32);
+        let out: Result<()> = retry.run(&ctx, "interpret TEST", || {
+            calls.set(calls.get() + 1);
+            Err(anyhow::anyhow!("model declined the task"))
+        });
+        assert!(out.is_err());
+        assert_eq!(calls.get(), 1, "an unclassified failure never re-attempts");
+        assert!(retry.take_events().is_empty());
+    }
+
+    #[test]
+    fn retry_once_annotates_the_second_failure_with_the_first_class() {
+        let (_rec, ctx) = recording_ctx();
+        let retry = RetryOnce::without_delay();
+        let calls = std::cell::Cell::new(0u32);
+        let out: Result<()> = retry.run(&ctx, "action TEST", || {
+            calls.set(calls.get() + 1);
+            Err(anyhow::Error::new(RetryClass::EmptyCompletion)
+                .context("action TEST: the model returned an empty completion body"))
+        });
+        let err = out.unwrap_err();
+        assert_eq!(calls.get(), 2, "exactly one re-attempt, never more");
+        assert!(
+            err.to_string()
+                .contains("failed again after one retry (empty completion body on the first attempt)"),
+            "{err}"
+        );
+        assert_eq!(retry.take_events().len(), 1);
+    }
+
+    #[test]
+    fn retry_once_refuses_into_a_cancelled_run() {
+        let rec = Arc::new(RecordingReporter::default());
+        let cancel = Arc::new(AtomicBool::new(true));
+        let ctx = RunContext::new("run", rec, cancel);
+        let retry = RetryOnce::without_delay();
+        let calls = std::cell::Cell::new(0u32);
+        let out: Result<()> = retry.run(&ctx, "interpret TEST", || {
+            calls.set(calls.get() + 1);
+            Err(anyhow::Error::new(RetryClass::DaemonStatus).context("local model returned 502"))
+        });
+        assert!(out.is_err());
+        assert_eq!(calls.get(), 1, "a cancelled run never re-attempts");
+        assert!(retry.take_events().is_empty());
+    }
+
+    #[test]
+    fn a_daemon_hiccup_is_absorbed_by_one_retry_at_the_wire() {
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 500,
+                headers: vec![],
+                body: "hiccup",
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"message":{"role":"assistant","content":"ok"}}"#,
+            },
+        ]);
+        let client = LocalModelClient::new(&server.base_url).unwrap();
+        let retry = RetryOnce::without_delay();
+        let req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
+        let resp = retry
+            .run(client.progress(), "interpret TEST", || client.chat(&req))
+            .unwrap();
+        assert_eq!(resp.content, "ok");
+        assert_eq!(server.attempts(), 2);
+        assert_eq!(retry.take_events().len(), 1);
     }
 
     #[test]

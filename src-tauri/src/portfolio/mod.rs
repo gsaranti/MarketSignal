@@ -1263,11 +1263,19 @@ pub struct DataHealth {
     /// `#[serde(default)]` for pre-field runs.
     #[serde(default)]
     pub benchmark_gaps: usize,
+    /// Model calls the bounded retry-once recovered — each fired retry's stage
+    /// and failure class (`docs/local-models.md §The local-model adapter
+    /// seam`). In a persisted run every listed re-attempt succeeded (a second
+    /// failure fails the run), so entries measure the absorbed transient rate —
+    /// the big-run retry watch's read. `#[serde(default)]` for pre-field runs.
+    #[serde(default)]
+    pub model_retries: Vec<crate::local_model::RetryEvent>,
     /// Infrastructure degradation worth surfacing prominently: deep-history
     /// failures, any current-multiple carry, a run-wide DGS10 history gap,
-    /// context pressure on any local call, or a length-stopped generation — a
-    /// raw-percentile fallback from genuinely thin issuer history is counted
-    /// but not flagged (as are the enriching-feed gaps above).
+    /// context pressure on any local call, a length-stopped generation, or a
+    /// fired model-call retry — a raw-percentile fallback from genuinely thin
+    /// issuer history is counted but not flagged (as are the enriching-feed
+    /// gaps above).
     pub attention: bool,
     /// The one-line deterministic summary the roll-up card renders.
     pub summary: String,

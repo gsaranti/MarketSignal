@@ -82,6 +82,13 @@ It is never zero on the non-streaming path, since generation shares the context 
 No derived deadline goes under the ten-minute backstop, which a request declaring no reservation rides exactly.
 The streaming path takes the prompt-evaluation term alone, since its tokens arrive as they generate, and that same value bounds each body read as an idle limit.
 The floors are drafted from the pinned serving path's measured throughput and move only with it ([local-model-operations.md §M5 pre-flight checklist](local-model-operations.md#m5-pre-flight-checklist)).
+The transport deadline composes with a **bounded retry-once** above it: a failed chat call re-attempts exactly once when the failure classifies as transient — a transport-level connection failure, a daemon error status, an empty completion body, a schema-parse failure of the returned content, or a broken stream — after a short drafted pause, each attempt deriving its own deadline.
+The once is per issued call, and the legs compose only through re-issue: the research loop's findings-parse retry issues a fresh call carrying its own single re-attempt, so one logical terminal turn is hard-bounded at four calls.
+The classification is a whitelist: a deadline trip, a length stop, a cancelled run, and any unclassified failure never re-attempt — the first two are attributable or deterministic, so a retry would spend hours reproducing a known outcome.
+The action call's blank-rationale guard keeps its fail-hard ruling outside the retry (ruled 2026-08-18).
+A second failure fails hard as before, annotated with the first attempt's class, so the run's failure detail stays attributable.
+Every fired retry emits its own tracker row and lands on the run's data-health read as a summary line plus structured events — the big confirmation run's transient-rate measurement.
+A resumed run's read covers only its own process: events fired before the failure share the recorded accumulator resume gap prompt usage already carries (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md` §Priority-2 minor findings), so a resumed run's rate reads as a floor.
 
 ## Schema-constrained output
 

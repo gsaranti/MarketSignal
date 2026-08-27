@@ -2084,6 +2084,7 @@ fn run_analysis(
             benchmark: benchmark_gaps.len(),
         },
         analyst.take_prompt_usage(),
+        analyst.take_retry_events(),
     );
     // The deterministic outcome half: tag active episodes' net alignment from this
     // run's diff, refresh label-time price series through the shared bar cache and
@@ -2356,6 +2357,7 @@ fn build_roll_up(
     house_view_omitted: bool,
     feed_gaps: FeedGaps,
     prompt_usage: Vec<crate::local_model::PromptUsage>,
+    model_retries: Vec<crate::local_model::RetryEvent>,
 ) -> PortfolioRollUp {
     use crate::portfolio::VerdictDisposition;
     let mut graded = 0;
@@ -2410,6 +2412,7 @@ fn build_roll_up(
             house_view_omitted,
             feed_gaps,
             prompt_usage,
+            model_retries,
         )),
         overview: format!(
             "{graded} graded{role_note}, {not_rated} not rated, {insufficient} \
@@ -2433,6 +2436,7 @@ fn build_data_health(
     house_view_omitted: bool,
     feed_gaps: FeedGaps,
     prompt_usage: Vec<crate::local_model::PromptUsage>,
+    model_retries: Vec<crate::local_model::RetryEvent>,
 ) -> crate::portfolio::DataHealth {
     let metas: Vec<&crate::portfolio::engine::TargetMeta> =
         audits.iter().filter_map(|a| a.target_meta.as_ref()).collect();
@@ -2587,6 +2591,19 @@ fn build_data_health(
             worst.num_ctx
         ));
     }
+    // The bounded retry-once's fired events (`docs/local-models.md §The
+    // local-model adapter seam`): in a persisted run every listed re-attempt
+    // succeeded (a second failure fails the run), so the line measures the
+    // absorbed transient rate — the big-run retry watch's read.
+    if let Some(first) = model_retries.first() {
+        parts.push(format!(
+            "bounded retry absorbed {} transient model-call failure{} (first: {} — {})",
+            model_retries.len(),
+            if model_retries.len() == 1 { "" } else { "s" },
+            first.stage,
+            first.cause
+        ));
+    }
     let near_full = context_pressure.len() - truncation_suspects.len();
     if near_full > 0 {
         let worst = context_pressure
@@ -2610,7 +2627,8 @@ fn build_data_health(
         || carry > 0
         || dgs10_history_gap
         || !context_pressure.is_empty()
-        || !output_limited.is_empty();
+        || !output_limited.is_empty()
+        || !model_retries.is_empty();
     let summary = if parts.is_empty() {
         "no priced targets this run".to_string()
     } else {
@@ -2634,6 +2652,7 @@ fn build_data_health(
         benchmark_gaps: feed_gaps.benchmark,
         context_pressure,
         peak_prompt,
+        model_retries,
         attention,
         summary,
     }
@@ -2746,6 +2765,7 @@ mod tests {
                 benchmark: 1,
             },
             vec![],
+            vec![],
         );
         assert_eq!(dh.commodity_gaps, 2);
         assert_eq!(dh.positioning_gaps, 1);
@@ -2759,8 +2779,34 @@ mod tests {
         assert!(dh.summary.contains("FINRA short interest unavailable"), "{}", dh.summary);
         assert!(dh.summary.contains("sector benchmark series failed on 1 symbol(s)"), "{}", dh.summary);
         // Clean feeds leave the line untouched.
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![]);
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![], vec![]);
         assert!(!dh.summary.contains("commodity"), "{}", dh.summary);
+    }
+
+    /// The bounded retry-once's data-health read: an absorbed transient is
+    /// named in the summary, carried structured, and trips attention — the
+    /// big-run retry watch's measurement.
+    #[test]
+    fn data_health_names_absorbed_retries_and_raises_attention() {
+        let retries = vec![crate::local_model::RetryEvent {
+            stage: "interpret WID".into(),
+            cause: "daemon error status".into(),
+        }];
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![], retries);
+        assert!(dh.attention, "an absorbed transient is infrastructure degradation");
+        assert_eq!(dh.model_retries.len(), 1);
+        assert!(
+            dh.summary.contains(
+                "bounded retry absorbed 1 transient model-call failure \
+                 (first: interpret WID — daemon error status)"
+            ),
+            "{}",
+            dh.summary
+        );
+        // No fired retries: no line, no attention from this trigger.
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), vec![], vec![]);
+        assert!(!dh.attention);
+        assert!(!dh.summary.contains("bounded retry"), "{}", dh.summary);
     }
 
     /// The context-fit fold: a call at or past the pressure fraction of its
@@ -2788,7 +2834,7 @@ mod tests {
                 output_limited: false,
             },
         ];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage);
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
         assert_eq!(dh.context_pressure.len(), 1);
         assert_eq!(dh.context_pressure[0].stage, "construction");
         assert_eq!(dh.peak_prompt.as_ref().unwrap().stage, "construction");
@@ -2809,7 +2855,7 @@ mod tests {
             num_predict: None,
             output_limited: false,
         }];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage);
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
         assert!(dh.context_pressure.is_empty());
         let peak = dh.peak_prompt.expect("peak recorded regardless of pressure");
         assert_eq!(peak.prompt_tokens, Some(90_000));
@@ -2831,7 +2877,7 @@ mod tests {
             num_predict: Some(65_536),
             output_limited: true,
         }];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage);
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
         assert!(dh.attention, "{}", dh.summary);
         let expected =
             "generation length-stopped on 1 local call (worst: construction generated 65536 of \
@@ -2854,7 +2900,7 @@ mod tests {
             num_predict: Some(65_536),
             output_limited: true,
         }];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage);
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
         assert!(dh.attention, "{}", dh.summary);
         let expected = "generation length-stopped on 1 local call (worst: construction \
                         generated unreported of 65536 reserved — counts incomplete; stop \
@@ -2882,7 +2928,7 @@ mod tests {
             num_predict: None,
             output_limited: false,
         }];
-        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage);
+        let dh = build_data_health(&[], 0, false, false, FeedGaps::default(), usage, vec![]);
         assert_eq!(dh.context_pressure.len(), 1);
         assert!(dh.attention, "{}", dh.summary);
         let expected = "likely front-truncation on 1 local call (worst: interpret NVDA reported \

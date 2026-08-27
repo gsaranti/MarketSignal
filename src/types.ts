@@ -673,8 +673,21 @@ export interface DataHealth {
   // run's fullest prompt regardless, the big-run prompt-fit watch's measurement.
   context_pressure: PromptUsage[];
   peak_prompt: PromptUsage | null;
+  // Model calls the bounded retry-once recovered (docs/local-models.md §The
+  // local-model adapter seam) — each fired retry's stage and failure class.
+  // Named in `summary` and an attention trigger. Absent on runs persisted
+  // before the field existed.
+  model_retries?: RetryEvent[];
   attention: boolean;
   summary: string;
+}
+
+// One fired bounded-retry: which stage re-attempted and for which failure
+// class. In a persisted run the re-attempt succeeded (a second failure fails
+// the run), so entries measure the absorbed transient rate.
+export interface RetryEvent {
+  stage: string;
+  cause: string;
 }
 
 // One local chat call's prompt-size observation: Ollama's reported prompt token
