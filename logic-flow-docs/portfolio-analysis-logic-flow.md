@@ -470,7 +470,7 @@ A guard-terminal stock — one the guard finds unsupported, non-US, or identity-
 Once the stock guard clears — and for every fund — the remaining legs are pulled. Stocks and funds pull disjoint financial legs — a fund touches neither the company statements nor SEC — but both share the deep price history, the option chain, and the local prior-run legs.
 
 - **Stock data retrieved from FMP**
-  - Income statement, balance sheet, and cash-flow statement (quarterly).
+  - Income statement, balance sheet, and cash-flow statement (quarterly); the income and cash-flow rows' period and filing dates are stored as the canonical fixed-width ISO render, and a row whose date does not parse is dropped as unreadable.
   - Ratios (P/E, P/B, debt/equity), key metrics (return on invested capital, free-cash-flow conversion, gross profitability), owner earnings, and enterprise value (EV, EV/EBITDA) — designed, not yet pulled; P/E, P/S, and P/B are derived from market cap and the statements today instead.
   - Discounted-cash-flow valuation cross-check (intrinsic value vs price) — designed.
   - Financial scores (Piotroski F-score, Altman Z-score) — designed.

@@ -221,6 +221,26 @@ Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only 
   The recorded `pipeline.rs:3365-3372` anchor had drifted to the render's current lines; `mod.rs:607-608` holds.
   Codex round 1 (2026-08-28, approve): no findings.
 - **FMP statement dates never canonicalized** — quarterly `period_end` / `filing_date` store raw source text (`fmp.rs:5954`, `5989`) while every downstream consumer is lexicographic (`engine.rs:448-461`, `887-893`); a non-padded date misorders the run, failing TTM adoption (a silent basis drop, and a spurious basis-flip gate) rather than producing a wrong sum.
+  Ruled 2026-08-28: an undatable statement date is an unreadable row, dropped, with an all-unreadable body reading malformed through the fetch layer's existing branch.
+  A partially unreadable statement response keeps the silent-drop posture of the row-dropping shapers (the EOD closes, the news dates, the per-symbol earnings rows).
+  The dividend windower rejects the whole body instead.
+  Surfacing the dropped count on the `ok` tracker row is a follow-up candidate, not built.
+  The adapter's date contract gains a canonical home at `data-sources.md` §Financial Modeling Prep, the statement-basis bullet carrying a pointer.
+  `ConsensusEstimate.period_end` (kept as served since the 2026-08-05 fix, which orders on parsed dates and never compares it) and the report-side `EarningsEvent.date` stay untouched, outside this finding.
+  Resolved 2026-08-28: both quarterly shapers store `period_end` and `filing_date` as the canonical fixed-width render through `canonical_date` (`fmp.rs`, `quarterly_income_from_value` / `quarterly_cash_flow_from_value`).
+  A `filingDate` that does not parse falls through to the legacy `fillingDate` spelling, and to `None` when neither parses.
+  No stamp moves: no prompt content, grade band, or stored-target basis changes.
+  Statement-date padding has no live observation recorded either way — the 2026-07-16 live check pinned spellings and row count, and the 2026-08-05 non-padded observation was the estimates and dividend rows — so the fix closes the feed family's documented hazard rather than an observed misorder.
+  Pinned: the canonical render on both shapers, the datable-string-first filing-date fallthrough, the unreadable-row drop, the all-unreadable malformed outcome, and four mixed-padding quarters adopting the TTM basis in calendar order end to end.
+  The recorded `engine.rs:887-893` anchor has drifted onto the `LedgerSeries` cadence map.
+  The lexicographic consumers are the canonicalization sort and tie-break, the filing-observation key, the anchor date against the ISO closes, and the overlay's local sort.
+  Codex round 1 (2026-08-28, changes requested): the `data-sources.md` contract had claimed every family the suite orders or compares by date, but the sector-P/E history stores its dates as served (`sector_pe_rows_from_value`, a dateless row kept with an empty date) and `fund::composite_yield_history` compares them lexicographically, so an unpadded print reads as after its own year's sample dates and is excluded there, then misselected as the latest print for later years.
+  The contract is narrowed to the five canonical families — the dated EOD closes, the news dates, the per-symbol earnings rows, the dividend history, and the quarterly statement prints — and names the sector-P/E history as the as-built exception.
+  Sector-P/E canonicalization is recorded off Codex round 1, not actioned — its own slice if it is wanted, the dateless-row semantics ruled with it.
+  Ruled 2026-08-28: it is I14 below, its own slice ahead of the run on I10/I11's terms.
+  Codex round 2 (2026-08-28, changes requested): the silent-drop line above had claimed every dated shaper; scoped to the row-dropping shapers, the dividend windower's whole-body rejection named.
+  Codex round 3 (2026-08-28, changes requested): I14 had said a dateless print never wins the latest-print pick; it holds its exchange's slot where no dated print qualifies, so a lone dateless row supplies the historical P/E — corrected, the slice's tests to cover dateless-only and mixed inputs.
+  Codex round 4 (2026-08-28, approve): no findings.
 
 ## Priority 2 — mid-run abort risk
 
@@ -371,6 +391,7 @@ Ruled 2026-08-27: the big confirmation run waits on this whole record — every 
 I10 and I11, added 2026-08-27 from the fix-slice Codex rounds, join that queue on the same terms.
 I12, added 2026-08-27 off the expense-ratio slice's Codex rounds, joins on the same terms.
 I13, added 2026-08-28 off the ledger-basis slice's Codex rounds, joins on the same terms.
+I14, added 2026-08-28 off the statement-date slice's Codex round, joins on the same terms.
 Fix grouping ruled 2026-08-27: one finding per slice through the plan → implement → review → Codex → commit loop, each marked here; the resume prompt-usage minor is the one-seam exception, its retry events and prompt usage riding `CheckpointAccumulators` together as a single slice.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
@@ -388,6 +409,7 @@ The green gates do not cover the adversarial boundaries below.
 I10 and I11 (2026-08-27) come from Codex's review rounds on the fix slices rather than the independent review, and join the queue ahead of the run on the same terms as I1–I9.
 I12 (2026-08-27) is the expense-ratio slice's deferred crossing-render edge, given its own heading by ruling and queued on the same terms.
 I13 (2026-08-28) is the equity-source continuity gap Codex round 2 on the ledger-basis slice surfaced, given its own heading by ruling and queued on the same terms.
+I14 (2026-08-28) is the sector-P/E history date canonicalization Codex round 1 on the statement-date slice surfaced, given its own heading by ruling and queued on the same terms.
 
 ### I1 — major: a non-positive quote passes the evidence floor and can make a successful run persist as unreadable
 
@@ -524,3 +546,14 @@ Price/book is the reachable half: it keys its observation on the marks' trading 
 No persisted record carries the equity source, so no watch-set read can catch a flip after the fact.
 The fix mirrors the basis-flip gate on the two instant series: an `equity_source` stamped on the financials at the merge, an `authored_equity_source` on the evaluation state, and the same one-pass-unevaluable-and-restamp treatment on a change; whether the prompt's basis line names the source (a `PROMPT_VERSION` event) is the slice's call.
 Surfaced by Codex round 2 on the ledger-basis slice (`portfolio-v15`) and recorded there as not actioned; ruled its own slice 2026-08-28.
+
+### I14 — minor: sector-P/E history dates are stored as served and compared lexicographically
+
+`sector_pe_rows_from_value` (`src-tauri/src/fmp.rs`) stores each `sector-pe-snapshot` / `historical-sector-pe` row's `date` as served, keeping a row without one under an empty date, while `fund::composite_yield_history` (`src-tauri/src/portfolio/fund.rs`) selects each sector's latest print on or before a quarter-end sample date by comparing those strings lexicographically.
+A non-zero-padded print — the feed family's documented wire quirk — reads as after every sample date in its own year and is excluded there, then reads as later than a December print and is misselected as the latest for later years, so the fund valuation history's coverage and its composite yield move with nothing having happened.
+An empty date sorts before every sample date, so a dateless row always qualifies; it holds its exchange's slot only where no dated print qualifies, since any dated print replaces it and none is replaced by it.
+A lone dateless row therefore supplies the historical P/E for its exchange — a semantics no contract states, so the slice's tests cover dateless-only and mixed dated/dateless inputs.
+The snapshot blend ignores dates and the history sampler keys on them, so the two consumers must be pinned separately.
+No persisted record carries the prints' source form, so no watch-set read can catch a misselection after the fact; `docs/data-sources.md` §Financial Modeling Prep names the family as the as-built exception until this lands.
+The fix is the statement-date slice's: store the canonical fixed-width render at the shaper, rule what a dateless row means, and pin both consumers; no stamp is expected to move.
+Surfaced by Codex round 1 on the statement-date slice and recorded there as not actioned; ruled its own slice 2026-08-28.

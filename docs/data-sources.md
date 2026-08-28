@@ -73,6 +73,13 @@ The endpoints each job calls are listed in [Endpoints by job](#endpoints-by-job)
 
 Financial Modeling Prep is the primary financial-data source for the application.
 All FMP paths are on the `https://financialmodelingprep.com/stable` base, on **one shared paid-tier key** used by the report and both local jobs (see [Local analysis suite — shared sourcing](#local-analysis-suite--shared-sourcing) for how the suite spreads its load).
+The dated EOD closes, the news dates, the per-symbol earnings rows, the dividend history, and the quarterly statement prints — the FMP row families the local suite orders or compares by date — are stored as the canonical fixed-width ISO render, never the source text, because the feed serves non-zero-padded dates on some rows (observed on the estimates and dividend rows) and those sort lexicographically out of calendar order.
+A row whose date does not parse as a calendar date is unreadable and dropped.
+A served array with no readable row reads malformed.
+The dividend windower is stricter: it parses every row's date and rejects the whole body on an undatable one.
+The quarterly statement rows' period and filing dates ride this rule, so the TTM basis's newest-first order and the restatement tie-break read calendar order (the 2026-08-24 review's Priority-1 minor).
+The consensus read orders its forward rows on parsed dates and keeps the near row's period as served — a label, never compared.
+The sector-P/E history is the as-built exception: its prints store the date as served and the fund composite-yield history compares them lexicographically, so it does not yet sit under this rule (recorded off the statement-date slice's Codex round, 2026-08-28).
 
 Responsibilities:
 - market prices

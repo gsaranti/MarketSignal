@@ -5942,7 +5942,13 @@ fn balance_sheet_from_value(value: &Value) -> Option<BalanceSheetLines> {
 }
 
 /// Shape quarterly `/cash-flow-statement` rows (newest first) — the pre-profit
-/// overlay's burn / runway / capex source. A row without a period date is skipped.
+/// overlay's burn / runway / capex source. A row without a datable period date
+/// is unreadable and skipped, and the period and filing dates are stored as
+/// their CANONICAL fixed-width ISO render ([`canonical_date`]): the newest-first
+/// sort and the restatement tie-break (`engine::canonicalize_statements`) are
+/// lexicographic, and the feed's date family serves non-zero-padded dates on
+/// some rows — observed on the estimates and dividend rows (2026-08-05), never
+/// yet on a statement row (large-scale review 2026-08-24, Priority-1 minor).
 fn quarterly_cash_flow_from_value(
     value: &Value,
 ) -> Vec<crate::portfolio::engine::QuarterlyCashFlowRow> {
@@ -5951,14 +5957,25 @@ fn quarterly_cash_flow_from_value(
     };
     rows.iter()
         .filter_map(|row| {
-            let period_end = row.get("date").and_then(Value::as_str)?.to_string();
+            let period_end = row
+                .get("date")
+                .and_then(Value::as_str)
+                .and_then(canonical_date)?;
             Some(crate::portfolio::engine::QuarterlyCashFlowRow {
                 period_end,
+                // Datable-string-first per key: an absent, null, or undatable
+                // `filingDate` falls through to the legacy `fillingDate`
+                // spelling, and to `None` (the period-end + grace anchor) when
+                // neither parses.
                 filing_date: row
                     .get("filingDate")
                     .and_then(Value::as_str)
-                    .or_else(|| row.get("fillingDate").and_then(Value::as_str))
-                    .map(str::to_string),
+                    .and_then(canonical_date)
+                    .or_else(|| {
+                        row.get("fillingDate")
+                            .and_then(Value::as_str)
+                            .and_then(canonical_date)
+                    }),
                 free_cash_flow: row.get("freeCashFlow").and_then(Value::as_f64),
                 // Numeric-first per key (the balance-sheet shaper's rule): a
                 // present-but-null preferred line must still fall through to the
@@ -5979,22 +5996,39 @@ fn quarterly_cash_flow_from_value(
 /// Shape quarterly `/income-statement` rows (newest first). Lenient key spellings
 /// pinned by fixtures; live-verified 2026-07-16 — the feed serves the stable
 /// spellings (`filingDate` / `epsDiluted` / `weightedAverageShsOutDil`) and the
-/// full 16 rows on `limit=16`.
+/// full 16 rows on `limit=16`. A row without a datable period date is
+/// unreadable and skipped, and the period and filing dates are stored as their
+/// CANONICAL fixed-width ISO render ([`canonical_date`]): the newest-first sort,
+/// the restatement tie-break, and the anchor date against the ISO closes are
+/// all lexicographic, and the feed's date family serves non-zero-padded dates
+/// on some rows (observed on the estimates and dividend rows, 2026-08-05;
+/// never yet on a statement row) — as source text a "2026-9-30" would sort
+/// after "2026-12-31", the run would read non-contiguous, and TTM adoption
+/// would fail onto the annual basis (large-scale review 2026-08-24,
+/// Priority-1 minor).
 fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::QuarterlyIncomeRow> {
     let Some(rows) = value.as_array() else {
         return vec![];
     };
     rows.iter()
         .filter_map(|row| {
-            let period_end = row.get("date").and_then(Value::as_str)?.to_string();
-            // String-first per key (the numeric-first rule's string form): a
-            // present-but-null `filingDate` must still fall through to the legacy
-            // `fillingDate` spelling, or a restated row loses its tie-break date.
+            let period_end = row
+                .get("date")
+                .and_then(Value::as_str)
+                .and_then(canonical_date)?;
+            // Datable-string-first per key (the numeric-first rule's string
+            // form): a present-but-null or undatable `filingDate` must still
+            // fall through to the legacy `fillingDate` spelling, or a restated
+            // row loses its tie-break date; `None` when neither parses.
             let filing_date = row
                 .get("filingDate")
                 .and_then(Value::as_str)
-                .or_else(|| row.get("fillingDate").and_then(Value::as_str))
-                .map(|s| s.to_string());
+                .and_then(canonical_date)
+                .or_else(|| {
+                    row.get("fillingDate")
+                        .and_then(Value::as_str)
+                        .and_then(canonical_date)
+                });
             Some(crate::portfolio::engine::QuarterlyIncomeRow {
                 period_end,
                 filing_date,
@@ -6404,6 +6438,101 @@ mod suite_tests {
         assert_eq!(rows[1].filing_date.as_deref(), Some("2026-01-30"));
         assert!(gaps.is_empty());
         assert_eq!(server.request_paths(), vec!["/income-statement"]);
+    }
+
+    #[test]
+    fn quarterly_statement_dates_store_the_canonical_render() {
+        // The shapers stored `date` / `filingDate` as source text while every
+        // consumer is lexicographic — `canonicalize_statements`' newest-first
+        // sort and restatement tie-break, the anchor date against ISO closes —
+        // so a non-zero-padded "2026-9-30" (the feed family's documented wire
+        // quirk) would sort after "2026-12-31", the run would read
+        // non-contiguous, and TTM adoption would fail onto the annual basis
+        // (large-scale review 2026-08-24, P1 minor).
+        let income = r#"[
+          {"date":"2026-9-30","filingDate":"2026-11-5","revenue":1.0},
+          {"date":"2026-6-30","filingDate":"soon","fillingDate":"2026-8-1","revenue":2.0},
+          {"date":"2026-3-31","filingDate":"never","fillingDate":"later","revenue":3.0},
+          {"date":"Q4 2025","filingDate":"2026-02-01","revenue":4.0}
+        ]"#;
+        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body: income }]);
+        let mut gaps = vec![];
+        let rows = source(&server.base_url).fetch_quarterly_income("AAPL", &mut gaps);
+        assert_eq!(rows.len(), 3, "the undatable-period row is unreadable: {rows:?}");
+        assert_eq!(rows[0].period_end, "2026-09-30");
+        assert_eq!(rows[0].filing_date.as_deref(), Some("2026-11-05"));
+        // Datable-string-first: an undatable `filingDate` falls through to the
+        // legacy spelling...
+        assert_eq!(rows[1].period_end, "2026-06-30");
+        assert_eq!(rows[1].filing_date.as_deref(), Some("2026-08-01"));
+        // ...and to `None` when neither parses — the period-end + grace anchor
+        // takes over, never the source text.
+        assert_eq!(rows[2].period_end, "2026-03-31");
+        assert_eq!(rows[2].filing_date, None);
+        assert!(gaps.is_empty(), "{gaps:?}");
+
+        // The cash-flow shaper holds the same rule; an impossible calendar date
+        // is as unreadable as a non-date.
+        let cash = r#"[
+          {"date":"2026-9-30","fillingDate":"2026-11-5","freeCashFlow":1.0},
+          {"date":"2026-06-31","freeCashFlow":2.0}
+        ]"#;
+        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body: cash }]);
+        let mut gaps = vec![];
+        let rows = source(&server.base_url).fetch_quarterly_cash_flow("AAPL", &mut gaps);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].period_end, "2026-09-30");
+        assert_eq!(rows[0].filing_date.as_deref(), Some("2026-11-05"));
+        assert!(gaps.is_empty(), "{gaps:?}");
+    }
+
+    #[test]
+    fn quarterly_statement_dates_all_undatable_read_malformed() {
+        // A served array with no readable row is the fetch layer's existing
+        // `malformed` branch — an undatable date is unreadable exactly as a
+        // dateless row is, never a benign `empty`.
+        let body = r#"[{"date":"soon","revenue":1.0},{"date":"Q3","revenue":2.0}]"#;
+        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body }]);
+        let mut gaps = vec![];
+        let rows = source(&server.base_url).fetch_quarterly_income("AAPL", &mut gaps);
+        assert!(rows.is_empty(), "{rows:?}");
+        assert_eq!(gaps, vec!["FMP quarterly income statements were malformed".to_string()]);
+
+        let body = r#"[{"date":"soon","freeCashFlow":1.0}]"#;
+        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body }]);
+        let mut gaps = vec![];
+        let rows = source(&server.base_url).fetch_quarterly_cash_flow("AAPL", &mut gaps);
+        assert!(rows.is_empty(), "{rows:?}");
+        assert_eq!(gaps, vec!["FMP quarterly cash-flow statements were malformed".to_string()]);
+    }
+
+    #[test]
+    fn quarterly_statement_dates_unpadded_still_adopt_the_ttm_basis() {
+        // The finding's harm, end to end: four consecutive quarters served with
+        // mixed padding. As source text "2026-9-30" sorted after "2026-12-31"
+        // newest-first, `quarters_contiguous` read the misordered run as a gap,
+        // and adoption failed onto the annual basis with nothing wrong in the
+        // data — a silent basis drop and a spurious basis-change gate.
+        let body = r#"[
+          {"date":"2026-12-31","revenue":10.0,"netIncome":1.0},
+          {"date":"2026-9-30","revenue":10.0,"netIncome":1.0},
+          {"date":"2026-6-30","revenue":10.0,"netIncome":1.0},
+          {"date":"2026-3-31","revenue":10.0,"netIncome":1.0}
+        ]"#;
+        let value: Value = serde_json::from_str(body).unwrap();
+        let mut fin = crate::portfolio::engine::CompanyFinancials {
+            quarterly_income: quarterly_income_from_value(&value),
+            ..Default::default()
+        };
+        assert!(
+            crate::portfolio::dossier::apply_ttm_statement_basis(&mut fin),
+            "{:?}",
+            fin.quarterly_income
+        );
+        let ends: Vec<&str> = fin.quarterly_income.iter().map(|r| r.period_end.as_str()).collect();
+        assert_eq!(ends, ["2026-12-31", "2026-09-30", "2026-06-30", "2026-03-31"]);
+        assert_eq!(fin.statement_basis, Some(crate::portfolio::StatementBasis::Ttm));
+        assert_eq!(fin.revenue, Some(40.0));
     }
 
     #[test]
