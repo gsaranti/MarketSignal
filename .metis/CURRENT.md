@@ -50,7 +50,7 @@ basis the model's thresholds are evaluated against annual prints and no prompt
 discloses which basis the holding is on; the basis-change streak reset bounds
 the damage to threshold semantics; `mod.rs:2505` is a fixture's model-authored
 falsifier statement, out of scope; then IV skew sign convention, FMP statement
-dates), then 5 P2, 8 P3, Codex I1–I12, and the §A4 seed edge. Carried untouched
+dates), then 5 P2, 8 P3, Codex I1–I13, and the §A4 seed edge. Carried untouched
 outside the record: `/api/tags` probes on the 600 s backstop; seed passes the
 whole prior ledger per topic; 6g qualitative trips un-trip unless re-researched.
 

@@ -198,6 +198,7 @@ Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only 
   Codex round 1 also caught the `Annual` stamp claiming SEC provenance: the merge stamped `Annual` for any level present, so FMP's own balance-sheet instant beside thin quarters and no SEC facts carried a `SEC annual` label for a level SEC never supplied.
   Codex round 2 (2026-08-28) closed the remaining boundary: an equity-only SEC fill had still stamped `Annual`, so the prompt called flows that never reached the engine "SEC annual"; `Annual` is now stamped only where SEC filled a flow line, and an instant standing alone — FMP's, or SEC's equity — carries no flow basis.
   Equity-source continuity — a debt/equity or price/book step when the equity leg moves between FMP's quarterly instant and SEC's annual one — is not the flow-basis stamp's and never fully was, since an FMP balance-sheet gap flips the source under an unchanged TTM basis; recorded off Codex round 2, not actioned, a separate stamp if it is ever wanted.
+  Ruled 2026-08-28: it is I13 below, its own slice ahead of the run on I10/I11's terms.
   Codex round 3 (2026-08-28, approve): wording — `None` is no adopted flow basis rather than no statement lines, and only flow-series thresholds are authored on the basis; swept through the sources comment, the canonical bullet and its pointer, the logic-flow, and this record.
   Codex round 4 (2026-08-28, approve): the `portfolio-v15` history paragraph had missed that sweep; aligned.
   The evaluation's basis-change note reads the same labels; its literal had carried thirty-space runs into the prompt (a `\`-continued string collapsed without its continuations), surfaced by this slice's plan and fixed with it.
@@ -358,6 +359,7 @@ A1–A4 are resolved (2026-08-27; each resolution is recorded under its §A head
 Ruled 2026-08-27: the big confirmation run waits on this whole record — every remaining finding (the Priority-1, -2, and -3 minors, Codex's I1–I9, and the §A4 exhausted-budget seed edge) is handled first, and the user names the session that launches it.
 I10 and I11, added 2026-08-27 from the fix-slice Codex rounds, join that queue on the same terms.
 I12, added 2026-08-27 off the expense-ratio slice's Codex rounds, joins on the same terms.
+I13, added 2026-08-28 off the ledger-basis slice's Codex rounds, joins on the same terms.
 Fix grouping ruled 2026-08-27: one finding per slice through the plan → implement → review → Codex → commit loop, each marked here; the resume prompt-usage minor is the one-seam exception, its retry events and prompt usage riding `CheckpointAccumulators` together as a single slice.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
@@ -374,6 +376,7 @@ The full repository gates were green on `4dc675b`: `cargo test` (1,185 passed, 3
 The green gates do not cover the adversarial boundaries below.
 I10 and I11 (2026-08-27) come from Codex's review rounds on the fix slices rather than the independent review, and join the queue ahead of the run on the same terms as I1–I9.
 I12 (2026-08-27) is the expense-ratio slice's deferred crossing-render edge, given its own heading by ruling and queued on the same terms.
+I13 (2026-08-28) is the equity-source continuity gap Codex round 2 on the ledger-basis slice surfaced, given its own heading by ruling and queued on the same terms.
 
 ### I1 — major: a non-positive quote passes the evidence floor and can make a successful run persist as unreadable
 
@@ -500,3 +503,13 @@ The edge is reachable: the adapter divides any numeric `expenseRatio` by 100 unq
 The two sites also disagree on the threshold: the input-delta entry prints it at four places and the 6f section shortest-round-trip (`{}`), so one crossing states its threshold two ways in one prompt.
 `ConditionCrossing` carries no series, so the fix is series-agnostic — one shared formatter at both sites, four places extending where a nonzero value would round to zero, the expense-ratio render's own rule — and a `PROMPT_VERSION` event.
 Surfaced by Codex rounds 1–2 on the `portfolio-v14` expense-ratio slice and recorded there as deferred; ruled its own slice 2026-08-27.
+
+### I13 — minor: an equity-source flip steps debt/equity and price/book past the continuity gate
+
+Debt/equity and price/book read `total_equity`, which is FMP's latest quarterly balance sheet when that leg returns it and SEC's annual `stockholders_equity` when it does not (`src-tauri/src/portfolio/dossier.rs` `merge_financials`, the equity fill; `docs/portfolio-analysis.md` §Starting parameters, the leverage leg).
+The FMP balance-sheet leg is fail-soft, so a gap on one run and a return on the next flips the equity leg between a quarter-end instant and a year-end one, and both series step with nothing having happened — the same size class as the flow-basis step the continuity gate exists for.
+The gate does not see it: `ConditionEvalState.authored_statement_basis` tracks the flow basis, which the ledger-basis slice narrowed to SEC flow fills, and the equity source was never stamped — a TTM-to-TTM pair of runs with a balance-sheet gap between them was uncovered under the old stamp too.
+Price/book is the reachable half: it keys its observation on the marks' trading day, so a stepped level confirms a breach in two distinct closes; debt/equity is filing-cadence and slower.
+No persisted record carries the equity source, so no watch-set read can catch a flip after the fact.
+The fix mirrors the basis-flip gate on the two instant series: an `equity_source` stamped on the financials at the merge, an `authored_equity_source` on the evaluation state, and the same one-pass-unevaluable-and-restamp treatment on a change; whether the prompt's basis line names the source (a `PROMPT_VERSION` event) is the slice's call.
+Surfaced by Codex round 2 on the ledger-basis slice (`portfolio-v15`) and recorded there as not actioned; ruled its own slice 2026-08-28.
