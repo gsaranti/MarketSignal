@@ -8,6 +8,7 @@ Revised 2026-08-18 to the `portfolio-v9` shape: the construction-stage, lean / d
 Revised again 2026-08-24, the pre-run bar now met: the research-loop, ruling-watch, pre-profit-activation, CBOE-backdrop, narrative-comparator, and Schwab-CEF-typing additions are folded in, with the prompt-stamp and Step-6a notes.
 Records this run persists stamp `portfolio-v14`, not the `portfolio-v11` these additions were first queued under — the run-evidence, infrastructure, research-loop, F3 tie-channel, and expense-ratio render slices all landed since the 2026-08-18 revision with no live run between.
 Revised again 2026-08-27 with the fired-retry watch (§Model serving and runtime), the sub-distillation-cap watch (§The research loop), and the one-month cap-saturation watch (§Grade, valuation and targets).
+Revised again 2026-08-27 with the technology-event pre-flag watch (§Thesis ledger and the quick check).
 
 Nothing here is a defect report.
 Each item is a behavior that has only ever been exercised against fixtures, a small live run, or a single symbol, and needs a read at real scale (a 47-position book) before it can be called confirmed.
@@ -47,6 +48,10 @@ The risk-tier distribution now that negative-book issuers take High, read agains
 Debut ledger authorship quality at 47-position scale.
 
 Live condition carry and supersession behavior, and tripped-claim discipline.
+
+The technology-event pre-flag's fire rate at book scale, and the memoized-benchmark race.
+The sector benchmark is fetched run-level and memoized per symbol, so a holding whose dated EOD lands after that fetch across the EOD-posting boundary reads a benchmark one session short.
+That reads as the typed gap `no <benchmark> close on the holding's newest session …` on `degraded_inputs`, never a flag; count those gaps, since each is a holding whose input delta lost its pre-flag to timing rather than to data.
 
 The first live quick-check sweep at 47-position scale — flag, badge and degraded-note render, plus the card overlay.
 

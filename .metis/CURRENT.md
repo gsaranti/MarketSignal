@@ -21,38 +21,44 @@ line anchors (three render sites, not its two) and caught BUILD/INDEX trailing
 the record (I1–I11). Carried nits hold: rustfmt-shape only edited hunks, sweep
 mirrors, read gate output in full, verify Codex findings against code and git.
 
+**Session-start 2026-08-27 (this session): the six open questions ruled, no
+code.** I12 gets its own heading — the two ledger crossing renders
+(`pipeline.rs:2424`, `:4308`) flatten a sub-basis-point expense ratio to
+`0.0000`, and the 6f site prints the threshold shortest-round-trip where the
+delta entry prints four places — queued on I10/I11's terms (series-agnostic
+shared formatter, a `PROMPT_VERSION` event). The `targets-v5` history now names
+the anchor share-count basis (`28332e1`) beside the band in both homes
+(`portfolio-analysis.md` §Starting parameters, the `engine.rs` doc comment),
+with the targets-stamp criterion stated once — a stored target's basis change
+moves the stamp, by correction as much as by calibration; no retro-bump, no
+`targets-v4` record ever persisted. The watch set gains the technology-event
+pre-flag watch (it had none): fire rate plus the memoized-benchmark race as the
+typed gap on `degraded_inputs`. The row-count `sessions` edge is recorded on
+the record's pre-flag bullet (conservative, unobserved, not actioned). Letters
+NOTE closed with nothing written — the exhaustive `match` forces a future
+variant's text; `opt()` dollar precision left unqueued. Gates: clippy 0
+warnings, cargo test 1247/0.
+
 ## Current state
 
-Nothing in flight; `main` at `fbac315`, tree clean, pushed. Queue ahead of the
-run, one finding per slice: **3 P1 minors** remain (next: **ledger TTM
-vocabulary** — the `LedgerSeries` description strings in `engine.rs` hard-code
-"TTM net margin" / "TTM gross margin", but on the annual fallback basis the
-model's thresholds are evaluated against annual prints and no prompt discloses
-which basis the holding is on; the basis-change streak reset bounds the damage
-to threshold semantics; then IV skew sign convention, FMP statement dates), then
-5 P2, 8 P3, Codex I1–I11, and the §A4 seed edge. Carried untouched outside the
-record: `/api/tags` probes on the 600 s backstop; seed passes the whole prior
-ledger per topic; 6g qualitative trips un-trip unless re-researched.
+Nothing in flight; `main` at this session's rulings commit (on `c863148`), tree
+clean, not yet pushed. Queue ahead of the run, one finding per slice: **3 P1
+minors** remain (next: **ledger TTM vocabulary** — the `LedgerSeries::describe`
+strings (`engine.rs:954-955`; the record's `831-832` anchor has drifted)
+hard-code "TTM net margin" / "TTM gross margin", but on the annual fallback
+basis the model's thresholds are evaluated against annual prints and no prompt
+discloses which basis the holding is on; the basis-change streak reset bounds
+the damage to threshold semantics; `mod.rs:2505` is a fixture's model-authored
+falsifier statement, out of scope; then IV skew sign convention, FMP statement
+dates), then 5 P2, 8 P3, Codex I1–I12, and the §A4 seed edge. Carried untouched
+outside the record: `/api/tags` probes on the 600 s backstop; seed passes the
+whole prior ledger per topic; 6g qualitative trips un-trip unless re-researched.
 
 ## Open questions
 
-- **I12 — the deferred crossing-render edge?** The generic ledger crossing
-  renders (`pipeline.rs` input-delta entry + 6f evaluation section) print every
-  series at four places, so a sub-basis-point expense ratio — reachable via the
-  unquantized adapter divide and an unbounded ledger threshold — prints
-  `0.0000` there while the direct render shows it. Recorded as deferred in the
-  record; whether it gets an I12 heading on I10/I11's terms is the user's call.
-- **Pre-flag `sessions` count** counts holding rows, not distinct dates —
-  pre-existing, conservative; recorded, not actioned.
-- **Stamp criterion, recorded once?** `28332e1` should also have bumped
-  `targets`; `35bf8af`'s v4→v5 conflates two changes. No retro-bump proposed.
-- **Watch-set line for the pre-flag typed gap?** `no XLK close on the holding's
-  newest session …` on `degraded_inputs` if the memoized-benchmark race fires;
-  none added.
-- **`Letters` NOTE wording** speaks only of "the letter"; a stock-branch
-  sub-score-only bump would need its own text. No such bump exists.
-- **`opt()` dollar amounts** — `liquid_resources` / `ttm_cash_burn` print at
-  three decimals in the pre-profit financing line; readability nit, unqueued.
+- None carried. The six from the expense-ratio slice were ruled this session
+  (§What happened); each ruling lives where it binds — the record's bullets and
+  I12, `portfolio-analysis.md` §Starting parameters, the watch set.
 
 ## Where to start
 

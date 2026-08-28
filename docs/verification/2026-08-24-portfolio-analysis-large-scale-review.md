@@ -139,6 +139,9 @@ Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only 
   The anchor carve-out from the latest-count basis is stated once at `portfolio-analysis.md` §Starting parameters, beside the forward driver's basis.
   The blanket at that home and its two mirrors (`trade-opportunities.md` §Starting parameters, the TO logic-flow) are scoped to forward conversions, off the Codex round.
   A pinned test proves an in-window neighbour denominates a count-less anchoring quarter and that a window with no count drops rather than riding today's shares outstanding.
+  The new denomination changes the basis of every stored target the anchor multiples feed, so by the targets stamp's own criterion it should have cut the stamp itself.
+  It rides `targets-v5` instead, cut twenty-five minutes later by the one-month band slice, and that stamp's history now names both changes (recorded 2026-08-27).
+  No retro-bump: no `targets-v4` record was ever persisted, so there is nothing for a separate stamp to distinguish.
 - **One-month band is unscaled daily volatility** — `(daily σ × 2).clamp(0.02, 0.15)` (`engine.rs:2562-2565`) understates a month's 1σ move by ~√21 against the suite's own √t convention (`dispersion_floor`, `tech_event_pre_flag`), so the printed band covers ~0.44σ of the month.
   The doc comment marks it "v1 mechanics", so this is surfaced as a deliberate-retention judgment call rather than an accident.
   Ruled 2026-08-27: scale by √t — the band becomes daily σ × 2 × √21 under the same clamp, matching the suite's `dispersion_floor` / `tech_event_pre_flag` convention.
@@ -154,6 +157,8 @@ Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only 
   The exact-session read takes the last row for a date, the policy `latest_on_or_before` already applies, so a duplicated bar never makes the read arbitrary (Codex round).
   The rule is stated once at `portfolio-analysis.md` §Starting parameters and mirrored in the Portfolio logic-flow.
   A pinned test proves a benchmark stopping one session short, or holed on the newest session, gaps where it would have fired over the shorter window, and that a benchmark running past the holding still reads on the holding's newest session.
+  The elapsed-session count reads holding rows (`engine.rs:3467-3470`), so a duplicated bar — FMP's parser sorts but never dedupes — would inflate it toward a higher threshold.
+  That direction is conservative and no duplicated bar has been observed, so it is recorded 2026-08-27, not actioned.
 - **Tech pre-flag prior-endpoint alignment** — `latest_on_or_before(benchmark_closes, prior_session)` (`engine.rs:3360-3361`) resolved the benchmark's prior-end close independently of the holding's, so a benchmark hole at the holding's anchor session shifted one leg's window — the same silent mismatch at the other end.
   Surfaced by the coverage slice's plan and folded into it under the one-seam exception (ruled 2026-08-27), since the fix is the same exact-session read.
   Resolved 2026-08-27: the benchmark's prior-end close is read on the session the holding's anchor resolved to, and a missing one is the same typed gap.
@@ -182,6 +187,7 @@ Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only 
   The ledger crossing lines keep the series' generic four-place render, so a sub-basis-point ratio would print `0.0000` there while the direct render shows it.
   That edge is reachable: the adapter divides any numeric `expenseRatio` by 100 unquantized, and a ledger threshold is any finite value.
   It is deferred, not impossible: recorded off Codex rounds 1–2, not actioned in this slice.
+  Ruled 2026-08-27: it is I12 below, its own slice ahead of the run on I10/I11's terms.
   `PROMPT_VERSION` moves to `portfolio-v14`, so a pre-fix checkpoint cannot resume into the corrected render and every record stamps the render it was authored under (Codex round 1).
   A pinned test holds the 0.03% fund, the legend's own 0.0075, the adapter's percent-over-100 arithmetic, a fee-waived zero, and a sub-basis-point ratio; a second proves all three prompts carry both readings.
 - **Ledger vocabulary asserts TTM the engine may not deliver** — the series vocabulary hard-codes "TTM net margin" / "TTM gross margin" (`engine.rs:831-832`), but on the annual fallback basis the model's thresholds are evaluated against annual prints, and no prompt discloses which basis the holding is on; the basis-change streak reset bounds the damage to threshold semantics.
@@ -335,6 +341,7 @@ F2 is resolved (2026-08-27; the resolution is recorded under §F2).
 A1–A4 are resolved (2026-08-27; each resolution is recorded under its §A heading, the §A4 one naming an exhausted-budget edge left open).
 Ruled 2026-08-27: the big confirmation run waits on this whole record — every remaining finding (the Priority-1, -2, and -3 minors, Codex's I1–I9, and the §A4 exhausted-budget seed edge) is handled first, and the user names the session that launches it.
 I10 and I11, added 2026-08-27 from the fix-slice Codex rounds, join that queue on the same terms.
+I12, added 2026-08-27 off the expense-ratio slice's Codex rounds, joins on the same terms.
 Fix grouping ruled 2026-08-27: one finding per slice through the plan → implement → review → Codex → commit loop, each marked here; the resume prompt-usage minor is the one-seam exception, its retry events and prompt usage riding `CheckpointAccumulators` together as a single slice.
 Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
@@ -350,6 +357,7 @@ The fund-weight NaN finding below is intentionally retained despite touching Cla
 The full repository gates were green on `4dc675b`: `cargo test` (1,185 passed, 31 ignored, plus all integration suites), `cargo clippy --all-targets --all-features`, `npm run build`, `npm test` (46 Node tests and 247 Vitest tests), and `git diff --check`.
 The green gates do not cover the adversarial boundaries below.
 I10 and I11 (2026-08-27) come from Codex's review rounds on the fix slices rather than the independent review, and join the queue ahead of the run on the same terms as I1–I9.
+I12 (2026-08-27) is the expense-ratio slice's deferred crossing-render edge, given its own heading by ruling and queued on the same terms.
 
 ### I1 — major: a non-positive quote passes the evidence floor and can make a successful run persist as unreadable
 
@@ -468,3 +476,11 @@ The target version has none: the loader discards `audit.target_meta.parameter_ve
 A run whose targets moved on a version bump alone — `targets-v4` → `targets-v5` widens every one-month band with no input change — can therefore have that move attributed to company evidence or a self-correction, and a self-correction marks `thesis_changed` and can open a successor outcome episode.
 Pre-existing since `targets-v3` → `targets-v4` (2026-08-13); surfaced by the Codex round on the `targets-v5` slice.
 The fix mirrors the grade mechanism — a `prior_target_parameter_version` on the dossier, an input-delta row, and the NOTE — as its own slice.
+
+### I12 — minor: the ledger crossing renders flatten a sub-basis-point expense ratio, and the two sites disagree on the threshold's precision
+
+Both crossing renders print the observed value at four places — the input-delta entry (`src-tauri/src/portfolio/pipeline.rs:2424`) and the 6f ENGINE CONDITION CROSSINGS section (`pipeline.rs:4308`) — so an expense ratio below one basis point prints `0.0000` there while the direct render (`fmt_expense_ratio`, `pipeline.rs:3787`) extends its precision.
+The edge is reachable: the adapter divides any numeric `expenseRatio` by 100 unquantized (`src-tauri/src/fmp.rs:6297-6300`), and a ledger threshold is any finite value (`pipeline.rs:1548`).
+The two sites also disagree on the threshold: the input-delta entry prints it at four places and the 6f section shortest-round-trip (`{}`), so one crossing states its threshold two ways in one prompt.
+`ConditionCrossing` carries no series, so the fix is series-agnostic — one shared formatter at both sites, four places extending where a nonzero value would round to zero, the expense-ratio render's own rule — and a `PROMPT_VERSION` event.
+Surfaced by Codex rounds 1–2 on the `portfolio-v14` expense-ratio slice and recorded there as deferred; ruled its own slice 2026-08-27.

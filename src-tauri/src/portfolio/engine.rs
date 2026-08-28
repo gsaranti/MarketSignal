@@ -281,7 +281,11 @@ const DISPERSION_FLOOR_VOL_SCALE: f64 = 0.5;
 /// persisted dataset (run `6a52f1dd` is the v3 baseline;
 /// `docs/verification/2026-08-13-big-run-attempt-2.md` §Workstream 3). v5: the
 /// one-month band √t-scaled to its 21 sessions under the unchanged clamp (ruled
-/// 2026-08-27 — a units inconsistency, not a calibration).
+/// 2026-08-27 — a units inconsistency, not a calibration), and the anchor
+/// share-count basis — each historical revenue-per-share print denominated on
+/// an in-window diluted count — cut the same session without its own stamp, so
+/// v5 names both. The stamp moves whenever a stored target's basis changes, by
+/// correction as much as by calibration.
 pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v5";
 
 // -- Risk tiers and the capital-efficiency hurdle (`docs/portfolio-analysis.md`
