@@ -2,54 +2,50 @@
 
 ## What happened
 
-**Every open question and all four carried items were decided and
-recorded** (`00531ad`, docs only). The load-bearing ruling: **the big
-confirmation run now waits until every finding in the 2026-08-24
-large-scale review record is handled** — the P1/P2/P3 minors, Codex
-I1–I9, and the §A4 exhausted-budget seed edge — and the user names the
-launch session at its start. The queue inverted (fixes first, run after;
-BUILD §What remains item 1 rewritten). Fix grouping: **one finding per
-slice** (the resume prompt-usage minor rides `CheckpointAccumulators`
-with retry events as one seam). Rulings in their canonical homes: docs
-register — mirrors state the store rule, fail-soft postures live once in
-§Failure posture (`CLAUDE.md` §Docs formatting); one-month band → √t
-scaling, own slice + `SCENARIO_TARGET_PARAMETER_VERSION` bump;
-core-beside-statement render declined (§F1); 6e supersede leg dormant by
-design — doc to as-built, label the supplement downgrade, one slice;
-forward-assumption promotion bar drafted (≥10 inspected shadow
-resolutions / ≥5 holdings / ≥2 runs / zero wrong fills —
-`portfolio-workflow.md` §6e); fraud-claim promotion = exactly two routes,
-structured-field adapter or per-claim acknowledgment
-(`trade-opportunities-workflow.md` §5c); Ollama lifecycle permanently
-user-managed, no auto-start or spin-down; research budgets kept as
-drafted, closed onto the watch set; `configuration.md:214` traced true
-(§What was verified correct); INDEX row for the review record added.
+**Four P1 minors from the 2026-08-24 large-scale review resolved**, one
+commit each on `main` through the plan → implement → review → Codex →
+commit loop: shadow-fill presence reads *any* consensus leg (`e495c3c` —
+the loss-forecast minor plus a Codex-confirmed low/high-bracket edge,
+folded as one seam under the 2026-08-27 exception, user-ruled); the
+narrative fallback checks TTM contiguity across the seam (`0b5653b`); the
+anchor share count stays inside the print's own window, with the "every
+per-share conversion" doc blanket and its two mirrors scoped to *forward*
+conversions (`28332e1`); and the one-month band √t-scaled under the
+unchanged clamp — `SCENARIO_TARGET_PARAMETER_VERSION` is now **`targets-v5`**
+— with a cap-saturation watch added to the watch set (`35bf8af`). Each
+resolution is marked on the record's own bullet (`Resolved 2026-08-27:`
+continuation lines). Codex's rounds surfaced two pre-existing gaps, recorded
+as **I10** (one-month methodology never rendered to the model or the UI)
+and **I11** (no cross-run continuity attribution for a target-version bump);
+the user ruled them queued as their own slices, not blockers. Two recurring
+review nits worth carrying: rustfmt-shape new test lines (the crate isn't
+rustfmt-clean overall — spot-check only the edited hunks), and sweep
+`logic-flow-docs/` mirrors whenever a numeric contract moves.
 
 ## Current state
 
-Nothing in flight; `main` at `00531ad`, tree clean, pushed. **The fix
-queue sits ahead of the run**, one finding per slice, in severity order:
-the 11 P1 minors (review record §Priority-1 minor findings), the 5 P2
-minors, the 8 P3 minors (the supersede one now carries its ruling), then
-Codex's I1–I9 (unverified by a Claude session), plus the §A4 seed fix
-(route a fully-dropped topic's prior through the reduce as a dormant
-prior). Two of today's rulings are slices in that queue (the √t band, the
-supersede doc+label). Carried untouched, outside the record: `/api/tags`
-probes on the 600 s backstop; seed passes the whole prior ledger per topic
-(doc↔code drift vs `portfolio-workflow.md` §6c); 6g qualitative trips
-un-trip unless re-researched.
+Nothing in flight; `main` at `35bf8af`, tree clean, pushed. The fix queue
+still sits ahead of the run, one finding per slice, severity order:
+**7 P1 minors** remain (next: tech pre-flag benchmark coverage; then
+pre-profit backfill any-role periods, fund momentum band saturation,
+expense-ratio `{:.3}` rendering, ledger TTM vocabulary, IV skew sign
+convention, FMP statement dates), then the 5 P2, 8 P3, Codex I1–I11, and
+the §A4 seed fix. Carried untouched outside the record: `/api/tags` probes
+on the 600 s backstop; seed passes the whole prior ledger per topic; 6g
+qualitative trips un-trip unless re-researched.
 
 ## Open questions
 
-- None live. Every question on the prior list is ruled and recorded
-  (review record §Disposition, the 2026-08-27 lines).
+- None live.
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task` the first P1 minor —
-loss-forecast displacement in the shadow fill: `feed_present`'s
-`v > 0.0` in `engine.rs::refine_targets_with_assumption` treats a
-published negative EPS consensus as absent, so a research fact overwrites
-all three consensus legs. Keep the loop per finding: plan → implement →
-review → Codex → commit, and mark it resolved in the review record. Do
-not launch or propose the big run — the user names that session.
+`/metis-session-start`, then `/metis-plan-task` the next P1 minor — tech
+pre-flag benchmark coverage: `latest_on_or_before(benchmark_closes,
+latest.date)` in `engine.rs::tech_event_pre_flag` never verifies the
+benchmark covers the holding's newest session, so a shorter benchmark
+series silently mismatches the windows instead of taking a typed gap. Keep
+the loop per finding (plan → implement → review → Codex → commit), mark it
+resolved in the record, and check `logic-flow-docs/` mirrors on every
+numeric change. Do not launch or propose the big run — the user names that
+session.
