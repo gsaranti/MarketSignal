@@ -1826,7 +1826,17 @@ pub struct HoldingAudit {
 /// input delta's tied research entries (`DeltaEntry.related_condition_id`,
 /// persisted on the what-changed audit) and its rewrite instruction names
 /// that mark as the qualitative leg.
-pub const PROMPT_VERSION: &str = "portfolio-v13";
+///
+/// `portfolio-v14`: the expense-ratio render (the 2026-08-24 review's
+/// Priority-1 minor). The role-risk, interpretation, and action prompts state
+/// a fund's expense ratio / drag through one shared formatter as the decimal
+/// fraction at four places — the ledger's unit — beside its percent reading
+/// (`0.0003 (0.03%/yr)`), where `opt()`'s three places had flattened a 0.03%
+/// fund to `0.000` against the legend's own arithmetic. A value-format change
+/// under an unchanged legend, stamped so a pre-fix checkpoint cannot resume
+/// into the corrected render and every record names the render it was
+/// authored under.
+pub const PROMPT_VERSION: &str = "portfolio-v14";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding

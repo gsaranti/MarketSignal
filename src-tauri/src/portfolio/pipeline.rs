@@ -2908,7 +2908,7 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     p.push_str(&format!(
         "EXPENSE RATIO (decimal fraction of assets per year; 0.0075 = 0.75%/yr): {}\n\
          OBSERVABLE RISK (annualized volatility): {}\n",
-        opt(r.expense_ratio),
+        fmt_expense_ratio(r.expense_ratio),
         opt(r.observable_risk),
     ));
     // The closed-end read renders only where the vehicle makes it meaningful
@@ -3510,7 +3510,7 @@ pub fn interpretation_user_prompt(input: &InterpretationInput) -> String {
              structurally absent and neutral-imputed (the letter carries a visible \
              low-confidence marker). Expense ratio (decimal fraction of assets per \
              year; 0.0075 = 0.75%/yr): {}. US share: {}.\n",
-            opt(f.fund.expense_ratio),
+            fmt_expense_ratio(f.fund.expense_ratio),
             f.fund
                 .country_weights
                 .iter()
@@ -3773,6 +3773,32 @@ fn opt(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.3}")).unwrap_or_else(|| "(gap)".to_string())
 }
 
+/// The expense-ratio prompt render — one shared formatter so the role-risk,
+/// interpretation, and action prompts state the value identically. The decimal
+/// fraction stays primary because it is the ledger's unit
+/// (`LedgerSeries::ExpenseRatio` is declared to the model as a decimal, and the
+/// debut falsifier's threshold is authored in it); the percent reading rides
+/// beside it so the number is legible without the legend's arithmetic. Four
+/// places is one basis point — the resolution expense ratios are usually
+/// quoted at — and a nonzero ratio that would round to zero extends its
+/// precision instead, up to ten places, so a ratio prints as free only below
+/// 5e-11. `opt()`'s three places flattened a 0.03% fund to `0.000`
+/// (large-scale review 2026-08-24, Priority-1 minor).
+fn fmt_expense_ratio(v: Option<f64>) -> String {
+    let Some(x) = v else {
+        return "(gap)".to_string();
+    };
+    let places: usize = if x == 0.0 {
+        4
+    } else {
+        (4..=10)
+            .find(|p| (x * 10f64.powi(*p as i32)).round() != 0.0)
+            .unwrap_or(10)
+    };
+    let pct = places - 2;
+    format!("{x:.places$} ({:.pct$}%/yr)", x * 100.0)
+}
+
 /// The closed-end price-vs-NAV prompt line — one shared render so the
 /// interpretation, action, and priced-fund prompts state the read identically
 /// (`docs/portfolio-analysis.md` §Asset eligibility: signal on the closed-end
@@ -3961,7 +3987,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 "EXPENSE DRAG (decimal fraction of assets per year): {}. OBSERVABLE \
                  RISK (annualized realized volatility): {}. STRUCTURAL FLAG \
                  (leveraged/inverse or option-overlay path dependency): {}.\n",
-                opt(verdict.expense_drag),
+                fmt_expense_ratio(verdict.expense_drag),
                 opt(verdict.observable_risk),
                 if verdict.structural_flag { "yes" } else { "no" },
             ));
@@ -8306,6 +8332,112 @@ mod tests {
         engine_output.metrics.nav_premium = None;
         let gap = prompt(&d, &engine_output);
         assert!(gap.contains("PRICE VS NAV: (gap)"), "{gap}");
+    }
+
+    #[test]
+    fn expense_ratio_renders_the_fraction_and_its_percent_reading() {
+        // A 0.03% fund flattened to `0.000` under `opt()`'s three places — read
+        // as free against the legend's own arithmetic — and the legend's example
+        // 0.0075 was unrepresentable (large-scale review 2026-08-24, P1 minor).
+        assert_eq!(fmt_expense_ratio(Some(0.0003)), "0.0003 (0.03%/yr)");
+        assert_eq!(fmt_expense_ratio(Some(0.0075)), "0.0075 (0.75%/yr)");
+        assert_eq!(fmt_expense_ratio(Some(0.0125)), "0.0125 (1.25%/yr)");
+        // The seam's actual arithmetic (`etf/info` serves percent; the adapter
+        // divides by 100) is not exactly 0.0003 in f64 — fixed precision, never
+        // shortest-round-trip display.
+        assert_eq!(fmt_expense_ratio(Some(0.03 / 100.0)), "0.0003 (0.03%/yr)");
+        // A fee-waived fund is genuinely zero.
+        assert_eq!(fmt_expense_ratio(Some(0.0)), "0.0000 (0.00%/yr)");
+        // A nonzero ratio below half a basis point extends its precision rather
+        // than printing as free.
+        assert_eq!(fmt_expense_ratio(Some(0.00004)), "0.00004 (0.004%/yr)");
+        assert_eq!(fmt_expense_ratio(None), "(gap)");
+    }
+
+    #[test]
+    fn expense_ratio_renders_both_readings_on_every_fund_prompt() {
+        // All three fund prompts route through the one formatter: the role-risk
+        // prompt, the priced branch's FUND CONTEXT arm, and the action prompt's
+        // role-risk arm (`expense_drag`). The fixture fund carries 0.0003.
+        let d = fund_dossier(us_equity_fund());
+        let readout = RoleRiskReadout {
+            class_label: "bond fund".into(),
+            expense_ratio: Some(0.0003),
+            ..Default::default()
+        };
+        let role = role_risk_user_prompt(&RoleRiskInput {
+            input_delta: &[],
+            dossier: &d,
+            prior_ledger: d.prior_ledger(),
+            readout: &readout,
+            ledger_eval: None,
+            distilled: "No research findings.",
+        });
+        assert!(
+            role.contains(
+                "EXPENSE RATIO (decimal fraction of assets per year; 0.0075 = 0.75%/yr): \
+                 0.0003 (0.03%/yr)\n"
+            ),
+            "{role}"
+        );
+
+        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let interp = interpretation_user_prompt(&InterpretationInput {
+            input_delta: &[],
+            dossier: &d,
+            prior_ledger: d.prior_ledger(),
+            engine: &engine_output,
+            distilled: "",
+            ledger_eval: None,
+            pre_profit: None,
+            tech_pre_flag: None,
+            narrative: None,
+        });
+        assert!(
+            interp.contains("0.0075 = 0.75%/yr): 0.0003 (0.03%/yr). US share:"),
+            "{interp}"
+        );
+
+        let rr = crate::portfolio::RoleRiskVerdict {
+            class_label: "bond fund".into(),
+            role_summary: "income sleeve".into(),
+            exposure_tilt: vec![],
+            expense_drag: Some(0.0003),
+            observable_risk: None,
+            structural_flag: false,
+            is_cef: false,
+            nav_premium: None,
+            evidence_gaps: vec![],
+            action: crate::portfolio::Action::Hold,
+            action_rationale: String::new(),
+            what_changed: "new holding".into(),
+        };
+        let action = action_user_prompt(&ActionInput {
+            dossier: &d,
+            subject: ActionSubject::RoleRisk { verdict: &rr },
+            engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
+            profile: &d.profile,
+        });
+        assert!(
+            action.contains(
+                "EXPENSE DRAG (decimal fraction of assets per year): 0.0003 (0.03%/yr). \
+                 OBSERVABLE"
+            ),
+            "{action}"
+        );
+        for (name, p) in [
+            ("role", &role),
+            ("interpretation", &interp),
+            ("action", &action),
+        ] {
+            assert!(
+                !p.contains("): 0.000\n") && !p.contains("): 0.000."),
+                "{name} prompt flattened the ratio: {p}"
+            );
+        }
     }
 
     #[test]
