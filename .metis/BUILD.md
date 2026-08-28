@@ -484,6 +484,15 @@ Each is easy to break by accident, so a plan should say how it honors them:
   or comparator) and later reads it beside a fresh print routes through the
   bridge contract — canonical at `docs/portfolio-analysis.md §Starting
   parameters` (Split-adjustment bridge).
+- **A grade-stamp bump describes itself.** `engine::GRADE_PARAMETER_VERSION`
+  moves only with a row appended to `engine::GRADE_PARAMETER_HISTORY` naming
+  what the bump changed on each branch (a test pins the last row to the
+  current stamp), because the what-changed delta row and the continuity NOTE
+  read a prior's boundary from that history — on the prior record's own
+  branch, only over a priced prior, silent where nothing changed — and a
+  generic "letters can move" row is citable evidence the validator accepts
+  (ruled 2026-08-27, off the fund-momentum slice's Codex rounds; canonical at
+  `docs/portfolio-analysis.md §Starting parameters`).
 
 ### What each built slice left for the next
 
