@@ -476,8 +476,10 @@ Each is easy to break by accident, so a plan should say how it honors them:
   stops, cancellation, and anything unclassified fail on first occurrence,
   and each call path wraps exactly one retry layer. Fired retries are
   evidence — a tracker row plus data-health `model_retries` events — never
-  silent. The contract is canonical at `docs/local-models.md §The
-  local-model adapter seam`.
+  silent. A resumed run's read spans both processes: each holding's
+  telemetry rides its checkpoint row, so the trail's telemetry membership is
+  its row membership (ruled 2026-08-28). The contract is canonical at
+  `docs/local-models.md §The local-model adapter seam`.
 - **No distillation prompt issues over its model's budget.** The adapter seam
   sizes every 6d call's rendered prompt before a request exists — within the
   fast tier's budget it issues there, over it on the resident reasoner (a
@@ -657,7 +659,7 @@ every stacked runtime confirmation at once.
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
    §Disposition owns the list) is handled: the pre-run majors (C1, F3
    (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
-   posture) are resolved; the Priority-1/-2/-3 minors, Codex's I1–I16, and
+   posture) and the Priority-1/-2/-3 minors are resolved; Codex's I1–I17 and
    the §A4 seed edge sit ahead of the run, one finding per slice; and the
    user names the launch session at its start. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are

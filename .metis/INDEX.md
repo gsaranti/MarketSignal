@@ -164,6 +164,7 @@ build status lives in `BUILD.md`.*
 - Context-memory discipline — local-models.md §Context-memory discipline
 - Per-job isolated vector memory — local-models.md §Run history and continuity; storage.md §Local Vector Memory
 - Web research tool — web-research.md
+- SSRF protection and the fetch URL policy — web-research.md §Safety and provenance
 - Pre-run web-research notice — interface.md §Pre-run web-research notice; web-research.md §Tavily fallback
 - Local-suite connection indicators (Ollama / SearXNG) — interface.md §Connection status
 - Source registry & evidence tiers — data-sources.md §Source registry and evidence tiers; web-research.md §Source quality and evidence weighting; configuration.md §Web Research
@@ -284,7 +285,7 @@ build status lives in `BUILD.md`.*
 - Rate-anchor failure rule — portfolio-analysis.md §Failure posture, §Starting parameters, §The quick check; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §ATO: the audit flow; data-sources.md §Portfolio Analysis — endpoint surface (FRED), §Trade Opportunities — endpoint surface (FRED)
 - Factor normalization basis — trade-opportunities-workflow.md §Step 5c; trade-opportunities.md §Starting parameters, §The lenses; storage.md §Local Analysis Suite Storage
 - ET session dating — data-sources.md (intro session-dating rule); portfolio-analysis.md §The quick check, §Triggering, §Outcome learning; portfolio-workflow.md §The quick check
-- Run data-health roll-up — portfolio-analysis.md §Portfolio roll-up, §Starting parameters; interface.md §Main Layout
+- Run data-health roll-up — portfolio-analysis.md §Portfolio roll-up, §Starting parameters, §Failure posture; interface.md §Main Layout
 - Re-check class resolution contract — trade-opportunities-workflow.md §Step 3c, §Step 5h; portfolio-workflow.md §Step 6g
 - Per-item checkpoint/resume + research caching, both jobs — portfolio-analysis.md §Failure posture (the Portfolio contract is canonical), §Starting parameters; portfolio-workflow.md §Step 2, §Step 6, §Step 6g; trade-opportunities.md §Failure posture; trade-opportunities-workflow.md §Step 5; run-tracking.md §Cancellation; storage.md §Local Analysis Suite Storage; data-portability.md §What moves, and what deliberately does not
 - Research loop & context management — web-research.md §The research loop and context management
@@ -332,4 +333,4 @@ the run's own dated record follows it.*
 - Trade Opportunities documentation audit — the 28 findings, their verification verdicts, seven rulings, dispositions, and two review rounds — verification/2026-08-19-trade-opportunities-documentation-audit.md; BUILD.md §What remains
 - Fund depth — the four rulings, the CEF probe findings, the built leg, and six review rounds — verification/2026-08-21-fund-depth-rulings.md; BUILD.md §What remains (Built)
 - Research-loop slice — the eight review rounds, the fix inventory, and the three 2026-08-24 channel rulings — verification/2026-08-24-research-loop-rulings.md; BUILD.md §What remains (Built)
-- Portfolio Analysis large-scale review — the findings by priority, the pre-run list and its dispositions, the 2026-08-27 rulings, and the Codex I1–I16 additions — verification/2026-08-24-portfolio-analysis-large-scale-review.md; BUILD.md §What remains
+- Portfolio Analysis large-scale review — the findings by priority, the pre-run list and its dispositions, the 2026-08-27 rulings, and the Codex I1–I17 additions — verification/2026-08-24-portfolio-analysis-large-scale-review.md; BUILD.md §What remains
