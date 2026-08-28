@@ -631,12 +631,15 @@ every stacked runtime confirmation at once.
 ### Remaining, in order
 
 1. **The single big confirmation run** — the queue's next item now the
-   Portfolio Analysis job is built in full (the pre-run bar is met). The
-   2026-08-24 large-scale review's pre-run list is **complete**
+   Portfolio Analysis job is built in full (the pre-run bar is met). By the
+   2026-08-27 ruling the run waits until **every finding** in the 2026-08-24
+   large-scale review
    (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md`
-   §Disposition owns the list): C1, F3 (`portfolio-v13`), F1, and the retry
-   posture (hard-after-one-bounded-retry, §Standing constraints) are all
-   resolved, so nothing sits ahead of the run. Its checklist is
+   §Disposition owns the list) is handled: the pre-run majors (C1, F3
+   (`portfolio-v13`), F1, F2, A1–A4, the hard-after-one-bounded-retry
+   posture) are resolved; the Priority-1/-2/-3 minors, Codex's I1–I9, and
+   the §A4 seed edge sit ahead of the run, one finding per slice; and the
+   user names the launch session at its start. Its checklist is
    `docs/verification/big-run-watch-set.md` (its two retired Stooq lines are
    now the FMP quota-consumption and 429-ladder watches), **revised to the v9
    shape 2026-08-18** (construction / lean / sizing watches removed, the
@@ -690,7 +693,8 @@ each is unbuilt work that no scheduled slice will pick up on its own.
   (the row transaction holds, and the intact archive is the retry path). The
   hardening is named and unscheduled.
 - **The local-suite guided-setup follow-up** — the Settings deferrals: in-app
-  `ollama pull` with run-tracker progress, `ollama serve` start, an
+  `ollama pull` with run-tracker progress (daemon start/stop stays the user's —
+  ruled 2026-08-27), an
   Install-Ollama deep link (needs an opener capability), reflecting the run-gate
   connectivity check in the Settings daemon indicator (today it reflects manual
   tests only — an accepted, recorded deviation from `interface.md §Connection

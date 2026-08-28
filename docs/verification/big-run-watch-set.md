@@ -67,7 +67,7 @@ Pre-sweep ledgers carry no stamp and read authored-inside until re-analyzed, so 
 
 The first live per-holding research loop at 47-position scale: SearXNG search availability against the Tavily fallback rate, and the per-topic pass loop's depth against real pages.
 
-The per-holding budgets, calibrating on this evidence: the 40-attempt fetch ceiling (`MAX_FETCHES_PER_HOLDING`; failed live attempts spend it), the 30-minute wall clock (`MAX_WALL_PER_HOLDING`), and the 4,000-char per-topic seed budget (`SEED_BUDGET_CHARS`).
+The per-holding budgets, calibrating on this evidence: the 40-attempt fetch ceiling (`MAX_FETCHES_PER_HOLDING`; failed live attempts spend it), the 30-minute wall clock (`MAX_WALL_PER_HOLDING`), the 4,000-char per-topic seed budget (`SEED_BUDGET_CHARS`), and the pass-shape constants (`MAX_TURNS_PER_PASS`, `MAX_PASSES_PER_TOPIC`, `PAGE_TEXT_CAP_CHARS`, `MAX_CLAIMS_PER_PASS`) — all kept as drafted until this run reads them (ruled 2026-08-27).
 What the run measures is how often each binds, and what the seed's fixed drop order actually drops when it does.
 
 Typed-channel validation yield against real fetched pages: how often the page-grounding checks — stated numbers, forward-fact language, the structural identity matcher, monetary unit typing — accept vs reject each of the three channels.

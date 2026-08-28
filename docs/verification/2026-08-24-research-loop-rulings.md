@@ -10,13 +10,13 @@ Every confirmed finding was fixed in-round, and the three semantic-validation P1
 1. **Forward assumption — shadow-only, suite-wide.**
    The engine still evaluates every `research_forward_assumption` under the app-owned Step-6e conflict policy, but the write-back is parked: the audit records the would-have target recompute ("would have moved the 12-month base target A → B") and the Step-6b targets always stand.
    The no-splice guarantee is structural — `engine_output` is immutable past Step 6b.
-   Promotion waits on manually inspected shadow cases; Trade Opportunities' direct-assumption leg carries the same ruling, its `research_target_scenario` bridge (claim-by-claim validated) deliberately left binding.
+   Promotion waits on inspected shadow cases against a drafted numeric bar (ruled 2026-08-27; canonical at portfolio-workflow.md §Step 6e); Trade Opportunities' direct-assumption leg carries the same ruling, its `research_target_scenario` bridge (claim-by-claim validated) deliberately left binding.
 2. **Leading indicator — anchor gated on keyed driver references.**
    Ledger key drivers carry an app-assigned stable `driver_id` (minted at ledger validation, carried by name across rewrites); the indicator must cite one via `confirms_driver_id`, and the app-computed `driver_verified` (never model-set) is the only thing that lets its presence suppress the narrative hype ceiling.
    An unknown or stale reference keeps the indicator as visible, gap-noted evidence.
 3. **Research-fed fraud — advisory.**
    The validated claim never joins the hard-forensic state (the merge path is removed; the hard rule reads the item-classified filing kinds alone).
-   It persists on the audit and reaches interpretation as clearly-labeled attention evidence; promotion back to a hard trigger waits on explicit acknowledgment or a source-specific adapter that reads the accused party from structured document fields.
+   It persists on the audit and reaches interpretation as clearly-labeled attention evidence; promotion back to a hard trigger has exactly two routes — a structured-field adapter or per-claim acknowledgment — confirmed 2026-08-27 as the only ones (canonical at trade-opportunities-workflow.md §Step 5c).
 
 ## Fix inventory (rounds 1–8, condensed)
 

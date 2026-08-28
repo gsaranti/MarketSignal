@@ -46,6 +46,12 @@ sentence, not a clause. Never satisfy it by breaking one sentence at its
 clauses instead; a fragment that needs its neighbors defeats the purpose,
 which is that a grep hit or a targeted read returns a self-contained claim.
 
+Fail-soft store writes keep one register: a mirror states the store rule as
+written ("persists", "is deleted") and never re-qualifies it; the fail-soft
+posture of each write is specified once in the job's canonical §Failure
+posture, and any other site carries at most a one-line pointer (ruled
+2026-08-27).
+
 ## Design system
 
 This project has a design package at `./market-signal-design-system/`.

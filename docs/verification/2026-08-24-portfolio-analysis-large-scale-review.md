@@ -59,6 +59,9 @@ Regressions pin the delta-row gate and the full-pass-output → quick-check seam
 The residue that remains is pre-field-shaped: an anchor-less row (pre-field, or a priced verdict whose run had no dated closes) runs as stored until a resolvable full pass stamps an anchor, so a real re-basis inside such a window goes undetected — accepted, and healed in full by the big run's whole-book pass.
 Two findings were declined with reasons.
 Statement prose quoting an old-basis number is model-authored and is never rewritten by the app: every compared, validated, and persisted machine value converts, a tie to a quantitative condition enables nothing (the research-supported channel honors qualitative trips only), and prose heals at the model's own rewrite, guided by the re-basis delta entry — rendering the machine core beside the statement in the 6c seed and 6d citation list is recorded as a named, undecided candidate and a `PROMPT_VERSION` event, not a rider on this fix.
+Ruled 2026-08-27: the core-beside-statement render is declined.
+Every compared, validated, and persisted machine value already converts, and prose heals at the model's own rewrite guided by the re-basis delta entry, so the render would add prompt bulk against context pressure for a confusion no run has shown.
+It returns only on run evidence of old-basis prose misleading a verdict.
 And distinguishing new anchor-less rows from pre-field rows buys nothing pre-release when the big run stamps the whole book.
 A pre-field row carries no anchor and runs as stored until its next full pass stamps one; the quote-bridge fallback for such rows was considered and cut by the avoid-premature-backward-compat rule, since the big run — a full pass over the whole book — stamps anchors everywhere.
 On re-verification the fourth listed consequence sharpened: `narrative_vs_reality`'s expansion read is a ratio of same-run multiples on both legs and is therefore basis-invariant; the cross-basis leg is the fallback form's **annualized price pace** (`engine.rs`, the `spot / prior_spot` power), which the paired bridging fixes.
@@ -122,6 +125,9 @@ Two Codex rounds keyed the inheritance by claim text as well as URL (a URL-only 
 - **Historical anchor share-count fallback** — a historical revenue-per-share anchor whose quarter lacks `diluted_shares` falls back to the newest quarter's or today's count (`engine.rs:2210-2213`), skewing the anchor-multiple history in the financially wrong direction under buybacks or dilution.
 - **One-month band is unscaled daily volatility** — `(daily σ × 2).clamp(0.02, 0.15)` (`engine.rs:2562-2565`) understates a month's 1σ move by ~√21 against the suite's own √t convention (`dispersion_floor`, `tech_event_pre_flag`), so the printed band covers ~0.44σ of the month.
   The doc comment marks it "v1 mechanics", so this is surfaced as a deliberate-retention judgment call rather than an accident.
+  Ruled 2026-08-27: scale by √t — the band becomes daily σ × 2 × √21 under the same clamp, matching the suite's `dispersion_floor` / `tech_event_pre_flag` convention.
+  It is a units inconsistency rather than a calibration, so it does not wait on outcome evidence.
+  It is its own slice and a `SCENARIO_TARGET_PARAMETER_VERSION` bump, since stored one-month targets change basis.
 - **Tech pre-flag benchmark coverage unchecked** — `latest_on_or_before(benchmark_closes, latest.date)` (`engine.rs:3260`) never verifies the benchmark covers the holding's newest session, so a shorter benchmark series silently mismatches the windows instead of taking a typed gap; rare, since both legs ride one FMP fetch.
 - **Pre-profit backfill counts any-role periods** — `backfill_required` counts distinct stored periods of any observation role (`pre_profit.rs:236-251`) where the documented rule counts *comparable* periods (bound + actual pairs), so a metric with four guidance rows and zero actuals suppresses the mandated backfill on later passes — blinding miss-detection exactly where guidance is open.
 - **Fund momentum band saturates** — the fund path scores `trailing_return` over the ~1,600-day deep history when present (`fund.rs:1027-1036`) against the stock path's ±30% band tuned to a 180-day window (`fund.rs:823`), so nearly every fund pins at 0 or 100; momentum sits outside the letter, so the damage is context quality in the prompt and the frozen `CalibrationSnapshot`.
@@ -231,6 +237,7 @@ Re-verification found one claim this finding had passed as matching that does no
 Both docs now state that edge as built.
 Restoring the invariant — rendering a fully-dropped topic's retained prior into the reduce the way dormant priors ride it — is a named code change; the edge needs three overflowing topics in one holding to reach.
 It is queued behind the big confirmation run, whose watch set reads the run's gaps for the cap; a hit promotes it.
+Under the 2026-08-27 run ruling (§Disposition) the fix moves ahead of the run with the rest of the record; the watch-set line stays, reading the run for whether the edge is reached.
 `logic-flow-docs/trade-opportunities-logic-flow.md` described the shared primitive with the same reduce-overflow wording and was corrected alongside, in the budget terms its own Bounds-and-audit bullet already used; the seed edge is built Portfolio behavior and was not ported to the unbuilt job.
 A Codex round then disambiguated what the cap counts in the canonical siblings: `web-research.md` §The research loop and context management and `configuration.md` §Local Analysis Suite Configuration now say only the per-unit map calls count, never the reduce or an ordinary tier-1 call.
 A second round noted the unreconciled-row delete is itself fail-soft and logged only (`job.rs:1889`), so the canonical doc now states the cold re-seed as the rule rather than a guarantee.
@@ -245,6 +252,10 @@ A third round moved the logic-flow mirror to pointer form — the rule plus a po
 - **"One isolated conversation per agenda topic"** — doc lines 1000–1001; as-built each *pass* is its own fresh conversation (`research.rs:1067-1090`), with only the claims ledger and findings carrying across a topic's passes — which the doc's own "who owns the context" bullets state correctly.
 - **"The thresholds are config knobs"** — doc line 1076; `OVERFLOW_THRESHOLD`, `CHARS_PER_TOKEN` (`distill.rs:48-51`) and `NUM_CTX_DISTILL` (`pipeline.rs:4535`) are compile-time constants exposed in no settings surface.
 - **Supersede validation legs overstated** — doc line 1155 claims metric/units/period match legs and that "a supersede always rejects"; the code has no match legs, and with an absent feed value a supersede-declared claim does not reject — it falls through and fills exactly like a supplement (`engine.rs:2039-2057`; the F-minor loss-displacement finding rides the same guard).
+  Ruled 2026-08-27: the supersede leg is dormant by design.
+  The doc moves to the as-built rule — a supersede rejects against any present feed value, and a supersede declared against an absent value is downgraded to a supplement fill, which `matched_rule` will name — and the match legs leave the doc.
+  The true leg is revivable only if the channel is promoted and the consensus feed gains an as-of date.
+  One slice: the doc plus the label.
 - **"An accepted forward assumption" as what-changed evidence** — doc line 1327; the delta row is pushed whenever distillation validated an assumption, regardless of its Step-6e shadow resolution — a `rejected:` resolution still anchors an external what-changed row (`pipeline.rs:1222-1230`).
 
 ## What was verified correct
@@ -257,6 +268,7 @@ Coverage matters as much as findings for a pre-run record; the following were tr
 - **Prompts** — the two-arm framing, sub-score directions, hurdle/tier renders, target provenance, the retrospective block's split-safe math, the what-changed instruction matching its validator exactly, the pre-profit overlay units, the forensic sections matching the 2026-08-24 rulings, tunnel-vision discipline in the action prompt (no book inputs, engine pick withheld), profile isolation from the intrinsic call, and the 6c prompt suite's seed/citation framing.
 - **Robustness** — run-slot release on success/error/panic, the checkpoint/resume cycle (atomic per-holding writes, no skip or double-process, version-stamp refusals, the newer-run eligibility check), cooperative cancellation at every boundary, single-transaction persistence with WAL + busy timeout, fail-soft routing of every enriching feed, web search/fetch failures degrading to tool notes, the SSRF guard (pinned DNS, full special-range table, body caps, re-checked cache reads), guaranteed budget-loop termination against an injectable clock, multi-byte-safe text handling, grammar-constrained local-model decoding with lenient wire structs, and the panic-freedom of the spine files' own unwrap/index/arithmetic sites.
 - **Alignment** — every constant the logic-flow doc states matches the code (grade weights and cutoffs, band parameters, tier thresholds, research budgets and freshness windows, retention caps, the resume window, outcome windows and grace), and all twelve "most important safety rules" hold, including the four 2026-08-24-adjacent ones (model arm never binds the baseline, shadow-only forward assumption, advisory fraud, driver-id-gated indicator anchor) and the code-enforced no-order Schwab boundary.
+- **Audit provenance** — the distillation shape and tier count reach the persisted audit as `configuration.md` §Local Analysis Suite Configuration states: `DistilledResearch.shape` rides `ResearchAuditRecord.shape` (`pipeline.rs:332`) into `HoldingAudit.research` (`mod.rs:1713`), serde-persisted with the run's audit rows (`store.rs:205`), the `Hierarchical` variant carrying `tier1_calls`, `subdistilled_topics`, and `dropped_passes` (traced 2026-08-27).
 
 ## Disposition
 
@@ -269,6 +281,9 @@ F1 is resolved (2026-08-27; the resolution is recorded under §F1).
 The retry posture is resolved (2026-08-27; the resolution is recorded under §Named design risk) — the pre-run list is complete.
 F2 is resolved (2026-08-27; the resolution is recorded under §F2).
 A1–A4 are resolved (2026-08-27; each resolution is recorded under its §A heading, the §A4 one naming an exhausted-budget edge left open).
+Ruled 2026-08-27: the big confirmation run waits on this whole record — every remaining finding (the Priority-1, -2, and -3 minors, Codex's I1–I9, and the §A4 exhausted-budget seed edge) is handled first, and the user names the session that launches it.
+Fix grouping ruled 2026-08-27: one finding per slice through the plan → implement → review → Codex → commit loop, each marked here; the resume prompt-usage minor is the one-seam exception, its retry events and prompt usage riding `CheckpointAccumulators` together as a single slice.
+Docs register ruled 2026-08-27, off the A1–A4 Codex rounds: a mirror states a store rule as written — "persists", "is deleted" — and the fail-soft posture of each write lives once in the job's canonical §Failure posture, mirrors carrying at most a pointer; the standing rule is `CLAUDE.md` §Docs formatting.
 
 ## Codex independent review additions
 
